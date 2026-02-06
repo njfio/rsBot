@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -184,9 +185,20 @@ pub enum PiAiError {
     InvalidResponse(String),
 }
 
+pub type StreamDeltaHandler = Arc<dyn Fn(String) + Send + Sync>;
+
 #[async_trait]
 pub trait LlmClient: Send + Sync {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError>;
+
+    async fn complete_with_stream(
+        &self,
+        request: ChatRequest,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, PiAiError> {
+        let _ = on_delta;
+        self.complete(request).await
+    }
 }
 
 #[cfg(test)]

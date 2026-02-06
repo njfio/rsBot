@@ -2,7 +2,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use jsonschema::validator_for;
-use pi_ai::{ChatRequest, LlmClient, Message, PiAiError, ToolCall, ToolDefinition};
+use pi_ai::{
+    ChatRequest, LlmClient, Message, PiAiError, StreamDeltaHandler, ToolCall, ToolDefinition,
+};
 use serde_json::{json, Value};
 use thiserror::Error;
 
@@ -163,6 +165,14 @@ impl Agent {
     }
 
     pub async fn prompt(&mut self, text: impl Into<String>) -> Result<Vec<Message>, AgentError> {
+        self.prompt_with_stream(text, None).await
+    }
+
+    pub async fn prompt_with_stream(
+        &mut self,
+        text: impl Into<String>,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<Vec<Message>, AgentError> {
         let start_index = self.messages.len();
         let user_message = Message::user(text.into());
         self.messages.push(user_message.clone());
@@ -170,12 +180,19 @@ impl Agent {
             message: user_message,
         });
 
-        self.run_loop(start_index).await
+        self.run_loop(start_index, on_delta).await
     }
 
     pub async fn continue_turn(&mut self) -> Result<Vec<Message>, AgentError> {
+        self.continue_turn_with_stream(None).await
+    }
+
+    pub async fn continue_turn_with_stream(
+        &mut self,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<Vec<Message>, AgentError> {
         let start_index = self.messages.len();
-        self.run_loop(start_index).await
+        self.run_loop(start_index, on_delta).await
     }
 
     fn emit(&self, event: AgentEvent) {
@@ -191,7 +208,11 @@ impl Agent {
             .collect()
     }
 
-    async fn run_loop(&mut self, start_index: usize) -> Result<Vec<Message>, AgentError> {
+    async fn run_loop(
+        &mut self,
+        start_index: usize,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<Vec<Message>, AgentError> {
         self.emit(AgentEvent::AgentStart);
 
         for turn in 1..=self.config.max_turns {
@@ -205,7 +226,10 @@ impl Agent {
                 temperature: self.config.temperature,
             };
 
-            let response = self.client.complete(request).await?;
+            let response = self
+                .client
+                .complete_with_stream(request, on_delta.clone())
+                .await?;
             let assistant = response.message;
             self.messages.push(assistant.clone());
             self.emit(AgentEvent::MessageAdded {
@@ -316,6 +340,31 @@ mod tests {
             responses.pop_front().ok_or_else(|| {
                 pi_ai::PiAiError::InvalidResponse("mock response queue is empty".to_string())
             })
+        }
+    }
+
+    struct StreamingMockClient {
+        response: ChatResponse,
+        deltas: Vec<String>,
+    }
+
+    #[async_trait]
+    impl pi_ai::LlmClient for StreamingMockClient {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, pi_ai::PiAiError> {
+            Ok(self.response.clone())
+        }
+
+        async fn complete_with_stream(
+            &self,
+            _request: ChatRequest,
+            on_delta: Option<pi_ai::StreamDeltaHandler>,
+        ) -> Result<ChatResponse, pi_ai::PiAiError> {
+            if let Some(handler) = on_delta {
+                for delta in &self.deltas {
+                    handler(delta.clone());
+                }
+            }
+            Ok(self.response.clone())
         }
     }
 
@@ -557,5 +606,41 @@ mod tests {
             .expect("tool result must exist");
         assert!(tool_message.is_error);
         assert!(tool_message.text_content().contains("invalid arguments"));
+    }
+
+    #[tokio::test]
+    async fn integration_prompt_with_stream_emits_incremental_deltas() {
+        let client = Arc::new(StreamingMockClient {
+            response: ChatResponse {
+                message: Message::assistant_text("Hello"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+            deltas: vec!["Hel".to_string(), "lo".to_string()],
+        });
+
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let streamed = Arc::new(Mutex::new(String::new()));
+        let sink_streamed = streamed.clone();
+        let sink = Arc::new(move |delta: String| {
+            sink_streamed
+                .lock()
+                .expect("stream lock")
+                .push_str(delta.as_str());
+        });
+
+        let new_messages = agent
+            .prompt_with_stream("hello", Some(sink))
+            .await
+            .expect("prompt should succeed");
+
+        assert_eq!(
+            new_messages
+                .last()
+                .expect("assistant message")
+                .text_content(),
+            "Hello"
+        );
+        assert_eq!(streamed.lock().expect("stream lock").as_str(), "Hello");
     }
 }

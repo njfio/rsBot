@@ -4,6 +4,7 @@ use pi_ai::{
     OpenAiClient, OpenAiConfig, PiAiError, ToolDefinition,
 };
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[tokio::test]
@@ -391,4 +392,65 @@ async fn regression_openai_client_returns_timeout_error_when_server_is_slow() {
         PiAiError::Http(inner) => assert!(inner.is_timeout()),
         other => panic!("expected timeout HTTP error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn integration_openai_client_streams_incremental_text_deltas() {
+    let server = MockServer::start();
+    let stream = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("x-pi-retry-attempt", "0")
+            .json_body_includes(
+                json!({
+                    "model": "gpt-4o-mini",
+                    "stream": true
+                })
+                .to_string(),
+            );
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+                "data: [DONE]\n\n"
+            ));
+    });
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: format!("{}/v1", server.base_url()),
+        api_key: "test-openai-key".to_string(),
+        organization: None,
+        request_timeout_ms: 5_000,
+        max_retries: 2,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+    })
+    .expect("openai client should be created");
+
+    let deltas = Arc::new(Mutex::new(String::new()));
+    let delta_sink = deltas.clone();
+    let sink = Arc::new(move |delta: String| {
+        delta_sink.lock().expect("delta lock").push_str(&delta);
+    });
+
+    let response = client
+        .complete_with_stream(
+            ChatRequest {
+                model: "gpt-4o-mini".to_string(),
+                messages: vec![Message::user("hello")],
+                tools: vec![],
+                max_tokens: None,
+                temperature: None,
+            },
+            Some(sink),
+        )
+        .await
+        .expect("streaming completion should succeed");
+
+    stream.assert_calls(1);
+    assert_eq!(deltas.lock().expect("delta lock").as_str(), "Hello");
+    assert_eq!(response.message.text_content(), "Hello");
+    assert_eq!(response.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(response.usage.total_tokens, 5);
 }

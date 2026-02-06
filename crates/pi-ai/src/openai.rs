@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -10,7 +11,7 @@ use crate::{
         retry_budget_allows_delay, should_retry_status,
     },
     ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole, PiAiError,
-    ToolDefinition,
+    StreamDeltaHandler, ToolDefinition,
 };
 
 #[derive(Debug, Clone)]
@@ -78,7 +79,29 @@ impl OpenAiClient {
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError> {
-        let body = build_chat_request_body(&request)?;
+        self.complete_with_mode(request, None).await
+    }
+
+    async fn complete_with_stream(
+        &self,
+        request: ChatRequest,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, PiAiError> {
+        self.complete_with_mode(request, on_delta).await
+    }
+}
+
+impl OpenAiClient {
+    async fn complete_with_mode(
+        &self,
+        request: ChatRequest,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, PiAiError> {
+        let mut body = build_chat_request_body(&request)?;
+        let stream_mode = on_delta.is_some();
+        if stream_mode {
+            body["stream"] = json!(true);
+        }
         let url = self.chat_completions_url();
         let started = std::time::Instant::now();
         let max_retries = self.config.max_retries;
@@ -97,11 +120,33 @@ impl LlmClient for OpenAiClient {
             match response {
                 Ok(response) => {
                     let status = response.status();
-                    let raw = response.text().await?;
                     if status.is_success() {
+                        if let Some(delta_handler) = on_delta.clone() {
+                            let is_event_stream = response
+                                .headers()
+                                .get(CONTENT_TYPE)
+                                .and_then(|value| value.to_str().ok())
+                                .map(|value| {
+                                    value.to_ascii_lowercase().contains("text/event-stream")
+                                })
+                                .unwrap_or(false);
+                            if is_event_stream {
+                                return parse_chat_stream_response(response, delta_handler).await;
+                            }
+
+                            let raw = response.text().await?;
+                            let parsed = parse_chat_response(&raw)?;
+                            let text = parsed.message.text_content();
+                            if !text.is_empty() {
+                                delta_handler(text);
+                            }
+                            return Ok(parsed);
+                        }
+                        let raw = response.text().await?;
                         return parse_chat_response(&raw);
                     }
 
+                    let raw = response.text().await?;
                     if attempt < max_retries && should_retry_status(status.as_u16()) {
                         let backoff_ms =
                             next_backoff_ms_with_jitter(attempt, self.config.retry_jitter);
@@ -316,6 +361,188 @@ fn parse_chat_response(raw: &str) -> Result<ChatResponse, PiAiError> {
     })
 }
 
+async fn parse_chat_stream_response(
+    response: reqwest::Response,
+    on_delta: StreamDeltaHandler,
+) -> Result<ChatResponse, PiAiError> {
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut finish_reason = None;
+    let mut text = String::new();
+    let mut tool_calls: Vec<OpenAiToolCallAccumulator> = Vec::new();
+    let mut usage = ChatUsage::default();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        let fragment = std::str::from_utf8(chunk.as_ref()).map_err(|error| {
+            PiAiError::InvalidResponse(format!("invalid UTF-8 in streaming response: {error}"))
+        })?;
+        buffer.push_str(fragment);
+
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].trim().to_string();
+            buffer.drain(..=pos);
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
+                if data == "[DONE]" {
+                    return Ok(finalize_stream_response(
+                        text,
+                        tool_calls,
+                        finish_reason,
+                        usage,
+                    ));
+                }
+
+                apply_stream_data(
+                    data,
+                    &on_delta,
+                    &mut text,
+                    &mut tool_calls,
+                    &mut finish_reason,
+                    &mut usage,
+                )?;
+            }
+        }
+    }
+
+    let trailing = buffer.trim();
+    if !trailing.is_empty() {
+        if let Some(data) = trailing.strip_prefix("data:") {
+            let data = data.trim();
+            if data != "[DONE]" {
+                apply_stream_data(
+                    data,
+                    &on_delta,
+                    &mut text,
+                    &mut tool_calls,
+                    &mut finish_reason,
+                    &mut usage,
+                )?;
+            }
+        }
+    }
+
+    Ok(finalize_stream_response(
+        text,
+        tool_calls,
+        finish_reason,
+        usage,
+    ))
+}
+
+fn apply_stream_data(
+    data: &str,
+    on_delta: &StreamDeltaHandler,
+    text: &mut String,
+    tool_calls: &mut Vec<OpenAiToolCallAccumulator>,
+    finish_reason: &mut Option<String>,
+    usage: &mut ChatUsage,
+) -> Result<(), PiAiError> {
+    let chunk: OpenAiStreamChunk = serde_json::from_str(data).map_err(|error| {
+        PiAiError::InvalidResponse(format!("failed to parse OpenAI stream chunk: {error}"))
+    })?;
+
+    if let Some(chunk_usage) = chunk.usage {
+        usage.input_tokens = chunk_usage.prompt_tokens;
+        usage.output_tokens = chunk_usage.completion_tokens;
+        usage.total_tokens = chunk_usage.total_tokens;
+    }
+
+    for choice in chunk.choices {
+        if let Some(reason) = choice.finish_reason {
+            *finish_reason = Some(reason);
+        }
+
+        let Some(delta) = choice.delta else {
+            continue;
+        };
+
+        if let Some(delta_text) = delta.content {
+            if !delta_text.is_empty() {
+                text.push_str(&delta_text);
+                on_delta(delta_text);
+            }
+        }
+
+        if let Some(delta_tool_calls) = delta.tool_calls {
+            for delta_call in delta_tool_calls {
+                let index = delta_call.index;
+                if tool_calls.len() <= index {
+                    tool_calls.resize_with(index + 1, OpenAiToolCallAccumulator::default);
+                }
+
+                let current = &mut tool_calls[index];
+                if let Some(id) = delta_call.id {
+                    if !id.is_empty() {
+                        current.id = id;
+                    }
+                }
+                if let Some(function) = delta_call.function {
+                    if let Some(name) = function.name {
+                        if !name.is_empty() {
+                            current.name = name;
+                        }
+                    }
+                    if let Some(arguments) = function.arguments {
+                        current.arguments.push_str(&arguments);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn finalize_stream_response(
+    text: String,
+    tool_calls: Vec<OpenAiToolCallAccumulator>,
+    finish_reason: Option<String>,
+    usage: ChatUsage,
+) -> ChatResponse {
+    let mut content = Vec::new();
+    if !text.trim().is_empty() {
+        content.push(ContentBlock::Text { text });
+    }
+
+    for (index, tool_call) in tool_calls.into_iter().enumerate() {
+        if tool_call.name.trim().is_empty() {
+            continue;
+        }
+
+        let id = if tool_call.id.trim().is_empty() {
+            format!("stream_tool_call_{}", index + 1)
+        } else {
+            tool_call.id
+        };
+        let arguments = match serde_json::from_str::<Value>(&tool_call.arguments) {
+            Ok(value) => value,
+            Err(_) => Value::String(tool_call.arguments),
+        };
+        content.push(ContentBlock::ToolCall {
+            id,
+            name: tool_call.name,
+            arguments,
+        });
+    }
+
+    ChatResponse {
+        message: Message {
+            role: MessageRole::Assistant,
+            content,
+            tool_call_id: None,
+            tool_name: None,
+            is_error: false,
+        },
+        finish_reason,
+        usage,
+    }
+}
+
 fn extract_text(content: &Option<Value>) -> String {
     match content {
         None | Some(Value::Null) => String::new(),
@@ -382,14 +609,53 @@ struct OpenAiUsage {
     total_tokens: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamChunk {
+    choices: Vec<OpenAiStreamChoice>,
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamChoice {
+    delta: Option<OpenAiStreamDelta>,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamDelta {
+    content: Option<String>,
+    tool_calls: Option<Vec<OpenAiStreamToolCallDelta>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamToolCallDelta {
+    index: usize,
+    id: Option<String>,
+    function: Option<OpenAiStreamFunctionDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiStreamFunctionDelta {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct OpenAiToolCallAccumulator {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
 
-    use crate::{
-        openai::{build_chat_request_body, parse_chat_response},
-        ChatRequest, ContentBlock, Message, ToolDefinition,
+    use super::{
+        apply_stream_data, build_chat_request_body, finalize_stream_response, parse_chat_response,
     };
+    use crate::{ChatRequest, ContentBlock, Message, ToolDefinition};
 
     #[test]
     fn serializes_assistant_tool_calls_for_openai() {
@@ -457,5 +723,83 @@ mod tests {
         assert_eq!(response.message.tool_calls().len(), 1);
         assert_eq!(response.usage.total_tokens, 14);
         assert_eq!(response.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn functional_stream_chunk_parsing_appends_deltas_and_tool_calls() {
+        let emitted = Arc::new(Mutex::new(String::new()));
+        let sink_emitted = emitted.clone();
+        let sink: crate::StreamDeltaHandler = Arc::new(move |delta: String| {
+            sink_emitted.lock().expect("delta lock").push_str(&delta);
+        });
+        let mut text = String::new();
+        let mut tool_calls = Vec::new();
+        let mut finish_reason = None;
+        let mut usage = crate::ChatUsage::default();
+
+        apply_stream_data(
+            r#"{"choices":[{"delta":{"content":"Hel"}}]}"#,
+            &sink,
+            &mut text,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut usage,
+        )
+        .expect("first stream chunk parse");
+        apply_stream_data(
+            r#"{"choices":[{"delta":{"content":"lo","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":\"README"}}]}}]}"#,
+            &sink,
+            &mut text,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut usage,
+        )
+        .expect("second stream chunk parse");
+        apply_stream_data(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":".md\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}"#,
+            &sink,
+            &mut text,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut usage,
+        )
+        .expect("third stream chunk parse");
+
+        assert_eq!(text, "Hello");
+        assert_eq!(emitted.lock().expect("delta lock").as_str(), "Hello");
+        assert_eq!(finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(usage.total_tokens, 7);
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].name, "read");
+
+        let response = finalize_stream_response(text, tool_calls, finish_reason, usage);
+        assert_eq!(response.message.tool_calls().len(), 1);
+        assert_eq!(
+            response.message.tool_calls()[0].arguments,
+            json!({"path":"README.md"})
+        );
+    }
+
+    #[test]
+    fn regression_stream_chunk_parse_returns_actionable_error() {
+        let sink: crate::StreamDeltaHandler = Arc::new(|_delta: String| {});
+        let mut text = String::new();
+        let mut tool_calls = Vec::new();
+        let mut finish_reason = None;
+        let mut usage = crate::ChatUsage::default();
+
+        let error = apply_stream_data(
+            r#"{"choices":[{"delta":{"content":"hi"}}"#,
+            &sink,
+            &mut text,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut usage,
+        )
+        .expect_err("invalid JSON should fail");
+
+        assert!(error
+            .to_string()
+            .contains("failed to parse OpenAI stream chunk"));
     }
 }

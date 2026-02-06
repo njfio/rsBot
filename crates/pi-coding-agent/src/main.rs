@@ -7,7 +7,10 @@ use std::{
     future::Future,
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -18,6 +21,7 @@ use pi_agent_core::{Agent, AgentConfig, AgentEvent};
 use pi_ai::{
     AnthropicClient, AnthropicConfig, ChatRequest, ChatResponse, GoogleClient, GoogleConfig,
     LlmClient, Message, MessageRole, ModelRef, OpenAiClient, OpenAiConfig, PiAiError, Provider,
+    StreamDeltaHandler,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1343,6 +1347,24 @@ where
     F: Future,
 {
     let checkpoint = agent.messages().to_vec();
+    let streamed_output = Arc::new(AtomicBool::new(false));
+    let stream_delta_handler = if render_options.stream_output {
+        let streamed_output = streamed_output.clone();
+        let stream_delay_ms = render_options.stream_delay_ms;
+        Some(Arc::new(move |delta: String| {
+            if delta.is_empty() {
+                return;
+            }
+            streamed_output.store(true, Ordering::Relaxed);
+            print!("{delta}");
+            let _ = std::io::stdout().flush();
+            if stream_delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(stream_delay_ms));
+            }
+        }) as StreamDeltaHandler)
+    } else {
+        None
+    };
     tokio::pin!(cancellation_signal);
 
     enum PromptOutcome<T> {
@@ -1353,14 +1375,14 @@ where
 
     let prompt_result = if turn_timeout_ms == 0 {
         tokio::select! {
-            result = agent.prompt(prompt) => PromptOutcome::Result(result),
+            result = agent.prompt_with_stream(prompt, stream_delta_handler.clone()) => PromptOutcome::Result(result),
             _ = &mut cancellation_signal => PromptOutcome::Cancelled,
         }
     } else {
         let timeout = tokio::time::sleep(Duration::from_millis(turn_timeout_ms));
         tokio::pin!(timeout);
         tokio::select! {
-            result = agent.prompt(prompt) => PromptOutcome::Result(result),
+            result = agent.prompt_with_stream(prompt, stream_delta_handler.clone()) => PromptOutcome::Result(result),
             _ = &mut cancellation_signal => PromptOutcome::Cancelled,
             _ = &mut timeout => PromptOutcome::TimedOut,
         }
@@ -1380,7 +1402,11 @@ where
 
     let new_messages = prompt_result?;
     persist_messages(session_runtime, &new_messages)?;
-    print_assistant_messages(&new_messages, render_options);
+    print_assistant_messages(
+        &new_messages,
+        render_options,
+        streamed_output.load(Ordering::Relaxed),
+    );
     Ok(PromptRunStatus::Completed)
 }
 
@@ -1861,7 +1887,12 @@ fn persist_messages(
     Ok(())
 }
 
-fn print_assistant_messages(messages: &[Message], render_options: RenderOptions) {
+fn print_assistant_messages(
+    messages: &[Message],
+    render_options: RenderOptions,
+    suppress_first_streamed_text: bool,
+) {
+    let mut suppressed_once = false;
     for message in messages {
         if message.role != MessageRole::Assistant {
             continue;
@@ -1869,6 +1900,11 @@ fn print_assistant_messages(messages: &[Message], render_options: RenderOptions)
 
         let text = message.text_content();
         if !text.trim().is_empty() {
+            if render_options.stream_output && suppress_first_streamed_text && !suppressed_once {
+                suppressed_once = true;
+                println!("\n");
+                continue;
+            }
             println!();
             if render_options.stream_output {
                 let mut stdout = std::io::stdout();
@@ -1985,11 +2021,12 @@ impl FallbackRoutingClient {
             "fallback_index": fallback_index,
         }));
     }
-}
 
-#[async_trait]
-impl LlmClient for FallbackRoutingClient {
-    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+    async fn complete_inner(
+        &self,
+        request: ChatRequest,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, PiAiError> {
         if self.routes.is_empty() {
             return Err(PiAiError::InvalidResponse(
                 "no provider routes configured".to_string(),
@@ -2000,7 +2037,16 @@ impl LlmClient for FallbackRoutingClient {
             let mut routed_request = request.clone();
             routed_request.model = route.model.clone();
 
-            match route.client.complete(routed_request).await {
+            let response = if let Some(stream_handler) = on_delta.clone() {
+                route
+                    .client
+                    .complete_with_stream(routed_request, Some(stream_handler))
+                    .await
+            } else {
+                route.client.complete(routed_request).await
+            };
+
+            match response {
                 Ok(response) => return Ok(response),
                 Err(error) => {
                     let Some(next_route) = self.routes.get(index + 1) else {
@@ -2018,6 +2064,21 @@ impl LlmClient for FallbackRoutingClient {
         Err(PiAiError::InvalidResponse(
             "provider fallback chain exhausted unexpectedly".to_string(),
         ))
+    }
+}
+
+#[async_trait]
+impl LlmClient for FallbackRoutingClient {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+        self.complete_inner(request, None).await
+    }
+
+    async fn complete_with_stream(
+        &self,
+        request: ChatRequest,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, PiAiError> {
+        self.complete_inner(request, on_delta).await
     }
 }
 
