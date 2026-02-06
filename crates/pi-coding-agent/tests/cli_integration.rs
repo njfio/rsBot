@@ -1939,6 +1939,104 @@ fn regression_interactive_skills_prune_command_rejects_unsafe_lockfile_entry() {
 }
 
 #[test]
+fn integration_interactive_skills_trust_list_command_reports_mixed_statuses() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    let trust_path = temp.path().join("trust-roots.json");
+    let payload = json!({
+        "roots": [
+            {
+                "id": "zeta",
+                "public_key": "eg==",
+                "revoked": false,
+                "expires_unix": 1,
+                "rotated_from": null
+            },
+            {
+                "id": "alpha",
+                "public_key": "YQ==",
+                "revoked": false,
+                "expires_unix": null,
+                "rotated_from": null
+            },
+            {
+                "id": "beta",
+                "public_key": "Yg==",
+                "revoked": true,
+                "expires_unix": null,
+                "rotated_from": "alpha"
+            }
+        ]
+    });
+    fs::write(&trust_path, format!("{payload}\n")).expect("write trust file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skill-trust-root-file",
+        trust_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-trust-list\n/quit\n");
+
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let stdout = String::from_utf8(output).expect("stdout should be utf8");
+    assert!(stdout.contains("skills trust list: path="));
+    assert!(stdout.contains("count=3"));
+    let alpha_index = stdout
+        .find("root: id=alpha revoked=false")
+        .expect("alpha row");
+    let beta_index = stdout.find("root: id=beta revoked=true").expect("beta row");
+    let zeta_index = stdout
+        .find("root: id=zeta revoked=false")
+        .expect("zeta row");
+    assert!(alpha_index < beta_index);
+    assert!(beta_index < zeta_index);
+    assert!(stdout.contains("rotated_from=alpha status=revoked"));
+    assert!(stdout.contains("expires_unix=1 rotated_from=none status=expired"));
+}
+
+#[test]
+fn regression_interactive_skills_trust_list_command_malformed_json_reports_error_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    let trust_path = temp.path().join("trust-roots.json");
+    fs::write(&trust_path, "{invalid-json").expect("write malformed trust file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin(format!(
+        "/skills-trust-list {}\n/help skills-trust-list\n/quit\n",
+        trust_path.display()
+    ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills trust list error: path="))
+        .stdout(predicate::str::contains(
+            "failed to parse trusted root file",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /skills-trust-list [trust_root_file]",
+        ));
+}
+
+#[test]
 fn interactive_skills_lock_write_command_writes_default_lockfile() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");
