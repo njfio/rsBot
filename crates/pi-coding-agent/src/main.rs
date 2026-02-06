@@ -646,8 +646,9 @@ async fn main() -> Result<()> {
     );
 
     let tool_policy = build_tool_policy(&cli)?;
+    let tool_policy_json = tool_policy_to_json(&tool_policy);
     if cli.print_tool_policy {
-        println!("{}", tool_policy_to_json(&tool_policy));
+        println!("{tool_policy_json}");
     }
     tools::register_builtin_tools(&mut agent, tool_policy);
     if let Some(path) = cli.tool_audit_log.clone() {
@@ -685,7 +686,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    run_interactive(agent, session_runtime, cli.turn_timeout_ms, render_options).await
+    run_interactive(
+        agent,
+        session_runtime,
+        cli.turn_timeout_ms,
+        render_options,
+        tool_policy_json,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -946,6 +954,7 @@ async fn run_interactive(
     mut session_runtime: Option<SessionRuntime>,
     turn_timeout_ms: u64,
     render_options: RenderOptions,
+    tool_policy_json: serde_json::Value,
 ) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -966,7 +975,9 @@ async fn run_interactive(
         }
 
         if trimmed.starts_with('/') {
-            if handle_command(trimmed, &mut agent, &mut session_runtime)? == CommandAction::Exit {
+            if handle_command(trimmed, &mut agent, &mut session_runtime, &tool_policy_json)?
+                == CommandAction::Exit
+            {
                 break;
             }
             continue;
@@ -1048,6 +1059,7 @@ fn handle_command(
     command: &str,
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
+    tool_policy_json: &serde_json::Value,
 ) -> Result<CommandAction> {
     if matches!(command, "/exit" | "/quit") {
         return Ok(CommandAction::Exit);
@@ -1068,6 +1080,11 @@ fn handle_command(
             }
             None => println!("session: disabled"),
         }
+        return Ok(CommandAction::Continue);
+    }
+
+    if command == "/policy" {
+        println!("{tool_policy_json}");
         return Ok(CommandAction::Continue);
     }
 
@@ -1181,7 +1198,7 @@ fn handle_command(
     }
 
     println!(
-        "unknown command: {}\ncommands: /session, /session-repair, /session-compact, /branches, /branch <id>, /resume, /quit",
+        "unknown command: {}\ncommands: /session, /policy, /session-repair, /session-compact, /branches, /branch <id>, /resume, /quit",
         command
     );
     Ok(CommandAction::Continue)
@@ -1552,6 +1569,13 @@ mod tests {
             stream_output: false,
             stream_delay_ms: 0,
         }
+    }
+
+    fn test_tool_policy_json() -> serde_json::Value {
+        serde_json::json!({
+            "allowed_roots": [],
+            "bash_profile": "balanced",
+        })
     }
 
     fn test_cli() -> Cli {
@@ -2092,11 +2116,13 @@ mod tests {
             store,
             active_head: Some(head),
         });
+        let tool_policy_json = test_tool_policy_json();
 
         let action = handle_command(
             &format!("/branch {branch_target}"),
             &mut agent,
             &mut runtime,
+            &tool_policy_json,
         )
         .expect("branch command should succeed");
         assert_eq!(action, CommandAction::Continue);
@@ -2106,7 +2132,7 @@ mod tests {
         );
         assert_eq!(agent.messages().len(), 3);
 
-        let action = handle_command("/resume", &mut agent, &mut runtime)
+        let action = handle_command("/resume", &mut agent, &mut runtime, &tool_policy_json)
             .expect("resume command should succeed");
         assert_eq!(action, CommandAction::Continue);
         assert_eq!(
@@ -2120,15 +2146,29 @@ mod tests {
     fn exit_commands_return_exit_action() {
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
         let mut runtime = None;
+        let tool_policy_json = test_tool_policy_json();
 
         assert_eq!(
-            handle_command("/quit", &mut agent, &mut runtime).expect("quit should succeed"),
+            handle_command("/quit", &mut agent, &mut runtime, &tool_policy_json)
+                .expect("quit should succeed"),
             CommandAction::Exit
         );
         assert_eq!(
-            handle_command("/exit", &mut agent, &mut runtime).expect("exit should succeed"),
+            handle_command("/exit", &mut agent, &mut runtime, &tool_policy_json)
+                .expect("exit should succeed"),
             CommandAction::Exit
         );
+    }
+
+    #[test]
+    fn policy_command_returns_continue_action() {
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let mut runtime = None;
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command("/policy", &mut agent, &mut runtime, &tool_policy_json)
+            .expect("policy should succeed");
+        assert_eq!(action, CommandAction::Continue);
     }
 
     #[test]
@@ -2153,9 +2193,15 @@ mod tests {
             store,
             active_head: Some(2),
         });
+        let tool_policy_json = test_tool_policy_json();
 
-        let action = handle_command("/session-repair", &mut agent, &mut runtime)
-            .expect("repair command should succeed");
+        let action = handle_command(
+            "/session-repair",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+        )
+        .expect("repair command should succeed");
         assert_eq!(action, CommandAction::Continue);
         assert_eq!(agent.messages().len(), 2);
     }
@@ -2194,9 +2240,15 @@ mod tests {
             store,
             active_head: Some(head),
         });
+        let tool_policy_json = test_tool_policy_json();
 
-        let action = handle_command("/session-compact", &mut agent, &mut runtime)
-            .expect("compact command should succeed");
+        let action = handle_command(
+            "/session-compact",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+        )
+        .expect("compact command should succeed");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");
