@@ -5,38 +5,181 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (for example: v1.2.3)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+  attestations: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  APP_NAME: pi-coding-agent
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-amd64
+            archive_ext: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos-amd64
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-amd64
+            archive_ext: zip
+
     steps:
-      - name: Checkout
+      - name: Checkout tag
         uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --release -p pi-coding-agent
-
-      - name: Package artifacts
+      - name: Build/package/smoke (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
+          cargo build --release -p "${APP_NAME}" --target "${{ matrix.target }}"
+
           mkdir -p dist
-          cp target/release/pi-coding-agent dist/pi-coding-agent-linux-amd64
-          tar -czf dist/pi-coding-agent-linux-amd64.tar.gz -C dist pi-coding-agent-linux-amd64
-          sha256sum dist/pi-coding-agent-linux-amd64.tar.gz > dist/pi-coding-agent-linux-amd64.tar.gz.sha256
+          binary_path="target/${{ matrix.target }}/release/${APP_NAME}"
+          packaged_binary="dist/${APP_NAME}-${{ matrix.platform }}"
+
+          cp "${binary_path}" "${packaged_binary}"
+          chmod +x "${packaged_binary}"
+
+          # Smoke test gate: artifact must execute and print help before publish.
+          "${packaged_binary}" --help > /dev/null
+
+          tar -czf "dist/${APP_NAME}-${{ matrix.platform }}.tar.gz" -C dist "${APP_NAME}-${{ matrix.platform }}"
+
+      - name: Build/package/smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cargo build --release -p "$env:APP_NAME" --target "${{ matrix.target }}"
+
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $binaryPath = "target\\${{ matrix.target }}\\release\\$env:APP_NAME.exe"
+          $packagedBinary = "dist\\$env:APP_NAME-${{ matrix.platform }}.exe"
+
+          Copy-Item "$binaryPath" "$packagedBinary"
+
+          # Smoke test gate: artifact must execute and print help before publish.
+          & "$packagedBinary" --help | Out-Null
+
+          Compress-Archive -Path "$packagedBinary" -DestinationPath "dist\\$env:APP_NAME-${{ matrix.platform }}.zip" -Force
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          if-no-files-found: error
+          path: dist/${{ env.APP_NAME }}-${{ matrix.platform }}.${{ matrix.archive_ext }}
+
+  checksums:
+    name: Generate checksums
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksum manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(dist/*.tar.gz dist/*.zip)
+          if [[ ${#artifacts[@]} -eq 0 ]]; then
+            echo "::error::no release archives were downloaded"
+            exit 1
+          fi
+
+          for artifact in "${artifacts[@]}"; do
+            sha256sum "${artifact}" > "${artifact}.sha256"
+          done
+          sha256sum "${artifacts[@]}" > dist/SHA256SUMS
+
+      - name: Upload checksum artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-checksums
+          if-no-files-found: error
+          path: |
+            dist/*.sha256
+            dist/SHA256SUMS
+
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - checksums
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Download checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: release-checksums
+          path: dist
+
+      - name: Verify staged files
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la dist
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/SHA256SUMS
 
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
           files: |
-            dist/pi-coding-agent-linux-amd64.tar.gz
-            dist/pi-coding-agent-linux-amd64.tar.gz.sha256
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/SHA256SUMS
