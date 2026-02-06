@@ -1,9 +1,12 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use ed25519_dalek::{Signature, VerifyingKey};
 use reqwest::Url;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -26,6 +29,14 @@ pub struct SkillInstallReport {
 pub struct RemoteSkillSource {
     pub url: String,
     pub sha256: Option<String>,
+    pub signature: Option<String>,
+    pub signer_public_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedKey {
+    pub id: String,
+    pub public_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -33,11 +44,23 @@ pub struct RegistrySkillEntry {
     pub name: String,
     pub url: String,
     pub sha256: Option<String>,
+    pub signing_key: Option<String>,
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RegistryKeyEntry {
+    pub id: String,
+    pub public_key: String,
+    pub signed_by: Option<String>,
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SkillRegistryManifest {
     pub version: u32,
+    #[serde(default)]
+    pub keys: Vec<RegistryKeyEntry>,
     pub skills: Vec<RegistrySkillEntry>,
 }
 
@@ -110,6 +133,8 @@ pub fn resolve_remote_skill_sources(
             .map(|url| RemoteSkillSource {
                 url: url.clone(),
                 sha256: None,
+                signature: None,
+                signer_public_key: None,
             })
             .collect());
     }
@@ -128,6 +153,8 @@ pub fn resolve_remote_skill_sources(
         .map(|(url, sha256)| RemoteSkillSource {
             url: url.clone(),
             sha256: Some(sha256.clone()),
+            signature: None,
+            signer_public_key: None,
         })
         .collect())
 }
@@ -181,6 +208,18 @@ pub async fn install_remote_skills(
                     actual_sha256
                 );
             }
+        }
+        if source.signature.is_some() ^ source.signer_public_key.is_some() {
+            bail!(
+                "incomplete signature metadata for '{}': both signature and signer public key are required",
+                source.url
+            );
+        }
+        if let (Some(signature), Some(signer_public_key)) =
+            (&source.signature, &source.signer_public_key)
+        {
+            verify_ed25519_signature(bytes.as_ref(), signature, signer_public_key)
+                .with_context(|| format!("signature verification failed for '{}'", source.url))?;
         }
 
         let file_name = remote_skill_file_name(&url, index);
@@ -246,17 +285,52 @@ pub async fn fetch_registry_manifest(
 pub fn resolve_registry_skill_sources(
     manifest: &SkillRegistryManifest,
     selected_names: &[String],
+    trust_roots: &[TrustedKey],
+    require_signed: bool,
 ) -> Result<Vec<RemoteSkillSource>> {
+    let trusted_keys = build_trusted_key_map(manifest, trust_roots)?;
     let mut resolved = Vec::new();
     for name in selected_names {
         let entry = manifest
             .skills
             .iter()
             .find(|entry| entry.name == *name)
-            .ok_or_else(|| anyhow::anyhow!("registry does not contain skill '{}'", name))?;
+            .ok_or_else(|| anyhow!("registry does not contain skill '{}'", name))?;
+
+        let has_signature = entry.signature.is_some() || entry.signing_key.is_some();
+        if require_signed && !has_signature {
+            bail!(
+                "registry skill '{}' is unsigned but signatures are required",
+                name
+            );
+        }
+
+        if entry.signature.is_some() ^ entry.signing_key.is_some() {
+            bail!(
+                "registry skill '{}' has incomplete signing metadata (both signing_key and signature are required)",
+                name
+            );
+        }
+
+        let (signature, signer_public_key) =
+            if let (Some(signature), Some(signing_key)) = (&entry.signature, &entry.signing_key) {
+                let signer_public_key = trusted_keys.get(signing_key).ok_or_else(|| {
+                    anyhow!(
+                        "registry skill '{}' uses untrusted signing key '{}'",
+                        name,
+                        signing_key
+                    )
+                })?;
+                (Some(signature.clone()), Some(signer_public_key.clone()))
+            } else {
+                (None, None)
+            };
+
         resolved.push(RemoteSkillSource {
             url: entry.url.clone(),
             sha256: entry.sha256.clone(),
+            signature,
+            signer_public_key,
         });
     }
 
@@ -291,6 +365,122 @@ pub fn augment_system_prompt(base: &str, skills: &[Skill]) -> String {
     }
 
     prompt
+}
+
+fn build_trusted_key_map(
+    manifest: &SkillRegistryManifest,
+    trust_roots: &[TrustedKey],
+) -> Result<HashMap<String, String>> {
+    let mut trusted = HashMap::new();
+    for root in trust_roots {
+        let root_public_key = root.public_key.trim().to_string();
+        let root_key_bytes =
+            decode_base64_fixed::<32>("trusted root public key", &root_public_key)?;
+        let _ = VerifyingKey::from_bytes(&root_key_bytes)
+            .with_context(|| format!("invalid trusted root key '{}'", root.id))?;
+
+        if let Some(existing) = trusted.get(&root.id) {
+            if existing != &root_public_key {
+                bail!(
+                    "duplicate trusted root id '{}' has conflicting keys",
+                    root.id
+                );
+            }
+            continue;
+        }
+        trusted.insert(root.id.clone(), root_public_key);
+    }
+
+    let mut manifest_keys = HashMap::new();
+    for key in &manifest.keys {
+        if manifest_keys.insert(key.id.clone(), key).is_some() {
+            bail!("registry contains duplicate key id '{}'", key.id);
+        }
+        if key.signed_by.is_some() ^ key.signature.is_some() {
+            bail!(
+                "registry key '{}' has incomplete signing metadata (signed_by and signature are required together)",
+                key.id
+            );
+        }
+    }
+
+    for root in trust_roots {
+        if let Some(manifest_root) = manifest_keys.get(&root.id) {
+            if manifest_root.public_key.trim() != root.public_key.trim() {
+                bail!(
+                    "trusted root '{}' does not match registry key material",
+                    root.id
+                );
+            }
+        }
+    }
+
+    loop {
+        let mut progressed = false;
+        for key in &manifest.keys {
+            if trusted.contains_key(&key.id) {
+                continue;
+            }
+
+            let (Some(signed_by), Some(signature)) = (&key.signed_by, &key.signature) else {
+                continue;
+            };
+            let Some(signer_public_key) = trusted.get(signed_by).cloned() else {
+                continue;
+            };
+
+            verify_ed25519_signature(
+                key_certificate_payload(key).as_bytes(),
+                signature,
+                &signer_public_key,
+            )
+            .with_context(|| {
+                format!(
+                    "failed to verify registry key '{}' signed by '{}'",
+                    key.id, signed_by
+                )
+            })?;
+
+            trusted.insert(key.id.clone(), key.public_key.trim().to_string());
+            progressed = true;
+        }
+
+        if !progressed {
+            break;
+        }
+    }
+
+    Ok(trusted)
+}
+
+fn verify_ed25519_signature(
+    message: &[u8],
+    signature_base64: &str,
+    public_key_base64: &str,
+) -> Result<()> {
+    let public_key_bytes = decode_base64_fixed::<32>("public key", public_key_base64)?;
+    let signature_bytes = decode_base64_fixed::<64>("signature", signature_base64)?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
+        .context("failed to decode ed25519 public key bytes")?;
+    let signature = Signature::from_bytes(&signature_bytes);
+    verifying_key
+        .verify_strict(message, &signature)
+        .map_err(|error| anyhow!("invalid ed25519 signature: {error}"))?;
+    Ok(())
+}
+
+fn decode_base64_fixed<const N: usize>(label: &str, value: &str) -> Result<[u8; N]> {
+    let decoded = BASE64
+        .decode(value.trim())
+        .with_context(|| format!("failed to decode {label} from base64"))?;
+    let bytes: [u8; N] = decoded
+        .try_into()
+        .map_err(|_| anyhow!("{label} must decode to {N} bytes"))?;
+    Ok(bytes)
+}
+
+fn key_certificate_payload(key: &RegistryKeyEntry) -> String {
+    format!("pi-skill-key-v1:{}:{}", key.id, key.public_key.trim())
 }
 
 fn upsert_skill_file(
@@ -348,6 +538,8 @@ fn normalize_sha256(value: &str) -> String {
 mod tests {
     use std::path::PathBuf;
 
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use ed25519_dalek::{Signer, SigningKey};
     use httpmock::prelude::*;
     use sha2::{Digest, Sha256};
     use tempfile::tempdir;
@@ -355,8 +547,8 @@ mod tests {
     use super::{
         augment_system_prompt, fetch_registry_manifest, install_remote_skills, install_skills,
         load_catalog, resolve_registry_skill_sources, resolve_remote_skill_sources,
-        resolve_selected_skills, RemoteSkillSource, Skill, SkillInstallReport,
-        SkillRegistryManifest,
+        resolve_selected_skills, RegistryKeyEntry, RemoteSkillSource, Skill, SkillInstallReport,
+        SkillRegistryManifest, TrustedKey,
     };
 
     #[test]
@@ -522,6 +714,8 @@ mod tests {
             &[RemoteSkillSource {
                 url: format!("{}/skills/review.md", server.base_url()),
                 sha256: Some(checksum),
+                signature: None,
+                signer_public_key: None,
             }],
             &destination,
         )
@@ -557,6 +751,8 @@ mod tests {
             &[RemoteSkillSource {
                 url: format!("{}/skills/check.md", server.base_url()),
                 sha256: Some("deadbeef".to_string()),
+                signature: None,
+                signer_public_key: None,
             }],
             &destination,
         )
@@ -584,6 +780,8 @@ mod tests {
             &[RemoteSkillSource {
                 url: format!("{}/skills/sync", server.base_url()),
                 sha256: None,
+                signature: None,
+                signer_public_key: None,
             }],
             &destination,
         )
@@ -637,14 +835,17 @@ mod tests {
     fn regression_resolve_registry_skill_sources_errors_for_missing_name() {
         let manifest = SkillRegistryManifest {
             version: 1,
+            keys: vec![],
             skills: vec![super::RegistrySkillEntry {
                 name: "known".to_string(),
                 url: "https://example.com/known.md".to_string(),
                 sha256: None,
+                signing_key: None,
+                signature: None,
             }],
         };
 
-        let error = resolve_registry_skill_sources(&manifest, &["missing".to_string()])
+        let error = resolve_registry_skill_sources(&manifest, &["missing".to_string()], &[], false)
             .expect_err("unknown name should fail");
         assert!(error
             .to_string()
@@ -681,8 +882,9 @@ mod tests {
             fetch_registry_manifest(&format!("{}/registry.json", server.base_url()), None)
                 .await
                 .expect("manifest fetch");
-        let sources = resolve_registry_skill_sources(&manifest, &["registry-skill".to_string()])
-            .expect("resolve");
+        let sources =
+            resolve_registry_skill_sources(&manifest, &["registry-skill".to_string()], &[], false)
+                .expect("resolve");
 
         let temp = tempdir().expect("tempdir");
         let destination = temp.path().join("skills");
@@ -704,5 +906,200 @@ mod tests {
         );
         registry.assert_hits(1);
         skill.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn regression_install_remote_skills_fails_on_signature_mismatch() {
+        let server = MockServer::start();
+        let body = "signed payload";
+        let signer = SigningKey::from_bytes(&[7u8; 32]);
+        let different_signer = SigningKey::from_bytes(&[8u8; 32]);
+        let signature = BASE64.encode(different_signer.sign(body.as_bytes()).to_bytes());
+        let public_key = BASE64.encode(signer.verifying_key().to_bytes());
+
+        let remote = server.mock(|when, then| {
+            when.method(GET).path("/skills/signed.md");
+            then.status(200).body(body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let destination = temp.path().join("skills");
+        let error = install_remote_skills(
+            &[RemoteSkillSource {
+                url: format!("{}/skills/signed.md", server.base_url()),
+                sha256: None,
+                signature: Some(signature),
+                signer_public_key: Some(public_key),
+            }],
+            &destination,
+        )
+        .await
+        .expect_err("signature mismatch should fail");
+        assert!(error
+            .to_string()
+            .contains("signature verification failed for"));
+        remote.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn functional_registry_signed_skill_roundtrip_with_trust_chain() {
+        let server = MockServer::start();
+
+        let root = SigningKey::from_bytes(&[11u8; 32]);
+        let publisher = SigningKey::from_bytes(&[12u8; 32]);
+        let root_public_key = BASE64.encode(root.verifying_key().to_bytes());
+        let publisher_public_key = BASE64.encode(publisher.verifying_key().to_bytes());
+        let publisher_certificate = BASE64.encode(
+            root.sign(format!("pi-skill-key-v1:publisher:{publisher_public_key}").as_bytes())
+                .to_bytes(),
+        );
+
+        let skill_body = "signed registry skill";
+        let skill_sha = format!("{:x}", Sha256::digest(skill_body.as_bytes()));
+        let skill_signature = BASE64.encode(publisher.sign(skill_body.as_bytes()).to_bytes());
+
+        let registry_body = serde_json::json!({
+            "version": 1,
+            "keys": [
+                {
+                    "id":"publisher",
+                    "public_key": publisher_public_key,
+                    "signed_by":"root",
+                    "signature": publisher_certificate
+                }
+            ],
+            "skills": [
+                {
+                    "name":"secure-skill",
+                    "url": format!("{}/skills/secure.md", server.base_url()),
+                    "sha256": skill_sha,
+                    "signing_key":"publisher",
+                    "signature": skill_signature
+                }
+            ]
+        })
+        .to_string();
+
+        let registry = server.mock(|when, then| {
+            when.method(GET).path("/registry.json");
+            then.status(200).body(registry_body);
+        });
+        let skill = server.mock(|when, then| {
+            when.method(GET).path("/skills/secure.md");
+            then.status(200).body(skill_body);
+        });
+
+        let manifest =
+            fetch_registry_manifest(&format!("{}/registry.json", server.base_url()), None)
+                .await
+                .expect("manifest fetch");
+        let sources = resolve_registry_skill_sources(
+            &manifest,
+            &["secure-skill".to_string()],
+            &[TrustedKey {
+                id: "root".to_string(),
+                public_key: root_public_key,
+            }],
+            true,
+        )
+        .expect("resolve signed sources");
+
+        let temp = tempdir().expect("tempdir");
+        let destination = temp.path().join("skills");
+        let report = install_remote_skills(&sources, &destination)
+            .await
+            .expect("install signed skill");
+
+        assert_eq!(
+            report,
+            SkillInstallReport {
+                installed: 1,
+                updated: 0,
+                skipped: 0
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(destination.join("secure.md")).expect("read skill"),
+            skill_body
+        );
+        registry.assert_hits(1);
+        skill.assert_hits(1);
+    }
+
+    #[test]
+    fn regression_resolve_registry_skill_sources_rejects_untrusted_signing_key() {
+        let publisher = SigningKey::from_bytes(&[21u8; 32]);
+        let manifest = SkillRegistryManifest {
+            version: 1,
+            keys: vec![],
+            skills: vec![super::RegistrySkillEntry {
+                name: "secure".to_string(),
+                url: "https://example.com/secure.md".to_string(),
+                sha256: None,
+                signing_key: Some("publisher".to_string()),
+                signature: Some(BASE64.encode(publisher.sign(b"payload").to_bytes())),
+            }],
+        };
+
+        let error = resolve_registry_skill_sources(&manifest, &["secure".to_string()], &[], false)
+            .expect_err("untrusted key should fail");
+        assert!(error.to_string().contains("untrusted signing key"));
+    }
+
+    #[test]
+    fn regression_resolve_registry_skill_sources_requires_signed_when_enabled() {
+        let manifest = SkillRegistryManifest {
+            version: 1,
+            keys: vec![],
+            skills: vec![super::RegistrySkillEntry {
+                name: "plain".to_string(),
+                url: "https://example.com/plain.md".to_string(),
+                sha256: None,
+                signing_key: None,
+                signature: None,
+            }],
+        };
+
+        let error = resolve_registry_skill_sources(&manifest, &["plain".to_string()], &[], true)
+            .expect_err("unsigned entry should fail");
+        assert!(error.to_string().contains("unsigned"));
+    }
+
+    #[test]
+    fn regression_resolve_registry_skill_sources_rejects_invalid_key_certificate() {
+        let root = SigningKey::from_bytes(&[31u8; 32]);
+        let root_public_key = BASE64.encode(root.verifying_key().to_bytes());
+        let publisher = SigningKey::from_bytes(&[32u8; 32]);
+        let publisher_public_key = BASE64.encode(publisher.verifying_key().to_bytes());
+        let invalid_certificate = BASE64.encode(publisher.sign(b"wrong payload").to_bytes());
+
+        let manifest = SkillRegistryManifest {
+            version: 1,
+            keys: vec![RegistryKeyEntry {
+                id: "publisher".to_string(),
+                public_key: publisher_public_key,
+                signed_by: Some("root".to_string()),
+                signature: Some(invalid_certificate),
+            }],
+            skills: vec![super::RegistrySkillEntry {
+                name: "secure".to_string(),
+                url: "https://example.com/secure.md".to_string(),
+                sha256: None,
+                signing_key: Some("publisher".to_string()),
+                signature: Some(BASE64.encode(publisher.sign(b"payload").to_bytes())),
+            }],
+        };
+
+        let error = resolve_registry_skill_sources(
+            &manifest,
+            &["secure".to_string()],
+            &[TrustedKey {
+                id: "root".to_string(),
+                public_key: root_public_key,
+            }],
+            true,
+        )
+        .expect_err("invalid certificate should fail");
+        assert!(error.to_string().contains("failed to verify registry key"));
     }
 }

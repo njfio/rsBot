@@ -27,11 +27,11 @@ Implemented now:
 - Skill loading from markdown packages via `--skills-dir` and `--skill`
 - Remote skill fetch/install with optional checksum verification
 - Registry-based skill installation (`--skill-registry-url`, `--install-skill-from-registry`)
+- Signed registry skill installation with trust roots (`--skill-trust-root`, `--require-signed-skills`)
 - Unit tests for serialization, tool loop, renderer diffing, and tool behaviors
 
 Not implemented yet:
 
-- Skill/extension signing and trust chain management
 - Full TUI parity with overlays/images/editor
 
 ## Build & Test
@@ -132,6 +132,19 @@ cargo run -p pi-coding-agent -- \
   --skill-registry-url https://example.com/registry.json \
   --skill-registry-sha256 3ac10... \
   --install-skill-from-registry review \
+  --skill review
+```
+
+Enforce signed registry skills with trusted root keys:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --prompt "Audit this module" \
+  --skills-dir .pi/skills \
+  --skill-registry-url https://example.com/registry.json \
+  --install-skill-from-registry review \
+  --skill-trust-root root=Gf7... \
+  --require-signed-skills \
   --skill review
 ```
 

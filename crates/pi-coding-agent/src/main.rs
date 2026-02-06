@@ -11,6 +11,7 @@ use pi_ai::{
     AnthropicClient, AnthropicConfig, GoogleClient, GoogleConfig, LlmClient, Message, MessageRole,
     ModelRef, OpenAiClient, OpenAiConfig, Provider,
 };
+use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -19,7 +20,7 @@ use crate::session::SessionStore;
 use crate::skills::{
     augment_system_prompt, fetch_registry_manifest, install_remote_skills, install_skills,
     load_catalog, resolve_registry_skill_sources, resolve_remote_skill_sources,
-    resolve_selected_skills,
+    resolve_selected_skills, TrustedKey,
 };
 use crate::tools::ToolPolicy;
 
@@ -163,6 +164,29 @@ struct Cli {
         help = "Skill name(s) to install from the remote registry"
     )]
     install_skill_from_registry: Vec<String>,
+
+    #[arg(
+        long = "skill-trust-root",
+        env = "PI_SKILL_TRUST_ROOT",
+        value_delimiter = ',',
+        help = "Trusted root key(s) for skill signature verification in key_id=base64_public_key format"
+    )]
+    skill_trust_root: Vec<String>,
+
+    #[arg(
+        long = "skill-trust-root-file",
+        env = "PI_SKILL_TRUST_ROOT_FILE",
+        help = "JSON file containing trusted root keys for skill signature verification"
+    )]
+    skill_trust_root_file: Option<PathBuf>,
+
+    #[arg(
+        long = "require-signed-skills",
+        env = "PI_REQUIRE_SIGNED_SKILLS",
+        default_value_t = false,
+        help = "Require selected registry skills to provide signature metadata and validate against trusted roots"
+    )]
+    require_signed_skills: bool,
 
     #[arg(long, env = "PI_MAX_TURNS", default_value_t = 8)]
     max_turns: usize,
@@ -316,13 +340,19 @@ async fn main() -> Result<()> {
             report.installed, report.updated, report.skipped
         );
     }
+    let trusted_skill_roots = resolve_skill_trust_roots(&cli)?;
     if !cli.install_skill_from_registry.is_empty() {
         let registry_url = cli.skill_registry_url.as_deref().ok_or_else(|| {
             anyhow!("--skill-registry-url is required when using --install-skill-from-registry")
         })?;
         let manifest =
             fetch_registry_manifest(registry_url, cli.skill_registry_sha256.as_deref()).await?;
-        let sources = resolve_registry_skill_sources(&manifest, &cli.install_skill_from_registry)?;
+        let sources = resolve_registry_skill_sources(
+            &manifest,
+            &cli.install_skill_from_registry,
+            &trusted_skill_roots,
+            cli.require_signed_skills,
+        )?;
         let report = install_remote_skills(&sources, &cli.skills_dir).await?;
         println!(
             "registry skills install: installed={} updated={} skipped={}",
@@ -368,6 +398,70 @@ async fn main() -> Result<()> {
     }
 
     run_interactive(agent, session_runtime, render_options).await
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustedRootRecord {
+    id: String,
+    public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TrustedRootFileFormat {
+    List(Vec<TrustedRootRecord>),
+    Wrapped { roots: Vec<TrustedRootRecord> },
+    Keys { keys: Vec<TrustedRootRecord> },
+}
+
+fn resolve_skill_trust_roots(cli: &Cli) -> Result<Vec<TrustedKey>> {
+    let mut roots = Vec::new();
+    for raw in &cli.skill_trust_root {
+        roots.push(parse_trusted_root_spec(raw)?);
+    }
+
+    if let Some(path) = &cli.skill_trust_root_file {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let parsed = serde_json::from_str::<TrustedRootFileFormat>(&raw)
+            .with_context(|| format!("failed to parse trusted root file {}", path.display()))?;
+        match parsed {
+            TrustedRootFileFormat::List(items) => {
+                for item in items {
+                    roots.push(TrustedKey {
+                        id: item.id,
+                        public_key: item.public_key,
+                    });
+                }
+            }
+            TrustedRootFileFormat::Wrapped { roots: items }
+            | TrustedRootFileFormat::Keys { keys: items } => {
+                for item in items {
+                    roots.push(TrustedKey {
+                        id: item.id,
+                        public_key: item.public_key,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(roots)
+}
+
+fn parse_trusted_root_spec(raw: &str) -> Result<TrustedKey> {
+    let (id, public_key) = raw
+        .split_once('=')
+        .ok_or_else(|| anyhow!("invalid --skill-trust-root '{raw}', expected key_id=base64_key"))?;
+    let id = id.trim();
+    let public_key = public_key.trim();
+    if id.is_empty() || public_key.is_empty() {
+        bail!("invalid --skill-trust-root '{raw}', expected key_id=base64_key");
+    }
+    Ok(TrustedKey {
+        id: id.to_string(),
+        public_key: public_key.to_string(),
+    })
 }
 
 fn initialize_session(agent: &mut Agent, cli: &Cli, system_prompt: &str) -> Result<SessionRuntime> {
@@ -866,8 +960,9 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        build_tool_policy, handle_command, run_prompt_with_cancellation, stream_text_chunks, Cli,
-        CommandAction, PromptRunStatus, RenderOptions, SessionRuntime,
+        build_tool_policy, handle_command, parse_trusted_root_spec, resolve_skill_trust_roots,
+        run_prompt_with_cancellation, stream_text_chunks, Cli, CommandAction, PromptRunStatus,
+        RenderOptions, SessionRuntime,
     };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
@@ -931,6 +1026,45 @@ mod tests {
         }
     }
 
+    fn test_cli() -> Cli {
+        Cli {
+            model: "openai/gpt-4o-mini".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            anthropic_api_base: "https://api.anthropic.com/v1".to_string(),
+            google_api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            api_key: None,
+            openai_api_key: None,
+            anthropic_api_key: None,
+            google_api_key: None,
+            system_prompt: "sys".to_string(),
+            skills_dir: PathBuf::from(".pi/skills"),
+            skills: vec![],
+            install_skill: vec![],
+            install_skill_url: vec![],
+            install_skill_sha256: vec![],
+            skill_registry_url: None,
+            skill_registry_sha256: None,
+            install_skill_from_registry: vec![],
+            skill_trust_root: vec![],
+            skill_trust_root_file: None,
+            require_signed_skills: false,
+            max_turns: 8,
+            json_events: false,
+            stream_output: true,
+            stream_delay_ms: 0,
+            prompt: None,
+            session: PathBuf::from(".pi/sessions/default.jsonl"),
+            no_session: false,
+            branch_from: None,
+            allow_path: vec![],
+            bash_timeout_ms: 500,
+            max_tool_output_bytes: 1024,
+            max_file_read_bytes: 2048,
+            max_command_length: 4096,
+            allow_command_newlines: true,
+        }
+    }
+
     #[test]
     fn resolve_api_key_uses_first_non_empty_candidate() {
         let key = resolve_api_key(vec![
@@ -953,6 +1087,39 @@ mod tests {
     fn pathbuf_from_cli_default_is_relative() {
         let path = PathBuf::from(".pi/sessions/default.jsonl");
         assert!(!path.is_absolute());
+    }
+
+    #[test]
+    fn unit_parse_trusted_root_spec_accepts_key_id_and_base64() {
+        let parsed = parse_trusted_root_spec("root=ZmFrZS1rZXk=").expect("parse root");
+        assert_eq!(parsed.id, "root");
+        assert_eq!(parsed.public_key, "ZmFrZS1rZXk=");
+    }
+
+    #[test]
+    fn regression_parse_trusted_root_spec_rejects_invalid_shapes() {
+        let error = parse_trusted_root_spec("missing-separator").expect_err("should fail");
+        assert!(error.to_string().contains("expected key_id=base64_key"));
+    }
+
+    #[test]
+    fn functional_resolve_skill_trust_roots_loads_inline_and_file_entries() {
+        let temp = tempdir().expect("tempdir");
+        let roots_file = temp.path().join("roots.json");
+        std::fs::write(
+            &roots_file,
+            r#"{"roots":[{"id":"file-root","public_key":"YQ=="}]}"#,
+        )
+        .expect("write roots");
+
+        let mut cli = test_cli();
+        cli.skill_trust_root = vec!["inline-root=Yg==".to_string()];
+        cli.skill_trust_root_file = Some(roots_file);
+
+        let roots = resolve_skill_trust_roots(&cli).expect("resolve roots");
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].id, "inline-root");
+        assert_eq!(roots[1].id, "file-root");
     }
 
     #[test]
@@ -1238,39 +1405,8 @@ mod tests {
 
     #[test]
     fn build_tool_policy_includes_cwd_and_custom_root() {
-        let cli = Cli {
-            model: "openai/gpt-4o-mini".to_string(),
-            api_base: "https://api.openai.com/v1".to_string(),
-            anthropic_api_base: "https://api.anthropic.com/v1".to_string(),
-            google_api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
-            api_key: None,
-            openai_api_key: None,
-            anthropic_api_key: None,
-            google_api_key: None,
-            system_prompt: "sys".to_string(),
-            skills_dir: PathBuf::from(".pi/skills"),
-            skills: vec![],
-            install_skill: vec![],
-            install_skill_url: vec![],
-            install_skill_sha256: vec![],
-            skill_registry_url: None,
-            skill_registry_sha256: None,
-            install_skill_from_registry: vec![],
-            max_turns: 8,
-            json_events: false,
-            stream_output: true,
-            stream_delay_ms: 0,
-            prompt: None,
-            session: PathBuf::from(".pi/sessions/default.jsonl"),
-            no_session: false,
-            branch_from: None,
-            allow_path: vec![PathBuf::from("/tmp")],
-            bash_timeout_ms: 500,
-            max_tool_output_bytes: 1024,
-            max_file_read_bytes: 2048,
-            max_command_length: 4096,
-            allow_command_newlines: true,
-        };
+        let mut cli = test_cli();
+        cli.allow_path = vec![PathBuf::from("/tmp")];
 
         let policy = build_tool_policy(&cli).expect("policy should build");
         assert!(policy.allowed_roots.len() >= 2);

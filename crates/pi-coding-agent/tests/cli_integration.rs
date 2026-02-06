@@ -1,6 +1,8 @@
 use std::{fs, process::Command};
 
 use assert_cmd::assert::OutputAssertExt;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use ed25519_dalek::{Signer, SigningKey};
 use httpmock::prelude::*;
 use predicates::prelude::*;
 use serde::Deserialize;
@@ -542,4 +544,157 @@ fn install_skill_from_registry_works_end_to_end() {
     registry.assert_hits(1);
     remote.assert_hits(1);
     openai.assert_hits(1);
+}
+
+#[test]
+fn install_signed_skill_from_registry_with_trust_root_works_end_to_end() {
+    let server = MockServer::start();
+    let root = SigningKey::from_bytes(&[41u8; 32]);
+    let publisher = SigningKey::from_bytes(&[42u8; 32]);
+    let root_public_key = BASE64.encode(root.verifying_key().to_bytes());
+    let publisher_public_key = BASE64.encode(publisher.verifying_key().to_bytes());
+    let publisher_certificate = BASE64.encode(
+        root.sign(format!("pi-skill-key-v1:publisher:{publisher_public_key}").as_bytes())
+            .to_bytes(),
+    );
+
+    let skill_body = "Signed registry skill";
+    let skill_sha = format!("{:x}", Sha256::digest(skill_body.as_bytes()));
+    let skill_signature = BASE64.encode(publisher.sign(skill_body.as_bytes()).to_bytes());
+    let registry_body = json!({
+        "version": 1,
+        "keys": [{
+            "id":"publisher",
+            "public_key": publisher_public_key,
+            "signed_by":"root",
+            "signature": publisher_certificate
+        }],
+        "skills": [{
+            "name": "reg-secure",
+            "url": format!("{}/skills/reg-secure.md", server.base_url()),
+            "sha256": skill_sha,
+            "signing_key":"publisher",
+            "signature": skill_signature
+        }]
+    })
+    .to_string();
+    let registry_sha = format!("{:x}", Sha256::digest(registry_body.as_bytes()));
+
+    let registry = server.mock(|when, then| {
+        when.method(GET).path("/registry.json");
+        then.status(200).body(registry_body);
+    });
+    let remote = server.mock(|when, then| {
+        when.method(GET).path("/skills/reg-secure.md");
+        then.status(200).body(skill_body);
+    });
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .json_body_partial(
+                json!({
+                    "messages": [{
+                        "role": "system",
+                        "content": "base\n\n# Skill: reg-secure\nSigned registry skill"
+                    }]
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "ok signed registry"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 1, "total_tokens": 9}
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--system-prompt",
+        "base",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skill-registry-url",
+        &format!("{}/registry.json", server.base_url()),
+        "--skill-registry-sha256",
+        &registry_sha,
+        "--skill-trust-root",
+        &format!("root={root_public_key}"),
+        "--require-signed-skills",
+        "--install-skill-from-registry",
+        "reg-secure",
+        "--skill",
+        "reg-secure",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "registry skills install: installed=1",
+        ))
+        .stdout(predicate::str::contains("ok signed registry"));
+    assert!(skills_dir.join("reg-secure.md").exists());
+    registry.assert_hits(1);
+    remote.assert_hits(1);
+    openai.assert_hits(1);
+}
+
+#[test]
+fn require_signed_skills_rejects_unsigned_registry_entries() {
+    let server = MockServer::start();
+    let registry_body = json!({
+        "version": 1,
+        "skills": [{
+            "name": "unsigned",
+            "url": format!("{}/skills/unsigned.md", server.base_url())
+        }]
+    })
+    .to_string();
+
+    let registry = server.mock(|when, then| {
+        when.method(GET).path("/registry.json");
+        then.status(200).body(registry_body);
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skill-registry-url",
+        &format!("{}/registry.json", server.base_url()),
+        "--require-signed-skills",
+        "--install-skill-from-registry",
+        "unsigned",
+        "--no-session",
+    ]);
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "unsigned but signatures are required",
+    ));
+    registry.assert_hits(1);
 }
