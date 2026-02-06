@@ -865,10 +865,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/macro",
-        usage: "/macro <save|run|list> ...",
+        usage: "/macro <save|run|list|show|delete> ...",
         description: "Manage reusable command macros",
         details:
-            "Persists macros in project-local config and supports dry-run validation before execution.",
+            "Persists macros in project-local config and supports dry-run validation, inspection, and deletion.",
         example: "/macro save quick-check /tmp/quick-check.commands",
     },
     CommandSpec {
@@ -3500,7 +3500,7 @@ fn execute_doctor_command(config: &DoctorCommandConfig) -> String {
 }
 
 const MACRO_SCHEMA_VERSION: u32 = 1;
-const MACRO_USAGE: &str = "usage: /macro <save|run|list> ...";
+const MACRO_USAGE: &str = "usage: /macro <save|run|list|show|delete> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MacroCommand {
@@ -3512,6 +3512,12 @@ enum MacroCommand {
     Run {
         name: String,
         dry_run: bool,
+    },
+    Show {
+        name: String,
+    },
+    Delete {
+        name: String,
     },
 }
 
@@ -3549,6 +3555,8 @@ fn parse_macro_command(command_args: &str) -> Result<MacroCommand> {
     const USAGE_LIST: &str = "usage: /macro list";
     const USAGE_SAVE: &str = "usage: /macro save <name> <commands_file>";
     const USAGE_RUN: &str = "usage: /macro run <name> [--dry-run]";
+    const USAGE_SHOW: &str = "usage: /macro show <name>";
+    const USAGE_DELETE: &str = "usage: /macro delete <name>";
 
     let tokens = command_args
         .split_whitespace()
@@ -3591,6 +3599,24 @@ fn parse_macro_command(command_args: &str) -> Result<MacroCommand> {
             Ok(MacroCommand::Run {
                 name: tokens[1].to_string(),
                 dry_run,
+            })
+        }
+        "show" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_SHOW}");
+            }
+            validate_macro_name(tokens[1])?;
+            Ok(MacroCommand::Show {
+                name: tokens[1].to_string(),
+            })
+        }
+        "delete" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_DELETE}");
+            }
+            validate_macro_name(tokens[1])?;
+            Ok(MacroCommand::Delete {
+                name: tokens[1].to_string(),
             })
         }
         other => bail!("unknown subcommand '{}'; {MACRO_USAGE}", other),
@@ -3694,6 +3720,19 @@ fn render_macro_list(path: &Path, macros: &BTreeMap<String, Vec<String>>) -> Str
     }
     for (name, commands) in macros {
         lines.push(format!("macro: name={} commands={}", name, commands.len()));
+    }
+    lines.join("\n")
+}
+
+fn render_macro_show(path: &Path, name: &str, commands: &[String]) -> String {
+    let mut lines = vec![format!(
+        "macro show: path={} name={} commands={}",
+        path.display(),
+        name,
+        commands.len()
+    )];
+    for (index, command) in commands.iter().enumerate() {
+        lines.push(format!("command: index={} value={command}", index));
     }
     lines.join("\n")
 }
@@ -3823,6 +3862,42 @@ fn execute_macro_command(
                 commands.len(),
                 commands.len()
             )
+        }
+        MacroCommand::Show { name } => {
+            let Some(commands) = macros.get(&name) else {
+                return format!(
+                    "macro error: path={} name={} error=unknown macro '{}'",
+                    macro_path.display(),
+                    name,
+                    name
+                );
+            };
+            render_macro_show(macro_path, &name, commands)
+        }
+        MacroCommand::Delete { name } => {
+            if !macros.contains_key(&name) {
+                return format!(
+                    "macro error: path={} name={} error=unknown macro '{}'",
+                    macro_path.display(),
+                    name,
+                    name
+                );
+            }
+
+            macros.remove(&name);
+            match save_macro_file(macro_path, &macros) {
+                Ok(()) => format!(
+                    "macro delete: path={} name={} status=deleted remaining={}",
+                    macro_path.display(),
+                    name,
+                    macros.len()
+                ),
+                Err(error) => format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                ),
+            }
         }
     }
 }
@@ -6093,8 +6168,8 @@ mod tests {
         parse_session_search_args, parse_skills_lock_diff_args, parse_skills_prune_args,
         parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
         parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
-        render_doctor_report, render_help_overview, render_macro_list, render_profile_diffs,
-        render_profile_list, render_profile_show, render_session_graph_dot,
+        render_doctor_report, render_help_overview, render_macro_list, render_macro_show,
+        render_profile_diffs, render_profile_list, render_profile_show, render_session_graph_dot,
         render_session_graph_mermaid, render_session_stats, render_skills_list,
         render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
@@ -7412,7 +7487,7 @@ mod tests {
     }
 
     #[test]
-    fn functional_parse_macro_command_supports_save_run_list_and_dry_run() {
+    fn functional_parse_macro_command_supports_lifecycle_and_usage_rules() {
         assert_eq!(
             parse_macro_command("list").expect("parse list"),
             MacroCommand::List
@@ -7438,6 +7513,18 @@ mod tests {
                 dry_run: true,
             }
         );
+        assert_eq!(
+            parse_macro_command("show quick").expect("parse show"),
+            MacroCommand::Show {
+                name: "quick".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_macro_command("delete quick").expect("parse delete"),
+            MacroCommand::Delete {
+                name: "quick".to_string(),
+            }
+        );
 
         let error = parse_macro_command("").expect_err("missing args should fail");
         assert!(error.to_string().contains(MACRO_USAGE));
@@ -7447,6 +7534,13 @@ mod tests {
         assert!(error
             .to_string()
             .contains("usage: /macro run <name> [--dry-run]"));
+
+        let error =
+            parse_macro_command("list extra").expect_err("list with extra arguments should fail");
+        assert!(error.to_string().contains("usage: /macro list"));
+
+        let error = parse_macro_command("show").expect_err("show without name should fail");
+        assert!(error.to_string().contains("usage: /macro show <name>"));
     }
 
     #[test]
@@ -7497,7 +7591,7 @@ mod tests {
     }
 
     #[test]
-    fn functional_render_macro_list_supports_empty_and_sorted_output() {
+    fn functional_render_macro_helpers_support_empty_and_deterministic_order() {
         let path = Path::new("/tmp/macros.json");
         let empty = render_macro_list(path, &BTreeMap::new());
         assert!(empty.contains("count=0"));
@@ -7514,10 +7608,15 @@ mod tests {
         let alpha_index = output.find("macro: name=alpha").expect("alpha row");
         let beta_index = output.find("macro: name=beta").expect("beta row");
         assert!(alpha_index < beta_index);
+
+        let show = render_macro_show(path, "alpha", macros.get("alpha").expect("alpha commands"));
+        assert!(show.contains("macro show: path=/tmp/macros.json name=alpha commands=2"));
+        assert!(show.contains("command: index=0 value=/session"));
+        assert!(show.contains("command: index=1 value=/session-stats"));
     }
 
     #[test]
-    fn integration_execute_macro_command_save_and_run_supports_dry_run_and_apply() {
+    fn integration_execute_macro_command_save_show_run_delete_lifecycle() {
         let temp = tempdir().expect("tempdir");
         let macro_path = temp.path().join(".pi").join("macros.json");
         let commands_file = temp.path().join("rewind.commands");
@@ -7585,6 +7684,18 @@ mod tests {
             Some(head)
         );
 
+        let show_output = execute_macro_command(
+            "show rewind",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        );
+        assert!(show_output.contains("macro show: path="));
+        assert!(show_output.contains("name=rewind commands=2"));
+        assert!(show_output.contains("command: index=0 value=/branch 1"));
+        assert!(show_output.contains("command: index=1 value=/session"));
+
         let run_output = execute_macro_command(
             "run rewind",
             &macro_path,
@@ -7612,6 +7723,28 @@ mod tests {
         assert!(list_output.contains("macro list: path="));
         assert!(list_output.contains("count=1"));
         assert!(list_output.contains("macro: name=rewind commands=2"));
+
+        let delete_output = execute_macro_command(
+            "delete rewind",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        );
+        assert!(delete_output.contains("macro delete: path="));
+        assert!(delete_output.contains("name=rewind"));
+        assert!(delete_output.contains("status=deleted"));
+        assert!(delete_output.contains("remaining=0"));
+
+        let final_list = execute_macro_command(
+            "list",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        );
+        assert!(final_list.contains("count=0"));
+        assert!(final_list.contains("macros: none"));
     }
 
     #[test]
@@ -7711,6 +7844,24 @@ mod tests {
         );
         assert!(missing_output.contains("unknown macro 'missing'"));
 
+        let missing_show = execute_macro_command(
+            "show missing",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        );
+        assert!(missing_show.contains("unknown macro 'missing'"));
+
+        let missing_delete = execute_macro_command(
+            "delete missing",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        );
+        assert!(missing_delete.contains("unknown macro 'missing'"));
+
         let invalid_output = execute_macro_command(
             "run broken",
             &macro_path,
@@ -7719,6 +7870,16 @@ mod tests {
             command_context,
         );
         assert!(invalid_output.contains("macro command #0 failed validation"));
+
+        let delete_broken = execute_macro_command(
+            "delete broken",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        );
+        assert!(delete_broken.contains("status=deleted"));
+        assert!(delete_broken.contains("remaining=0"));
     }
 
     #[test]
@@ -8292,7 +8453,7 @@ mod tests {
         assert!(help.contains("/skills-trust-list [trust_root_file]"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
-        assert!(help.contains("/macro <save|run|list> ..."));
+        assert!(help.contains("/macro <save|run|list|show|delete> ..."));
         assert!(help.contains("/profile <save|load|list|show|delete> ..."));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/branch-alias <set|list|use> ..."));
@@ -8319,7 +8480,7 @@ mod tests {
     fn functional_render_command_help_supports_macro_topic_without_slash() {
         let help = render_command_help("macro").expect("render help");
         assert!(help.contains("command: /macro"));
-        assert!(help.contains("usage: /macro <save|run|list> ..."));
+        assert!(help.contains("usage: /macro <save|run|list|show|delete> ..."));
         assert!(help.contains("example: /macro save quick-check /tmp/quick-check.commands"));
     }
 

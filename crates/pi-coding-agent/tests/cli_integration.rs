@@ -856,7 +856,7 @@ fn regression_interactive_branch_alias_command_corrupt_file_reports_parse_error(
 }
 
 #[test]
-fn integration_interactive_macro_command_save_run_and_list_flow() {
+fn integration_interactive_macro_command_lifecycle_flow() {
     let temp = tempdir().expect("tempdir");
     let session = temp.path().join("session-macro.jsonl");
     let macro_commands_file = temp.path().join("rewind.commands");
@@ -901,7 +901,7 @@ fn integration_interactive_macro_command_save_run_and_list_flow() {
             session.to_str().expect("utf8 path"),
         ])
         .write_stdin(format!(
-            "/macro save rewind {}\n/macro list\n/macro run rewind --dry-run\n/macro run rewind\n/session\n/quit\n",
+            "/macro save rewind {}\n/macro list\n/macro show rewind\n/macro run rewind --dry-run\n/macro run rewind\n/macro delete rewind\n/macro list\n/session\n/quit\n",
             macro_commands_file.display()
         ));
 
@@ -912,17 +912,24 @@ fn integration_interactive_macro_command_save_run_and_list_flow() {
         .stdout(predicate::str::contains("commands=2"))
         .stdout(predicate::str::contains("macro list: path="))
         .stdout(predicate::str::contains("macro: name=rewind commands=2"))
+        .stdout(predicate::str::contains("macro show: path="))
+        .stdout(predicate::str::contains("command: index=0 value=/branch 1"))
+        .stdout(predicate::str::contains("command: index=1 value=/session"))
         .stdout(predicate::str::contains("mode=dry-run"))
         .stdout(predicate::str::contains("plan: command=/branch 1"))
         .stdout(predicate::str::contains("macro run: path="))
         .stdout(predicate::str::contains("mode=apply"))
         .stdout(predicate::str::contains("executed=2"))
+        .stdout(predicate::str::contains("macro delete: path="))
+        .stdout(predicate::str::contains("status=deleted"))
+        .stdout(predicate::str::contains("remaining=0"))
+        .stdout(predicate::str::contains("count=0"))
+        .stdout(predicate::str::contains("macros: none"))
         .stdout(predicate::str::contains("active_head=1"));
 
     let macro_raw = fs::read_to_string(&macro_store).expect("read macro store");
     assert!(macro_raw.contains("\"schema_version\": 1"));
-    assert!(macro_raw.contains("\"rewind\""));
-    assert!(macro_raw.contains("/branch 1"));
+    assert!(!macro_raw.contains("\"rewind\""));
 }
 
 #[test]
@@ -971,7 +978,50 @@ fn regression_interactive_macro_command_invalid_name_and_missing_file_report_err
         ))
         .stdout(predicate::str::contains("failed to read commands file"))
         .stdout(predicate::str::contains(
-            "usage: /macro <save|run|list> ...",
+            "usage: /macro <save|run|list|show|delete> ...",
+        ));
+}
+
+#[test]
+fn regression_interactive_macro_command_reports_show_delete_usage_and_missing_macro() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-macro-usage.jsonl");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--session",
+            session.to_str().expect("utf8 path"),
+        ])
+        .write_stdin("/macro show\n/macro delete\n/macro show missing\n/help macro\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("usage: /macro show <name>"))
+        .stdout(predicate::str::contains("usage: /macro delete <name>"))
+        .stdout(predicate::str::contains("unknown macro 'missing'"))
+        .stdout(predicate::str::contains(
+            "usage: /macro <save|run|list|show|delete> ...",
         ));
 }
 
@@ -1017,7 +1067,7 @@ fn regression_interactive_macro_command_corrupt_store_reports_parse_error() {
         .stdout(predicate::str::contains("macro error: path="))
         .stdout(predicate::str::contains("failed to parse macro file"))
         .stdout(predicate::str::contains(
-            "usage: /macro <save|run|list> ...",
+            "usage: /macro <save|run|list|show|delete> ...",
         ));
 }
 

@@ -306,8 +306,10 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 # Save/list/run repeatable command macros (project-local .pi/macros.json)
 /macro save quick-check /tmp/quick-check.commands
 /macro list
+/macro show quick-check
 /macro run quick-check --dry-run
 /macro run quick-check
+/macro delete quick-check
 
 # Save/load runtime defaults profiles (project-local .pi/profiles.json)
 /profile save baseline
