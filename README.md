@@ -263,6 +263,8 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 
 # Import a snapshot into the current session (mode defaults to merge)
 /session-import /tmp/session-snapshot.jsonl
+
+# Repair/import output includes affected IDs and remap pairs for diagnostics
 ```
 
 Tune session lock behavior for shared/concurrent workflows:

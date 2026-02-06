@@ -1416,11 +1416,12 @@ fn handle_command_with_session_import_mode(
         runtime.active_head = report.active_head;
         reload_agent_from_active_head(agent, runtime)?;
         println!(
-            "session import complete: path={} mode={} imported_entries={} remapped_entries={} replaced_entries={} total_entries={} head={}",
+            "session import complete: path={} mode={} imported_entries={} remapped_entries={} remapped_ids={} replaced_entries={} total_entries={} head={}",
             source.display(),
             session_import_mode_label(session_import_mode),
             report.imported_entries,
             report.remapped_entries,
+            format_remap_ids(&report.remapped_ids),
             report.replaced_entries,
             report.resulting_entries,
             runtime
@@ -1509,8 +1510,13 @@ fn handle_command_with_session_import_mode(
         reload_agent_from_active_head(agent, runtime)?;
 
         println!(
-            "repair complete: removed_duplicates={} removed_invalid_parent={} removed_cycles={}",
-            report.removed_duplicates, report.removed_invalid_parent, report.removed_cycles
+            "repair complete: removed_duplicates={} duplicate_ids={} removed_invalid_parent={} invalid_parent_ids={} removed_cycles={} cycle_ids={}",
+            report.removed_duplicates,
+            format_id_list(&report.duplicate_ids),
+            report.removed_invalid_parent,
+            format_id_list(&report.invalid_parent_ids),
+            report.removed_cycles,
+            format_id_list(&report.cycle_ids)
         );
         return Ok(CommandAction::Continue);
     }
@@ -1597,6 +1603,27 @@ fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
         SessionImportMode::Merge => "merge",
         SessionImportMode::Replace => "replace",
     }
+}
+
+fn format_id_list(ids: &[u64]) -> String {
+    if ids.is_empty() {
+        return "none".to_string();
+    }
+    ids.iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn format_remap_ids(remapped: &[(u64, u64)]) -> String {
+    if remapped.is_empty() {
+        return "none".to_string();
+    }
+    remapped
+        .iter()
+        .map(|(from, to)| format!("{from}->{to}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn normalize_help_topic(topic: &str) -> String {
@@ -2012,14 +2039,15 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, build_tool_policy, ensure_non_empty_text, handle_command,
-        handle_command_with_session_import_mode, initialize_session, parse_command,
-        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
-        render_command_help, render_help_overview, resolve_prompt_input, resolve_skill_trust_roots,
-        resolve_system_prompt, run_prompt_with_cancellation, stream_text_chunks,
-        tool_audit_event_json, tool_policy_to_json, unknown_command_message, validate_session_file,
-        Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode, CommandAction,
-        PromptRunStatus, RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
+        apply_trust_root_mutations, build_tool_policy, ensure_non_empty_text, format_id_list,
+        format_remap_ids, handle_command, handle_command_with_session_import_mode,
+        initialize_session, parse_command, parse_sandbox_command_tokens, parse_trust_rotation_spec,
+        parse_trusted_root_spec, render_command_help, render_help_overview, resolve_prompt_input,
+        resolve_skill_trust_roots, resolve_system_prompt, run_prompt_with_cancellation,
+        stream_text_chunks, tool_audit_event_json, tool_policy_to_json, unknown_command_message,
+        validate_session_file, Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode,
+        CommandAction, PromptRunStatus, RenderOptions, SessionRuntime, ToolAuditLogger,
+        TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -2231,6 +2259,18 @@ mod tests {
     fn regression_unknown_command_message_without_close_match_has_no_suggestion() {
         let message = unknown_command_message("/zzzzzzzz");
         assert!(!message.contains("did you mean"));
+    }
+
+    #[test]
+    fn unit_format_id_list_renders_none_and_csv() {
+        assert_eq!(format_id_list(&[]), "none");
+        assert_eq!(format_id_list(&[1, 2, 42]), "1,2,42");
+    }
+
+    #[test]
+    fn unit_format_remap_ids_renders_none_and_pairs() {
+        assert_eq!(format_remap_ids(&[]), "none");
+        assert_eq!(format_remap_ids(&[(1, 3), (2, 4)]), "1->3,2->4");
     }
 
     #[test]
