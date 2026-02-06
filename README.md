@@ -316,6 +316,10 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /skills-lock-diff
 /skills-lock-diff /tmp/custom-skills.lock.json --json
 
+# Preview and apply prune of untracked local skills
+/skills-prune
+/skills-prune /tmp/custom-skills.lock.json --apply
+
 # List currently installed skills
 /skills-list
 

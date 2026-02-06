@@ -3,7 +3,7 @@ mod skills;
 mod tools;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     future::Future,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -33,9 +33,9 @@ use crate::session::{SessionImportMode, SessionStore};
 use crate::skills::{
     augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
     build_remote_skill_lock_hints, default_skills_lock_path, fetch_registry_manifest,
-    install_remote_skills, install_skills, load_catalog, resolve_registry_skill_sources,
-    resolve_remote_skill_sources, resolve_selected_skills, sync_skills_with_lockfile,
-    write_skills_lockfile, TrustedKey,
+    install_remote_skills, install_skills, load_catalog, load_skills_lockfile,
+    resolve_registry_skill_sources, resolve_remote_skill_sources, resolve_selected_skills,
+    sync_skills_with_lockfile, write_skills_lockfile, TrustedKey,
 };
 use crate::tools::{
     tool_policy_preset_name, BashCommandProfile, OsSandboxMode, ToolPolicy, ToolPolicyPreset,
@@ -711,6 +711,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/skills-lock-diff .pi/skills/skills.lock.json --json",
     },
     CommandSpec {
+        name: "/skills-prune",
+        usage: "/skills-prune [lockfile_path] [--dry-run|--apply]",
+        description: "Prune installed skills not tracked in lockfile",
+        details:
+            "Dry-run is default; use --apply to delete prune candidates after deterministic listing.",
+        example: "/skills-prune .pi/skills/skills.lock.json --apply",
+    },
+    CommandSpec {
         name: "/skills-lock-write",
         usage: "/skills-lock-write [lockfile_path]",
         description: "Write/update skills lockfile from installed skills",
@@ -781,6 +789,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-show",
     "/skills-list",
     "/skills-lock-diff",
+    "/skills-prune",
     "/skills-lock-write",
     "/skills-sync",
     "/branches",
@@ -2131,6 +2140,14 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/skills-prune" {
+        println!(
+            "{}",
+            execute_skills_prune_command(skills_dir, default_skills_lock_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/skills-lock-write" {
         println!(
             "{}",
@@ -2555,6 +2572,286 @@ fn parse_skills_lock_diff_args(
         lock_path.unwrap_or_else(|| default_lock_path.to_path_buf()),
         json_output,
     ))
+}
+
+const SKILLS_PRUNE_USAGE: &str = "usage: /skills-prune [lockfile_path] [--dry-run|--apply]";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillsPruneMode {
+    DryRun,
+    Apply,
+}
+
+impl SkillsPruneMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DryRun => "dry-run",
+            Self::Apply => "apply",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillsPruneCandidate {
+    file: String,
+    path: PathBuf,
+}
+
+fn parse_skills_prune_args(
+    command_args: &str,
+    default_lock_path: &Path,
+) -> Result<(PathBuf, SkillsPruneMode)> {
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return Ok((default_lock_path.to_path_buf(), SkillsPruneMode::DryRun));
+    }
+
+    let mut lock_path: Option<PathBuf> = None;
+    let mut mode = SkillsPruneMode::DryRun;
+    let mut mode_flag_seen = false;
+    for token in tokens {
+        match token {
+            "--dry-run" => {
+                if mode_flag_seen && mode != SkillsPruneMode::DryRun {
+                    bail!("conflicting flags '--dry-run' and '--apply'; {SKILLS_PRUNE_USAGE}");
+                }
+                mode = SkillsPruneMode::DryRun;
+                mode_flag_seen = true;
+            }
+            "--apply" => {
+                if mode_flag_seen && mode != SkillsPruneMode::Apply {
+                    bail!("conflicting flags '--dry-run' and '--apply'; {SKILLS_PRUNE_USAGE}");
+                }
+                mode = SkillsPruneMode::Apply;
+                mode_flag_seen = true;
+            }
+            _ => {
+                if lock_path.is_some() {
+                    bail!("unexpected argument '{}'; {SKILLS_PRUNE_USAGE}", token);
+                }
+                lock_path = Some(PathBuf::from(token));
+            }
+        }
+    }
+
+    Ok((
+        lock_path.unwrap_or_else(|| default_lock_path.to_path_buf()),
+        mode,
+    ))
+}
+
+fn validate_skills_prune_file_name(file: &str) -> Result<()> {
+    if file.contains('\\') {
+        bail!(
+            "unsafe lockfile entry '{}': path separators are not allowed",
+            file
+        );
+    }
+
+    let path = Path::new(file);
+    if path.is_absolute() {
+        bail!(
+            "unsafe lockfile entry '{}': absolute paths are not allowed",
+            file
+        );
+    }
+
+    let mut components = path.components();
+    let first = components.next();
+    if components.next().is_some() {
+        bail!(
+            "unsafe lockfile entry '{}': nested paths are not allowed",
+            file
+        );
+    }
+
+    match first {
+        Some(std::path::Component::Normal(component)) => {
+            let Some(component) = component.to_str() else {
+                bail!("unsafe lockfile entry '{}': path must be valid UTF-8", file);
+            };
+            if component.is_empty() {
+                bail!("unsafe lockfile entry '{}': empty file name", file);
+            }
+        }
+        _ => bail!("unsafe lockfile entry '{}': invalid path component", file),
+    }
+
+    if !file.ends_with(".md") {
+        bail!(
+            "unsafe lockfile entry '{}': only markdown files can be pruned",
+            file
+        );
+    }
+
+    Ok(())
+}
+
+fn resolve_prunable_skill_file_name(skills_dir: &Path, skill_path: &Path) -> Result<String> {
+    let relative_path = skill_path.strip_prefix(skills_dir).with_context(|| {
+        format!(
+            "unsafe skill path '{}': outside skills dir '{}'",
+            skill_path.display(),
+            skills_dir.display()
+        )
+    })?;
+    let mut components = relative_path.components();
+    let first = components.next();
+    if components.next().is_some() {
+        bail!(
+            "unsafe skill path '{}': nested paths are not allowed",
+            skill_path.display()
+        );
+    }
+    let Some(std::path::Component::Normal(file_os_str)) = first else {
+        bail!(
+            "unsafe skill path '{}': invalid file path component",
+            skill_path.display()
+        );
+    };
+    let Some(file) = file_os_str.to_str() else {
+        bail!(
+            "unsafe skill path '{}': file name must be valid UTF-8",
+            skill_path.display()
+        );
+    };
+    validate_skills_prune_file_name(file)?;
+    Ok(file.to_string())
+}
+
+fn derive_skills_prune_candidates(
+    skills_dir: &Path,
+    catalog: &[skills::Skill],
+    tracked_files: &HashSet<String>,
+) -> Result<Vec<SkillsPruneCandidate>> {
+    let mut candidates = Vec::new();
+    for skill in catalog {
+        let file = resolve_prunable_skill_file_name(skills_dir, &skill.path)?;
+        if tracked_files.contains(&file) {
+            continue;
+        }
+        candidates.push(SkillsPruneCandidate {
+            file,
+            path: skill.path.clone(),
+        });
+    }
+    candidates.sort_by(|left, right| left.file.cmp(&right.file));
+    Ok(candidates)
+}
+
+fn execute_skills_prune_command(
+    skills_dir: &Path,
+    default_lock_path: &Path,
+    command_args: &str,
+) -> String {
+    let (lock_path, mode) = match parse_skills_prune_args(command_args, default_lock_path) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return format!(
+                "skills prune error: path={} mode={} error={error}",
+                default_lock_path.display(),
+                SkillsPruneMode::DryRun.as_str()
+            )
+        }
+    };
+
+    let lockfile = match load_skills_lockfile(&lock_path) {
+        Ok(lockfile) => lockfile,
+        Err(error) => {
+            return format!(
+                "skills prune error: path={} mode={} error={error}",
+                lock_path.display(),
+                mode.as_str()
+            )
+        }
+    };
+
+    let mut tracked_files = HashSet::new();
+    for entry in &lockfile.entries {
+        if let Err(error) = validate_skills_prune_file_name(&entry.file) {
+            return format!(
+                "skills prune error: path={} mode={} error={error}",
+                lock_path.display(),
+                mode.as_str()
+            );
+        }
+        tracked_files.insert(entry.file.clone());
+    }
+
+    let catalog = match load_catalog(skills_dir) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            return format!(
+                "skills prune error: path={} mode={} error={error}",
+                lock_path.display(),
+                mode.as_str()
+            )
+        }
+    };
+
+    let candidates = match derive_skills_prune_candidates(skills_dir, &catalog, &tracked_files) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return format!(
+                "skills prune error: path={} mode={} error={error}",
+                lock_path.display(),
+                mode.as_str()
+            )
+        }
+    };
+
+    let mut lines = vec![format!(
+        "skills prune: mode={} lockfile={} skills_dir={} tracked_entries={} installed_skills={} prune_candidates={}",
+        mode.as_str(),
+        lock_path.display(),
+        skills_dir.display(),
+        tracked_files.len(),
+        catalog.len(),
+        candidates.len()
+    )];
+
+    if candidates.is_empty() {
+        lines.push("prune: none".to_string());
+        return lines.join("\n");
+    }
+
+    for candidate in &candidates {
+        let action = match mode {
+            SkillsPruneMode::DryRun => "would_delete",
+            SkillsPruneMode::Apply => "delete",
+        };
+        lines.push(format!("prune: file={} action={action}", candidate.file));
+    }
+
+    if mode == SkillsPruneMode::DryRun {
+        return lines.join("\n");
+    }
+
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+    for candidate in &candidates {
+        match std::fs::remove_file(&candidate.path) {
+            Ok(()) => {
+                deleted += 1;
+                lines.push(format!("prune: file={} status=deleted", candidate.file));
+            }
+            Err(error) => {
+                failed += 1;
+                lines.push(format!(
+                    "prune: file={} status=error error={error}",
+                    candidate.file
+                ));
+            }
+        }
+    }
+    lines.push(format!(
+        "skills prune result: mode=apply deleted={} failed={}",
+        deleted, failed
+    ));
+    lines.join("\n")
 }
 
 fn render_skills_lock_diff_in_sync(path: &Path, report: &skills::SkillsSyncReport) -> String {
@@ -3396,7 +3693,7 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, VecDeque},
+        collections::{HashMap, HashSet, VecDeque},
         future::{pending, ready},
         path::{Path, PathBuf},
         sync::Arc,
@@ -3417,22 +3714,25 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
-        ensure_non_empty_text, execute_skills_list_command, execute_skills_lock_diff_command,
-        execute_skills_lock_write_command, execute_skills_search_command,
-        execute_skills_show_command, execute_skills_sync_command, format_id_list, format_remap_ids,
-        handle_command, handle_command_with_session_import_mode, initialize_session,
-        is_retryable_provider_error, parse_command, parse_sandbox_command_tokens,
-        parse_skills_lock_diff_args, parse_skills_search_args, parse_trust_rotation_spec,
+        derive_skills_prune_candidates, ensure_non_empty_text, execute_skills_list_command,
+        execute_skills_lock_diff_command, execute_skills_lock_write_command,
+        execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+        execute_skills_sync_command, format_id_list, format_remap_ids, handle_command,
+        handle_command_with_session_import_mode, initialize_session, is_retryable_provider_error,
+        parse_command, parse_sandbox_command_tokens, parse_skills_lock_diff_args,
+        parse_skills_prune_args, parse_skills_search_args, parse_trust_rotation_spec,
         parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
         render_help_overview, render_skills_list, render_skills_lock_diff_drift,
         render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
         render_skills_show, render_skills_sync_drift_details, resolve_fallback_models,
-        resolve_prompt_input, resolve_skill_trust_roots, resolve_skills_lock_path,
-        resolve_system_prompt, run_prompt_with_cancellation, stream_text_chunks,
-        summarize_audit_file, tool_audit_event_json, tool_policy_to_json, unknown_command_message,
-        validate_session_file, Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode,
-        CliToolPolicyPreset, ClientRoute, CommandAction, FallbackRoutingClient, PromptRunStatus,
-        PromptTelemetryLogger, RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
+        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_skill_trust_roots,
+        resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
+        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
+        unknown_command_message, validate_session_file, validate_skills_prune_file_name, Cli,
+        CliBashProfile, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute,
+        CommandAction, FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger,
+        RenderOptions, SessionRuntime, SkillsPruneMode, ToolAuditLogger, TrustedRootRecord,
+        SKILLS_PRUNE_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -3900,6 +4200,7 @@ mod tests {
         assert!(help.contains("/skills-show <name>"));
         assert!(help.contains("/skills-list"));
         assert!(help.contains("/skills-lock-diff [lockfile_path] [--json]"));
+        assert!(help.contains("/skills-prune [lockfile_path] [--dry-run|--apply]"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/branch <id>"));
@@ -3954,6 +4255,13 @@ mod tests {
         let help = render_command_help("skills-lock-diff").expect("render help");
         assert!(help.contains("command: /skills-lock-diff"));
         assert!(help.contains("usage: /skills-lock-diff [lockfile_path] [--json]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_prune_topic_without_slash() {
+        let help = render_command_help("skills-prune").expect("render help");
+        assert!(help.contains("command: /skills-prune"));
+        assert!(help.contains("usage: /skills-prune [lockfile_path] [--dry-run|--apply]"));
     }
 
     #[test]
@@ -4089,6 +4397,87 @@ mod tests {
         assert!(error
             .to_string()
             .contains("usage: /skills-lock-diff [lockfile_path] [--json]"));
+    }
+
+    #[test]
+    fn unit_parse_skills_prune_args_defaults_and_supports_mode_flags() {
+        let default_lock = PathBuf::from(".pi/skills/skills.lock.json");
+        assert_eq!(
+            parse_skills_prune_args("", &default_lock).expect("default parse"),
+            (default_lock.clone(), SkillsPruneMode::DryRun)
+        );
+        assert_eq!(
+            parse_skills_prune_args("--apply", &default_lock).expect("apply parse"),
+            (default_lock.clone(), SkillsPruneMode::Apply)
+        );
+        assert_eq!(
+            parse_skills_prune_args("/tmp/custom.lock.json --dry-run", &default_lock)
+                .expect("path + dry-run parse"),
+            (
+                PathBuf::from("/tmp/custom.lock.json"),
+                SkillsPruneMode::DryRun
+            )
+        );
+    }
+
+    #[test]
+    fn regression_parse_skills_prune_args_rejects_conflicts_and_extra_positionals() {
+        let default_lock = PathBuf::from(".pi/skills/skills.lock.json");
+
+        let conflict = parse_skills_prune_args("--apply --dry-run", &default_lock)
+            .expect_err("conflicting flags should fail");
+        assert!(conflict.to_string().contains(SKILLS_PRUNE_USAGE));
+
+        let extra = parse_skills_prune_args("one two", &default_lock)
+            .expect_err("extra positional args should fail");
+        assert!(extra.to_string().contains(SKILLS_PRUNE_USAGE));
+    }
+
+    #[test]
+    fn unit_validate_skills_prune_file_name_rejects_unsafe_paths() {
+        validate_skills_prune_file_name("checklist.md").expect("simple markdown name should pass");
+        assert!(validate_skills_prune_file_name("../checklist.md").is_err());
+        assert!(validate_skills_prune_file_name("nested/checklist.md").is_err());
+        assert!(validate_skills_prune_file_name(r"nested\checklist.md").is_err());
+    }
+
+    #[test]
+    fn unit_derive_skills_prune_candidates_filters_tracked_and_sorts() {
+        let skills_dir = Path::new(".pi/skills");
+        let catalog = vec![
+            crate::skills::Skill {
+                name: "zeta".to_string(),
+                content: "zeta".to_string(),
+                path: PathBuf::from(".pi/skills/zeta.md"),
+            },
+            crate::skills::Skill {
+                name: "alpha".to_string(),
+                content: "alpha".to_string(),
+                path: PathBuf::from(".pi/skills/alpha.md"),
+            },
+            crate::skills::Skill {
+                name: "beta".to_string(),
+                content: "beta".to_string(),
+                path: PathBuf::from(".pi/skills/beta.md"),
+            },
+        ];
+        let tracked = HashSet::from([String::from("alpha.md")]);
+        let candidates = derive_skills_prune_candidates(skills_dir, &catalog, &tracked)
+            .expect("derive candidates");
+        let files = candidates
+            .iter()
+            .map(|candidate| candidate.file.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(files, vec!["beta.md", "zeta.md"]);
+    }
+
+    #[test]
+    fn regression_resolve_prunable_skill_file_name_rejects_nested_paths() {
+        let skills_dir = Path::new(".pi/skills");
+        let error =
+            resolve_prunable_skill_file_name(skills_dir, Path::new(".pi/skills/nested/a.md"))
+                .expect_err("nested path should fail");
+        assert!(error.to_string().contains("nested paths are not allowed"));
     }
 
     #[test]
@@ -4228,6 +4617,86 @@ mod tests {
         );
         assert!(output.contains("skills lock diff error: path="));
         assert!(output.contains("failed to read skills lockfile"));
+    }
+
+    #[test]
+    fn functional_execute_skills_prune_command_supports_dry_run_and_apply() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("tracked.md"), "tracked body").expect("write tracked");
+        std::fs::write(skills_dir.join("stale.md"), "stale body").expect("write stale");
+
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let tracked_sha = format!("{:x}", Sha256::digest("tracked body".as_bytes()));
+        let lockfile = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "name": "tracked",
+                "file": "tracked.md",
+                "sha256": tracked_sha,
+                "source": {
+                    "kind": "unknown"
+                }
+            }]
+        });
+        std::fs::write(&lock_path, format!("{lockfile}\n")).expect("write lockfile");
+
+        let dry_run = execute_skills_prune_command(&skills_dir, &lock_path, "");
+        assert!(dry_run.contains("skills prune: mode=dry-run"));
+        assert!(dry_run.contains("prune: file=stale.md action=would_delete"));
+        assert!(skills_dir.join("stale.md").exists());
+
+        let apply = execute_skills_prune_command(&skills_dir, &lock_path, "--apply");
+        assert!(apply.contains("skills prune: mode=apply"));
+        assert!(apply.contains("prune: file=stale.md action=delete"));
+        assert!(apply.contains("prune: file=stale.md status=deleted"));
+        assert!(apply.contains("skills prune result: mode=apply deleted=1 failed=0"));
+        assert!(skills_dir.join("tracked.md").exists());
+        assert!(!skills_dir.join("stale.md").exists());
+    }
+
+    #[test]
+    fn regression_execute_skills_prune_command_reports_missing_lockfile_errors() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("stale.md"), "stale body").expect("write stale");
+
+        let missing_lock_path = temp.path().join("missing.lock.json");
+        let output = execute_skills_prune_command(
+            &skills_dir,
+            &default_skills_lock_path(&skills_dir),
+            missing_lock_path.to_str().expect("utf8 path"),
+        );
+        assert!(output.contains("skills prune error: path="));
+        assert!(output.contains("failed to read skills lockfile"));
+    }
+
+    #[test]
+    fn regression_execute_skills_prune_command_rejects_unsafe_lockfile_entries() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("stale.md"), "stale body").expect("write stale");
+
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let lockfile = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "name": "escape",
+                "file": "../escape.md",
+                "sha256": "abc123",
+                "source": {
+                    "kind": "unknown"
+                }
+            }]
+        });
+        std::fs::write(&lock_path, format!("{lockfile}\n")).expect("write lockfile");
+
+        let output = execute_skills_prune_command(&skills_dir, &lock_path, "");
+        assert!(output.contains("skills prune error: path="));
+        assert!(output.contains("unsafe lockfile entry '../escape.md'"));
     }
 
     #[test]
@@ -4650,6 +5119,52 @@ mod tests {
             &lock_path,
         )
         .expect("skills lock diff command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_prune_command_preserves_session_runtime_on_error() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+        let lock_path = default_skills_lock_path(&skills_dir);
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-prune /tmp/missing.lock.json --apply",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_dir,
+            &lock_path,
+        )
+        .expect("skills prune command should continue");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");

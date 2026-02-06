@@ -1775,6 +1775,170 @@ fn regression_interactive_skills_lock_diff_command_invalid_args_reports_error_an
 }
 
 #[test]
+fn interactive_skills_prune_command_dry_run_lists_candidates_without_deleting() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("tracked.md"), "tracked body").expect("write tracked");
+    fs::write(skills_dir.join("stale.md"), "stale body").expect("write stale");
+    let tracked_sha = format!("{:x}", Sha256::digest("tracked body".as_bytes()));
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "tracked",
+            "file": "tracked.md",
+            "sha256": tracked_sha,
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(skills_dir.join("skills.lock.json"), format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-prune\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills prune: mode=dry-run"))
+        .stdout(predicate::str::contains(
+            "prune: file=stale.md action=would_delete",
+        ));
+
+    assert!(skills_dir.join("stale.md").exists());
+}
+
+#[test]
+fn integration_interactive_skills_prune_command_apply_deletes_untracked_files() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("tracked.md"), "tracked body").expect("write tracked");
+    fs::write(skills_dir.join("stale.md"), "stale body").expect("write stale");
+    let tracked_sha = format!("{:x}", Sha256::digest("tracked body".as_bytes()));
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "tracked",
+            "file": "tracked.md",
+            "sha256": tracked_sha,
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(skills_dir.join("skills.lock.json"), format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-prune --apply\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills prune: mode=apply"))
+        .stdout(predicate::str::contains(
+            "prune: file=stale.md action=delete",
+        ))
+        .stdout(predicate::str::contains(
+            "prune: file=stale.md status=deleted",
+        ))
+        .stdout(predicate::str::contains(
+            "skills prune result: mode=apply deleted=1 failed=0",
+        ));
+
+    assert!(skills_dir.join("tracked.md").exists());
+    assert!(!skills_dir.join("stale.md").exists());
+}
+
+#[test]
+fn regression_interactive_skills_prune_command_missing_lockfile_reports_error_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("stale.md"), "stale body").expect("write stale");
+    let missing_lock = temp.path().join("missing.lock.json");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin(format!(
+        "/skills-prune {} --apply\n/help skills-prune\n/quit\n",
+        missing_lock.display()
+    ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills prune error: path="))
+        .stdout(predicate::str::contains("failed to read skills lockfile"))
+        .stdout(predicate::str::contains(
+            "usage: /skills-prune [lockfile_path] [--dry-run|--apply]",
+        ));
+}
+
+#[test]
+fn regression_interactive_skills_prune_command_rejects_unsafe_lockfile_entry() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("stale.md"), "stale body").expect("write stale");
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "escape",
+            "file": "../escape.md",
+            "sha256": "abc123",
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(skills_dir.join("skills.lock.json"), format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-prune\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills prune error: path="))
+        .stdout(predicate::str::contains(
+            "unsafe lockfile entry '../escape.md'",
+        ));
+}
+
+#[test]
 fn interactive_skills_lock_write_command_writes_default_lockfile() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");
