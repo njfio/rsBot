@@ -521,7 +521,7 @@ fn acquire_lock(path: &Path, timeout: Duration) -> Result<LockGuard> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, sync::Arc, thread};
+    use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, thread};
 
     use tempfile::tempdir;
 
@@ -862,6 +862,51 @@ mod tests {
 
         let store = SessionStore::load(&path).expect("reload");
         assert_eq!(store.entries().len(), 3);
+    }
+
+    #[test]
+    fn stress_parallel_appends_high_volume_remain_consistent() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("stress-concurrent.jsonl");
+
+        let mut store = SessionStore::load(&path).expect("load");
+        store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("init");
+
+        let workers = 8;
+        let appends_per_worker = 25;
+        let mut handles = Vec::new();
+        for worker_index in 0..workers {
+            let path = path.clone();
+            handles.push(thread::spawn(move || {
+                for append_index in 0..appends_per_worker {
+                    let mut store = SessionStore::load(&path).expect("load worker");
+                    let head = store.head_id();
+                    store
+                        .append_messages(
+                            head,
+                            &[pi_ai::Message::user(format!(
+                                "worker-{worker_index}-append-{append_index}"
+                            ))],
+                        )
+                        .expect("append worker");
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("worker join");
+        }
+
+        let reloaded = SessionStore::load(&path).expect("reload");
+        assert_eq!(reloaded.entries().len(), 1 + workers * appends_per_worker);
+        let unique_ids = reloaded
+            .entries()
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<HashSet<_>>();
+        assert_eq!(unique_ids.len(), reloaded.entries().len());
     }
 
     #[test]

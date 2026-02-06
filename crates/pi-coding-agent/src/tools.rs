@@ -663,6 +663,7 @@ fn redact_secrets(text: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
+    use proptest::prelude::*;
     use tempfile::tempdir;
 
     use super::{
@@ -901,6 +902,25 @@ mod tests {
         let truncated = truncate_bytes(value, 7);
         assert!(truncated.starts_with("hello"));
         assert!(truncated.contains("<output truncated>"));
+    }
+
+    proptest! {
+        #[test]
+        fn property_truncate_bytes_always_returns_valid_utf8(input in any::<String>(), limit in 0usize..256) {
+            let truncated = truncate_bytes(&input, limit);
+            prop_assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+            if input.len() <= limit {
+                prop_assert_eq!(truncated, input);
+            } else {
+                prop_assert!(truncated.contains("<output truncated>"));
+            }
+        }
+
+        #[test]
+        fn property_leading_executable_handles_arbitrary_shellish_strings(prefix in "[A-Za-z_][A-Za-z0-9_]{0,8}", body in any::<String>()) {
+            let command = format!("{prefix}=1 {body}");
+            let _ = leading_executable(&command);
+        }
     }
 
     #[test]

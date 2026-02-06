@@ -10,4 +10,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion = "0.5"
 tempfile = "3"
+
+[[bench]]
+name = "render_bench"
+harness = false

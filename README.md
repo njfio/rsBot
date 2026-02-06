@@ -40,6 +40,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+Robustness and performance suites:
+
+```bash
+# Property and regression-heavy suite
+cargo test -p pi-coding-agent
+
+# Stress-oriented session test
+cargo test -p pi-coding-agent stress_parallel_appends_high_volume_remain_consistent
+
+# Benchmarks
+cargo bench -p pi-tui
+```
+
 ## CI/CD
 
 This repository includes GitHub Actions workflows for:
