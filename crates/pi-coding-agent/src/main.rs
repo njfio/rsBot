@@ -654,6 +654,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/session",
     },
     CommandSpec {
+        name: "/session-search",
+        usage: "/session-search <query>",
+        description: "Search session entries by role/text across all branches",
+        details:
+            "Case-insensitive search over role and message text. Output is deterministic and capped.",
+        example: "/session-search retry budget",
+    },
+    CommandSpec {
         name: "/session-export",
         usage: "/session-export <path>",
         description: "Export active lineage snapshot to a JSONL file",
@@ -790,6 +798,7 @@ const COMMAND_SPECS: &[CommandSpec] = &[
 const COMMAND_NAMES: &[&str] = &[
     "/help",
     "/session",
+    "/session-search",
     "/session-export",
     "/session-import",
     "/policy",
@@ -2038,6 +2047,20 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/session-search" {
+        let Some(runtime) = session_runtime.as_ref() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+        if command_args.trim().is_empty() {
+            println!("usage: /session-search <query>");
+            return Ok(CommandAction::Continue);
+        }
+
+        println!("{}", execute_session_search_command(runtime, command_args));
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/session-export" {
         let Some(runtime) = session_runtime.as_ref() else {
             println!("session is disabled");
@@ -2351,6 +2374,137 @@ fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
         SessionImportMode::Merge => "merge",
         SessionImportMode::Replace => "replace",
     }
+}
+
+const SESSION_SEARCH_MAX_RESULTS: usize = 50;
+const SESSION_SEARCH_PREVIEW_CHARS: usize = 80;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionSearchMatch {
+    id: u64,
+    parent_id: Option<u64>,
+    role: String,
+    preview: String,
+}
+
+fn parse_session_search_args(command_args: &str) -> Result<String> {
+    let query = command_args.trim();
+    if query.is_empty() {
+        bail!("query is required");
+    }
+    Ok(query.to_string())
+}
+
+fn normalize_preview_text(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn session_message_preview(message: &Message) -> String {
+    let normalized = normalize_preview_text(&message.text_content());
+    let preview = if normalized.is_empty() {
+        "(no text)".to_string()
+    } else {
+        normalized
+    };
+
+    if preview.chars().count() <= SESSION_SEARCH_PREVIEW_CHARS {
+        return preview;
+    }
+    let truncated = preview
+        .chars()
+        .take(SESSION_SEARCH_PREVIEW_CHARS)
+        .collect::<String>();
+    format!("{truncated}...")
+}
+
+fn session_message_role(message: &Message) -> String {
+    format!("{:?}", message.role).to_lowercase()
+}
+
+fn search_session_entries(
+    entries: &[crate::session::SessionEntry],
+    query: &str,
+    max_results: usize,
+) -> (Vec<SessionSearchMatch>, usize) {
+    let normalized_query = query.to_lowercase();
+    let mut ordered_entries = entries.iter().collect::<Vec<_>>();
+    ordered_entries.sort_by_key(|entry| entry.id);
+
+    let mut matches = Vec::new();
+    let mut total_matches = 0usize;
+    for entry in ordered_entries {
+        let role = session_message_role(&entry.message);
+        let text = entry.message.text_content();
+        let role_hit = role.contains(&normalized_query);
+        let text_hit = text.to_lowercase().contains(&normalized_query);
+        if !role_hit && !text_hit {
+            continue;
+        }
+
+        total_matches += 1;
+        if matches.len() >= max_results {
+            continue;
+        }
+        matches.push(SessionSearchMatch {
+            id: entry.id,
+            parent_id: entry.parent_id,
+            role,
+            preview: session_message_preview(&entry.message),
+        });
+    }
+
+    (matches, total_matches)
+}
+
+fn render_session_search(
+    query: &str,
+    entries_count: usize,
+    matches: &[SessionSearchMatch],
+    total_matches: usize,
+    max_results: usize,
+) -> String {
+    let mut lines = vec![format!(
+        "session search: query=\"{}\" entries={} matches={} shown={} max_results={}",
+        query,
+        entries_count,
+        total_matches,
+        matches.len(),
+        max_results
+    )];
+    if matches.is_empty() {
+        lines.push("results: none".to_string());
+        return lines.join("\n");
+    }
+
+    for item in matches {
+        lines.push(format!(
+            "result: id={} parent={} role={} preview={}",
+            item.id,
+            item.parent_id
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            item.role,
+            item.preview
+        ));
+    }
+    lines.join("\n")
+}
+
+fn execute_session_search_command(runtime: &SessionRuntime, command_args: &str) -> String {
+    let query = match parse_session_search_args(command_args) {
+        Ok(query) => query,
+        Err(error) => return format!("session search error: error={error}"),
+    };
+
+    let (matches, total_matches) =
+        search_session_entries(runtime.store.entries(), &query, SESSION_SEARCH_MAX_RESULTS);
+    render_session_search(
+        &query,
+        runtime.store.entries().len(),
+        &matches,
+        total_matches,
+        SESSION_SEARCH_MAX_RESULTS,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3835,27 +3989,29 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
-        derive_skills_prune_candidates, ensure_non_empty_text, execute_skills_list_command,
-        execute_skills_lock_diff_command, execute_skills_lock_write_command,
-        execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-        execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
-        format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, parse_command,
-        parse_sandbox_command_tokens, parse_skills_lock_diff_args, parse_skills_prune_args,
-        parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
-        parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
-        render_help_overview, render_skills_list, render_skills_lock_diff_drift,
-        render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
-        render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
-        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
-        resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
-        run_prompt_with_cancellation, stream_text_chunks, summarize_audit_file,
+        derive_skills_prune_candidates, ensure_non_empty_text, execute_session_search_command,
+        execute_skills_list_command, execute_skills_lock_diff_command,
+        execute_skills_lock_write_command, execute_skills_prune_command,
+        execute_skills_search_command, execute_skills_show_command, execute_skills_sync_command,
+        execute_skills_trust_list_command, format_id_list, format_remap_ids, handle_command,
+        handle_command_with_session_import_mode, initialize_session, is_retryable_provider_error,
+        parse_command, parse_sandbox_command_tokens, parse_session_search_args,
+        parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
+        parse_skills_trust_list_args, parse_trust_rotation_spec, parse_trusted_root_spec,
+        percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
+        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        render_skills_lock_write_success, render_skills_search, render_skills_show,
+        render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
+        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_skill_trust_roots,
+        resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
+        search_session_entries, session_message_preview, stream_text_chunks, summarize_audit_file,
         tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
         validate_session_file, validate_skills_prune_file_name, Cli, CliBashProfile,
         CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
         SessionRuntime, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
-        TrustedRootRecord, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
+        TrustedRootRecord, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+        SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -4324,10 +4480,125 @@ mod tests {
     }
 
     #[test]
+    fn unit_parse_session_search_args_trims_and_rejects_empty_query() {
+        assert_eq!(
+            parse_session_search_args("  retry budget  ").expect("parse query"),
+            "retry budget"
+        );
+        let error = parse_session_search_args(" \n\t ").expect_err("empty query should fail");
+        assert!(error.to_string().contains("query is required"));
+    }
+
+    #[test]
+    fn unit_session_message_preview_normalizes_whitespace_and_truncates() {
+        let message = Message::user(format!(
+            "line one\nline two {}",
+            "x".repeat(SESSION_SEARCH_PREVIEW_CHARS)
+        ));
+        let preview = session_message_preview(&message);
+        assert!(preview.starts_with("line one line two"));
+        assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn unit_search_session_entries_matches_role_and_text_case_insensitively() {
+        let entries = vec![
+            crate::session::SessionEntry {
+                id: 2,
+                parent_id: Some(1),
+                message: Message::assistant_text("Budget stabilized"),
+            },
+            crate::session::SessionEntry {
+                id: 1,
+                parent_id: None,
+                message: Message::user("Root question"),
+            },
+        ];
+
+        let (role_matches, role_total) = search_session_entries(&entries, "USER", 10);
+        assert_eq!(role_total, 1);
+        assert_eq!(role_matches[0].id, 1);
+        assert_eq!(role_matches[0].role, "user");
+
+        let (text_matches, text_total) = search_session_entries(&entries, "budget", 10);
+        assert_eq!(text_total, 1);
+        assert_eq!(text_matches[0].id, 2);
+        assert_eq!(text_matches[0].role, "assistant");
+    }
+
+    #[test]
+    fn functional_execute_session_search_command_renders_result_rows() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let head = store
+            .append_messages(None, &[Message::system("sys")])
+            .expect("append root");
+        let head = store
+            .append_messages(head, &[Message::user("Retry budget fix in progress")])
+            .expect("append user");
+        let runtime = SessionRuntime {
+            store,
+            active_head: head,
+        };
+
+        let output = execute_session_search_command(&runtime, "retry");
+        assert!(output.contains("session search: query=\"retry\""));
+        assert!(output.contains("matches=1"));
+        assert!(output.contains("shown=1"));
+        assert!(output.contains("result: id=2 parent=1 role=user"));
+        assert!(output.contains("preview=Retry budget fix in progress"));
+    }
+
+    #[test]
+    fn regression_search_session_entries_caps_huge_result_sets() {
+        let entries = (1..=200)
+            .map(|id| crate::session::SessionEntry {
+                id,
+                parent_id: if id == 1 { None } else { Some(id - 1) },
+                message: Message::user(format!("needle-{id}")),
+            })
+            .collect::<Vec<_>>();
+        let (matches, total_matches) =
+            search_session_entries(&entries, "needle", SESSION_SEARCH_MAX_RESULTS);
+        assert_eq!(total_matches, 200);
+        assert_eq!(matches.len(), SESSION_SEARCH_MAX_RESULTS);
+        assert_eq!(matches[0].id, 1);
+        assert_eq!(
+            matches.last().map(|item| item.id),
+            Some(SESSION_SEARCH_MAX_RESULTS as u64)
+        );
+    }
+
+    #[test]
+    fn integration_execute_session_search_command_scans_entries_across_branches() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("sys")])
+            .expect("append root");
+        let main_head = store
+            .append_messages(root, &[Message::user("main branch target")])
+            .expect("append main");
+        let _branch_head = store
+            .append_messages(root, &[Message::user("branch target")])
+            .expect("append branch");
+        let runtime = SessionRuntime {
+            store,
+            active_head: main_head,
+        };
+
+        let output = execute_session_search_command(&runtime, "target");
+        let main_index = output.find("result: id=2").expect("main result");
+        let branch_index = output.find("result: id=3").expect("branch result");
+        assert!(main_index < branch_index);
+    }
+
+    #[test]
     fn functional_render_help_overview_lists_known_commands() {
         let help = render_help_overview();
         assert!(help.contains("/help [command]"));
         assert!(help.contains("/session"));
+        assert!(help.contains("/session-search <query>"));
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/audit-summary <path>"));
@@ -4349,6 +4620,13 @@ mod tests {
         assert!(help.contains("command: /branch"));
         assert!(help.contains("usage: /branch <id>"));
         assert!(help.contains("example: /branch 12"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_session_search_topic_without_slash() {
+        let help = render_command_help("session-search").expect("render help");
+        assert!(help.contains("command: /session-search"));
+        assert!(help.contains("usage: /session-search <query>"));
     }
 
     #[test]
