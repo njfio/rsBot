@@ -514,6 +514,175 @@ fn regression_interactive_session_graph_export_command_invalid_destination_repor
 }
 
 #[test]
+fn integration_interactive_branch_alias_command_set_use_and_list_flow() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-branch-alias.jsonl");
+    let alias_path = session.with_extension("aliases.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":2,
+            "parent_id":1,
+            "message":{
+                "role":"assistant",
+                "content":[{"type":"text","text":"stable branch"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":3,
+            "parent_id":1,
+            "message":{
+                "role":"assistant",
+                "content":[{"type":"text","text":"hot branch"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/branch-alias set hotfix 2\n/branch 3\n/session\n/branch-alias use hotfix\n/session\n/branch-alias list\n/quit\n");
+
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let stdout = String::from_utf8(output).expect("stdout should be utf8");
+    assert!(stdout.contains("branch alias set: path="));
+    assert!(stdout.contains("name=hotfix id=2"));
+    assert!(stdout.contains("branch alias use: path="));
+    assert!(stdout.contains("name=hotfix id=2"));
+    assert!(stdout.contains("branch alias list: path="));
+    assert!(stdout.contains("alias: name=hotfix id=2 status=ok"));
+
+    let use_index = stdout.find("branch alias use: path=").expect("use output");
+    let after_use = &stdout[use_index..];
+    assert!(after_use.contains("active_head=2"));
+
+    let alias_raw = fs::read_to_string(&alias_path).expect("read alias file");
+    assert!(alias_raw.contains("\"schema_version\": 1"));
+    assert!(alias_raw.contains("\"hotfix\": 2"));
+}
+
+#[test]
+fn regression_interactive_branch_alias_command_stale_alias_reports_error_and_list_status() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-branch-alias-stale.jsonl");
+    let alias_path = session.with_extension("aliases.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+    let aliases = json!({
+        "schema_version": 1,
+        "aliases": {
+            "legacy": 999
+        }
+    });
+    fs::write(&alias_path, format!("{aliases}\n")).expect("write alias file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/branch-alias list\n/branch-alias use legacy\n/help branch-alias\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "alias: name=legacy id=999 status=stale",
+        ))
+        .stdout(predicate::str::contains(
+            "alias points to unknown session id 999",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /branch-alias <set|list|use> ...",
+        ));
+}
+
+#[test]
+fn regression_interactive_branch_alias_command_corrupt_file_reports_parse_error() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-branch-alias-corrupt.jsonl");
+    let alias_path = session.with_extension("aliases.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+    fs::write(&alias_path, "{invalid-json").expect("write malformed alias file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/branch-alias list\n/help branch-alias\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("branch alias error: path="))
+        .stdout(predicate::str::contains("failed to parse alias file"))
+        .stdout(predicate::str::contains(
+            "usage: /branch-alias <set|list|use> ...",
+        ));
+}
+
+#[test]
 fn interactive_session_import_merge_remaps_collisions_by_default() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("target.jsonl");

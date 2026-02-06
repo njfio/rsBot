@@ -775,6 +775,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/branches",
     },
     CommandSpec {
+        name: "/branch-alias",
+        usage: "/branch-alias <set|list|use> ...",
+        description: "Manage persistent branch aliases for quick navigation",
+        details:
+            "Aliases are stored in a sidecar JSON file next to the active session file.",
+        example: "/branch-alias set hotfix 42",
+    },
+    CommandSpec {
         name: "/branch",
         usage: "/branch <id>",
         description: "Switch active branch head to a specific entry id",
@@ -830,6 +838,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-lock-write",
     "/skills-sync",
     "/branches",
+    "/branch-alias",
     "/branch",
     "/resume",
     "/session-repair",
@@ -2312,6 +2321,19 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/branch-alias" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        println!(
+            "{}",
+            execute_branch_alias_command(command_args, agent, runtime)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/session-repair" {
         if !command_args.is_empty() {
             println!("usage: /session-repair");
@@ -2862,6 +2884,232 @@ fn execute_session_graph_export_command(runtime: &SessionRuntime, command_args: 
             "session graph export error: path={} error={error}",
             destination.display()
         ),
+    }
+}
+
+const BRANCH_ALIAS_SCHEMA_VERSION: u32 = 1;
+const BRANCH_ALIAS_USAGE: &str = "usage: /branch-alias <set|list|use> ...";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BranchAliasCommand {
+    List,
+    Set { name: String, id: u64 },
+    Use { name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct BranchAliasFile {
+    schema_version: u32,
+    aliases: BTreeMap<String, u64>,
+}
+
+fn branch_alias_path_for_session(session_path: &Path) -> PathBuf {
+    session_path.with_extension("aliases.json")
+}
+
+fn validate_branch_alias_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        bail!("alias name must not be empty");
+    };
+    if !first.is_ascii_alphabetic() {
+        bail!("alias name '{}' must start with an ASCII letter", name);
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')) {
+        bail!(
+            "alias name '{}' must contain only ASCII letters, digits, '-' or '_'",
+            name
+        );
+    }
+    Ok(())
+}
+
+fn parse_branch_alias_command(command_args: &str) -> Result<BranchAliasCommand> {
+    const USAGE_LIST: &str = "usage: /branch-alias list";
+    const USAGE_SET: &str = "usage: /branch-alias set <name> <id>";
+    const USAGE_USE: &str = "usage: /branch-alias use <name>";
+
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        bail!("{BRANCH_ALIAS_USAGE}");
+    }
+
+    match tokens[0] {
+        "list" => {
+            if tokens.len() != 1 {
+                bail!("{USAGE_LIST}");
+            }
+            Ok(BranchAliasCommand::List)
+        }
+        "set" => {
+            if tokens.len() != 3 {
+                bail!("{USAGE_SET}");
+            }
+            validate_branch_alias_name(tokens[1])?;
+            let id = tokens[2]
+                .parse::<u64>()
+                .map_err(|_| anyhow!("invalid branch id '{}'; expected an integer", tokens[2]))?;
+            Ok(BranchAliasCommand::Set {
+                name: tokens[1].to_string(),
+                id,
+            })
+        }
+        "use" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_USE}");
+            }
+            validate_branch_alias_name(tokens[1])?;
+            Ok(BranchAliasCommand::Use {
+                name: tokens[1].to_string(),
+            })
+        }
+        other => bail!("unknown subcommand '{}'; {BRANCH_ALIAS_USAGE}", other),
+    }
+}
+
+fn load_branch_aliases(path: &Path) -> Result<BTreeMap<String, u64>> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read alias file {}", path.display()))?;
+    let parsed = serde_json::from_str::<BranchAliasFile>(&raw)
+        .with_context(|| format!("failed to parse alias file {}", path.display()))?;
+    if parsed.schema_version != BRANCH_ALIAS_SCHEMA_VERSION {
+        bail!(
+            "unsupported alias schema_version {} in {} (expected {})",
+            parsed.schema_version,
+            path.display(),
+            BRANCH_ALIAS_SCHEMA_VERSION
+        );
+    }
+    Ok(parsed.aliases)
+}
+
+fn save_branch_aliases(path: &Path, aliases: &BTreeMap<String, u64>) -> Result<()> {
+    let payload = BranchAliasFile {
+        schema_version: BRANCH_ALIAS_SCHEMA_VERSION,
+        aliases: aliases.clone(),
+    };
+    let mut encoded =
+        serde_json::to_string_pretty(&payload).context("failed to encode branch aliases")?;
+    encoded.push('\n');
+    write_text_atomic(path, &encoded)
+}
+
+fn render_branch_alias_list(
+    path: &Path,
+    aliases: &BTreeMap<String, u64>,
+    runtime: &SessionRuntime,
+) -> String {
+    let mut lines = vec![format!(
+        "branch alias list: path={} count={}",
+        path.display(),
+        aliases.len()
+    )];
+    if aliases.is_empty() {
+        lines.push("aliases: none".to_string());
+        return lines.join("\n");
+    }
+    for (name, id) in aliases {
+        let status = if runtime.store.contains(*id) {
+            "ok"
+        } else {
+            "stale"
+        };
+        lines.push(format!("alias: name={} id={} status={}", name, id, status));
+    }
+    lines.join("\n")
+}
+
+fn execute_branch_alias_command(
+    command_args: &str,
+    agent: &mut Agent,
+    runtime: &mut SessionRuntime,
+) -> String {
+    let alias_path = branch_alias_path_for_session(runtime.store.path());
+    let command = match parse_branch_alias_command(command_args) {
+        Ok(command) => command,
+        Err(error) => {
+            return format!(
+                "branch alias error: path={} error={error}",
+                alias_path.display()
+            )
+        }
+    };
+
+    let mut aliases = match load_branch_aliases(&alias_path) {
+        Ok(aliases) => aliases,
+        Err(error) => {
+            return format!(
+                "branch alias error: path={} error={error}",
+                alias_path.display()
+            )
+        }
+    };
+
+    match command {
+        BranchAliasCommand::List => render_branch_alias_list(&alias_path, &aliases, runtime),
+        BranchAliasCommand::Set { name, id } => {
+            if !runtime.store.contains(id) {
+                return format!(
+                    "branch alias error: path={} name={} error=unknown session id {}",
+                    alias_path.display(),
+                    name,
+                    id
+                );
+            }
+            aliases.insert(name.clone(), id);
+            match save_branch_aliases(&alias_path, &aliases) {
+                Ok(()) => format!(
+                    "branch alias set: path={} name={} id={}",
+                    alias_path.display(),
+                    name,
+                    id
+                ),
+                Err(error) => format!(
+                    "branch alias error: path={} name={} error={error}",
+                    alias_path.display(),
+                    name
+                ),
+            }
+        }
+        BranchAliasCommand::Use { name } => {
+            let Some(id) = aliases.get(&name).copied() else {
+                return format!(
+                    "branch alias error: path={} name={} error=unknown alias '{}'",
+                    alias_path.display(),
+                    name,
+                    name
+                );
+            };
+            if !runtime.store.contains(id) {
+                return format!(
+                    "branch alias error: path={} name={} error=alias points to unknown session id {}",
+                    alias_path.display(),
+                    name,
+                    id
+                );
+            }
+            runtime.active_head = Some(id);
+            match reload_agent_from_active_head(agent, runtime) {
+                Ok(()) => format!(
+                    "branch alias use: path={} name={} id={}",
+                    alias_path.display(),
+                    name,
+                    id
+                ),
+                Err(error) => format!(
+                    "branch alias error: path={} name={} error={error}",
+                    alias_path.display(),
+                    name
+                ),
+            }
+        }
     }
 }
 
@@ -4346,34 +4594,37 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, build_tool_policy, compute_session_entry_depths,
-        compute_session_stats, default_skills_lock_path, derive_skills_prune_candidates,
-        ensure_non_empty_text, escape_graph_label, execute_session_graph_export_command,
+        apply_trust_root_mutations, branch_alias_path_for_session, build_tool_policy,
+        compute_session_entry_depths, compute_session_stats, default_skills_lock_path,
+        derive_skills_prune_candidates, ensure_non_empty_text, escape_graph_label,
+        execute_branch_alias_command, execute_session_graph_export_command,
         execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
         execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, parse_command,
-        parse_sandbox_command_tokens, parse_session_search_args, parse_skills_lock_diff_args,
-        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-        render_audit_summary, render_command_help, render_help_overview, render_session_graph_dot,
-        render_session_graph_mermaid, render_session_stats, render_skills_list,
-        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
-        render_skills_lock_write_success, render_skills_search, render_skills_show,
-        render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
-        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
-        resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
-        run_prompt_with_cancellation, search_session_entries, session_message_preview,
-        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
-        trust_record_status, unknown_command_message, validate_session_file,
-        validate_skills_prune_file_name, Cli, CliBashProfile, CliOsSandboxMode,
+        initialize_session, is_retryable_provider_error, load_branch_aliases,
+        parse_branch_alias_command, parse_command, parse_sandbox_command_tokens,
+        parse_session_search_args, parse_skills_lock_diff_args, parse_skills_prune_args,
+        parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
+        parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
+        render_help_overview, render_session_graph_dot, render_session_graph_mermaid,
+        render_session_stats, render_skills_list, render_skills_lock_diff_drift,
+        render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
+        render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
+        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
+        resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
+        resolve_system_prompt, run_prompt_with_cancellation, save_branch_aliases,
+        search_session_entries, session_message_preview, stream_text_chunks, summarize_audit_file,
+        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
+        validate_branch_alias_name, validate_session_file, validate_skills_prune_file_name,
+        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliOsSandboxMode,
         CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
         SessionGraphFormat, SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig,
-        ToolAuditLogger, TrustedRootRecord, SESSION_SEARCH_MAX_RESULTS,
-        SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
+        ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
+        SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
+        SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -5254,6 +5505,176 @@ mod tests {
     }
 
     #[test]
+    fn unit_validate_branch_alias_name_accepts_and_rejects_expected_inputs() {
+        validate_branch_alias_name("hotfix_1").expect("valid alias");
+
+        let error = validate_branch_alias_name("").expect_err("empty alias should fail");
+        assert!(error.to_string().contains("must not be empty"));
+
+        let error = validate_branch_alias_name("1hotfix")
+            .expect_err("alias starting with a digit should fail");
+        assert!(error
+            .to_string()
+            .contains("must start with an ASCII letter"));
+
+        let error = validate_branch_alias_name("hotfix.bad")
+            .expect_err("alias with unsupported punctuation should fail");
+        assert!(error
+            .to_string()
+            .contains("must contain only ASCII letters, digits, '-' or '_'"));
+    }
+
+    #[test]
+    fn functional_parse_branch_alias_command_supports_core_subcommands() {
+        assert_eq!(
+            parse_branch_alias_command("list").expect("parse list"),
+            BranchAliasCommand::List
+        );
+        assert_eq!(
+            parse_branch_alias_command("set hotfix 42").expect("parse set"),
+            BranchAliasCommand::Set {
+                name: "hotfix".to_string(),
+                id: 42,
+            }
+        );
+        assert_eq!(
+            parse_branch_alias_command("use hotfix").expect("parse use"),
+            BranchAliasCommand::Use {
+                name: "hotfix".to_string(),
+            }
+        );
+
+        let error = parse_branch_alias_command("").expect_err("missing args should fail");
+        assert!(error.to_string().contains(BRANCH_ALIAS_USAGE));
+
+        let error =
+            parse_branch_alias_command("set hotfix nope").expect_err("invalid id should fail");
+        assert!(error.to_string().contains("invalid branch id 'nope'"));
+
+        let error = parse_branch_alias_command("delete hotfix")
+            .expect_err("unknown subcommand should fail");
+        assert!(error.to_string().contains("unknown subcommand 'delete'"));
+    }
+
+    #[test]
+    fn unit_save_and_load_branch_aliases_round_trip_schema_and_values() {
+        let temp = tempdir().expect("tempdir");
+        let alias_path = temp.path().join("session.aliases.json");
+        let aliases = BTreeMap::from([
+            ("hotfix".to_string(), 7_u64),
+            ("rollback".to_string(), 12_u64),
+        ]);
+
+        save_branch_aliases(&alias_path, &aliases).expect("save aliases");
+
+        let loaded = load_branch_aliases(&alias_path).expect("load aliases");
+        assert_eq!(loaded, aliases);
+
+        let raw = std::fs::read_to_string(&alias_path).expect("read alias file");
+        let parsed = serde_json::from_str::<BranchAliasFile>(&raw).expect("parse alias file");
+        assert_eq!(parsed.schema_version, BRANCH_ALIAS_SCHEMA_VERSION);
+        assert_eq!(parsed.aliases, aliases);
+    }
+
+    #[test]
+    fn integration_execute_branch_alias_command_supports_set_use_and_list_flow() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let stable = store
+            .append_messages(Some(root), &[Message::assistant_text("stable branch")])
+            .expect("append stable")
+            .expect("stable id");
+        let hot = store
+            .append_messages(Some(root), &[Message::assistant_text("hot branch")])
+            .expect("append hot")
+            .expect("hot id");
+        let mut runtime = SessionRuntime {
+            store,
+            active_head: Some(hot),
+        };
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = runtime
+            .store
+            .lineage_messages(runtime.active_head)
+            .expect("lineage");
+        agent.replace_messages(lineage);
+
+        let set_output =
+            execute_branch_alias_command(&format!("set hotfix {stable}"), &mut agent, &mut runtime);
+        assert!(set_output.contains("branch alias set: path="));
+        assert!(set_output.contains("name=hotfix"));
+        assert_eq!(runtime.active_head, Some(hot));
+
+        let list_output = execute_branch_alias_command("list", &mut agent, &mut runtime);
+        assert!(list_output.contains("branch alias list: path="));
+        assert!(list_output.contains("count=1"));
+        assert!(list_output.contains(&format!("alias: name=hotfix id={} status=ok", stable)));
+
+        let use_output = execute_branch_alias_command("use hotfix", &mut agent, &mut runtime);
+        assert!(use_output.contains("branch alias use: path="));
+        assert!(use_output.contains(&format!("id={stable}")));
+        assert_eq!(runtime.active_head, Some(stable));
+
+        let alias_path = branch_alias_path_for_session(&session_path);
+        let aliases = load_branch_aliases(&alias_path).expect("load aliases");
+        assert_eq!(aliases.get("hotfix"), Some(&stable));
+    }
+
+    #[test]
+    fn regression_execute_branch_alias_command_reports_stale_alias_ids() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let mut runtime = SessionRuntime {
+            store,
+            active_head: Some(root),
+        };
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let alias_path = branch_alias_path_for_session(&session_path);
+        let aliases = BTreeMap::from([("legacy".to_string(), 999_u64)]);
+        save_branch_aliases(&alias_path, &aliases).expect("save stale alias");
+
+        let list_output = execute_branch_alias_command("list", &mut agent, &mut runtime);
+        assert!(list_output.contains("count=1"));
+        assert!(list_output.contains("alias: name=legacy id=999 status=stale"));
+
+        let use_output = execute_branch_alias_command("use legacy", &mut agent, &mut runtime);
+        assert!(use_output.contains("branch alias error: path="));
+        assert!(use_output.contains("alias points to unknown session id 999"));
+    }
+
+    #[test]
+    fn regression_execute_branch_alias_command_reports_corrupt_alias_file() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let mut runtime = SessionRuntime {
+            store,
+            active_head: Some(root),
+        };
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let alias_path = branch_alias_path_for_session(&session_path);
+        std::fs::write(&alias_path, "{invalid-json").expect("write malformed alias file");
+
+        let output = execute_branch_alias_command("list", &mut agent, &mut runtime);
+        assert!(output.contains("branch alias error: path="));
+        assert!(output.contains("failed to parse alias file"));
+    }
+
+    #[test]
     fn functional_render_help_overview_lists_known_commands() {
         let help = render_help_overview();
         assert!(help.contains("/help [command]"));
@@ -5273,6 +5694,7 @@ mod tests {
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/branch <id>"));
+        assert!(help.contains("/branch-alias <set|list|use> ..."));
         assert!(help.contains("/quit"));
     }
 
@@ -5282,6 +5704,14 @@ mod tests {
         assert!(help.contains("command: /branch"));
         assert!(help.contains("usage: /branch <id>"));
         assert!(help.contains("example: /branch 12"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_branch_alias_topic_without_slash() {
+        let help = render_command_help("branch-alias").expect("render help");
+        assert!(help.contains("command: /branch-alias"));
+        assert!(help.contains("usage: /branch-alias <set|list|use> ..."));
+        assert!(help.contains("example: /branch-alias set hotfix 42"));
     }
 
     #[test]

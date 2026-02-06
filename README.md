@@ -290,6 +290,11 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /session-graph-export /tmp/session-graph.mmd
 /branches
 
+# Persist and use named aliases for fast branch navigation
+/branch-alias set hotfix 12
+/branch-alias list
+/branch-alias use hotfix
+
 # Switch to an older entry and fork a new branch
 /branch 12
 
