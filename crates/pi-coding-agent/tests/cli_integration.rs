@@ -1499,6 +1499,59 @@ fn regression_skills_sync_flag_fails_on_drift() {
 }
 
 #[test]
+fn interactive_skills_list_command_prints_inventory() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("zeta.md"), "zeta body").expect("write zeta");
+    fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-list\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills list: path="))
+        .stdout(predicate::str::contains("count=2"))
+        .stdout(predicate::str::contains("skill: name=alpha file=alpha.md"))
+        .stdout(predicate::str::contains("skill: name=zeta file=zeta.md"));
+}
+
+#[test]
+fn regression_interactive_skills_list_command_with_args_prints_usage_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-list extra\n/help skills-list\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("usage: /skills-list"))
+        .stdout(predicate::str::contains("command: /skills-list"));
+}
+
+#[test]
 fn interactive_skills_lock_write_command_writes_default_lockfile() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");

@@ -683,6 +683,13 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/audit-summary .pi/audit/tool-events.jsonl",
     },
     CommandSpec {
+        name: "/skills-list",
+        usage: "/skills-list",
+        description: "List installed skills in the active skills directory",
+        details: "Read-only command that prints deterministic skill inventory output.",
+        example: "/skills-list",
+    },
+    CommandSpec {
         name: "/skills-lock-write",
         usage: "/skills-lock-write [lockfile_path]",
         description: "Write/update skills lockfile from installed skills",
@@ -749,6 +756,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/session-import",
     "/policy",
     "/audit-summary",
+    "/skills-list",
     "/skills-lock-write",
     "/skills-sync",
     "/branches",
@@ -2061,6 +2069,15 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/skills-list" {
+        if !command_args.is_empty() {
+            println!("usage: /skills-list");
+            return Ok(CommandAction::Continue);
+        }
+        println!("{}", execute_skills_list_command(skills_dir));
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/skills-lock-write" {
         println!(
             "{}",
@@ -2238,6 +2255,37 @@ fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
     match mode {
         SessionImportMode::Merge => "merge",
         SessionImportMode::Replace => "replace",
+    }
+}
+
+fn render_skills_list(skills_dir: &Path, catalog: &[skills::Skill]) -> String {
+    let mut lines = vec![format!(
+        "skills list: path={} count={}",
+        skills_dir.display(),
+        catalog.len()
+    )];
+    if catalog.is_empty() {
+        lines.push("skills: none".to_string());
+    } else {
+        for skill in catalog {
+            let file = skill
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown");
+            lines.push(format!("skill: name={} file={}", skill.name, file));
+        }
+    }
+    lines.join("\n")
+}
+
+fn execute_skills_list_command(skills_dir: &Path) -> String {
+    match load_catalog(skills_dir) {
+        Ok(catalog) => render_skills_list(skills_dir, &catalog),
+        Err(error) => format!(
+            "skills list error: path={} error={error}",
+            skills_dir.display()
+        ),
     }
 }
 
@@ -3037,19 +3085,19 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
-        ensure_non_empty_text, execute_skills_lock_write_command, execute_skills_sync_command,
-        format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, parse_command,
-        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
-        percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
-        render_skills_lock_write_success, render_skills_sync_drift_details,
-        resolve_fallback_models, resolve_prompt_input, resolve_skill_trust_roots,
-        resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
-        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
-        unknown_command_message, validate_session_file, Cli, CliBashProfile, CliOsSandboxMode,
-        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
-        FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
-        SessionRuntime, ToolAuditLogger, TrustedRootRecord,
+        ensure_non_empty_text, execute_skills_list_command, execute_skills_lock_write_command,
+        execute_skills_sync_command, format_id_list, format_remap_ids, handle_command,
+        handle_command_with_session_import_mode, initialize_session, is_retryable_provider_error,
+        parse_command, parse_sandbox_command_tokens, parse_trust_rotation_spec,
+        parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
+        render_help_overview, render_skills_list, render_skills_lock_write_success,
+        render_skills_sync_drift_details, resolve_fallback_models, resolve_prompt_input,
+        resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
+        run_prompt_with_cancellation, stream_text_chunks, summarize_audit_file,
+        tool_audit_event_json, tool_policy_to_json, unknown_command_message, validate_session_file,
+        Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
+        ClientRoute, CommandAction, FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger,
+        RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -3513,6 +3561,7 @@ mod tests {
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/audit-summary <path>"));
+        assert!(help.contains("/skills-list"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/branch <id>"));
@@ -3539,6 +3588,13 @@ mod tests {
         let help = render_command_help("skills-lock-write").expect("render help");
         assert!(help.contains("command: /skills-lock-write"));
         assert!(help.contains("usage: /skills-lock-write [lockfile_path]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_list_topic_without_slash() {
+        let help = render_command_help("skills-list").expect("render help");
+        assert!(help.contains("command: /skills-list"));
+        assert!(help.contains("usage: /skills-list"));
     }
 
     #[test]
@@ -3598,6 +3654,42 @@ mod tests {
             rendered,
             "skills lock write: path=skills.lock.json entries=3"
         );
+    }
+
+    #[test]
+    fn unit_render_skills_list_handles_empty_catalog() {
+        let rendered = render_skills_list(Path::new(".pi/skills"), &[]);
+        assert!(rendered.contains("skills list: path=.pi/skills count=0"));
+        assert!(rendered.contains("skills: none"));
+    }
+
+    #[test]
+    fn functional_execute_skills_list_command_reports_sorted_inventory() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("zeta.md"), "zeta").expect("write zeta");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha").expect("write alpha");
+        std::fs::write(skills_dir.join("ignored.txt"), "ignored").expect("write ignored");
+
+        let output = execute_skills_list_command(&skills_dir);
+        assert!(output.contains("count=2"));
+        let alpha_index = output
+            .find("skill: name=alpha file=alpha.md")
+            .expect("alpha");
+        let zeta_index = output.find("skill: name=zeta file=zeta.md").expect("zeta");
+        assert!(alpha_index < zeta_index);
+    }
+
+    #[test]
+    fn regression_execute_skills_list_command_reports_errors_without_panicking() {
+        let temp = tempdir().expect("tempdir");
+        let not_a_dir = temp.path().join("skills.md");
+        std::fs::write(&not_a_dir, "not a directory").expect("write file");
+
+        let output = execute_skills_list_command(&not_a_dir);
+        assert!(output.contains("skills list error: path="));
+        assert!(output.contains("is not a directory"));
     }
 
     #[test]
@@ -3809,6 +3901,53 @@ mod tests {
             &lock_path,
         )
         .expect("skills lock write command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_list_command_preserves_session_runtime() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+        std::fs::write(skills_dir.join("beta.md"), "beta body").expect("write beta");
+        let lock_path = default_skills_lock_path(&skills_dir);
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-list",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_dir,
+            &lock_path,
+        )
+        .expect("skills list command should continue");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");
