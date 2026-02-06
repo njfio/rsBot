@@ -320,6 +320,10 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /skills-prune
 /skills-prune /tmp/custom-skills.lock.json --apply
 
+# Inspect trust-root keys from configured or explicit trust-root file
+/skills-trust-list
+/skills-trust-list /tmp/trust-roots.json
+
 # List currently installed skills
 /skills-list
 

@@ -614,6 +614,7 @@ struct SessionRuntime {
 struct SkillsSyncCommandConfig {
     skills_dir: PathBuf,
     default_lock_path: PathBuf,
+    default_trust_root_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,6 +720,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/skills-prune .pi/skills/skills.lock.json --apply",
     },
     CommandSpec {
+        name: "/skills-trust-list",
+        usage: "/skills-trust-list [trust_root_file]",
+        description: "List trust-root keys with revocation/expiry/rotation status",
+        details:
+            "Uses configured --skill-trust-root-file when no path argument is provided.",
+        example: "/skills-trust-list .pi/skills/trust-roots.json",
+    },
+    CommandSpec {
         name: "/skills-lock-write",
         usage: "/skills-lock-write [lockfile_path]",
         description: "Write/update skills lockfile from installed skills",
@@ -790,6 +799,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-list",
     "/skills-lock-diff",
     "/skills-prune",
+    "/skills-trust-list",
     "/skills-lock-write",
     "/skills-sync",
     "/branches",
@@ -1465,6 +1475,7 @@ async fn main() -> Result<()> {
     let skills_sync_command_config = SkillsSyncCommandConfig {
         skills_dir: cli.skills_dir.clone(),
         default_lock_path: skills_lock_path.clone(),
+        default_trust_root_path: cli.skill_trust_root_file.clone(),
     };
     run_interactive(
         agent,
@@ -1843,8 +1854,7 @@ async fn run_interactive(
                 &mut session_runtime,
                 &tool_policy_json,
                 session_import_mode,
-                &skills_sync_command_config.skills_dir,
-                &skills_sync_command_config.default_lock_path,
+                skills_sync_command_config,
             )? == CommandAction::Exit
             {
                 break;
@@ -1955,14 +1965,18 @@ fn handle_command(
 ) -> Result<CommandAction> {
     let skills_dir = PathBuf::from(".pi/skills");
     let skills_lock_path = default_skills_lock_path(&skills_dir);
+    let skills_command_config = SkillsSyncCommandConfig {
+        skills_dir,
+        default_lock_path: skills_lock_path,
+        default_trust_root_path: None,
+    };
     handle_command_with_session_import_mode(
         command,
         agent,
         session_runtime,
         tool_policy_json,
         SessionImportMode::Merge,
-        &skills_dir,
-        &skills_lock_path,
+        &skills_command_config,
     )
 }
 
@@ -1972,9 +1986,12 @@ fn handle_command_with_session_import_mode(
     session_runtime: &mut Option<SessionRuntime>,
     tool_policy_json: &serde_json::Value,
     session_import_mode: SessionImportMode,
-    skills_dir: &Path,
-    default_skills_lock_path: &Path,
+    skills_command_config: &SkillsSyncCommandConfig,
 ) -> Result<CommandAction> {
+    let skills_dir = skills_command_config.skills_dir.as_path();
+    let default_skills_lock_path = skills_command_config.default_lock_path.as_path();
+    let default_trust_root_path = skills_command_config.default_trust_root_path.as_deref();
+
     let Some(parsed) = parse_command(command) else {
         println!("invalid command input: {command}");
         return Ok(CommandAction::Continue);
@@ -2144,6 +2161,14 @@ fn handle_command_with_session_import_mode(
         println!(
             "{}",
             execute_skills_prune_command(skills_dir, default_skills_lock_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/skills-trust-list" {
+        println!(
+            "{}",
+            execute_skills_trust_list_command(default_trust_root_path, command_args)
         );
         return Ok(CommandAction::Continue);
     }
@@ -2852,6 +2877,102 @@ fn execute_skills_prune_command(
         deleted, failed
     ));
     lines.join("\n")
+}
+
+const SKILLS_TRUST_LIST_USAGE: &str = "usage: /skills-trust-list [trust_root_file]";
+
+fn parse_skills_trust_list_args(
+    command_args: &str,
+    default_trust_root_path: Option<&Path>,
+) -> Result<PathBuf> {
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return default_trust_root_path
+            .map(Path::to_path_buf)
+            .ok_or_else(|| anyhow!("trust root file is required; {SKILLS_TRUST_LIST_USAGE}"));
+    }
+
+    if tokens.len() > 1 {
+        bail!(
+            "unexpected argument '{}'; {SKILLS_TRUST_LIST_USAGE}",
+            tokens[1]
+        );
+    }
+
+    Ok(PathBuf::from(tokens[0]))
+}
+
+fn trust_record_status(record: &TrustedRootRecord, now_unix: u64) -> &'static str {
+    if record.revoked {
+        "revoked"
+    } else if is_expired_unix(record.expires_unix, now_unix) {
+        "expired"
+    } else {
+        "active"
+    }
+}
+
+fn render_skills_trust_list(path: &Path, records: &[TrustedRootRecord]) -> String {
+    let now_unix = current_unix_timestamp();
+    let mut lines = vec![format!(
+        "skills trust list: path={} count={}",
+        path.display(),
+        records.len()
+    )];
+
+    if records.is_empty() {
+        lines.push("roots: none".to_string());
+        return lines.join("\n");
+    }
+
+    for record in records {
+        lines.push(format!(
+            "root: id={} revoked={} expires_unix={} rotated_from={} status={}",
+            record.id,
+            record.revoked,
+            record
+                .expires_unix
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            record.rotated_from.as_deref().unwrap_or("none"),
+            trust_record_status(record, now_unix)
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn execute_skills_trust_list_command(
+    default_trust_root_path: Option<&Path>,
+    command_args: &str,
+) -> String {
+    let trust_root_path = match parse_skills_trust_list_args(command_args, default_trust_root_path)
+    {
+        Ok(path) => path,
+        Err(error) => {
+            let configured_path = default_trust_root_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            return format!(
+                "skills trust list error: path={} error={error}",
+                configured_path
+            );
+        }
+    };
+
+    match load_trust_root_records(&trust_root_path) {
+        Ok(mut records) => {
+            records.sort_by(|left, right| left.id.cmp(&right.id));
+            render_skills_trust_list(&trust_root_path, &records)
+        }
+        Err(error) => format!(
+            "skills trust list error: path={} error={error}",
+            trust_root_path.display()
+        ),
+    }
 }
 
 fn render_skills_lock_diff_in_sync(path: &Path, report: &skills::SkillsSyncReport) -> String {
@@ -3717,22 +3838,24 @@ mod tests {
         derive_skills_prune_candidates, ensure_non_empty_text, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-        execute_skills_sync_command, format_id_list, format_remap_ids, handle_command,
-        handle_command_with_session_import_mode, initialize_session, is_retryable_provider_error,
-        parse_command, parse_sandbox_command_tokens, parse_skills_lock_diff_args,
-        parse_skills_prune_args, parse_skills_search_args, parse_trust_rotation_spec,
+        execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
+        format_remap_ids, handle_command, handle_command_with_session_import_mode,
+        initialize_session, is_retryable_provider_error, parse_command,
+        parse_sandbox_command_tokens, parse_skills_lock_diff_args, parse_skills_prune_args,
+        parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
         parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
         render_help_overview, render_skills_list, render_skills_lock_diff_drift,
         render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
-        render_skills_show, render_skills_sync_drift_details, resolve_fallback_models,
-        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_skill_trust_roots,
-        resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
-        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
-        unknown_command_message, validate_session_file, validate_skills_prune_file_name, Cli,
-        CliBashProfile, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute,
-        CommandAction, FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger,
-        RenderOptions, SessionRuntime, SkillsPruneMode, ToolAuditLogger, TrustedRootRecord,
-        SKILLS_PRUNE_USAGE,
+        render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
+        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
+        resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
+        run_prompt_with_cancellation, stream_text_chunks, summarize_audit_file,
+        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
+        validate_session_file, validate_skills_prune_file_name, Cli, CliBashProfile,
+        CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
+        SessionRuntime, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
+        TrustedRootRecord, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -3896,6 +4019,18 @@ mod tests {
             os_sandbox_mode: CliOsSandboxMode::Off,
             os_sandbox_command: vec![],
             enforce_regular_files: true,
+        }
+    }
+
+    fn skills_command_config(
+        skills_dir: &Path,
+        lock_path: &Path,
+        trust_root_path: Option<&Path>,
+    ) -> SkillsSyncCommandConfig {
+        SkillsSyncCommandConfig {
+            skills_dir: skills_dir.to_path_buf(),
+            default_lock_path: lock_path.to_path_buf(),
+            default_trust_root_path: trust_root_path.map(Path::to_path_buf),
         }
     }
 
@@ -4201,6 +4336,7 @@ mod tests {
         assert!(help.contains("/skills-list"));
         assert!(help.contains("/skills-lock-diff [lockfile_path] [--json]"));
         assert!(help.contains("/skills-prune [lockfile_path] [--dry-run|--apply]"));
+        assert!(help.contains("/skills-trust-list [trust_root_file]"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/branch <id>"));
@@ -4262,6 +4398,13 @@ mod tests {
         let help = render_command_help("skills-prune").expect("render help");
         assert!(help.contains("command: /skills-prune"));
         assert!(help.contains("usage: /skills-prune [lockfile_path] [--dry-run|--apply]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_trust_list_topic_without_slash() {
+        let help = render_command_help("skills-trust-list").expect("render help");
+        assert!(help.contains("command: /skills-trust-list"));
+        assert!(help.contains("usage: /skills-trust-list [trust_root_file]"));
     }
 
     #[test]
@@ -4478,6 +4621,72 @@ mod tests {
             resolve_prunable_skill_file_name(skills_dir, Path::new(".pi/skills/nested/a.md"))
                 .expect_err("nested path should fail");
         assert!(error.to_string().contains("nested paths are not allowed"));
+    }
+
+    #[test]
+    fn unit_parse_skills_trust_list_args_supports_configured_and_explicit_paths() {
+        let configured = PathBuf::from("/tmp/trust-roots.json");
+        assert_eq!(
+            parse_skills_trust_list_args("", Some(configured.as_path()))
+                .expect("configured path should be used"),
+            configured
+        );
+
+        assert_eq!(
+            parse_skills_trust_list_args(
+                "/tmp/override.json",
+                Some(Path::new("/tmp/default.json"))
+            )
+            .expect("explicit path should override configured path"),
+            PathBuf::from("/tmp/override.json")
+        );
+    }
+
+    #[test]
+    fn regression_parse_skills_trust_list_args_requires_path_without_configuration() {
+        let missing = parse_skills_trust_list_args("", None)
+            .expect_err("command should fail without configured/default path");
+        assert!(missing.to_string().contains(SKILLS_TRUST_LIST_USAGE));
+
+        let extra = parse_skills_trust_list_args("one two", Some(Path::new("/tmp/default.json")))
+            .expect_err("extra positional args should fail");
+        assert!(extra.to_string().contains(SKILLS_TRUST_LIST_USAGE));
+    }
+
+    #[test]
+    fn unit_trust_record_status_reports_active_revoked_and_expired() {
+        let active = TrustedRootRecord {
+            id: "active".to_string(),
+            public_key: "YQ==".to_string(),
+            revoked: false,
+            expires_unix: None,
+            rotated_from: None,
+        };
+        let revoked = TrustedRootRecord {
+            id: "revoked".to_string(),
+            public_key: "Yg==".to_string(),
+            revoked: true,
+            expires_unix: None,
+            rotated_from: None,
+        };
+        let expired = TrustedRootRecord {
+            id: "expired".to_string(),
+            public_key: "Yw==".to_string(),
+            revoked: false,
+            expires_unix: Some(1),
+            rotated_from: None,
+        };
+
+        assert_eq!(trust_record_status(&active, 10), "active");
+        assert_eq!(trust_record_status(&revoked, 10), "revoked");
+        assert_eq!(trust_record_status(&expired, 10), "expired");
+    }
+
+    #[test]
+    fn unit_render_skills_trust_list_handles_empty_records() {
+        let rendered = render_skills_trust_list(Path::new(".pi/trust-roots.json"), &[]);
+        assert!(rendered.contains("skills trust list: path=.pi/trust-roots.json count=0"));
+        assert!(rendered.contains("roots: none"));
     }
 
     #[test]
@@ -4700,6 +4909,75 @@ mod tests {
     }
 
     #[test]
+    fn functional_execute_skills_trust_list_command_supports_default_and_explicit_paths() {
+        let temp = tempdir().expect("tempdir");
+        let default_trust_path = temp.path().join("trust-roots.json");
+        let explicit_trust_path = temp.path().join("explicit-trust-roots.json");
+        let payload = serde_json::json!({
+            "roots": [
+                {
+                    "id": "zeta",
+                    "public_key": "eg==",
+                    "revoked": false,
+                    "expires_unix": 1,
+                    "rotated_from": null
+                },
+                {
+                    "id": "alpha",
+                    "public_key": "YQ==",
+                    "revoked": false,
+                    "expires_unix": null,
+                    "rotated_from": null
+                },
+                {
+                    "id": "beta",
+                    "public_key": "Yg==",
+                    "revoked": true,
+                    "expires_unix": null,
+                    "rotated_from": "alpha"
+                }
+            ]
+        });
+        std::fs::write(&default_trust_path, format!("{payload}\n")).expect("write default trust");
+        std::fs::write(&explicit_trust_path, format!("{payload}\n")).expect("write explicit trust");
+
+        let default_output =
+            execute_skills_trust_list_command(Some(default_trust_path.as_path()), "");
+        assert!(default_output.contains("skills trust list: path="));
+        assert!(default_output.contains("count=3"));
+        let alpha_index = default_output.find("root: id=alpha").expect("alpha row");
+        let beta_index = default_output.find("root: id=beta").expect("beta row");
+        let zeta_index = default_output.find("root: id=zeta").expect("zeta row");
+        assert!(alpha_index < beta_index);
+        assert!(beta_index < zeta_index);
+        assert!(default_output.contains(
+            "root: id=beta revoked=true expires_unix=none rotated_from=alpha status=revoked"
+        ));
+        assert!(default_output.contains(
+            "root: id=zeta revoked=false expires_unix=1 rotated_from=none status=expired"
+        ));
+
+        let explicit_output = execute_skills_trust_list_command(
+            None,
+            explicit_trust_path.to_str().expect("utf8 path"),
+        );
+        assert!(explicit_output.contains("skills trust list: path="));
+        assert!(explicit_output.contains("count=3"));
+    }
+
+    #[test]
+    fn regression_execute_skills_trust_list_command_reports_malformed_json() {
+        let temp = tempdir().expect("tempdir");
+        let trust_path = temp.path().join("trust-roots.json");
+        std::fs::write(&trust_path, "{not-json").expect("write malformed trust file");
+
+        let output =
+            execute_skills_trust_list_command(None, trust_path.to_str().expect("utf8 path"));
+        assert!(output.contains("skills trust list error: path="));
+        assert!(output.contains("failed to parse trusted root file"));
+    }
+
+    #[test]
     fn functional_execute_skills_show_command_displays_selected_skill() {
         let temp = tempdir().expect("tempdir");
         let skills_dir = temp.path().join("skills");
@@ -4875,6 +5153,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             "/skills-sync",
@@ -4882,8 +5161,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
-            &skills_dir,
-            &lock_path,
+            &skills_command_config,
         )
         .expect("skills sync command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -4923,6 +5201,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             &format!("/skills-lock-write {}", blocking_path.display()),
@@ -4930,8 +5209,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
-            &skills_dir,
-            &lock_path,
+            &skills_command_config,
         )
         .expect("skills lock write command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -4970,6 +5248,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             "/skills-list",
@@ -4977,8 +5256,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
-            &skills_dir,
-            &lock_path,
+            &skills_command_config,
         )
         .expect("skills list command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -5016,6 +5294,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             "/skills-show missing",
@@ -5023,8 +5302,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
-            &skills_dir,
-            &lock_path,
+            &skills_command_config,
         )
         .expect("skills show command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -5062,6 +5340,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             "/skills-search alpha 0",
@@ -5069,8 +5348,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
-            &skills_dir,
-            &lock_path,
+            &skills_command_config,
         )
         .expect("skills search command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -5108,6 +5386,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             "/skills-lock-diff /tmp/missing.lock.json",
@@ -5115,8 +5394,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
-            &skills_dir,
-            &lock_path,
+            &skills_command_config,
         )
         .expect("skills lock diff command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -5154,6 +5432,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             "/skills-prune /tmp/missing.lock.json --apply",
@@ -5161,10 +5440,58 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
-            &skills_dir,
-            &lock_path,
+            &skills_command_config,
         )
         .expect("skills prune command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_trust_list_command_preserves_session_runtime_on_error() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let trust_path = temp.path().join("trust-roots.json");
+        std::fs::write(&trust_path, "{invalid-json").expect("write malformed trust file");
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+        let skills_command_config =
+            skills_command_config(&skills_dir, &lock_path, Some(trust_path.as_path()));
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-trust-list",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        )
+        .expect("skills trust list command should continue");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");
@@ -6092,6 +6419,7 @@ mod tests {
         let tool_policy_json = test_tool_policy_json();
         let skills_dir = PathBuf::from(".pi/skills");
         let skills_lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &skills_lock_path, None);
 
         let action = handle_command_with_session_import_mode(
             &format!("/session-import {}", import_path.display()),
@@ -6099,8 +6427,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Replace,
-            &skills_dir,
-            &skills_lock_path,
+            &skills_command_config,
         )
         .expect("session replace import should succeed");
         assert_eq!(action, CommandAction::Continue);
