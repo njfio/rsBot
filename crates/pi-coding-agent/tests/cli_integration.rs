@@ -620,21 +620,15 @@ fn google_prompt_works_end_to_end() {
     let server = MockServer::start();
     let google = server.mock(|when, then| {
         when.method(POST)
-            .path("/models/gemini-2.5-pro:generateContent")
-            .query_param("key", "test-google-key");
-        then.status(200).json_body(json!({
-            "candidates": [{
-                "content": {
-                    "parts": [{"text": "integration google response"}]
-                },
-                "finishReason": "STOP"
-            }],
-            "usageMetadata": {
-                "promptTokenCount": 8,
-                "candidatesTokenCount": 3,
-                "totalTokenCount": 11
-            }
-        }));
+            .path("/models/gemini-2.5-pro:streamGenerateContent")
+            .query_param("key", "test-google-key")
+            .query_param("alt", "sse");
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concat!(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"integration \"}]}}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"google response\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":3,\"totalTokenCount\":11}}\n\n"
+            ));
     });
 
     let mut cmd = binary_command();

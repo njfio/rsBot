@@ -521,3 +521,57 @@ async fn integration_anthropic_client_streams_incremental_text_deltas() {
     assert_eq!(response.finish_reason.as_deref(), Some("end_turn"));
     assert_eq!(response.usage.total_tokens, 10);
 }
+
+#[tokio::test]
+async fn integration_google_client_streams_incremental_text_deltas() {
+    let server = MockServer::start();
+    let stream = server.mock(|when, then| {
+        when.method(POST)
+            .path("/models/gemini-2.5-pro:streamGenerateContent")
+            .query_param("key", "test-google-key")
+            .query_param("alt", "sse")
+            .header("x-pi-retry-attempt", "0");
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concat!(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"He\"}]}}]}\n\n",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"llo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":3,\"totalTokenCount\":7}}\n\n"
+            ));
+    });
+
+    let client = GoogleClient::new(GoogleConfig {
+        api_base: server.base_url(),
+        api_key: "test-google-key".to_string(),
+        request_timeout_ms: 5_000,
+        max_retries: 2,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+    })
+    .expect("google client should be created");
+
+    let deltas = Arc::new(Mutex::new(String::new()));
+    let delta_sink = deltas.clone();
+    let sink = Arc::new(move |delta: String| {
+        delta_sink.lock().expect("delta lock").push_str(&delta);
+    });
+
+    let response = client
+        .complete_with_stream(
+            ChatRequest {
+                model: "gemini-2.5-pro".to_string(),
+                messages: vec![Message::user("hello")],
+                tools: vec![],
+                max_tokens: None,
+                temperature: None,
+            },
+            Some(sink),
+        )
+        .await
+        .expect("streaming completion should succeed");
+
+    stream.assert_calls(1);
+    assert_eq!(deltas.lock().expect("delta lock").as_str(), "Hello");
+    assert_eq!(response.message.text_content(), "Hello");
+    assert_eq!(response.finish_reason.as_deref(), Some("STOP"));
+    assert_eq!(response.usage.total_tokens, 7);
+}
