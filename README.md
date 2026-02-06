@@ -19,7 +19,7 @@ Implemented now:
 - Interactive CLI and one-shot prompt mode
 - Token-by-token CLI output rendering controls
 - Persistent JSONL sessions with branch/resume support
-- Session repair and lineage compaction commands
+- Session repair, export/import, and lineage compaction commands
 - Built-in filesystem and shell tools
 - Theme loading and ANSI styling primitives in `pi-tui`
 - Overlay composition primitives in `pi-tui`
@@ -260,6 +260,9 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 
 # Export the active lineage snapshot to a new JSONL file
 /session-export /tmp/session-snapshot.jsonl
+
+# Import a snapshot into the current session (mode defaults to merge)
+/session-import /tmp/session-snapshot.jsonl
 ```
 
 Tune session lock behavior for shared/concurrent workflows:
@@ -269,6 +272,11 @@ cargo run -p pi-coding-agent -- \
   --model openai/gpt-4o-mini \
   --session-lock-wait-ms 15000 \
   --session-lock-stale-ms 60000
+
+# Optional: use replace mode for /session-import
+cargo run -p pi-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --session-import-mode replace
 ```
 
 Validate a session graph and exit:

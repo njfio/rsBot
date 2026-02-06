@@ -23,7 +23,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
-use crate::session::SessionStore;
+use crate::session::{SessionImportMode, SessionStore};
 use crate::skills::{
     augment_system_prompt, fetch_registry_manifest, install_remote_skills, install_skills,
     load_catalog, resolve_registry_skill_sources, resolve_remote_skill_sources,
@@ -61,6 +61,21 @@ impl From<CliOsSandboxMode> for OsSandboxMode {
             CliOsSandboxMode::Off => OsSandboxMode::Off,
             CliOsSandboxMode::Auto => OsSandboxMode::Auto,
             CliOsSandboxMode::Force => OsSandboxMode::Force,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliSessionImportMode {
+    Merge,
+    Replace,
+}
+
+impl From<CliSessionImportMode> for SessionImportMode {
+    fn from(value: CliSessionImportMode) -> Self {
+        match value {
+            CliSessionImportMode::Merge => SessionImportMode::Merge,
+            CliSessionImportMode::Replace => SessionImportMode::Replace,
         }
     }
 }
@@ -329,6 +344,15 @@ struct Cli {
     )]
     session_validate: bool,
 
+    #[arg(
+        long,
+        env = "PI_SESSION_IMPORT_MODE",
+        value_enum,
+        default_value = "merge",
+        help = "Import mode for /session-import: merge appends with id remapping, replace overwrites the current session"
+    )]
+    session_import_mode: CliSessionImportMode,
+
     #[arg(long, help = "Start from a specific session entry id")]
     branch_from: Option<u64>,
 
@@ -513,6 +537,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/session-export /tmp/session-snapshot.jsonl",
     },
     CommandSpec {
+        name: "/session-import",
+        usage: "/session-import <path>",
+        description: "Import a lineage snapshot into the current session",
+        details:
+            "Uses --session-import-mode (merge or replace). Merge remaps colliding ids; replace overwrites current entries.",
+        example: "/session-import /tmp/session-snapshot.jsonl",
+    },
+    CommandSpec {
         name: "/policy",
         usage: "/policy",
         description: "Print the effective tool policy JSON",
@@ -567,6 +599,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/help",
     "/session",
     "/session-export",
+    "/session-import",
     "/policy",
     "/branches",
     "/branch",
@@ -822,6 +855,7 @@ async fn main() -> Result<()> {
         session_runtime,
         cli.turn_timeout_ms,
         render_options,
+        cli.session_import_mode.into(),
         tool_policy_json,
     )
     .await
@@ -1163,6 +1197,7 @@ async fn run_interactive(
     mut session_runtime: Option<SessionRuntime>,
     turn_timeout_ms: u64,
     render_options: RenderOptions,
+    session_import_mode: SessionImportMode,
     tool_policy_json: serde_json::Value,
 ) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
@@ -1184,8 +1219,13 @@ async fn run_interactive(
         }
 
         if trimmed.starts_with('/') {
-            if handle_command(trimmed, &mut agent, &mut session_runtime, &tool_policy_json)?
-                == CommandAction::Exit
+            if handle_command_with_session_import_mode(
+                trimmed,
+                &mut agent,
+                &mut session_runtime,
+                &tool_policy_json,
+                session_import_mode,
+            )? == CommandAction::Exit
             {
                 break;
             }
@@ -1264,11 +1304,28 @@ where
     Ok(PromptRunStatus::Completed)
 }
 
+#[cfg(test)]
 fn handle_command(
     command: &str,
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
     tool_policy_json: &serde_json::Value,
+) -> Result<CommandAction> {
+    handle_command_with_session_import_mode(
+        command,
+        agent,
+        session_runtime,
+        tool_policy_json,
+        SessionImportMode::Merge,
+    )
+}
+
+fn handle_command_with_session_import_mode(
+    command: &str,
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    tool_policy_json: &serde_json::Value,
+    session_import_mode: SessionImportMode,
 ) -> Result<CommandAction> {
     let Some(parsed) = parse_command(command) else {
         println!("invalid command input: {command}");
@@ -1334,6 +1391,38 @@ fn handle_command(
             "session export complete: path={} entries={} head={}",
             destination.display(),
             exported,
+            runtime
+                .active_head
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session-import" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+        if command_args.is_empty() {
+            println!("usage: /session-import <path>");
+            return Ok(CommandAction::Continue);
+        }
+
+        let source = PathBuf::from(command_args);
+        let report = runtime
+            .store
+            .import_snapshot(&source, session_import_mode)?;
+        runtime.active_head = report.active_head;
+        reload_agent_from_active_head(agent, runtime)?;
+        println!(
+            "session import complete: path={} mode={} imported_entries={} remapped_entries={} replaced_entries={} total_entries={} head={}",
+            source.display(),
+            session_import_mode_label(session_import_mode),
+            report.imported_entries,
+            report.remapped_entries,
+            report.replaced_entries,
+            report.resulting_entries,
             runtime
                 .active_head
                 .map(|id| id.to_string())
@@ -1500,6 +1589,13 @@ fn canonical_command_name(name: &str) -> &str {
         "/quit"
     } else {
         name
+    }
+}
+
+fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
+    match mode {
+        SessionImportMode::Merge => "merge",
+        SessionImportMode::Replace => "replace",
     }
 }
 
@@ -1917,15 +2013,16 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, build_tool_policy, ensure_non_empty_text, handle_command,
-        initialize_session, parse_command, parse_sandbox_command_tokens, parse_trust_rotation_spec,
-        parse_trusted_root_spec, render_command_help, render_help_overview, resolve_prompt_input,
-        resolve_skill_trust_roots, resolve_system_prompt, run_prompt_with_cancellation,
-        stream_text_chunks, tool_audit_event_json, tool_policy_to_json, unknown_command_message,
-        validate_session_file, Cli, CliBashProfile, CliOsSandboxMode, CommandAction,
+        handle_command_with_session_import_mode, initialize_session, parse_command,
+        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
+        render_command_help, render_help_overview, resolve_prompt_input, resolve_skill_trust_roots,
+        resolve_system_prompt, run_prompt_with_cancellation, stream_text_chunks,
+        tool_audit_event_json, tool_policy_to_json, unknown_command_message, validate_session_file,
+        Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode, CommandAction,
         PromptRunStatus, RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
-    use crate::session::SessionStore;
+    use crate::session::{SessionImportMode, SessionStore};
     use crate::tools::{BashCommandProfile, OsSandboxMode};
 
     struct NoopClient;
@@ -2031,6 +2128,7 @@ mod tests {
             session: PathBuf::from(".pi/sessions/default.jsonl"),
             no_session: false,
             session_validate: false,
+            session_import_mode: CliSessionImportMode::Merge,
             branch_from: None,
             session_lock_wait_ms: 5_000,
             session_lock_stale_ms: 30_000,
@@ -2110,6 +2208,7 @@ mod tests {
         assert!(help.contains("/help [command]"));
         assert!(help.contains("/session"));
         assert!(help.contains("/session-export <path>"));
+        assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/quit"));
     }
@@ -2774,6 +2873,173 @@ mod tests {
         assert_eq!(exported.entries()[0].message.text_content(), "sys");
         assert_eq!(exported.entries()[1].message.text_content(), "q1");
         assert_eq!(exported.entries()[2].message.text_content(), "a1");
+    }
+
+    #[test]
+    fn functional_session_import_command_merges_snapshot_and_updates_active_head() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let import_path = temp.path().join("import.jsonl");
+
+        let mut target_store = SessionStore::load(&session_path).expect("load target");
+        let target_head = target_store
+            .append_messages(None, &[pi_ai::Message::system("target-root")])
+            .expect("append target root")
+            .expect("target head");
+        target_store
+            .append_messages(Some(target_head), &[pi_ai::Message::user("target-user")])
+            .expect("append target user");
+
+        let mut import_store = SessionStore::load(&import_path).expect("load import");
+        let import_head = import_store
+            .append_messages(None, &[pi_ai::Message::system("import-root")])
+            .expect("append import root");
+        import_store
+            .append_messages(import_head, &[pi_ai::Message::user("import-user")])
+            .expect("append import user");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let target_lineage = target_store
+            .lineage_messages(target_store.head_id())
+            .expect("target lineage");
+        agent.replace_messages(target_lineage);
+
+        let mut runtime = Some(SessionRuntime {
+            store: target_store,
+            active_head: Some(2),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command(
+            &format!("/session-import {}", import_path.display()),
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+        )
+        .expect("session import should succeed");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.store.entries().len(), 4);
+        assert_eq!(runtime.active_head, Some(4));
+        assert_eq!(runtime.store.entries()[2].id, 3);
+        assert_eq!(runtime.store.entries()[2].parent_id, None);
+        assert_eq!(runtime.store.entries()[3].id, 4);
+        assert_eq!(runtime.store.entries()[3].parent_id, Some(3));
+        assert_eq!(agent.messages().len(), 2);
+        assert_eq!(agent.messages()[0].text_content(), "import-root");
+        assert_eq!(agent.messages()[1].text_content(), "import-user");
+    }
+
+    #[test]
+    fn integration_session_import_command_replace_mode_overwrites_runtime_state() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session-replace.jsonl");
+        let import_path = temp.path().join("import-replace.jsonl");
+
+        let mut target_store = SessionStore::load(&session_path).expect("load target");
+        let head = target_store
+            .append_messages(None, &[pi_ai::Message::system("target-root")])
+            .expect("append target root");
+        target_store
+            .append_messages(head, &[pi_ai::Message::user("target-user")])
+            .expect("append target user");
+
+        let import_raw = [
+            serde_json::json!({"record_type":"meta","schema_version":1}).to_string(),
+            serde_json::json!({"record_type":"entry","id":10,"parent_id":null,"message":pi_ai::Message::system("import-root")}).to_string(),
+            serde_json::json!({"record_type":"entry","id":11,"parent_id":10,"message":pi_ai::Message::assistant_text("import-assistant")}).to_string(),
+        ]
+        .join("\n");
+        std::fs::write(&import_path, format!("{import_raw}\n")).expect("write import snapshot");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let target_lineage = target_store
+            .lineage_messages(target_store.head_id())
+            .expect("target lineage");
+        agent.replace_messages(target_lineage);
+
+        let mut runtime = Some(SessionRuntime {
+            store: target_store,
+            active_head: Some(2),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command_with_session_import_mode(
+            &format!("/session-import {}", import_path.display()),
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Replace,
+        )
+        .expect("session replace import should succeed");
+        assert_eq!(action, CommandAction::Continue);
+
+        let mut runtime = runtime.expect("runtime");
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(runtime.store.entries()[0].id, 10);
+        assert_eq!(runtime.store.entries()[1].id, 11);
+        assert_eq!(runtime.active_head, Some(11));
+        assert_eq!(agent.messages().len(), 2);
+        assert_eq!(agent.messages()[0].text_content(), "import-root");
+        assert_eq!(agent.messages()[1].text_content(), "import-assistant");
+
+        let next = runtime
+            .store
+            .append_messages(
+                runtime.active_head,
+                &[pi_ai::Message::user("after-replace")],
+            )
+            .expect("append after replace");
+        assert_eq!(next, Some(12));
+    }
+
+    #[test]
+    fn regression_session_import_command_rejects_invalid_snapshot() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session-invalid.jsonl");
+        let import_path = temp.path().join("import-invalid.jsonl");
+
+        let mut target_store = SessionStore::load(&session_path).expect("load target");
+        target_store
+            .append_messages(None, &[pi_ai::Message::system("target-root")])
+            .expect("append target");
+        let import_raw = [
+            serde_json::json!({"record_type":"meta","schema_version":1}).to_string(),
+            serde_json::json!({"record_type":"entry","id":1,"parent_id":2,"message":pi_ai::Message::system("cycle-a")}).to_string(),
+            serde_json::json!({"record_type":"entry","id":2,"parent_id":1,"message":pi_ai::Message::user("cycle-b")}).to_string(),
+        ]
+        .join("\n");
+        std::fs::write(&import_path, format!("{import_raw}\n")).expect("write invalid import");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let target_lineage = target_store
+            .lineage_messages(target_store.head_id())
+            .expect("target lineage");
+        agent.replace_messages(target_lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store: target_store,
+            active_head: Some(1),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let error = handle_command(
+            &format!("/session-import {}", import_path.display()),
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+        )
+        .expect_err("invalid import should fail");
+        assert!(error
+            .to_string()
+            .contains("import session validation failed"));
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.store.entries().len(), 1);
+        assert_eq!(runtime.active_head, Some(1));
+        assert_eq!(agent.messages().len(), target_lineage.len());
+        assert_eq!(agent.messages()[0].text_content(), "target-root");
     }
 
     #[test]
