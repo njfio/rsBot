@@ -683,6 +683,13 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/audit-summary .pi/audit/tool-events.jsonl",
     },
     CommandSpec {
+        name: "/skills-search",
+        usage: "/skills-search <query> [max_results]",
+        description: "Search installed skills by name and content",
+        details: "Ranks name matches first, then content-only matches.",
+        example: "/skills-search checklist 10",
+    },
+    CommandSpec {
         name: "/skills-show",
         usage: "/skills-show <name>",
         description: "Display installed skill content and metadata",
@@ -763,6 +770,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/session-import",
     "/policy",
     "/audit-summary",
+    "/skills-search",
     "/skills-show",
     "/skills-list",
     "/skills-lock-write",
@@ -2077,6 +2085,18 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/skills-search" {
+        if command_args.is_empty() {
+            println!("usage: /skills-search <query> [max_results]");
+            return Ok(CommandAction::Continue);
+        }
+        println!(
+            "{}",
+            execute_skills_search_command(skills_dir, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/skills-show" {
         if command_args.is_empty() {
             println!("usage: /skills-show <name>");
@@ -2273,6 +2293,143 @@ fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
         SessionImportMode::Merge => "merge",
         SessionImportMode::Replace => "replace",
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillsSearchMatch {
+    name: String,
+    file: String,
+    name_hit: bool,
+    content_hit: bool,
+}
+
+fn parse_skills_search_args(command_args: &str) -> Result<(String, usize)> {
+    const DEFAULT_MAX_RESULTS: usize = 20;
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        bail!("query is required");
+    }
+
+    let mut max_results = DEFAULT_MAX_RESULTS;
+    let query_tokens = if let Some(last) = tokens.last() {
+        match last.parse::<usize>() {
+            Ok(parsed_limit) => {
+                if parsed_limit == 0 {
+                    bail!("max_results must be greater than zero");
+                }
+                max_results = parsed_limit;
+                &tokens[..tokens.len() - 1]
+            }
+            Err(_) => &tokens[..],
+        }
+    } else {
+        &tokens[..]
+    };
+
+    if query_tokens.is_empty() {
+        bail!("query is required");
+    }
+    let query = query_tokens.join(" ");
+    if query.trim().is_empty() {
+        bail!("query is required");
+    }
+
+    Ok((query, max_results))
+}
+
+fn render_skills_search(
+    skills_dir: &Path,
+    query: &str,
+    max_results: usize,
+    matches: &[SkillsSearchMatch],
+    total_matches: usize,
+) -> String {
+    let mut lines = vec![format!(
+        "skills search: path={} query={:?} max_results={} matched={} shown={}",
+        skills_dir.display(),
+        query,
+        max_results,
+        total_matches,
+        matches.len()
+    )];
+    if matches.is_empty() {
+        lines.push("skills: none".to_string());
+        return lines.join("\n");
+    }
+
+    for entry in matches {
+        let match_kind = match (entry.name_hit, entry.content_hit) {
+            (true, true) => "name+content",
+            (true, false) => "name",
+            (false, true) => "content",
+            (false, false) => "unknown",
+        };
+        lines.push(format!(
+            "skill: name={} file={} match={}",
+            entry.name, entry.file, match_kind
+        ));
+    }
+    lines.join("\n")
+}
+
+fn execute_skills_search_command(skills_dir: &Path, command_args: &str) -> String {
+    let (query, max_results) = match parse_skills_search_args(command_args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return format!(
+                "skills search error: path={} args={:?} error={error}",
+                skills_dir.display(),
+                command_args
+            )
+        }
+    };
+
+    let catalog = match load_catalog(skills_dir) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            return format!(
+                "skills search error: path={} query={:?} error={error}",
+                skills_dir.display(),
+                query
+            )
+        }
+    };
+
+    let query_lower = query.to_ascii_lowercase();
+    let mut matches = Vec::new();
+    for skill in catalog {
+        let name_hit = skill.name.to_ascii_lowercase().contains(&query_lower);
+        let content_hit = skill.content.to_ascii_lowercase().contains(&query_lower);
+        if !(name_hit || content_hit) {
+            continue;
+        }
+        let file = skill
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        matches.push(SkillsSearchMatch {
+            name: skill.name,
+            file,
+            name_hit,
+            content_hit,
+        });
+    }
+
+    matches.sort_by(|left, right| {
+        right
+            .name_hit
+            .cmp(&left.name_hit)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    let total_matches = matches.len();
+    matches.truncate(max_results);
+
+    render_skills_search(skills_dir, &query, max_results, &matches, total_matches)
 }
 
 fn render_skills_show(skills_dir: &Path, skill: &skills::Skill) -> String {
@@ -3138,12 +3295,13 @@ mod tests {
     use super::{
         apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
         ensure_non_empty_text, execute_skills_list_command, execute_skills_lock_write_command,
-        execute_skills_show_command, execute_skills_sync_command, format_id_list, format_remap_ids,
-        handle_command, handle_command_with_session_import_mode, initialize_session,
-        is_retryable_provider_error, parse_command, parse_sandbox_command_tokens,
-        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-        render_audit_summary, render_command_help, render_help_overview, render_skills_list,
-        render_skills_lock_write_success, render_skills_show, render_skills_sync_drift_details,
+        execute_skills_search_command, execute_skills_show_command, execute_skills_sync_command,
+        format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
+        initialize_session, is_retryable_provider_error, parse_command,
+        parse_sandbox_command_tokens, parse_skills_search_args, parse_trust_rotation_spec,
+        parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
+        render_help_overview, render_skills_list, render_skills_lock_write_success,
+        render_skills_search, render_skills_show, render_skills_sync_drift_details,
         resolve_fallback_models, resolve_prompt_input, resolve_skill_trust_roots,
         resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
         stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
@@ -3614,6 +3772,7 @@ mod tests {
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/audit-summary <path>"));
+        assert!(help.contains("/skills-search <query> [max_results]"));
         assert!(help.contains("/skills-show <name>"));
         assert!(help.contains("/skills-list"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
@@ -3656,6 +3815,13 @@ mod tests {
         let help = render_command_help("skills-show").expect("render help");
         assert!(help.contains("command: /skills-show"));
         assert!(help.contains("usage: /skills-show <name>"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_search_topic_without_slash() {
+        let help = render_command_help("skills-search").expect("render help");
+        assert!(help.contains("command: /skills-search"));
+        assert!(help.contains("usage: /skills-search <query> [max_results]"));
     }
 
     #[test]
@@ -3740,6 +3906,43 @@ mod tests {
     }
 
     #[test]
+    fn unit_parse_skills_search_args_defaults_and_supports_optional_limit() {
+        assert_eq!(
+            parse_skills_search_args("checklist").expect("parse default"),
+            ("checklist".to_string(), 20)
+        );
+        assert_eq!(
+            parse_skills_search_args("checklist 5").expect("parse explicit"),
+            ("checklist".to_string(), 5)
+        );
+        assert_eq!(
+            parse_skills_search_args("secure review 7").expect("parse multiword query"),
+            ("secure review".to_string(), 7)
+        );
+    }
+
+    #[test]
+    fn regression_parse_skills_search_args_rejects_missing_query_and_zero_limit() {
+        let missing_query = parse_skills_search_args("").expect_err("empty query must fail");
+        assert!(missing_query.to_string().contains("query is required"));
+
+        let zero_limit = parse_skills_search_args("checklist 0").expect_err("zero limit must fail");
+        assert!(zero_limit
+            .to_string()
+            .contains("max_results must be greater than zero"));
+    }
+
+    #[test]
+    fn unit_render_skills_search_handles_empty_results() {
+        let rendered = render_skills_search(Path::new(".pi/skills"), "missing", 10, &[], 0);
+        assert!(rendered.contains("skills search: path=.pi/skills"));
+        assert!(rendered.contains("query=\"missing\""));
+        assert!(rendered.contains("matched=0"));
+        assert!(rendered.contains("shown=0"));
+        assert!(rendered.contains("skills: none"));
+    }
+
+    #[test]
     fn functional_execute_skills_list_command_reports_sorted_inventory() {
         let temp = tempdir().expect("tempdir");
         let skills_dir = temp.path().join("skills");
@@ -3766,6 +3969,40 @@ mod tests {
         let output = execute_skills_list_command(&not_a_dir);
         assert!(output.contains("skills list error: path="));
         assert!(output.contains("is not a directory"));
+    }
+
+    #[test]
+    fn functional_execute_skills_search_command_ranks_name_hits_before_content_hits() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("checklist.md"), "Always run tests")
+            .expect("write checklist");
+        std::fs::write(skills_dir.join("quality.md"), "Use checklist for review")
+            .expect("write quality");
+
+        let output = execute_skills_search_command(&skills_dir, "checklist");
+        assert!(output.contains("skills search: path="));
+        assert!(output.contains("matched=2"));
+        let checklist_index = output
+            .find("skill: name=checklist file=checklist.md match=name")
+            .expect("checklist row");
+        let quality_index = output
+            .find("skill: name=quality file=quality.md match=content")
+            .expect("quality row");
+        assert!(checklist_index < quality_index);
+    }
+
+    #[test]
+    fn regression_execute_skills_search_command_reports_invalid_args_without_panicking() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("checklist.md"), "Always run tests").expect("write skill");
+
+        let output = execute_skills_search_command(&skills_dir, "checklist 0");
+        assert!(output.contains("skills search error: path="));
+        assert!(output.contains("max_results must be greater than zero"));
     }
 
     #[test]
@@ -4096,6 +4333,52 @@ mod tests {
             &lock_path,
         )
         .expect("skills show command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_search_command_preserves_session_runtime_on_invalid_args() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+        let lock_path = default_skills_lock_path(&skills_dir);
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-search alpha 0",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_dir,
+            &lock_path,
+        )
+        .expect("skills search command should continue");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");

@@ -308,6 +308,10 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 # Show a specific installed skill by name
 /skills-show checklist
 
+# Search installed skills by name/content with optional result cap
+/skills-search checklist
+/skills-search checklist 10
+
 # List currently installed skills
 /skills-list
 
