@@ -704,6 +704,13 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/skills-list",
     },
     CommandSpec {
+        name: "/skills-lock-diff",
+        usage: "/skills-lock-diff [lockfile_path] [--json]",
+        description: "Inspect lockfile drift without enforcing sync",
+        details: "Reports in-sync/drift/error status and supports structured JSON output.",
+        example: "/skills-lock-diff .pi/skills/skills.lock.json --json",
+    },
+    CommandSpec {
         name: "/skills-lock-write",
         usage: "/skills-lock-write [lockfile_path]",
         description: "Write/update skills lockfile from installed skills",
@@ -773,6 +780,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-search",
     "/skills-show",
     "/skills-list",
+    "/skills-lock-diff",
     "/skills-lock-write",
     "/skills-sync",
     "/branches",
@@ -2115,6 +2123,14 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/skills-lock-diff" {
+        println!(
+            "{}",
+            execute_skills_lock_diff_command(skills_dir, default_skills_lock_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/skills-lock-write" {
         println!(
             "{}",
@@ -2503,6 +2519,113 @@ fn resolve_skills_lock_path(command_args: &str, default_lock_path: &Path) -> Pat
         default_lock_path.to_path_buf()
     } else {
         PathBuf::from(command_args)
+    }
+}
+
+fn parse_skills_lock_diff_args(
+    command_args: &str,
+    default_lock_path: &Path,
+) -> Result<(PathBuf, bool)> {
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return Ok((default_lock_path.to_path_buf(), false));
+    }
+
+    let mut lock_path: Option<PathBuf> = None;
+    let mut json_output = false;
+    for token in tokens {
+        if token == "--json" {
+            json_output = true;
+            continue;
+        }
+
+        if lock_path.is_some() {
+            bail!(
+                "unexpected argument '{}'; usage: /skills-lock-diff [lockfile_path] [--json]",
+                token
+            );
+        }
+        lock_path = Some(PathBuf::from(token));
+    }
+
+    Ok((
+        lock_path.unwrap_or_else(|| default_lock_path.to_path_buf()),
+        json_output,
+    ))
+}
+
+fn render_skills_lock_diff_in_sync(path: &Path, report: &skills::SkillsSyncReport) -> String {
+    format!(
+        "skills lock diff: in-sync path={} expected_entries={} actual_entries={}",
+        path.display(),
+        report.expected_entries,
+        report.actual_entries
+    )
+}
+
+fn render_skills_lock_diff_drift(path: &Path, report: &skills::SkillsSyncReport) -> String {
+    format!(
+        "skills lock diff: drift path={} {}",
+        path.display(),
+        render_skills_sync_drift_details(report)
+    )
+}
+
+fn execute_skills_lock_diff_command(
+    skills_dir: &Path,
+    default_lock_path: &Path,
+    command_args: &str,
+) -> String {
+    let (lock_path, json_output) =
+        match parse_skills_lock_diff_args(command_args, default_lock_path) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                return format!(
+                    "skills lock diff error: path={} error={error}",
+                    default_lock_path.display()
+                )
+            }
+        };
+
+    match sync_skills_with_lockfile(skills_dir, &lock_path) {
+        Ok(report) => {
+            if json_output {
+                return serde_json::json!({
+                    "path": lock_path.display().to_string(),
+                    "status": if report.in_sync() { "in_sync" } else { "drift" },
+                    "in_sync": report.in_sync(),
+                    "expected_entries": report.expected_entries,
+                    "actual_entries": report.actual_entries,
+                    "missing": report.missing,
+                    "extra": report.extra,
+                    "changed": report.changed,
+                    "metadata_mismatch": report.metadata_mismatch,
+                })
+                .to_string();
+            }
+            if report.in_sync() {
+                render_skills_lock_diff_in_sync(&lock_path, &report)
+            } else {
+                render_skills_lock_diff_drift(&lock_path, &report)
+            }
+        }
+        Err(error) => {
+            if json_output {
+                return serde_json::json!({
+                    "path": lock_path.display().to_string(),
+                    "status": "error",
+                    "error": error.to_string(),
+                })
+                .to_string();
+            }
+            format!(
+                "skills lock diff error: path={} error={error}",
+                lock_path.display()
+            )
+        }
     }
 }
 
@@ -3294,21 +3417,22 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
-        ensure_non_empty_text, execute_skills_list_command, execute_skills_lock_write_command,
-        execute_skills_search_command, execute_skills_show_command, execute_skills_sync_command,
-        format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, parse_command,
-        parse_sandbox_command_tokens, parse_skills_search_args, parse_trust_rotation_spec,
+        ensure_non_empty_text, execute_skills_list_command, execute_skills_lock_diff_command,
+        execute_skills_lock_write_command, execute_skills_search_command,
+        execute_skills_show_command, execute_skills_sync_command, format_id_list, format_remap_ids,
+        handle_command, handle_command_with_session_import_mode, initialize_session,
+        is_retryable_provider_error, parse_command, parse_sandbox_command_tokens,
+        parse_skills_lock_diff_args, parse_skills_search_args, parse_trust_rotation_spec,
         parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
-        render_help_overview, render_skills_list, render_skills_lock_write_success,
-        render_skills_search, render_skills_show, render_skills_sync_drift_details,
-        resolve_fallback_models, resolve_prompt_input, resolve_skill_trust_roots,
-        resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
-        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
-        unknown_command_message, validate_session_file, Cli, CliBashProfile, CliOsSandboxMode,
-        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
-        FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
-        SessionRuntime, ToolAuditLogger, TrustedRootRecord,
+        render_help_overview, render_skills_list, render_skills_lock_diff_drift,
+        render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
+        render_skills_show, render_skills_sync_drift_details, resolve_fallback_models,
+        resolve_prompt_input, resolve_skill_trust_roots, resolve_skills_lock_path,
+        resolve_system_prompt, run_prompt_with_cancellation, stream_text_chunks,
+        summarize_audit_file, tool_audit_event_json, tool_policy_to_json, unknown_command_message,
+        validate_session_file, Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode,
+        CliToolPolicyPreset, ClientRoute, CommandAction, FallbackRoutingClient, PromptRunStatus,
+        PromptTelemetryLogger, RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -3775,6 +3899,7 @@ mod tests {
         assert!(help.contains("/skills-search <query> [max_results]"));
         assert!(help.contains("/skills-show <name>"));
         assert!(help.contains("/skills-list"));
+        assert!(help.contains("/skills-lock-diff [lockfile_path] [--json]"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/branch <id>"));
@@ -3822,6 +3947,13 @@ mod tests {
         let help = render_command_help("skills-search").expect("render help");
         assert!(help.contains("command: /skills-search"));
         assert!(help.contains("usage: /skills-search <query> [max_results]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_lock_diff_topic_without_slash() {
+        let help = render_command_help("skills-lock-diff").expect("render help");
+        assert!(help.contains("command: /skills-lock-diff"));
+        assert!(help.contains("usage: /skills-lock-diff [lockfile_path] [--json]"));
     }
 
     #[test]
@@ -3933,6 +4065,47 @@ mod tests {
     }
 
     #[test]
+    fn unit_parse_skills_lock_diff_args_supports_defaults_path_override_and_json() {
+        let default_lock = PathBuf::from(".pi/skills/skills.lock.json");
+        assert_eq!(
+            parse_skills_lock_diff_args("", &default_lock).expect("default parse"),
+            (default_lock.clone(), false)
+        );
+        assert_eq!(
+            parse_skills_lock_diff_args("--json", &default_lock).expect("json parse"),
+            (default_lock.clone(), true)
+        );
+        assert_eq!(
+            parse_skills_lock_diff_args("/tmp/custom.lock.json --json", &default_lock)
+                .expect("path + json parse"),
+            (PathBuf::from("/tmp/custom.lock.json"), true)
+        );
+    }
+
+    #[test]
+    fn regression_parse_skills_lock_diff_args_rejects_extra_positional_args() {
+        let default_lock = PathBuf::from(".pi/skills/skills.lock.json");
+        let error = parse_skills_lock_diff_args("one two", &default_lock).expect_err("must fail");
+        assert!(error
+            .to_string()
+            .contains("usage: /skills-lock-diff [lockfile_path] [--json]"));
+    }
+
+    #[test]
+    fn unit_render_skills_lock_diff_helpers_include_expected_prefixes() {
+        let report = crate::skills::SkillsSyncReport {
+            expected_entries: 1,
+            actual_entries: 1,
+            ..crate::skills::SkillsSyncReport::default()
+        };
+        let in_sync = render_skills_lock_diff_in_sync(Path::new("skills.lock.json"), &report);
+        assert!(in_sync.contains("skills lock diff: in-sync"));
+
+        let drift = render_skills_lock_diff_drift(Path::new("skills.lock.json"), &report);
+        assert!(drift.contains("skills lock diff: drift"));
+    }
+
+    #[test]
     fn unit_render_skills_search_handles_empty_results() {
         let rendered = render_skills_search(Path::new(".pi/skills"), "missing", 10, &[], 0);
         assert!(rendered.contains("skills search: path=.pi/skills"));
@@ -4003,6 +4176,58 @@ mod tests {
         let output = execute_skills_search_command(&skills_dir, "checklist 0");
         assert!(output.contains("skills search error: path="));
         assert!(output.contains("max_results must be greater than zero"));
+    }
+
+    #[test]
+    fn functional_execute_skills_lock_diff_command_supports_human_and_json_output() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+        let lockfile = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "name": "focus",
+                "file": "focus.md",
+                "sha256": sha,
+                "source": {
+                    "kind": "unknown"
+                }
+            }]
+        });
+        std::fs::write(&lock_path, format!("{lockfile}\n")).expect("write lock");
+
+        let human = execute_skills_lock_diff_command(&skills_dir, &lock_path, "");
+        assert!(human.contains("skills lock diff: in-sync"));
+        assert!(human.contains("expected_entries=1"));
+
+        let json_output = execute_skills_lock_diff_command(&skills_dir, &lock_path, "--json");
+        let payload: serde_json::Value =
+            serde_json::from_str(&json_output).expect("parse json output");
+        assert_eq!(payload["status"], "in_sync");
+        assert_eq!(payload["in_sync"], true);
+        assert_eq!(payload["expected_entries"], 1);
+        assert_eq!(payload["actual_entries"], 1);
+    }
+
+    #[test]
+    fn regression_execute_skills_lock_diff_command_reports_missing_lockfile_errors() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let missing_lock_path = temp.path().join("missing.lock.json");
+        let output = execute_skills_lock_diff_command(
+            &skills_dir,
+            &default_skills_lock_path(&skills_dir),
+            missing_lock_path.to_str().expect("utf8 path"),
+        );
+        assert!(output.contains("skills lock diff error: path="));
+        assert!(output.contains("failed to read skills lockfile"));
     }
 
     #[test]
@@ -4379,6 +4604,52 @@ mod tests {
             &lock_path,
         )
         .expect("skills search command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_lock_diff_command_preserves_session_runtime_on_error() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+        let lock_path = default_skills_lock_path(&skills_dir);
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-lock-diff /tmp/missing.lock.json",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_dir,
+            &lock_path,
+        )
+        .expect("skills lock diff command should continue");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");

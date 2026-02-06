@@ -1667,6 +1667,114 @@ fn regression_interactive_skills_search_command_invalid_limit_reports_error_and_
 }
 
 #[test]
+fn interactive_skills_lock_diff_command_reports_in_sync_state() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+    let sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "focus",
+            "file": "focus.md",
+            "sha256": sha,
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(skills_dir.join("skills.lock.json"), format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-lock-diff\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills lock diff: in-sync"))
+        .stdout(predicate::str::contains("expected_entries=1"))
+        .stdout(predicate::str::contains("actual_entries=1"));
+}
+
+#[test]
+fn integration_interactive_skills_lock_diff_command_supports_json_output() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+    let lock_path = temp.path().join("custom.lock.json");
+    let sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "focus",
+            "file": "focus.md",
+            "sha256": sha,
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(&lock_path, format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin(format!(
+        "/skills-lock-diff {} --json\n/quit\n",
+        lock_path.display()
+    ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\":\"in_sync\""))
+        .stdout(predicate::str::contains("\"in_sync\":true"));
+}
+
+#[test]
+fn regression_interactive_skills_lock_diff_command_invalid_args_reports_error_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-lock-diff one two\n/help skills-lock-diff\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills lock diff error: path="))
+        .stdout(predicate::str::contains(
+            "usage: /skills-lock-diff [lockfile_path] [--json]",
+        ));
+}
+
+#[test]
 fn interactive_skills_lock_write_command_writes_default_lockfile() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");
