@@ -407,6 +407,113 @@ fn regression_interactive_session_stats_command_with_args_prints_usage_and_conti
 }
 
 #[test]
+fn integration_interactive_session_graph_export_command_writes_mermaid_file() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-graph-export.jsonl");
+    let graph_path = temp.path().join("session-graph.mmd");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":2,
+            "parent_id":1,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"child"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin(format!(
+        "/session-graph-export {}\n/quit\n",
+        graph_path.display()
+    ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("session graph export: path="))
+        .stdout(predicate::str::contains("format=mermaid"))
+        .stdout(predicate::str::contains("nodes=2"))
+        .stdout(predicate::str::contains("edges=1"));
+
+    let raw_graph = fs::read_to_string(graph_path).expect("read graph");
+    assert!(raw_graph.contains("graph TD"));
+    assert!(raw_graph.contains("n1 --> n2"));
+}
+
+#[test]
+fn regression_interactive_session_graph_export_command_invalid_destination_reports_error() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-graph-export-invalid.jsonl");
+    let graph_dir = temp.path().join("graph-dir");
+    fs::create_dir_all(&graph_dir).expect("mkdir");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin(format!(
+        "/session-graph-export {}\n/help session-graph-export\n/quit\n",
+        graph_dir.display()
+    ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "session graph export error: path=",
+        ))
+        .stdout(predicate::str::contains("is a directory"))
+        .stdout(predicate::str::contains(
+            "usage: /session-graph-export <path>",
+        ));
+}
+
+#[test]
 fn interactive_session_import_merge_remaps_collisions_by_default() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("target.jsonl");

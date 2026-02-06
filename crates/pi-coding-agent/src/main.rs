@@ -670,6 +670,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/session-stats",
     },
     CommandSpec {
+        name: "/session-graph-export",
+        usage: "/session-graph-export <path>",
+        description: "Export session graph as Mermaid or DOT file",
+        details:
+            "Uses .dot extension for Graphviz DOT; defaults to Mermaid for other destinations.",
+        example: "/session-graph-export /tmp/session-graph.mmd",
+    },
+    CommandSpec {
         name: "/session-export",
         usage: "/session-export <path>",
         description: "Export active lineage snapshot to a JSONL file",
@@ -808,6 +816,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/session",
     "/session-search",
     "/session-stats",
+    "/session-graph-export",
     "/session-export",
     "/session-import",
     "/policy",
@@ -2084,6 +2093,23 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/session-graph-export" {
+        let Some(runtime) = session_runtime.as_ref() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+        if command_args.trim().is_empty() {
+            println!("usage: /session-graph-export <path>");
+            return Ok(CommandAction::Continue);
+        }
+
+        println!(
+            "{}",
+            execute_session_graph_export_command(runtime, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/session-export" {
         let Some(runtime) = session_runtime.as_ref() else {
             println!("session is disabled");
@@ -2673,6 +2699,169 @@ fn execute_session_stats_command(runtime: &SessionRuntime) -> String {
     match compute_session_stats(runtime) {
         Ok(stats) => render_session_stats(&stats),
         Err(error) => format!("session stats error: {error}"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionGraphFormat {
+    Mermaid,
+    Dot,
+}
+
+impl SessionGraphFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mermaid => "mermaid",
+            Self::Dot => "dot",
+        }
+    }
+}
+
+fn resolve_session_graph_format(path: &Path) -> SessionGraphFormat {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if extension.eq_ignore_ascii_case("dot") {
+        SessionGraphFormat::Dot
+    } else {
+        SessionGraphFormat::Mermaid
+    }
+}
+
+fn escape_graph_label(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn session_graph_node_label(entry: &crate::session::SessionEntry) -> String {
+    format!(
+        "{}: {} | {}",
+        entry.id,
+        session_message_role(&entry.message),
+        session_message_preview(&entry.message)
+    )
+}
+
+fn render_session_graph_mermaid(entries: &[crate::session::SessionEntry]) -> String {
+    let mut ordered = entries.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|entry| entry.id);
+
+    let mut lines = vec!["graph TD".to_string()];
+    if ordered.is_empty() {
+        lines.push("  empty[\"(empty session)\"]".to_string());
+        return lines.join("\n");
+    }
+
+    for entry in &ordered {
+        lines.push(format!(
+            "  n{}[\"{}\"]",
+            entry.id,
+            escape_graph_label(&session_graph_node_label(entry))
+        ));
+    }
+    for entry in &ordered {
+        if let Some(parent_id) = entry.parent_id {
+            lines.push(format!("  n{} --> n{}", parent_id, entry.id));
+        }
+    }
+    lines.join("\n")
+}
+
+fn render_session_graph_dot(entries: &[crate::session::SessionEntry]) -> String {
+    let mut ordered = entries.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|entry| entry.id);
+
+    let mut lines = vec!["digraph session {".to_string(), "  rankdir=LR;".to_string()];
+    if ordered.is_empty() {
+        lines.push("  empty [label=\"(empty session)\"];".to_string());
+    } else {
+        for entry in &ordered {
+            lines.push(format!(
+                "  n{} [label=\"{}\"];",
+                entry.id,
+                escape_graph_label(&session_graph_node_label(entry))
+            ));
+        }
+        for entry in &ordered {
+            if let Some(parent_id) = entry.parent_id {
+                lines.push(format!("  n{} -> n{};", parent_id, entry.id));
+            }
+        }
+    }
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+fn render_session_graph(
+    format: SessionGraphFormat,
+    entries: &[crate::session::SessionEntry],
+) -> String {
+    match format {
+        SessionGraphFormat::Mermaid => render_session_graph_mermaid(entries),
+        SessionGraphFormat::Dot => render_session_graph_dot(entries),
+    }
+}
+
+fn write_text_atomic(path: &Path, content: &str) -> Result<()> {
+    if path.as_os_str().is_empty() {
+        bail!("destination path cannot be empty");
+    }
+    if path.exists() && path.is_dir() {
+        bail!("destination path '{}' is a directory", path.display());
+    }
+
+    let parent_dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent_dir)
+        .with_context(|| format!("failed to create {}", parent_dir.display()))?;
+
+    let temp_name = format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("session-graph"),
+        std::process::id(),
+        current_unix_timestamp()
+    );
+    let temp_path = parent_dir.join(temp_name);
+    std::fs::write(&temp_path, content)
+        .with_context(|| format!("failed to write temporary file {}", temp_path.display()))?;
+    std::fs::rename(&temp_path, path).with_context(|| {
+        format!(
+            "failed to rename temporary graph file {} to {}",
+            temp_path.display(),
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn execute_session_graph_export_command(runtime: &SessionRuntime, command_args: &str) -> String {
+    let destination = PathBuf::from(command_args.trim());
+    let format = resolve_session_graph_format(&destination);
+    let graph = render_session_graph(format, runtime.store.entries());
+    let nodes = runtime.store.entries().len();
+    let edges = runtime
+        .store
+        .entries()
+        .iter()
+        .filter(|entry| entry.parent_id.is_some())
+        .count();
+
+    match write_text_atomic(&destination, &graph) {
+        Ok(()) => format!(
+            "session graph export: path={} format={} nodes={} edges={}",
+            destination.display(),
+            format.as_str(),
+            nodes,
+            edges
+        ),
+        Err(error) => format!(
+            "session graph export error: path={} error={error}",
+            destination.display()
+        ),
     }
 }
 
@@ -4159,20 +4348,22 @@ mod tests {
     use super::{
         apply_trust_root_mutations, build_tool_policy, compute_session_entry_depths,
         compute_session_stats, default_skills_lock_path, derive_skills_prune_candidates,
-        ensure_non_empty_text, execute_session_search_command, execute_session_stats_command,
-        execute_skills_list_command, execute_skills_lock_diff_command,
-        execute_skills_lock_write_command, execute_skills_prune_command,
-        execute_skills_search_command, execute_skills_show_command, execute_skills_sync_command,
-        execute_skills_trust_list_command, format_id_list, format_remap_ids, handle_command,
-        handle_command_with_session_import_mode, initialize_session, is_retryable_provider_error,
-        parse_command, parse_sandbox_command_tokens, parse_session_search_args,
-        parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
-        parse_skills_trust_list_args, parse_trust_rotation_spec, parse_trusted_root_spec,
-        percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
-        render_session_stats, render_skills_list, render_skills_lock_diff_drift,
-        render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
-        render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
-        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
+        ensure_non_empty_text, escape_graph_label, execute_session_graph_export_command,
+        execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+        execute_skills_lock_diff_command, execute_skills_lock_write_command,
+        execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+        execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
+        format_remap_ids, handle_command, handle_command_with_session_import_mode,
+        initialize_session, is_retryable_provider_error, parse_command,
+        parse_sandbox_command_tokens, parse_session_search_args, parse_skills_lock_diff_args,
+        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
+        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
+        render_audit_summary, render_command_help, render_help_overview, render_session_graph_dot,
+        render_session_graph_mermaid, render_session_stats, render_skills_list,
+        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        render_skills_lock_write_success, render_skills_search, render_skills_show,
+        render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
+        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
         resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
         run_prompt_with_cancellation, search_session_entries, session_message_preview,
         stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
@@ -4180,9 +4371,9 @@ mod tests {
         validate_skills_prune_file_name, Cli, CliBashProfile, CliOsSandboxMode,
         CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
-        SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
-        TrustedRootRecord, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-        SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
+        SessionGraphFormat, SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig,
+        ToolAuditLogger, TrustedRootRecord, SESSION_SEARCH_MAX_RESULTS,
+        SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -4930,12 +5121,146 @@ mod tests {
     }
 
     #[test]
+    fn unit_resolve_session_graph_format_and_escape_label_behaviors() {
+        assert_eq!(
+            resolve_session_graph_format(Path::new("/tmp/graph.dot")),
+            SessionGraphFormat::Dot
+        );
+        assert_eq!(
+            resolve_session_graph_format(Path::new("/tmp/graph.mmd")),
+            SessionGraphFormat::Mermaid
+        );
+        assert_eq!(escape_graph_label("a\"b\\c"), "a\\\"b\\\\c".to_string());
+    }
+
+    #[test]
+    fn unit_render_session_graph_mermaid_and_dot_include_deterministic_edges() {
+        let entries = vec![
+            crate::session::SessionEntry {
+                id: 2,
+                parent_id: Some(1),
+                message: Message::user("child"),
+            },
+            crate::session::SessionEntry {
+                id: 1,
+                parent_id: None,
+                message: Message::system("root"),
+            },
+        ];
+
+        let mermaid = render_session_graph_mermaid(&entries);
+        assert!(mermaid.contains("graph TD"));
+        let root_index = mermaid.find("n1[\"1: system | root\"]").expect("root node");
+        let child_index = mermaid.find("n2[\"2: user | child\"]").expect("child node");
+        assert!(root_index < child_index);
+        assert!(mermaid.contains("n1 --> n2"));
+
+        let dot = render_session_graph_dot(&entries);
+        assert!(dot.contains("digraph session"));
+        assert!(dot.contains("n1 [label=\"1: system | root\"];"));
+        assert!(dot.contains("n2 [label=\"2: user | child\"];"));
+        assert!(dot.contains("n1 -> n2;"));
+    }
+
+    #[test]
+    fn functional_execute_session_graph_export_command_writes_mermaid_file() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let _head = store
+            .append_messages(Some(root), &[Message::user("child")])
+            .expect("append child")
+            .expect("head id");
+        let runtime = SessionRuntime {
+            store,
+            active_head: Some(root + 1),
+        };
+        let destination = temp.path().join("session-graph.mmd");
+
+        let output = execute_session_graph_export_command(
+            &runtime,
+            destination.to_str().expect("utf8 path"),
+        );
+        assert!(output.contains("session graph export: path="));
+        assert!(output.contains("format=mermaid"));
+        assert!(output.contains("nodes=2"));
+        assert!(output.contains("edges=1"));
+
+        let raw = std::fs::read_to_string(destination).expect("read graph");
+        assert!(raw.contains("graph TD"));
+        assert!(raw.contains("n1 --> n2"));
+    }
+
+    #[test]
+    fn integration_execute_session_graph_export_command_supports_dot_for_branched_session() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let _main = store
+            .append_messages(Some(root), &[Message::user("main")])
+            .expect("append main")
+            .expect("main id");
+        let _branch = store
+            .append_messages(Some(root), &[Message::user("branch")])
+            .expect("append branch")
+            .expect("branch id");
+        let runtime = SessionRuntime {
+            store,
+            active_head: Some(root + 2),
+        };
+        let destination = temp.path().join("session-graph.dot");
+
+        let output = execute_session_graph_export_command(
+            &runtime,
+            destination.to_str().expect("utf8 path"),
+        );
+        assert!(output.contains("format=dot"));
+        assert!(output.contains("nodes=3"));
+        assert!(output.contains("edges=2"));
+
+        let raw = std::fs::read_to_string(destination).expect("read graph");
+        assert!(raw.contains("digraph session"));
+        assert!(raw.contains("n1 -> n2;"));
+        assert!(raw.contains("n1 -> n3;"));
+    }
+
+    #[test]
+    fn regression_execute_session_graph_export_command_rejects_directory_destination() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let runtime = SessionRuntime {
+            store,
+            active_head: Some(root),
+        };
+        let destination_dir = temp.path().join("graph-dir");
+        std::fs::create_dir_all(&destination_dir).expect("mkdir");
+
+        let output = execute_session_graph_export_command(
+            &runtime,
+            destination_dir.to_str().expect("utf8 path"),
+        );
+        assert!(output.contains("session graph export error: path="));
+        assert!(output.contains("is a directory"));
+    }
+
+    #[test]
     fn functional_render_help_overview_lists_known_commands() {
         let help = render_help_overview();
         assert!(help.contains("/help [command]"));
         assert!(help.contains("/session"));
         assert!(help.contains("/session-search <query>"));
         assert!(help.contains("/session-stats"));
+        assert!(help.contains("/session-graph-export <path>"));
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/audit-summary <path>"));
@@ -4971,6 +5296,13 @@ mod tests {
         let help = render_command_help("session-stats").expect("render help");
         assert!(help.contains("command: /session-stats"));
         assert!(help.contains("usage: /session-stats"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_session_graph_export_topic_without_slash() {
+        let help = render_command_help("session-graph-export").expect("render help");
+        assert!(help.contains("command: /session-graph-export"));
+        assert!(help.contains("usage: /session-graph-export <path>"));
     }
 
     #[test]
