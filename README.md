@@ -287,6 +287,7 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /session
 /session-search retry budget
 /session-stats
+/session-graph-export /tmp/session-graph.mmd
 /branches
 
 # Switch to an older entry and fork a new branch
