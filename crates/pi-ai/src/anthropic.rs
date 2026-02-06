@@ -2,8 +2,12 @@ use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::time::sleep;
 
 use crate::{
+    retry::{
+        is_retryable_http_error, new_request_id, next_backoff_ms, should_retry_status, MAX_RETRIES,
+    },
     ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole, PiAiError,
     ToolDefinition,
 };
@@ -56,23 +60,50 @@ impl AnthropicClient {
 impl LlmClient for AnthropicClient {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError> {
         let body = build_messages_request_body(&request);
-        let response = self
-            .client
-            .post(self.messages_url())
-            .json(&body)
-            .send()
-            .await?;
+        let url = self.messages_url();
 
-        let status = response.status();
-        let raw = response.text().await?;
-        if !status.is_success() {
-            return Err(PiAiError::HttpStatus {
-                status: status.as_u16(),
-                body: raw,
-            });
+        for attempt in 0..=MAX_RETRIES {
+            let request_id = new_request_id();
+            let response = self
+                .client
+                .post(&url)
+                .header("x-pi-request-id", request_id)
+                .header("x-pi-retry-attempt", attempt.to_string())
+                .json(&body)
+                .send()
+                .await;
+
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    let raw = response.text().await?;
+                    if status.is_success() {
+                        return parse_messages_response(&raw);
+                    }
+
+                    if attempt < MAX_RETRIES && should_retry_status(status.as_u16()) {
+                        sleep(std::time::Duration::from_millis(next_backoff_ms(attempt))).await;
+                        continue;
+                    }
+
+                    return Err(PiAiError::HttpStatus {
+                        status: status.as_u16(),
+                        body: raw,
+                    });
+                }
+                Err(error) => {
+                    if attempt < MAX_RETRIES && is_retryable_http_error(&error) {
+                        sleep(std::time::Duration::from_millis(next_backoff_ms(attempt))).await;
+                        continue;
+                    }
+                    return Err(PiAiError::Http(error));
+                }
+            }
         }
 
-        parse_messages_response(&raw)
+        Err(PiAiError::InvalidResponse(
+            "request retry loop terminated unexpectedly".to_string(),
+        ))
     }
 }
 

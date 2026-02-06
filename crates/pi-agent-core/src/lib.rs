@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use jsonschema::validator_for;
 use pi_ai::{ChatRequest, LlmClient, Message, PiAiError, ToolCall, ToolDefinition};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -99,11 +100,16 @@ pub enum AgentError {
 
 type EventHandler = Arc<dyn Fn(&AgentEvent) + Send + Sync>;
 
+struct RegisteredTool {
+    definition: ToolDefinition,
+    tool: Arc<dyn AgentTool>,
+}
+
 pub struct Agent {
     client: Arc<dyn LlmClient>,
     config: AgentConfig,
     messages: Vec<Message>,
-    tools: HashMap<String, Arc<dyn AgentTool>>,
+    tools: HashMap<String, RegisteredTool>,
     handlers: Vec<EventHandler>,
 }
 
@@ -135,7 +141,13 @@ impl Agent {
         T: AgentTool + 'static,
     {
         let definition = tool.definition();
-        self.tools.insert(definition.name.clone(), Arc::new(tool));
+        self.tools.insert(
+            definition.name.clone(),
+            RegisteredTool {
+                definition,
+                tool: Arc::new(tool),
+            },
+        );
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -173,7 +185,10 @@ impl Agent {
     }
 
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|tool| tool.definition()).collect()
+        self.tools
+            .values()
+            .map(|tool| tool.definition.clone())
+            .collect()
     }
 
     async fn run_loop(&mut self, start_index: usize) -> Result<Vec<Message>, AgentError> {
@@ -235,8 +250,12 @@ impl Agent {
             arguments: call.arguments.clone(),
         });
 
-        let result = if let Some(tool) = self.tools.get(&call.name) {
-            tool.execute(call.arguments).await
+        let result = if let Some(registered) = self.tools.get(&call.name) {
+            if let Err(error) = validate_tool_arguments(&registered.definition, &call.arguments) {
+                ToolExecutionResult::error(json!({ "error": error }))
+            } else {
+                registered.tool.execute(call.arguments).await
+            }
         } else {
             ToolExecutionResult::error(json!({
                 "error": format!("Tool '{}' is not registered", call.name)
@@ -256,6 +275,21 @@ impl Agent {
             message: tool_message,
         });
     }
+}
+
+fn validate_tool_arguments(definition: &ToolDefinition, arguments: &Value) -> Result<(), String> {
+    let validator = validator_for(&definition.parameters)
+        .map_err(|error| format!("invalid JSON schema for '{}': {error}", definition.name))?;
+
+    let mut errors = validator.iter_errors(arguments);
+    if let Some(first) = errors.next() {
+        return Err(format!(
+            "invalid arguments for '{}': {}",
+            definition.name, first
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -483,5 +517,45 @@ mod tests {
             AgentError::MaxTurnsExceeded(2) => {}
             other => panic!("expected AgentError::MaxTurnsExceeded(2), got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_tool_arguments_via_json_schema() {
+        let assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+            id: "call_1".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({}),
+        }]);
+
+        let final_assistant = Message::assistant_text("done");
+
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: assistant,
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: final_assistant,
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+
+        let mut agent = Agent::new(client, AgentConfig::default());
+        agent.register_tool(ReadTool);
+
+        let messages = agent
+            .prompt("read without args")
+            .await
+            .expect("prompt succeeds");
+        let tool_message = messages
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("tool result must exist");
+        assert!(tool_message.is_error);
+        assert!(tool_message.text_content().contains("invalid arguments"));
     }
 }

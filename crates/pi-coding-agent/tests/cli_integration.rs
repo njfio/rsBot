@@ -19,11 +19,41 @@ struct SessionMessage {
     role: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "record_type", rename_all = "snake_case")]
+enum SessionRecord {
+    Meta {
+        schema_version: u32,
+    },
+    Entry {
+        id: u64,
+        parent_id: Option<u64>,
+        message: SessionMessage,
+    },
+}
+
 fn parse_session_entries(path: &std::path::Path) -> Vec<SessionEntry> {
     let raw = fs::read_to_string(path).expect("session file should exist");
     raw.lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str::<SessionEntry>(line).expect("line should parse"))
+        .filter_map(|line| {
+            let record = serde_json::from_str::<SessionRecord>(line).expect("line should parse");
+            match record {
+                SessionRecord::Meta { schema_version } => {
+                    assert_eq!(schema_version, 1);
+                    None
+                }
+                SessionRecord::Entry {
+                    id,
+                    parent_id,
+                    message,
+                } => Some(SessionEntry {
+                    id,
+                    parent_id,
+                    message,
+                }),
+            }
+        })
         .collect()
 }
 
@@ -201,4 +231,158 @@ fn google_prompt_works_end_to_end() {
         .stdout(predicate::str::contains("integration google response"));
 
     google.assert_hits(1);
+}
+
+#[test]
+fn stream_output_flags_are_accepted_in_prompt_mode() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "streamed response"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--no-session",
+        "--stream-output",
+        "false",
+        "--stream-delay-ms",
+        "0",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("streamed response"));
+
+    openai.assert_hits(1);
+}
+
+#[test]
+fn selected_skill_is_included_in_system_prompt() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .json_body_partial(
+                json!({
+                    "messages": [{
+                        "role": "system",
+                        "content": "base\n\n# Skill: focus\nAlways use checklist"
+                    }]
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 6, "completion_tokens": 1, "total_tokens": 7}
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("create skills dir");
+    fs::write(skills_dir.join("focus.md"), "Always use checklist").expect("write skill file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--system-prompt",
+        "base",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skill",
+        "focus",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("ok"));
+    openai.assert_hits(1);
+}
+
+#[test]
+fn install_skill_flag_installs_skill_before_prompt() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .json_body_partial(
+                json!({
+                    "messages": [{
+                        "role": "system",
+                        "content": "base\n\n# Skill: installable\nInstalled skill body"
+                    }]
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "ok install"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 6, "completion_tokens": 1, "total_tokens": 7}
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    let source_skill = temp.path().join("installable.md");
+    fs::write(&source_skill, "Installed skill body").expect("write source skill");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--system-prompt",
+        "base",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--install-skill",
+        source_skill.to_str().expect("utf8 path"),
+        "--skill",
+        "installable",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills install: installed=1"))
+        .stdout(predicate::str::contains("ok install"));
+    assert!(skills_dir.join("installable.md").exists());
+    openai.assert_hits(1);
 }

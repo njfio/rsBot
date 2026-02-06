@@ -1,18 +1,71 @@
-use std::path::Path;
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use pi_agent_core::{Agent, AgentTool, ToolExecutionResult};
 use pi_ai::ToolDefinition;
 use serde_json::{json, Value};
+use tokio::{process::Command, time::timeout};
 
-pub fn register_builtin_tools(agent: &mut Agent) {
-    agent.register_tool(ReadTool);
-    agent.register_tool(WriteTool);
-    agent.register_tool(EditTool);
-    agent.register_tool(BashTool);
+const SAFE_BASH_ENV_VARS: &[&str] = &[
+    "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TMP", "TEMP",
+    "TZ",
+];
+
+#[derive(Debug, Clone)]
+pub struct ToolPolicy {
+    pub allowed_roots: Vec<PathBuf>,
+    pub max_file_read_bytes: usize,
+    pub max_command_output_bytes: usize,
+    pub bash_timeout_ms: u64,
+    pub max_command_length: usize,
+    pub allow_command_newlines: bool,
+    pub denied_command_patterns: Vec<&'static str>,
 }
 
-pub struct ReadTool;
+impl ToolPolicy {
+    pub fn new(allowed_roots: Vec<PathBuf>) -> Self {
+        Self {
+            allowed_roots,
+            max_file_read_bytes: 1_000_000,
+            max_command_output_bytes: 16_000,
+            bash_timeout_ms: 120_000,
+            max_command_length: 4_096,
+            allow_command_newlines: false,
+            denied_command_patterns: vec![
+                "rm -rf /",
+                "rm -rf ~",
+                ":(){:|:&};:",
+                "shutdown",
+                "reboot",
+                "mkfs",
+                "dd if=/dev/zero",
+            ],
+        }
+    }
+}
+
+pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
+    let policy = Arc::new(policy);
+    agent.register_tool(ReadTool::new(policy.clone()));
+    agent.register_tool(WriteTool::new(policy.clone()));
+    agent.register_tool(EditTool::new(policy.clone()));
+    agent.register_tool(BashTool::new(policy));
+}
+
+pub struct ReadTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl ReadTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
 
 #[async_trait]
 impl AgentTool for ReadTool {
@@ -37,20 +90,56 @@ impl AgentTool for ReadTool {
             Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
         };
 
-        match tokio::fs::read_to_string(&path).await {
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Read) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({ "path": path, "error": error }))
+            }
+        };
+
+        let metadata = match tokio::fs::metadata(&resolved).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": resolved,
+                    "error": error.to_string(),
+                }))
+            }
+        };
+
+        if metadata.len() as usize > self.policy.max_file_read_bytes {
+            return ToolExecutionResult::error(json!({
+                "path": resolved,
+                "error": format!(
+                    "file is too large ({} bytes), limit is {} bytes",
+                    metadata.len(),
+                    self.policy.max_file_read_bytes
+                ),
+            }));
+        }
+
+        match tokio::fs::read_to_string(&resolved).await {
             Ok(content) => ToolExecutionResult::ok(json!({
-                "path": path,
+                "path": resolved,
                 "content": content,
             })),
             Err(error) => ToolExecutionResult::error(json!({
-                "path": path,
+                "path": resolved,
                 "error": error.to_string(),
             })),
         }
     }
 }
 
-pub struct WriteTool;
+pub struct WriteTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl WriteTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
 
 #[async_trait]
 impl AgentTool for WriteTool {
@@ -82,31 +171,46 @@ impl AgentTool for WriteTool {
             Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
         };
 
-        if let Some(parent) = Path::new(&path).parent() {
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Write) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({ "path": path, "error": error }))
+            }
+        };
+
+        if let Some(parent) = Path::new(&resolved).parent() {
             if !parent.as_os_str().is_empty() {
                 if let Err(error) = tokio::fs::create_dir_all(parent).await {
                     return ToolExecutionResult::error(json!({
-                        "path": path,
+                        "path": resolved,
                         "error": format!("failed to create parent directory: {error}"),
                     }));
                 }
             }
         }
 
-        match tokio::fs::write(&path, content.as_bytes()).await {
+        match tokio::fs::write(&resolved, content.as_bytes()).await {
             Ok(()) => ToolExecutionResult::ok(json!({
-                "path": path,
+                "path": resolved,
                 "bytes_written": content.len(),
             })),
             Err(error) => ToolExecutionResult::error(json!({
-                "path": path,
+                "path": resolved,
                 "error": error.to_string(),
             })),
         }
     }
 }
 
-pub struct EditTool;
+pub struct EditTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl EditTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
 
 #[async_trait]
 impl AgentTool for EditTool {
@@ -151,16 +255,23 @@ impl AgentTool for EditTool {
             }));
         }
 
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Write) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({ "path": path, "error": error }))
+            }
+        };
+
         let replace_all = arguments
             .get("all")
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let source = match tokio::fs::read_to_string(&path).await {
+        let source = match tokio::fs::read_to_string(&resolved).await {
             Ok(source) => source,
             Err(error) => {
                 return ToolExecutionResult::error(json!({
-                    "path": path,
+                    "path": resolved,
                     "error": error.to_string(),
                 }))
             }
@@ -169,7 +280,7 @@ impl AgentTool for EditTool {
         let occurrences = source.matches(&find).count();
         if occurrences == 0 {
             return ToolExecutionResult::error(json!({
-                "path": path,
+                "path": resolved,
                 "error": "target string not found",
             }));
         }
@@ -180,22 +291,30 @@ impl AgentTool for EditTool {
             source.replacen(&find, &replace, 1)
         };
 
-        if let Err(error) = tokio::fs::write(&path, updated.as_bytes()).await {
+        if let Err(error) = tokio::fs::write(&resolved, updated.as_bytes()).await {
             return ToolExecutionResult::error(json!({
-                "path": path,
+                "path": resolved,
                 "error": error.to_string(),
             }));
         }
 
         let replacements = if replace_all { occurrences } else { 1 };
         ToolExecutionResult::ok(json!({
-            "path": path,
+            "path": resolved,
             "replacements": replacements,
         }))
     }
 }
 
-pub struct BashTool;
+pub struct BashTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl BashTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
 
 #[async_trait]
 impl AgentTool for BashTool {
@@ -221,39 +340,188 @@ impl AgentTool for BashTool {
             Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
         };
 
-        let cwd = arguments
-            .get("cwd")
-            .and_then(Value::as_str)
-            .map(|value| value.to_string());
+        let command_length = command.chars().count();
+        if command_length > self.policy.max_command_length {
+            return ToolExecutionResult::error(json!({
+                "command": command,
+                "error": format!(
+                    "command is too long ({} chars), limit is {} chars",
+                    command_length,
+                    self.policy.max_command_length
+                ),
+            }));
+        }
+
+        if !self.policy.allow_command_newlines && (command.contains('\n') || command.contains('\r'))
+        {
+            return ToolExecutionResult::error(json!({
+                "command": command,
+                "error": "multiline commands are disabled by policy",
+            }));
+        }
+
+        if let Some(pattern) = self
+            .policy
+            .denied_command_patterns
+            .iter()
+            .find(|pattern| command.contains(**pattern))
+        {
+            return ToolExecutionResult::error(json!({
+                "command": command,
+                "error": format!("command contains denied pattern '{pattern}'"),
+            }));
+        }
+
+        let cwd = match arguments.get("cwd").and_then(Value::as_str) {
+            Some(cwd) => match resolve_and_validate_path(cwd, &self.policy, PathMode::Read) {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    return ToolExecutionResult::error(json!({
+                        "cwd": cwd,
+                        "error": error,
+                    }))
+                }
+            },
+            None => None,
+        };
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-        let mut process = tokio::process::Command::new(shell);
-        process.arg("-lc").arg(&command);
+        let mut command_builder = Command::new(shell);
+        command_builder.arg("-lc").arg(&command);
+        command_builder.kill_on_drop(true);
+        command_builder.env_clear();
+        for key in SAFE_BASH_ENV_VARS {
+            if let Ok(value) = std::env::var(key) {
+                command_builder.env(key, value);
+            }
+        }
+        command_builder.env("PI_SANDBOXED", "1");
 
         if let Some(cwd) = &cwd {
-            process.current_dir(cwd);
+            command_builder.current_dir(cwd);
         }
 
-        match process.output().await {
-            Ok(output) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                ToolExecutionResult::ok(json!({
+        let timeout_duration = Duration::from_millis(self.policy.bash_timeout_ms.max(1));
+        let output = match timeout(timeout_duration, command_builder.output()).await {
+            Ok(result) => match result {
+                Ok(output) => output,
+                Err(error) => {
+                    return ToolExecutionResult::error(json!({
+                        "command": command,
+                        "cwd": cwd,
+                        "error": error.to_string(),
+                    }))
+                }
+            },
+            Err(_) => {
+                return ToolExecutionResult::error(json!({
                     "command": command,
                     "cwd": cwd,
-                    "status": output.status.code(),
-                    "success": output.status.success(),
-                    "stdout": truncate(&stdout, 16_000),
-                    "stderr": truncate(&stderr, 16_000),
+                    "error": format!("command timed out after {} ms", self.policy.bash_timeout_ms),
                 }))
             }
-            Err(error) => ToolExecutionResult::error(json!({
-                "command": command,
-                "cwd": cwd,
-                "error": error.to_string(),
-            })),
+        };
+
+        let stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
+        let stderr = redact_secrets(&String::from_utf8_lossy(&output.stderr));
+        ToolExecutionResult::ok(json!({
+            "command": command,
+            "cwd": cwd,
+            "status": output.status.code(),
+            "success": output.status.success(),
+            "stdout": truncate_bytes(&stdout, self.policy.max_command_output_bytes),
+            "stderr": truncate_bytes(&stderr, self.policy.max_command_output_bytes),
+        }))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PathMode {
+    Read,
+    Write,
+}
+
+fn resolve_and_validate_path(
+    user_path: &str,
+    policy: &ToolPolicy,
+    mode: PathMode,
+) -> Result<String, String> {
+    let cwd = std::env::current_dir().map_err(|error| format!("failed to resolve cwd: {error}"))?;
+    let input = PathBuf::from(user_path);
+    let absolute = if input.is_absolute() {
+        input
+    } else {
+        cwd.join(input)
+    };
+
+    let canonical = canonicalize_best_effort(&absolute).map_err(|error| {
+        format!(
+            "failed to canonicalize path '{}': {error}",
+            absolute.display()
+        )
+    })?;
+
+    if !is_path_allowed(&canonical, policy)? {
+        return Err(format!(
+            "path '{}' is outside allowed roots",
+            canonical.display()
+        ));
+    }
+
+    if matches!(mode, PathMode::Read) && !canonical.exists() {
+        return Err(format!("path '{}' does not exist", canonical.display()));
+    }
+
+    Ok(canonical.display().to_string())
+}
+
+fn is_path_allowed(path: &Path, policy: &ToolPolicy) -> Result<bool, String> {
+    if policy.allowed_roots.is_empty() {
+        return Ok(true);
+    }
+
+    for root in &policy.allowed_roots {
+        let canonical_root = canonicalize_best_effort(root)
+            .map_err(|error| format!("invalid allowed root '{}': {error}", root.display()))?;
+
+        if path.starts_with(&canonical_root) {
+            return Ok(true);
         }
     }
+
+    Ok(false)
+}
+
+fn canonicalize_best_effort(path: &Path) -> std::io::Result<PathBuf> {
+    if path.exists() {
+        return std::fs::canonicalize(path);
+    }
+
+    let mut missing_suffix: Vec<OsString> = Vec::new();
+    let mut cursor = path;
+
+    while !cursor.exists() {
+        if let Some(file_name) = cursor.file_name() {
+            missing_suffix.push(file_name.to_os_string());
+        }
+
+        cursor = match cursor.parent() {
+            Some(parent) => parent,
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no existing ancestor for path",
+                ));
+            }
+        };
+    }
+
+    let mut canonical = std::fs::canonicalize(cursor)?;
+    for component in missing_suffix.iter().rev() {
+        canonical.push(component);
+    }
+
+    Ok(canonical)
 }
 
 fn required_string(arguments: &Value, key: &str) -> Result<String, String> {
@@ -264,21 +532,60 @@ fn required_string(arguments: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing required string argument '{key}'"))
 }
 
-fn truncate(value: &str, limit: usize) -> String {
+fn truncate_bytes(value: &str, limit: usize) -> String {
     if value.len() <= limit {
         return value.to_string();
     }
 
-    let mut output = value[..limit].to_string();
+    if limit == 0 {
+        return "<output truncated>".to_string();
+    }
+
+    let mut end = limit.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    let mut output = value[..end].to_string();
     output.push_str("\n<output truncated>");
     output
 }
 
+fn redact_secrets(text: &str) -> String {
+    let mut redacted = text.to_string();
+
+    for (name, value) in std::env::vars() {
+        let upper = name.to_ascii_uppercase();
+        let is_sensitive = upper.ends_with("_KEY")
+            || upper.ends_with("_TOKEN")
+            || upper.ends_with("_SECRET")
+            || upper.ends_with("_PASSWORD");
+        if !is_sensitive || value.trim().len() < 6 {
+            continue;
+        }
+
+        redacted = redacted.replace(&value, "[REDACTED]");
+    }
+
+    redacted
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use tempfile::tempdir;
 
-    use super::{AgentTool, BashTool, EditTool, ToolExecutionResult, WriteTool};
+    use super::{
+        canonicalize_best_effort, redact_secrets, truncate_bytes, AgentTool, BashTool, EditTool,
+        ToolExecutionResult, ToolPolicy, WriteTool,
+    };
+
+    fn test_policy(path: &Path) -> Arc<ToolPolicy> {
+        Arc::new(ToolPolicy::new(vec![path.to_path_buf()]))
+    }
+
+    use std::path::Path;
 
     #[tokio::test]
     async fn edit_tool_replaces_single_match() {
@@ -286,7 +593,7 @@ mod tests {
         let file = temp.path().join("test.txt");
         tokio::fs::write(&file, "a a a").await.expect("write file");
 
-        let tool = EditTool;
+        let tool = EditTool::new(test_policy(temp.path()));
         let result = tool
             .execute(serde_json::json!({
                 "path": file,
@@ -308,7 +615,7 @@ mod tests {
         let file = temp.path().join("test.txt");
         tokio::fs::write(&file, "a a a").await.expect("write file");
 
-        let tool = EditTool;
+        let tool = EditTool::new(test_policy(temp.path()));
         let result = tool
             .execute(serde_json::json!({
                 "path": file,
@@ -330,7 +637,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let file = temp.path().join("nested/output.txt");
 
-        let tool = WriteTool;
+        let tool = WriteTool::new(test_policy(temp.path()));
         let result = tool
             .execute(serde_json::json!({
                 "path": file,
@@ -347,9 +654,13 @@ mod tests {
 
     #[tokio::test]
     async fn bash_tool_runs_command() {
-        let tool = BashTool;
+        let temp = tempdir().expect("tempdir");
+        let tool = BashTool::new(test_policy(temp.path()));
         let result = tool
-            .execute(serde_json::json!({ "command": "printf 'ok'" }))
+            .execute(serde_json::json!({
+                "command": "printf 'ok'",
+                "cwd": temp.path().display().to_string(),
+            }))
             .await;
 
         assert!(!result.is_error);
@@ -362,9 +673,140 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn bash_tool_times_out_long_command() {
+        let temp = tempdir().expect("tempdir");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.bash_timeout_ms = 100;
+        let tool = BashTool::new(Arc::new(policy));
+
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "sleep 2",
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .to_string()
+            .contains("command timed out after 100 ms"));
+    }
+
+    #[tokio::test]
+    async fn unit_bash_tool_rejects_multiline_commands_by_default() {
+        let temp = tempdir().expect("tempdir");
+        let tool = BashTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "printf 'a'\nprintf 'b'",
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .to_string()
+            .contains("multiline commands are disabled"));
+    }
+
+    #[tokio::test]
+    async fn regression_bash_tool_rejects_commands_longer_than_policy_limit() {
+        let temp = tempdir().expect("tempdir");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.max_command_length = 4;
+        let tool = BashTool::new(Arc::new(policy));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "printf",
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert!(result.content.to_string().contains("command is too long"));
+    }
+
+    #[tokio::test]
+    async fn functional_bash_tool_does_not_inherit_sensitive_environment_variables() {
+        let temp = tempdir().expect("tempdir");
+        let key = "PI_TEST_SECRET_NOT_INHERITED";
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, "very-secret-value");
+
+        let tool = BashTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": format!("printf \"${{{key}:-missing}}\""),
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        if let Some(value) = previous {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+
+        assert!(!result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("stdout")
+                .and_then(serde_json::Value::as_str),
+            Some("missing")
+        );
+    }
+
+    #[tokio::test]
+    async fn write_tool_blocks_paths_outside_allowed_roots() {
+        let temp = tempdir().expect("tempdir");
+        let outside = temp
+            .path()
+            .parent()
+            .expect("parent path")
+            .join("outside.txt");
+
+        let tool = WriteTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": outside,
+                "content": "data"
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert!(result.content.to_string().contains("outside allowed roots"));
+    }
+
     #[test]
     fn tool_result_text_serializes_json() {
         let result = ToolExecutionResult::ok(serde_json::json!({ "a": 1 }));
         assert!(result.as_text().contains('"'));
+    }
+
+    #[test]
+    fn truncate_bytes_keeps_valid_utf8_boundaries() {
+        let value = "hello🙂world";
+        let truncated = truncate_bytes(value, 7);
+        assert!(truncated.starts_with("hello"));
+        assert!(truncated.contains("<output truncated>"));
+    }
+
+    #[test]
+    fn redact_secrets_replaces_sensitive_env_values() {
+        std::env::set_var("TEST_API_KEY", "secret-value-123");
+        let redacted = redact_secrets("token=secret-value-123");
+        assert_eq!(redacted, "token=[REDACTED]");
+    }
+
+    #[test]
+    fn canonicalize_best_effort_handles_non_existing_child() {
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path().join("a/b/c.txt");
+        let canonical = canonicalize_best_effort(&target).expect("canonicalization should work");
+        assert!(canonical.ends_with("a/b/c.txt"));
     }
 }

@@ -12,6 +12,8 @@ async fn openai_client_sends_expected_http_request() {
         when.method(POST)
             .path("/v1/chat/completions")
             .header("authorization", "Bearer test-openai-key")
+            .header_exists("x-pi-request-id")
+            .header("x-pi-retry-attempt", "0")
             .json_body_partial(
                 json!({
                     "model": "gpt-4o-mini",
@@ -73,6 +75,8 @@ async fn anthropic_client_sends_expected_http_request() {
             .path("/v1/messages")
             .header("x-api-key", "test-anthropic-key")
             .header("anthropic-version", "2023-06-01")
+            .header_exists("x-pi-request-id")
+            .header("x-pi-retry-attempt", "0")
             .json_body_partial(
                 json!({
                     "model": "claude-sonnet-4-20250514",
@@ -129,6 +133,8 @@ async fn google_client_sends_expected_http_request() {
         when.method(POST)
             .path("/models/gemini-2.5-pro:generateContent")
             .query_param("key", "test-google-key")
+            .header_exists("x-pi-request-id")
+            .header("x-pi-retry-attempt", "0")
             .json_body_partial(
                 json!({
                     "contents": [{"role": "user"}],
@@ -219,4 +225,49 @@ async fn openai_client_surfaces_http_status_error() {
         }
         other => panic!("expected PiAiError::HttpStatus, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn openai_client_retries_on_rate_limit_then_succeeds() {
+    let server = MockServer::start();
+    let first = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("x-pi-retry-attempt", "0");
+        then.status(429).body("rate limited");
+    });
+    let second = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("x-pi-retry-attempt", "1");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "ok after retry"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }));
+    });
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: format!("{}/v1", server.base_url()),
+        api_key: "test-openai-key".to_string(),
+        organization: None,
+    })
+    .expect("openai client should be created");
+
+    let response = client
+        .complete(ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+        })
+        .await
+        .expect("retry should eventually succeed");
+
+    assert_eq!(response.message.text_content(), "ok after retry");
+    first.assert_hits(1);
+    second.assert_hits(1);
 }

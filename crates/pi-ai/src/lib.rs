@@ -2,6 +2,7 @@ mod anthropic;
 mod google;
 mod openai;
 mod provider;
+mod retry;
 mod types;
 
 pub use anthropic::{AnthropicClient, AnthropicConfig};

@@ -1,10 +1,11 @@
 mod session;
+mod skills;
 mod tools;
 
-use std::{io::Write, path::PathBuf, sync::Arc};
+use std::{future::Future, io::Write, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use pi_agent_core::{Agent, AgentConfig, AgentEvent};
 use pi_ai::{
     AnthropicClient, AnthropicConfig, GoogleClient, GoogleConfig, LlmClient, Message, MessageRole,
@@ -15,6 +16,8 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use crate::session::SessionStore;
+use crate::skills::{augment_system_prompt, install_skills, load_catalog, resolve_selected_skills};
+use crate::tools::ToolPolicy;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -95,11 +98,52 @@ struct Cli {
     )]
     system_prompt: String,
 
+    #[arg(
+        long,
+        env = "PI_SKILLS_DIR",
+        default_value = ".pi/skills",
+        help = "Directory containing skill markdown files"
+    )]
+    skills_dir: PathBuf,
+
+    #[arg(
+        long = "skill",
+        env = "PI_SKILL",
+        value_delimiter = ',',
+        help = "Skill name(s) to include in the system prompt"
+    )]
+    skills: Vec<String>,
+
+    #[arg(
+        long = "install-skill",
+        env = "PI_INSTALL_SKILL",
+        value_delimiter = ',',
+        help = "Skill markdown file(s) to install into --skills-dir before startup"
+    )]
+    install_skill: Vec<PathBuf>,
+
     #[arg(long, env = "PI_MAX_TURNS", default_value_t = 8)]
     max_turns: usize,
 
     #[arg(long, help = "Print agent lifecycle events as JSON")]
     json_events: bool,
+
+    #[arg(
+        long,
+        env = "PI_STREAM_OUTPUT",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Render assistant text output token-by-token"
+    )]
+    stream_output: bool,
+
+    #[arg(
+        long,
+        env = "PI_STREAM_DELAY_MS",
+        default_value_t = 0,
+        help = "Delay between streamed output chunks in milliseconds"
+    )]
+    stream_delay_ms: u64,
 
     #[arg(long, help = "Run one prompt and exit")]
     prompt: Option<String>,
@@ -117,6 +161,54 @@ struct Cli {
 
     #[arg(long, help = "Start from a specific session entry id")]
     branch_from: Option<u64>,
+
+    #[arg(
+        long = "allow-path",
+        env = "PI_ALLOW_PATH",
+        value_delimiter = ',',
+        help = "Allowed filesystem roots for read/write/edit/bash cwd (repeatable or comma-separated)"
+    )]
+    allow_path: Vec<PathBuf>,
+
+    #[arg(
+        long,
+        env = "PI_BASH_TIMEOUT_MS",
+        default_value_t = 120_000,
+        help = "Timeout for bash tool commands in milliseconds"
+    )]
+    bash_timeout_ms: u64,
+
+    #[arg(
+        long,
+        env = "PI_MAX_TOOL_OUTPUT_BYTES",
+        default_value_t = 16_000,
+        help = "Maximum bytes returned from tool outputs (stdout/stderr)"
+    )]
+    max_tool_output_bytes: usize,
+
+    #[arg(
+        long,
+        env = "PI_MAX_FILE_READ_BYTES",
+        default_value_t = 1_000_000,
+        help = "Maximum file size read by the read tool"
+    )]
+    max_file_read_bytes: usize,
+
+    #[arg(
+        long,
+        env = "PI_MAX_COMMAND_LENGTH",
+        default_value_t = 4_096,
+        help = "Maximum command length accepted by the bash tool"
+    )]
+    max_command_length: usize,
+
+    #[arg(
+        long,
+        env = "PI_ALLOW_COMMAND_NEWLINES",
+        default_value_t = false,
+        help = "Allow newline characters in bash commands"
+    )]
+    allow_command_newlines: bool,
 }
 
 #[derive(Debug)]
@@ -129,6 +221,27 @@ struct SessionRuntime {
 enum CommandAction {
     Continue,
     Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptRunStatus {
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RenderOptions {
+    stream_output: bool,
+    stream_delay_ms: u64,
+}
+
+impl RenderOptions {
+    fn from_cli(cli: &Cli) -> Self {
+        Self {
+            stream_output: cli.stream_output,
+            stream_delay_ms: cli.stream_delay_ms,
+        }
+    }
 }
 
 #[tokio::main]
@@ -145,24 +258,37 @@ async fn main() -> Result<()> {
 
     let client = build_client(&cli, model_ref.provider)
         .with_context(|| format!("failed to create {} client", model_ref.provider))?;
+    if !cli.install_skill.is_empty() {
+        let report = install_skills(&cli.install_skill, &cli.skills_dir)?;
+        println!(
+            "skills install: installed={} updated={} skipped={}",
+            report.installed, report.updated, report.skipped
+        );
+    }
+    let catalog = load_catalog(&cli.skills_dir)
+        .with_context(|| format!("failed to load skills from {}", cli.skills_dir.display()))?;
+    let selected_skills = resolve_selected_skills(&catalog, &cli.skills)?;
+    let system_prompt = augment_system_prompt(&cli.system_prompt, &selected_skills);
 
     let mut agent = Agent::new(
         client,
         AgentConfig {
             model: model_ref.model,
-            system_prompt: cli.system_prompt.clone(),
+            system_prompt: system_prompt.clone(),
             max_turns: cli.max_turns,
             temperature: Some(0.0),
             max_tokens: None,
         },
     );
 
-    tools::register_builtin_tools(&mut agent);
+    let tool_policy = build_tool_policy(&cli)?;
+    tools::register_builtin_tools(&mut agent, tool_policy);
+    let render_options = RenderOptions::from_cli(&cli);
 
     let mut session_runtime = if cli.no_session {
         None
     } else {
-        Some(initialize_session(&mut agent, &cli)?)
+        Some(initialize_session(&mut agent, &cli, &system_prompt)?)
     };
 
     if cli.json_events {
@@ -173,17 +299,17 @@ async fn main() -> Result<()> {
     }
 
     if let Some(prompt) = cli.prompt {
-        run_prompt(&mut agent, &mut session_runtime, &prompt).await?;
+        run_prompt(&mut agent, &mut session_runtime, &prompt, render_options).await?;
         return Ok(());
     }
 
-    run_interactive(agent, session_runtime).await
+    run_interactive(agent, session_runtime, render_options).await
 }
 
-fn initialize_session(agent: &mut Agent, cli: &Cli) -> Result<SessionRuntime> {
+fn initialize_session(agent: &mut Agent, cli: &Cli, system_prompt: &str) -> Result<SessionRuntime> {
     let mut store = SessionStore::load(&cli.session)?;
 
-    let mut active_head = store.ensure_initialized(&cli.system_prompt)?;
+    let mut active_head = store.ensure_initialized(system_prompt)?;
     if let Some(branch_id) = cli.branch_from {
         if !store.contains(branch_id) {
             bail!(
@@ -207,16 +333,26 @@ async fn run_prompt(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
     prompt: &str,
+    render_options: RenderOptions,
 ) -> Result<()> {
-    let new_messages = agent.prompt(prompt).await?;
-    persist_messages(session_runtime, &new_messages)?;
-    print_assistant_messages(&new_messages);
+    let status = run_prompt_with_cancellation(
+        agent,
+        session_runtime,
+        prompt,
+        tokio::signal::ctrl_c(),
+        render_options,
+    )
+    .await?;
+    if status == PromptRunStatus::Cancelled {
+        println!("\nrequest cancelled\n");
+    }
     Ok(())
 }
 
 async fn run_interactive(
     mut agent: Agent,
     mut session_runtime: Option<SessionRuntime>,
+    render_options: RenderOptions,
 ) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -243,12 +379,49 @@ async fn run_interactive(
             continue;
         }
 
-        let new_messages = agent.prompt(trimmed).await?;
-        persist_messages(&mut session_runtime, &new_messages)?;
-        print_assistant_messages(&new_messages);
+        let status = run_prompt_with_cancellation(
+            &mut agent,
+            &mut session_runtime,
+            trimmed,
+            tokio::signal::ctrl_c(),
+            render_options,
+        )
+        .await?;
+        if status == PromptRunStatus::Cancelled {
+            println!("\nrequest cancelled\n");
+        }
     }
 
     Ok(())
+}
+
+async fn run_prompt_with_cancellation<F>(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    prompt: &str,
+    cancellation_signal: F,
+    render_options: RenderOptions,
+) -> Result<PromptRunStatus>
+where
+    F: Future,
+{
+    let checkpoint = agent.messages().to_vec();
+    tokio::pin!(cancellation_signal);
+
+    let prompt_result = tokio::select! {
+        result = agent.prompt(prompt) => Some(result),
+        _ = &mut cancellation_signal => None,
+    };
+
+    let Some(prompt_result) = prompt_result else {
+        agent.replace_messages(checkpoint);
+        return Ok(PromptRunStatus::Cancelled);
+    };
+
+    let new_messages = prompt_result?;
+    persist_messages(session_runtime, &new_messages)?;
+    print_assistant_messages(&new_messages, render_options);
+    Ok(PromptRunStatus::Completed)
 }
 
 fn handle_command(
@@ -321,6 +494,51 @@ fn handle_command(
         return Ok(CommandAction::Continue);
     }
 
+    if command == "/session-repair" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let report = runtime.store.repair()?;
+        runtime.active_head = runtime
+            .active_head
+            .filter(|head| runtime.store.contains(*head))
+            .or_else(|| runtime.store.head_id());
+        reload_agent_from_active_head(agent, runtime)?;
+
+        println!(
+            "repair complete: removed_duplicates={} removed_invalid_parent={} removed_cycles={}",
+            report.removed_duplicates, report.removed_invalid_parent, report.removed_cycles
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command == "/session-compact" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let report = runtime.store.compact_to_lineage(runtime.active_head)?;
+        runtime.active_head = report
+            .head_id
+            .filter(|head| runtime.store.contains(*head))
+            .or_else(|| runtime.store.head_id());
+        reload_agent_from_active_head(agent, runtime)?;
+
+        println!(
+            "compact complete: removed_entries={} retained_entries={} head={}",
+            report.removed_entries,
+            report.retained_entries,
+            runtime
+                .active_head
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if let Some(rest) = command.strip_prefix("/branch ") {
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
@@ -343,7 +561,7 @@ fn handle_command(
     }
 
     println!(
-        "unknown command: {}\ncommands: /session, /branches, /branch <id>, /resume, /quit",
+        "unknown command: {}\ncommands: /session, /session-repair, /session-compact, /branches, /branch <id>, /resume, /quit",
         command
     );
     Ok(CommandAction::Continue)
@@ -388,7 +606,7 @@ fn persist_messages(
     Ok(())
 }
 
-fn print_assistant_messages(messages: &[Message]) {
+fn print_assistant_messages(messages: &[Message], render_options: RenderOptions) {
     for message in messages {
         if message.role != MessageRole::Assistant {
             continue;
@@ -396,7 +614,20 @@ fn print_assistant_messages(messages: &[Message]) {
 
         let text = message.text_content();
         if !text.trim().is_empty() {
-            println!("\n{text}\n");
+            println!();
+            if render_options.stream_output {
+                let mut stdout = std::io::stdout();
+                for chunk in stream_text_chunks(&text) {
+                    print!("{chunk}");
+                    let _ = stdout.flush();
+                    if render_options.stream_delay_ms > 0 {
+                        std::thread::sleep(Duration::from_millis(render_options.stream_delay_ms));
+                    }
+                }
+                println!("\n");
+            } else {
+                println!("{text}\n");
+            }
             continue;
         }
 
@@ -408,6 +639,10 @@ fn print_assistant_messages(messages: &[Message]) {
             );
         }
     }
+}
+
+fn stream_text_chunks(text: &str) -> Vec<&str> {
+    text.split_inclusive(char::is_whitespace).collect()
 }
 
 fn event_to_json(event: &AgentEvent) -> serde_json::Value {
@@ -521,6 +756,20 @@ fn resolve_api_key(candidates: Vec<Option<String>>) -> Option<String> {
         .find(|value| !value.trim().is_empty())
 }
 
+fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
+    let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+    let mut roots = vec![cwd];
+    roots.extend(cli.allow_path.clone());
+
+    let mut policy = ToolPolicy::new(roots);
+    policy.bash_timeout_ms = cli.bash_timeout_ms.max(1);
+    policy.max_command_output_bytes = cli.max_tool_output_bytes.max(128);
+    policy.max_file_read_bytes = cli.max_file_read_bytes.max(1_024);
+    policy.max_command_length = cli.max_command_length.max(8);
+    policy.allow_command_newlines = cli.allow_command_newlines;
+    Ok(policy)
+}
+
 fn init_tracing() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())
@@ -535,28 +784,86 @@ fn init_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{
+        collections::VecDeque,
+        future::{pending, ready},
+        path::PathBuf,
+        sync::Arc,
+        time::Duration,
+    };
 
     use async_trait::async_trait;
     use pi_agent_core::{Agent, AgentConfig};
-    use pi_ai::PiAiError;
+    use pi_ai::{
+        ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MessageRole, PiAiError,
+    };
     use tempfile::tempdir;
+    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::time::sleep;
 
-    use super::{handle_command, CommandAction, SessionRuntime};
+    use super::{
+        build_tool_policy, handle_command, run_prompt_with_cancellation, stream_text_chunks, Cli,
+        CommandAction, PromptRunStatus, RenderOptions, SessionRuntime,
+    };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
 
     struct NoopClient;
 
     #[async_trait]
-    impl pi_ai::LlmClient for NoopClient {
-        async fn complete(
-            &self,
-            _request: pi_ai::ChatRequest,
-        ) -> Result<pi_ai::ChatResponse, PiAiError> {
+    impl LlmClient for NoopClient {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, PiAiError> {
             Err(PiAiError::InvalidResponse(
                 "noop client should not be called".to_string(),
             ))
+        }
+    }
+
+    struct SuccessClient;
+
+    #[async_trait]
+    impl LlmClient for SuccessClient {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+            Ok(ChatResponse {
+                message: pi_ai::Message::assistant_text("done"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            })
+        }
+    }
+
+    struct SlowClient;
+
+    #[async_trait]
+    impl LlmClient for SlowClient {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+            sleep(Duration::from_secs(5)).await;
+            Ok(ChatResponse {
+                message: pi_ai::Message::assistant_text("slow"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            })
+        }
+    }
+
+    struct QueueClient {
+        responses: AsyncMutex<VecDeque<ChatResponse>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for QueueClient {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+            let mut responses = self.responses.lock().await;
+            responses.pop_front().ok_or_else(|| {
+                PiAiError::InvalidResponse("mock response queue is empty".to_string())
+            })
+        }
+    }
+
+    fn test_render_options() -> RenderOptions {
+        RenderOptions {
+            stream_output: false,
+            stream_delay_ms: 0,
         }
     }
 
@@ -582,6 +889,139 @@ mod tests {
     fn pathbuf_from_cli_default_is_relative() {
         let path = PathBuf::from(".pi/sessions/default.jsonl");
         assert!(!path.is_absolute());
+    }
+
+    #[test]
+    fn unit_stream_text_chunks_preserve_whitespace_boundaries() {
+        let chunks = stream_text_chunks("hello world\nnext");
+        assert_eq!(chunks, vec!["hello ", "world\n", "next"]);
+    }
+
+    #[test]
+    fn regression_stream_text_chunks_handles_empty_and_single_word() {
+        assert!(stream_text_chunks("").is_empty());
+        assert_eq!(stream_text_chunks("token"), vec!["token"]);
+    }
+
+    #[tokio::test]
+    async fn integration_run_prompt_with_cancellation_completes_when_not_cancelled() {
+        let mut agent = Agent::new(Arc::new(SuccessClient), AgentConfig::default());
+        let mut runtime = None;
+
+        let status = run_prompt_with_cancellation(
+            &mut agent,
+            &mut runtime,
+            "hello",
+            pending::<()>(),
+            test_render_options(),
+        )
+        .await
+        .expect("prompt should complete");
+
+        assert_eq!(status, PromptRunStatus::Completed);
+        assert_eq!(agent.messages().len(), 3);
+        assert_eq!(agent.messages()[1].role, MessageRole::User);
+        assert_eq!(agent.messages()[2].role, MessageRole::Assistant);
+    }
+
+    #[tokio::test]
+    async fn regression_run_prompt_with_cancellation_restores_agent_state() {
+        let mut agent = Agent::new(Arc::new(SlowClient), AgentConfig::default());
+        let initial_messages = agent.messages().to_vec();
+        let mut runtime = None;
+
+        let status = run_prompt_with_cancellation(
+            &mut agent,
+            &mut runtime,
+            "cancel me",
+            ready(()),
+            test_render_options(),
+        )
+        .await
+        .expect("cancellation branch should succeed");
+
+        assert_eq!(status, PromptRunStatus::Cancelled);
+        assert_eq!(agent.messages().len(), initial_messages.len());
+        assert_eq!(agent.messages()[0].role, initial_messages[0].role);
+        assert_eq!(
+            agent.messages()[0].text_content(),
+            initial_messages[0].text_content()
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_regression_cancellation_does_not_persist_partial_session_entries() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("cancel-session.jsonl");
+
+        let mut store = SessionStore::load(&path).expect("load");
+        let active_head = store
+            .ensure_initialized("You are a helpful coding assistant.")
+            .expect("initialize session");
+
+        let mut runtime = Some(SessionRuntime { store, active_head });
+        let mut agent = Agent::new(Arc::new(SlowClient), AgentConfig::default());
+
+        let status = run_prompt_with_cancellation(
+            &mut agent,
+            &mut runtime,
+            "cancel me",
+            ready(()),
+            test_render_options(),
+        )
+        .await
+        .expect("cancelled prompt should succeed");
+
+        assert_eq!(status, PromptRunStatus::Cancelled);
+        assert_eq!(runtime.as_ref().expect("runtime").store.entries().len(), 1);
+
+        let reloaded = SessionStore::load(&path).expect("reload");
+        assert_eq!(reloaded.entries().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn integration_agent_bash_policy_blocks_overlong_commands() {
+        let temp = tempdir().expect("tempdir");
+        let responses = VecDeque::from(vec![
+            ChatResponse {
+                message: pi_ai::Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                    id: "call-1".to_string(),
+                    name: "bash".to_string(),
+                    arguments: serde_json::json!({
+                        "command": "printf",
+                        "cwd": temp.path().display().to_string(),
+                    }),
+                }]),
+                finish_reason: Some("tool_calls".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: pi_ai::Message::assistant_text("done"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        ]);
+
+        let client = Arc::new(QueueClient {
+            responses: AsyncMutex::new(responses),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+
+        let mut policy = crate::tools::ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.max_command_length = 4;
+        crate::tools::register_builtin_tools(&mut agent, policy);
+
+        let new_messages = agent
+            .prompt("run command")
+            .await
+            .expect("prompt should succeed");
+        let tool_message = new_messages
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("tool result should be present");
+
+        assert!(tool_message.is_error);
+        assert!(tool_message.text_content().contains("command is too long"));
     }
 
     #[test]
@@ -655,5 +1095,120 @@ mod tests {
             handle_command("/exit", &mut agent, &mut runtime).expect("exit should succeed"),
             CommandAction::Exit
         );
+    }
+
+    #[test]
+    fn session_repair_command_runs_successfully() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&path).expect("load");
+        let head = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append");
+        store
+            .append_messages(head, &[pi_ai::Message::user("hello")])
+            .expect("append");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store
+            .lineage_messages(store.head_id())
+            .expect("lineage should resolve");
+        agent.replace_messages(lineage);
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(2),
+        });
+
+        let action = handle_command("/session-repair", &mut agent, &mut runtime)
+            .expect("repair command should succeed");
+        assert_eq!(action, CommandAction::Continue);
+        assert_eq!(agent.messages().len(), 2);
+    }
+
+    #[test]
+    fn session_compact_command_prunes_inactive_branch() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("session-compact.jsonl");
+
+        let mut store = SessionStore::load(&path).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append")
+            .expect("root");
+        let head = store
+            .append_messages(
+                Some(root),
+                &[
+                    pi_ai::Message::user("main-q"),
+                    pi_ai::Message::assistant_text("main-a"),
+                ],
+            )
+            .expect("append")
+            .expect("main head");
+        store
+            .append_messages(Some(root), &[pi_ai::Message::user("branch-q")])
+            .expect("append branch");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store
+            .lineage_messages(Some(head))
+            .expect("lineage should resolve");
+        agent.replace_messages(lineage);
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+
+        let action = handle_command("/session-compact", &mut agent, &mut runtime)
+            .expect("compact command should succeed");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.store.entries().len(), 3);
+        assert_eq!(runtime.store.branch_tips().len(), 1);
+        assert_eq!(runtime.store.branch_tips()[0].id, head);
+        assert_eq!(agent.messages().len(), 3);
+    }
+
+    #[test]
+    fn build_tool_policy_includes_cwd_and_custom_root() {
+        let cli = Cli {
+            model: "openai/gpt-4o-mini".to_string(),
+            api_base: "https://api.openai.com/v1".to_string(),
+            anthropic_api_base: "https://api.anthropic.com/v1".to_string(),
+            google_api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            api_key: None,
+            openai_api_key: None,
+            anthropic_api_key: None,
+            google_api_key: None,
+            system_prompt: "sys".to_string(),
+            skills_dir: PathBuf::from(".pi/skills"),
+            skills: vec![],
+            install_skill: vec![],
+            max_turns: 8,
+            json_events: false,
+            stream_output: true,
+            stream_delay_ms: 0,
+            prompt: None,
+            session: PathBuf::from(".pi/sessions/default.jsonl"),
+            no_session: false,
+            branch_from: None,
+            allow_path: vec![PathBuf::from("/tmp")],
+            bash_timeout_ms: 500,
+            max_tool_output_bytes: 1024,
+            max_file_read_bytes: 2048,
+            max_command_length: 4096,
+            allow_command_newlines: true,
+        };
+
+        let policy = build_tool_policy(&cli).expect("policy should build");
+        assert!(policy.allowed_roots.len() >= 2);
+        assert_eq!(policy.bash_timeout_ms, 500);
+        assert_eq!(policy.max_command_output_bytes, 1024);
+        assert_eq!(policy.max_file_read_bytes, 2048);
+        assert_eq!(policy.max_command_length, 4096);
+        assert!(policy.allow_command_newlines);
     }
 }

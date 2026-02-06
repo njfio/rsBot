@@ -17,15 +17,18 @@ Implemented now:
 - Tool-call loop (`assistant -> tool -> assistant`) in `pi-agent-core`
 - Multi-provider model routing: `openai/*`, `anthropic/*`, `google/*`
 - Interactive CLI and one-shot prompt mode
+- Token-by-token CLI output rendering controls
 - Persistent JSONL sessions with branch/resume support
+- Session repair and lineage compaction commands
 - Built-in filesystem and shell tools
+- Theme loading and ANSI styling primitives in `pi-tui`
+- Overlay composition primitives in `pi-tui`
+- Skill loading from markdown packages via `--skills-dir` and `--skill`
 - Unit tests for serialization, tool loop, renderer diffing, and tool behaviors
 
 Not implemented yet:
 
-- Streaming token-by-token UI updates
-- Advanced session tree UX/compaction
-- Extensions/skills/themes package system
+- Remote/distributed extensions lifecycle (registry/fetch/signing)
 - Full TUI parity with overlays/images/editor
 
 ## Build & Test
@@ -75,6 +78,37 @@ Run one prompt:
 cargo run -p pi-coding-agent -- --prompt "Summarize src/lib.rs"
 ```
 
+Cancel an in-flight prompt (interactive or one-shot) with `Ctrl+C`. The pending turn is discarded and session history remains consistent.
+
+Control output streaming behavior:
+
+```bash
+# Disable token-by-token rendering
+cargo run -p pi-coding-agent -- --prompt "Hello" --stream-output false
+
+# Add artificial delay between streamed chunks
+cargo run -p pi-coding-agent -- --prompt "Hello" --stream-delay-ms 20
+```
+
+Load reusable skills into the system prompt:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --prompt "Review src/lib.rs" \
+  --skills-dir .pi/skills \
+  --skill checklist,security
+```
+
+Install skills into the local package directory before running:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --prompt "Audit this module" \
+  --skills-dir .pi/skills \
+  --install-skill /tmp/review.md \
+  --skill review
+```
+
 Use a custom base URL (OpenAI-compatible):
 
 ```bash
@@ -96,4 +130,22 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 
 # Jump back to latest head
 /resume
+
+# Repair malformed/corrupted session graphs
+/session-repair
+
+# Compact to the active lineage and prune inactive branches
+/session-compact
+```
+
+Tool policy controls:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --allow-path /Users/me/project \
+  --max-file-read-bytes 500000 \
+  --max-tool-output-bytes 8000 \
+  --bash-timeout-ms 60000 \
+  --max-command-length 2048
 ```

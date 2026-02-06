@@ -1,8 +1,12 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::time::sleep;
 
 use crate::{
+    retry::{
+        is_retryable_http_error, new_request_id, next_backoff_ms, should_retry_status, MAX_RETRIES,
+    },
     ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole, PiAiError,
     ToolDefinition,
 };
@@ -45,24 +49,51 @@ impl GoogleClient {
 impl LlmClient for GoogleClient {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError> {
         let body = build_generate_content_body(&request);
-        let response = self
-            .client
-            .post(self.generate_content_url(&request.model))
-            .query(&[("key", self.config.api_key.as_str())])
-            .json(&body)
-            .send()
-            .await?;
+        let url = self.generate_content_url(&request.model);
 
-        let status = response.status();
-        let raw = response.text().await?;
-        if !status.is_success() {
-            return Err(PiAiError::HttpStatus {
-                status: status.as_u16(),
-                body: raw,
-            });
+        for attempt in 0..=MAX_RETRIES {
+            let request_id = new_request_id();
+            let response = self
+                .client
+                .post(&url)
+                .header("x-pi-request-id", request_id)
+                .header("x-pi-retry-attempt", attempt.to_string())
+                .query(&[("key", self.config.api_key.as_str())])
+                .json(&body)
+                .send()
+                .await;
+
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    let raw = response.text().await?;
+                    if status.is_success() {
+                        return parse_generate_content_response(&raw);
+                    }
+
+                    if attempt < MAX_RETRIES && should_retry_status(status.as_u16()) {
+                        sleep(std::time::Duration::from_millis(next_backoff_ms(attempt))).await;
+                        continue;
+                    }
+
+                    return Err(PiAiError::HttpStatus {
+                        status: status.as_u16(),
+                        body: raw,
+                    });
+                }
+                Err(error) => {
+                    if attempt < MAX_RETRIES && is_retryable_http_error(&error) {
+                        sleep(std::time::Duration::from_millis(next_backoff_ms(attempt))).await;
+                        continue;
+                    }
+                    return Err(PiAiError::Http(error));
+                }
+            }
         }
 
-        parse_generate_content_response(&raw)
+        Err(PiAiError::InvalidResponse(
+            "request retry loop terminated unexpectedly".to_string(),
+        ))
     }
 }
 
