@@ -108,6 +108,12 @@ Run one prompt from a file:
 cargo run -p pi-coding-agent -- --prompt-file .pi/prompts/review.txt
 ```
 
+Pipe a one-shot prompt from stdin:
+
+```bash
+printf "Summarize src/main.rs" | cargo run -p pi-coding-agent -- --prompt-file -
+```
+
 Load the base system prompt from a file:
 
 ```bash

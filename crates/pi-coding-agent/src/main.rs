@@ -5,7 +5,7 @@ mod tools;
 use std::{
     collections::HashMap,
     future::Future,
-    io::Write,
+    io::{Read, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -721,13 +721,24 @@ fn resolve_prompt_input(cli: &Cli) -> Result<Option<String>> {
         return Ok(None);
     };
 
-    let prompt = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read prompt file {}", path.display()))?;
-    if prompt.trim().is_empty() {
-        bail!("prompt file {} is empty", path.display());
+    if path == std::path::Path::new("-") {
+        let mut prompt = String::new();
+        std::io::stdin()
+            .read_to_string(&mut prompt)
+            .context("failed to read prompt from stdin")?;
+        return Ok(Some(ensure_non_empty_text(
+            prompt,
+            "stdin prompt".to_string(),
+        )?));
     }
 
-    Ok(Some(prompt))
+    let prompt = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read prompt file {}", path.display()))?;
+
+    Ok(Some(ensure_non_empty_text(
+        prompt,
+        format!("prompt file {}", path.display()),
+    )?))
 }
 
 fn resolve_system_prompt(cli: &Cli) -> Result<String> {
@@ -737,11 +748,18 @@ fn resolve_system_prompt(cli: &Cli) -> Result<String> {
 
     let system_prompt = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read system prompt file {}", path.display()))?;
-    if system_prompt.trim().is_empty() {
-        bail!("system prompt file {} is empty", path.display());
-    }
 
-    Ok(system_prompt)
+    ensure_non_empty_text(
+        system_prompt,
+        format!("system prompt file {}", path.display()),
+    )
+}
+
+fn ensure_non_empty_text(text: String, source: String) -> Result<String> {
+    if text.trim().is_empty() {
+        bail!("{source} is empty");
+    }
+    Ok(text)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1549,12 +1567,13 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, build_tool_policy, handle_command, initialize_session,
-        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
-        resolve_prompt_input, resolve_skill_trust_roots, resolve_system_prompt,
-        run_prompt_with_cancellation, stream_text_chunks, tool_audit_event_json,
-        tool_policy_to_json, Cli, CliBashProfile, CliOsSandboxMode, CommandAction, PromptRunStatus,
-        RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
+        apply_trust_root_mutations, build_tool_policy, ensure_non_empty_text, handle_command,
+        initialize_session, parse_sandbox_command_tokens, parse_trust_rotation_spec,
+        parse_trusted_root_spec, resolve_prompt_input, resolve_skill_trust_roots,
+        resolve_system_prompt, run_prompt_with_cancellation, stream_text_chunks,
+        tool_audit_event_json, tool_policy_to_json, Cli, CliBashProfile, CliOsSandboxMode,
+        CommandAction, PromptRunStatus, RenderOptions, SessionRuntime, ToolAuditLogger,
+        TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
@@ -1707,6 +1726,20 @@ mod tests {
 
         let prompt = resolve_prompt_input(&cli).expect("resolve prompt");
         assert_eq!(prompt.as_deref(), Some("inline prompt"));
+    }
+
+    #[test]
+    fn unit_ensure_non_empty_text_returns_original_content() {
+        let text = ensure_non_empty_text("hello".to_string(), "prompt".to_string())
+            .expect("non-empty text should pass");
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn regression_ensure_non_empty_text_rejects_blank_content() {
+        let error = ensure_non_empty_text(" \n\t".to_string(), "prompt".to_string())
+            .expect_err("blank text should fail");
+        assert!(error.to_string().contains("prompt is empty"));
     }
 
     #[test]

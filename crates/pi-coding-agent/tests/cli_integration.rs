@@ -1,6 +1,6 @@
-use std::{fs, process::Command};
+use std::fs;
 
-use assert_cmd::assert::OutputAssertExt;
+use assert_cmd::Command;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
 use httpmock::prelude::*;
@@ -434,6 +434,64 @@ fn prompt_file_flag_runs_one_shot_prompt() {
         .stdout(predicate::str::contains("file prompt ok"));
 
     openai.assert_calls(1);
+}
+
+#[test]
+fn prompt_file_dash_reads_prompt_from_stdin() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .body_includes("prompt from stdin");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "stdin prompt ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt-file",
+        "-",
+        "--no-session",
+    ])
+    .write_stdin("prompt from stdin");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("stdin prompt ok"));
+
+    openai.assert_calls(1);
+}
+
+#[test]
+fn regression_prompt_file_dash_rejects_empty_stdin() {
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt-file",
+        "-",
+        "--no-session",
+    ])
+    .write_stdin(" \n\t");
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("stdin prompt"))
+        .stderr(predicate::str::contains("is empty"));
 }
 
 #[test]
