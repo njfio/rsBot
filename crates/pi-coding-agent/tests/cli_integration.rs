@@ -796,6 +796,7 @@ fn tool_policy_preset_and_bash_dry_run_flags_are_accepted_in_prompt_mode() {
         "--tool-policy-preset",
         "hardened",
         "--bash-dry-run",
+        "--tool-policy-trace",
         "--print-tool-policy",
         "--no-session",
     ]);
@@ -804,6 +805,7 @@ fn tool_policy_preset_and_bash_dry_run_flags_are_accepted_in_prompt_mode() {
         .success()
         .stdout(predicate::str::contains("\"preset\":\"hardened\""))
         .stdout(predicate::str::contains("\"bash_dry_run\":true"))
+        .stdout(predicate::str::contains("\"tool_policy_trace\":true"))
         .stdout(predicate::str::contains("preset dry-run ok"));
 
     openai.assert_calls(1);

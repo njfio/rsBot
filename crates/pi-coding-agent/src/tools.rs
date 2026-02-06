@@ -8,6 +8,7 @@ use std::{
 use async_trait::async_trait;
 use pi_agent_core::{Agent, AgentTool, ToolExecutionResult};
 use pi_ai::ToolDefinition;
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::{process::Command, time::timeout};
 
@@ -72,6 +73,7 @@ pub struct ToolPolicy {
     pub os_sandbox_command: Vec<String>,
     pub enforce_regular_files: bool,
     pub bash_dry_run: bool,
+    pub tool_policy_trace: bool,
 }
 
 impl ToolPolicy {
@@ -94,6 +96,7 @@ impl ToolPolicy {
             os_sandbox_command: Vec::new(),
             enforce_regular_files: true,
             bash_dry_run: false,
+            tool_policy_trace: false,
         };
         policy.apply_preset(ToolPolicyPreset::Balanced);
         policy
@@ -492,6 +495,68 @@ impl BashTool {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct PolicyTraceStep {
+    check: &'static str,
+    outcome: &'static str,
+    detail: String,
+}
+
+fn push_policy_trace(
+    trace: &mut Vec<PolicyTraceStep>,
+    enabled: bool,
+    check: &'static str,
+    outcome: &'static str,
+    detail: impl Into<String>,
+) {
+    if !enabled {
+        return;
+    }
+    trace.push(PolicyTraceStep {
+        check,
+        outcome,
+        detail: detail.into(),
+    });
+}
+
+fn attach_policy_trace(
+    payload: &mut serde_json::Map<String, Value>,
+    enabled: bool,
+    trace: &[PolicyTraceStep],
+    decision: &'static str,
+) {
+    if !enabled {
+        return;
+    }
+    payload.insert("policy_decision".to_string(), json!(decision));
+    payload.insert("policy_trace".to_string(), json!(trace));
+}
+
+fn bash_policy_error(
+    command: Option<String>,
+    cwd: Option<String>,
+    policy_rule: &'static str,
+    error: impl Into<String>,
+    allowed_commands: Option<Vec<String>>,
+    trace_enabled: bool,
+    trace: &[PolicyTraceStep],
+) -> ToolExecutionResult {
+    let mut payload = serde_json::Map::new();
+    if let Some(command) = command {
+        payload.insert("command".to_string(), json!(command));
+    }
+    if let Some(cwd) = cwd {
+        payload.insert("cwd".to_string(), json!(cwd));
+    }
+    payload.insert("policy_rule".to_string(), json!(policy_rule));
+    payload.insert("error".to_string(), json!(error.into()));
+    if let Some(allowed_commands) = allowed_commands {
+        payload.insert("allowed_commands".to_string(), json!(allowed_commands));
+    }
+    attach_policy_trace(&mut payload, trace_enabled, trace, "deny");
+    ToolExecutionResult::error(Value::Object(payload))
+}
+
 #[async_trait]
 impl AgentTool for BashTool {
     fn definition(&self) -> ToolDefinition {
@@ -515,49 +580,139 @@ impl AgentTool for BashTool {
             Ok(command) => command,
             Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
         };
+        let trace_enabled = self.policy.tool_policy_trace;
+        let mut trace = Vec::new();
 
         let command_length = command.chars().count();
         if command_length > self.policy.max_command_length {
-            return ToolExecutionResult::error(json!({
-                "command": command,
-                "policy_rule": "max_command_length",
-                "error": format!(
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "max_command_length",
+                "deny",
+                format!(
                     "command is too long ({} chars), limit is {} chars",
-                    command_length,
-                    self.policy.max_command_length
+                    command_length, self.policy.max_command_length
                 ),
-            }));
+            );
+            return bash_policy_error(
+                Some(command),
+                None,
+                "max_command_length",
+                format!(
+                    "command is too long ({} chars), limit is {} chars",
+                    command_length, self.policy.max_command_length
+                ),
+                None,
+                trace_enabled,
+                &trace,
+            );
         }
+        push_policy_trace(
+            &mut trace,
+            trace_enabled,
+            "max_command_length",
+            "allow",
+            format!(
+                "command length {} within limit {}",
+                command_length, self.policy.max_command_length
+            ),
+        );
 
         if !self.policy.allow_command_newlines && (command.contains('\n') || command.contains('\r'))
         {
-            return ToolExecutionResult::error(json!({
-                "command": command,
-                "policy_rule": "allow_command_newlines",
-                "error": "multiline commands are disabled by policy",
-            }));
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "allow_command_newlines",
+                "deny",
+                "multiline command detected while newlines are disallowed",
+            );
+            return bash_policy_error(
+                Some(command),
+                None,
+                "allow_command_newlines",
+                "multiline commands are disabled by policy",
+                None,
+                trace_enabled,
+                &trace,
+            );
         }
+        push_policy_trace(
+            &mut trace,
+            trace_enabled,
+            "allow_command_newlines",
+            "allow",
+            "command newline policy satisfied",
+        );
 
         if !self.policy.allowed_commands.is_empty() {
             let Some(executable) = leading_executable(&command) else {
-                return ToolExecutionResult::error(json!({
-                    "command": command,
-                    "policy_rule": "allowed_commands",
-                    "error": "unable to parse command executable",
-                }));
+                push_policy_trace(
+                    &mut trace,
+                    trace_enabled,
+                    "allowed_commands",
+                    "deny",
+                    "unable to parse command executable",
+                );
+                return bash_policy_error(
+                    Some(command),
+                    None,
+                    "allowed_commands",
+                    "unable to parse command executable",
+                    None,
+                    trace_enabled,
+                    &trace,
+                );
             };
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "executable_parse",
+                "allow",
+                format!("parsed executable '{executable}'"),
+            );
             if !is_command_allowed(&executable, &self.policy.allowed_commands) {
-                return ToolExecutionResult::error(json!({
-                    "command": command,
-                    "policy_rule": "allowed_commands",
-                    "error": format!(
+                push_policy_trace(
+                    &mut trace,
+                    trace_enabled,
+                    "allowed_commands",
+                    "deny",
+                    format!(
                         "command '{}' is not allowed by '{}' bash profile",
                         executable,
                         bash_profile_name(self.policy.bash_profile),
                     ),
-                    "allowed_commands": self.policy.allowed_commands,
-                }));
+                );
+                return bash_policy_error(
+                    Some(command),
+                    None,
+                    "allowed_commands",
+                    format!(
+                        "command '{}' is not allowed by '{}' bash profile",
+                        executable,
+                        bash_profile_name(self.policy.bash_profile),
+                    ),
+                    Some(self.policy.allowed_commands.clone()),
+                    trace_enabled,
+                    &trace,
+                );
             }
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "allowed_commands",
+                "allow",
+                format!("command '{executable}' allowed"),
+            );
+        } else {
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "allowed_commands",
+                "allow",
+                "allowlist disabled for current profile",
+            );
         }
 
         let cwd = match arguments.get("cwd").and_then(Value::as_str) {
@@ -566,22 +721,61 @@ impl AgentTool for BashTool {
                     if let Err(error) =
                         validate_directory_target(&path, self.policy.enforce_regular_files)
                     {
-                        return ToolExecutionResult::error(json!({
-                            "cwd": path.display().to_string(),
-                            "error": error,
-                        }));
+                        push_policy_trace(
+                            &mut trace,
+                            trace_enabled,
+                            "cwd_validation",
+                            "deny",
+                            error.clone(),
+                        );
+                        return bash_policy_error(
+                            Some(command),
+                            Some(path.display().to_string()),
+                            "cwd_validation",
+                            error,
+                            None,
+                            trace_enabled,
+                            &trace,
+                        );
                     }
+                    push_policy_trace(
+                        &mut trace,
+                        trace_enabled,
+                        "cwd_validation",
+                        "allow",
+                        format!("cwd '{}' accepted", path.display()),
+                    );
                     Some(path)
                 }
                 Err(error) => {
-                    return ToolExecutionResult::error(json!({
-                        "cwd": cwd,
-                        "policy_rule": "allowed_roots",
-                        "error": error,
-                    }))
+                    push_policy_trace(
+                        &mut trace,
+                        trace_enabled,
+                        "allowed_roots",
+                        "deny",
+                        error.clone(),
+                    );
+                    return bash_policy_error(
+                        Some(command),
+                        Some(cwd.to_string()),
+                        "allowed_roots",
+                        error,
+                        None,
+                        trace_enabled,
+                        &trace,
+                    );
                 }
             },
-            None => None,
+            None => {
+                push_policy_trace(
+                    &mut trace,
+                    trace_enabled,
+                    "cwd_validation",
+                    "allow",
+                    "cwd not provided; using process current directory",
+                );
+                None
+            }
         };
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
@@ -590,31 +784,75 @@ impl AgentTool for BashTool {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let sandbox_spec = match resolve_sandbox_spec(&self.policy, &shell, &command, &current_dir)
         {
-            Ok(spec) => spec,
+            Ok(spec) => {
+                push_policy_trace(
+                    &mut trace,
+                    trace_enabled,
+                    "os_sandbox_mode",
+                    "allow",
+                    format!(
+                        "resolved sandbox mode '{}' (sandboxed={})",
+                        os_sandbox_mode_name(self.policy.os_sandbox_mode),
+                        spec.sandboxed
+                    ),
+                );
+                spec
+            }
             Err(error) => {
-                return ToolExecutionResult::error(json!({
-                    "command": command,
-                    "cwd": cwd.as_ref().map(|value| value.display().to_string()),
-                    "policy_rule": "os_sandbox_mode",
-                    "error": error,
-                }))
+                push_policy_trace(
+                    &mut trace,
+                    trace_enabled,
+                    "os_sandbox_mode",
+                    "deny",
+                    error.clone(),
+                );
+                return bash_policy_error(
+                    Some(command),
+                    cwd.as_ref().map(|value| value.display().to_string()),
+                    "os_sandbox_mode",
+                    error,
+                    None,
+                    trace_enabled,
+                    &trace,
+                );
             }
         };
 
         if self.policy.bash_dry_run {
-            return ToolExecutionResult::ok(json!({
-                "command": command,
-                "cwd": cwd.map(|value| value.display().to_string()),
-                "sandboxed": sandbox_spec.sandboxed,
-                "sandbox_mode": os_sandbox_mode_name(self.policy.os_sandbox_mode),
-                "dry_run": true,
-                "would_execute": true,
-                "status": null,
-                "success": true,
-                "stdout": "",
-                "stderr": "",
-            }));
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "execution_mode",
+                "allow",
+                "bash dry-run enabled; command not executed",
+            );
+            let mut payload = serde_json::Map::new();
+            payload.insert("command".to_string(), json!(command));
+            payload.insert(
+                "cwd".to_string(),
+                json!(cwd.map(|value| value.display().to_string())),
+            );
+            payload.insert("sandboxed".to_string(), json!(sandbox_spec.sandboxed));
+            payload.insert(
+                "sandbox_mode".to_string(),
+                json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
+            );
+            payload.insert("dry_run".to_string(), json!(true));
+            payload.insert("would_execute".to_string(), json!(true));
+            payload.insert("status".to_string(), Value::Null);
+            payload.insert("success".to_string(), json!(true));
+            payload.insert("stdout".to_string(), json!(""));
+            payload.insert("stderr".to_string(), json!(""));
+            attach_policy_trace(&mut payload, trace_enabled, &trace, "allow");
+            return ToolExecutionResult::ok(Value::Object(payload));
         }
+        push_policy_trace(
+            &mut trace,
+            trace_enabled,
+            "execution_mode",
+            "allow",
+            "bash command execution permitted",
+        );
 
         let mut command_builder = Command::new(&sandbox_spec.program);
         command_builder.args(&sandbox_spec.args);
@@ -639,35 +877,68 @@ impl AgentTool for BashTool {
             Ok(result) => match result {
                 Ok(output) => output,
                 Err(error) => {
-                    return ToolExecutionResult::error(json!({
-                        "command": command,
-                        "cwd": cwd.as_ref().map(|value| value.display().to_string()),
-                        "error": error.to_string(),
-                    }))
+                    let mut payload = serde_json::Map::new();
+                    payload.insert("command".to_string(), json!(command));
+                    payload.insert(
+                        "cwd".to_string(),
+                        json!(cwd.as_ref().map(|value| value.display().to_string())),
+                    );
+                    payload.insert("error".to_string(), json!(error.to_string()));
+                    attach_policy_trace(&mut payload, trace_enabled, &trace, "allow");
+                    return ToolExecutionResult::error(Value::Object(payload));
                 }
             },
             Err(_) => {
-                return ToolExecutionResult::error(json!({
-                    "command": command,
-                    "cwd": cwd.as_ref().map(|value| value.display().to_string()),
-                    "error": format!("command timed out after {} ms", self.policy.bash_timeout_ms),
-                }))
+                let mut payload = serde_json::Map::new();
+                payload.insert("command".to_string(), json!(command));
+                payload.insert(
+                    "cwd".to_string(),
+                    json!(cwd.as_ref().map(|value| value.display().to_string())),
+                );
+                payload.insert(
+                    "error".to_string(),
+                    json!(format!(
+                        "command timed out after {} ms",
+                        self.policy.bash_timeout_ms
+                    )),
+                );
+                attach_policy_trace(&mut payload, trace_enabled, &trace, "allow");
+                return ToolExecutionResult::error(Value::Object(payload));
             }
         };
 
         let stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
         let stderr = redact_secrets(&String::from_utf8_lossy(&output.stderr));
-        ToolExecutionResult::ok(json!({
-            "command": command,
-            "cwd": cwd.map(|value| value.display().to_string()),
-            "sandboxed": sandbox_spec.sandboxed,
-            "sandbox_mode": os_sandbox_mode_name(self.policy.os_sandbox_mode),
-            "dry_run": false,
-            "status": output.status.code(),
-            "success": output.status.success(),
-            "stdout": truncate_bytes(&stdout, self.policy.max_command_output_bytes),
-            "stderr": truncate_bytes(&stderr, self.policy.max_command_output_bytes),
-        }))
+        let mut payload = serde_json::Map::new();
+        payload.insert("command".to_string(), json!(command));
+        payload.insert(
+            "cwd".to_string(),
+            json!(cwd.map(|value| value.display().to_string())),
+        );
+        payload.insert("sandboxed".to_string(), json!(sandbox_spec.sandboxed));
+        payload.insert(
+            "sandbox_mode".to_string(),
+            json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
+        );
+        payload.insert("dry_run".to_string(), json!(false));
+        payload.insert("status".to_string(), json!(output.status.code()));
+        payload.insert("success".to_string(), json!(output.status.success()));
+        payload.insert(
+            "stdout".to_string(),
+            json!(truncate_bytes(
+                &stdout,
+                self.policy.max_command_output_bytes
+            )),
+        );
+        payload.insert(
+            "stderr".to_string(),
+            json!(truncate_bytes(
+                &stderr,
+                self.policy.max_command_output_bytes
+            )),
+        );
+        attach_policy_trace(&mut payload, trace_enabled, &trace, "allow");
+        ToolExecutionResult::ok(Value::Object(payload))
     }
 }
 
@@ -1419,6 +1690,40 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("allowed_commands")
         );
+        assert!(result.content.get("policy_trace").is_none());
+    }
+
+    #[tokio::test]
+    async fn integration_bash_tool_policy_trace_emits_deny_decision_details() {
+        let temp = tempdir().expect("tempdir");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.tool_policy_trace = true;
+        let tool = BashTool::new(Arc::new(policy));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "python --version",
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("policy_decision")
+                .and_then(serde_json::Value::as_str),
+            Some("deny")
+        );
+        let trace = result
+            .content
+            .get("policy_trace")
+            .and_then(serde_json::Value::as_array)
+            .expect("trace should be present for trace mode");
+        assert!(!trace.is_empty());
+        assert!(trace.iter().any(|step| {
+            step.get("check").and_then(serde_json::Value::as_str) == Some("allowed_commands")
+                && step.get("outcome").and_then(serde_json::Value::as_str) == Some("deny")
+        }));
     }
 
     #[tokio::test]
@@ -1451,7 +1756,46 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            result
+                .content
+                .get("policy_decision")
+                .and_then(serde_json::Value::as_str),
+            None
+        );
+        assert!(result.content.get("policy_trace").is_none());
         assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn functional_bash_tool_trace_includes_allow_decision_for_dry_run() {
+        let temp = tempdir().expect("tempdir");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.bash_dry_run = true;
+        policy.tool_policy_trace = true;
+        let tool = BashTool::new(Arc::new(policy));
+
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "printf 'ok'",
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(!result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("policy_decision")
+                .and_then(serde_json::Value::as_str),
+            Some("allow")
+        );
+        let trace = result
+            .content
+            .get("policy_trace")
+            .and_then(serde_json::Value::as_array)
+            .expect("trace should be present for trace mode");
+        assert!(!trace.is_empty());
     }
 
     #[tokio::test]

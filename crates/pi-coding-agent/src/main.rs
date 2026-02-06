@@ -476,6 +476,14 @@ struct Cli {
     bash_dry_run: bool,
 
     #[arg(
+        long,
+        env = "PI_TOOL_POLICY_TRACE",
+        default_value_t = false,
+        help = "Include policy evaluation trace details in bash tool results"
+    )]
+    tool_policy_trace: bool,
+
+    #[arg(
         long = "allow-command",
         env = "PI_ALLOW_COMMAND",
         value_delimiter = ',',
@@ -2015,6 +2023,9 @@ fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     if cli.bash_dry_run {
         policy.bash_dry_run = true;
     }
+    if cli.tool_policy_trace {
+        policy.tool_policy_trace = true;
+    }
     if !cli.allow_command.is_empty() {
         for command in &cli.allow_command {
             let command = command.trim();
@@ -2072,6 +2083,7 @@ fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
         "os_sandbox_command": policy.os_sandbox_command.clone(),
         "enforce_regular_files": policy.enforce_regular_files,
         "bash_dry_run": policy.bash_dry_run,
+        "tool_policy_trace": policy.tool_policy_trace,
     })
 }
 
@@ -2238,6 +2250,7 @@ mod tests {
             bash_profile: CliBashProfile::Balanced,
             tool_policy_preset: CliToolPolicyPreset::Balanced,
             bash_dry_run: false,
+            tool_policy_trace: false,
             allow_command: vec![],
             print_tool_policy: false,
             tool_audit_log: None,
@@ -3389,6 +3402,7 @@ mod tests {
         assert!(policy.enforce_regular_files);
         assert_eq!(policy.policy_preset, ToolPolicyPreset::Balanced);
         assert!(!policy.bash_dry_run);
+        assert!(!policy.tool_policy_trace);
     }
 
     #[test]
@@ -3407,6 +3421,7 @@ mod tests {
         assert_eq!(payload["max_file_write_bytes"], 4096);
         assert_eq!(payload["enforce_regular_files"], true);
         assert_eq!(payload["bash_dry_run"], false);
+        assert_eq!(payload["tool_policy_trace"], false);
     }
 
     #[test]
@@ -3449,6 +3464,14 @@ mod tests {
         assert_eq!(policy.policy_preset, ToolPolicyPreset::Hardened);
         assert_eq!(policy.bash_profile, BashCommandProfile::Permissive);
         assert!(policy.allowed_commands.is_empty());
+    }
+
+    #[test]
+    fn functional_build_tool_policy_enables_trace_when_flag_set() {
+        let mut cli = test_cli();
+        cli.tool_policy_trace = true;
+        let policy = build_tool_policy(&cli).expect("policy should build");
+        assert!(policy.tool_policy_trace);
     }
 
     #[test]

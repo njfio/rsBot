@@ -303,6 +303,7 @@ cargo run -p pi-coding-agent -- \
   --max-command-length 2048 \
   --bash-profile strict \
   --bash-dry-run false \
+  --tool-policy-trace false \
   --allow-command python,cargo-nextest* \
   --print-tool-policy \
   --os-sandbox-mode auto \
