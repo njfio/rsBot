@@ -683,6 +683,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/audit-summary .pi/audit/tool-events.jsonl",
     },
     CommandSpec {
+        name: "/skills-lock-write",
+        usage: "/skills-lock-write [lockfile_path]",
+        description: "Write/update skills lockfile from installed skills",
+        details:
+            "Uses <skills-dir>/skills.lock.json when path is omitted. Preserves existing source metadata when possible.",
+        example: "/skills-lock-write .pi/skills/skills.lock.json",
+    },
+    CommandSpec {
         name: "/skills-sync",
         usage: "/skills-sync [lockfile_path]",
         description: "Validate installed skills against the lockfile",
@@ -741,6 +749,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/session-import",
     "/policy",
     "/audit-summary",
+    "/skills-lock-write",
     "/skills-sync",
     "/branches",
     "/branch",
@@ -1329,9 +1338,8 @@ async fn main() -> Result<()> {
         let lockfile =
             write_skills_lockfile(&cli.skills_dir, &skills_lock_path, &skill_lock_hints)?;
         println!(
-            "skills lock write: path={} entries={}",
-            skills_lock_path.display(),
-            lockfile.entries.len()
+            "{}",
+            render_skills_lock_write_success(&skills_lock_path, lockfile.entries.len())
         );
     }
     if cli.skills_sync {
@@ -2053,6 +2061,14 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/skills-lock-write" {
+        println!(
+            "{}",
+            execute_skills_lock_write_command(skills_dir, default_skills_lock_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/skills-sync" {
         println!(
             "{}",
@@ -2225,11 +2241,33 @@ fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
     }
 }
 
-fn resolve_skills_sync_lock_path(command_args: &str, default_lock_path: &Path) -> PathBuf {
+fn resolve_skills_lock_path(command_args: &str, default_lock_path: &Path) -> PathBuf {
     if command_args.is_empty() {
         default_lock_path.to_path_buf()
     } else {
         PathBuf::from(command_args)
+    }
+}
+
+fn render_skills_lock_write_success(path: &Path, entries: usize) -> String {
+    format!(
+        "skills lock write: path={} entries={entries}",
+        path.display()
+    )
+}
+
+fn execute_skills_lock_write_command(
+    skills_dir: &Path,
+    default_lock_path: &Path,
+    command_args: &str,
+) -> String {
+    let lock_path = resolve_skills_lock_path(command_args, default_lock_path);
+    match write_skills_lockfile(skills_dir, &lock_path, &[]) {
+        Ok(lockfile) => render_skills_lock_write_success(&lock_path, lockfile.entries.len()),
+        Err(error) => format!(
+            "skills lock write error: path={} error={error}",
+            lock_path.display()
+        ),
     }
 }
 
@@ -2275,7 +2313,7 @@ fn execute_skills_sync_command(
     default_lock_path: &Path,
     command_args: &str,
 ) -> String {
-    let lock_path = resolve_skills_sync_lock_path(command_args, default_lock_path);
+    let lock_path = resolve_skills_lock_path(command_args, default_lock_path);
     match sync_skills_with_lockfile(skills_dir, &lock_path) {
         Ok(report) => {
             if report.in_sync() {
@@ -2980,7 +3018,7 @@ mod tests {
     use std::{
         collections::{HashMap, VecDeque},
         future::{pending, ready},
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::Arc,
         time::{Duration, Instant},
     };
@@ -2999,18 +3037,19 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
-        ensure_non_empty_text, execute_skills_sync_command, format_id_list, format_remap_ids,
-        handle_command, handle_command_with_session_import_mode, initialize_session,
-        is_retryable_provider_error, parse_command, parse_sandbox_command_tokens,
-        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-        render_audit_summary, render_command_help, render_help_overview,
-        render_skills_sync_drift_details, resolve_fallback_models, resolve_prompt_input,
-        resolve_skill_trust_roots, resolve_skills_sync_lock_path, resolve_system_prompt,
-        run_prompt_with_cancellation, stream_text_chunks, summarize_audit_file,
-        tool_audit_event_json, tool_policy_to_json, unknown_command_message, validate_session_file,
-        Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
-        ClientRoute, CommandAction, FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger,
-        RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
+        ensure_non_empty_text, execute_skills_lock_write_command, execute_skills_sync_command,
+        format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
+        initialize_session, is_retryable_provider_error, parse_command,
+        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
+        percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
+        render_skills_lock_write_success, render_skills_sync_drift_details,
+        resolve_fallback_models, resolve_prompt_input, resolve_skill_trust_roots,
+        resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
+        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
+        unknown_command_message, validate_session_file, Cli, CliBashProfile, CliOsSandboxMode,
+        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
+        SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -3474,6 +3513,7 @@ mod tests {
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/audit-summary <path>"));
+        assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/quit"));
@@ -3492,6 +3532,13 @@ mod tests {
         let help = render_command_help("skills-sync").expect("render help");
         assert!(help.contains("command: /skills-sync"));
         assert!(help.contains("usage: /skills-sync [lockfile_path]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_lock_write_topic_without_slash() {
+        let help = render_command_help("skills-lock-write").expect("render help");
+        assert!(help.contains("command: /skills-lock-write"));
+        assert!(help.contains("usage: /skills-lock-write [lockfile_path]"));
     }
 
     #[test]
@@ -3519,14 +3566,14 @@ mod tests {
     }
 
     #[test]
-    fn unit_resolve_skills_sync_lock_path_uses_default_and_explicit_values() {
+    fn unit_resolve_skills_lock_path_uses_default_and_explicit_values() {
         let default_lock_path = PathBuf::from(".pi/skills/skills.lock.json");
         assert_eq!(
-            resolve_skills_sync_lock_path("", &default_lock_path),
+            resolve_skills_lock_path("", &default_lock_path),
             default_lock_path
         );
         assert_eq!(
-            resolve_skills_sync_lock_path("custom/lock.json", &default_lock_path),
+            resolve_skills_lock_path("custom/lock.json", &default_lock_path),
             PathBuf::from("custom/lock.json")
         );
     }
@@ -3541,6 +3588,53 @@ mod tests {
         assert_eq!(
             render_skills_sync_drift_details(&report),
             "expected_entries=2 actual_entries=2 missing=none extra=none changed=none metadata=none"
+        );
+    }
+
+    #[test]
+    fn unit_render_skills_lock_write_success_formats_path_and_entry_count() {
+        let rendered = render_skills_lock_write_success(Path::new("skills.lock.json"), 3);
+        assert_eq!(
+            rendered,
+            "skills lock write: path=skills.lock.json entries=3"
+        );
+    }
+
+    #[test]
+    fn functional_execute_skills_lock_write_command_writes_default_lockfile() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let output = execute_skills_lock_write_command(&skills_dir, &lock_path, "");
+        assert!(output.contains("skills lock write: path="));
+        assert!(output.contains("entries=1"));
+
+        let lock_raw = std::fs::read_to_string(lock_path).expect("read lockfile");
+        assert!(lock_raw.contains("\"file\": \"focus.md\""));
+    }
+
+    #[test]
+    fn regression_execute_skills_lock_write_command_reports_write_errors_without_panicking() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let blocking_path = temp.path().join("lock-as-dir");
+        std::fs::create_dir_all(&blocking_path).expect("create blocking dir");
+
+        let output = execute_skills_lock_write_command(
+            &skills_dir,
+            &default_skills_lock_path(&skills_dir),
+            blocking_path.to_str().expect("utf8 path"),
+        );
+        assert!(output.contains("skills lock write error: path="));
+        assert!(
+            output.contains("failed to read skills lockfile")
+                || output.contains("failed to write skills lockfile")
         );
     }
 
@@ -3667,6 +3761,54 @@ mod tests {
             &lock_path,
         )
         .expect("skills sync command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_lock_write_command_preserves_session_runtime_on_error() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "actual body").expect("write skill");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let blocking_path = temp.path().join("lock-as-dir");
+        std::fs::create_dir_all(&blocking_path).expect("blocking dir");
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command_with_session_import_mode(
+            &format!("/skills-lock-write {}", blocking_path.display()),
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_dir,
+            &lock_path,
+        )
+        .expect("skills lock write command should continue");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");

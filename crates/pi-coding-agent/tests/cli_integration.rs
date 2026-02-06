@@ -1499,6 +1499,101 @@ fn regression_skills_sync_flag_fails_on_drift() {
 }
 
 #[test]
+fn interactive_skills_lock_write_command_writes_default_lockfile() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-lock-write\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills lock write: path="))
+        .stdout(predicate::str::contains("entries=1"));
+
+    let lock_path = skills_dir.join("skills.lock.json");
+    let raw = fs::read_to_string(lock_path).expect("read lock");
+    assert!(raw.contains("\"file\": \"focus.md\""));
+}
+
+#[test]
+fn integration_interactive_skills_lock_write_command_accepts_optional_lockfile_path() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+    let custom_lock_path = temp.path().join("custom.lock.json");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin(format!(
+        "/skills-lock-write {}\n/quit\n",
+        custom_lock_path.display()
+    ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills lock write: path="))
+        .stdout(predicate::str::contains(
+            custom_lock_path.display().to_string(),
+        ));
+
+    let raw = fs::read_to_string(custom_lock_path).expect("read custom lock");
+    assert!(raw.contains("\"file\": \"focus.md\""));
+}
+
+#[test]
+fn regression_interactive_skills_lock_write_command_reports_error_and_continues_loop() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+    let blocking_path = temp.path().join("blocking.lock");
+    fs::create_dir_all(&blocking_path).expect("create blocking path");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin(format!(
+        "/skills-lock-write {}\n/help skills-lock-write\n/quit\n",
+        blocking_path.display()
+    ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills lock write error: path="))
+        .stdout(predicate::str::contains(
+            "usage: /skills-lock-write [lockfile_path]",
+        ));
+}
+
+#[test]
 fn interactive_skills_sync_command_uses_default_lockfile_path() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");
