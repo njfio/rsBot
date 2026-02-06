@@ -775,6 +775,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/branches",
     },
     CommandSpec {
+        name: "/macro",
+        usage: "/macro <save|run|list> ...",
+        description: "Manage reusable command macros",
+        details:
+            "Persists macros in project-local config and supports dry-run validation before execution.",
+        example: "/macro save quick-check /tmp/quick-check.commands",
+    },
+    CommandSpec {
         name: "/branch-alias",
         usage: "/branch-alias <set|list|use> ...",
         description: "Manage persistent branch aliases for quick navigation",
@@ -838,6 +846,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-lock-write",
     "/skills-sync",
     "/branches",
+    "/macro",
     "/branch-alias",
     "/branch",
     "/resume",
@@ -2321,6 +2330,29 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/macro" {
+        let macro_path = match default_macro_config_path() {
+            Ok(path) => path,
+            Err(error) => {
+                println!("macro error: path=unknown error={error}");
+                return Ok(CommandAction::Continue);
+            }
+        };
+        println!(
+            "{}",
+            execute_macro_command(
+                command_args,
+                &macro_path,
+                agent,
+                session_runtime,
+                tool_policy_json,
+                session_import_mode,
+                skills_command_config
+            )
+        );
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/branch-alias" {
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
@@ -2884,6 +2916,335 @@ fn execute_session_graph_export_command(runtime: &SessionRuntime, command_args: 
             "session graph export error: path={} error={error}",
             destination.display()
         ),
+    }
+}
+
+const MACRO_SCHEMA_VERSION: u32 = 1;
+const MACRO_USAGE: &str = "usage: /macro <save|run|list> ...";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MacroCommand {
+    List,
+    Save {
+        name: String,
+        commands_file: PathBuf,
+    },
+    Run {
+        name: String,
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct MacroFile {
+    schema_version: u32,
+    macros: BTreeMap<String, Vec<String>>,
+}
+
+fn default_macro_config_path() -> Result<PathBuf> {
+    Ok(std::env::current_dir()
+        .context("failed to resolve current working directory")?
+        .join(".pi")
+        .join("macros.json"))
+}
+
+fn validate_macro_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        bail!("macro name must not be empty");
+    };
+    if !first.is_ascii_alphabetic() {
+        bail!("macro name '{}' must start with an ASCII letter", name);
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')) {
+        bail!(
+            "macro name '{}' must contain only ASCII letters, digits, '-' or '_'",
+            name
+        );
+    }
+    Ok(())
+}
+
+fn parse_macro_command(command_args: &str) -> Result<MacroCommand> {
+    const USAGE_LIST: &str = "usage: /macro list";
+    const USAGE_SAVE: &str = "usage: /macro save <name> <commands_file>";
+    const USAGE_RUN: &str = "usage: /macro run <name> [--dry-run]";
+
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        bail!("{MACRO_USAGE}");
+    }
+
+    match tokens[0] {
+        "list" => {
+            if tokens.len() != 1 {
+                bail!("{USAGE_LIST}");
+            }
+            Ok(MacroCommand::List)
+        }
+        "save" => {
+            if tokens.len() != 3 {
+                bail!("{USAGE_SAVE}");
+            }
+            validate_macro_name(tokens[1])?;
+            Ok(MacroCommand::Save {
+                name: tokens[1].to_string(),
+                commands_file: PathBuf::from(tokens[2]),
+            })
+        }
+        "run" => {
+            if !(2..=3).contains(&tokens.len()) {
+                bail!("{USAGE_RUN}");
+            }
+            validate_macro_name(tokens[1])?;
+            let dry_run = if tokens.len() == 3 {
+                if tokens[2] != "--dry-run" {
+                    bail!("{USAGE_RUN}");
+                }
+                true
+            } else {
+                false
+            };
+            Ok(MacroCommand::Run {
+                name: tokens[1].to_string(),
+                dry_run,
+            })
+        }
+        other => bail!("unknown subcommand '{}'; {MACRO_USAGE}", other),
+    }
+}
+
+fn load_macro_file(path: &Path) -> Result<BTreeMap<String, Vec<String>>> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read macro file {}", path.display()))?;
+    let parsed = serde_json::from_str::<MacroFile>(&raw)
+        .with_context(|| format!("failed to parse macro file {}", path.display()))?;
+    if parsed.schema_version != MACRO_SCHEMA_VERSION {
+        bail!(
+            "unsupported macro schema_version {} in {} (expected {})",
+            parsed.schema_version,
+            path.display(),
+            MACRO_SCHEMA_VERSION
+        );
+    }
+    Ok(parsed.macros)
+}
+
+fn save_macro_file(path: &Path, macros: &BTreeMap<String, Vec<String>>) -> Result<()> {
+    let payload = MacroFile {
+        schema_version: MACRO_SCHEMA_VERSION,
+        macros: macros.clone(),
+    };
+    let mut encoded = serde_json::to_string_pretty(&payload).context("failed to encode macros")?;
+    encoded.push('\n');
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "macro config path {} does not have a parent directory",
+            path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create macro config directory {}",
+            parent.display()
+        )
+    })?;
+    write_text_atomic(path, &encoded)
+}
+
+fn load_macro_commands(commands_file: &Path) -> Result<Vec<String>> {
+    let raw = std::fs::read_to_string(commands_file)
+        .with_context(|| format!("failed to read commands file {}", commands_file.display()))?;
+    let commands = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !line.starts_with('#'))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if commands.is_empty() {
+        bail!(
+            "commands file {} does not contain runnable commands",
+            commands_file.display()
+        );
+    }
+    Ok(commands)
+}
+
+fn validate_macro_command_entry(command: &str) -> Result<()> {
+    let parsed = parse_command(command)
+        .ok_or_else(|| anyhow!("invalid macro command '{command}': command must start with '/'"))?;
+    let name = canonical_command_name(parsed.name);
+    if !COMMAND_NAMES.contains(&name) {
+        bail!("invalid macro command '{command}': unknown command '{name}'");
+    }
+    if matches!(name, "/quit" | "/exit") {
+        bail!("invalid macro command '{command}': exit commands are not allowed");
+    }
+    if name == "/macro" {
+        bail!("invalid macro command '{command}': nested /macro commands are not allowed");
+    }
+    Ok(())
+}
+
+fn validate_macro_commands(commands: &[String]) -> Result<()> {
+    for (index, command) in commands.iter().enumerate() {
+        validate_macro_command_entry(command)
+            .with_context(|| format!("macro command #{index} failed validation"))?;
+    }
+    Ok(())
+}
+
+fn render_macro_list(path: &Path, macros: &BTreeMap<String, Vec<String>>) -> String {
+    let mut lines = vec![format!(
+        "macro list: path={} count={}",
+        path.display(),
+        macros.len()
+    )];
+    if macros.is_empty() {
+        lines.push("macros: none".to_string());
+        return lines.join("\n");
+    }
+    for (name, commands) in macros {
+        lines.push(format!("macro: name={} commands={}", name, commands.len()));
+    }
+    lines.join("\n")
+}
+
+fn execute_macro_command(
+    command_args: &str,
+    macro_path: &Path,
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    tool_policy_json: &serde_json::Value,
+    session_import_mode: SessionImportMode,
+    skills_command_config: &SkillsSyncCommandConfig,
+) -> String {
+    let command = match parse_macro_command(command_args) {
+        Ok(command) => command,
+        Err(error) => {
+            return format!("macro error: path={} error={error}", macro_path.display());
+        }
+    };
+
+    let mut macros = match load_macro_file(macro_path) {
+        Ok(macros) => macros,
+        Err(error) => {
+            return format!("macro error: path={} error={error}", macro_path.display());
+        }
+    };
+
+    match command {
+        MacroCommand::List => render_macro_list(macro_path, &macros),
+        MacroCommand::Save {
+            name,
+            commands_file,
+        } => {
+            let commands = match load_macro_commands(&commands_file) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    return format!(
+                        "macro error: path={} name={} error={error}",
+                        macro_path.display(),
+                        name
+                    );
+                }
+            };
+            if let Err(error) = validate_macro_commands(&commands) {
+                return format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                );
+            }
+            macros.insert(name.clone(), commands.clone());
+            match save_macro_file(macro_path, &macros) {
+                Ok(()) => format!(
+                    "macro save: path={} name={} source={} commands={}",
+                    macro_path.display(),
+                    name,
+                    commands_file.display(),
+                    commands.len()
+                ),
+                Err(error) => format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                ),
+            }
+        }
+        MacroCommand::Run { name, dry_run } => {
+            let Some(commands) = macros.get(&name) else {
+                return format!(
+                    "macro error: path={} name={} error=unknown macro '{}'",
+                    macro_path.display(),
+                    name,
+                    name
+                );
+            };
+            if let Err(error) = validate_macro_commands(commands) {
+                return format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                );
+            }
+            if dry_run {
+                let mut lines = vec![format!(
+                    "macro run: path={} name={} mode=dry-run commands={}",
+                    macro_path.display(),
+                    name,
+                    commands.len()
+                )];
+                for command in commands {
+                    lines.push(format!("plan: command={command}"));
+                }
+                return lines.join("\n");
+            }
+
+            for command in commands {
+                match handle_command_with_session_import_mode(
+                    command,
+                    agent,
+                    session_runtime,
+                    tool_policy_json,
+                    session_import_mode,
+                    skills_command_config,
+                ) {
+                    Ok(CommandAction::Continue) => {}
+                    Ok(CommandAction::Exit) => {
+                        return format!(
+                            "macro error: path={} name={} error=exit command is not allowed in macros",
+                            macro_path.display(),
+                            name
+                        );
+                    }
+                    Err(error) => {
+                        return format!(
+                            "macro error: path={} name={} command={} error={error}",
+                            macro_path.display(),
+                            name,
+                            command
+                        );
+                    }
+                }
+            }
+
+            format!(
+                "macro run: path={} name={} mode=apply commands={} executed={}",
+                macro_path.display(),
+                name,
+                commands.len(),
+                commands.len()
+            )
+        }
     }
 }
 
@@ -4595,35 +4956,38 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, branch_alias_path_for_session, build_tool_policy,
-        compute_session_entry_depths, compute_session_stats, default_skills_lock_path,
-        derive_skills_prune_candidates, ensure_non_empty_text, escape_graph_label,
-        execute_branch_alias_command, execute_session_graph_export_command,
-        execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+        compute_session_entry_depths, compute_session_stats, default_macro_config_path,
+        default_skills_lock_path, derive_skills_prune_candidates, ensure_non_empty_text,
+        escape_graph_label, execute_branch_alias_command, execute_macro_command,
+        execute_session_graph_export_command, execute_session_search_command,
+        execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
         execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, load_branch_aliases,
-        parse_branch_alias_command, parse_command, parse_sandbox_command_tokens,
-        parse_session_search_args, parse_skills_lock_diff_args, parse_skills_prune_args,
-        parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
-        parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
-        render_help_overview, render_session_graph_dot, render_session_graph_mermaid,
-        render_session_stats, render_skills_list, render_skills_lock_diff_drift,
-        render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
-        render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
-        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
-        resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
-        resolve_system_prompt, run_prompt_with_cancellation, save_branch_aliases,
-        search_session_entries, session_message_preview, stream_text_chunks, summarize_audit_file,
-        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-        validate_branch_alias_name, validate_session_file, validate_skills_prune_file_name,
-        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliOsSandboxMode,
-        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
-        FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
-        SessionGraphFormat, SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig,
-        ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
-        SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
+        initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
+        parse_branch_alias_command, parse_command, parse_macro_command,
+        parse_sandbox_command_tokens, parse_session_search_args, parse_skills_lock_diff_args,
+        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
+        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
+        render_audit_summary, render_command_help, render_help_overview, render_macro_list,
+        render_session_graph_dot, render_session_graph_mermaid, render_session_stats,
+        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        render_skills_lock_write_success, render_skills_search, render_skills_show,
+        render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
+        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
+        resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
+        run_prompt_with_cancellation, save_branch_aliases, save_macro_file, search_session_entries,
+        session_message_preview, stream_text_chunks, summarize_audit_file, tool_audit_event_json,
+        tool_policy_to_json, trust_record_status, unknown_command_message,
+        validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
+        validate_session_file, validate_skills_prune_file_name, BranchAliasCommand,
+        BranchAliasFile, Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode,
+        CliToolPolicyPreset, ClientRoute, CommandAction, FallbackRoutingClient, MacroCommand,
+        MacroFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions, SessionGraphFormat,
+        SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
+        TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
+        MACRO_USAGE, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
         SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
@@ -5505,6 +5869,330 @@ mod tests {
     }
 
     #[test]
+    fn unit_default_macro_config_path_uses_project_local_file_location() {
+        let path = default_macro_config_path().expect("resolve macro path");
+        assert!(path.ends_with(Path::new(".pi").join("macros.json")));
+    }
+
+    #[test]
+    fn unit_validate_macro_name_accepts_and_rejects_expected_inputs() {
+        validate_macro_name("quick_check").expect("valid macro name");
+
+        let error = validate_macro_name("").expect_err("empty macro name should fail");
+        assert!(error.to_string().contains("must not be empty"));
+
+        let error =
+            validate_macro_name("9check").expect_err("macro name starting with digit should fail");
+        assert!(error
+            .to_string()
+            .contains("must start with an ASCII letter"));
+
+        let error = validate_macro_name("check.list")
+            .expect_err("macro name with unsupported punctuation should fail");
+        assert!(error
+            .to_string()
+            .contains("must contain only ASCII letters, digits, '-' or '_'"));
+    }
+
+    #[test]
+    fn functional_parse_macro_command_supports_save_run_list_and_dry_run() {
+        assert_eq!(
+            parse_macro_command("list").expect("parse list"),
+            MacroCommand::List
+        );
+        assert_eq!(
+            parse_macro_command("save quick /tmp/quick.commands").expect("parse save"),
+            MacroCommand::Save {
+                name: "quick".to_string(),
+                commands_file: PathBuf::from("/tmp/quick.commands"),
+            }
+        );
+        assert_eq!(
+            parse_macro_command("run quick").expect("parse run"),
+            MacroCommand::Run {
+                name: "quick".to_string(),
+                dry_run: false,
+            }
+        );
+        assert_eq!(
+            parse_macro_command("run quick --dry-run").expect("parse dry run"),
+            MacroCommand::Run {
+                name: "quick".to_string(),
+                dry_run: true,
+            }
+        );
+
+        let error = parse_macro_command("").expect_err("missing args should fail");
+        assert!(error.to_string().contains(MACRO_USAGE));
+
+        let error =
+            parse_macro_command("run quick --apply").expect_err("unknown run flag should fail");
+        assert!(error
+            .to_string()
+            .contains("usage: /macro run <name> [--dry-run]"));
+    }
+
+    #[test]
+    fn unit_validate_macro_command_entry_rejects_nested_unknown_and_exit_commands() {
+        validate_macro_command_entry("/session").expect("known command should validate");
+
+        let error =
+            validate_macro_command_entry("session").expect_err("command without slash should fail");
+        assert!(error.to_string().contains("must start with '/'"));
+
+        let error = validate_macro_command_entry("/does-not-exist")
+            .expect_err("unknown command should fail");
+        assert!(error
+            .to_string()
+            .contains("unknown command '/does-not-exist'"));
+
+        let error = validate_macro_command_entry("/macro list")
+            .expect_err("nested macro command should fail");
+        assert!(error
+            .to_string()
+            .contains("nested /macro commands are not allowed"));
+
+        let error = validate_macro_command_entry("/quit").expect_err("exit commands should fail");
+        assert!(error.to_string().contains("exit commands are not allowed"));
+    }
+
+    #[test]
+    fn unit_save_and_load_macro_file_round_trip_schema_and_values() {
+        let temp = tempdir().expect("tempdir");
+        let macro_path = temp.path().join(".pi").join("macros.json");
+        let macros = BTreeMap::from([
+            (
+                "quick".to_string(),
+                vec!["/session".to_string(), "/session-stats".to_string()],
+            ),
+            ("review".to_string(), vec!["/help session".to_string()]),
+        ]);
+
+        save_macro_file(&macro_path, &macros).expect("save macro file");
+
+        let loaded = load_macro_file(&macro_path).expect("load macro file");
+        assert_eq!(loaded, macros);
+
+        let raw = std::fs::read_to_string(&macro_path).expect("read macro file");
+        let parsed = serde_json::from_str::<MacroFile>(&raw).expect("parse macro file");
+        assert_eq!(parsed.schema_version, MACRO_SCHEMA_VERSION);
+        assert_eq!(parsed.macros, macros);
+    }
+
+    #[test]
+    fn functional_render_macro_list_supports_empty_and_sorted_output() {
+        let path = Path::new("/tmp/macros.json");
+        let empty = render_macro_list(path, &BTreeMap::new());
+        assert!(empty.contains("count=0"));
+        assert!(empty.contains("macros: none"));
+
+        let macros = BTreeMap::from([
+            ("beta".to_string(), vec!["/session".to_string()]),
+            (
+                "alpha".to_string(),
+                vec!["/session".to_string(), "/session-stats".to_string()],
+            ),
+        ]);
+        let output = render_macro_list(path, &macros);
+        let alpha_index = output.find("macro: name=alpha").expect("alpha row");
+        let beta_index = output.find("macro: name=beta").expect("beta row");
+        assert!(alpha_index < beta_index);
+    }
+
+    #[test]
+    fn integration_execute_macro_command_save_and_run_supports_dry_run_and_apply() {
+        let temp = tempdir().expect("tempdir");
+        let macro_path = temp.path().join(".pi").join("macros.json");
+        let commands_file = temp.path().join("rewind.commands");
+        std::fs::write(&commands_file, "/branch 1\n/session\n").expect("write commands file");
+
+        let session_path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[Message::assistant_text("leaf")])
+            .expect("append leaf")
+            .expect("head id");
+        let mut session_runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = session_runtime
+            .as_ref()
+            .expect("runtime")
+            .store
+            .lineage_messages(Some(head))
+            .expect("lineage");
+        agent.replace_messages(lineage);
+
+        let tool_policy_json = test_tool_policy_json();
+        let skills_dir = temp.path().join("skills");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+
+        let save_output = execute_macro_command(
+            &format!("save rewind {}", commands_file.display()),
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(save_output.contains("macro save: path="));
+        assert!(save_output.contains("name=rewind"));
+        assert!(save_output.contains("commands=2"));
+
+        let dry_run_output = execute_macro_command(
+            "run rewind --dry-run",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(dry_run_output.contains("mode=dry-run"));
+        assert!(dry_run_output.contains("plan: command=/branch 1"));
+        assert_eq!(
+            session_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.active_head),
+            Some(head)
+        );
+
+        let run_output = execute_macro_command(
+            "run rewind",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(run_output.contains("macro run: path="));
+        assert!(run_output.contains("mode=apply"));
+        assert!(run_output.contains("executed=2"));
+        assert_eq!(
+            session_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.active_head),
+            Some(root)
+        );
+
+        let list_output = execute_macro_command(
+            "list",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(list_output.contains("macro list: path="));
+        assert!(list_output.contains("count=1"));
+        assert!(list_output.contains("macro: name=rewind commands=2"));
+    }
+
+    #[test]
+    fn regression_execute_macro_command_reports_missing_commands_file() {
+        let temp = tempdir().expect("tempdir");
+        let macro_path = temp.path().join(".pi").join("macros.json");
+        let missing_commands_file = temp.path().join("missing.commands");
+        let tool_policy_json = test_tool_policy_json();
+        let skills_dir = temp.path().join("skills");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let mut session_runtime = None;
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+
+        let output = execute_macro_command(
+            &format!("save quick {}", missing_commands_file.display()),
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(output.contains("macro error: path="));
+        assert!(output.contains("failed to read commands file"));
+    }
+
+    #[test]
+    fn regression_execute_macro_command_reports_corrupt_macro_file() {
+        let temp = tempdir().expect("tempdir");
+        let macro_path = temp.path().join(".pi").join("macros.json");
+        std::fs::create_dir_all(
+            macro_path
+                .parent()
+                .expect("macro path should include a parent"),
+        )
+        .expect("create macro config dir");
+        std::fs::write(&macro_path, "{invalid-json").expect("write malformed macro file");
+
+        let tool_policy_json = test_tool_policy_json();
+        let skills_dir = temp.path().join("skills");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let mut session_runtime = None;
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+
+        let output = execute_macro_command(
+            "list",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(output.contains("macro error: path="));
+        assert!(output.contains("failed to parse macro file"));
+    }
+
+    #[test]
+    fn regression_execute_macro_command_rejects_unknown_macro_and_invalid_entries() {
+        let temp = tempdir().expect("tempdir");
+        let macro_path = temp.path().join(".pi").join("macros.json");
+        let macros = BTreeMap::from([("broken".to_string(), vec!["/macro list".to_string()])]);
+        save_macro_file(&macro_path, &macros).expect("save macro file");
+
+        let tool_policy_json = test_tool_policy_json();
+        let skills_dir = temp.path().join("skills");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let mut session_runtime = None;
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+
+        let missing_output = execute_macro_command(
+            "run missing",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(missing_output.contains("unknown macro 'missing'"));
+
+        let invalid_output = execute_macro_command(
+            "run broken",
+            &macro_path,
+            &mut agent,
+            &mut session_runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_command_config,
+        );
+        assert!(invalid_output.contains("macro command #0 failed validation"));
+    }
+
+    #[test]
     fn unit_validate_branch_alias_name_accepts_and_rejects_expected_inputs() {
         validate_branch_alias_name("hotfix_1").expect("valid alias");
 
@@ -5693,6 +6381,7 @@ mod tests {
         assert!(help.contains("/skills-trust-list [trust_root_file]"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
+        assert!(help.contains("/macro <save|run|list> ..."));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/branch-alias <set|list|use> ..."));
         assert!(help.contains("/quit"));
@@ -5712,6 +6401,14 @@ mod tests {
         assert!(help.contains("command: /branch-alias"));
         assert!(help.contains("usage: /branch-alias <set|list|use> ..."));
         assert!(help.contains("example: /branch-alias set hotfix 42"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_macro_topic_without_slash() {
+        let help = render_command_help("macro").expect("render help");
+        assert!(help.contains("command: /macro"));
+        assert!(help.contains("usage: /macro <save|run|list> ..."));
+        assert!(help.contains("example: /macro save quick-check /tmp/quick-check.commands"));
     }
 
     #[test]

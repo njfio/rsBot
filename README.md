@@ -290,6 +290,12 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /session-graph-export /tmp/session-graph.mmd
 /branches
 
+# Save/list/run repeatable command macros (project-local .pi/macros.json)
+/macro save quick-check /tmp/quick-check.commands
+/macro list
+/macro run quick-check --dry-run
+/macro run quick-check
+
 # Persist and use named aliases for fast branch navigation
 /branch-alias set hotfix 12
 /branch-alias list
