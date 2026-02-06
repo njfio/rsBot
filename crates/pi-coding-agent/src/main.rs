@@ -873,10 +873,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/profile",
-        usage: "/profile <save|load> <name>",
-        description: "Save/load model, policy, and session defaults",
+        usage: "/profile <save|load|list|show|delete> ...",
+        description: "Manage model, policy, and session default profiles",
         details:
-            "Profiles are persisted in project-local config. Load reports diffs from the current runtime defaults.",
+            "Profiles are persisted in project-local config. Load reports diffs from current defaults; list/show/delete support lifecycle management.",
         example: "/profile save baseline",
     },
     CommandSpec {
@@ -3828,12 +3828,15 @@ fn execute_macro_command(
 }
 
 const PROFILE_SCHEMA_VERSION: u32 = 1;
-const PROFILE_USAGE: &str = "usage: /profile <save|load> <name>";
+const PROFILE_USAGE: &str = "usage: /profile <save|load|list|show|delete> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProfileCommand {
     Save { name: String },
     Load { name: String },
+    List,
+    Show { name: String },
+    Delete { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3869,6 +3872,9 @@ fn validate_profile_name(name: &str) -> Result<()> {
 fn parse_profile_command(command_args: &str) -> Result<ProfileCommand> {
     const USAGE_SAVE: &str = "usage: /profile save <name>";
     const USAGE_LOAD: &str = "usage: /profile load <name>";
+    const USAGE_LIST: &str = "usage: /profile list";
+    const USAGE_SHOW: &str = "usage: /profile show <name>";
+    const USAGE_DELETE: &str = "usage: /profile delete <name>";
 
     let tokens = command_args
         .split_whitespace()
@@ -3894,6 +3900,30 @@ fn parse_profile_command(command_args: &str) -> Result<ProfileCommand> {
             }
             validate_profile_name(tokens[1])?;
             Ok(ProfileCommand::Load {
+                name: tokens[1].to_string(),
+            })
+        }
+        "list" => {
+            if tokens.len() != 1 {
+                bail!("{USAGE_LIST}");
+            }
+            Ok(ProfileCommand::List)
+        }
+        "show" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_SHOW}");
+            }
+            validate_profile_name(tokens[1])?;
+            Ok(ProfileCommand::Show {
+                name: tokens[1].to_string(),
+            })
+        }
+        "delete" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_DELETE}");
+            }
+            validate_profile_name(tokens[1])?;
+            Ok(ProfileCommand::Delete {
                 name: tokens[1].to_string(),
             })
         }
@@ -4051,6 +4081,100 @@ fn render_profile_diffs(current: &ProfileDefaults, loaded: &ProfileDefaults) -> 
     diffs
 }
 
+fn render_profile_list(
+    profile_path: &Path,
+    profiles: &BTreeMap<String, ProfileDefaults>,
+) -> String {
+    if profiles.is_empty() {
+        return format!(
+            "profile list: path={} profiles=0 names=none",
+            profile_path.display()
+        );
+    }
+
+    let mut lines = vec![format!(
+        "profile list: path={} profiles={}",
+        profile_path.display(),
+        profiles.len()
+    )];
+    for name in profiles.keys() {
+        lines.push(format!("profile: name={name}"));
+    }
+    lines.join("\n")
+}
+
+fn render_profile_show(profile_path: &Path, name: &str, profile: &ProfileDefaults) -> String {
+    let fallback_models = if profile.fallback_models.is_empty() {
+        "none".to_string()
+    } else {
+        profile.fallback_models.join(",")
+    };
+    let mut lines = vec![format!(
+        "profile show: path={} name={} status=found",
+        profile_path.display(),
+        name
+    )];
+    lines.push(format!("value: model={}", profile.model));
+    lines.push(format!("value: fallback_models={fallback_models}"));
+    lines.push(format!(
+        "value: session.enabled={}",
+        profile.session.enabled
+    ));
+    lines.push(format!(
+        "value: session.path={}",
+        profile.session.path.as_deref().unwrap_or("none")
+    ));
+    lines.push(format!(
+        "value: session.import_mode={}",
+        profile.session.import_mode
+    ));
+    lines.push(format!(
+        "value: policy.tool_policy_preset={}",
+        profile.policy.tool_policy_preset
+    ));
+    lines.push(format!(
+        "value: policy.bash_profile={}",
+        profile.policy.bash_profile
+    ));
+    lines.push(format!(
+        "value: policy.bash_dry_run={}",
+        profile.policy.bash_dry_run
+    ));
+    lines.push(format!(
+        "value: policy.os_sandbox_mode={}",
+        profile.policy.os_sandbox_mode
+    ));
+    lines.push(format!(
+        "value: policy.enforce_regular_files={}",
+        profile.policy.enforce_regular_files
+    ));
+    lines.push(format!(
+        "value: policy.bash_timeout_ms={}",
+        profile.policy.bash_timeout_ms
+    ));
+    lines.push(format!(
+        "value: policy.max_command_length={}",
+        profile.policy.max_command_length
+    ));
+    lines.push(format!(
+        "value: policy.max_tool_output_bytes={}",
+        profile.policy.max_tool_output_bytes
+    ));
+    lines.push(format!(
+        "value: policy.max_file_read_bytes={}",
+        profile.policy.max_file_read_bytes
+    ));
+    lines.push(format!(
+        "value: policy.max_file_write_bytes={}",
+        profile.policy.max_file_write_bytes
+    ));
+    lines.push(format!(
+        "value: policy.allow_command_newlines={}",
+        profile.policy.allow_command_newlines
+    ));
+    lines.join("\n")
+}
+
 fn execute_profile_command(
     command_args: &str,
     profile_path: &Path,
@@ -4091,6 +4215,18 @@ fn execute_profile_command(
                 ),
             }
         }
+        ProfileCommand::List => render_profile_list(profile_path, &profiles),
+        ProfileCommand::Show { name } => {
+            let Some(loaded) = profiles.get(&name) else {
+                return format!(
+                    "profile error: path={} name={} error=unknown profile '{}'",
+                    profile_path.display(),
+                    name,
+                    name
+                );
+            };
+            render_profile_show(profile_path, &name, loaded)
+        }
         ProfileCommand::Load { name } => {
             let Some(loaded) = profiles.get(&name) else {
                 return format!(
@@ -4116,6 +4252,29 @@ fn execute_profile_command(
             )];
             lines.extend(diffs);
             lines.join("\n")
+        }
+        ProfileCommand::Delete { name } => {
+            if profiles.remove(&name).is_none() {
+                return format!(
+                    "profile error: path={} name={} error=unknown profile '{}'",
+                    profile_path.display(),
+                    name,
+                    name
+                );
+            }
+            match save_profile_store(profile_path, &profiles) {
+                Ok(()) => format!(
+                    "profile delete: path={} name={} status=deleted remaining={}",
+                    profile_path.display(),
+                    name,
+                    profiles.len()
+                ),
+                Err(error) => format!(
+                    "profile error: path={} name={} error={error}",
+                    profile_path.display(),
+                    name
+                ),
+            }
         }
     }
 }
@@ -5935,8 +6094,9 @@ mod tests {
         parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
         parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
         render_doctor_report, render_help_overview, render_macro_list, render_profile_diffs,
-        render_session_graph_dot, render_session_graph_mermaid, render_session_stats,
-        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        render_profile_list, render_profile_show, render_session_graph_dot,
+        render_session_graph_mermaid, render_session_stats, render_skills_list,
+        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
         render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
         resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
@@ -7582,7 +7742,7 @@ mod tests {
     }
 
     #[test]
-    fn functional_parse_profile_command_supports_save_load_and_usage_errors() {
+    fn functional_parse_profile_command_supports_lifecycle_subcommands_and_usage_errors() {
         assert_eq!(
             parse_profile_command("save baseline").expect("parse save"),
             ProfileCommand::Save {
@@ -7595,6 +7755,22 @@ mod tests {
                 name: "baseline".to_string(),
             }
         );
+        assert_eq!(
+            parse_profile_command("list").expect("parse list"),
+            ProfileCommand::List
+        );
+        assert_eq!(
+            parse_profile_command("show baseline").expect("parse show"),
+            ProfileCommand::Show {
+                name: "baseline".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_profile_command("delete baseline").expect("parse delete"),
+            ProfileCommand::Delete {
+                name: "baseline".to_string(),
+            }
+        );
 
         let error = parse_profile_command("").expect_err("empty args should fail");
         assert!(error.to_string().contains(PROFILE_USAGE));
@@ -7602,9 +7778,16 @@ mod tests {
         let error = parse_profile_command("save").expect_err("missing name should fail");
         assert!(error.to_string().contains("usage: /profile save <name>"));
 
+        let error = parse_profile_command("list extra")
+            .expect_err("list with trailing arguments should fail");
+        assert!(error.to_string().contains("usage: /profile list"));
+
+        let error = parse_profile_command("show").expect_err("show missing name should fail");
+        assert!(error.to_string().contains("usage: /profile show <name>"));
+
         let error =
-            parse_profile_command("delete baseline").expect_err("unknown subcommand should fail");
-        assert!(error.to_string().contains("unknown subcommand 'delete'"));
+            parse_profile_command("unknown baseline").expect_err("unknown subcommand should fail");
+        assert!(error.to_string().contains("unknown subcommand 'unknown'"));
     }
 
     #[test]
@@ -7649,7 +7832,33 @@ mod tests {
     }
 
     #[test]
-    fn integration_execute_profile_command_save_then_load_roundtrip() {
+    fn unit_render_profile_list_and_show_produce_deterministic_output() {
+        let profile_path = PathBuf::from("/tmp/profiles.json");
+        let mut alternate = test_profile_defaults();
+        alternate.model = "google/gemini-2.5-pro".to_string();
+        let profiles = BTreeMap::from([
+            ("zeta".to_string(), test_profile_defaults()),
+            ("alpha".to_string(), alternate.clone()),
+        ]);
+
+        let list_output = render_profile_list(&profile_path, &profiles);
+        assert!(list_output.contains("profile list: path=/tmp/profiles.json profiles=2"));
+        let alpha_index = list_output.find("profile: name=alpha").expect("alpha row");
+        let zeta_index = list_output.find("profile: name=zeta").expect("zeta row");
+        assert!(alpha_index < zeta_index);
+
+        let show_output = render_profile_show(&profile_path, "alpha", &alternate);
+        assert!(
+            show_output.contains("profile show: path=/tmp/profiles.json name=alpha status=found")
+        );
+        assert!(show_output.contains("value: model=google/gemini-2.5-pro"));
+        assert!(show_output.contains("value: fallback_models=none"));
+        assert!(show_output.contains("value: session.path=.pi/sessions/default.jsonl"));
+        assert!(show_output.contains("value: policy.max_command_length=4096"));
+    }
+
+    #[test]
+    fn integration_execute_profile_command_full_lifecycle_roundtrip() {
         let temp = tempdir().expect("tempdir");
         let profile_path = temp.path().join(".pi").join("profiles.json");
         let current = test_profile_defaults();
@@ -7665,11 +7874,31 @@ mod tests {
         assert!(load_output.contains("status=in_sync"));
         assert!(load_output.contains("diffs=0"));
 
+        let list_output = execute_profile_command("list", &profile_path, &current);
+        assert!(list_output.contains("profile list: path="));
+        assert!(list_output.contains("profiles=1"));
+        assert!(list_output.contains("profile: name=baseline"));
+
+        let show_output = execute_profile_command("show baseline", &profile_path, &current);
+        assert!(show_output.contains("profile show: path="));
+        assert!(show_output.contains("name=baseline status=found"));
+        assert!(show_output.contains("value: model=openai/gpt-4o-mini"));
+
         let mut changed = current.clone();
         changed.model = "anthropic/claude-sonnet-4-20250514".to_string();
         let diff_output = execute_profile_command("load baseline", &profile_path, &changed);
         assert!(diff_output.contains("status=diff"));
         assert!(diff_output.contains("diff: field=model"));
+
+        let delete_output = execute_profile_command("delete baseline", &profile_path, &current);
+        assert!(delete_output.contains("profile delete: path="));
+        assert!(delete_output.contains("name=baseline"));
+        assert!(delete_output.contains("status=deleted"));
+        assert!(delete_output.contains("remaining=0"));
+
+        let list_after_delete = execute_profile_command("list", &profile_path, &current);
+        assert!(list_after_delete.contains("profiles=0"));
+        assert!(list_after_delete.contains("names=none"));
     }
 
     #[test]
@@ -7681,6 +7910,14 @@ mod tests {
         let missing_output = execute_profile_command("load missing", &profile_path, &current);
         assert!(missing_output.contains("profile error: path="));
         assert!(missing_output.contains("unknown profile 'missing'"));
+
+        let missing_show = execute_profile_command("show missing", &profile_path, &current);
+        assert!(missing_show.contains("profile error: path="));
+        assert!(missing_show.contains("unknown profile 'missing'"));
+
+        let missing_delete = execute_profile_command("delete missing", &profile_path, &current);
+        assert!(missing_delete.contains("profile error: path="));
+        assert!(missing_delete.contains("unknown profile 'missing'"));
 
         std::fs::create_dir_all(
             profile_path
@@ -8056,7 +8293,7 @@ mod tests {
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/macro <save|run|list> ..."));
-        assert!(help.contains("/profile <save|load> <name>"));
+        assert!(help.contains("/profile <save|load|list|show|delete> ..."));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/branch-alias <set|list|use> ..."));
         assert!(help.contains("/quit"));
@@ -8090,7 +8327,7 @@ mod tests {
     fn functional_render_command_help_supports_profile_topic_without_slash() {
         let help = render_command_help("profile").expect("render help");
         assert!(help.contains("command: /profile"));
-        assert!(help.contains("usage: /profile <save|load> <name>"));
+        assert!(help.contains("usage: /profile <save|load|list|show|delete> ..."));
         assert!(help.contains("example: /profile save baseline"));
     }
 

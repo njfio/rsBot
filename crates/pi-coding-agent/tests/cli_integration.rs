@@ -1022,7 +1022,7 @@ fn regression_interactive_macro_command_corrupt_store_reports_parse_error() {
 }
 
 #[test]
-fn integration_interactive_profile_command_save_and_load_roundtrip() {
+fn integration_interactive_profile_command_full_lifecycle_roundtrip() {
     let temp = tempdir().expect("tempdir");
     let profile_store = temp.path().join(".pi").join("profiles.json");
 
@@ -1035,21 +1035,33 @@ fn integration_interactive_profile_command_save_and_load_roundtrip() {
             "test-openai-key",
             "--no-session",
         ])
-        .write_stdin("/profile save baseline\n/profile load baseline\n/quit\n");
+        .write_stdin(
+            "/profile save baseline\n/profile list\n/profile show baseline\n/profile load baseline\n/profile delete baseline\n/profile list\n/quit\n",
+        );
 
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("profile save: path="))
         .stdout(predicate::str::contains("name=baseline"))
         .stdout(predicate::str::contains("status=saved"))
+        .stdout(predicate::str::contains("profile list: path="))
+        .stdout(predicate::str::contains("profiles=1"))
+        .stdout(predicate::str::contains("profile: name=baseline"))
+        .stdout(predicate::str::contains("profile show: path="))
+        .stdout(predicate::str::contains("name=baseline status=found"))
+        .stdout(predicate::str::contains("value: model=openai/gpt-4o-mini"))
         .stdout(predicate::str::contains("profile load: path="))
         .stdout(predicate::str::contains("status=in_sync"))
-        .stdout(predicate::str::contains("diffs=0"));
+        .stdout(predicate::str::contains("diffs=0"))
+        .stdout(predicate::str::contains("profile delete: path="))
+        .stdout(predicate::str::contains("status=deleted"))
+        .stdout(predicate::str::contains("remaining=0"))
+        .stdout(predicate::str::contains("profiles=0"))
+        .stdout(predicate::str::contains("names=none"));
 
     let raw = fs::read_to_string(profile_store).expect("read profile store");
     assert!(raw.contains("\"schema_version\": 1"));
-    assert!(raw.contains("\"baseline\""));
-    assert!(raw.contains("\"model\": \"openai/gpt-4o-mini\""));
+    assert!(!raw.contains("\"baseline\""));
 }
 
 #[test]
@@ -1074,7 +1086,34 @@ fn regression_interactive_profile_command_invalid_name_reports_error_and_continu
             "profile name '1bad' must start with an ASCII letter",
         ))
         .stdout(predicate::str::contains(
-            "usage: /profile <save|load> <name>",
+            "usage: /profile <save|load|list|show|delete> ...",
+        ));
+}
+
+#[test]
+fn regression_interactive_profile_command_reports_show_list_delete_usage_errors() {
+    let temp = tempdir().expect("tempdir");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--no-session",
+        ])
+        .write_stdin(
+            "/profile show\n/profile list extra\n/profile delete missing\n/help profile\n/quit\n",
+        );
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("usage: /profile show <name>"))
+        .stdout(predicate::str::contains("usage: /profile list"))
+        .stdout(predicate::str::contains("unknown profile 'missing'"))
+        .stdout(predicate::str::contains(
+            "usage: /profile <save|load|list|show|delete> ...",
         ));
 }
 
@@ -1131,7 +1170,7 @@ fn regression_interactive_profile_command_invalid_schema_reports_error_and_conti
             "unsupported profile schema_version 99",
         ))
         .stdout(predicate::str::contains(
-            "usage: /profile <save|load> <name>",
+            "usage: /profile <save|load|list|show|delete> ...",
         ));
 }
 
