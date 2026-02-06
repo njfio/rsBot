@@ -610,6 +610,12 @@ struct SessionRuntime {
     active_head: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+struct SkillsSyncCommandConfig {
+    skills_dir: PathBuf,
+    default_lock_path: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandAction {
     Continue,
@@ -677,6 +683,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/audit-summary .pi/audit/tool-events.jsonl",
     },
     CommandSpec {
+        name: "/skills-sync",
+        usage: "/skills-sync [lockfile_path]",
+        description: "Validate installed skills against the lockfile",
+        details:
+            "Uses <skills-dir>/skills.lock.json when path is omitted. Prints drift diagnostics without exiting interactive mode.",
+        example: "/skills-sync .pi/skills/skills.lock.json",
+    },
+    CommandSpec {
         name: "/branches",
         usage: "/branches",
         description: "List branch tips in the current session graph",
@@ -727,6 +741,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/session-import",
     "/policy",
     "/audit-summary",
+    "/skills-sync",
     "/branches",
     "/branch",
     "/resume",
@@ -1322,40 +1337,12 @@ async fn main() -> Result<()> {
     if cli.skills_sync {
         let report = sync_skills_with_lockfile(&cli.skills_dir, &skills_lock_path)?;
         if report.in_sync() {
-            println!(
-                "skills sync: in-sync path={} expected_entries={} actual_entries={}",
-                skills_lock_path.display(),
-                report.expected_entries,
-                report.actual_entries
-            );
+            println!("{}", render_skills_sync_in_sync(&skills_lock_path, &report));
         } else {
-            let missing = if report.missing.is_empty() {
-                "none".to_string()
-            } else {
-                report.missing.join(",")
-            };
-            let extra = if report.extra.is_empty() {
-                "none".to_string()
-            } else {
-                report.extra.join(",")
-            };
-            let changed = if report.changed.is_empty() {
-                "none".to_string()
-            } else {
-                report.changed.join(",")
-            };
-            let metadata = if report.metadata_mismatch.is_empty() {
-                "none".to_string()
-            } else {
-                report.metadata_mismatch.join(";")
-            };
             bail!(
-                "skills sync drift detected: path={} missing={} extra={} changed={} metadata={}",
+                "skills sync drift detected: path={} {}",
                 skills_lock_path.display(),
-                missing,
-                extra,
-                changed,
-                metadata
+                render_skills_sync_drift_details(&report)
             );
         }
     }
@@ -1426,6 +1413,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let skills_sync_command_config = SkillsSyncCommandConfig {
+        skills_dir: cli.skills_dir.clone(),
+        default_lock_path: skills_lock_path.clone(),
+    };
     run_interactive(
         agent,
         session_runtime,
@@ -1433,6 +1424,7 @@ async fn main() -> Result<()> {
         render_options,
         cli.session_import_mode.into(),
         tool_policy_json,
+        &skills_sync_command_config,
     )
     .await
 }
@@ -1775,6 +1767,7 @@ async fn run_interactive(
     render_options: RenderOptions,
     session_import_mode: SessionImportMode,
     tool_policy_json: serde_json::Value,
+    skills_sync_command_config: &SkillsSyncCommandConfig,
 ) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -1801,6 +1794,8 @@ async fn run_interactive(
                 &mut session_runtime,
                 &tool_policy_json,
                 session_import_mode,
+                &skills_sync_command_config.skills_dir,
+                &skills_sync_command_config.default_lock_path,
             )? == CommandAction::Exit
             {
                 break;
@@ -1909,12 +1904,16 @@ fn handle_command(
     session_runtime: &mut Option<SessionRuntime>,
     tool_policy_json: &serde_json::Value,
 ) -> Result<CommandAction> {
+    let skills_dir = PathBuf::from(".pi/skills");
+    let skills_lock_path = default_skills_lock_path(&skills_dir);
     handle_command_with_session_import_mode(
         command,
         agent,
         session_runtime,
         tool_policy_json,
         SessionImportMode::Merge,
+        &skills_dir,
+        &skills_lock_path,
     )
 }
 
@@ -1924,6 +1923,8 @@ fn handle_command_with_session_import_mode(
     session_runtime: &mut Option<SessionRuntime>,
     tool_policy_json: &serde_json::Value,
     session_import_mode: SessionImportMode,
+    skills_dir: &Path,
+    default_skills_lock_path: &Path,
 ) -> Result<CommandAction> {
     let Some(parsed) = parse_command(command) else {
         println!("invalid command input: {command}");
@@ -2049,6 +2050,14 @@ fn handle_command_with_session_import_mode(
             Ok(summary) => println!("{}", render_audit_summary(&path, &summary)),
             Err(error) => println!("audit summary error: {error}"),
         }
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/skills-sync" {
+        println!(
+            "{}",
+            execute_skills_sync_command(skills_dir, default_skills_lock_path, command_args)
+        );
         return Ok(CommandAction::Continue);
     }
 
@@ -2213,6 +2222,72 @@ fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
     match mode {
         SessionImportMode::Merge => "merge",
         SessionImportMode::Replace => "replace",
+    }
+}
+
+fn resolve_skills_sync_lock_path(command_args: &str, default_lock_path: &Path) -> PathBuf {
+    if command_args.is_empty() {
+        default_lock_path.to_path_buf()
+    } else {
+        PathBuf::from(command_args)
+    }
+}
+
+fn render_skills_sync_field(items: &[String], separator: &str) -> String {
+    if items.is_empty() {
+        "none".to_string()
+    } else {
+        items.join(separator)
+    }
+}
+
+fn render_skills_sync_drift_details(report: &skills::SkillsSyncReport) -> String {
+    format!(
+        "expected_entries={} actual_entries={} missing={} extra={} changed={} metadata={}",
+        report.expected_entries,
+        report.actual_entries,
+        render_skills_sync_field(&report.missing, ","),
+        render_skills_sync_field(&report.extra, ","),
+        render_skills_sync_field(&report.changed, ","),
+        render_skills_sync_field(&report.metadata_mismatch, ";")
+    )
+}
+
+fn render_skills_sync_in_sync(path: &Path, report: &skills::SkillsSyncReport) -> String {
+    format!(
+        "skills sync: in-sync path={} expected_entries={} actual_entries={}",
+        path.display(),
+        report.expected_entries,
+        report.actual_entries
+    )
+}
+
+fn render_skills_sync_drift(path: &Path, report: &skills::SkillsSyncReport) -> String {
+    format!(
+        "skills sync: drift path={} {}",
+        path.display(),
+        render_skills_sync_drift_details(report)
+    )
+}
+
+fn execute_skills_sync_command(
+    skills_dir: &Path,
+    default_lock_path: &Path,
+    command_args: &str,
+) -> String {
+    let lock_path = resolve_skills_sync_lock_path(command_args, default_lock_path);
+    match sync_skills_with_lockfile(skills_dir, &lock_path) {
+        Ok(report) => {
+            if report.in_sync() {
+                render_skills_sync_in_sync(&lock_path, &report)
+            } else {
+                render_skills_sync_drift(&lock_path, &report)
+            }
+        }
+        Err(error) => format!(
+            "skills sync error: path={} error={error}",
+            lock_path.display()
+        ),
     }
 }
 
@@ -2917,22 +2992,25 @@ mod tests {
         ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
         ModelRef, PiAiError, Provider,
     };
+    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
     use tokio::sync::Mutex as AsyncMutex;
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, build_tool_policy, ensure_non_empty_text, format_id_list,
-        format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, parse_command,
-        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
-        percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
-        resolve_fallback_models, resolve_prompt_input, resolve_skill_trust_roots,
-        resolve_system_prompt, run_prompt_with_cancellation, stream_text_chunks,
-        summarize_audit_file, tool_audit_event_json, tool_policy_to_json, unknown_command_message,
-        validate_session_file, Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode,
-        CliToolPolicyPreset, ClientRoute, CommandAction, FallbackRoutingClient, PromptRunStatus,
-        PromptTelemetryLogger, RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
+        apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
+        ensure_non_empty_text, execute_skills_sync_command, format_id_list, format_remap_ids,
+        handle_command, handle_command_with_session_import_mode, initialize_session,
+        is_retryable_provider_error, parse_command, parse_sandbox_command_tokens,
+        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
+        render_audit_summary, render_command_help, render_help_overview,
+        render_skills_sync_drift_details, resolve_fallback_models, resolve_prompt_input,
+        resolve_skill_trust_roots, resolve_skills_sync_lock_path, resolve_system_prompt,
+        run_prompt_with_cancellation, stream_text_chunks, summarize_audit_file,
+        tool_audit_event_json, tool_policy_to_json, unknown_command_message, validate_session_file,
+        Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
+        ClientRoute, CommandAction, FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger,
+        RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -3396,6 +3474,7 @@ mod tests {
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/audit-summary <path>"));
+        assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/quit"));
     }
@@ -3406,6 +3485,13 @@ mod tests {
         assert!(help.contains("command: /branch"));
         assert!(help.contains("usage: /branch <id>"));
         assert!(help.contains("example: /branch 12"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_sync_topic_without_slash() {
+        let help = render_command_help("skills-sync").expect("render help");
+        assert!(help.contains("command: /skills-sync"));
+        assert!(help.contains("usage: /skills-sync [lockfile_path]"));
     }
 
     #[test]
@@ -3433,6 +3519,78 @@ mod tests {
     }
 
     #[test]
+    fn unit_resolve_skills_sync_lock_path_uses_default_and_explicit_values() {
+        let default_lock_path = PathBuf::from(".pi/skills/skills.lock.json");
+        assert_eq!(
+            resolve_skills_sync_lock_path("", &default_lock_path),
+            default_lock_path
+        );
+        assert_eq!(
+            resolve_skills_sync_lock_path("custom/lock.json", &default_lock_path),
+            PathBuf::from("custom/lock.json")
+        );
+    }
+
+    #[test]
+    fn unit_render_skills_sync_drift_details_uses_none_placeholders() {
+        let report = crate::skills::SkillsSyncReport {
+            expected_entries: 2,
+            actual_entries: 2,
+            ..crate::skills::SkillsSyncReport::default()
+        };
+        assert_eq!(
+            render_skills_sync_drift_details(&report),
+            "expected_entries=2 actual_entries=2 missing=none extra=none changed=none metadata=none"
+        );
+    }
+
+    #[test]
+    fn functional_execute_skills_sync_command_reports_in_sync_for_default_lock_path() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+        let lockfile = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "name": "focus",
+                "file": "focus.md",
+                "sha256": sha,
+                "source": {
+                    "kind": "unknown"
+                }
+            }]
+        });
+        std::fs::write(&lock_path, format!("{lockfile}\n")).expect("write lockfile");
+
+        let output = execute_skills_sync_command(&skills_dir, &lock_path, "");
+        assert!(output.contains("skills sync: in-sync"));
+        assert!(output.contains("expected_entries=1"));
+        assert!(output.contains("actual_entries=1"));
+    }
+
+    #[test]
+    fn regression_execute_skills_sync_command_reports_lockfile_errors_without_panicking() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let missing_lock_path = temp.path().join("missing.lock.json");
+        let output = execute_skills_sync_command(
+            &skills_dir,
+            &default_skills_lock_path(&skills_dir),
+            missing_lock_path.to_str().expect("utf8 path"),
+        );
+
+        assert!(output.contains("skills sync error: path="));
+        assert!(output.contains("failed to read skills lockfile"));
+    }
+
+    #[test]
     fn functional_help_command_returns_continue_action() {
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
         let mut runtime = None;
@@ -3457,6 +3615,64 @@ mod tests {
         )
         .expect("audit summary usage should not fail");
         assert_eq!(action, CommandAction::Continue);
+    }
+
+    #[test]
+    fn integration_skills_sync_command_preserves_session_runtime_on_drift() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "actual body").expect("write skill");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let lockfile = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "name": "focus",
+                "file": "focus.md",
+                "sha256": "deadbeef",
+                "source": {
+                    "kind": "unknown"
+                }
+            }]
+        });
+        std::fs::write(&lock_path, format!("{lockfile}\n")).expect("write lock");
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-sync",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &skills_dir,
+            &lock_path,
+        )
+        .expect("skills sync command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
     }
 
     #[test]
@@ -4376,6 +4592,8 @@ mod tests {
             active_head: Some(2),
         });
         let tool_policy_json = test_tool_policy_json();
+        let skills_dir = PathBuf::from(".pi/skills");
+        let skills_lock_path = default_skills_lock_path(&skills_dir);
 
         let action = handle_command_with_session_import_mode(
             &format!("/session-import {}", import_path.display()),
@@ -4383,6 +4601,8 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Replace,
+            &skills_dir,
+            &skills_lock_path,
         )
         .expect("session replace import should succeed");
         assert_eq!(action, CommandAction::Continue);

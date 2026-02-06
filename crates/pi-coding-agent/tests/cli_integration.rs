@@ -1499,6 +1499,124 @@ fn regression_skills_sync_flag_fails_on_drift() {
 }
 
 #[test]
+fn interactive_skills_sync_command_uses_default_lockfile_path() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+    let sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "focus",
+            "file": "focus.md",
+            "sha256": sha,
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(skills_dir.join("skills.lock.json"), format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-sync\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills sync: in-sync"))
+        .stdout(predicate::str::contains("expected_entries=1"))
+        .stdout(predicate::str::contains("actual_entries=1"));
+}
+
+#[test]
+fn integration_interactive_skills_sync_command_accepts_optional_lockfile_path() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+    let lock_path = temp.path().join("custom.lock.json");
+    let sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "focus",
+            "file": "focus.md",
+            "sha256": sha,
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(&lock_path, format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin(format!("/skills-sync {}\n/quit\n", lock_path.display()));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills sync: in-sync"))
+        .stdout(predicate::str::contains(lock_path.display().to_string()));
+}
+
+#[test]
+fn regression_interactive_skills_sync_command_reports_drift_and_continues_loop() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "actual body").expect("write skill");
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "focus",
+            "file": "focus.md",
+            "sha256": "deadbeef",
+            "source": {
+                "kind": "unknown"
+            }
+        }]
+    });
+    fs::write(skills_dir.join("skills.lock.json"), format!("{lockfile}\n")).expect("write lock");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-sync\n/help skills-sync\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills sync: drift"))
+        .stdout(predicate::str::contains("changed=focus.md"))
+        .stdout(predicate::str::contains(
+            "usage: /skills-sync [lockfile_path]",
+        ));
+}
+
+#[test]
 fn install_skill_url_with_sha256_verification_works_end_to_end() {
     let server = MockServer::start();
     let remote_body = "Remote checksum skill";
