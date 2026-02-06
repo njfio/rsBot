@@ -396,6 +396,70 @@ fn print_tool_policy_flag_outputs_effective_policy_json() {
 }
 
 #[test]
+fn prompt_file_flag_runs_one_shot_prompt() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .body_includes("prompt from file");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "file prompt ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let prompt_path = temp.path().join("prompt.txt");
+    fs::write(&prompt_path, "prompt from file").expect("write prompt");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt-file",
+        prompt_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("file prompt ok"));
+
+    openai.assert_calls(1);
+}
+
+#[test]
+fn regression_empty_prompt_file_fails_fast() {
+    let temp = tempdir().expect("tempdir");
+    let prompt_path = temp.path().join("empty-prompt.txt");
+    fs::write(&prompt_path, " \n\t").expect("write prompt");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt-file",
+        prompt_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("prompt file"))
+        .stderr(predicate::str::contains("is empty"));
+}
+
+#[test]
 fn tool_audit_log_flag_creates_audit_log_file() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {

@@ -297,6 +297,14 @@ struct Cli {
 
     #[arg(
         long,
+        env = "PI_PROMPT_FILE",
+        conflicts_with = "prompt",
+        help = "Read one prompt from a UTF-8 text file and exit"
+    )]
+    prompt_file: Option<PathBuf>,
+
+    #[arg(
+        long,
         env = "PI_SESSION",
         default_value = ".pi/sessions/default.jsonl",
         help = "Session JSONL file"
@@ -674,7 +682,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    if let Some(prompt) = cli.prompt {
+    if let Some(prompt) = resolve_prompt_input(&cli)? {
         run_prompt(
             &mut agent,
             &mut session_runtime,
@@ -694,6 +702,24 @@ async fn main() -> Result<()> {
         tool_policy_json,
     )
     .await
+}
+
+fn resolve_prompt_input(cli: &Cli) -> Result<Option<String>> {
+    if let Some(prompt) = &cli.prompt {
+        return Ok(Some(prompt.clone()));
+    }
+
+    let Some(path) = cli.prompt_file.as_ref() else {
+        return Ok(None);
+    };
+
+    let prompt = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read prompt file {}", path.display()))?;
+    if prompt.trim().is_empty() {
+        bail!("prompt file {} is empty", path.display());
+    }
+
+    Ok(Some(prompt))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1503,10 +1529,10 @@ mod tests {
     use super::{
         apply_trust_root_mutations, build_tool_policy, handle_command, initialize_session,
         parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
-        resolve_skill_trust_roots, run_prompt_with_cancellation, stream_text_chunks,
-        tool_audit_event_json, tool_policy_to_json, Cli, CliBashProfile, CliOsSandboxMode,
-        CommandAction, PromptRunStatus, RenderOptions, SessionRuntime, ToolAuditLogger,
-        TrustedRootRecord,
+        resolve_prompt_input, resolve_skill_trust_roots, run_prompt_with_cancellation,
+        stream_text_chunks, tool_audit_event_json, tool_policy_to_json, Cli, CliBashProfile,
+        CliOsSandboxMode, CommandAction, PromptRunStatus, RenderOptions, SessionRuntime,
+        ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
@@ -1610,6 +1636,7 @@ mod tests {
             stream_output: true,
             stream_delay_ms: 0,
             prompt: None,
+            prompt_file: None,
             session: PathBuf::from(".pi/sessions/default.jsonl"),
             no_session: false,
             branch_from: None,
@@ -1648,6 +1675,43 @@ mod tests {
     fn resolve_api_key_returns_none_when_all_candidates_are_empty() {
         let key = resolve_api_key(vec![None, Some("".to_string())]);
         assert!(key.is_none());
+    }
+
+    #[test]
+    fn unit_resolve_prompt_input_uses_inline_prompt() {
+        let mut cli = test_cli();
+        cli.prompt = Some("inline prompt".to_string());
+
+        let prompt = resolve_prompt_input(&cli).expect("resolve prompt");
+        assert_eq!(prompt.as_deref(), Some("inline prompt"));
+    }
+
+    #[test]
+    fn functional_resolve_prompt_input_reads_prompt_file() {
+        let temp = tempdir().expect("tempdir");
+        let prompt_path = temp.path().join("prompt.txt");
+        std::fs::write(&prompt_path, "file prompt\nline two").expect("write prompt");
+
+        let mut cli = test_cli();
+        cli.prompt_file = Some(prompt_path);
+
+        let prompt = resolve_prompt_input(&cli).expect("resolve prompt from file");
+        assert_eq!(prompt.as_deref(), Some("file prompt\nline two"));
+    }
+
+    #[test]
+    fn regression_resolve_prompt_input_rejects_empty_prompt_file() {
+        let temp = tempdir().expect("tempdir");
+        let prompt_path = temp.path().join("prompt.txt");
+        std::fs::write(&prompt_path, "   \n\t").expect("write prompt");
+
+        let mut cli = test_cli();
+        cli.prompt_file = Some(prompt_path.clone());
+
+        let error = resolve_prompt_input(&cli).expect_err("empty prompt should fail");
+        assert!(error
+            .to_string()
+            .contains(&format!("prompt file {} is empty", prompt_path.display())));
     }
 
     #[test]
