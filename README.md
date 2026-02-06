@@ -312,6 +312,10 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /skills-search checklist
 /skills-search checklist 10
 
+# Inspect lockfile drift without enforcing sync (optional JSON output)
+/skills-lock-diff
+/skills-lock-diff /tmp/custom-skills.lock.json --json
+
 # List currently installed skills
 /skills-list
 
