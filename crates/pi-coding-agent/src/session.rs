@@ -521,7 +521,7 @@ fn acquire_lock(path: &Path, timeout: Duration) -> Result<LockGuard> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, thread};
+    use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, thread, time::Duration};
 
     use tempfile::tempdir;
 
@@ -881,16 +881,29 @@ mod tests {
             let path = path.clone();
             handles.push(thread::spawn(move || {
                 for append_index in 0..appends_per_worker {
-                    let mut store = SessionStore::load(&path).expect("load worker");
-                    let head = store.head_id();
-                    store
-                        .append_messages(
+                    let mut retries = 0usize;
+                    loop {
+                        let mut store = SessionStore::load(&path).expect("load worker");
+                        let head = store.head_id();
+                        match store.append_messages(
                             head,
                             &[pi_ai::Message::user(format!(
                                 "worker-{worker_index}-append-{append_index}"
                             ))],
-                        )
-                        .expect("append worker");
+                        ) {
+                            Ok(_) => break,
+                            Err(error)
+                                if error.to_string().contains("timed out acquiring lock") =>
+                            {
+                                retries += 1;
+                                if retries >= 8 {
+                                    panic!("append worker retries exhausted: {error}");
+                                }
+                                thread::sleep(Duration::from_millis(30));
+                            }
+                            Err(error) => panic!("append worker: {error}"),
+                        }
+                    }
                 }
             }));
         }

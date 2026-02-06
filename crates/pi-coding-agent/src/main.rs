@@ -22,7 +22,7 @@ use crate::skills::{
     load_catalog, resolve_registry_skill_sources, resolve_remote_skill_sources,
     resolve_selected_skills, TrustedKey,
 };
-use crate::tools::{BashCommandProfile, ToolPolicy};
+use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CliBashProfile {
@@ -37,6 +37,23 @@ impl From<CliBashProfile> for BashCommandProfile {
             CliBashProfile::Permissive => BashCommandProfile::Permissive,
             CliBashProfile::Balanced => BashCommandProfile::Balanced,
             CliBashProfile::Strict => BashCommandProfile::Strict,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliOsSandboxMode {
+    Off,
+    Auto,
+    Force,
+}
+
+impl From<CliOsSandboxMode> for OsSandboxMode {
+    fn from(value: CliOsSandboxMode) -> Self {
+        match value {
+            CliOsSandboxMode::Off => OsSandboxMode::Off,
+            CliOsSandboxMode::Auto => OsSandboxMode::Auto,
+            CliOsSandboxMode::Force => OsSandboxMode::Force,
         }
     }
 }
@@ -349,6 +366,32 @@ struct Cli {
         help = "Additional command executables/prefixes to allow (supports trailing '*' wildcards)"
     )]
     allow_command: Vec<String>,
+
+    #[arg(
+        long,
+        env = "PI_OS_SANDBOX_MODE",
+        value_enum,
+        default_value = "off",
+        help = "OS sandbox mode for bash tool: off, auto, or force"
+    )]
+    os_sandbox_mode: CliOsSandboxMode,
+
+    #[arg(
+        long = "os-sandbox-command",
+        env = "PI_OS_SANDBOX_COMMAND",
+        value_delimiter = ',',
+        help = "Optional sandbox launcher command template tokens. Supports placeholders: {shell}, {command}, {cwd}"
+    )]
+    os_sandbox_command: Vec<String>,
+
+    #[arg(
+        long,
+        env = "PI_ENFORCE_REGULAR_FILES",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Require read/edit targets and existing write targets to be regular files (reject symlink targets)"
+    )]
+    enforce_regular_files: bool,
 }
 
 #[derive(Debug)]
@@ -1184,6 +1227,9 @@ fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     policy.max_command_length = cli.max_command_length.max(8);
     policy.allow_command_newlines = cli.allow_command_newlines;
     policy.set_bash_profile(cli.bash_profile.into());
+    policy.os_sandbox_mode = cli.os_sandbox_mode.into();
+    policy.os_sandbox_command = parse_sandbox_command_tokens(&cli.os_sandbox_command)?;
+    policy.enforce_regular_files = cli.enforce_regular_files;
     if !cli.allow_command.is_empty() {
         for command in &cli.allow_command {
             let command = command.trim();
@@ -1200,6 +1246,24 @@ fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
         }
     }
     Ok(policy)
+}
+
+fn parse_sandbox_command_tokens(raw_tokens: &[String]) -> Result<Vec<String>> {
+    let mut parsed = Vec::new();
+    for raw in raw_tokens {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let tokens = shell_words::split(trimmed).map_err(|error| {
+            anyhow!("invalid --os-sandbox-command token '{}': {error}", trimmed)
+        })?;
+        if tokens.is_empty() {
+            continue;
+        }
+        parsed.extend(tokens);
+    }
+    Ok(parsed)
 }
 
 fn init_tracing() {
@@ -1234,14 +1298,15 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, build_tool_policy, handle_command, parse_trust_rotation_spec,
-        parse_trusted_root_spec, resolve_skill_trust_roots, run_prompt_with_cancellation,
-        stream_text_chunks, Cli, CliBashProfile, CommandAction, PromptRunStatus, RenderOptions,
+        apply_trust_root_mutations, build_tool_policy, handle_command,
+        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
+        resolve_skill_trust_roots, run_prompt_with_cancellation, stream_text_chunks, Cli,
+        CliBashProfile, CliOsSandboxMode, CommandAction, PromptRunStatus, RenderOptions,
         SessionRuntime, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
-    use crate::tools::BashCommandProfile;
+    use crate::tools::{BashCommandProfile, OsSandboxMode};
 
     struct NoopClient;
 
@@ -1345,6 +1410,9 @@ mod tests {
             allow_command_newlines: true,
             bash_profile: CliBashProfile::Balanced,
             allow_command: vec![],
+            os_sandbox_mode: CliOsSandboxMode::Off,
+            os_sandbox_command: vec![],
+            enforce_regular_files: true,
         }
     }
 
@@ -1834,6 +1902,40 @@ mod tests {
     }
 
     #[test]
+    fn unit_parse_sandbox_command_tokens_supports_shell_words_and_placeholders() {
+        let tokens = parse_sandbox_command_tokens(&[
+            "bwrap".to_string(),
+            "--bind".to_string(),
+            "\"{cwd}\"".to_string(),
+            "{cwd}".to_string(),
+            "{shell}".to_string(),
+            "{command}".to_string(),
+        ])
+        .expect("parse should succeed");
+
+        assert_eq!(
+            tokens,
+            vec![
+                "bwrap".to_string(),
+                "--bind".to_string(),
+                "{cwd}".to_string(),
+                "{cwd}".to_string(),
+                "{shell}".to_string(),
+                "{command}".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn regression_parse_sandbox_command_tokens_rejects_invalid_quotes() {
+        let error = parse_sandbox_command_tokens(&["\"unterminated".to_string()])
+            .expect_err("parse should fail");
+        assert!(error
+            .to_string()
+            .contains("invalid --os-sandbox-command token"));
+    }
+
+    #[test]
     fn build_tool_policy_includes_cwd_and_custom_root() {
         let mut cli = test_cli();
         cli.allow_path = vec![PathBuf::from("/tmp")];
@@ -1845,6 +1947,9 @@ mod tests {
         assert_eq!(policy.max_file_read_bytes, 2048);
         assert_eq!(policy.max_command_length, 4096);
         assert!(policy.allow_command_newlines);
+        assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Off);
+        assert!(policy.os_sandbox_command.is_empty());
+        assert!(policy.enforce_regular_files);
     }
 
     #[test]
@@ -1868,5 +1973,29 @@ mod tests {
         cli.bash_profile = CliBashProfile::Permissive;
         let policy = build_tool_policy(&cli).expect("policy should build");
         assert!(policy.allowed_commands.is_empty());
+    }
+
+    #[test]
+    fn functional_build_tool_policy_applies_sandbox_and_regular_file_settings() {
+        let mut cli = test_cli();
+        cli.os_sandbox_mode = CliOsSandboxMode::Auto;
+        cli.os_sandbox_command = vec![
+            "sandbox-run".to_string(),
+            "--cwd".to_string(),
+            "{cwd}".to_string(),
+        ];
+        cli.enforce_regular_files = false;
+
+        let policy = build_tool_policy(&cli).expect("policy should build");
+        assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Auto);
+        assert_eq!(
+            policy.os_sandbox_command,
+            vec![
+                "sandbox-run".to_string(),
+                "--cwd".to_string(),
+                "{cwd}".to_string()
+            ]
+        );
+        assert!(!policy.enforce_regular_files);
     }
 }

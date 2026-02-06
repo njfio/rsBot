@@ -34,6 +34,20 @@ pub enum BashCommandProfile {
     Strict,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsSandboxMode {
+    Off,
+    Auto,
+    Force,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BashSandboxSpec {
+    program: String,
+    args: Vec<String>,
+    sandboxed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolPolicy {
     pub allowed_roots: Vec<PathBuf>,
@@ -44,6 +58,9 @@ pub struct ToolPolicy {
     pub allow_command_newlines: bool,
     pub bash_profile: BashCommandProfile,
     pub allowed_commands: Vec<String>,
+    pub os_sandbox_mode: OsSandboxMode,
+    pub os_sandbox_command: Vec<String>,
+    pub enforce_regular_files: bool,
 }
 
 impl ToolPolicy {
@@ -60,6 +77,9 @@ impl ToolPolicy {
                 .iter()
                 .map(|command| (*command).to_string())
                 .collect(),
+            os_sandbox_mode: OsSandboxMode::Off,
+            os_sandbox_command: Vec::new(),
+            enforce_regular_files: true,
         }
     }
 
@@ -126,12 +146,20 @@ impl AgentTool for ReadTool {
                 return ToolExecutionResult::error(json!({ "path": path, "error": error }))
             }
         };
+        if let Err(error) =
+            validate_file_target(&resolved, PathMode::Read, self.policy.enforce_regular_files)
+        {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
 
         let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(metadata) => metadata,
             Err(error) => {
                 return ToolExecutionResult::error(json!({
-                    "path": resolved,
+                    "path": resolved.display().to_string(),
                     "error": error.to_string(),
                 }))
             }
@@ -139,7 +167,7 @@ impl AgentTool for ReadTool {
 
         if metadata.len() as usize > self.policy.max_file_read_bytes {
             return ToolExecutionResult::error(json!({
-                "path": resolved,
+                "path": resolved.display().to_string(),
                 "error": format!(
                     "file is too large ({} bytes), limit is {} bytes",
                     metadata.len(),
@@ -150,11 +178,11 @@ impl AgentTool for ReadTool {
 
         match tokio::fs::read_to_string(&resolved).await {
             Ok(content) => ToolExecutionResult::ok(json!({
-                "path": resolved,
+                "path": resolved.display().to_string(),
                 "content": content,
             })),
             Err(error) => ToolExecutionResult::error(json!({
-                "path": resolved,
+                "path": resolved.display().to_string(),
                 "error": error.to_string(),
             })),
         }
@@ -207,12 +235,22 @@ impl AgentTool for WriteTool {
                 return ToolExecutionResult::error(json!({ "path": path, "error": error }))
             }
         };
+        if let Err(error) = validate_file_target(
+            &resolved,
+            PathMode::Write,
+            self.policy.enforce_regular_files,
+        ) {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
 
-        if let Some(parent) = Path::new(&resolved).parent() {
+        if let Some(parent) = resolved.parent() {
             if !parent.as_os_str().is_empty() {
                 if let Err(error) = tokio::fs::create_dir_all(parent).await {
                     return ToolExecutionResult::error(json!({
-                        "path": resolved,
+                        "path": resolved.display().to_string(),
                         "error": format!("failed to create parent directory: {error}"),
                     }));
                 }
@@ -221,11 +259,11 @@ impl AgentTool for WriteTool {
 
         match tokio::fs::write(&resolved, content.as_bytes()).await {
             Ok(()) => ToolExecutionResult::ok(json!({
-                "path": resolved,
+                "path": resolved.display().to_string(),
                 "bytes_written": content.len(),
             })),
             Err(error) => ToolExecutionResult::error(json!({
-                "path": resolved,
+                "path": resolved.display().to_string(),
                 "error": error.to_string(),
             })),
         }
@@ -285,12 +323,20 @@ impl AgentTool for EditTool {
             }));
         }
 
-        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Write) {
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Edit) {
             Ok(path) => path,
             Err(error) => {
                 return ToolExecutionResult::error(json!({ "path": path, "error": error }))
             }
         };
+        if let Err(error) =
+            validate_file_target(&resolved, PathMode::Edit, self.policy.enforce_regular_files)
+        {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
 
         let replace_all = arguments
             .get("all")
@@ -301,7 +347,7 @@ impl AgentTool for EditTool {
             Ok(source) => source,
             Err(error) => {
                 return ToolExecutionResult::error(json!({
-                    "path": resolved,
+                    "path": resolved.display().to_string(),
                     "error": error.to_string(),
                 }))
             }
@@ -310,7 +356,7 @@ impl AgentTool for EditTool {
         let occurrences = source.matches(&find).count();
         if occurrences == 0 {
             return ToolExecutionResult::error(json!({
-                "path": resolved,
+                "path": resolved.display().to_string(),
                 "error": "target string not found",
             }));
         }
@@ -323,14 +369,14 @@ impl AgentTool for EditTool {
 
         if let Err(error) = tokio::fs::write(&resolved, updated.as_bytes()).await {
             return ToolExecutionResult::error(json!({
-                "path": resolved,
+                "path": resolved.display().to_string(),
                 "error": error.to_string(),
             }));
         }
 
         let replacements = if replace_all { occurrences } else { 1 };
         ToolExecutionResult::ok(json!({
-            "path": resolved,
+            "path": resolved.display().to_string(),
             "replacements": replacements,
         }))
     }
@@ -424,8 +470,22 @@ impl AgentTool for BashTool {
         };
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-        let mut command_builder = Command::new(shell);
-        command_builder.arg("-lc").arg(&command);
+        let current_dir = cwd
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let sandbox_spec = match resolve_sandbox_spec(&self.policy, &shell, &command, &current_dir)
+        {
+            Ok(spec) => spec,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "command": command,
+                    "cwd": cwd.as_ref().map(|value| value.display().to_string()),
+                    "error": error,
+                }))
+            }
+        };
+        let mut command_builder = Command::new(&sandbox_spec.program);
+        command_builder.args(&sandbox_spec.args);
         command_builder.kill_on_drop(true);
         command_builder.env_clear();
         for key in SAFE_BASH_ENV_VARS {
@@ -433,7 +493,10 @@ impl AgentTool for BashTool {
                 command_builder.env(key, value);
             }
         }
-        command_builder.env("PI_SANDBOXED", "1");
+        command_builder.env(
+            "PI_SANDBOXED",
+            if sandbox_spec.sandboxed { "1" } else { "0" },
+        );
 
         if let Some(cwd) = &cwd {
             command_builder.current_dir(cwd);
@@ -446,7 +509,7 @@ impl AgentTool for BashTool {
                 Err(error) => {
                     return ToolExecutionResult::error(json!({
                         "command": command,
-                        "cwd": cwd,
+                        "cwd": cwd.as_ref().map(|value| value.display().to_string()),
                         "error": error.to_string(),
                     }))
                 }
@@ -454,7 +517,7 @@ impl AgentTool for BashTool {
             Err(_) => {
                 return ToolExecutionResult::error(json!({
                     "command": command,
-                    "cwd": cwd,
+                    "cwd": cwd.as_ref().map(|value| value.display().to_string()),
                     "error": format!("command timed out after {} ms", self.policy.bash_timeout_ms),
                 }))
             }
@@ -464,7 +527,9 @@ impl AgentTool for BashTool {
         let stderr = redact_secrets(&String::from_utf8_lossy(&output.stderr));
         ToolExecutionResult::ok(json!({
             "command": command,
-            "cwd": cwd,
+            "cwd": cwd.map(|value| value.display().to_string()),
+            "sandboxed": sandbox_spec.sandboxed,
+            "sandbox_mode": os_sandbox_mode_name(self.policy.os_sandbox_mode),
             "status": output.status.code(),
             "success": output.status.success(),
             "stdout": truncate_bytes(&stdout, self.policy.max_command_output_bytes),
@@ -477,13 +542,14 @@ impl AgentTool for BashTool {
 enum PathMode {
     Read,
     Write,
+    Edit,
 }
 
 fn resolve_and_validate_path(
     user_path: &str,
     policy: &ToolPolicy,
     mode: PathMode,
-) -> Result<String, String> {
+) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| format!("failed to resolve cwd: {error}"))?;
     let input = PathBuf::from(user_path);
     let absolute = if input.is_absolute() {
@@ -506,11 +572,50 @@ fn resolve_and_validate_path(
         ));
     }
 
-    if matches!(mode, PathMode::Read) && !canonical.exists() {
-        return Err(format!("path '{}' does not exist", canonical.display()));
+    if matches!(mode, PathMode::Read | PathMode::Edit) && !absolute.exists() {
+        return Err(format!("path '{}' does not exist", absolute.display()));
     }
 
-    Ok(canonical.display().to_string())
+    Ok(absolute)
+}
+
+fn validate_file_target(
+    path: &Path,
+    mode: PathMode,
+    enforce_regular_files: bool,
+) -> Result<(), String> {
+    if !enforce_regular_files {
+        return Ok(());
+    }
+
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let symlink_meta = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to inspect path '{}': {error}", path.display()))?;
+    if symlink_meta.file_type().is_symlink() {
+        return Err(format!(
+            "path '{}' is a symbolic link, which is denied by policy",
+            path.display()
+        ));
+    }
+
+    if matches!(mode, PathMode::Read | PathMode::Edit) && !symlink_meta.file_type().is_file() {
+        return Err(format!(
+            "path '{}' must be a regular file for this operation",
+            path.display()
+        ));
+    }
+
+    if matches!(mode, PathMode::Write) && path.exists() && !symlink_meta.file_type().is_file() {
+        return Err(format!(
+            "path '{}' must be a regular file when overwriting existing content",
+            path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 fn is_path_allowed(path: &Path, policy: &ToolPolicy) -> Result<bool, String> {
@@ -570,6 +675,148 @@ fn required_string(arguments: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing required string argument '{key}'"))
 }
 
+fn resolve_sandbox_spec(
+    policy: &ToolPolicy,
+    shell: &str,
+    command: &str,
+    cwd: &Path,
+) -> Result<BashSandboxSpec, String> {
+    if !policy.os_sandbox_command.is_empty() {
+        return build_spec_from_command_template(&policy.os_sandbox_command, shell, command, cwd);
+    }
+
+    match policy.os_sandbox_mode {
+        OsSandboxMode::Off => Ok(BashSandboxSpec {
+            program: shell.to_string(),
+            args: vec!["-lc".to_string(), command.to_string()],
+            sandboxed: false,
+        }),
+        OsSandboxMode::Auto => {
+            if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
+                Ok(spec)
+            } else {
+                Ok(BashSandboxSpec {
+                    program: shell.to_string(),
+                    args: vec!["-lc".to_string(), command.to_string()],
+                    sandboxed: false,
+                })
+            }
+        }
+        OsSandboxMode::Force => {
+            if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
+                Ok(spec)
+            } else {
+                Err("OS sandbox mode 'force' is enabled but no sandbox launcher is configured or available".to_string())
+            }
+        }
+    }
+}
+
+fn build_spec_from_command_template(
+    template: &[String],
+    shell: &str,
+    command: &str,
+    cwd: &Path,
+) -> Result<BashSandboxSpec, String> {
+    let Some(program_template) = template.first() else {
+        return Err("sandbox command template is empty".to_string());
+    };
+    let mut args = Vec::new();
+    let mut has_shell = false;
+    let mut has_command = false;
+    for token in &template[1..] {
+        if token == "{shell}" {
+            has_shell = true;
+            args.push(shell.to_string());
+            continue;
+        }
+        if token == "{command}" {
+            has_command = true;
+            args.push(command.to_string());
+            continue;
+        }
+        args.push(token.replace("{cwd}", &cwd.display().to_string()));
+    }
+
+    let program = program_template.replace("{cwd}", &cwd.display().to_string());
+    if !has_shell {
+        args.push(shell.to_string());
+    }
+    if !has_command {
+        args.push("-lc".to_string());
+        args.push(command.to_string());
+    }
+
+    Ok(BashSandboxSpec {
+        program,
+        args,
+        sandboxed: true,
+    })
+}
+
+fn auto_sandbox_spec(shell: &str, command: &str, cwd: &Path) -> Option<BashSandboxSpec> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = (shell, command, cwd);
+
+    #[cfg(target_os = "linux")]
+    {
+        if command_available("bwrap") {
+            let mut args = vec![
+                "--die-with-parent".to_string(),
+                "--new-session".to_string(),
+                "--unshare-all".to_string(),
+                "--proc".to_string(),
+                "/proc".to_string(),
+                "--dev".to_string(),
+                "/dev".to_string(),
+                "--tmpfs".to_string(),
+                "/tmp".to_string(),
+            ];
+            for mount in ["/usr", "/bin", "/lib", "/lib64"] {
+                if Path::new(mount).exists() {
+                    args.extend_from_slice(&[
+                        "--ro-bind".to_string(),
+                        mount.to_string(),
+                        mount.to_string(),
+                    ]);
+                }
+            }
+            args.extend_from_slice(&[
+                "--bind".to_string(),
+                cwd.display().to_string(),
+                cwd.display().to_string(),
+                "--chdir".to_string(),
+                cwd.display().to_string(),
+                shell.to_string(),
+                "-lc".to_string(),
+                command.to_string(),
+            ]);
+            return Some(BashSandboxSpec {
+                program: "bwrap".to_string(),
+                args,
+                sandboxed: true,
+            });
+        }
+    }
+
+    None
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn command_available(command: &str) -> bool {
+    let path = std::env::var_os("PATH");
+    let Some(path) = path else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(command);
+        if candidate.exists() {
+            return true;
+        }
+    }
+    false
+}
+
 fn leading_executable(command: &str) -> Option<String> {
     let tokens = shell_words::split(command).ok()?;
     for token in tokens {
@@ -621,6 +868,14 @@ fn bash_profile_name(profile: BashCommandProfile) -> &'static str {
     }
 }
 
+fn os_sandbox_mode_name(mode: OsSandboxMode) -> &'static str {
+    match mode {
+        OsSandboxMode::Off => "off",
+        OsSandboxMode::Auto => "auto",
+        OsSandboxMode::Force => "force",
+    }
+}
+
 fn truncate_bytes(value: &str, limit: usize) -> String {
     if value.len() <= limit {
         return value.to_string();
@@ -667,15 +922,18 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        bash_profile_name, canonicalize_best_effort, is_command_allowed, leading_executable,
-        redact_secrets, truncate_bytes, AgentTool, BashCommandProfile, BashTool, EditTool,
-        ToolExecutionResult, ToolPolicy, WriteTool,
+        bash_profile_name, build_spec_from_command_template, canonicalize_best_effort,
+        command_available, is_command_allowed, leading_executable, os_sandbox_mode_name,
+        redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile,
+        BashTool, EditTool, OsSandboxMode, ToolExecutionResult, ToolPolicy, WriteTool,
     };
 
     fn test_policy(path: &Path) -> Arc<ToolPolicy> {
         Arc::new(ToolPolicy::new(vec![path.to_path_buf()]))
     }
 
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as symlink_file;
     use std::path::Path;
 
     #[tokio::test]
@@ -743,6 +1001,32 @@ mod tests {
         assert_eq!(content, "hello");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn functional_write_tool_rejects_symlink_targets_by_default() {
+        let temp = tempdir().expect("tempdir");
+        let target = temp.path().join("target.txt");
+        tokio::fs::write(&target, "safe")
+            .await
+            .expect("write target");
+        let symlink = temp.path().join("link.txt");
+        symlink_file(&target, &symlink).expect("create symlink");
+
+        let tool = WriteTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": symlink,
+                "content": "changed"
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .to_string()
+            .contains("symbolic link, which is denied by policy"));
+    }
+
     #[tokio::test]
     async fn bash_tool_runs_command() {
         let temp = tempdir().expect("tempdir");
@@ -761,6 +1045,20 @@ mod tests {
                 .get("stdout")
                 .and_then(serde_json::Value::as_str),
             Some("ok")
+        );
+        assert_eq!(
+            result
+                .content
+                .get("sandbox_mode")
+                .and_then(serde_json::Value::as_str),
+            Some("off")
+        );
+        assert_eq!(
+            result
+                .content
+                .get("sandboxed")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
         );
     }
 
@@ -897,6 +1195,50 @@ mod tests {
     }
 
     #[test]
+    fn unit_build_spec_from_template_injects_shell_and_command_defaults() {
+        let temp = tempdir().expect("tempdir");
+        let cwd = temp.path();
+        let template = vec![
+            "sandbox-run".to_string(),
+            "--cwd".to_string(),
+            "{cwd}".to_string(),
+        ];
+        let spec = build_spec_from_command_template(&template, "/bin/sh", "printf 'ok'", cwd)
+            .expect("template should build");
+
+        assert_eq!(spec.program, "sandbox-run");
+        assert_eq!(
+            spec.args,
+            vec![
+                "--cwd".to_string(),
+                cwd.display().to_string(),
+                "/bin/sh".to_string(),
+                "-lc".to_string(),
+                "printf 'ok'".to_string(),
+            ]
+        );
+        assert!(spec.sandboxed);
+    }
+
+    #[test]
+    fn regression_resolve_sandbox_spec_force_requires_launcher_or_template() {
+        let temp = tempdir().expect("tempdir");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.os_sandbox_mode = OsSandboxMode::Force;
+
+        let result = resolve_sandbox_spec(&policy, "sh", "printf 'ok'", temp.path());
+        if cfg!(target_os = "linux") && command_available("bwrap") {
+            let spec = result.expect("expected bwrap sandbox spec");
+            assert_eq!(spec.program, "bwrap");
+            assert!(spec.sandboxed);
+            return;
+        }
+
+        let error = result.expect_err("force mode should fail without a launcher");
+        assert!(error.contains("mode 'force'"));
+    }
+
+    #[test]
     fn truncate_bytes_keeps_valid_utf8_boundaries() {
         let value = "hello🙂world";
         let truncated = truncate_bytes(value, 7);
@@ -966,5 +1308,12 @@ mod tests {
         );
         assert_eq!(bash_profile_name(BashCommandProfile::Balanced), "balanced");
         assert_eq!(bash_profile_name(BashCommandProfile::Strict), "strict");
+    }
+
+    #[test]
+    fn regression_os_sandbox_mode_name_is_stable() {
+        assert_eq!(os_sandbox_mode_name(OsSandboxMode::Off), "off");
+        assert_eq!(os_sandbox_mode_name(OsSandboxMode::Auto), "auto");
+        assert_eq!(os_sandbox_mode_name(OsSandboxMode::Force), "force");
     }
 }

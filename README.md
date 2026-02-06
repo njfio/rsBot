@@ -246,5 +246,8 @@ cargo run -p pi-coding-agent -- \
   --bash-timeout-ms 60000 \
   --max-command-length 2048 \
   --bash-profile strict \
-  --allow-command python,cargo-nextest*
+  --allow-command python,cargo-nextest* \
+  --os-sandbox-mode auto \
+  --os-sandbox-command bwrap,--die-with-parent,--new-session,--unshare-all,--proc,/proc,--dev,/dev,--tmpfs,/tmp,--bind,{cwd},{cwd},--chdir,{cwd},{shell},-lc,{command} \
+  --enforce-regular-files true
 ```
