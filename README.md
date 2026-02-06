@@ -296,6 +296,10 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /macro run quick-check --dry-run
 /macro run quick-check
 
+# Save/load runtime defaults profiles (project-local .pi/profiles.json)
+/profile save baseline
+/profile load baseline
+
 # Persist and use named aliases for fast branch navigation
 /branch-alias set hotfix 12
 /branch-alias list

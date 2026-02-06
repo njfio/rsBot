@@ -849,6 +849,120 @@ fn regression_interactive_macro_command_corrupt_store_reports_parse_error() {
 }
 
 #[test]
+fn integration_interactive_profile_command_save_and_load_roundtrip() {
+    let temp = tempdir().expect("tempdir");
+    let profile_store = temp.path().join(".pi").join("profiles.json");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--no-session",
+        ])
+        .write_stdin("/profile save baseline\n/profile load baseline\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("profile save: path="))
+        .stdout(predicate::str::contains("name=baseline"))
+        .stdout(predicate::str::contains("status=saved"))
+        .stdout(predicate::str::contains("profile load: path="))
+        .stdout(predicate::str::contains("status=in_sync"))
+        .stdout(predicate::str::contains("diffs=0"));
+
+    let raw = fs::read_to_string(profile_store).expect("read profile store");
+    assert!(raw.contains("\"schema_version\": 1"));
+    assert!(raw.contains("\"baseline\""));
+    assert!(raw.contains("\"model\": \"openai/gpt-4o-mini\""));
+}
+
+#[test]
+fn regression_interactive_profile_command_invalid_name_reports_error_and_continues() {
+    let temp = tempdir().expect("tempdir");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--no-session",
+        ])
+        .write_stdin("/profile save 1bad\n/help profile\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("profile error: path="))
+        .stdout(predicate::str::contains(
+            "profile name '1bad' must start with an ASCII letter",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /profile <save|load> <name>",
+        ));
+}
+
+#[test]
+fn regression_interactive_profile_command_invalid_schema_reports_error_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let profile_dir = temp.path().join(".pi");
+    let profile_store = profile_dir.join("profiles.json");
+    fs::create_dir_all(&profile_dir).expect("mkdir profile dir");
+    let invalid = json!({
+        "schema_version": 99,
+        "profiles": {
+            "baseline": {
+                "model": "openai/gpt-4o-mini",
+                "fallback_models": [],
+                "session": {
+                    "enabled": false,
+                    "path": null,
+                    "import_mode": "merge"
+                },
+                "policy": {
+                    "tool_policy_preset": "balanced",
+                    "bash_profile": "balanced",
+                    "bash_dry_run": false,
+                    "os_sandbox_mode": "off",
+                    "enforce_regular_files": true,
+                    "bash_timeout_ms": 500,
+                    "max_command_length": 4096,
+                    "max_tool_output_bytes": 1024,
+                    "max_file_read_bytes": 2048,
+                    "max_file_write_bytes": 2048,
+                    "allow_command_newlines": true
+                }
+            }
+        }
+    });
+    fs::write(&profile_store, format!("{invalid}\n")).expect("write invalid profile store");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--no-session",
+        ])
+        .write_stdin("/profile load baseline\n/help profile\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("profile error: path="))
+        .stdout(predicate::str::contains(
+            "unsupported profile schema_version 99",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /profile <save|load> <name>",
+        ));
+}
+
+#[test]
 fn interactive_session_import_merge_remaps_collisions_by_default() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("target.jsonl");

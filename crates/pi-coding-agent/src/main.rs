@@ -617,6 +617,36 @@ struct SkillsSyncCommandConfig {
     default_trust_root_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ProfileSessionDefaults {
+    enabled: bool,
+    path: Option<String>,
+    import_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ProfilePolicyDefaults {
+    tool_policy_preset: String,
+    bash_profile: String,
+    bash_dry_run: bool,
+    os_sandbox_mode: String,
+    enforce_regular_files: bool,
+    bash_timeout_ms: u64,
+    max_command_length: usize,
+    max_tool_output_bytes: usize,
+    max_file_read_bytes: usize,
+    max_file_write_bytes: usize,
+    allow_command_newlines: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ProfileDefaults {
+    model: String,
+    fallback_models: Vec<String>,
+    session: ProfileSessionDefaults,
+    policy: ProfilePolicyDefaults,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandAction {
     Continue,
@@ -783,6 +813,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/macro save quick-check /tmp/quick-check.commands",
     },
     CommandSpec {
+        name: "/profile",
+        usage: "/profile <save|load> <name>",
+        description: "Save/load model, policy, and session defaults",
+        details:
+            "Profiles are persisted in project-local config. Load reports diffs from the current runtime defaults.",
+        example: "/profile save baseline",
+    },
+    CommandSpec {
         name: "/branch-alias",
         usage: "/branch-alias <set|list|use> ...",
         description: "Manage persistent branch aliases for quick navigation",
@@ -847,6 +885,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-sync",
     "/branches",
     "/macro",
+    "/profile",
     "/branch-alias",
     "/branch",
     "/resume",
@@ -876,6 +915,21 @@ impl RenderOptions {
             stream_delay_ms: cli.stream_delay_ms,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct CommandExecutionContext<'a> {
+    tool_policy_json: &'a serde_json::Value,
+    session_import_mode: SessionImportMode,
+    profile_defaults: &'a ProfileDefaults,
+    skills_command_config: &'a SkillsSyncCommandConfig,
+}
+
+#[derive(Clone, Copy)]
+struct InteractiveRuntimeConfig<'a> {
+    turn_timeout_ms: u64,
+    render_options: RenderOptions,
+    command_context: CommandExecutionContext<'a>,
 }
 
 #[derive(Clone)]
@@ -1522,14 +1576,22 @@ async fn main() -> Result<()> {
         default_lock_path: skills_lock_path.clone(),
         default_trust_root_path: cli.skill_trust_root_file.clone(),
     };
+    let profile_defaults = build_profile_defaults(&cli);
+    let command_context = CommandExecutionContext {
+        tool_policy_json: &tool_policy_json,
+        session_import_mode: cli.session_import_mode.into(),
+        profile_defaults: &profile_defaults,
+        skills_command_config: &skills_sync_command_config,
+    };
+    let interactive_config = InteractiveRuntimeConfig {
+        turn_timeout_ms: cli.turn_timeout_ms,
+        render_options,
+        command_context,
+    };
     run_interactive(
         agent,
         session_runtime,
-        cli.turn_timeout_ms,
-        render_options,
-        cli.session_import_mode.into(),
-        tool_policy_json,
-        &skills_sync_command_config,
+        interactive_config,
     )
     .await
 }
@@ -1868,11 +1930,7 @@ async fn run_prompt(
 async fn run_interactive(
     mut agent: Agent,
     mut session_runtime: Option<SessionRuntime>,
-    turn_timeout_ms: u64,
-    render_options: RenderOptions,
-    session_import_mode: SessionImportMode,
-    tool_policy_json: serde_json::Value,
-    skills_sync_command_config: &SkillsSyncCommandConfig,
+    config: InteractiveRuntimeConfig<'_>,
 ) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -1897,9 +1955,10 @@ async fn run_interactive(
                 trimmed,
                 &mut agent,
                 &mut session_runtime,
-                &tool_policy_json,
-                session_import_mode,
-                skills_sync_command_config,
+                config.command_context.tool_policy_json,
+                config.command_context.session_import_mode,
+                config.command_context.profile_defaults,
+                config.command_context.skills_command_config,
             )? == CommandAction::Exit
             {
                 break;
@@ -1911,9 +1970,9 @@ async fn run_interactive(
             &mut agent,
             &mut session_runtime,
             trimmed,
-            turn_timeout_ms,
+            config.turn_timeout_ms,
             tokio::signal::ctrl_c(),
-            render_options,
+            config.render_options,
         )
         .await?;
         if status == PromptRunStatus::Cancelled {
@@ -2015,12 +2074,35 @@ fn handle_command(
         default_lock_path: skills_lock_path,
         default_trust_root_path: None,
     };
+    let profile_defaults = ProfileDefaults {
+        model: "openai/gpt-4o-mini".to_string(),
+        fallback_models: Vec::new(),
+        session: ProfileSessionDefaults {
+            enabled: true,
+            path: Some(".pi/sessions/default.jsonl".to_string()),
+            import_mode: "merge".to_string(),
+        },
+        policy: ProfilePolicyDefaults {
+            tool_policy_preset: "balanced".to_string(),
+            bash_profile: "balanced".to_string(),
+            bash_dry_run: false,
+            os_sandbox_mode: "off".to_string(),
+            enforce_regular_files: true,
+            bash_timeout_ms: 500,
+            max_command_length: 4096,
+            max_tool_output_bytes: 1024,
+            max_file_read_bytes: 2048,
+            max_file_write_bytes: 2048,
+            allow_command_newlines: true,
+        },
+    };
     handle_command_with_session_import_mode(
         command,
         agent,
         session_runtime,
         tool_policy_json,
         SessionImportMode::Merge,
+        &profile_defaults,
         &skills_command_config,
     )
 }
@@ -2031,6 +2113,7 @@ fn handle_command_with_session_import_mode(
     session_runtime: &mut Option<SessionRuntime>,
     tool_policy_json: &serde_json::Value,
     session_import_mode: SessionImportMode,
+    profile_defaults: &ProfileDefaults,
     skills_command_config: &SkillsSyncCommandConfig,
 ) -> Result<CommandAction> {
     let skills_dir = skills_command_config.skills_dir.as_path();
@@ -2345,10 +2428,28 @@ fn handle_command_with_session_import_mode(
                 &macro_path,
                 agent,
                 session_runtime,
-                tool_policy_json,
-                session_import_mode,
-                skills_command_config
+                CommandExecutionContext {
+                    tool_policy_json,
+                    session_import_mode,
+                    profile_defaults,
+                    skills_command_config,
+                }
             )
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/profile" {
+        let profile_path = match default_profile_store_path() {
+            Ok(path) => path,
+            Err(error) => {
+                println!("profile error: path=unknown error={error}");
+                return Ok(CommandAction::Continue);
+            }
+        };
+        println!(
+            "{}",
+            execute_profile_command(command_args, &profile_path, profile_defaults)
         );
         return Ok(CommandAction::Continue);
     }
@@ -3123,9 +3224,7 @@ fn execute_macro_command(
     macro_path: &Path,
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    tool_policy_json: &serde_json::Value,
-    session_import_mode: SessionImportMode,
-    skills_command_config: &SkillsSyncCommandConfig,
+    command_context: CommandExecutionContext<'_>,
 ) -> String {
     let command = match parse_macro_command(command_args) {
         Ok(command) => command,
@@ -3214,9 +3313,10 @@ fn execute_macro_command(
                     command,
                     agent,
                     session_runtime,
-                    tool_policy_json,
-                    session_import_mode,
-                    skills_command_config,
+                    command_context.tool_policy_json,
+                    command_context.session_import_mode,
+                    command_context.profile_defaults,
+                    command_context.skills_command_config,
                 ) {
                     Ok(CommandAction::Continue) => {}
                     Ok(CommandAction::Exit) => {
@@ -3244,6 +3344,299 @@ fn execute_macro_command(
                 commands.len(),
                 commands.len()
             )
+        }
+    }
+}
+
+const PROFILE_SCHEMA_VERSION: u32 = 1;
+const PROFILE_USAGE: &str = "usage: /profile <save|load> <name>";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProfileCommand {
+    Save { name: String },
+    Load { name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ProfileStoreFile {
+    schema_version: u32,
+    profiles: BTreeMap<String, ProfileDefaults>,
+}
+
+fn default_profile_store_path() -> Result<PathBuf> {
+    Ok(std::env::current_dir()
+        .context("failed to resolve current working directory")?
+        .join(".pi")
+        .join("profiles.json"))
+}
+
+fn validate_profile_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        bail!("profile name must not be empty");
+    };
+    if !first.is_ascii_alphabetic() {
+        bail!("profile name '{}' must start with an ASCII letter", name);
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')) {
+        bail!(
+            "profile name '{}' must contain only ASCII letters, digits, '-' or '_'",
+            name
+        );
+    }
+    Ok(())
+}
+
+fn parse_profile_command(command_args: &str) -> Result<ProfileCommand> {
+    const USAGE_SAVE: &str = "usage: /profile save <name>";
+    const USAGE_LOAD: &str = "usage: /profile load <name>";
+
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        bail!("{PROFILE_USAGE}");
+    }
+
+    match tokens[0] {
+        "save" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_SAVE}");
+            }
+            validate_profile_name(tokens[1])?;
+            Ok(ProfileCommand::Save {
+                name: tokens[1].to_string(),
+            })
+        }
+        "load" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_LOAD}");
+            }
+            validate_profile_name(tokens[1])?;
+            Ok(ProfileCommand::Load {
+                name: tokens[1].to_string(),
+            })
+        }
+        other => bail!("unknown subcommand '{}'; {PROFILE_USAGE}", other),
+    }
+}
+
+fn load_profile_store(path: &Path) -> Result<BTreeMap<String, ProfileDefaults>> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read profile store {}", path.display()))?;
+    let parsed = serde_json::from_str::<ProfileStoreFile>(&raw)
+        .with_context(|| format!("failed to parse profile store {}", path.display()))?;
+    if parsed.schema_version != PROFILE_SCHEMA_VERSION {
+        bail!(
+            "unsupported profile schema_version {} in {} (expected {})",
+            parsed.schema_version,
+            path.display(),
+            PROFILE_SCHEMA_VERSION
+        );
+    }
+    Ok(parsed.profiles)
+}
+
+fn save_profile_store(path: &Path, profiles: &BTreeMap<String, ProfileDefaults>) -> Result<()> {
+    let payload = ProfileStoreFile {
+        schema_version: PROFILE_SCHEMA_VERSION,
+        profiles: profiles.clone(),
+    };
+    let mut encoded =
+        serde_json::to_string_pretty(&payload).context("failed to encode profile store")?;
+    encoded.push('\n');
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "profile store path {} does not have a parent directory",
+            path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create profile directory {}", parent.display()))?;
+    write_text_atomic(path, &encoded)
+}
+
+fn render_profile_diffs(current: &ProfileDefaults, loaded: &ProfileDefaults) -> Vec<String> {
+    fn to_list(values: &[String]) -> String {
+        if values.is_empty() {
+            "none".to_string()
+        } else {
+            values.join(",")
+        }
+    }
+
+    let mut diffs = Vec::new();
+    if current.model != loaded.model {
+        diffs.push(format!(
+            "diff: field=model current={} loaded={}",
+            current.model, loaded.model
+        ));
+    }
+    if current.fallback_models != loaded.fallback_models {
+        diffs.push(format!(
+            "diff: field=fallback_models current={} loaded={}",
+            to_list(&current.fallback_models),
+            to_list(&loaded.fallback_models)
+        ));
+    }
+    if current.session.enabled != loaded.session.enabled {
+        diffs.push(format!(
+            "diff: field=session.enabled current={} loaded={}",
+            current.session.enabled, loaded.session.enabled
+        ));
+    }
+    if current.session.path != loaded.session.path {
+        diffs.push(format!(
+            "diff: field=session.path current={} loaded={}",
+            current.session.path.as_deref().unwrap_or("none"),
+            loaded.session.path.as_deref().unwrap_or("none")
+        ));
+    }
+    if current.session.import_mode != loaded.session.import_mode {
+        diffs.push(format!(
+            "diff: field=session.import_mode current={} loaded={}",
+            current.session.import_mode, loaded.session.import_mode
+        ));
+    }
+    if current.policy.tool_policy_preset != loaded.policy.tool_policy_preset {
+        diffs.push(format!(
+            "diff: field=policy.tool_policy_preset current={} loaded={}",
+            current.policy.tool_policy_preset, loaded.policy.tool_policy_preset
+        ));
+    }
+    if current.policy.bash_profile != loaded.policy.bash_profile {
+        diffs.push(format!(
+            "diff: field=policy.bash_profile current={} loaded={}",
+            current.policy.bash_profile, loaded.policy.bash_profile
+        ));
+    }
+    if current.policy.bash_dry_run != loaded.policy.bash_dry_run {
+        diffs.push(format!(
+            "diff: field=policy.bash_dry_run current={} loaded={}",
+            current.policy.bash_dry_run, loaded.policy.bash_dry_run
+        ));
+    }
+    if current.policy.os_sandbox_mode != loaded.policy.os_sandbox_mode {
+        diffs.push(format!(
+            "diff: field=policy.os_sandbox_mode current={} loaded={}",
+            current.policy.os_sandbox_mode, loaded.policy.os_sandbox_mode
+        ));
+    }
+    if current.policy.enforce_regular_files != loaded.policy.enforce_regular_files {
+        diffs.push(format!(
+            "diff: field=policy.enforce_regular_files current={} loaded={}",
+            current.policy.enforce_regular_files, loaded.policy.enforce_regular_files
+        ));
+    }
+    if current.policy.bash_timeout_ms != loaded.policy.bash_timeout_ms {
+        diffs.push(format!(
+            "diff: field=policy.bash_timeout_ms current={} loaded={}",
+            current.policy.bash_timeout_ms, loaded.policy.bash_timeout_ms
+        ));
+    }
+    if current.policy.max_command_length != loaded.policy.max_command_length {
+        diffs.push(format!(
+            "diff: field=policy.max_command_length current={} loaded={}",
+            current.policy.max_command_length, loaded.policy.max_command_length
+        ));
+    }
+    if current.policy.max_tool_output_bytes != loaded.policy.max_tool_output_bytes {
+        diffs.push(format!(
+            "diff: field=policy.max_tool_output_bytes current={} loaded={}",
+            current.policy.max_tool_output_bytes, loaded.policy.max_tool_output_bytes
+        ));
+    }
+    if current.policy.max_file_read_bytes != loaded.policy.max_file_read_bytes {
+        diffs.push(format!(
+            "diff: field=policy.max_file_read_bytes current={} loaded={}",
+            current.policy.max_file_read_bytes, loaded.policy.max_file_read_bytes
+        ));
+    }
+    if current.policy.max_file_write_bytes != loaded.policy.max_file_write_bytes {
+        diffs.push(format!(
+            "diff: field=policy.max_file_write_bytes current={} loaded={}",
+            current.policy.max_file_write_bytes, loaded.policy.max_file_write_bytes
+        ));
+    }
+    if current.policy.allow_command_newlines != loaded.policy.allow_command_newlines {
+        diffs.push(format!(
+            "diff: field=policy.allow_command_newlines current={} loaded={}",
+            current.policy.allow_command_newlines, loaded.policy.allow_command_newlines
+        ));
+    }
+
+    diffs
+}
+
+fn execute_profile_command(
+    command_args: &str,
+    profile_path: &Path,
+    current_defaults: &ProfileDefaults,
+) -> String {
+    let command = match parse_profile_command(command_args) {
+        Ok(command) => command,
+        Err(error) => {
+            return format!(
+                "profile error: path={} error={error}",
+                profile_path.display()
+            );
+        }
+    };
+    let mut profiles = match load_profile_store(profile_path) {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            return format!(
+                "profile error: path={} error={error}",
+                profile_path.display()
+            );
+        }
+    };
+
+    match command {
+        ProfileCommand::Save { name } => {
+            profiles.insert(name.clone(), current_defaults.clone());
+            match save_profile_store(profile_path, &profiles) {
+                Ok(()) => format!(
+                    "profile save: path={} name={} status=saved",
+                    profile_path.display(),
+                    name
+                ),
+                Err(error) => format!(
+                    "profile error: path={} name={} error={error}",
+                    profile_path.display(),
+                    name
+                ),
+            }
+        }
+        ProfileCommand::Load { name } => {
+            let Some(loaded) = profiles.get(&name) else {
+                return format!(
+                    "profile error: path={} name={} error=unknown profile '{}'",
+                    profile_path.display(),
+                    name,
+                    name
+                );
+            };
+            let diffs = render_profile_diffs(current_defaults, loaded);
+            if diffs.is_empty() {
+                return format!(
+                    "profile load: path={} name={} status=in_sync diffs=0",
+                    profile_path.display(),
+                    name
+                );
+            }
+            let mut lines = vec![format!(
+                "profile load: path={} name={} status=diff diffs={}",
+                profile_path.display(),
+                name,
+                diffs.len()
+            )];
+            lines.extend(diffs);
+            lines.join("\n")
         }
     }
 }
@@ -4920,6 +5313,35 @@ fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
     })
 }
 
+fn build_profile_defaults(cli: &Cli) -> ProfileDefaults {
+    ProfileDefaults {
+        model: cli.model.clone(),
+        fallback_models: cli.fallback_model.clone(),
+        session: ProfileSessionDefaults {
+            enabled: !cli.no_session,
+            path: if cli.no_session {
+                None
+            } else {
+                Some(cli.session.display().to_string())
+            },
+            import_mode: format!("{:?}", cli.session_import_mode).to_lowercase(),
+        },
+        policy: ProfilePolicyDefaults {
+            tool_policy_preset: format!("{:?}", cli.tool_policy_preset).to_lowercase(),
+            bash_profile: format!("{:?}", cli.bash_profile).to_lowercase(),
+            bash_dry_run: cli.bash_dry_run,
+            os_sandbox_mode: format!("{:?}", cli.os_sandbox_mode).to_lowercase(),
+            enforce_regular_files: cli.enforce_regular_files,
+            bash_timeout_ms: cli.bash_timeout_ms,
+            max_command_length: cli.max_command_length,
+            max_tool_output_bytes: cli.max_tool_output_bytes,
+            max_file_read_bytes: cli.max_file_read_bytes,
+            max_file_write_bytes: cli.max_file_write_bytes,
+            allow_command_newlines: cli.allow_command_newlines,
+        },
+    }
+}
+
 fn init_tracing() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())
@@ -4955,10 +5377,11 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, branch_alias_path_for_session, build_tool_policy,
-        compute_session_entry_depths, compute_session_stats, default_macro_config_path,
-        default_skills_lock_path, derive_skills_prune_candidates, ensure_non_empty_text,
-        escape_graph_label, execute_branch_alias_command, execute_macro_command,
+        apply_trust_root_mutations, branch_alias_path_for_session, build_profile_defaults,
+        build_tool_policy, compute_session_entry_depths, compute_session_stats,
+        default_macro_config_path, default_profile_store_path, default_skills_lock_path,
+        derive_skills_prune_candidates, ensure_non_empty_text, escape_graph_label,
+        execute_branch_alias_command, execute_macro_command, execute_profile_command,
         execute_session_graph_export_command, execute_session_search_command,
         execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
@@ -4966,28 +5389,32 @@ mod tests {
         execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
         initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
-        parse_branch_alias_command, parse_command, parse_macro_command,
-        parse_sandbox_command_tokens, parse_session_search_args, parse_skills_lock_diff_args,
-        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-        render_audit_summary, render_command_help, render_help_overview, render_macro_list,
-        render_session_graph_dot, render_session_graph_mermaid, render_session_stats,
-        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        load_profile_store, parse_branch_alias_command, parse_command, parse_macro_command,
+        parse_profile_command, parse_sandbox_command_tokens, parse_session_search_args,
+        parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
+        parse_skills_trust_list_args, parse_trust_rotation_spec, parse_trusted_root_spec,
+        percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
+        render_macro_list, render_profile_diffs, render_session_graph_dot,
+        render_session_graph_mermaid, render_session_stats, render_skills_list,
+        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
         render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
         resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
         resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
-        run_prompt_with_cancellation, save_branch_aliases, save_macro_file, search_session_entries,
-        session_message_preview, stream_text_chunks, summarize_audit_file, tool_audit_event_json,
-        tool_policy_to_json, trust_record_status, unknown_command_message,
+        run_prompt_with_cancellation, save_branch_aliases, save_macro_file, save_profile_store,
+        search_session_entries, session_message_preview, stream_text_chunks, summarize_audit_file,
+        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
         validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
-        validate_session_file, validate_skills_prune_file_name, BranchAliasCommand,
-        BranchAliasFile, Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode,
-        CliToolPolicyPreset, ClientRoute, CommandAction, FallbackRoutingClient, MacroCommand,
-        MacroFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions, SessionGraphFormat,
-        SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
-        TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-        MACRO_USAGE, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
+        validate_profile_name, validate_session_file, validate_skills_prune_file_name,
+        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliOsSandboxMode,
+        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        CommandExecutionContext, FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand,
+        ProfileDefaults,
+        ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
+        SessionGraphFormat, SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig,
+        ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
+        MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+        SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
         SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
@@ -5165,6 +5592,10 @@ mod tests {
             default_lock_path: lock_path.to_path_buf(),
             default_trust_root_path: trust_root_path.map(Path::to_path_buf),
         }
+    }
+
+    fn test_profile_defaults() -> ProfileDefaults {
+        build_profile_defaults(&test_cli())
     }
 
     #[test]
@@ -6030,18 +6461,23 @@ mod tests {
         agent.replace_messages(lineage);
 
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let command_context = CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+        };
 
         let save_output = execute_macro_command(
             &format!("save rewind {}", commands_file.display()),
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(save_output.contains("macro save: path="));
         assert!(save_output.contains("name=rewind"));
@@ -6052,9 +6488,7 @@ mod tests {
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(dry_run_output.contains("mode=dry-run"));
         assert!(dry_run_output.contains("plan: command=/branch 1"));
@@ -6070,9 +6504,7 @@ mod tests {
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(run_output.contains("macro run: path="));
         assert!(run_output.contains("mode=apply"));
@@ -6089,9 +6521,7 @@ mod tests {
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(list_output.contains("macro list: path="));
         assert!(list_output.contains("count=1"));
@@ -6104,9 +6534,16 @@ mod tests {
         let macro_path = temp.path().join(".pi").join("macros.json");
         let missing_commands_file = temp.path().join("missing.commands");
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let command_context = CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+        };
         let mut session_runtime = None;
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
 
@@ -6115,9 +6552,7 @@ mod tests {
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(output.contains("macro error: path="));
         assert!(output.contains("failed to read commands file"));
@@ -6136,9 +6571,16 @@ mod tests {
         std::fs::write(&macro_path, "{invalid-json").expect("write malformed macro file");
 
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let command_context = CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+        };
         let mut session_runtime = None;
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
 
@@ -6147,9 +6589,7 @@ mod tests {
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(output.contains("macro error: path="));
         assert!(output.contains("failed to parse macro file"));
@@ -6163,9 +6603,16 @@ mod tests {
         save_macro_file(&macro_path, &macros).expect("save macro file");
 
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let command_context = CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+        };
         let mut session_runtime = None;
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
 
@@ -6174,9 +6621,7 @@ mod tests {
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(missing_output.contains("unknown macro 'missing'"));
 
@@ -6185,11 +6630,155 @@ mod tests {
             &macro_path,
             &mut agent,
             &mut session_runtime,
-            &tool_policy_json,
-            SessionImportMode::Merge,
-            &skills_command_config,
+            command_context,
         );
         assert!(invalid_output.contains("macro command #0 failed validation"));
+    }
+
+    #[test]
+    fn unit_validate_profile_name_accepts_and_rejects_expected_inputs() {
+        validate_profile_name("baseline_1").expect("valid profile name");
+
+        let error = validate_profile_name("").expect_err("empty profile name should fail");
+        assert!(error.to_string().contains("must not be empty"));
+
+        let error = validate_profile_name("1baseline")
+            .expect_err("profile name starting with digit should fail");
+        assert!(error
+            .to_string()
+            .contains("must start with an ASCII letter"));
+
+        let error = validate_profile_name("baseline.json")
+            .expect_err("profile name with punctuation should fail");
+        assert!(error
+            .to_string()
+            .contains("must contain only ASCII letters, digits, '-' or '_'"));
+    }
+
+    #[test]
+    fn functional_parse_profile_command_supports_save_load_and_usage_errors() {
+        assert_eq!(
+            parse_profile_command("save baseline").expect("parse save"),
+            ProfileCommand::Save {
+                name: "baseline".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_profile_command("load baseline").expect("parse load"),
+            ProfileCommand::Load {
+                name: "baseline".to_string(),
+            }
+        );
+
+        let error = parse_profile_command("").expect_err("empty args should fail");
+        assert!(error.to_string().contains(PROFILE_USAGE));
+
+        let error = parse_profile_command("save").expect_err("missing name should fail");
+        assert!(error.to_string().contains("usage: /profile save <name>"));
+
+        let error =
+            parse_profile_command("delete baseline").expect_err("unknown subcommand should fail");
+        assert!(error.to_string().contains("unknown subcommand 'delete'"));
+    }
+
+    #[test]
+    fn unit_save_and_load_profile_store_round_trip_schema_and_values() {
+        let temp = tempdir().expect("tempdir");
+        let profile_path = temp.path().join(".pi").join("profiles.json");
+        let mut alternate = test_profile_defaults();
+        alternate.model = "google/gemini-2.5-pro".to_string();
+        let profiles = BTreeMap::from([
+            ("baseline".to_string(), test_profile_defaults()),
+            ("alt".to_string(), alternate.clone()),
+        ]);
+
+        save_profile_store(&profile_path, &profiles).expect("save profiles");
+        let loaded = load_profile_store(&profile_path).expect("load profiles");
+        assert_eq!(loaded, profiles);
+
+        let raw = std::fs::read_to_string(&profile_path).expect("read profile file");
+        let parsed = serde_json::from_str::<ProfileStoreFile>(&raw).expect("parse profile file");
+        assert_eq!(parsed.schema_version, PROFILE_SCHEMA_VERSION);
+        assert_eq!(parsed.profiles, profiles);
+    }
+
+    #[test]
+    fn functional_render_profile_diffs_reports_changed_fields() {
+        let current = test_profile_defaults();
+        let mut loaded = current.clone();
+        loaded.model = "google/gemini-2.5-pro".to_string();
+        loaded.policy.max_command_length = 2048;
+        loaded.session.import_mode = "replace".to_string();
+
+        let diffs = render_profile_diffs(&current, &loaded);
+        assert_eq!(diffs.len(), 3);
+        assert!(diffs.iter().any(|line| line
+            .contains("field=model current=openai/gpt-4o-mini loaded=google/gemini-2.5-pro")));
+        assert!(diffs
+            .iter()
+            .any(|line| line.contains("field=session.import_mode current=merge loaded=replace")));
+        assert!(diffs
+            .iter()
+            .any(|line| line.contains("field=policy.max_command_length current=4096 loaded=2048")));
+    }
+
+    #[test]
+    fn integration_execute_profile_command_save_then_load_roundtrip() {
+        let temp = tempdir().expect("tempdir");
+        let profile_path = temp.path().join(".pi").join("profiles.json");
+        let current = test_profile_defaults();
+
+        let save_output = execute_profile_command("save baseline", &profile_path, &current);
+        assert!(save_output.contains("profile save: path="));
+        assert!(save_output.contains("name=baseline"));
+        assert!(save_output.contains("status=saved"));
+
+        let load_output = execute_profile_command("load baseline", &profile_path, &current);
+        assert!(load_output.contains("profile load: path="));
+        assert!(load_output.contains("name=baseline"));
+        assert!(load_output.contains("status=in_sync"));
+        assert!(load_output.contains("diffs=0"));
+
+        let mut changed = current.clone();
+        changed.model = "anthropic/claude-sonnet-4-20250514".to_string();
+        let diff_output = execute_profile_command("load baseline", &profile_path, &changed);
+        assert!(diff_output.contains("status=diff"));
+        assert!(diff_output.contains("diff: field=model"));
+    }
+
+    #[test]
+    fn regression_execute_profile_command_reports_unknown_profile_and_schema_errors() {
+        let temp = tempdir().expect("tempdir");
+        let profile_path = temp.path().join(".pi").join("profiles.json");
+        let current = test_profile_defaults();
+
+        let missing_output = execute_profile_command("load missing", &profile_path, &current);
+        assert!(missing_output.contains("profile error: path="));
+        assert!(missing_output.contains("unknown profile 'missing'"));
+
+        std::fs::create_dir_all(
+            profile_path
+                .parent()
+                .expect("profile path should include parent dir"),
+        )
+        .expect("create profile dir");
+        let invalid = serde_json::json!({
+            "schema_version": 999,
+            "profiles": {
+                "baseline": current
+            }
+        });
+        std::fs::write(&profile_path, format!("{invalid}\n")).expect("write invalid schema");
+
+        let schema_output = execute_profile_command("load baseline", &profile_path, &current);
+        assert!(schema_output.contains("profile error: path="));
+        assert!(schema_output.contains("unsupported profile schema_version 999"));
+    }
+
+    #[test]
+    fn regression_default_profile_store_path_uses_project_local_profiles_file() {
+        let path = default_profile_store_path().expect("resolve profile store path");
+        assert!(path.ends_with(Path::new(".pi").join("profiles.json")));
     }
 
     #[test]
@@ -6382,6 +6971,7 @@ mod tests {
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/macro <save|run|list> ..."));
+        assert!(help.contains("/profile <save|load> <name>"));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/branch-alias <set|list|use> ..."));
         assert!(help.contains("/quit"));
@@ -6409,6 +6999,14 @@ mod tests {
         assert!(help.contains("command: /macro"));
         assert!(help.contains("usage: /macro <save|run|list> ..."));
         assert!(help.contains("example: /macro save quick-check /tmp/quick-check.commands"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_profile_topic_without_slash() {
+        let help = render_command_help("profile").expect("render help");
+        assert!(help.contains("command: /profile"));
+        assert!(help.contains("usage: /profile <save|load> <name>"));
+        assert!(help.contains("example: /profile save baseline"));
     }
 
     #[test]
@@ -7234,6 +7832,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
@@ -7242,6 +7841,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills sync command should continue");
@@ -7282,6 +7882,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
@@ -7290,6 +7891,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills lock write command should continue");
@@ -7329,6 +7931,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
@@ -7337,6 +7940,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills list command should continue");
@@ -7375,6 +7979,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
@@ -7383,6 +7988,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills show command should continue");
@@ -7421,6 +8027,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
@@ -7429,6 +8036,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills search command should continue");
@@ -7467,6 +8075,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
@@ -7475,6 +8084,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills lock diff command should continue");
@@ -7513,6 +8123,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
 
         let action = handle_command_with_session_import_mode(
@@ -7521,6 +8132,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills prune command should continue");
@@ -7561,6 +8173,7 @@ mod tests {
             active_head: Some(head),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_command_config =
             skills_command_config(&skills_dir, &lock_path, Some(trust_path.as_path()));
 
@@ -7570,6 +8183,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Merge,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("skills trust list command should continue");
@@ -8498,6 +9112,7 @@ mod tests {
             active_head: Some(2),
         });
         let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
         let skills_dir = PathBuf::from(".pi/skills");
         let skills_lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &skills_lock_path, None);
@@ -8508,6 +9123,7 @@ mod tests {
             &mut runtime,
             &tool_policy_json,
             SessionImportMode::Replace,
+            &profile_defaults,
             &skills_command_config,
         )
         .expect("session replace import should succeed");
