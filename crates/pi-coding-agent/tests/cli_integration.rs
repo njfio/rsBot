@@ -301,6 +301,112 @@ fn regression_interactive_session_search_command_empty_query_prints_usage_and_co
 }
 
 #[test]
+fn integration_interactive_session_stats_command_reports_branched_summary() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-stats.jsonl");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":2,
+            "parent_id":1,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"main"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":3,
+            "parent_id":1,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"branch"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/session-stats\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "session stats: entries=3 branch_tips=2 roots=1 max_depth=2",
+        ))
+        .stdout(predicate::str::contains(
+            "heads: active=3 latest=3 active_is_latest=true",
+        ))
+        .stdout(predicate::str::contains("depth: active=2 latest=2"))
+        .stdout(predicate::str::contains("role: system=1"))
+        .stdout(predicate::str::contains("role: user=2"));
+}
+
+#[test]
+fn regression_interactive_session_stats_command_with_args_prints_usage_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-stats-usage.jsonl");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/session-stats extra\n/help session-stats\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("usage: /session-stats"))
+        .stdout(predicate::str::contains("command: /session-stats"))
+        .stdout(predicate::str::contains("usage: /session-stats"));
+}
+
+#[test]
 fn interactive_session_import_merge_remaps_collisions_by_default() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("target.jsonl");

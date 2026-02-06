@@ -662,6 +662,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/session-search retry budget",
     },
     CommandSpec {
+        name: "/session-stats",
+        usage: "/session-stats",
+        description: "Summarize session size, branch tips, depth, and role counts",
+        details:
+            "Read-only session graph diagnostics including active/latest head indicators.",
+        example: "/session-stats",
+    },
+    CommandSpec {
         name: "/session-export",
         usage: "/session-export <path>",
         description: "Export active lineage snapshot to a JSONL file",
@@ -799,6 +807,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/help",
     "/session",
     "/session-search",
+    "/session-stats",
     "/session-export",
     "/session-import",
     "/policy",
@@ -2061,6 +2070,20 @@ fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/session-stats" {
+        let Some(runtime) = session_runtime.as_ref() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+        if !command_args.trim().is_empty() {
+            println!("usage: /session-stats");
+            return Ok(CommandAction::Continue);
+        }
+
+        println!("{}", execute_session_stats_command(runtime));
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/session-export" {
         let Some(runtime) = session_runtime.as_ref() else {
             println!("session is disabled");
@@ -2505,6 +2528,152 @@ fn execute_session_search_command(runtime: &SessionRuntime, command_args: &str) 
         total_matches,
         SESSION_SEARCH_MAX_RESULTS,
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionStats {
+    entries: usize,
+    branch_tips: usize,
+    roots: usize,
+    max_depth: usize,
+    active_depth: Option<usize>,
+    latest_depth: Option<usize>,
+    active_head: Option<u64>,
+    latest_head: Option<u64>,
+    active_is_latest: bool,
+    role_counts: BTreeMap<String, usize>,
+}
+
+fn compute_session_entry_depths(
+    entries: &[crate::session::SessionEntry],
+) -> Result<HashMap<u64, usize>> {
+    let mut parent_by_id = HashMap::new();
+    for entry in entries {
+        if parent_by_id.insert(entry.id, entry.parent_id).is_some() {
+            bail!("duplicate session entry id {}", entry.id);
+        }
+    }
+
+    fn depth_for(
+        id: u64,
+        parent_by_id: &HashMap<u64, Option<u64>>,
+        memo: &mut HashMap<u64, usize>,
+        visiting: &mut HashSet<u64>,
+    ) -> Result<usize> {
+        if let Some(depth) = memo.get(&id) {
+            return Ok(*depth);
+        }
+        if !visiting.insert(id) {
+            bail!("detected cycle while computing depth at session id {id}");
+        }
+
+        let Some(parent_id) = parent_by_id.get(&id) else {
+            bail!("unknown session entry id {}", id);
+        };
+        let depth = match parent_id {
+            None => 1,
+            Some(parent_id) => {
+                if !parent_by_id.contains_key(parent_id) {
+                    bail!("missing parent id {} for session entry {}", parent_id, id);
+                }
+                depth_for(*parent_id, parent_by_id, memo, visiting)? + 1
+            }
+        };
+        visiting.remove(&id);
+        memo.insert(id, depth);
+        Ok(depth)
+    }
+
+    let mut memo = HashMap::new();
+    for id in parent_by_id.keys().copied() {
+        let mut visiting = HashSet::new();
+        let _ = depth_for(id, &parent_by_id, &mut memo, &mut visiting)?;
+    }
+    Ok(memo)
+}
+
+fn compute_session_stats(runtime: &SessionRuntime) -> Result<SessionStats> {
+    let entries = runtime.store.entries();
+    let depths = compute_session_entry_depths(entries)?;
+    let mut role_counts = BTreeMap::new();
+    for entry in entries {
+        let role = session_message_role(&entry.message);
+        *role_counts.entry(role).or_insert(0) += 1;
+    }
+
+    let latest_head = runtime.store.head_id();
+    let latest_depth = latest_head.and_then(|id| depths.get(&id).copied());
+    let active_depth = match runtime.active_head {
+        Some(id) => Some(
+            *depths
+                .get(&id)
+                .ok_or_else(|| anyhow!("active head {} does not exist in session", id))?,
+        ),
+        None => None,
+    };
+
+    Ok(SessionStats {
+        entries: entries.len(),
+        branch_tips: runtime.store.branch_tips().len(),
+        roots: entries
+            .iter()
+            .filter(|entry| entry.parent_id.is_none())
+            .count(),
+        max_depth: depths.values().copied().max().unwrap_or(0),
+        active_depth,
+        latest_depth,
+        active_head: runtime.active_head,
+        latest_head,
+        active_is_latest: runtime.active_head == latest_head,
+        role_counts,
+    })
+}
+
+fn render_session_stats(stats: &SessionStats) -> String {
+    let mut lines = vec![format!(
+        "session stats: entries={} branch_tips={} roots={} max_depth={}",
+        stats.entries, stats.branch_tips, stats.roots, stats.max_depth
+    )];
+    lines.push(format!(
+        "heads: active={} latest={} active_is_latest={}",
+        stats
+            .active_head
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        stats
+            .latest_head
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        stats.active_is_latest
+    ));
+    lines.push(format!(
+        "depth: active={} latest={}",
+        stats
+            .active_depth
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        stats
+            .latest_depth
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    ));
+
+    if stats.role_counts.is_empty() {
+        lines.push("roles: none".to_string());
+    } else {
+        for (role, count) in &stats.role_counts {
+            lines.push(format!("role: {}={}", role, count));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn execute_session_stats_command(runtime: &SessionRuntime) -> String {
+    match compute_session_stats(runtime) {
+        Ok(stats) => render_session_stats(&stats),
+        Err(error) => format!("session stats error: {error}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3968,7 +4137,7 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet, VecDeque},
+        collections::{BTreeMap, HashMap, HashSet, VecDeque},
         future::{pending, ready},
         path::{Path, PathBuf},
         sync::Arc,
@@ -3988,8 +4157,9 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
-        derive_skills_prune_candidates, ensure_non_empty_text, execute_session_search_command,
+        apply_trust_root_mutations, build_tool_policy, compute_session_entry_depths,
+        compute_session_stats, default_skills_lock_path, derive_skills_prune_candidates,
+        ensure_non_empty_text, execute_session_search_command, execute_session_stats_command,
         execute_skills_list_command, execute_skills_lock_diff_command,
         execute_skills_lock_write_command, execute_skills_prune_command,
         execute_skills_search_command, execute_skills_show_command, execute_skills_sync_command,
@@ -3999,17 +4169,18 @@ mod tests {
         parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
         parse_skills_trust_list_args, parse_trust_rotation_spec, parse_trusted_root_spec,
         percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
-        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
-        render_skills_lock_write_success, render_skills_search, render_skills_show,
-        render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
-        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_skill_trust_roots,
-        resolve_skills_lock_path, resolve_system_prompt, run_prompt_with_cancellation,
-        search_session_entries, session_message_preview, stream_text_chunks, summarize_audit_file,
-        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-        validate_session_file, validate_skills_prune_file_name, Cli, CliBashProfile,
-        CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        render_session_stats, render_skills_list, render_skills_lock_diff_drift,
+        render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
+        render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
+        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
+        resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
+        run_prompt_with_cancellation, search_session_entries, session_message_preview,
+        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
+        trust_record_status, unknown_command_message, validate_session_file,
+        validate_skills_prune_file_name, Cli, CliBashProfile, CliOsSandboxMode,
+        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         FallbackRoutingClient, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
-        SessionRuntime, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
+        SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
         TrustedRootRecord, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
         SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
@@ -4594,11 +4765,177 @@ mod tests {
     }
 
     #[test]
+    fn unit_compute_session_entry_depths_calculates_branch_depths() {
+        let entries = vec![
+            crate::session::SessionEntry {
+                id: 3,
+                parent_id: Some(2),
+                message: Message::assistant_text("leaf"),
+            },
+            crate::session::SessionEntry {
+                id: 1,
+                parent_id: None,
+                message: Message::system("root"),
+            },
+            crate::session::SessionEntry {
+                id: 2,
+                parent_id: Some(1),
+                message: Message::user("middle"),
+            },
+        ];
+        let depths = compute_session_entry_depths(&entries).expect("depth computation");
+        assert_eq!(depths.get(&1), Some(&1));
+        assert_eq!(depths.get(&2), Some(&2));
+        assert_eq!(depths.get(&3), Some(&3));
+    }
+
+    #[test]
+    fn unit_compute_session_stats_calculates_core_counts() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let active_head = store
+            .append_messages(Some(root), &[Message::user("user one")])
+            .expect("append user")
+            .expect("active head");
+        let runtime = SessionRuntime {
+            store,
+            active_head: Some(active_head),
+        };
+
+        let stats = compute_session_stats(&runtime).expect("compute stats");
+        assert_eq!(stats.entries, 2);
+        assert_eq!(stats.branch_tips, 1);
+        assert_eq!(stats.roots, 1);
+        assert_eq!(stats.max_depth, 2);
+        assert_eq!(stats.active_depth, Some(2));
+        assert_eq!(stats.latest_depth, Some(2));
+        assert!(stats.active_is_latest);
+        assert_eq!(stats.role_counts.get("system"), Some(&1));
+        assert_eq!(stats.role_counts.get("user"), Some(&1));
+    }
+
+    #[test]
+    fn functional_render_session_stats_includes_heads_depths_and_roles() {
+        let mut role_counts = BTreeMap::new();
+        role_counts.insert("assistant".to_string(), 2);
+        role_counts.insert("user".to_string(), 1);
+        let stats = SessionStats {
+            entries: 3,
+            branch_tips: 1,
+            roots: 1,
+            max_depth: 3,
+            active_depth: Some(3),
+            latest_depth: Some(3),
+            active_head: Some(3),
+            latest_head: Some(3),
+            active_is_latest: true,
+            role_counts,
+        };
+
+        let rendered = render_session_stats(&stats);
+        assert!(rendered.contains("session stats: entries=3 branch_tips=1 roots=1 max_depth=3"));
+        assert!(rendered.contains("heads: active=3 latest=3 active_is_latest=true"));
+        assert!(rendered.contains("depth: active=3 latest=3"));
+        assert!(rendered.contains("role: assistant=2"));
+        assert!(rendered.contains("role: user=1"));
+    }
+
+    #[test]
+    fn integration_execute_session_stats_command_summarizes_branched_session() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let main_head = store
+            .append_messages(Some(root), &[Message::user("main user")])
+            .expect("append main")
+            .expect("main head");
+        let branch_head = store
+            .append_messages(Some(root), &[Message::user("branch user")])
+            .expect("append branch")
+            .expect("branch head");
+        let latest_head = store
+            .append_messages(
+                Some(branch_head),
+                &[Message::assistant_text("branch assistant")],
+            )
+            .expect("append branch assistant")
+            .expect("latest head");
+        let runtime = SessionRuntime {
+            store,
+            active_head: Some(main_head),
+        };
+
+        let output = execute_session_stats_command(&runtime);
+        assert!(output.contains("session stats: entries=4"));
+        assert!(output.contains("branch_tips=2"));
+        assert!(output.contains("roots=1"));
+        assert!(output.contains("max_depth=3"));
+        assert!(output.contains(&format!(
+            "heads: active={} latest={} active_is_latest=false",
+            main_head, latest_head
+        )));
+        assert!(output.contains("role: assistant=1"));
+        assert!(output.contains("role: system=1"));
+        assert!(output.contains("role: user=2"));
+    }
+
+    #[test]
+    fn regression_execute_session_stats_command_handles_empty_session() {
+        let temp = tempdir().expect("tempdir");
+        let store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let runtime = SessionRuntime {
+            store,
+            active_head: None,
+        };
+
+        let output = execute_session_stats_command(&runtime);
+        assert!(output.contains("session stats: entries=0 branch_tips=0 roots=0 max_depth=0"));
+        assert!(output.contains("heads: active=none latest=none active_is_latest=true"));
+        assert!(output.contains("depth: active=none latest=none"));
+        assert!(output.contains("roles: none"));
+    }
+
+    #[test]
+    fn regression_execute_session_stats_command_reports_malformed_graph() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("malformed-session.jsonl");
+        let raw = [
+            serde_json::json!({"record_type":"meta","schema_version":1}).to_string(),
+            serde_json::json!({
+                "record_type":"entry",
+                "id":1,
+                "parent_id":2,
+                "message": Message::system("orphan")
+            })
+            .to_string(),
+        ]
+        .join("\n");
+        std::fs::write(&session_path, format!("{raw}\n")).expect("write session");
+        let store = SessionStore::load(&session_path).expect("load session");
+        let runtime = SessionRuntime {
+            store,
+            active_head: Some(1),
+        };
+
+        let output = execute_session_stats_command(&runtime);
+        assert!(output.contains("session stats error:"));
+        assert!(output.contains("missing parent id 2"));
+    }
+
+    #[test]
     fn functional_render_help_overview_lists_known_commands() {
         let help = render_help_overview();
         assert!(help.contains("/help [command]"));
         assert!(help.contains("/session"));
         assert!(help.contains("/session-search <query>"));
+        assert!(help.contains("/session-stats"));
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
         assert!(help.contains("/audit-summary <path>"));
@@ -4627,6 +4964,13 @@ mod tests {
         let help = render_command_help("session-search").expect("render help");
         assert!(help.contains("command: /session-search"));
         assert!(help.contains("usage: /session-search <query>"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_session_stats_topic_without_slash() {
+        let help = render_command_help("session-stats").expect("render help");
+        assert!(help.contains("command: /session-stats"));
+        assert!(help.contains("usage: /session-stats"));
     }
 
     #[test]
