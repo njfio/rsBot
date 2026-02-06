@@ -1605,6 +1605,68 @@ fn regression_interactive_skills_show_command_reports_unknown_skill_and_continue
 }
 
 #[test]
+fn interactive_skills_search_command_ranks_name_hits_before_content_hits() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("checklist.md"), "Always run tests").expect("write checklist");
+    fs::write(skills_dir.join("quality.md"), "Use checklist for review").expect("write quality");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-search checklist\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills search: path="))
+        .stdout(predicate::str::contains("matched=2"))
+        .stdout(predicate::str::contains(
+            "skill: name=checklist file=checklist.md match=name",
+        ))
+        .stdout(predicate::str::contains(
+            "skill: name=quality file=quality.md match=content",
+        ));
+}
+
+#[test]
+fn regression_interactive_skills_search_command_invalid_limit_reports_error_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("checklist.md"), "Always run tests").expect("write skill");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-search checklist 0\n/help skills-search\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills search error: path="))
+        .stdout(predicate::str::contains(
+            "max_results must be greater than zero",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /skills-search <query> [max_results]",
+        ));
+}
+
+#[test]
 fn interactive_skills_lock_write_command_writes_default_lockfile() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");
