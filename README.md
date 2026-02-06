@@ -134,7 +134,7 @@ cargo run -p pi-coding-agent -- --prompt "Hello" --stream-output false
 cargo run -p pi-coding-agent -- --prompt "Hello" --stream-delay-ms 20
 ```
 
-When using OpenAI-compatible models with `--stream-output true`, the client uses provider-side incremental streaming when available.
+When using OpenAI-compatible or Anthropic models with `--stream-output true`, the client uses provider-side incremental streaming when available.
 
 Control provider and turn timeouts:
 
