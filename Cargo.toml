@@ -26,5 +26,5 @@ thiserror = "2"
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "process", "fs", "io-util", "io-std", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-jsonschema = "0.37"
+jsonschema = "0.41"
 sha2 = "0.10"
