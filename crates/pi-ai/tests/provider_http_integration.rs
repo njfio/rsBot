@@ -454,3 +454,70 @@ async fn integration_openai_client_streams_incremental_text_deltas() {
     assert_eq!(response.finish_reason.as_deref(), Some("stop"));
     assert_eq!(response.usage.total_tokens, 5);
 }
+
+#[tokio::test]
+async fn integration_anthropic_client_streams_incremental_text_deltas() {
+    let server = MockServer::start();
+    let stream = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/messages")
+            .header("x-pi-retry-attempt", "0")
+            .json_body_includes(
+                json!({
+                    "model": "claude-sonnet-4-20250514",
+                    "stream": true
+                })
+                .to_string(),
+            );
+        then.status(200)
+            .header("content-type", "text/event-stream")
+            .body(concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":6}}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"He\"}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"llo\"}}\n\n",
+                "event: message_delta\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n",
+                "event: message_stop\n",
+                "data: {\"type\":\"message_stop\"}\n\n"
+            ));
+    });
+
+    let client = AnthropicClient::new(AnthropicConfig {
+        api_base: format!("{}/v1", server.base_url()),
+        api_key: "test-anthropic-key".to_string(),
+        request_timeout_ms: 5_000,
+        max_retries: 2,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+    })
+    .expect("anthropic client should be created");
+
+    let deltas = Arc::new(Mutex::new(String::new()));
+    let delta_sink = deltas.clone();
+    let sink = Arc::new(move |delta: String| {
+        delta_sink.lock().expect("delta lock").push_str(&delta);
+    });
+
+    let response = client
+        .complete_with_stream(
+            ChatRequest {
+                model: "claude-sonnet-4-20250514".to_string(),
+                messages: vec![Message::user("hello")],
+                tools: vec![],
+                max_tokens: None,
+                temperature: None,
+            },
+            Some(sink),
+        )
+        .await
+        .expect("streaming completion should succeed");
+
+    stream.assert_calls(1);
+    assert_eq!(deltas.lock().expect("delta lock").as_str(), "Hello");
+    assert_eq!(response.message.text_content(), "Hello");
+    assert_eq!(response.finish_reason.as_deref(), Some("end_turn"));
+    assert_eq!(response.usage.total_tokens, 10);
+}
