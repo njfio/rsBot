@@ -744,10 +744,10 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/session-stats",
-        usage: "/session-stats",
+        usage: "/session-stats [--json]",
         description: "Summarize session size, branch tips, depth, and role counts",
         details:
-            "Read-only session graph diagnostics including active/latest head indicators.",
+            "Read-only session graph diagnostics including active/latest head indicators. Add --json for machine-readable output.",
         example: "/session-stats",
     },
     CommandSpec {
@@ -2397,12 +2397,15 @@ fn handle_command_with_session_import_mode(
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
-        if !command_args.trim().is_empty() {
-            println!("usage: /session-stats");
-            return Ok(CommandAction::Continue);
-        }
+        let format = match parse_session_stats_args(command_args) {
+            Ok(format) => format,
+            Err(_) => {
+                println!("usage: /session-stats [--json]");
+                return Ok(CommandAction::Continue);
+            }
+        };
 
-        println!("{}", execute_session_stats_command(runtime));
+        println!("{}", execute_session_stats_command(runtime, format));
         return Ok(CommandAction::Continue);
     }
 
@@ -2952,6 +2955,26 @@ struct SessionStats {
     role_counts: BTreeMap<String, usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionStatsOutputFormat {
+    Text,
+    Json,
+}
+
+fn parse_session_stats_args(command_args: &str) -> Result<SessionStatsOutputFormat> {
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return Ok(SessionStatsOutputFormat::Text);
+    }
+    if tokens.len() == 1 && tokens[0] == "--json" {
+        return Ok(SessionStatsOutputFormat::Json);
+    }
+    bail!("usage: /session-stats [--json]");
+}
+
 fn compute_session_entry_depths(
     entries: &[crate::session::SessionEntry],
 ) -> Result<HashMap<u64, usize>> {
@@ -3077,10 +3100,38 @@ fn render_session_stats(stats: &SessionStats) -> String {
     lines.join("\n")
 }
 
-fn execute_session_stats_command(runtime: &SessionRuntime) -> String {
+fn render_session_stats_json(stats: &SessionStats) -> String {
+    serde_json::json!({
+        "entries": stats.entries,
+        "branch_tips": stats.branch_tips,
+        "roots": stats.roots,
+        "max_depth": stats.max_depth,
+        "active_depth": stats.active_depth,
+        "latest_depth": stats.latest_depth,
+        "active_head": stats.active_head,
+        "latest_head": stats.latest_head,
+        "active_is_latest": stats.active_is_latest,
+        "role_counts": stats.role_counts,
+    })
+    .to_string()
+}
+
+fn execute_session_stats_command(
+    runtime: &SessionRuntime,
+    format: SessionStatsOutputFormat,
+) -> String {
     match compute_session_stats(runtime) {
-        Ok(stats) => render_session_stats(&stats),
-        Err(error) => format!("session stats error: {error}"),
+        Ok(stats) => match format {
+            SessionStatsOutputFormat::Text => render_session_stats(&stats),
+            SessionStatsOutputFormat::Json => render_session_stats_json(&stats),
+        },
+        Err(error) => match format {
+            SessionStatsOutputFormat::Text => format!("session stats error: {error}"),
+            SessionStatsOutputFormat::Json => serde_json::json!({
+                "error": format!("session stats error: {error}")
+            })
+            .to_string(),
+        },
     }
 }
 
@@ -6232,14 +6283,14 @@ mod tests {
         initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
         load_profile_store, parse_branch_alias_command, parse_command, parse_command_file,
         parse_doctor_command_args, parse_macro_command, parse_profile_command,
-        parse_sandbox_command_tokens, parse_session_search_args, parse_skills_lock_diff_args,
-        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-        render_audit_summary, render_command_help, render_doctor_report, render_doctor_report_json,
-        render_help_overview, render_macro_list, render_macro_show, render_profile_diffs,
-        render_profile_list, render_profile_show, render_session_graph_dot,
-        render_session_graph_mermaid, render_session_stats, render_skills_list,
-        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        parse_sandbox_command_tokens, parse_session_search_args, parse_session_stats_args,
+        parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
+        parse_skills_trust_list_args, parse_trust_rotation_spec, parse_trusted_root_spec,
+        percentile_duration_ms, render_audit_summary, render_command_help, render_doctor_report,
+        render_doctor_report_json, render_help_overview, render_macro_list, render_macro_show,
+        render_profile_diffs, render_profile_list, render_profile_show, render_session_graph_dot,
+        render_session_graph_mermaid, render_session_stats, render_session_stats_json,
+        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
         render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
         resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
@@ -6255,11 +6306,11 @@ mod tests {
         DoctorCheckResult, DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus,
         DoctorStatus, FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand,
         ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
-        SessionGraphFormat, SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig,
-        ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
-        MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
-        SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
-        SKILLS_TRUST_LIST_USAGE,
+        SessionGraphFormat, SessionRuntime, SessionStats, SessionStatsOutputFormat,
+        SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger, TrustedRootRecord,
+        BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
+        PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_SEARCH_MAX_RESULTS,
+        SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -6980,6 +7031,47 @@ mod tests {
     }
 
     #[test]
+    fn unit_parse_session_stats_args_supports_default_and_json_modes() {
+        assert_eq!(
+            parse_session_stats_args("").expect("empty args"),
+            SessionStatsOutputFormat::Text
+        );
+        assert_eq!(
+            parse_session_stats_args("--json").expect("json flag"),
+            SessionStatsOutputFormat::Json
+        );
+        let error = parse_session_stats_args("--bad").expect_err("invalid flag should fail");
+        assert!(error.to_string().contains("usage: /session-stats [--json]"));
+    }
+
+    #[test]
+    fn unit_render_session_stats_json_includes_counts_and_roles() {
+        let mut role_counts = BTreeMap::new();
+        role_counts.insert("assistant".to_string(), 2);
+        role_counts.insert("user".to_string(), 1);
+        let stats = SessionStats {
+            entries: 3,
+            branch_tips: 1,
+            roots: 1,
+            max_depth: 3,
+            active_depth: Some(3),
+            latest_depth: Some(3),
+            active_head: Some(3),
+            latest_head: Some(3),
+            active_is_latest: true,
+            role_counts,
+        };
+
+        let json = render_session_stats_json(&stats);
+        let value = serde_json::from_str::<serde_json::Value>(&json).expect("parse json");
+        assert_eq!(value["entries"], 3);
+        assert_eq!(value["branch_tips"], 1);
+        assert_eq!(value["active_head"], 3);
+        assert_eq!(value["role_counts"]["assistant"], 2);
+        assert_eq!(value["role_counts"]["user"], 1);
+    }
+
+    #[test]
     fn integration_execute_session_stats_command_summarizes_branched_session() {
         let temp = tempdir().expect("tempdir");
         let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
@@ -7007,7 +7099,7 @@ mod tests {
             active_head: Some(main_head),
         };
 
-        let output = execute_session_stats_command(&runtime);
+        let output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Text);
         assert!(output.contains("session stats: entries=4"));
         assert!(output.contains("branch_tips=2"));
         assert!(output.contains("roots=1"));
@@ -7019,6 +7111,18 @@ mod tests {
         assert!(output.contains("role: assistant=1"));
         assert!(output.contains("role: system=1"));
         assert!(output.contains("role: user=2"));
+
+        let json_output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Json);
+        let value = serde_json::from_str::<serde_json::Value>(&json_output).expect("parse json");
+        assert_eq!(value["entries"], 4);
+        assert_eq!(value["branch_tips"], 2);
+        assert_eq!(value["roots"], 1);
+        assert_eq!(value["max_depth"], 3);
+        assert_eq!(value["active_head"], main_head);
+        assert_eq!(value["latest_head"], latest_head);
+        assert_eq!(value["role_counts"]["assistant"], 1);
+        assert_eq!(value["role_counts"]["system"], 1);
+        assert_eq!(value["role_counts"]["user"], 2);
     }
 
     #[test]
@@ -7030,11 +7134,19 @@ mod tests {
             active_head: None,
         };
 
-        let output = execute_session_stats_command(&runtime);
+        let output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Text);
         assert!(output.contains("session stats: entries=0 branch_tips=0 roots=0 max_depth=0"));
         assert!(output.contains("heads: active=none latest=none active_is_latest=true"));
         assert!(output.contains("depth: active=none latest=none"));
         assert!(output.contains("roles: none"));
+
+        let json_output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Json);
+        let value = serde_json::from_str::<serde_json::Value>(&json_output).expect("parse json");
+        assert_eq!(value["entries"], 0);
+        assert_eq!(value["branch_tips"], 0);
+        assert_eq!(value["roots"], 0);
+        assert_eq!(value["max_depth"], 0);
+        assert_eq!(value["active_head"], serde_json::Value::Null);
     }
 
     #[test]
@@ -7059,9 +7171,17 @@ mod tests {
             active_head: Some(1),
         };
 
-        let output = execute_session_stats_command(&runtime);
+        let output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Text);
         assert!(output.contains("session stats error:"));
         assert!(output.contains("missing parent id 2"));
+
+        let json_output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Json);
+        let value =
+            serde_json::from_str::<serde_json::Value>(&json_output).expect("parse json error");
+        assert!(value["error"]
+            .as_str()
+            .expect("error string")
+            .contains("missing parent id 2"));
     }
 
     #[test]
@@ -8626,7 +8746,7 @@ mod tests {
     fn functional_render_command_help_supports_session_stats_topic_without_slash() {
         let help = render_command_help("session-stats").expect("render help");
         assert!(help.contains("command: /session-stats"));
-        assert!(help.contains("usage: /session-stats"));
+        assert!(help.contains("usage: /session-stats [--json]"));
     }
 
     #[test]

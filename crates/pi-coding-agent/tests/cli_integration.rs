@@ -442,7 +442,7 @@ fn integration_interactive_session_stats_command_reports_branched_summary() {
         "--session",
         session.to_str().expect("utf8 path"),
     ])
-    .write_stdin("/session-stats\n/quit\n");
+    .write_stdin("/session-stats\n/session-stats --json\n/quit\n");
 
     cmd.assert()
         .success()
@@ -454,7 +454,11 @@ fn integration_interactive_session_stats_command_reports_branched_summary() {
         ))
         .stdout(predicate::str::contains("depth: active=2 latest=2"))
         .stdout(predicate::str::contains("role: system=1"))
-        .stdout(predicate::str::contains("role: user=2"));
+        .stdout(predicate::str::contains("role: user=2"))
+        .stdout(predicate::str::contains("\"entries\":3"))
+        .stdout(predicate::str::contains("\"branch_tips\":2"))
+        .stdout(predicate::str::contains("\"role_counts\""))
+        .stdout(predicate::str::contains("\"user\":2"));
 }
 
 #[test]
@@ -491,9 +495,9 @@ fn regression_interactive_session_stats_command_with_args_prints_usage_and_conti
 
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("usage: /session-stats"))
+        .stdout(predicate::str::contains("usage: /session-stats [--json]"))
         .stdout(predicate::str::contains("command: /session-stats"))
-        .stdout(predicate::str::contains("usage: /session-stats"));
+        .stdout(predicate::str::contains("usage: /session-stats [--json]"));
 }
 
 #[test]
