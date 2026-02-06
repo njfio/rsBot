@@ -530,6 +530,57 @@ fn openai_prompt_persists_session_and_supports_branch_from() {
 }
 
 #[test]
+fn fallback_model_flag_routes_to_secondary_model_on_retryable_failure() {
+    let server = MockServer::start();
+    let primary = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .body_includes("\"model\":\"gpt-primary\"")
+            .header("x-pi-retry-attempt", "0");
+        then.status(503).body("primary unavailable");
+    });
+    let fallback = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .body_includes("\"model\":\"gpt-fallback\"")
+            .header("x-pi-retry-attempt", "0");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "fallback route response"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 6, "completion_tokens": 2, "total_tokens": 8}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-primary",
+        "--fallback-model",
+        "openai/gpt-fallback",
+        "--provider-max-retries",
+        "0",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("fallback route response"));
+
+    primary.assert_calls(1);
+    fallback.assert_calls(1);
+}
+
+#[test]
 fn anthropic_prompt_works_end_to_end() {
     let server = MockServer::start();
     let anthropic = server.mock(|when, then| {

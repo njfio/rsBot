@@ -155,6 +155,11 @@ cargo run -p pi-coding-agent -- --prompt "Hello" --provider-retry-budget-ms 1500
 
 # Disable jitter to use deterministic exponential backoff
 cargo run -p pi-coding-agent -- --prompt "Hello" --provider-retry-jitter false
+
+# Configure fallback models (attempted in order on retriable provider failures)
+cargo run -p pi-coding-agent -- --prompt "Hello" \
+  --model openai/gpt-4o-mini \
+  --fallback-model openai/gpt-4o,anthropic/claude-sonnet-4-20250514
 ```
 
 Load reusable skills into the system prompt:

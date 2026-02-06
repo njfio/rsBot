@@ -12,11 +12,12 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use async_trait::async_trait;
 use clap::{ArgAction, Parser, ValueEnum};
 use pi_agent_core::{Agent, AgentConfig, AgentEvent};
 use pi_ai::{
-    AnthropicClient, AnthropicConfig, GoogleClient, GoogleConfig, LlmClient, Message, MessageRole,
-    ModelRef, OpenAiClient, OpenAiConfig, Provider,
+    AnthropicClient, AnthropicConfig, ChatRequest, ChatResponse, GoogleClient, GoogleConfig,
+    LlmClient, Message, MessageRole, ModelRef, OpenAiClient, OpenAiConfig, PiAiError, Provider,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -115,6 +116,14 @@ struct Cli {
         help = "Model in provider/model format. Supported providers: openai, anthropic, google."
     )]
     model: String,
+
+    #[arg(
+        long = "fallback-model",
+        env = "PI_FALLBACK_MODEL",
+        value_delimiter = ',',
+        help = "Optional fallback model chain in provider/model format. Triggered only on retriable provider failures."
+    )]
+    fallback_model: Vec<String>,
 
     #[arg(
         long,
@@ -825,9 +834,9 @@ async fn main() -> Result<()> {
 
     let model_ref = ModelRef::parse(&cli.model)
         .map_err(|error| anyhow!("failed to parse --model '{}': {error}", cli.model))?;
+    let fallback_model_refs = resolve_fallback_models(&cli, &model_ref)?;
 
-    let client = build_client(&cli, model_ref.provider)
-        .with_context(|| format!("failed to create {} client", model_ref.provider))?;
+    let client = build_client_with_fallbacks(&cli, &model_ref, &fallback_model_refs)?;
     if !cli.install_skill.is_empty() {
         let report = install_skills(&cli.install_skill, &cli.skills_dir)?;
         println!(
@@ -872,7 +881,7 @@ async fn main() -> Result<()> {
     let mut agent = Agent::new(
         client,
         AgentConfig {
-            model: model_ref.model,
+            model: model_ref.model.clone(),
             system_prompt: system_prompt.clone(),
             max_turns: cli.max_turns,
             temperature: Some(0.0),
@@ -1931,7 +1940,188 @@ fn event_to_json(event: &AgentEvent) -> serde_json::Value {
     }
 }
 
-fn build_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn LlmClient>> {
+type FallbackEventSink = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
+
+#[derive(Clone)]
+struct ClientRoute {
+    provider: Provider,
+    model: String,
+    client: Arc<dyn LlmClient>,
+}
+
+impl ClientRoute {
+    fn model_ref(&self) -> String {
+        format!("{}/{}", self.provider, self.model)
+    }
+}
+
+struct FallbackRoutingClient {
+    routes: Vec<ClientRoute>,
+    event_sink: Option<FallbackEventSink>,
+}
+
+impl FallbackRoutingClient {
+    fn new(routes: Vec<ClientRoute>, event_sink: Option<FallbackEventSink>) -> Self {
+        Self { routes, event_sink }
+    }
+
+    fn emit_fallback_event(
+        &self,
+        from: &ClientRoute,
+        to: &ClientRoute,
+        error: &PiAiError,
+        fallback_index: usize,
+    ) {
+        let Some(sink) = &self.event_sink else {
+            return;
+        };
+        let (error_kind, status) = fallback_error_metadata(error);
+        sink(serde_json::json!({
+            "type": "provider_fallback",
+            "from_model": from.model_ref(),
+            "to_model": to.model_ref(),
+            "error_kind": error_kind,
+            "status": status,
+            "fallback_index": fallback_index,
+        }));
+    }
+}
+
+#[async_trait]
+impl LlmClient for FallbackRoutingClient {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+        if self.routes.is_empty() {
+            return Err(PiAiError::InvalidResponse(
+                "no provider routes configured".to_string(),
+            ));
+        }
+
+        for (index, route) in self.routes.iter().enumerate() {
+            let mut routed_request = request.clone();
+            routed_request.model = route.model.clone();
+
+            match route.client.complete(routed_request).await {
+                Ok(response) => return Ok(response),
+                Err(error) => {
+                    let Some(next_route) = self.routes.get(index + 1) else {
+                        return Err(error);
+                    };
+                    if is_retryable_provider_error(&error) {
+                        self.emit_fallback_event(route, next_route, &error, index + 1);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        Err(PiAiError::InvalidResponse(
+            "provider fallback chain exhausted unexpectedly".to_string(),
+        ))
+    }
+}
+
+fn is_retryable_status(status: u16) -> bool {
+    status == 408 || status == 409 || status == 425 || status == 429 || status >= 500
+}
+
+fn is_retryable_provider_error(error: &PiAiError) -> bool {
+    match error {
+        PiAiError::HttpStatus { status, .. } => is_retryable_status(*status),
+        PiAiError::Http(inner) => {
+            inner.is_timeout() || inner.is_connect() || inner.is_request() || inner.is_body()
+        }
+        _ => false,
+    }
+}
+
+fn fallback_error_metadata(error: &PiAiError) -> (&'static str, Option<u16>) {
+    match error {
+        PiAiError::HttpStatus { status, .. } => ("http_status", Some(*status)),
+        PiAiError::Http(inner) if inner.is_timeout() => ("http_timeout", None),
+        PiAiError::Http(inner) if inner.is_connect() => ("http_connect", None),
+        PiAiError::Http(inner) if inner.is_request() => ("http_request", None),
+        PiAiError::Http(inner) if inner.is_body() => ("http_body", None),
+        PiAiError::Http(_) => ("http_other", None),
+        PiAiError::MissingApiKey => ("missing_api_key", None),
+        PiAiError::Serde(_) => ("serde", None),
+        PiAiError::InvalidResponse(_) => ("invalid_response", None),
+    }
+}
+
+fn resolve_fallback_models(cli: &Cli, primary: &ModelRef) -> Result<Vec<ModelRef>> {
+    let mut resolved = Vec::new();
+    for raw in &cli.fallback_model {
+        let parsed = ModelRef::parse(raw)
+            .map_err(|error| anyhow!("failed to parse --fallback-model '{}': {error}", raw))?;
+
+        if parsed.provider == primary.provider && parsed.model == primary.model {
+            continue;
+        }
+
+        if resolved.iter().any(|existing: &ModelRef| {
+            existing.provider == parsed.provider && existing.model == parsed.model
+        }) {
+            continue;
+        }
+
+        resolved.push(parsed);
+    }
+    Ok(resolved)
+}
+
+fn build_client_with_fallbacks(
+    cli: &Cli,
+    primary: &ModelRef,
+    fallback_models: &[ModelRef],
+) -> Result<Arc<dyn LlmClient>> {
+    let primary_client = build_provider_client(cli, primary.provider)
+        .with_context(|| format!("failed to create {} client", primary.provider))?;
+    if fallback_models.is_empty() {
+        return Ok(primary_client);
+    }
+
+    let mut provider_clients: Vec<(Provider, Arc<dyn LlmClient>)> =
+        vec![(primary.provider, primary_client.clone())];
+    let mut routes = vec![ClientRoute {
+        provider: primary.provider,
+        model: primary.model.clone(),
+        client: primary_client,
+    }];
+
+    for model_ref in fallback_models {
+        let client = if let Some((_, existing)) = provider_clients
+            .iter()
+            .find(|(provider, _)| *provider == model_ref.provider)
+        {
+            existing.clone()
+        } else {
+            let created = build_provider_client(cli, model_ref.provider).with_context(|| {
+                format!(
+                    "failed to create {} client for fallback model '{}'",
+                    model_ref.provider, model_ref.model
+                )
+            })?;
+            provider_clients.push((model_ref.provider, created.clone()));
+            created
+        };
+
+        routes.push(ClientRoute {
+            provider: model_ref.provider,
+            model: model_ref.model.clone(),
+            client,
+        });
+    }
+
+    let event_sink = if cli.json_events {
+        Some(Arc::new(|event| println!("{event}")) as FallbackEventSink)
+    } else {
+        None
+    };
+    Ok(Arc::new(FallbackRoutingClient::new(routes, event_sink)))
+}
+
+fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn LlmClient>> {
     match provider {
         Provider::OpenAi => {
             let api_key = resolve_api_key(vec![
@@ -2147,7 +2337,8 @@ mod tests {
     use clap::Parser;
     use pi_agent_core::{Agent, AgentConfig, AgentEvent, ToolExecutionResult};
     use pi_ai::{
-        ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MessageRole, PiAiError,
+        ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
+        ModelRef, PiAiError, Provider,
     };
     use tempfile::tempdir;
     use tokio::sync::Mutex as AsyncMutex;
@@ -2156,13 +2347,14 @@ mod tests {
     use super::{
         apply_trust_root_mutations, build_tool_policy, ensure_non_empty_text, format_id_list,
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, parse_command, parse_sandbox_command_tokens, parse_trust_rotation_spec,
-        parse_trusted_root_spec, render_command_help, render_help_overview, resolve_prompt_input,
+        initialize_session, is_retryable_provider_error, parse_command,
+        parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
+        render_command_help, render_help_overview, resolve_fallback_models, resolve_prompt_input,
         resolve_skill_trust_roots, resolve_system_prompt, run_prompt_with_cancellation,
         stream_text_chunks, tool_audit_event_json, tool_policy_to_json, unknown_command_message,
         validate_session_file, Cli, CliBashProfile, CliOsSandboxMode, CliSessionImportMode,
-        CliToolPolicyPreset, CommandAction, PromptRunStatus, RenderOptions, SessionRuntime,
-        ToolAuditLogger, TrustedRootRecord,
+        CliToolPolicyPreset, ClientRoute, CommandAction, FallbackRoutingClient, PromptRunStatus,
+        RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -2220,6 +2412,22 @@ mod tests {
         }
     }
 
+    struct SequenceClient {
+        outcomes: AsyncMutex<VecDeque<Result<ChatResponse, PiAiError>>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for SequenceClient {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+            let mut outcomes = self.outcomes.lock().await;
+            outcomes.pop_front().unwrap_or_else(|| {
+                Err(PiAiError::InvalidResponse(
+                    "mock outcome queue is empty".to_string(),
+                ))
+            })
+        }
+    }
+
     fn test_render_options() -> RenderOptions {
         RenderOptions {
             stream_output: false,
@@ -2234,9 +2442,20 @@ mod tests {
         })
     }
 
+    fn test_chat_request() -> ChatRequest {
+        ChatRequest {
+            model: "placeholder-model".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+        }
+    }
+
     fn test_cli() -> Cli {
         Cli {
             model: "openai/gpt-4o-mini".to_string(),
+            fallback_model: vec![],
             api_base: "https://api.openai.com/v1".to_string(),
             anthropic_api_base: "https://api.anthropic.com/v1".to_string(),
             google_api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
@@ -2340,6 +2559,185 @@ mod tests {
         assert_eq!(cli.provider_max_retries, 5);
         assert_eq!(cli.provider_retry_budget_ms, 1500);
         assert!(!cli.provider_retry_jitter);
+    }
+
+    #[test]
+    fn unit_is_retryable_provider_error_classifies_status_errors() {
+        assert!(is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 429,
+            body: "rate limited".to_string(),
+        }));
+        assert!(is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 503,
+            body: "unavailable".to_string(),
+        }));
+        assert!(!is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 401,
+            body: "unauthorized".to_string(),
+        }));
+        assert!(!is_retryable_provider_error(&PiAiError::InvalidResponse(
+            "bad payload".to_string(),
+        )));
+    }
+
+    #[test]
+    fn functional_resolve_fallback_models_parses_deduplicates_and_skips_primary() {
+        let primary = ModelRef::parse("openai/gpt-4o-mini").expect("primary model parse");
+        let mut cli = test_cli();
+        cli.fallback_model = vec![
+            "openai/gpt-4o-mini".to_string(),
+            "google/gemini-2.5-pro".to_string(),
+            "google/gemini-2.5-pro".to_string(),
+            "anthropic/claude-sonnet-4-20250514".to_string(),
+        ];
+
+        let resolved = resolve_fallback_models(&cli, &primary).expect("resolve fallbacks");
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0].provider, Provider::Google);
+        assert_eq!(resolved[0].model, "gemini-2.5-pro");
+        assert_eq!(resolved[1].provider, Provider::Anthropic);
+    }
+
+    #[tokio::test]
+    async fn functional_fallback_routing_client_uses_next_route_for_retryable_error() {
+        let primary = Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([Err(PiAiError::HttpStatus {
+                status: 503,
+                body: "unavailable".to_string(),
+            })])),
+        });
+        let fallback = Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([Ok(ChatResponse {
+                message: Message::assistant_text("fallback success"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            })])),
+        });
+
+        let client = FallbackRoutingClient::new(
+            vec![
+                ClientRoute {
+                    provider: Provider::OpenAi,
+                    model: "gpt-primary".to_string(),
+                    client: primary as Arc<dyn LlmClient>,
+                },
+                ClientRoute {
+                    provider: Provider::Anthropic,
+                    model: "claude-fallback".to_string(),
+                    client: fallback as Arc<dyn LlmClient>,
+                },
+            ],
+            None,
+        );
+
+        let response = client
+            .complete(test_chat_request())
+            .await
+            .expect("fallback should recover request");
+        assert_eq!(response.message.text_content(), "fallback success");
+    }
+
+    #[tokio::test]
+    async fn regression_fallback_routing_client_skips_fallback_on_non_retryable_error() {
+        let primary = Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([Err(PiAiError::HttpStatus {
+                status: 400,
+                body: "bad request".to_string(),
+            })])),
+        });
+        let fallback = Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([Ok(ChatResponse {
+                message: Message::assistant_text("should not run"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            })])),
+        });
+
+        let client = FallbackRoutingClient::new(
+            vec![
+                ClientRoute {
+                    provider: Provider::OpenAi,
+                    model: "gpt-primary".to_string(),
+                    client: primary as Arc<dyn LlmClient>,
+                },
+                ClientRoute {
+                    provider: Provider::Google,
+                    model: "gemini-fallback".to_string(),
+                    client: fallback.clone() as Arc<dyn LlmClient>,
+                },
+            ],
+            None,
+        );
+
+        let error = client
+            .complete(test_chat_request())
+            .await
+            .expect_err("non-retryable error should return immediately");
+        match error {
+            PiAiError::HttpStatus { status, body } => {
+                assert_eq!(status, 400);
+                assert!(body.contains("bad request"));
+            }
+            other => panic!("expected HttpStatus error, got {other:?}"),
+        }
+
+        let fallback_remaining = fallback.outcomes.lock().await.len();
+        assert_eq!(
+            fallback_remaining, 1,
+            "fallback route should not be invoked"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_fallback_routing_client_emits_json_event_on_failover() {
+        let primary = Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([Err(PiAiError::HttpStatus {
+                status: 429,
+                body: "rate limited".to_string(),
+            })])),
+        });
+        let fallback = Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([Ok(ChatResponse {
+                message: Message::assistant_text("fallback ok"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            })])),
+        });
+        let events = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink_events = events.clone();
+        let sink = Arc::new(move |event: serde_json::Value| {
+            sink_events.lock().expect("event lock").push(event);
+        });
+
+        let client = FallbackRoutingClient::new(
+            vec![
+                ClientRoute {
+                    provider: Provider::OpenAi,
+                    model: "gpt-primary".to_string(),
+                    client: primary as Arc<dyn LlmClient>,
+                },
+                ClientRoute {
+                    provider: Provider::OpenAi,
+                    model: "gpt-fallback".to_string(),
+                    client: fallback as Arc<dyn LlmClient>,
+                },
+            ],
+            Some(sink),
+        );
+
+        let _ = client
+            .complete(test_chat_request())
+            .await
+            .expect("fallback should succeed");
+
+        let events = events.lock().expect("event lock");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "provider_fallback");
+        assert_eq!(events[0]["from_model"], "openai/gpt-primary");
+        assert_eq!(events[0]["to_model"], "openai/gpt-fallback");
+        assert_eq!(events[0]["error_kind"], "http_status");
+        assert_eq!(events[0]["status"], 429);
+        assert_eq!(events[0]["fallback_index"], 1);
     }
 
     #[test]
