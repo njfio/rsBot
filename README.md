@@ -115,6 +115,18 @@ Pipe a one-shot prompt from stdin:
 printf "Summarize src/main.rs" | cargo run -p pi-coding-agent -- --prompt-file -
 ```
 
+Execute a slash-command script and exit:
+
+```bash
+# Fail-fast on first malformed/failing line (default)
+cargo run -p pi-coding-agent -- --no-session --command-file .pi/commands/checks.commands
+
+# Continue past malformed/failing lines and report a final summary
+cargo run -p pi-coding-agent -- --no-session \
+  --command-file .pi/commands/checks.commands \
+  --command-file-error-mode continue-on-error
+```
+
 Load the base system prompt from a file:
 
 ```bash

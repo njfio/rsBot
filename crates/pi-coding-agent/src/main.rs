@@ -91,6 +91,19 @@ impl From<CliSessionImportMode> for SessionImportMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliCommandFileErrorMode {
+    FailFast,
+    ContinueOnError,
+}
+
+fn command_file_error_mode_label(mode: CliCommandFileErrorMode) -> &'static str {
+    match mode {
+        CliCommandFileErrorMode::FailFast => "fail-fast",
+        CliCommandFileErrorMode::ContinueOnError => "continue-on-error",
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CliToolPolicyPreset {
     Permissive,
     Balanced,
@@ -409,6 +422,25 @@ struct Cli {
         help = "Read one prompt from a UTF-8 text file and exit"
     )]
     prompt_file: Option<PathBuf>,
+
+    #[arg(
+        long,
+        env = "PI_COMMAND_FILE",
+        conflicts_with = "prompt",
+        conflicts_with = "prompt_file",
+        help = "Execute slash commands from a UTF-8 file and exit"
+    )]
+    command_file: Option<PathBuf>,
+
+    #[arg(
+        long,
+        env = "PI_COMMAND_FILE_ERROR_MODE",
+        value_enum,
+        default_value = "fail-fast",
+        requires = "command_file",
+        help = "Behavior when command-file execution hits malformed or failing commands"
+    )]
+    command_file_error_mode: CliCommandFileErrorMode,
 
     #[arg(
         long,
@@ -1588,12 +1620,17 @@ async fn main() -> Result<()> {
         render_options,
         command_context,
     };
-    run_interactive(
-        agent,
-        session_runtime,
-        interactive_config,
-    )
-    .await
+    if let Some(command_file_path) = cli.command_file.as_deref() {
+        execute_command_file(
+            command_file_path,
+            cli.command_file_error_mode,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        )?;
+        return Ok(());
+    }
+    run_interactive(agent, session_runtime, interactive_config).await
 }
 
 fn resolve_prompt_input(cli: &Cli) -> Result<Option<String>> {
@@ -1901,6 +1938,134 @@ fn initialize_session(agent: &mut Agent, cli: &Cli, system_prompt: &str) -> Resu
     }
 
     Ok(SessionRuntime { store, active_head })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandFileEntry {
+    line_number: usize,
+    command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandFileReport {
+    total: usize,
+    executed: usize,
+    succeeded: usize,
+    failed: usize,
+    halted_early: bool,
+}
+
+fn parse_command_file(path: &Path) -> Result<Vec<CommandFileEntry>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read command file {}", path.display()))?;
+    let mut entries = Vec::new();
+    for (index, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        entries.push(CommandFileEntry {
+            line_number: index + 1,
+            command: trimmed.to_string(),
+        });
+    }
+    Ok(entries)
+}
+
+fn execute_command_file(
+    path: &Path,
+    mode: CliCommandFileErrorMode,
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    command_context: CommandExecutionContext<'_>,
+) -> Result<CommandFileReport> {
+    let entries = parse_command_file(path)?;
+    let mut report = CommandFileReport {
+        total: entries.len(),
+        executed: 0,
+        succeeded: 0,
+        failed: 0,
+        halted_early: false,
+    };
+
+    for entry in entries {
+        report.executed += 1;
+
+        if !entry.command.starts_with('/') {
+            report.failed += 1;
+            println!(
+                "command file error: path={} line={} command={} error=command must start with '/'",
+                path.display(),
+                entry.line_number,
+                entry.command
+            );
+            if mode == CliCommandFileErrorMode::FailFast {
+                report.halted_early = true;
+                break;
+            }
+            continue;
+        }
+
+        match handle_command_with_session_import_mode(
+            &entry.command,
+            agent,
+            session_runtime,
+            command_context.tool_policy_json,
+            command_context.session_import_mode,
+            command_context.profile_defaults,
+            command_context.skills_command_config,
+        ) {
+            Ok(CommandAction::Continue) => {
+                report.succeeded += 1;
+            }
+            Ok(CommandAction::Exit) => {
+                report.succeeded += 1;
+                report.halted_early = true;
+                println!(
+                    "command file notice: path={} line={} command={} action=exit",
+                    path.display(),
+                    entry.line_number,
+                    entry.command
+                );
+                break;
+            }
+            Err(error) => {
+                report.failed += 1;
+                println!(
+                    "command file error: path={} line={} command={} error={error}",
+                    path.display(),
+                    entry.line_number,
+                    entry.command
+                );
+                if mode == CliCommandFileErrorMode::FailFast {
+                    report.halted_early = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    println!(
+        "command file summary: path={} mode={} total={} executed={} succeeded={} failed={} halted_early={}",
+        path.display(),
+        command_file_error_mode_label(mode),
+        report.total,
+        report.executed,
+        report.succeeded,
+        report.failed,
+        report.halted_early
+    );
+
+    if mode == CliCommandFileErrorMode::FailFast && report.failed > 0 {
+        bail!(
+            "command file execution failed: path={} failed={} mode={}",
+            path.display(),
+            report.failed,
+            command_file_error_mode_label(mode)
+        );
+    }
+
+    Ok(report)
 }
 
 async fn run_prompt(
@@ -5378,23 +5543,23 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, branch_alias_path_for_session, build_profile_defaults,
-        build_tool_policy, compute_session_entry_depths, compute_session_stats,
-        default_macro_config_path, default_profile_store_path, default_skills_lock_path,
-        derive_skills_prune_candidates, ensure_non_empty_text, escape_graph_label,
-        execute_branch_alias_command, execute_macro_command, execute_profile_command,
-        execute_session_graph_export_command, execute_session_search_command,
-        execute_session_stats_command, execute_skills_list_command,
+        build_tool_policy, command_file_error_mode_label, compute_session_entry_depths,
+        compute_session_stats, default_macro_config_path, default_profile_store_path,
+        default_skills_lock_path, derive_skills_prune_candidates, ensure_non_empty_text,
+        escape_graph_label, execute_branch_alias_command, execute_command_file,
+        execute_macro_command, execute_profile_command, execute_session_graph_export_command,
+        execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
         execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
         initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
-        load_profile_store, parse_branch_alias_command, parse_command, parse_macro_command,
-        parse_profile_command, parse_sandbox_command_tokens, parse_session_search_args,
-        parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
-        parse_skills_trust_list_args, parse_trust_rotation_spec, parse_trusted_root_spec,
-        percentile_duration_ms, render_audit_summary, render_command_help, render_help_overview,
-        render_macro_list, render_profile_diffs, render_session_graph_dot,
+        load_profile_store, parse_branch_alias_command, parse_command, parse_command_file,
+        parse_macro_command, parse_profile_command, parse_sandbox_command_tokens,
+        parse_session_search_args, parse_skills_lock_diff_args, parse_skills_prune_args,
+        parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
+        parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
+        render_help_overview, render_macro_list, render_profile_diffs, render_session_graph_dot,
         render_session_graph_mermaid, render_session_stats, render_skills_list,
         render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
@@ -5406,16 +5571,15 @@ mod tests {
         tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
         validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
         validate_profile_name, validate_session_file, validate_skills_prune_file_name,
-        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliOsSandboxMode,
-        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
-        CommandExecutionContext, FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand,
-        ProfileDefaults,
-        ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
-        SessionGraphFormat, SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig,
-        ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
-        MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
-        SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
-        SKILLS_TRUST_LIST_USAGE,
+        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+        CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        CommandExecutionContext, CommandFileEntry, CommandFileReport, FallbackRoutingClient,
+        MacroCommand, MacroFile, ProfileCommand, ProfileDefaults, ProfileStoreFile,
+        PromptRunStatus, PromptTelemetryLogger, RenderOptions, SessionGraphFormat, SessionRuntime,
+        SessionStats, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger, TrustedRootRecord,
+        BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
+        PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_SEARCH_MAX_RESULTS,
+        SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -5554,6 +5718,8 @@ mod tests {
             stream_delay_ms: 0,
             prompt: None,
             prompt_file: None,
+            command_file: None,
+            command_file_error_mode: CliCommandFileErrorMode::FailFast,
             session: PathBuf::from(".pi/sessions/default.jsonl"),
             no_session: false,
             session_validate: false,
@@ -5596,6 +5762,19 @@ mod tests {
 
     fn test_profile_defaults() -> ProfileDefaults {
         build_profile_defaults(&test_cli())
+    }
+
+    fn test_command_context<'a>(
+        tool_policy_json: &'a serde_json::Value,
+        profile_defaults: &'a ProfileDefaults,
+        skills_command_config: &'a SkillsSyncCommandConfig,
+    ) -> CommandExecutionContext<'a> {
+        CommandExecutionContext {
+            tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults,
+            skills_command_config,
+        }
     }
 
     #[test]
@@ -5664,6 +5843,32 @@ mod tests {
         assert_eq!(
             cli.skills_lock_file,
             Some(PathBuf::from("custom/skills.lock.json"))
+        );
+    }
+
+    #[test]
+    fn unit_cli_command_file_flags_default_to_disabled() {
+        let cli = Cli::parse_from(["pi-rs"]);
+        assert!(cli.command_file.is_none());
+        assert_eq!(
+            cli.command_file_error_mode,
+            CliCommandFileErrorMode::FailFast
+        );
+    }
+
+    #[test]
+    fn functional_cli_command_file_flags_accept_overrides() {
+        let cli = Cli::parse_from([
+            "pi-rs",
+            "--command-file",
+            "automation.commands",
+            "--command-file-error-mode",
+            "continue-on-error",
+        ]);
+        assert_eq!(cli.command_file, Some(PathBuf::from("automation.commands")));
+        assert_eq!(
+            cli.command_file_error_mode,
+            CliCommandFileErrorMode::ContinueOnError
         );
     }
 
@@ -6779,6 +6984,164 @@ mod tests {
     fn regression_default_profile_store_path_uses_project_local_profiles_file() {
         let path = default_profile_store_path().expect("resolve profile store path");
         assert!(path.ends_with(Path::new(".pi").join("profiles.json")));
+    }
+
+    #[test]
+    fn unit_command_file_error_mode_label_matches_cli_values() {
+        assert_eq!(
+            command_file_error_mode_label(CliCommandFileErrorMode::FailFast),
+            "fail-fast"
+        );
+        assert_eq!(
+            command_file_error_mode_label(CliCommandFileErrorMode::ContinueOnError),
+            "continue-on-error"
+        );
+    }
+
+    #[test]
+    fn unit_parse_command_file_skips_comments_blanks_and_keeps_line_numbers() {
+        let temp = tempdir().expect("tempdir");
+        let command_file = temp.path().join("commands.txt");
+        std::fs::write(
+            &command_file,
+            "# comment\n\n  /session  \nnot-command\n   # another comment\n/help session\n",
+        )
+        .expect("write command file");
+
+        let entries = parse_command_file(&command_file).expect("parse command file");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries[0],
+            CommandFileEntry {
+                line_number: 3,
+                command: "/session".to_string(),
+            }
+        );
+        assert_eq!(
+            entries[1],
+            CommandFileEntry {
+                line_number: 4,
+                command: "not-command".to_string(),
+            }
+        );
+        assert_eq!(
+            entries[2],
+            CommandFileEntry {
+                line_number: 6,
+                command: "/help session".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn functional_execute_command_file_runs_script_and_returns_summary() {
+        let temp = tempdir().expect("tempdir");
+        let command_file = temp.path().join("commands.txt");
+        std::fs::write(&command_file, "/session\n/help session\n").expect("write command file");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let mut session_runtime = None;
+        let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
+        let skills_dir = temp.path().join("skills");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let command_context =
+            test_command_context(&tool_policy_json, &profile_defaults, &skills_command_config);
+
+        let report = execute_command_file(
+            &command_file,
+            CliCommandFileErrorMode::FailFast,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        )
+        .expect("execute command file");
+
+        assert_eq!(
+            report,
+            CommandFileReport {
+                total: 2,
+                executed: 2,
+                succeeded: 2,
+                failed: 0,
+                halted_early: false,
+            }
+        );
+    }
+
+    #[test]
+    fn integration_execute_command_file_continue_on_error_runs_remaining_commands() {
+        let temp = tempdir().expect("tempdir");
+        let command_file = temp.path().join("commands.txt");
+        std::fs::write(&command_file, "/session\nnot-command\n/help session\n")
+            .expect("write command file");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let mut session_runtime = None;
+        let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
+        let skills_dir = temp.path().join("skills");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let command_context =
+            test_command_context(&tool_policy_json, &profile_defaults, &skills_command_config);
+
+        let report = execute_command_file(
+            &command_file,
+            CliCommandFileErrorMode::ContinueOnError,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        )
+        .expect("execute command file");
+
+        assert_eq!(
+            report,
+            CommandFileReport {
+                total: 3,
+                executed: 3,
+                succeeded: 2,
+                failed: 1,
+                halted_early: false,
+            }
+        );
+    }
+
+    #[test]
+    fn regression_execute_command_file_fail_fast_stops_on_malformed_line() {
+        let temp = tempdir().expect("tempdir");
+        let command_file = temp.path().join("commands.txt");
+        std::fs::write(&command_file, "/session\nnot-command\n/help session\n")
+            .expect("write command file");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let mut session_runtime = None;
+        let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
+        let skills_dir = temp.path().join("skills");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+        let command_context =
+            test_command_context(&tool_policy_json, &profile_defaults, &skills_command_config);
+
+        let error = execute_command_file(
+            &command_file,
+            CliCommandFileErrorMode::FailFast,
+            &mut agent,
+            &mut session_runtime,
+            command_context,
+        )
+        .expect_err("fail-fast should stop on malformed command line");
+        assert!(error.to_string().contains("command file execution failed"));
+    }
+
+    #[test]
+    fn regression_parse_command_file_reports_missing_file() {
+        let temp = tempdir().expect("tempdir");
+        let missing = temp.path().join("missing-commands.txt");
+        let error = parse_command_file(&missing).expect_err("missing command file should fail");
+        assert!(error.to_string().contains("failed to read command file"));
     }
 
     #[test]

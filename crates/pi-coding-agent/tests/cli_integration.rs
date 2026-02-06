@@ -200,6 +200,96 @@ fn interactive_help_and_unknown_command_suggestions_work() {
 }
 
 #[test]
+fn command_file_flag_executes_slash_commands_and_prints_summary() {
+    let temp = tempdir().expect("tempdir");
+    let command_file = temp.path().join("commands.txt");
+    fs::write(&command_file, "/help session\n").expect("write command file");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path()).args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--no-session",
+        "--command-file",
+        command_file.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("command: /session"))
+        .stdout(predicate::str::contains("usage: /session"))
+        .stdout(predicate::str::contains("command file summary: path="))
+        .stdout(predicate::str::contains("mode=fail-fast"))
+        .stdout(predicate::str::contains("total=1"))
+        .stdout(predicate::str::contains("succeeded=1"))
+        .stdout(predicate::str::contains("failed=0"));
+}
+
+#[test]
+fn integration_command_file_continue_on_error_executes_remaining_commands() {
+    let temp = tempdir().expect("tempdir");
+    let command_file = temp.path().join("commands.txt");
+    fs::write(&command_file, "/session\nnot-command\n/help session\n").expect("write command file");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path()).args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--no-session",
+        "--command-file",
+        command_file.to_str().expect("utf8 path"),
+        "--command-file-error-mode",
+        "continue-on-error",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("session: disabled"))
+        .stdout(predicate::str::contains("command file error: path="))
+        .stdout(predicate::str::contains("command must start with '/'"))
+        .stdout(predicate::str::contains("command: /session"))
+        .stdout(predicate::str::contains("mode=continue-on-error"))
+        .stdout(predicate::str::contains("total=3"))
+        .stdout(predicate::str::contains("executed=3"))
+        .stdout(predicate::str::contains("succeeded=2"))
+        .stdout(predicate::str::contains("failed=1"))
+        .stdout(predicate::str::contains("halted_early=false"));
+}
+
+#[test]
+fn regression_command_file_fail_fast_stops_on_malformed_line_and_exits_failure() {
+    let temp = tempdir().expect("tempdir");
+    let command_file = temp.path().join("commands.txt");
+    fs::write(&command_file, "/session\nnot-command\n/help session\n").expect("write command file");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path()).args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--no-session",
+        "--command-file",
+        command_file.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains("session: disabled"))
+        .stdout(predicate::str::contains("command file error: path="))
+        .stdout(predicate::str::contains("command must start with '/'"))
+        .stdout(predicate::str::contains("mode=fail-fast"))
+        .stdout(predicate::str::contains("executed=2"))
+        .stdout(predicate::str::contains("failed=1"))
+        .stdout(predicate::str::contains("halted_early=true"))
+        .stderr(predicate::str::contains("command file execution failed"));
+}
+
+#[test]
 fn integration_interactive_session_search_command_finds_results_across_branches() {
     let temp = tempdir().expect("tempdir");
     let session = temp.path().join("session-search.jsonl");
