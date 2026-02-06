@@ -108,6 +108,14 @@ Run one prompt from a file:
 cargo run -p pi-coding-agent -- --prompt-file .pi/prompts/review.txt
 ```
 
+Load the base system prompt from a file:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --system-prompt-file .pi/prompts/system.txt \
+  --prompt "Review src/main.rs"
+```
+
 Cancel an in-flight prompt (interactive or one-shot) with `Ctrl+C`. The pending turn is discarded and session history remains consistent.
 
 Control output streaming behavior:

@@ -146,6 +146,13 @@ struct Cli {
 
     #[arg(
         long,
+        env = "PI_SYSTEM_PROMPT_FILE",
+        help = "Load system prompt from a UTF-8 text file (overrides --system-prompt)"
+    )]
+    system_prompt_file: Option<PathBuf>,
+
+    #[arg(
+        long,
         env = "PI_SKILLS_DIR",
         default_value = ".pi/skills",
         help = "Directory containing skill markdown files"
@@ -637,10 +644,11 @@ async fn main() -> Result<()> {
             report.installed, report.updated, report.skipped
         );
     }
+    let base_system_prompt = resolve_system_prompt(&cli)?;
     let catalog = load_catalog(&cli.skills_dir)
         .with_context(|| format!("failed to load skills from {}", cli.skills_dir.display()))?;
     let selected_skills = resolve_selected_skills(&catalog, &cli.skills)?;
-    let system_prompt = augment_system_prompt(&cli.system_prompt, &selected_skills);
+    let system_prompt = augment_system_prompt(&base_system_prompt, &selected_skills);
 
     let mut agent = Agent::new(
         client,
@@ -720,6 +728,20 @@ fn resolve_prompt_input(cli: &Cli) -> Result<Option<String>> {
     }
 
     Ok(Some(prompt))
+}
+
+fn resolve_system_prompt(cli: &Cli) -> Result<String> {
+    let Some(path) = cli.system_prompt_file.as_ref() else {
+        return Ok(cli.system_prompt.clone());
+    };
+
+    let system_prompt = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read system prompt file {}", path.display()))?;
+    if system_prompt.trim().is_empty() {
+        bail!("system prompt file {} is empty", path.display());
+    }
+
+    Ok(system_prompt)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1529,10 +1551,10 @@ mod tests {
     use super::{
         apply_trust_root_mutations, build_tool_policy, handle_command, initialize_session,
         parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
-        resolve_prompt_input, resolve_skill_trust_roots, run_prompt_with_cancellation,
-        stream_text_chunks, tool_audit_event_json, tool_policy_to_json, Cli, CliBashProfile,
-        CliOsSandboxMode, CommandAction, PromptRunStatus, RenderOptions, SessionRuntime,
-        ToolAuditLogger, TrustedRootRecord,
+        resolve_prompt_input, resolve_skill_trust_roots, resolve_system_prompt,
+        run_prompt_with_cancellation, stream_text_chunks, tool_audit_event_json,
+        tool_policy_to_json, Cli, CliBashProfile, CliOsSandboxMode, CommandAction, PromptRunStatus,
+        RenderOptions, SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
@@ -1615,6 +1637,7 @@ mod tests {
             anthropic_api_key: None,
             google_api_key: None,
             system_prompt: "sys".to_string(),
+            system_prompt_file: None,
             skills_dir: PathBuf::from(".pi/skills"),
             skills: vec![],
             install_skill: vec![],
@@ -1712,6 +1735,44 @@ mod tests {
         assert!(error
             .to_string()
             .contains(&format!("prompt file {} is empty", prompt_path.display())));
+    }
+
+    #[test]
+    fn unit_resolve_system_prompt_uses_inline_value_when_file_is_unset() {
+        let mut cli = test_cli();
+        cli.system_prompt = "inline system".to_string();
+
+        let system_prompt = resolve_system_prompt(&cli).expect("resolve system prompt");
+        assert_eq!(system_prompt, "inline system");
+    }
+
+    #[test]
+    fn functional_resolve_system_prompt_reads_system_prompt_file() {
+        let temp = tempdir().expect("tempdir");
+        let prompt_path = temp.path().join("system.txt");
+        std::fs::write(&prompt_path, "system from file").expect("write prompt");
+
+        let mut cli = test_cli();
+        cli.system_prompt_file = Some(prompt_path);
+
+        let system_prompt = resolve_system_prompt(&cli).expect("resolve system prompt");
+        assert_eq!(system_prompt, "system from file");
+    }
+
+    #[test]
+    fn regression_resolve_system_prompt_rejects_empty_system_prompt_file() {
+        let temp = tempdir().expect("tempdir");
+        let prompt_path = temp.path().join("system.txt");
+        std::fs::write(&prompt_path, "\n\t  ").expect("write prompt");
+
+        let mut cli = test_cli();
+        cli.system_prompt_file = Some(prompt_path.clone());
+
+        let error = resolve_system_prompt(&cli).expect_err("empty system prompt should fail");
+        assert!(error.to_string().contains(&format!(
+            "system prompt file {} is empty",
+            prompt_path.display()
+        )));
     }
 
     #[test]

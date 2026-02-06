@@ -460,6 +460,77 @@ fn regression_empty_prompt_file_fails_fast() {
 }
 
 #[test]
+fn system_prompt_file_flag_overrides_inline_system_prompt() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .body_includes("system prompt from file")
+            .body_excludes(
+                "You are a focused coding assistant. Prefer concrete steps and safe edits.",
+            );
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "system prompt file ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let system_prompt_path = temp.path().join("system-prompt.txt");
+    fs::write(&system_prompt_path, "system prompt from file").expect("write system prompt");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--system-prompt-file",
+        system_prompt_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("system prompt file ok"));
+
+    openai.assert_calls(1);
+}
+
+#[test]
+fn regression_empty_system_prompt_file_fails_fast() {
+    let temp = tempdir().expect("tempdir");
+    let system_prompt_path = temp.path().join("empty-system-prompt.txt");
+    fs::write(&system_prompt_path, "  \n\t").expect("write system prompt");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--system-prompt-file",
+        system_prompt_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("system prompt file"))
+        .stderr(predicate::str::contains("is empty"));
+}
+
+#[test]
 fn tool_audit_log_flag_creates_audit_log_file() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {
