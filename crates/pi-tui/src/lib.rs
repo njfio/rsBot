@@ -7,6 +7,171 @@ pub trait Component {
     fn render(&self, width: usize) -> Vec<String>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Cursor {
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorBuffer {
+    lines: Vec<String>,
+    cursor: Cursor,
+}
+
+impl Default for EditorBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EditorBuffer {
+    pub fn new() -> Self {
+        Self {
+            lines: vec![String::new()],
+            cursor: Cursor::default(),
+        }
+    }
+
+    pub fn from_text(text: &str) -> Self {
+        let mut lines = text
+            .split('\n')
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+
+        Self {
+            lines,
+            cursor: Cursor::default(),
+        }
+    }
+
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    pub fn to_text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    pub fn insert_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            if ch == '\n' {
+                self.insert_newline();
+            } else {
+                self.insert_char(ch);
+            }
+        }
+    }
+
+    pub fn insert_char(&mut self, ch: char) {
+        let line = &mut self.lines[self.cursor.line];
+        let byte_index = char_to_byte_index(line, self.cursor.column);
+        line.insert(byte_index, ch);
+        self.cursor.column += 1;
+    }
+
+    pub fn insert_newline(&mut self) {
+        let current = &mut self.lines[self.cursor.line];
+        let split_index = char_to_byte_index(current, self.cursor.column);
+        let tail = current.split_off(split_index);
+        self.cursor.line += 1;
+        self.cursor.column = 0;
+        self.lines.insert(self.cursor.line, tail);
+    }
+
+    pub fn delete_backward(&mut self) {
+        if self.cursor.column > 0 {
+            let line = &mut self.lines[self.cursor.line];
+            let start = char_to_byte_index(line, self.cursor.column - 1);
+            let end = char_to_byte_index(line, self.cursor.column);
+            line.replace_range(start..end, "");
+            self.cursor.column -= 1;
+            return;
+        }
+
+        if self.cursor.line == 0 {
+            return;
+        }
+
+        let current = self.lines.remove(self.cursor.line);
+        self.cursor.line -= 1;
+        let previous = &mut self.lines[self.cursor.line];
+        let previous_len = previous.chars().count();
+        previous.push_str(&current);
+        self.cursor.column = previous_len;
+    }
+
+    pub fn delete_forward(&mut self) {
+        let line_len = self.lines[self.cursor.line].chars().count();
+        if self.cursor.column < line_len {
+            let line = &mut self.lines[self.cursor.line];
+            let start = char_to_byte_index(line, self.cursor.column);
+            let end = char_to_byte_index(line, self.cursor.column + 1);
+            line.replace_range(start..end, "");
+            return;
+        }
+
+        if self.cursor.line + 1 >= self.lines.len() {
+            return;
+        }
+
+        let next = self.lines.remove(self.cursor.line + 1);
+        self.lines[self.cursor.line].push_str(&next);
+    }
+
+    pub fn move_left(&mut self) {
+        if self.cursor.column > 0 {
+            self.cursor.column -= 1;
+            return;
+        }
+
+        if self.cursor.line > 0 {
+            self.cursor.line -= 1;
+            self.cursor.column = self.lines[self.cursor.line].chars().count();
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        let line_len = self.lines[self.cursor.line].chars().count();
+        if self.cursor.column < line_len {
+            self.cursor.column += 1;
+            return;
+        }
+
+        if self.cursor.line + 1 < self.lines.len() {
+            self.cursor.line += 1;
+            self.cursor.column = 0;
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.cursor.line == 0 {
+            return;
+        }
+
+        self.cursor.line -= 1;
+        let line_len = self.lines[self.cursor.line].chars().count();
+        self.cursor.column = self.cursor.column.min(line_len);
+    }
+
+    pub fn move_down(&mut self) {
+        if self.cursor.line + 1 >= self.lines.len() {
+            return;
+        }
+
+        self.cursor.line += 1;
+        let line_len = self.lines[self.cursor.line].chars().count();
+        self.cursor.column = self.cursor.column.min(line_len);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Theme {
     pub name: String,
@@ -284,6 +449,17 @@ pub fn apply_overlay(base: &[String], overlay: &[String], top: usize, left: usiz
     output
 }
 
+fn char_to_byte_index(line: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+
+    line.char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| line.len())
+}
+
 fn is_valid_ansi_color_code(code: &str) -> bool {
     if code.is_empty() {
         return false;
@@ -316,7 +492,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        apply_overlay, wrap_text, DiffRenderer, RenderOp, Text, Theme, ThemeError, ThemeRole,
+        apply_overlay, wrap_text, Cursor, DiffRenderer, EditorBuffer, RenderOp, Text, Theme,
+        ThemeError, ThemeRole,
     };
     use crate::Component;
 
@@ -477,6 +654,61 @@ mod tests {
             vec![RenderOp::Update {
                 line: 1,
                 content: "TWOa".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn unit_editor_buffer_insert_and_delete_single_line() {
+        let mut editor = EditorBuffer::new();
+        editor.insert_text("rust");
+        assert_eq!(editor.to_text(), "rust");
+        assert_eq!(editor.cursor(), Cursor { line: 0, column: 4 });
+
+        editor.delete_backward();
+        assert_eq!(editor.to_text(), "rus");
+        assert_eq!(editor.cursor(), Cursor { line: 0, column: 3 });
+    }
+
+    #[test]
+    fn functional_editor_buffer_multiline_editing_and_navigation() {
+        let mut editor = EditorBuffer::from_text("one\ntwo");
+        editor.move_down();
+        editor.move_right();
+        editor.move_right();
+        editor.insert_newline();
+        editor.insert_text("x");
+
+        assert_eq!(editor.lines().len(), 3);
+        assert_eq!(editor.to_text(), "one\ntw\nxo");
+        assert_eq!(editor.cursor(), Cursor { line: 2, column: 1 });
+    }
+
+    #[test]
+    fn regression_editor_delete_backward_merges_lines_without_panic() {
+        let mut editor = EditorBuffer::from_text("ab\ncd");
+        editor.move_down();
+        editor.delete_backward();
+        assert_eq!(editor.to_text(), "abcd");
+        assert_eq!(editor.cursor(), Cursor { line: 0, column: 2 });
+    }
+
+    #[test]
+    fn integration_editor_buffer_diff_renderer_tracks_line_changes() {
+        let mut renderer = DiffRenderer::new();
+        let mut editor = EditorBuffer::from_text("a\nb");
+
+        let initial = renderer.diff(editor.lines().to_vec());
+        assert_eq!(initial.len(), 2);
+
+        editor.move_down();
+        editor.insert_text("!");
+        let delta = renderer.diff(editor.lines().to_vec());
+        assert_eq!(
+            delta,
+            vec![RenderOp::Update {
+                line: 1,
+                content: "!b".to_string(),
             }]
         );
     }
