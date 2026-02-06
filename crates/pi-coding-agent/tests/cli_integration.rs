@@ -265,7 +265,8 @@ fn interactive_session_import_merge_remaps_collisions_by_default() {
         .success()
         .stdout(predicate::str::contains("session import complete"))
         .stdout(predicate::str::contains("mode=merge"))
-        .stdout(predicate::str::contains("remapped_entries=2"));
+        .stdout(predicate::str::contains("remapped_entries=2"))
+        .stdout(predicate::str::contains("remapped_ids=1->2,2->3"));
 
     let entries = parse_session_entries(&target);
     assert_eq!(entries.len(), 3);
@@ -358,6 +359,7 @@ fn integration_interactive_session_import_replace_mode_overwrites_target() {
         .success()
         .stdout(predicate::str::contains("session import complete"))
         .stdout(predicate::str::contains("mode=replace"))
+        .stdout(predicate::str::contains("remapped_ids=none"))
         .stdout(predicate::str::contains("replaced_entries=2"));
 
     let entries = parse_session_entries(&target);
@@ -366,6 +368,95 @@ fn integration_interactive_session_import_replace_mode_overwrites_target() {
     assert_eq!(entries[0].parent_id, None);
     assert_eq!(entries[1].id, 11);
     assert_eq!(entries[1].parent_id, Some(10));
+}
+
+#[test]
+fn regression_session_repair_reports_removed_ids() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("repair-session.jsonl");
+
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":2,
+            "parent_id":99,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"invalid-parent"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":3,
+            "parent_id":4,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"cycle-a"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":4,
+            "parent_id":3,
+            "message":{
+                "role":"assistant",
+                "content":[{"type":"text","text":"cycle-b"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":5,
+            "parent_id":1,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"healthy-head"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write malformed session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 session path"),
+    ])
+    .write_stdin("/session-repair\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("repair complete"))
+        .stdout(predicate::str::contains("invalid_parent_ids=2"))
+        .stdout(predicate::str::contains("cycle_ids=3,4"));
+
+    let entries = parse_session_entries(&session);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].id, 1);
+    assert_eq!(entries[1].id, 5);
 }
 
 #[test]

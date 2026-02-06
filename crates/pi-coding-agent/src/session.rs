@@ -34,11 +34,14 @@ enum SessionRecord {
     Entry(SessionEntry),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepairReport {
     pub removed_duplicates: usize,
+    pub duplicate_ids: Vec<u64>,
     pub removed_invalid_parent: usize,
+    pub invalid_parent_ids: Vec<u64>,
     pub removed_cycles: usize,
+    pub cycle_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -68,10 +71,11 @@ pub enum SessionImportMode {
     Replace,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportReport {
     pub imported_entries: usize,
     pub remapped_entries: usize,
+    pub remapped_ids: Vec<(u64, u64)>,
     pub replaced_entries: usize,
     pub resulting_entries: usize,
     pub active_head: Option<u64>,
@@ -254,13 +258,14 @@ impl SessionStore {
         let existing_entries = read_session_entries(&self.path)?;
         let report = match mode {
             SessionImportMode::Merge => {
-                let (merged_entries, remapped_entries, active_head) =
+                let (merged_entries, remapped_ids, active_head) =
                     merge_entries_with_remap(&existing_entries, &imported_entries)?;
                 write_session_entries_atomic(&self.path, &merged_entries)?;
                 self.entries = merged_entries;
                 ImportReport {
                     imported_entries: imported_entries.len(),
-                    remapped_entries,
+                    remapped_entries: remapped_ids.len(),
+                    remapped_ids,
                     replaced_entries: 0,
                     resulting_entries: self.entries.len(),
                     active_head,
@@ -272,6 +277,7 @@ impl SessionStore {
                 ImportReport {
                     imported_entries: self.entries.len(),
                     remapped_entries: 0,
+                    remapped_ids: Vec::new(),
                     replaced_entries: existing_entries.len(),
                     resulting_entries: self.entries.len(),
                     active_head: self.entries.last().map(|entry| entry.id),
@@ -323,6 +329,7 @@ impl SessionStore {
                 unique.push(entry);
             } else {
                 report.removed_duplicates += 1;
+                report.duplicate_ids.push(entry.id);
             }
         }
 
@@ -342,6 +349,9 @@ impl SessionStore {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            let mut invalid_ids = invalid_ids;
+            invalid_ids.sort_unstable();
+            invalid_ids.dedup();
 
             if invalid_ids.is_empty() {
                 break;
@@ -350,6 +360,7 @@ impl SessionStore {
             for id in invalid_ids {
                 if id_to_entry.remove(&id).is_some() {
                     report.removed_invalid_parent += 1;
+                    report.invalid_parent_ids.push(id);
                 }
             }
 
@@ -364,9 +375,13 @@ impl SessionStore {
             .copied()
             .filter(|id| has_cycle(*id, &id_to_entry))
             .collect::<Vec<_>>();
+        let mut cycle_ids = cycle_ids;
+        cycle_ids.sort_unstable();
+        cycle_ids.dedup();
         for id in cycle_ids {
             if id_to_entry.remove(&id).is_some() {
                 report.removed_cycles += 1;
+                report.cycle_ids.push(id);
             }
         }
 
@@ -524,14 +539,16 @@ fn validation_report_for_entries(entries: &[SessionEntry]) -> SessionValidationR
     report
 }
 
+type MergeImportResult = (Vec<SessionEntry>, Vec<(u64, u64)>, Option<u64>);
+
 fn merge_entries_with_remap(
     existing_entries: &[SessionEntry],
     imported_entries: &[SessionEntry],
-) -> Result<(Vec<SessionEntry>, usize, Option<u64>)> {
+) -> Result<MergeImportResult> {
     let mut merged = existing_entries.to_vec();
     if imported_entries.is_empty() {
         let active_head = merged.last().map(|entry| entry.id);
-        return Ok((merged, 0, active_head));
+        return Ok((merged, Vec::new(), active_head));
     }
 
     let mut used_ids = existing_entries
@@ -539,14 +556,14 @@ fn merge_entries_with_remap(
         .map(|entry| entry.id)
         .collect::<HashSet<_>>();
     let mut next_id = used_ids.iter().max().copied().unwrap_or(0) + 1;
-    let mut remapped_entries = 0usize;
+    let mut remapped_ids = Vec::new();
     let mut id_map = HashMap::with_capacity(imported_entries.len());
 
     for entry in imported_entries {
         let mapped_id = if used_ids.contains(&entry.id) {
             let replacement = next_id;
             next_id += 1;
-            remapped_entries += 1;
+            remapped_ids.push((entry.id, replacement));
             replacement
         } else {
             entry.id
@@ -579,7 +596,7 @@ fn merge_entries_with_remap(
         .last()
         .and_then(|entry| id_map.get(&entry.id).copied());
 
-    Ok((merged, remapped_entries, active_head))
+    Ok((merged, remapped_ids, active_head))
 }
 
 fn read_session_entries(path: &Path) -> Result<Vec<SessionEntry>> {
@@ -898,6 +915,7 @@ mod tests {
 
         assert_eq!(report.imported_entries, 2);
         assert_eq!(report.remapped_entries, 2);
+        assert_eq!(report.remapped_ids, vec![(1, 3), (2, 4)]);
         assert_eq!(report.replaced_entries, 0);
         assert_eq!(report.resulting_entries, 4);
         assert_eq!(report.active_head, Some(4));
@@ -909,6 +927,104 @@ mod tests {
         assert_eq!(entries[3].id, 4);
         assert_eq!(entries[3].parent_id, Some(3));
         assert_eq!(entries[3].message.text_content(), "import-assistant");
+    }
+
+    #[test]
+    fn integration_export_import_roundtrip_merge_produces_valid_session_graph() {
+        let temp = tempdir().expect("tempdir");
+        let source_path = temp.path().join("roundtrip-source.jsonl");
+        let target_path = temp.path().join("roundtrip-target.jsonl");
+        let export_path = temp.path().join("roundtrip-export.jsonl");
+
+        let mut source_store = SessionStore::load(&source_path).expect("load source");
+        let source_head = source_store
+            .append_messages(None, &[pi_ai::Message::system("source-root")])
+            .expect("append source root");
+        let source_head = source_store
+            .append_messages(
+                source_head,
+                &[
+                    pi_ai::Message::user("source-user"),
+                    pi_ai::Message::assistant_text("source-assistant"),
+                ],
+            )
+            .expect("append source branch");
+        source_store
+            .export_lineage(source_head, &export_path)
+            .expect("export source lineage");
+
+        let mut target_store = SessionStore::load(&target_path).expect("load target");
+        target_store
+            .append_messages(None, &[pi_ai::Message::system("target-root")])
+            .expect("append target");
+
+        let report = target_store
+            .import_snapshot(&export_path, SessionImportMode::Merge)
+            .expect("import merge");
+        assert_eq!(report.imported_entries, 3);
+        assert_eq!(report.remapped_entries, 3);
+        assert_eq!(report.remapped_ids, vec![(1, 2), (2, 3), (3, 4)]);
+        assert_eq!(report.resulting_entries, 4);
+        assert!(target_store.validation_report().is_valid());
+
+        let lineage = target_store
+            .lineage_messages(report.active_head)
+            .expect("lineage from imported head");
+        assert_eq!(
+            lineage
+                .iter()
+                .map(|message| message.text_content())
+                .collect::<Vec<_>>(),
+            vec!["source-root", "source-user", "source-assistant"]
+        );
+    }
+
+    #[test]
+    fn functional_export_import_roundtrip_replace_overwrites_target_graph() {
+        let temp = tempdir().expect("tempdir");
+        let source_path = temp.path().join("replace-roundtrip-source.jsonl");
+        let target_path = temp.path().join("replace-roundtrip-target.jsonl");
+        let export_path = temp.path().join("replace-roundtrip-export.jsonl");
+
+        let mut source_store = SessionStore::load(&source_path).expect("load source");
+        let source_head = source_store
+            .append_messages(None, &[pi_ai::Message::system("source-root")])
+            .expect("append source");
+        source_store
+            .append_messages(source_head, &[pi_ai::Message::user("source-user")])
+            .expect("append source user");
+        source_store
+            .export_lineage(source_store.head_id(), &export_path)
+            .expect("export source");
+
+        let mut target_store = SessionStore::load(&target_path).expect("load target");
+        let target_head = target_store
+            .append_messages(None, &[pi_ai::Message::system("target-root")])
+            .expect("append target");
+        target_store
+            .append_messages(
+                target_head,
+                &[pi_ai::Message::assistant_text("target-assistant")],
+            )
+            .expect("append target assistant");
+
+        let report = target_store
+            .import_snapshot(&export_path, SessionImportMode::Replace)
+            .expect("replace import");
+        assert_eq!(report.imported_entries, 2);
+        assert_eq!(report.replaced_entries, 2);
+        assert_eq!(report.remapped_entries, 0);
+        assert!(report.remapped_ids.is_empty());
+        assert_eq!(target_store.entries().len(), 2);
+        assert_eq!(
+            target_store.entries()[0].message.text_content(),
+            "source-root"
+        );
+        assert_eq!(
+            target_store.entries()[1].message.text_content(),
+            "source-user"
+        );
+        assert!(target_store.validation_report().is_valid());
     }
 
     #[test]
@@ -938,6 +1054,7 @@ mod tests {
             .expect("replace import");
         assert_eq!(report.imported_entries, 2);
         assert_eq!(report.remapped_entries, 0);
+        assert!(report.remapped_ids.is_empty());
         assert_eq!(report.replaced_entries, 2);
         assert_eq!(report.resulting_entries, 2);
         assert_eq!(report.active_head, Some(11));
@@ -977,6 +1094,8 @@ mod tests {
             .import_snapshot(&source, SessionImportMode::Replace)
             .expect("replace import");
         assert_eq!(report.imported_entries, 0);
+        assert_eq!(report.remapped_entries, 0);
+        assert!(report.remapped_ids.is_empty());
         assert_eq!(report.replaced_entries, 1);
         assert_eq!(report.resulting_entries, 0);
         assert_eq!(report.active_head, None);
@@ -1172,8 +1291,11 @@ mod tests {
             report,
             RepairReport {
                 removed_duplicates: 0,
+                duplicate_ids: Vec::new(),
                 removed_invalid_parent: 1,
+                invalid_parent_ids: vec![2],
                 removed_cycles: 2,
+                cycle_ids: vec![3, 4],
             }
         );
         assert_eq!(store.entries().len(), 1);
@@ -1541,6 +1663,7 @@ mod tests {
         let mut store = SessionStore::load(&path).expect("load");
         let report = store.repair().expect("repair");
         assert_eq!(report.removed_duplicates, 1);
+        assert_eq!(report.duplicate_ids, vec![1]);
         assert_eq!(store.entries().len(), 1);
         assert_eq!(store.entries()[0].id, duplicate_entry.id);
     }
@@ -1648,6 +1771,7 @@ mod tests {
         let report = store.repair().expect("repair");
         assert_eq!(report.removed_invalid_parent, 0);
         assert_eq!(report.removed_cycles, 2);
+        assert_eq!(report.cycle_ids, vec![1, 2]);
     }
 
     #[test]
