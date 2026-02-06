@@ -468,6 +468,100 @@ enum CommandAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedCommand<'a> {
+    name: &'a str,
+    args: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommandSpec {
+    name: &'static str,
+    usage: &'static str,
+    description: &'static str,
+    details: &'static str,
+    example: &'static str,
+}
+
+const COMMAND_SPECS: &[CommandSpec] = &[
+    CommandSpec {
+        name: "/help",
+        usage: "/help [command]",
+        description: "Show command list or detailed command help",
+        details: "Use '/help /command' (or '/help command') for command-specific guidance.",
+        example: "/help /branch",
+    },
+    CommandSpec {
+        name: "/session",
+        usage: "/session",
+        description: "Show session path, entry count, and active head id",
+        details: "Read-only command; does not mutate session state.",
+        example: "/session",
+    },
+    CommandSpec {
+        name: "/policy",
+        usage: "/policy",
+        description: "Print the effective tool policy JSON",
+        details: "Useful for debugging allowlists, limits, and sandbox settings.",
+        example: "/policy",
+    },
+    CommandSpec {
+        name: "/branches",
+        usage: "/branches",
+        description: "List branch tips in the current session graph",
+        details: "Each row includes entry id, parent id, and a short message summary.",
+        example: "/branches",
+    },
+    CommandSpec {
+        name: "/branch",
+        usage: "/branch <id>",
+        description: "Switch active branch head to a specific entry id",
+        details: "Reloads the agent message context to the selected lineage.",
+        example: "/branch 12",
+    },
+    CommandSpec {
+        name: "/resume",
+        usage: "/resume",
+        description: "Jump back to the latest session head",
+        details: "Resets active branch to current head and reloads lineage messages.",
+        example: "/resume",
+    },
+    CommandSpec {
+        name: "/session-repair",
+        usage: "/session-repair",
+        description: "Repair malformed session graphs",
+        details: "Removes duplicate ids, invalid parent references, and cyclic lineage entries.",
+        example: "/session-repair",
+    },
+    CommandSpec {
+        name: "/session-compact",
+        usage: "/session-compact",
+        description: "Compact session to active lineage",
+        details: "Prunes inactive branches and retains only entries reachable from active head.",
+        example: "/session-compact",
+    },
+    CommandSpec {
+        name: "/quit",
+        usage: "/quit",
+        description: "Exit interactive mode",
+        details: "Alias: /exit",
+        example: "/quit",
+    },
+];
+
+const COMMAND_NAMES: &[&str] = &[
+    "/help",
+    "/session",
+    "/policy",
+    "/branches",
+    "/branch",
+    "/resume",
+    "/session-repair",
+    "/session-compact",
+    "/quit",
+    "/exit",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptRunStatus {
     Completed,
     Cancelled,
@@ -1127,11 +1221,35 @@ fn handle_command(
     session_runtime: &mut Option<SessionRuntime>,
     tool_policy_json: &serde_json::Value,
 ) -> Result<CommandAction> {
-    if matches!(command, "/exit" | "/quit") {
+    let Some(parsed) = parse_command(command) else {
+        println!("invalid command input: {command}");
+        return Ok(CommandAction::Continue);
+    };
+    let command_name = canonical_command_name(parsed.name);
+    let command_args = parsed.args;
+
+    if command_name == "/quit" {
         return Ok(CommandAction::Exit);
     }
 
-    if command == "/session" {
+    if command_name == "/help" {
+        if command_args.is_empty() {
+            println!("{}", render_help_overview());
+        } else {
+            let topic = normalize_help_topic(command_args);
+            match render_command_help(&topic) {
+                Some(help) => println!("{help}"),
+                None => println!("{}", unknown_help_topic_message(&topic)),
+            }
+        }
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session" {
+        if !command_args.is_empty() {
+            println!("usage: /session");
+            return Ok(CommandAction::Continue);
+        }
         match session_runtime.as_ref() {
             Some(runtime) => {
                 println!(
@@ -1149,12 +1267,20 @@ fn handle_command(
         return Ok(CommandAction::Continue);
     }
 
-    if command == "/policy" {
+    if command_name == "/policy" {
+        if !command_args.is_empty() {
+            println!("usage: /policy");
+            return Ok(CommandAction::Continue);
+        }
         println!("{tool_policy_json}");
         return Ok(CommandAction::Continue);
     }
 
-    if command == "/resume" {
+    if command_name == "/resume" {
+        if !command_args.is_empty() {
+            println!("usage: /resume");
+            return Ok(CommandAction::Continue);
+        }
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
@@ -1172,7 +1298,11 @@ fn handle_command(
         return Ok(CommandAction::Continue);
     }
 
-    if command == "/branches" {
+    if command_name == "/branches" {
+        if !command_args.is_empty() {
+            println!("usage: /branches");
+            return Ok(CommandAction::Continue);
+        }
         let Some(runtime) = session_runtime.as_ref() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
@@ -1197,7 +1327,11 @@ fn handle_command(
         return Ok(CommandAction::Continue);
     }
 
-    if command == "/session-repair" {
+    if command_name == "/session-repair" {
+        if !command_args.is_empty() {
+            println!("usage: /session-repair");
+            return Ok(CommandAction::Continue);
+        }
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
@@ -1217,7 +1351,11 @@ fn handle_command(
         return Ok(CommandAction::Continue);
     }
 
-    if command == "/session-compact" {
+    if command_name == "/session-compact" {
+        if !command_args.is_empty() {
+            println!("usage: /session-compact");
+            return Ok(CommandAction::Continue);
+        }
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
@@ -1242,16 +1380,19 @@ fn handle_command(
         return Ok(CommandAction::Continue);
     }
 
-    if let Some(rest) = command.strip_prefix("/branch ") {
+    if command_name == "/branch" {
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
+        if command_args.is_empty() {
+            println!("usage: /branch <id>");
+            return Ok(CommandAction::Continue);
+        }
 
-        let target = rest
-            .trim()
+        let target = command_args
             .parse::<u64>()
-            .map_err(|_| anyhow!("invalid branch id '{}'; expected an integer", rest.trim()))?;
+            .map_err(|_| anyhow!("invalid branch id '{}'; expected an integer", command_args))?;
 
         if !runtime.store.contains(target) {
             bail!("unknown session id {}", target);
@@ -1263,11 +1404,144 @@ fn handle_command(
         return Ok(CommandAction::Continue);
     }
 
-    println!(
-        "unknown command: {}\ncommands: /session, /policy, /session-repair, /session-compact, /branches, /branch <id>, /resume, /quit",
-        command
-    );
+    println!("{}", unknown_command_message(parsed.name));
     Ok(CommandAction::Continue)
+}
+
+fn parse_command(input: &str) -> Option<ParsedCommand<'_>> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('/') {
+        return None;
+    }
+
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let name = parts.next().unwrap_or_default();
+    let args = parts.next().map(str::trim).unwrap_or_default();
+    Some(ParsedCommand { name, args })
+}
+
+fn canonical_command_name(name: &str) -> &str {
+    if name == "/exit" {
+        "/quit"
+    } else {
+        name
+    }
+}
+
+fn normalize_help_topic(topic: &str) -> String {
+    let trimmed = topic.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+fn render_help_overview() -> String {
+    let mut lines = vec!["commands:".to_string()];
+    for spec in COMMAND_SPECS {
+        lines.push(format!("  {:<22} {}", spec.usage, spec.description));
+    }
+    lines.push("tip: run /help <command> for details".to_string());
+    lines.join("\n")
+}
+
+fn render_command_help(topic: &str) -> Option<String> {
+    let normalized = normalize_help_topic(topic);
+    let command_name = canonical_command_name(&normalized);
+    let spec = COMMAND_SPECS
+        .iter()
+        .find(|entry| entry.name == command_name)?;
+    Some(format!(
+        "command: {}\nusage: {}\n{}\n{}\nexample: {}",
+        spec.name, spec.usage, spec.description, spec.details, spec.example
+    ))
+}
+
+fn unknown_help_topic_message(topic: &str) -> String {
+    match suggest_command(topic) {
+        Some(suggestion) => format!(
+            "unknown help topic: {topic}\ndid you mean {suggestion}?\nrun /help for command list"
+        ),
+        None => format!("unknown help topic: {topic}\nrun /help for command list"),
+    }
+}
+
+fn unknown_command_message(command: &str) -> String {
+    match suggest_command(command) {
+        Some(suggestion) => {
+            format!("unknown command: {command}\ndid you mean {suggestion}?\nrun /help for command list")
+        }
+        None => format!("unknown command: {command}\nrun /help for command list"),
+    }
+}
+
+fn suggest_command(command: &str) -> Option<&'static str> {
+    let command = canonical_command_name(command);
+    if command.is_empty() {
+        return None;
+    }
+
+    if let Some(prefix_match) = COMMAND_NAMES
+        .iter()
+        .find(|candidate| candidate.starts_with(command))
+    {
+        return Some(prefix_match);
+    }
+
+    let mut best: Option<(&str, usize)> = None;
+    for candidate in COMMAND_NAMES {
+        let distance = levenshtein_distance(command, candidate);
+        match best {
+            Some((_, best_distance)) if distance >= best_distance => {}
+            _ => best = Some((candidate, distance)),
+        }
+    }
+
+    let (candidate, distance) = best?;
+    let threshold = match command.len() {
+        0..=4 => 1,
+        5..=8 => 2,
+        _ => 3,
+    };
+    if distance <= threshold {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    if a == b {
+        return 0;
+    }
+    if a.is_empty() {
+        return b.chars().count();
+    }
+    if b.is_empty() {
+        return a.chars().count();
+    }
+
+    let b_chars = b.chars().collect::<Vec<_>>();
+    let mut previous = (0..=b_chars.len()).collect::<Vec<_>>();
+    let mut current = vec![0; b_chars.len() + 1];
+
+    for (i, left) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, right) in b_chars.iter().enumerate() {
+            let substitution_cost = if left == *right { 0 } else { 1 };
+            let deletion = previous[j + 1] + 1;
+            let insertion = current[j] + 1;
+            let substitution = previous[j] + substitution_cost;
+            current[j + 1] = deletion.min(insertion).min(substitution);
+        }
+        previous.clone_from_slice(&current);
+    }
+
+    previous[b_chars.len()]
 }
 
 fn reload_agent_from_active_head(agent: &mut Agent, runtime: &SessionRuntime) -> Result<()> {
@@ -1568,12 +1842,12 @@ mod tests {
 
     use super::{
         apply_trust_root_mutations, build_tool_policy, ensure_non_empty_text, handle_command,
-        initialize_session, parse_sandbox_command_tokens, parse_trust_rotation_spec,
-        parse_trusted_root_spec, resolve_prompt_input, resolve_skill_trust_roots,
-        resolve_system_prompt, run_prompt_with_cancellation, stream_text_chunks,
-        tool_audit_event_json, tool_policy_to_json, Cli, CliBashProfile, CliOsSandboxMode,
-        CommandAction, PromptRunStatus, RenderOptions, SessionRuntime, ToolAuditLogger,
-        TrustedRootRecord,
+        initialize_session, parse_command, parse_sandbox_command_tokens, parse_trust_rotation_spec,
+        parse_trusted_root_spec, render_command_help, render_help_overview, resolve_prompt_input,
+        resolve_skill_trust_roots, resolve_system_prompt, run_prompt_with_cancellation,
+        stream_text_chunks, tool_audit_event_json, tool_policy_to_json, unknown_command_message,
+        Cli, CliBashProfile, CliOsSandboxMode, CommandAction, PromptRunStatus, RenderOptions,
+        SessionRuntime, ToolAuditLogger, TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
@@ -1740,6 +2014,58 @@ mod tests {
         let error = ensure_non_empty_text(" \n\t".to_string(), "prompt".to_string())
             .expect_err("blank text should fail");
         assert!(error.to_string().contains("prompt is empty"));
+    }
+
+    #[test]
+    fn unit_parse_command_splits_name_and_args_with_extra_whitespace() {
+        let parsed = parse_command("   /branch    42   ").expect("parse command");
+        assert_eq!(parsed.name, "/branch");
+        assert_eq!(parsed.args, "42");
+    }
+
+    #[test]
+    fn regression_parse_command_rejects_non_slash_input() {
+        assert!(parse_command("help").is_none());
+    }
+
+    #[test]
+    fn functional_render_help_overview_lists_known_commands() {
+        let help = render_help_overview();
+        assert!(help.contains("/help [command]"));
+        assert!(help.contains("/session"));
+        assert!(help.contains("/branch <id>"));
+        assert!(help.contains("/quit"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_branch_topic_without_slash() {
+        let help = render_command_help("branch").expect("render help");
+        assert!(help.contains("command: /branch"));
+        assert!(help.contains("usage: /branch <id>"));
+        assert!(help.contains("example: /branch 12"));
+    }
+
+    #[test]
+    fn regression_unknown_command_message_suggests_closest_match() {
+        let message = unknown_command_message("/polciy");
+        assert!(message.contains("did you mean /policy?"));
+    }
+
+    #[test]
+    fn regression_unknown_command_message_without_close_match_has_no_suggestion() {
+        let message = unknown_command_message("/zzzzzzzz");
+        assert!(!message.contains("did you mean"));
+    }
+
+    #[test]
+    fn functional_help_command_returns_continue_action() {
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let mut runtime = None;
+        let tool_policy_json = test_tool_policy_json();
+
+        let action = handle_command("/help branch", &mut agent, &mut runtime, &tool_policy_json)
+            .expect("help should succeed");
+        assert_eq!(action, CommandAction::Continue);
     }
 
     #[test]
@@ -2277,7 +2603,7 @@ mod tests {
         let tool_policy_json = test_tool_policy_json();
 
         let action = handle_command(
-            &format!("/branch {branch_target}"),
+            &format!("  /branch    {branch_target}   "),
             &mut agent,
             &mut runtime,
             &tool_policy_json,

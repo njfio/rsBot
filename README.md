@@ -238,6 +238,10 @@ Session branching and resume:
 # Persist to the default session file (.pi/sessions/default.jsonl)
 cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 
+# Show interactive command help
+/help
+/help branch
+
 # Resume latest branch (default behavior), inspect session state
 /session
 /branches

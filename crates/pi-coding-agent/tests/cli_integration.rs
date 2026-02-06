@@ -90,6 +90,26 @@ fn no_session_and_branch_from_combination_fails_fast() {
 }
 
 #[test]
+fn interactive_help_and_unknown_command_suggestions_work() {
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--no-session",
+    ])
+    .write_stdin("/help\n/help branch\n/help polciy\n/polciy\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("commands:"))
+        .stdout(predicate::str::contains("usage: /branch <id>"))
+        .stdout(predicate::str::contains("unknown help topic: /polciy"))
+        .stdout(predicate::str::contains("did you mean /policy?"));
+}
+
+#[test]
 fn openai_prompt_persists_session_and_supports_branch_from() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {
