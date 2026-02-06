@@ -200,6 +200,107 @@ fn interactive_help_and_unknown_command_suggestions_work() {
 }
 
 #[test]
+fn integration_interactive_session_search_command_finds_results_across_branches() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-search.jsonl");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":2,
+            "parent_id":1,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"main target"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":3,
+            "parent_id":1,
+            "message":{
+                "role":"user",
+                "content":[{"type":"text","text":"branch target"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/session-search target\n/quit\n");
+
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let stdout = String::from_utf8(output).expect("stdout should be utf8");
+    assert!(stdout.contains("session search: query=\"target\""));
+    let main_index = stdout.find("result: id=2").expect("main result");
+    let branch_index = stdout.find("result: id=3").expect("branch result");
+    assert!(main_index < branch_index);
+}
+
+#[test]
+fn regression_interactive_session_search_command_empty_query_prints_usage_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-search-empty.jsonl");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/session-search\n/help session-search\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("usage: /session-search <query>"))
+        .stdout(predicate::str::contains("command: /session-search"))
+        .stdout(predicate::str::contains("usage: /session-search <query>"));
+}
+
+#[test]
 fn interactive_session_import_merge_remaps_collisions_by_default() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("target.jsonl");

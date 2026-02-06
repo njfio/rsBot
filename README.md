@@ -285,6 +285,7 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 
 # Resume latest branch (default behavior), inspect session state
 /session
+/session-search retry budget
 /branches
 
 # Switch to an older entry and fork a new branch
