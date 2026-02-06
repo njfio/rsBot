@@ -156,7 +156,7 @@ fn openai_prompt_persists_session_and_supports_branch_from() {
     assert_eq!(entries[3].parent_id, Some(2));
     assert_eq!(entries[4].parent_id, Some(entries[3].id));
 
-    openai.assert_hits(2);
+    openai.assert_calls(2);
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn anthropic_prompt_works_end_to_end() {
         .success()
         .stdout(predicate::str::contains("integration anthropic response"));
 
-    anthropic.assert_hits(1);
+    anthropic.assert_calls(1);
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn google_prompt_works_end_to_end() {
         .success()
         .stdout(predicate::str::contains("integration google response"));
 
-    google.assert_hits(1);
+    google.assert_calls(1);
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn stream_output_flags_are_accepted_in_prompt_mode() {
         .success()
         .stdout(predicate::str::contains("streamed response"));
 
-    openai.assert_hits(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn bash_profile_flags_are_accepted_in_prompt_mode() {
         .success()
         .stdout(predicate::str::contains("profile ok"));
 
-    openai.assert_hits(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -353,7 +353,7 @@ fn session_lock_flags_are_accepted_in_prompt_mode() {
         .success()
         .stdout(predicate::str::contains("lock flags ok"));
 
-    openai.assert_hits(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -392,7 +392,48 @@ fn print_tool_policy_flag_outputs_effective_policy_json() {
         .stdout(predicate::str::contains("\"os_sandbox_mode\""))
         .stdout(predicate::str::contains("policy output ok"));
 
-    openai.assert_hits(1);
+    openai.assert_calls(1);
+}
+
+#[test]
+fn tool_audit_log_flag_creates_audit_log_file() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "audit log ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let audit_path = temp.path().join("tool-audit.jsonl");
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--tool-audit-log",
+        audit_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("audit log ok"));
+
+    assert!(audit_path.exists());
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -440,7 +481,7 @@ fn selected_skill_is_included_in_system_prompt() {
         when.method(POST)
             .path("/v1/chat/completions")
             .header("authorization", "Bearer test-openai-key")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "messages": [{
                         "role": "system",
@@ -485,7 +526,7 @@ fn selected_skill_is_included_in_system_prompt() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("ok"));
-    openai.assert_hits(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -495,7 +536,7 @@ fn install_skill_flag_installs_skill_before_prompt() {
         when.method(POST)
             .path("/v1/chat/completions")
             .header("authorization", "Bearer test-openai-key")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "messages": [{
                         "role": "system",
@@ -544,7 +585,7 @@ fn install_skill_flag_installs_skill_before_prompt() {
         .stdout(predicate::str::contains("skills install: installed=1"))
         .stdout(predicate::str::contains("ok install"));
     assert!(skills_dir.join("installable.md").exists());
-    openai.assert_hits(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -562,7 +603,7 @@ fn install_skill_url_with_sha256_verification_works_end_to_end() {
         when.method(POST)
             .path("/v1/chat/completions")
             .header("authorization", "Bearer test-openai-key")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "messages": [{
                         "role": "system",
@@ -613,8 +654,8 @@ fn install_skill_url_with_sha256_verification_works_end_to_end() {
         ))
         .stdout(predicate::str::contains("ok remote"));
     assert!(skills_dir.join("remote.md").exists());
-    remote.assert_hits(1);
-    openai.assert_hits(1);
+    remote.assert_calls(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -645,7 +686,7 @@ fn install_skill_from_registry_works_end_to_end() {
         when.method(POST)
             .path("/v1/chat/completions")
             .header("authorization", "Bearer test-openai-key")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "messages": [{
                         "role": "system",
@@ -698,9 +739,9 @@ fn install_skill_from_registry_works_end_to_end() {
         ))
         .stdout(predicate::str::contains("ok registry"));
     assert!(skills_dir.join("reg.md").exists());
-    registry.assert_hits(1);
-    remote.assert_hits(1);
-    openai.assert_hits(1);
+    registry.assert_calls(1);
+    remote.assert_calls(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -749,7 +790,7 @@ fn install_signed_skill_from_registry_with_trust_root_works_end_to_end() {
         when.method(POST)
             .path("/v1/chat/completions")
             .header("authorization", "Bearer test-openai-key")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "messages": [{
                         "role": "system",
@@ -805,9 +846,9 @@ fn install_signed_skill_from_registry_with_trust_root_works_end_to_end() {
         ))
         .stdout(predicate::str::contains("ok signed registry"));
     assert!(skills_dir.join("reg-secure.md").exists());
-    registry.assert_hits(1);
-    remote.assert_hits(1);
-    openai.assert_hits(1);
+    registry.assert_calls(1);
+    remote.assert_calls(1);
+    openai.assert_calls(1);
 }
 
 #[test]
@@ -853,5 +894,5 @@ fn require_signed_skills_rejects_unsigned_registry_entries() {
     cmd.assert().failure().stderr(predicate::str::contains(
         "unsigned but signatures are required",
     ));
-    registry.assert_hits(1);
+    registry.assert_calls(1);
 }

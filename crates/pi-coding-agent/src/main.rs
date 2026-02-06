@@ -2,7 +2,14 @@ mod session;
 mod skills;
 mod tools;
 
-use std::{future::Future, io::Write, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    future::Future,
+    io::Write,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgAction, Parser, ValueEnum};
@@ -401,6 +408,13 @@ struct Cli {
 
     #[arg(
         long,
+        env = "PI_TOOL_AUDIT_LOG",
+        help = "Optional JSONL file path for tool execution audit events"
+    )]
+    tool_audit_log: Option<PathBuf>,
+
+    #[arg(
+        long,
         env = "PI_OS_SANDBOX_MODE",
         value_enum,
         default_value = "off",
@@ -457,6 +471,112 @@ impl RenderOptions {
             stream_output: cli.stream_output,
             stream_delay_ms: cli.stream_delay_ms,
         }
+    }
+}
+
+#[derive(Clone)]
+struct ToolAuditLogger {
+    path: PathBuf,
+    file: Arc<Mutex<std::fs::File>>,
+    starts: Arc<Mutex<HashMap<String, Instant>>>,
+}
+
+impl ToolAuditLogger {
+    fn open(path: PathBuf) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "failed to create tool audit log directory {}",
+                        parent.display()
+                    )
+                })?;
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open tool audit log {}", path.display()))?;
+        Ok(Self {
+            path,
+            file: Arc::new(Mutex::new(file)),
+            starts: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    fn log_event(&self, event: &AgentEvent) -> Result<()> {
+        let payload = {
+            let mut starts = self
+                .starts
+                .lock()
+                .map_err(|_| anyhow!("tool audit state lock is poisoned"))?;
+            tool_audit_event_json(event, &mut starts)
+        };
+
+        let Some(payload) = payload else {
+            return Ok(());
+        };
+        let line = serde_json::to_string(&payload).context("failed to encode tool audit event")?;
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| anyhow!("tool audit file lock is poisoned"))?;
+        writeln!(file, "{line}")
+            .with_context(|| format!("failed to write tool audit log {}", self.path.display()))?;
+        file.flush()
+            .with_context(|| format!("failed to flush tool audit log {}", self.path.display()))?;
+        Ok(())
+    }
+}
+
+fn current_unix_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn tool_audit_event_json(
+    event: &AgentEvent,
+    starts: &mut HashMap<String, Instant>,
+) -> Option<serde_json::Value> {
+    match event {
+        AgentEvent::ToolExecutionStart {
+            tool_call_id,
+            tool_name,
+            arguments,
+        } => {
+            starts.insert(tool_call_id.clone(), Instant::now());
+            Some(serde_json::json!({
+                "timestamp_unix_ms": current_unix_timestamp_ms(),
+                "event": "tool_execution_start",
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "arguments_bytes": arguments.to_string().len(),
+            }))
+        }
+        AgentEvent::ToolExecutionEnd {
+            tool_call_id,
+            tool_name,
+            result,
+        } => {
+            let duration_ms = starts
+                .remove(tool_call_id)
+                .map(|started| started.elapsed().as_millis() as u64);
+            Some(serde_json::json!({
+                "timestamp_unix_ms": current_unix_timestamp_ms(),
+                "event": "tool_execution_end",
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "duration_ms": duration_ms,
+                "is_error": result.is_error,
+                "result_bytes": result.as_text().len(),
+            }))
+        }
+        _ => None,
     }
 }
 
@@ -530,6 +650,14 @@ async fn main() -> Result<()> {
         println!("{}", tool_policy_to_json(&tool_policy));
     }
     tools::register_builtin_tools(&mut agent, tool_policy);
+    if let Some(path) = cli.tool_audit_log.clone() {
+        let logger = ToolAuditLogger::open(path)?;
+        agent.subscribe(move |event| {
+            if let Err(error) = logger.log_event(event) {
+                eprintln!("tool audit logger error: {error}");
+            }
+        });
+    }
     let render_options = RenderOptions::from_cli(&cli);
 
     let mut session_runtime = if cli.no_session {
@@ -1339,7 +1467,7 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{HashMap, VecDeque},
         future::{pending, ready},
         path::PathBuf,
         sync::Arc,
@@ -1347,7 +1475,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use pi_agent_core::{Agent, AgentConfig};
+    use pi_agent_core::{Agent, AgentConfig, AgentEvent, ToolExecutionResult};
     use pi_ai::{
         ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MessageRole, PiAiError,
     };
@@ -1359,8 +1487,9 @@ mod tests {
         apply_trust_root_mutations, build_tool_policy, handle_command, initialize_session,
         parse_sandbox_command_tokens, parse_trust_rotation_spec, parse_trusted_root_spec,
         resolve_skill_trust_roots, run_prompt_with_cancellation, stream_text_chunks,
-        tool_policy_to_json, Cli, CliBashProfile, CliOsSandboxMode, CommandAction, PromptRunStatus,
-        RenderOptions, SessionRuntime, TrustedRootRecord,
+        tool_audit_event_json, tool_policy_to_json, Cli, CliBashProfile, CliOsSandboxMode,
+        CommandAction, PromptRunStatus, RenderOptions, SessionRuntime, ToolAuditLogger,
+        TrustedRootRecord,
     };
     use crate::resolve_api_key;
     use crate::session::SessionStore;
@@ -1472,6 +1601,7 @@ mod tests {
             bash_profile: CliBashProfile::Balanced,
             allow_command: vec![],
             print_tool_policy: false,
+            tool_audit_log: None,
             os_sandbox_mode: CliOsSandboxMode::Off,
             os_sandbox_command: vec![],
             enforce_regular_files: true,
@@ -1633,6 +1763,73 @@ mod tests {
     fn regression_stream_text_chunks_handles_empty_and_single_word() {
         assert!(stream_text_chunks("").is_empty());
         assert_eq!(stream_text_chunks("token"), vec!["token"]);
+    }
+
+    #[test]
+    fn unit_tool_audit_event_json_for_start_has_expected_shape() {
+        let mut starts = HashMap::new();
+        let event = AgentEvent::ToolExecutionStart {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "bash".to_string(),
+            arguments: serde_json::json!({ "command": "pwd" }),
+        };
+        let payload = tool_audit_event_json(&event, &mut starts).expect("expected payload");
+
+        assert_eq!(payload["event"], "tool_execution_start");
+        assert_eq!(payload["tool_call_id"], "call-1");
+        assert_eq!(payload["tool_name"], "bash");
+        assert!(payload["arguments_bytes"].as_u64().unwrap_or(0) > 0);
+        assert!(starts.contains_key("call-1"));
+    }
+
+    #[test]
+    fn unit_tool_audit_event_json_for_end_tracks_duration_and_error_state() {
+        let mut starts = HashMap::new();
+        starts.insert("call-2".to_string(), Instant::now());
+        let event = AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call-2".to_string(),
+            tool_name: "read".to_string(),
+            result: ToolExecutionResult::error(serde_json::json!({ "error": "denied" })),
+        };
+        let payload = tool_audit_event_json(&event, &mut starts).expect("expected payload");
+
+        assert_eq!(payload["event"], "tool_execution_end");
+        assert_eq!(payload["tool_call_id"], "call-2");
+        assert_eq!(payload["is_error"], true);
+        assert!(payload["result_bytes"].as_u64().unwrap_or(0) > 0);
+        assert!(payload["duration_ms"].is_number() || payload["duration_ms"].is_null());
+        assert!(!starts.contains_key("call-2"));
+    }
+
+    #[test]
+    fn integration_tool_audit_logger_persists_jsonl_records() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("tool-audit.jsonl");
+        let logger = ToolAuditLogger::open(log_path.clone()).expect("logger should open");
+
+        let start = AgentEvent::ToolExecutionStart {
+            tool_call_id: "call-3".to_string(),
+            tool_name: "write".to_string(),
+            arguments: serde_json::json!({ "path": "out.txt", "content": "x" }),
+        };
+        logger.log_event(&start).expect("write start event");
+
+        let end = AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call-3".to_string(),
+            tool_name: "write".to_string(),
+            result: ToolExecutionResult::ok(serde_json::json!({ "bytes_written": 1 })),
+        };
+        logger.log_event(&end).expect("write end event");
+
+        let raw = std::fs::read_to_string(log_path).expect("read audit log");
+        let lines = raw.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+
+        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("parse first");
+        let second: serde_json::Value = serde_json::from_str(lines[1]).expect("parse second");
+        assert_eq!(first["event"], "tool_execution_start");
+        assert_eq!(second["event"], "tool_execution_end");
+        assert_eq!(second["is_error"], false);
     }
 
     #[tokio::test]

@@ -262,3 +262,12 @@ cargo run -p pi-coding-agent -- \
   --os-sandbox-command bwrap,--die-with-parent,--new-session,--unshare-all,--proc,/proc,--dev,/dev,--tmpfs,/tmp,--bind,{cwd},{cwd},--chdir,{cwd},{shell},-lc,{command} \
   --enforce-regular-files true
 ```
+
+Emit structured tool audit events to JSONL:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --prompt "Inspect repo status" \
+  --tool-audit-log .pi/audit/tools.jsonl
+```

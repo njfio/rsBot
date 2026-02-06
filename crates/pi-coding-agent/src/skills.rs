@@ -792,7 +792,7 @@ mod tests {
             std::fs::read_to_string(destination.join("review.md")).expect("read installed"),
             body
         );
-        remote.assert_hits(1);
+        remote.assert_calls(1);
     }
 
     #[tokio::test]
@@ -818,7 +818,7 @@ mod tests {
         .expect_err("checksum mismatch should fail");
 
         assert!(error.to_string().contains("sha256 mismatch"));
-        remote.assert_hits(1);
+        remote.assert_calls(1);
     }
 
     #[tokio::test]
@@ -858,7 +858,7 @@ mod tests {
             std::fs::read_to_string(destination.join("sync.md")).expect("read updated"),
             "v2"
         );
-        remote.assert_hits(1);
+        remote.assert_calls(1);
     }
 
     #[tokio::test]
@@ -886,7 +886,7 @@ mod tests {
         .expect("fetch should succeed");
         assert_eq!(manifest.version, 1);
         assert_eq!(manifest.skills.len(), 1);
-        registry.assert_hits(1);
+        registry.assert_calls(1);
     }
 
     #[test]
@@ -964,8 +964,8 @@ mod tests {
             std::fs::read_to_string(destination.join("skill.md")).expect("read skill"),
             skill_body
         );
-        registry.assert_hits(1);
-        skill.assert_hits(1);
+        registry.assert_calls(1);
+        skill.assert_calls(1);
     }
 
     #[tokio::test]
@@ -998,7 +998,7 @@ mod tests {
         assert!(error
             .to_string()
             .contains("signature verification failed for"));
-        remote.assert_hits(1);
+        remote.assert_calls(1);
     }
 
     #[tokio::test]
@@ -1082,8 +1082,8 @@ mod tests {
             std::fs::read_to_string(destination.join("secure.md")).expect("read skill"),
             skill_body
         );
-        registry.assert_hits(1);
-        skill.assert_hits(1);
+        registry.assert_calls(1);
+        skill.assert_calls(1);
     }
 
     #[test]

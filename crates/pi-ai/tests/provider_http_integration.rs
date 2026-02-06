@@ -15,7 +15,7 @@ async fn openai_client_sends_expected_http_request() {
             .header("authorization", "Bearer test-openai-key")
             .header_exists("x-pi-request-id")
             .header("x-pi-retry-attempt", "0")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "model": "gpt-4o-mini",
                     "messages": [{"role": "system"}, {"role": "user"}],
@@ -79,7 +79,7 @@ async fn anthropic_client_sends_expected_http_request() {
             .header("anthropic-version", "2023-06-01")
             .header_exists("x-pi-request-id")
             .header("x-pi-retry-attempt", "0")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "model": "claude-sonnet-4-20250514",
                     "system": "system",
@@ -138,7 +138,7 @@ async fn google_client_sends_expected_http_request() {
             .query_param("key", "test-google-key")
             .header_exists("x-pi-request-id")
             .header("x-pi-retry-attempt", "0")
-            .json_body_partial(
+            .json_body_includes(
                 json!({
                     "contents": [{"role": "user"}],
                     "tools": [{"functionDeclarations": [{"name": "read"}]}]
@@ -274,8 +274,8 @@ async fn openai_client_retries_on_rate_limit_then_succeeds() {
         .expect("retry should eventually succeed");
 
     assert_eq!(response.message.text_content(), "ok after retry");
-    first.assert_hits(1);
-    second.assert_hits(1);
+    first.assert_calls(1);
+    second.assert_calls(1);
 }
 
 #[tokio::test]
