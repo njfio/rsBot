@@ -683,6 +683,172 @@ fn regression_interactive_branch_alias_command_corrupt_file_reports_parse_error(
 }
 
 #[test]
+fn integration_interactive_macro_command_save_run_and_list_flow() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-macro.jsonl");
+    let macro_commands_file = temp.path().join("rewind.commands");
+    let macro_store = temp.path().join(".pi").join("macros.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":2,
+            "parent_id":1,
+            "message":{
+                "role":"assistant",
+                "content":[{"type":"text","text":"leaf"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+    fs::write(&macro_commands_file, "/branch 1\n/session\n").expect("write macro commands");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--session",
+            session.to_str().expect("utf8 path"),
+        ])
+        .write_stdin(format!(
+            "/macro save rewind {}\n/macro list\n/macro run rewind --dry-run\n/macro run rewind\n/session\n/quit\n",
+            macro_commands_file.display()
+        ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("macro save: path="))
+        .stdout(predicate::str::contains("name=rewind"))
+        .stdout(predicate::str::contains("commands=2"))
+        .stdout(predicate::str::contains("macro list: path="))
+        .stdout(predicate::str::contains("macro: name=rewind commands=2"))
+        .stdout(predicate::str::contains("mode=dry-run"))
+        .stdout(predicate::str::contains("plan: command=/branch 1"))
+        .stdout(predicate::str::contains("macro run: path="))
+        .stdout(predicate::str::contains("mode=apply"))
+        .stdout(predicate::str::contains("executed=2"))
+        .stdout(predicate::str::contains("active_head=1"));
+
+    let macro_raw = fs::read_to_string(&macro_store).expect("read macro store");
+    assert!(macro_raw.contains("\"schema_version\": 1"));
+    assert!(macro_raw.contains("\"rewind\""));
+    assert!(macro_raw.contains("/branch 1"));
+}
+
+#[test]
+fn regression_interactive_macro_command_invalid_name_and_missing_file_report_errors() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-macro-errors.jsonl");
+    let missing_commands_file = temp.path().join("missing.commands");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--session",
+            session.to_str().expect("utf8 path"),
+        ])
+        .write_stdin(format!(
+            "/macro save 1bad {}\n/macro save quick {}\n/help macro\n/quit\n",
+            missing_commands_file.display(),
+            missing_commands_file.display()
+        ));
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("macro error: path="))
+        .stdout(predicate::str::contains(
+            "macro name '1bad' must start with an ASCII letter",
+        ))
+        .stdout(predicate::str::contains("failed to read commands file"))
+        .stdout(predicate::str::contains(
+            "usage: /macro <save|run|list> ...",
+        ));
+}
+
+#[test]
+fn regression_interactive_macro_command_corrupt_store_reports_parse_error() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-macro-corrupt.jsonl");
+    let macro_store_dir = temp.path().join(".pi");
+    let macro_store_path = macro_store_dir.join("macros.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+    fs::create_dir_all(&macro_store_dir).expect("mkdir macro dir");
+    fs::write(&macro_store_path, "{invalid-json").expect("write malformed macro store");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path())
+        .args([
+            "--model",
+            "openai/gpt-4o-mini",
+            "--openai-api-key",
+            "test-openai-key",
+            "--session",
+            session.to_str().expect("utf8 path"),
+        ])
+        .write_stdin("/macro list\n/help macro\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("macro error: path="))
+        .stdout(predicate::str::contains("failed to parse macro file"))
+        .stdout(predicate::str::contains(
+            "usage: /macro <save|run|list> ...",
+        ));
+}
+
+#[test]
 fn interactive_session_import_merge_remaps_collisions_by_default() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("target.jsonl");
