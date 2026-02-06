@@ -497,6 +497,89 @@ fn regression_interactive_session_stats_command_with_args_prints_usage_and_conti
 }
 
 #[test]
+fn integration_interactive_doctor_command_reports_runtime_diagnostics() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("doctor-session.jsonl");
+    let skills_dir = temp.path().join("skills");
+    let lock_path = temp.path().join("skills.lock.json");
+    let trust_root_path = temp.path().join("trust-roots.json");
+    fs::create_dir_all(&skills_dir).expect("mkdir skills");
+    fs::write(skills_dir.join("focus.md"), "focus skill").expect("write skill");
+    fs::write(&lock_path, "{}\n").expect("write lock");
+    fs::write(&trust_root_path, "[]\n").expect("write trust roots");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skills-lock-file",
+        lock_path.to_str().expect("utf8 path"),
+        "--skill-trust-root-file",
+        trust_root_path.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/doctor\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "doctor summary: checks=6 pass=6 warn=0 fail=0",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=provider_key.openai status=pass code=present",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=session_path status=pass code=readable",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=skills_lock status=pass code=readable",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=trust_root status=pass code=readable",
+        ));
+}
+
+#[test]
+fn regression_interactive_doctor_command_with_args_prints_usage_and_continues() {
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--no-session",
+    ])
+    .write_stdin("/doctor extra\n/help doctor\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("usage: /doctor"))
+        .stdout(predicate::str::contains("command: /doctor"))
+        .stdout(predicate::str::contains("example: /doctor"));
+}
+
+#[test]
 fn integration_interactive_session_graph_export_command_writes_mermaid_file() {
     let temp = tempdir().expect("tempdir");
     let session = temp.path().join("session-graph-export.jsonl");

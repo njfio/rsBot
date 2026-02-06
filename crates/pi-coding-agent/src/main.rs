@@ -647,6 +647,25 @@ struct SkillsSyncCommandConfig {
     skills_dir: PathBuf,
     default_lock_path: PathBuf,
     default_trust_root_path: Option<PathBuf>,
+    doctor_config: DoctorCommandConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorProviderKeyStatus {
+    provider: String,
+    key_env_var: String,
+    present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorCommandConfig {
+    model: String,
+    provider_keys: Vec<DoctorProviderKeyStatus>,
+    session_enabled: bool,
+    session_path: PathBuf,
+    skills_dir: PathBuf,
+    skills_lock_path: PathBuf,
+    trust_root_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -730,6 +749,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         details:
             "Read-only session graph diagnostics including active/latest head indicators.",
         example: "/session-stats",
+    },
+    CommandSpec {
+        name: "/doctor",
+        usage: "/doctor",
+        description: "Run deterministic runtime diagnostics",
+        details:
+            "Checks provider key presence plus session/skills/lock/trust-root path readability.",
+        example: "/doctor",
     },
     CommandSpec {
         name: "/session-graph-export",
@@ -902,6 +929,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/session",
     "/session-search",
     "/session-stats",
+    "/doctor",
     "/session-graph-export",
     "/session-export",
     "/session-import",
@@ -1607,6 +1635,12 @@ async fn main() -> Result<()> {
         skills_dir: cli.skills_dir.clone(),
         default_lock_path: skills_lock_path.clone(),
         default_trust_root_path: cli.skill_trust_root_file.clone(),
+        doctor_config: build_doctor_command_config(
+            &cli,
+            &model_ref,
+            &fallback_model_refs,
+            &skills_lock_path,
+        ),
     };
     let profile_defaults = build_profile_defaults(&cli);
     let command_context = CommandExecutionContext {
@@ -2238,6 +2272,19 @@ fn handle_command(
         skills_dir,
         default_lock_path: skills_lock_path,
         default_trust_root_path: None,
+        doctor_config: DoctorCommandConfig {
+            model: "openai/gpt-4o-mini".to_string(),
+            provider_keys: vec![DoctorProviderKeyStatus {
+                provider: "openai".to_string(),
+                key_env_var: "OPENAI_API_KEY".to_string(),
+                present: true,
+            }],
+            session_enabled: true,
+            session_path: PathBuf::from(".pi/sessions/default.jsonl"),
+            skills_dir: PathBuf::from(".pi/skills"),
+            skills_lock_path: PathBuf::from(".pi/skills/skills.lock.json"),
+            trust_root_path: None,
+        },
     };
     let profile_defaults = ProfileDefaults {
         model: "openai/gpt-4o-mini".to_string(),
@@ -2356,6 +2403,18 @@ fn handle_command_with_session_import_mode(
         }
 
         println!("{}", execute_session_stats_command(runtime));
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/doctor" {
+        if !command_args.is_empty() {
+            println!("usage: /doctor");
+            return Ok(CommandAction::Continue);
+        }
+        println!(
+            "{}",
+            execute_doctor_command(&skills_command_config.doctor_config)
+        );
         return Ok(CommandAction::Continue);
     }
 
@@ -3183,6 +3242,261 @@ fn execute_session_graph_export_command(runtime: &SessionRuntime, command_args: 
             destination.display()
         ),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DoctorStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            DoctorStatus::Pass => "pass",
+            DoctorStatus::Warn => "warn",
+            DoctorStatus::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DoctorCheckResult {
+    key: String,
+    status: DoctorStatus,
+    code: String,
+    path: Option<String>,
+    action: Option<String>,
+}
+
+fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheckResult> {
+    let mut checks = Vec::new();
+    checks.push(DoctorCheckResult {
+        key: "model".to_string(),
+        status: DoctorStatus::Pass,
+        code: config.model.clone(),
+        path: None,
+        action: None,
+    });
+
+    for provider_check in &config.provider_keys {
+        let status = if provider_check.present {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Fail
+        };
+        checks.push(DoctorCheckResult {
+            key: format!("provider_key.{}", provider_check.provider),
+            status,
+            code: if provider_check.present {
+                "present".to_string()
+            } else {
+                "missing".to_string()
+            },
+            path: None,
+            action: if provider_check.present {
+                None
+            } else {
+                Some(format!("set {}", provider_check.key_env_var))
+            },
+        });
+    }
+
+    if !config.session_enabled {
+        checks.push(DoctorCheckResult {
+            key: "session_path".to_string(),
+            status: DoctorStatus::Warn,
+            code: "session_disabled".to_string(),
+            path: Some(config.session_path.display().to_string()),
+            action: Some("omit --no-session to enable persistence".to_string()),
+        });
+    } else if config.session_path.exists() {
+        match std::fs::metadata(&config.session_path) {
+            Ok(metadata) if metadata.is_file() => checks.push(DoctorCheckResult {
+                key: "session_path".to_string(),
+                status: DoctorStatus::Pass,
+                code: "readable".to_string(),
+                path: Some(config.session_path.display().to_string()),
+                action: None,
+            }),
+            Ok(_) => checks.push(DoctorCheckResult {
+                key: "session_path".to_string(),
+                status: DoctorStatus::Fail,
+                code: "not_file".to_string(),
+                path: Some(config.session_path.display().to_string()),
+                action: Some("choose a regular file path for --session".to_string()),
+            }),
+            Err(error) => checks.push(DoctorCheckResult {
+                key: "session_path".to_string(),
+                status: DoctorStatus::Fail,
+                code: format!("metadata_error:{error}"),
+                path: Some(config.session_path.display().to_string()),
+                action: Some("fix session path permissions".to_string()),
+            }),
+        }
+    } else {
+        let parent_exists = config
+            .session_path
+            .parent()
+            .map(|parent| parent.exists())
+            .unwrap_or(false);
+        checks.push(DoctorCheckResult {
+            key: "session_path".to_string(),
+            status: if parent_exists {
+                DoctorStatus::Warn
+            } else {
+                DoctorStatus::Fail
+            },
+            code: if parent_exists {
+                "missing_will_create".to_string()
+            } else {
+                "missing_parent".to_string()
+            },
+            path: Some(config.session_path.display().to_string()),
+            action: if parent_exists {
+                Some("run a prompt or command to create the session file".to_string())
+            } else {
+                Some("create the parent directory for --session".to_string())
+            },
+        });
+    }
+
+    if config.skills_dir.exists() {
+        match std::fs::metadata(&config.skills_dir) {
+            Ok(metadata) if metadata.is_dir() => checks.push(DoctorCheckResult {
+                key: "skills_dir".to_string(),
+                status: DoctorStatus::Pass,
+                code: "readable_dir".to_string(),
+                path: Some(config.skills_dir.display().to_string()),
+                action: None,
+            }),
+            Ok(_) => checks.push(DoctorCheckResult {
+                key: "skills_dir".to_string(),
+                status: DoctorStatus::Fail,
+                code: "not_dir".to_string(),
+                path: Some(config.skills_dir.display().to_string()),
+                action: Some("set --skills-dir to an existing directory".to_string()),
+            }),
+            Err(error) => checks.push(DoctorCheckResult {
+                key: "skills_dir".to_string(),
+                status: DoctorStatus::Fail,
+                code: format!("metadata_error:{error}"),
+                path: Some(config.skills_dir.display().to_string()),
+                action: Some("fix skills directory permissions".to_string()),
+            }),
+        }
+    } else {
+        checks.push(DoctorCheckResult {
+            key: "skills_dir".to_string(),
+            status: DoctorStatus::Warn,
+            code: "missing".to_string(),
+            path: Some(config.skills_dir.display().to_string()),
+            action: Some("create --skills-dir or install at least one skill".to_string()),
+        });
+    }
+
+    if config.skills_lock_path.exists() {
+        match std::fs::read_to_string(&config.skills_lock_path) {
+            Ok(_) => checks.push(DoctorCheckResult {
+                key: "skills_lock".to_string(),
+                status: DoctorStatus::Pass,
+                code: "readable".to_string(),
+                path: Some(config.skills_lock_path.display().to_string()),
+                action: None,
+            }),
+            Err(error) => checks.push(DoctorCheckResult {
+                key: "skills_lock".to_string(),
+                status: DoctorStatus::Fail,
+                code: format!("read_error:{error}"),
+                path: Some(config.skills_lock_path.display().to_string()),
+                action: Some("fix lockfile permissions or regenerate lockfile".to_string()),
+            }),
+        }
+    } else {
+        checks.push(DoctorCheckResult {
+            key: "skills_lock".to_string(),
+            status: DoctorStatus::Warn,
+            code: "missing".to_string(),
+            path: Some(config.skills_lock_path.display().to_string()),
+            action: Some("run /skills-lock-write to generate lockfile".to_string()),
+        });
+    }
+
+    match config.trust_root_path.as_ref() {
+        Some(path) if path.exists() => match std::fs::read_to_string(path) {
+            Ok(_) => checks.push(DoctorCheckResult {
+                key: "trust_root".to_string(),
+                status: DoctorStatus::Pass,
+                code: "readable".to_string(),
+                path: Some(path.display().to_string()),
+                action: None,
+            }),
+            Err(error) => checks.push(DoctorCheckResult {
+                key: "trust_root".to_string(),
+                status: DoctorStatus::Fail,
+                code: format!("read_error:{error}"),
+                path: Some(path.display().to_string()),
+                action: Some("fix trust-root file permissions".to_string()),
+            }),
+        },
+        Some(path) => checks.push(DoctorCheckResult {
+            key: "trust_root".to_string(),
+            status: DoctorStatus::Warn,
+            code: "missing".to_string(),
+            path: Some(path.display().to_string()),
+            action: Some("create trust-root file or adjust --skill-trust-root-file".to_string()),
+        }),
+        None => checks.push(DoctorCheckResult {
+            key: "trust_root".to_string(),
+            status: DoctorStatus::Warn,
+            code: "not_configured".to_string(),
+            path: None,
+            action: Some("configure --skill-trust-root-file when using signed skills".to_string()),
+        }),
+    }
+
+    checks
+}
+
+fn render_doctor_report(checks: &[DoctorCheckResult]) -> String {
+    let pass = checks
+        .iter()
+        .filter(|item| item.status == DoctorStatus::Pass)
+        .count();
+    let warn = checks
+        .iter()
+        .filter(|item| item.status == DoctorStatus::Warn)
+        .count();
+    let fail = checks
+        .iter()
+        .filter(|item| item.status == DoctorStatus::Fail)
+        .count();
+
+    let mut lines = vec![format!(
+        "doctor summary: checks={} pass={} warn={} fail={}",
+        checks.len(),
+        pass,
+        warn,
+        fail
+    )];
+
+    for check in checks {
+        lines.push(format!(
+            "doctor check: key={} status={} code={} path={} action={}",
+            check.key,
+            check.status.as_str(),
+            check.code,
+            check.path.as_deref().unwrap_or("none"),
+            check.action.as_deref().unwrap_or("none")
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn execute_doctor_command(config: &DoctorCommandConfig) -> String {
+    render_doctor_report(&run_doctor_checks(config))
 }
 
 const MACRO_SCHEMA_VERSION: u32 = 1;
@@ -5507,6 +5821,66 @@ fn build_profile_defaults(cli: &Cli) -> ProfileDefaults {
     }
 }
 
+fn provider_key_env_var(provider: Provider) -> &'static str {
+    match provider {
+        Provider::OpenAi => "OPENAI_API_KEY",
+        Provider::Anthropic => "ANTHROPIC_API_KEY",
+        Provider::Google => "GEMINI_API_KEY",
+    }
+}
+
+fn provider_key_present(cli: &Cli, provider: Provider) -> bool {
+    match provider {
+        Provider::OpenAi => {
+            resolve_api_key(vec![cli.openai_api_key.clone(), cli.api_key.clone()]).is_some()
+        }
+        Provider::Anthropic => {
+            resolve_api_key(vec![cli.anthropic_api_key.clone(), cli.api_key.clone()]).is_some()
+        }
+        Provider::Google => {
+            resolve_api_key(vec![cli.google_api_key.clone(), cli.api_key.clone()]).is_some()
+        }
+    }
+}
+
+fn build_doctor_command_config(
+    cli: &Cli,
+    primary_model: &ModelRef,
+    fallback_models: &[ModelRef],
+    skills_lock_path: &Path,
+) -> DoctorCommandConfig {
+    let mut providers = Vec::new();
+    providers.push(primary_model.provider);
+    for model in fallback_models {
+        if !providers.contains(&model.provider) {
+            providers.push(model.provider);
+        }
+    }
+    providers.sort_by_key(|provider| provider.as_str().to_string());
+    let provider_keys = providers
+        .into_iter()
+        .map(|provider| DoctorProviderKeyStatus {
+            provider: provider.as_str().to_string(),
+            key_env_var: provider_key_env_var(provider).to_string(),
+            present: provider_key_present(cli, provider),
+        })
+        .collect::<Vec<_>>();
+
+    DoctorCommandConfig {
+        model: format!(
+            "{}/{}",
+            primary_model.provider.as_str(),
+            primary_model.model
+        ),
+        provider_keys,
+        session_enabled: !cli.no_session,
+        session_path: cli.session.clone(),
+        skills_dir: cli.skills_dir.clone(),
+        skills_lock_path: skills_lock_path.to_path_buf(),
+        trust_root_path: cli.skill_trust_root_file.clone(),
+    }
+}
+
 fn init_tracing() {
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())
@@ -5542,12 +5916,13 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, branch_alias_path_for_session, build_profile_defaults,
-        build_tool_policy, command_file_error_mode_label, compute_session_entry_depths,
-        compute_session_stats, default_macro_config_path, default_profile_store_path,
-        default_skills_lock_path, derive_skills_prune_candidates, ensure_non_empty_text,
-        escape_graph_label, execute_branch_alias_command, execute_command_file,
-        execute_macro_command, execute_profile_command, execute_session_graph_export_command,
+        apply_trust_root_mutations, branch_alias_path_for_session, build_doctor_command_config,
+        build_profile_defaults, build_tool_policy, command_file_error_mode_label,
+        compute_session_entry_depths, compute_session_stats, default_macro_config_path,
+        default_profile_store_path, default_skills_lock_path, derive_skills_prune_candidates,
+        ensure_non_empty_text, escape_graph_label, execute_branch_alias_command,
+        execute_command_file, execute_doctor_command, execute_macro_command,
+        execute_profile_command, execute_session_graph_export_command,
         execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
@@ -5559,27 +5934,29 @@ mod tests {
         parse_session_search_args, parse_skills_lock_diff_args, parse_skills_prune_args,
         parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
         parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
-        render_help_overview, render_macro_list, render_profile_diffs, render_session_graph_dot,
-        render_session_graph_mermaid, render_session_stats, render_skills_list,
-        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        render_doctor_report, render_help_overview, render_macro_list, render_profile_diffs,
+        render_session_graph_dot, render_session_graph_mermaid, render_session_stats,
+        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
         render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
         resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
         resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
-        run_prompt_with_cancellation, save_branch_aliases, save_macro_file, save_profile_store,
-        search_session_entries, session_message_preview, stream_text_chunks, summarize_audit_file,
-        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-        validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
-        validate_profile_name, validate_session_file, validate_skills_prune_file_name,
-        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-        CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
-        CommandExecutionContext, CommandFileEntry, CommandFileReport, FallbackRoutingClient,
-        MacroCommand, MacroFile, ProfileCommand, ProfileDefaults, ProfileStoreFile,
-        PromptRunStatus, PromptTelemetryLogger, RenderOptions, SessionGraphFormat, SessionRuntime,
-        SessionStats, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger, TrustedRootRecord,
-        BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
-        PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_SEARCH_MAX_RESULTS,
-        SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
+        run_doctor_checks, run_prompt_with_cancellation, save_branch_aliases, save_macro_file,
+        save_profile_store, search_session_entries, session_message_preview, stream_text_chunks,
+        summarize_audit_file, tool_audit_event_json, tool_policy_to_json, trust_record_status,
+        unknown_command_message, validate_branch_alias_name, validate_macro_command_entry,
+        validate_macro_name, validate_profile_name, validate_session_file,
+        validate_skills_prune_file_name, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+        CliCommandFileErrorMode, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
+        ClientRoute, CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+        DoctorCheckResult, DoctorCommandConfig, DoctorProviderKeyStatus, DoctorStatus,
+        FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand, ProfileDefaults,
+        ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
+        SessionGraphFormat, SessionRuntime, SessionStats, SkillsPruneMode, SkillsSyncCommandConfig,
+        ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
+        MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+        SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
+        SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -5757,6 +6134,19 @@ mod tests {
             skills_dir: skills_dir.to_path_buf(),
             default_lock_path: lock_path.to_path_buf(),
             default_trust_root_path: trust_root_path.map(Path::to_path_buf),
+            doctor_config: DoctorCommandConfig {
+                model: "openai/gpt-4o-mini".to_string(),
+                provider_keys: vec![DoctorProviderKeyStatus {
+                    provider: "openai".to_string(),
+                    key_env_var: "OPENAI_API_KEY".to_string(),
+                    present: true,
+                }],
+                session_enabled: true,
+                session_path: PathBuf::from(".pi/sessions/default.jsonl"),
+                skills_dir: skills_dir.to_path_buf(),
+                skills_lock_path: lock_path.to_path_buf(),
+                trust_root_path: trust_root_path.map(Path::to_path_buf),
+            },
         }
     }
 
@@ -6369,6 +6759,337 @@ mod tests {
         let output = execute_session_stats_command(&runtime);
         assert!(output.contains("session stats error:"));
         assert!(output.contains("missing parent id 2"));
+    }
+
+    #[test]
+    fn unit_build_doctor_command_config_collects_sorted_unique_provider_states() {
+        let mut cli = test_cli();
+        cli.no_session = true;
+        cli.session = PathBuf::from("/tmp/session.jsonl");
+        cli.skills_dir = PathBuf::from("/tmp/skills");
+        cli.skills_lock_file = Some(PathBuf::from("/tmp/custom.lock.json"));
+        cli.skill_trust_root_file = Some(PathBuf::from("/tmp/trust-roots.json"));
+        cli.openai_api_key = Some("openai-key".to_string());
+        cli.anthropic_api_key = Some("anthropic-key".to_string());
+        cli.google_api_key = None;
+
+        let primary = ModelRef {
+            provider: Provider::OpenAi,
+            model: "gpt-4o-mini".to_string(),
+        };
+        let fallbacks = vec![
+            ModelRef {
+                provider: Provider::Google,
+                model: "gemini-2.5-pro".to_string(),
+            },
+            ModelRef {
+                provider: Provider::Anthropic,
+                model: "claude-sonnet-4".to_string(),
+            },
+            ModelRef {
+                provider: Provider::OpenAi,
+                model: "gpt-4.1-mini".to_string(),
+            },
+        ];
+        let lock_path = PathBuf::from("/tmp/skills.lock.json");
+
+        let config = build_doctor_command_config(&cli, &primary, &fallbacks, &lock_path);
+        assert_eq!(config.model, "openai/gpt-4o-mini");
+        assert!(!config.session_enabled);
+        assert_eq!(config.session_path, PathBuf::from("/tmp/session.jsonl"));
+        assert_eq!(config.skills_dir, PathBuf::from("/tmp/skills"));
+        assert_eq!(config.skills_lock_path, lock_path);
+        assert_eq!(
+            config.trust_root_path,
+            Some(PathBuf::from("/tmp/trust-roots.json"))
+        );
+
+        let provider_rows = config
+            .provider_keys
+            .iter()
+            .map(|item| {
+                (
+                    item.provider.clone(),
+                    item.key_env_var.clone(),
+                    item.present,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            provider_rows,
+            vec![
+                (
+                    "anthropic".to_string(),
+                    "ANTHROPIC_API_KEY".to_string(),
+                    true
+                ),
+                ("google".to_string(), "GEMINI_API_KEY".to_string(), false),
+                ("openai".to_string(), "OPENAI_API_KEY".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn unit_render_doctor_report_summarizes_counts_and_rows() {
+        let report = render_doctor_report(&[
+            DoctorCheckResult {
+                key: "model".to_string(),
+                status: DoctorStatus::Pass,
+                code: "openai/gpt-4o-mini".to_string(),
+                path: None,
+                action: None,
+            },
+            DoctorCheckResult {
+                key: "provider_key.openai".to_string(),
+                status: DoctorStatus::Fail,
+                code: "missing".to_string(),
+                path: None,
+                action: Some("set OPENAI_API_KEY".to_string()),
+            },
+            DoctorCheckResult {
+                key: "skills_lock".to_string(),
+                status: DoctorStatus::Warn,
+                code: "missing".to_string(),
+                path: Some("/tmp/skills.lock.json".to_string()),
+                action: Some("run /skills-lock-write to generate lockfile".to_string()),
+            },
+        ]);
+
+        assert!(report.contains("doctor summary: checks=3 pass=1 warn=1 fail=1"));
+        assert!(report.contains(
+            "doctor check: key=model status=pass code=openai/gpt-4o-mini path=none action=none"
+        ));
+        assert!(report.contains(
+            "doctor check: key=provider_key.openai status=fail code=missing path=none action=set OPENAI_API_KEY"
+        ));
+        assert!(report.contains("doctor check: key=skills_lock status=warn code=missing path=/tmp/skills.lock.json action=run /skills-lock-write to generate lockfile"));
+    }
+
+    #[test]
+    fn functional_execute_doctor_command_reports_deterministic_check_order() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let skills_dir = temp.path().join("skills");
+        let lock_path = temp.path().join("skills.lock.json");
+        let trust_root_path = temp.path().join("trust-roots.json");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir skills");
+        std::fs::write(&session_path, "{}\n").expect("write session");
+        std::fs::write(&lock_path, "{}\n").expect("write lock");
+        std::fs::write(&trust_root_path, "[]\n").expect("write trust");
+
+        let config = DoctorCommandConfig {
+            model: "openai/gpt-4o-mini".to_string(),
+            provider_keys: vec![
+                DoctorProviderKeyStatus {
+                    provider: "anthropic".to_string(),
+                    key_env_var: "ANTHROPIC_API_KEY".to_string(),
+                    present: false,
+                },
+                DoctorProviderKeyStatus {
+                    provider: "openai".to_string(),
+                    key_env_var: "OPENAI_API_KEY".to_string(),
+                    present: true,
+                },
+            ],
+            session_enabled: true,
+            session_path,
+            skills_dir,
+            skills_lock_path: lock_path,
+            trust_root_path: Some(trust_root_path),
+        };
+
+        let report = execute_doctor_command(&config);
+        assert!(report.contains("doctor summary: checks=7 pass=6 warn=0 fail=1"));
+
+        let keys = report
+            .lines()
+            .skip(1)
+            .map(|line| {
+                line.split("key=")
+                    .nth(1)
+                    .expect("key section")
+                    .split(" status=")
+                    .next()
+                    .expect("key value")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "model".to_string(),
+                "provider_key.anthropic".to_string(),
+                "provider_key.openai".to_string(),
+                "session_path".to_string(),
+                "skills_dir".to_string(),
+                "skills_lock".to_string(),
+                "trust_root".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn integration_run_doctor_checks_identifies_missing_runtime_prerequisites() {
+        let temp = tempdir().expect("tempdir");
+        let config = DoctorCommandConfig {
+            model: "openai/gpt-4o-mini".to_string(),
+            provider_keys: vec![DoctorProviderKeyStatus {
+                provider: "openai".to_string(),
+                key_env_var: "OPENAI_API_KEY".to_string(),
+                present: false,
+            }],
+            session_enabled: true,
+            session_path: temp.path().join("missing-parent").join("session.jsonl"),
+            skills_dir: temp.path().join("missing-skills"),
+            skills_lock_path: temp.path().join("missing-lock.json"),
+            trust_root_path: Some(temp.path().join("missing-trust-roots.json")),
+        };
+
+        let checks = run_doctor_checks(&config);
+        let by_key = checks
+            .into_iter()
+            .map(|check| (check.key.clone(), check))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            by_key.get("model").map(|item| item.status),
+            Some(DoctorStatus::Pass)
+        );
+        assert_eq!(
+            by_key
+                .get("provider_key.openai")
+                .map(|item| (item.status, item.code.clone())),
+            Some((DoctorStatus::Fail, "missing".to_string()))
+        );
+        assert_eq!(
+            by_key
+                .get("session_path")
+                .map(|item| (item.status, item.code.clone())),
+            Some((DoctorStatus::Fail, "missing_parent".to_string()))
+        );
+        assert_eq!(
+            by_key
+                .get("skills_dir")
+                .map(|item| (item.status, item.code.clone())),
+            Some((DoctorStatus::Warn, "missing".to_string()))
+        );
+        assert_eq!(
+            by_key
+                .get("skills_lock")
+                .map(|item| (item.status, item.code.clone())),
+            Some((DoctorStatus::Warn, "missing".to_string()))
+        );
+        assert_eq!(
+            by_key
+                .get("trust_root")
+                .map(|item| (item.status, item.code.clone())),
+            Some((DoctorStatus::Warn, "missing".to_string()))
+        );
+    }
+
+    #[test]
+    fn integration_doctor_command_preserves_session_runtime() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write skill");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        std::fs::write(&lock_path, "{}\n").expect("write lock");
+        let trust_root_path = temp.path().join("trust-roots.json");
+        std::fs::write(&trust_root_path, "[]\n").expect("write trust");
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
+        let mut skills_command_config =
+            skills_command_config(&skills_dir, &lock_path, Some(&trust_root_path));
+        skills_command_config.doctor_config.session_path = temp.path().join("session.jsonl");
+
+        let action = handle_command_with_session_import_mode(
+            "/doctor",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &profile_defaults,
+            &skills_command_config,
+        )
+        .expect("doctor command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn regression_run_doctor_checks_reports_type_and_readability_errors() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session-as-dir");
+        std::fs::create_dir_all(&session_path).expect("mkdir session dir");
+        let skills_dir = temp.path().join("skills-as-file");
+        std::fs::write(&skills_dir, "not a directory").expect("write skills file");
+        let lock_path = temp.path().join("lock-as-dir");
+        std::fs::create_dir_all(&lock_path).expect("mkdir lock dir");
+        let trust_root_path = temp.path().join("trust-as-dir");
+        std::fs::create_dir_all(&trust_root_path).expect("mkdir trust dir");
+
+        let config = DoctorCommandConfig {
+            model: "openai/gpt-4o-mini".to_string(),
+            provider_keys: vec![DoctorProviderKeyStatus {
+                provider: "openai".to_string(),
+                key_env_var: "OPENAI_API_KEY".to_string(),
+                present: true,
+            }],
+            session_enabled: true,
+            session_path,
+            skills_dir,
+            skills_lock_path: lock_path,
+            trust_root_path: Some(trust_root_path),
+        };
+
+        let checks = run_doctor_checks(&config);
+        let by_key = checks
+            .into_iter()
+            .map(|check| (check.key.clone(), check))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            by_key
+                .get("session_path")
+                .map(|item| (item.status, item.code.clone())),
+            Some((DoctorStatus::Fail, "not_file".to_string()))
+        );
+        assert_eq!(
+            by_key
+                .get("skills_dir")
+                .map(|item| (item.status, item.code.clone())),
+            Some((DoctorStatus::Fail, "not_dir".to_string()))
+        );
+        let lock = by_key.get("skills_lock").expect("skills lock check");
+        assert_eq!(lock.status, DoctorStatus::Fail);
+        assert!(lock.code.starts_with("read_error:"));
+        let trust = by_key.get("trust_root").expect("trust root check");
+        assert_eq!(trust.status, DoctorStatus::Fail);
+        assert!(trust.code.starts_with("read_error:"));
     }
 
     #[test]
@@ -7321,6 +8042,7 @@ mod tests {
         assert!(help.contains("/session"));
         assert!(help.contains("/session-search <query>"));
         assert!(help.contains("/session-stats"));
+        assert!(help.contains("/doctor"));
         assert!(help.contains("/session-graph-export <path>"));
         assert!(help.contains("/session-export <path>"));
         assert!(help.contains("/session-import <path>"));
@@ -7384,6 +8106,14 @@ mod tests {
         let help = render_command_help("session-stats").expect("render help");
         assert!(help.contains("command: /session-stats"));
         assert!(help.contains("usage: /session-stats"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_doctor_topic_without_slash() {
+        let help = render_command_help("doctor").expect("render help");
+        assert!(help.contains("command: /doctor"));
+        assert!(help.contains("usage: /doctor"));
+        assert!(help.contains("example: /doctor"));
     }
 
     #[test]
