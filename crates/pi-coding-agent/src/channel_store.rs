@@ -1,12 +1,13 @@
 use std::{
     io::{BufRead, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
 use pi_ai::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{current_unix_timestamp_ms, write_text_atomic};
 
@@ -60,6 +61,31 @@ pub(crate) struct ChannelRepairReport {
     pub context_removed_lines: usize,
     pub log_backup_path: Option<PathBuf>,
     pub context_backup_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct ChannelArtifactRecord {
+    pub id: String,
+    pub run_id: String,
+    pub artifact_type: String,
+    pub visibility: String,
+    pub relative_path: String,
+    pub bytes: u64,
+    pub checksum_sha256: String,
+    pub created_unix_ms: u64,
+    pub expires_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) struct ChannelArtifactLoadReport {
+    pub records: Vec<ChannelArtifactRecord>,
+    pub invalid_lines: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) struct ChannelArtifactPurgeReport {
+    pub expired_removed: usize,
+    pub invalid_removed: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +158,10 @@ impl ChannelStore {
 
     pub(crate) fn artifacts_dir(&self) -> PathBuf {
         self.channel_dir().join("artifacts")
+    }
+
+    pub(crate) fn artifact_index_path(&self) -> PathBuf {
+        self.artifacts_dir().join("index.jsonl")
     }
 
     pub(crate) fn append_log_entry(&self, entry: &ChannelLogEntry) -> Result<()> {
@@ -238,6 +268,153 @@ impl ChannelStore {
         })
     }
 
+    pub(crate) fn write_text_artifact(
+        &self,
+        run_id: &str,
+        artifact_type: &str,
+        visibility: &str,
+        retention_days: Option<u64>,
+        extension: &str,
+        content: &str,
+    ) -> Result<ChannelArtifactRecord> {
+        let run_id = run_id.trim();
+        let artifact_type = artifact_type.trim();
+        let visibility = visibility.trim();
+        if run_id.is_empty() || artifact_type.is_empty() || visibility.is_empty() {
+            bail!("artifact run_id, artifact_type, and visibility must be non-empty");
+        }
+        let extension = extension.trim().trim_start_matches('.');
+        if extension.is_empty() {
+            bail!("artifact extension must be non-empty");
+        }
+
+        let created_unix_ms = current_unix_timestamp_ms();
+        let hash_seed = format!(
+            "{run_id}:{artifact_type}:{created_unix_ms}:{}",
+            self.channel_id
+        );
+        let artifact_id = format!(
+            "artifact-{}-{}",
+            created_unix_ms,
+            short_hash(hash_seed.as_bytes())
+        );
+        let run_key = sanitize_for_path(run_id);
+        let type_key = sanitize_for_path(artifact_type);
+        let ext_key = sanitize_for_path(extension);
+        let relative_path = format!("artifacts/{run_key}/{type_key}-{artifact_id}.{ext_key}");
+        let absolute_path = resolve_safe_channel_path(&self.channel_dir(), &relative_path)?;
+        if let Some(parent) = absolute_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+        }
+
+        let mut payload = content.to_string();
+        if !payload.ends_with('\n') {
+            payload.push('\n');
+        }
+        write_text_atomic(&absolute_path, &payload)
+            .with_context(|| format!("failed to write {}", absolute_path.display()))?;
+        let checksum_sha256 = sha256_hex(payload.as_bytes());
+        let bytes = payload.len() as u64;
+        let expires_unix_ms = retention_days
+            .map(|days| days.saturating_mul(86_400_000))
+            .map(|ttl| created_unix_ms.saturating_add(ttl));
+        let record = ChannelArtifactRecord {
+            id: artifact_id,
+            run_id: run_id.to_string(),
+            artifact_type: artifact_type.to_string(),
+            visibility: visibility.to_string(),
+            relative_path,
+            bytes,
+            checksum_sha256,
+            created_unix_ms,
+            expires_unix_ms,
+        };
+        append_jsonl_line(&self.artifact_index_path(), &record)?;
+        Ok(record)
+    }
+
+    pub(crate) fn load_artifact_records(&self) -> Result<Vec<ChannelArtifactRecord>> {
+        let path = self.artifact_index_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        read_jsonl_records(&path)
+    }
+
+    pub(crate) fn load_artifact_records_tolerant(&self) -> Result<ChannelArtifactLoadReport> {
+        let path = self.artifact_index_path();
+        if !path.exists() {
+            return Ok(ChannelArtifactLoadReport::default());
+        }
+        let file = std::fs::File::open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
+        let reader = std::io::BufReader::new(file);
+
+        let mut report = ChannelArtifactLoadReport::default();
+        for line_result in reader.lines() {
+            let line = line_result.with_context(|| format!("failed reading {}", path.display()))?;
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<ChannelArtifactRecord>(trimmed) {
+                Ok(record) => report.records.push(record),
+                Err(_) => report.invalid_lines = report.invalid_lines.saturating_add(1),
+            }
+        }
+        Ok(report)
+    }
+
+    pub(crate) fn list_active_artifacts(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<Vec<ChannelArtifactRecord>> {
+        let mut records = self
+            .load_artifact_records_tolerant()?
+            .records
+            .into_iter()
+            .filter(|record| !is_artifact_expired(record, now_unix_ms))
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .created_unix_ms
+                .cmp(&left.created_unix_ms)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
+    }
+
+    pub(crate) fn purge_expired_artifacts(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<ChannelArtifactPurgeReport> {
+        let loaded = self.load_artifact_records_tolerant()?;
+        let mut keep = Vec::new();
+        let mut expired_removed = 0_usize;
+        for record in loaded.records {
+            if is_artifact_expired(&record, now_unix_ms) {
+                let artifact_path =
+                    resolve_safe_channel_path(&self.channel_dir(), &record.relative_path)?;
+                if artifact_path.exists() {
+                    std::fs::remove_file(&artifact_path)
+                        .with_context(|| format!("failed to remove {}", artifact_path.display()))?;
+                }
+                expired_removed = expired_removed.saturating_add(1);
+            } else {
+                keep.push(record);
+            }
+        }
+
+        write_jsonl_records(&self.artifact_index_path(), &keep)?;
+        Ok(ChannelArtifactPurgeReport {
+            expired_removed,
+            invalid_removed: loaded.invalid_lines,
+        })
+    }
+
     fn ensure_layout(&self) -> Result<()> {
         let channel_dir = self.channel_dir();
         std::fs::create_dir_all(&channel_dir)
@@ -247,7 +424,11 @@ impl ChannelStore {
         std::fs::create_dir_all(self.artifacts_dir())
             .with_context(|| format!("failed to create {}", self.artifacts_dir().display()))?;
 
-        for path in [self.log_path(), self.context_path()] {
+        for path in [
+            self.log_path(),
+            self.context_path(),
+            self.artifact_index_path(),
+        ] {
             if !path.exists() {
                 std::fs::write(&path, "")
                     .with_context(|| format!("failed to initialize {}", path.display()))?;
@@ -427,6 +608,49 @@ fn sanitize_for_path(raw: &str) -> String {
     }
 }
 
+fn resolve_safe_channel_path(channel_dir: &Path, relative_path: &str) -> Result<PathBuf> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute() {
+        bail!("artifact relative path must be non-absolute");
+    }
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        bail!("artifact relative path must not traverse parent directories");
+    }
+    Ok(channel_dir.join(relative))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn short_hash(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    )
+}
+
+fn is_artifact_expired(record: &ChannelArtifactRecord, now_unix_ms: u64) -> bool {
+    record
+        .expires_unix_ms
+        .map(|expiry| expiry <= now_unix_ms)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -510,6 +734,37 @@ mod tests {
         let entries = store.load_context_entries().expect("load entries");
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].text, "a1");
+    }
+
+    #[test]
+    fn functional_artifact_roundtrip_create_and_list_active_records() {
+        let temp = tempdir().expect("tempdir");
+        let store = ChannelStore::open(temp.path(), "github", "issue-44").expect("open store");
+
+        let artifact = store
+            .write_text_artifact(
+                "run-1",
+                "github-reply",
+                "private",
+                Some(7),
+                "md",
+                "# reply\nhello",
+            )
+            .expect("write artifact");
+        assert_eq!(artifact.run_id, "run-1");
+        assert!(artifact.relative_path.starts_with("artifacts/run-1/"));
+        assert!(artifact.checksum_sha256.len() >= 64);
+        assert!(store.channel_dir().join(&artifact.relative_path).exists());
+
+        let strict = store.load_artifact_records().expect("load strict records");
+        assert_eq!(strict.len(), 1);
+        assert_eq!(strict[0].id, artifact.id);
+
+        let active = store
+            .list_active_artifacts(artifact.created_unix_ms)
+            .expect("list active");
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, artifact.id);
     }
 
     #[test]
@@ -605,6 +860,47 @@ mod tests {
     }
 
     #[test]
+    fn integration_purge_expired_artifacts_rewrites_index_and_removes_files() {
+        let temp = tempdir().expect("tempdir");
+        let store = ChannelStore::open(temp.path(), "github", "issue-52").expect("open store");
+
+        let expired = store
+            .write_text_artifact(
+                "run-expired",
+                "github-reply",
+                "private",
+                Some(0),
+                "md",
+                "expired body",
+            )
+            .expect("write expired");
+        let retained = store
+            .write_text_artifact(
+                "run-active",
+                "github-reply",
+                "private",
+                Some(30),
+                "md",
+                "active body",
+            )
+            .expect("write retained");
+
+        let purge = store
+            .purge_expired_artifacts(expired.created_unix_ms.saturating_add(1))
+            .expect("purge");
+        assert_eq!(purge.expired_removed, 1);
+        assert_eq!(purge.invalid_removed, 0);
+        assert!(!store.channel_dir().join(&expired.relative_path).exists());
+        assert!(store.channel_dir().join(&retained.relative_path).exists());
+
+        let active = store
+            .list_active_artifacts(expired.created_unix_ms.saturating_add(1))
+            .expect("active records");
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, retained.id);
+    }
+
+    #[test]
     fn regression_open_creates_schema_for_legacy_layout_without_schema_file() {
         let temp = tempdir().expect("tempdir");
         let legacy_dir = temp.path().join("channels/github/legacy_issue");
@@ -622,5 +918,24 @@ mod tests {
         let inspect = store.inspect().expect("inspect legacy");
         assert_eq!(inspect.log_records, 1);
         assert_eq!(inspect.invalid_log_lines, 0);
+    }
+
+    #[test]
+    fn regression_artifact_tolerant_loader_skips_invalid_lines_without_failure() {
+        let temp = tempdir().expect("tempdir");
+        let store = ChannelStore::open(temp.path(), "github", "issue-61").expect("open store");
+        let artifact = store
+            .write_text_artifact("run-1", "github-reply", "private", Some(7), "md", "ok")
+            .expect("write valid artifact");
+        let mut seeded = std::fs::read_to_string(store.artifact_index_path()).expect("read index");
+        seeded.push_str("not-json\n");
+        std::fs::write(store.artifact_index_path(), seeded).expect("seed invalid line");
+
+        let loaded = store
+            .load_artifact_records_tolerant()
+            .expect("tolerant load should pass");
+        assert_eq!(loaded.records.len(), 1);
+        assert_eq!(loaded.records[0].id, artifact.id);
+        assert_eq!(loaded.invalid_lines, 1);
     }
 }

@@ -244,6 +244,8 @@ In bridge mode:
 - inbound/outbound event payloads are persisted as JSONL logs for replay/debugging
 - duplicate deliveries are deduplicated using persisted event keys and response footers
 - bot replies include run/model/token metadata in the issue comment footer
+- each completed run emits a markdown artifact plus metadata index entry under `channel-store/.../artifacts/`
+- `/pi artifacts` posts the current issue artifact inventory (active entries + index corruption count)
 
 Run as a Slack Socket Mode conversational transport:
 
