@@ -150,6 +150,29 @@ In bridge mode:
 - duplicate deliveries are deduplicated using persisted event keys and response footers
 - bot replies include run/model/token metadata in the issue comment footer
 
+Run as a Slack Socket Mode conversational transport:
+
+```bash
+export PI_SLACK_APP_TOKEN=...xapp-token...
+export PI_SLACK_BOT_TOKEN=...xoxb-token...
+
+cargo run -p pi-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --slack-bridge \
+  --slack-state-dir .pi/slack \
+  --slack-thread-detail-output true \
+  --slack-thread-detail-threshold-chars 1500
+```
+
+In Slack bridge mode:
+
+- `app_mention` and DM (`message.im`) events are normalized into per-channel runs
+- each channel maps to a deterministic session file under `.pi/slack/channels/.../session.jsonl`
+- inbound/outbound event payloads are persisted as JSONL logs for replay/debugging
+- duplicate deliveries are deduplicated via persisted event keys
+- stale events are skipped based on `--slack-max-event-age-seconds`
+- attached files are downloaded into channel-local attachment folders and surfaced in prompt context
+
 Load the base system prompt from a file:
 
 ```bash

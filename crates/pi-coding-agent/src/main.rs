@@ -1,6 +1,7 @@
 mod github_issues;
 mod session;
 mod skills;
+mod slack;
 mod tools;
 
 use std::{
@@ -45,6 +46,7 @@ use crate::tools::{
     tool_policy_preset_name, BashCommandProfile, OsSandboxMode, ToolPolicy, ToolPolicyPreset,
 };
 use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
+use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CliBashProfile {
@@ -673,6 +675,122 @@ struct Cli {
         help = "Base backoff delay in milliseconds for github api retries"
     )]
     github_retry_base_delay_ms: u64,
+
+    #[arg(
+        long = "slack-bridge",
+        env = "PI_SLACK_BRIDGE",
+        default_value_t = false,
+        help = "Run as a Slack Socket Mode conversational transport loop instead of interactive prompt mode"
+    )]
+    slack_bridge: bool,
+
+    #[arg(
+        long = "slack-app-token",
+        env = "PI_SLACK_APP_TOKEN",
+        hide_env_values = true,
+        requires = "slack_bridge",
+        help = "Slack Socket Mode app token (xapp-...)"
+    )]
+    slack_app_token: Option<String>,
+
+    #[arg(
+        long = "slack-bot-token",
+        env = "PI_SLACK_BOT_TOKEN",
+        hide_env_values = true,
+        requires = "slack_bridge",
+        help = "Slack bot token for Web API (xoxb-...)"
+    )]
+    slack_bot_token: Option<String>,
+
+    #[arg(
+        long = "slack-bot-user-id",
+        env = "PI_SLACK_BOT_USER_ID",
+        requires = "slack_bridge",
+        help = "Optional bot user id used to strip self-mentions and ignore self-authored events"
+    )]
+    slack_bot_user_id: Option<String>,
+
+    #[arg(
+        long = "slack-api-base",
+        env = "PI_SLACK_API_BASE",
+        default_value = "https://slack.com/api",
+        requires = "slack_bridge",
+        help = "Slack Web API base URL"
+    )]
+    slack_api_base: String,
+
+    #[arg(
+        long = "slack-state-dir",
+        env = "PI_SLACK_STATE_DIR",
+        default_value = ".pi/slack",
+        requires = "slack_bridge",
+        help = "Directory for slack bridge state/session/event logs"
+    )]
+    slack_state_dir: PathBuf,
+
+    #[arg(
+        long = "slack-thread-detail-output",
+        env = "PI_SLACK_THREAD_DETAIL_OUTPUT",
+        default_value_t = true,
+        action = ArgAction::Set,
+        requires = "slack_bridge",
+        help = "When responses exceed threshold, keep summary in placeholder and post full response as a threaded detail message"
+    )]
+    slack_thread_detail_output: bool,
+
+    #[arg(
+        long = "slack-thread-detail-threshold-chars",
+        env = "PI_SLACK_THREAD_DETAIL_THRESHOLD_CHARS",
+        default_value_t = 1500,
+        requires = "slack_bridge",
+        help = "Character threshold used with --slack-thread-detail-output"
+    )]
+    slack_thread_detail_threshold_chars: usize,
+
+    #[arg(
+        long = "slack-processed-event-cap",
+        env = "PI_SLACK_PROCESSED_EVENT_CAP",
+        default_value_t = 10_000,
+        requires = "slack_bridge",
+        help = "Maximum processed-event keys to retain for duplicate delivery protection"
+    )]
+    slack_processed_event_cap: usize,
+
+    #[arg(
+        long = "slack-max-event-age-seconds",
+        env = "PI_SLACK_MAX_EVENT_AGE_SECONDS",
+        default_value_t = 7_200,
+        requires = "slack_bridge",
+        help = "Ignore inbound Slack events older than this many seconds (0 disables age checks)"
+    )]
+    slack_max_event_age_seconds: u64,
+
+    #[arg(
+        long = "slack-reconnect-delay-ms",
+        env = "PI_SLACK_RECONNECT_DELAY_MS",
+        default_value_t = 1_000,
+        requires = "slack_bridge",
+        help = "Delay before reconnecting after socket/session errors"
+    )]
+    slack_reconnect_delay_ms: u64,
+
+    #[arg(
+        long = "slack-retry-max-attempts",
+        env = "PI_SLACK_RETRY_MAX_ATTEMPTS",
+        default_value_t = 4,
+        requires = "slack_bridge",
+        help = "Maximum attempts for retryable slack api failures (429/5xx/transport)"
+    )]
+    slack_retry_max_attempts: usize,
+
+    #[arg(
+        long = "slack-retry-base-delay-ms",
+        env = "PI_SLACK_RETRY_BASE_DELAY_MS",
+        default_value_t = 500,
+        requires = "slack_bridge",
+        help = "Base backoff delay in milliseconds for slack api retries"
+    )]
+    slack_retry_base_delay_ms: u64,
 
     #[arg(
         long,
@@ -1950,6 +2068,7 @@ async fn main() -> Result<()> {
     }
     let render_options = RenderOptions::from_cli(&cli);
     validate_github_issues_bridge_cli(&cli)?;
+    validate_slack_bridge_cli(&cli)?;
     if cli.github_issues_bridge {
         let repo_slug = cli.github_repo.clone().ok_or_else(|| {
             anyhow!("--github-repo is required when --github-issues-bridge is set")
@@ -1981,6 +2100,43 @@ async fn main() -> Result<()> {
             processed_event_cap: cli.github_processed_event_cap.max(1),
             retry_max_attempts: cli.github_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.github_retry_base_delay_ms.max(1),
+        })
+        .await;
+    }
+    if cli.slack_bridge {
+        let app_token = cli.slack_app_token.clone().ok_or_else(|| {
+            anyhow!(
+                "--slack-app-token (or PI_SLACK_APP_TOKEN) is required when --slack-bridge is set"
+            )
+        })?;
+        let bot_token = cli.slack_bot_token.clone().ok_or_else(|| {
+            anyhow!(
+                "--slack-bot-token (or PI_SLACK_BOT_TOKEN) is required when --slack-bridge is set"
+            )
+        })?;
+        return run_slack_bridge(SlackBridgeRuntimeConfig {
+            client: client.clone(),
+            model: model_ref.model.clone(),
+            system_prompt: system_prompt.clone(),
+            max_turns: cli.max_turns,
+            tool_policy: tool_policy.clone(),
+            turn_timeout_ms: cli.turn_timeout_ms,
+            request_timeout_ms: cli.request_timeout_ms,
+            render_options,
+            session_lock_wait_ms: cli.session_lock_wait_ms,
+            session_lock_stale_ms: cli.session_lock_stale_ms,
+            state_dir: cli.slack_state_dir.clone(),
+            api_base: cli.slack_api_base.clone(),
+            app_token,
+            bot_token,
+            bot_user_id: cli.slack_bot_user_id.clone(),
+            detail_thread_output: cli.slack_thread_detail_output,
+            detail_thread_threshold_chars: cli.slack_thread_detail_threshold_chars.max(1),
+            processed_event_cap: cli.slack_processed_event_cap.max(1),
+            max_event_age_seconds: cli.slack_max_event_age_seconds,
+            reconnect_delay: Duration::from_millis(cli.slack_reconnect_delay_ms.max(1)),
+            retry_max_attempts: cli.slack_retry_max_attempts.max(1),
+            retry_base_delay_ms: cli.slack_retry_base_delay_ms.max(1),
         })
         .await;
     }
@@ -2148,6 +2304,57 @@ fn validate_github_issues_bridge_cli(cli: &Cli) -> Result<()> {
     {
         bail!("--github-token (or GITHUB_TOKEN) is required when --github-issues-bridge is set");
     }
+    Ok(())
+}
+
+fn validate_slack_bridge_cli(cli: &Cli) -> Result<()> {
+    if !cli.slack_bridge {
+        return Ok(());
+    }
+
+    if cli.prompt.is_some() || cli.prompt_file.is_some() || cli.command_file.is_some() {
+        bail!("--slack-bridge cannot be combined with --prompt, --prompt-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--slack-bridge cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge {
+        bail!("--slack-bridge cannot be combined with --github-issues-bridge");
+    }
+    if cli
+        .slack_app_token
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        bail!("--slack-app-token (or PI_SLACK_APP_TOKEN) is required when --slack-bridge is set");
+    }
+    if cli
+        .slack_bot_token
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        bail!("--slack-bot-token (or PI_SLACK_BOT_TOKEN) is required when --slack-bridge is set");
+    }
+    if cli.slack_thread_detail_threshold_chars == 0 {
+        bail!("--slack-thread-detail-threshold-chars must be greater than 0");
+    }
+    if cli.slack_processed_event_cap == 0 {
+        bail!("--slack-processed-event-cap must be greater than 0");
+    }
+    if cli.slack_reconnect_delay_ms == 0 {
+        bail!("--slack-reconnect-delay-ms must be greater than 0");
+    }
+    if cli.slack_retry_max_attempts == 0 {
+        bail!("--slack-retry-max-attempts must be greater than 0");
+    }
+    if cli.slack_retry_base_delay_ms == 0 {
+        bail!("--slack-retry-base-delay-ms must be greater than 0");
+    }
+
     Ok(())
 }
 
@@ -9766,10 +9973,10 @@ mod tests {
         tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
         validate_branch_alias_name, validate_github_issues_bridge_cli,
         validate_macro_command_entry, validate_macro_name, validate_profile_name,
-        validate_session_file, validate_skills_prune_file_name, AuthCommand, AuthCommandConfig,
-        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-        CliCredentialStoreEncryptionMode, CliOsSandboxMode, CliProviderAuthMode,
-        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
+        AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+        CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOsSandboxMode,
+        CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
         CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
         DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
@@ -9944,6 +10151,19 @@ mod tests {
             github_processed_event_cap: 10_000,
             github_retry_max_attempts: 4,
             github_retry_base_delay_ms: 500,
+            slack_bridge: false,
+            slack_app_token: None,
+            slack_bot_token: None,
+            slack_bot_user_id: None,
+            slack_api_base: "https://slack.com/api".to_string(),
+            slack_state_dir: PathBuf::from(".pi/slack"),
+            slack_thread_detail_output: true,
+            slack_thread_detail_threshold_chars: 1500,
+            slack_processed_event_cap: 10_000,
+            slack_max_event_age_seconds: 7_200,
+            slack_reconnect_delay_ms: 1_000,
+            slack_retry_max_attempts: 4,
+            slack_retry_base_delay_ms: 500,
             session: PathBuf::from(".pi/sessions/default.jsonl"),
             no_session: false,
             session_validate: false,
@@ -15532,6 +15752,43 @@ mod tests {
         assert!(error
             .to_string()
             .contains("--github-token (or GITHUB_TOKEN) is required"));
+    }
+
+    #[test]
+    fn unit_validate_slack_bridge_cli_accepts_minimum_configuration() {
+        let mut cli = test_cli();
+        cli.slack_bridge = true;
+        cli.slack_app_token = Some("xapp-test".to_string());
+        cli.slack_bot_token = Some("xoxb-test".to_string());
+
+        validate_slack_bridge_cli(&cli).expect("slack bridge config should validate");
+    }
+
+    #[test]
+    fn functional_validate_slack_bridge_cli_rejects_prompt_conflicts() {
+        let mut cli = test_cli();
+        cli.slack_bridge = true;
+        cli.slack_app_token = Some("xapp-test".to_string());
+        cli.slack_bot_token = Some("xoxb-test".to_string());
+        cli.prompt = Some("conflict".to_string());
+
+        let error = validate_slack_bridge_cli(&cli).expect_err("prompt conflict");
+        assert!(error
+            .to_string()
+            .contains("--slack-bridge cannot be combined"));
+    }
+
+    #[test]
+    fn regression_validate_slack_bridge_cli_rejects_missing_tokens() {
+        let mut cli = test_cli();
+        cli.slack_bridge = true;
+        cli.slack_app_token = Some("xapp-test".to_string());
+        cli.slack_bot_token = None;
+
+        let error = validate_slack_bridge_cli(&cli).expect_err("missing slack bot token");
+        assert!(error
+            .to_string()
+            .contains("--slack-bot-token (or PI_SLACK_BOT_TOKEN) is required"));
     }
 
     #[test]
