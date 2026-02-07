@@ -88,6 +88,9 @@ export GROQ_API_KEY=...your-groq-key...
 # xAI (OpenAI-compatible alias path)
 export XAI_API_KEY=...your-xai-key...
 
+# Mistral (OpenAI-compatible alias path)
+export MISTRAL_API_KEY=...your-mistral-key...
+
 # Anthropic
 export ANTHROPIC_API_KEY=...your-key...
 
@@ -135,6 +138,14 @@ Use xAI via OpenAI-compatible endpoint:
 cargo run -p pi-coding-agent -- \
   --model xai/grok-4 \
   --api-base https://api.x.ai/v1
+```
+
+Use Mistral via OpenAI-compatible endpoint:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model mistral/mistral-large-latest \
+  --api-base https://api.mistral.ai/v1
 ```
 
 Run one prompt:

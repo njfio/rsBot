@@ -2064,6 +2064,38 @@ fn integration_xai_alias_uses_openai_compatible_runtime_with_env_key() {
 }
 
 #[test]
+fn integration_mistral_alias_uses_openai_compatible_runtime_with_env_key() {
+    let server = MockServer::start();
+    let mistral = server.mock(|_, then| {
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "integration mistral response"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "mistral/mistral-large-latest",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "hello",
+        "--no-session",
+    ])
+    .env("MISTRAL_API_KEY", "test-mistral-key");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("integration mistral response"));
+
+    mistral.assert_calls(1);
+}
+
+#[test]
 fn anthropic_prompt_works_end_to_end() {
     let server = MockServer::start();
     let anthropic = server.mock(|when, then| {

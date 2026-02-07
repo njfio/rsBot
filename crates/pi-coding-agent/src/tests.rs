@@ -613,6 +613,17 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             json_output: false,
         }
     );
+
+    let mistral_login =
+        parse_auth_command("login mistral --mode api-key").expect("parse mistral login");
+    assert_eq!(
+        mistral_login,
+        AuthCommand::Login {
+            provider: Provider::OpenAi,
+            mode: Some(ProviderAuthMethod::ApiKey),
+            json_output: false,
+        }
+    );
 }
 
 #[test]
@@ -1473,7 +1484,7 @@ fn resolve_api_key_returns_none_when_all_candidates_are_empty() {
 }
 
 #[test]
-fn functional_openai_api_key_candidates_include_openrouter_groq_and_xai_env_slots() {
+fn functional_openai_api_key_candidates_include_openrouter_groq_xai_and_mistral_env_slots() {
     let candidates =
         provider_api_key_candidates_with_inputs(Provider::OpenAi, None, None, None, None);
     assert!(candidates
@@ -1485,6 +1496,9 @@ fn functional_openai_api_key_candidates_include_openrouter_groq_and_xai_env_slot
     assert!(candidates
         .iter()
         .any(|(source, _)| *source == "XAI_API_KEY"));
+    assert!(candidates
+        .iter()
+        .any(|(source, _)| *source == "MISTRAL_API_KEY"));
 }
 
 #[test]
