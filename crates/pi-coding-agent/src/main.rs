@@ -1,4 +1,5 @@
 mod channel_store;
+mod events;
 mod github_issues;
 mod session;
 mod skills;
@@ -35,6 +36,10 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
 use crate::channel_store::ChannelStore;
+use crate::events::{
+    ingest_webhook_immediate_event, run_event_scheduler, EventSchedulerConfig,
+    EventWebhookIngestConfig,
+};
 use crate::session::{SessionImportMode, SessionStore};
 use crate::skills::{
     augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
@@ -596,6 +601,101 @@ struct Cli {
         help = "Repair malformed ChannelStore JSONL files for one channel and exit"
     )]
     channel_store_repair: Option<String>,
+
+    #[arg(
+        long = "events-runner",
+        env = "PI_EVENTS_RUNNER",
+        default_value_t = false,
+        help = "Run filesystem-backed scheduled events worker"
+    )]
+    events_runner: bool,
+
+    #[arg(
+        long = "events-dir",
+        env = "PI_EVENTS_DIR",
+        default_value = ".pi/events",
+        help = "Directory containing event definition JSON files"
+    )]
+    events_dir: PathBuf,
+
+    #[arg(
+        long = "events-state-path",
+        env = "PI_EVENTS_STATE_PATH",
+        default_value = ".pi/events/state.json",
+        help = "Persistent scheduler state path for periodic/debounce tracking"
+    )]
+    events_state_path: PathBuf,
+
+    #[arg(
+        long = "events-poll-interval-ms",
+        env = "PI_EVENTS_POLL_INTERVAL_MS",
+        default_value_t = 1_000,
+        requires = "events_runner",
+        help = "Scheduler poll interval in milliseconds"
+    )]
+    events_poll_interval_ms: u64,
+
+    #[arg(
+        long = "events-queue-limit",
+        env = "PI_EVENTS_QUEUE_LIMIT",
+        default_value_t = 64,
+        requires = "events_runner",
+        help = "Maximum due events executed per poll cycle"
+    )]
+    events_queue_limit: usize,
+
+    #[arg(
+        long = "events-stale-immediate-max-age-seconds",
+        env = "PI_EVENTS_STALE_IMMEDIATE_MAX_AGE_SECONDS",
+        default_value_t = 86_400,
+        requires = "events_runner",
+        help = "Maximum age for immediate events before they are skipped and removed (0 disables)"
+    )]
+    events_stale_immediate_max_age_seconds: u64,
+
+    #[arg(
+        long = "event-webhook-ingest-file",
+        env = "PI_EVENT_WEBHOOK_INGEST_FILE",
+        value_name = "PATH",
+        conflicts_with = "events_runner",
+        help = "One-shot webhook ingestion: read payload file, enqueue debounced immediate event, and exit"
+    )]
+    event_webhook_ingest_file: Option<PathBuf>,
+
+    #[arg(
+        long = "event-webhook-channel",
+        env = "PI_EVENT_WEBHOOK_CHANNEL",
+        requires = "event_webhook_ingest_file",
+        value_name = "transport/channel_id",
+        help = "Channel reference used for webhook-ingested immediate events"
+    )]
+    event_webhook_channel: Option<String>,
+
+    #[arg(
+        long = "event-webhook-prompt-prefix",
+        env = "PI_EVENT_WEBHOOK_PROMPT_PREFIX",
+        default_value = "Handle webhook-triggered event.",
+        requires = "event_webhook_ingest_file",
+        help = "Prompt prefix prepended before webhook payload content"
+    )]
+    event_webhook_prompt_prefix: String,
+
+    #[arg(
+        long = "event-webhook-debounce-key",
+        env = "PI_EVENT_WEBHOOK_DEBOUNCE_KEY",
+        requires = "event_webhook_ingest_file",
+        help = "Optional debounce key shared across webhook ingestions"
+    )]
+    event_webhook_debounce_key: Option<String>,
+
+    #[arg(
+        long = "event-webhook-debounce-window-seconds",
+        env = "PI_EVENT_WEBHOOK_DEBOUNCE_WINDOW_SECONDS",
+        default_value_t = 60,
+        requires = "event_webhook_ingest_file",
+        help = "Debounce window in seconds for repeated webhook ingestions with same key"
+    )]
+    event_webhook_debounce_window_seconds: u64,
 
     #[arg(
         long = "github-issues-bridge",
@@ -1991,6 +2091,27 @@ async fn main() -> Result<()> {
         execute_channel_store_admin_command(&cli)?;
         return Ok(());
     }
+    if cli.event_webhook_ingest_file.is_some() {
+        validate_event_webhook_ingest_cli(&cli)?;
+        let payload_file = cli
+            .event_webhook_ingest_file
+            .clone()
+            .ok_or_else(|| anyhow!("--event-webhook-ingest-file is required"))?;
+        let channel_ref = cli
+            .event_webhook_channel
+            .clone()
+            .ok_or_else(|| anyhow!("--event-webhook-channel is required"))?;
+        ingest_webhook_immediate_event(&EventWebhookIngestConfig {
+            events_dir: cli.events_dir.clone(),
+            state_path: cli.events_state_path.clone(),
+            channel_ref,
+            payload_file,
+            prompt_prefix: cli.event_webhook_prompt_prefix.clone(),
+            debounce_key: cli.event_webhook_debounce_key.clone(),
+            debounce_window_seconds: cli.event_webhook_debounce_window_seconds,
+        })?;
+        return Ok(());
+    }
 
     if cli.no_session && cli.branch_from.is_some() {
         bail!("--branch-from cannot be used together with --no-session");
@@ -2101,6 +2222,7 @@ async fn main() -> Result<()> {
     let render_options = RenderOptions::from_cli(&cli);
     validate_github_issues_bridge_cli(&cli)?;
     validate_slack_bridge_cli(&cli)?;
+    validate_events_runner_cli(&cli)?;
     if cli.github_issues_bridge {
         let repo_slug = cli.github_repo.clone().ok_or_else(|| {
             anyhow!("--github-repo is required when --github-issues-bridge is set")
@@ -2169,6 +2291,26 @@ async fn main() -> Result<()> {
             reconnect_delay: Duration::from_millis(cli.slack_reconnect_delay_ms.max(1)),
             retry_max_attempts: cli.slack_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.slack_retry_base_delay_ms.max(1),
+        })
+        .await;
+    }
+    if cli.events_runner {
+        return run_event_scheduler(EventSchedulerConfig {
+            client: client.clone(),
+            model: model_ref.model.clone(),
+            system_prompt: system_prompt.clone(),
+            max_turns: cli.max_turns,
+            tool_policy: tool_policy.clone(),
+            turn_timeout_ms: cli.turn_timeout_ms,
+            render_options,
+            session_lock_wait_ms: cli.session_lock_wait_ms,
+            session_lock_stale_ms: cli.session_lock_stale_ms,
+            channel_store_root: cli.channel_store_root.clone(),
+            events_dir: cli.events_dir.clone(),
+            state_path: cli.events_state_path.clone(),
+            poll_interval: Duration::from_millis(cli.events_poll_interval_ms.max(1)),
+            queue_limit: cli.events_queue_limit.max(1),
+            stale_immediate_max_age_seconds: cli.events_stale_immediate_max_age_seconds,
         })
         .await;
     }
@@ -2387,6 +2529,51 @@ fn validate_slack_bridge_cli(cli: &Cli) -> Result<()> {
         bail!("--slack-retry-base-delay-ms must be greater than 0");
     }
 
+    Ok(())
+}
+
+fn validate_events_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.events_runner {
+        return Ok(());
+    }
+
+    if cli.prompt.is_some() || cli.prompt_file.is_some() || cli.command_file.is_some() {
+        bail!("--events-runner cannot be combined with --prompt, --prompt-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--events-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge || cli.slack_bridge {
+        bail!("--events-runner cannot be combined with --github-issues-bridge or --slack-bridge");
+    }
+    if cli.events_poll_interval_ms == 0 {
+        bail!("--events-poll-interval-ms must be greater than 0");
+    }
+    if cli.events_queue_limit == 0 {
+        bail!("--events-queue-limit must be greater than 0");
+    }
+    Ok(())
+}
+
+fn validate_event_webhook_ingest_cli(cli: &Cli) -> Result<()> {
+    if cli.event_webhook_ingest_file.is_none() {
+        return Ok(());
+    }
+    if cli.events_runner {
+        bail!("--event-webhook-ingest-file cannot be combined with --events-runner");
+    }
+    if cli
+        .event_webhook_channel
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .is_empty()
+    {
+        bail!("--event-webhook-channel is required when --event-webhook-ingest-file is set");
+    }
+    if cli.event_webhook_debounce_window_seconds == 0 {
+        bail!("--event-webhook-debounce-window-seconds must be greater than 0");
+    }
     Ok(())
 }
 
@@ -10058,12 +10245,13 @@ mod tests {
         search_session_entries, session_bookmark_path_for_session, session_message_preview,
         shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
         tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-        validate_branch_alias_name, validate_github_issues_bridge_cli,
-        validate_macro_command_entry, validate_macro_name, validate_profile_name,
-        validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
-        AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
-        CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOsSandboxMode,
-        CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        validate_branch_alias_name, validate_event_webhook_ingest_cli, validate_events_runner_cli,
+        validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
+        validate_profile_name, validate_session_file, validate_skills_prune_file_name,
+        validate_slack_bridge_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
+        BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+        CliCredentialStoreEncryptionMode, CliOsSandboxMode, CliProviderAuthMode,
+        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
         CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
         DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
@@ -10229,6 +10417,17 @@ mod tests {
             channel_store_root: PathBuf::from(".pi/channel-store"),
             channel_store_inspect: None,
             channel_store_repair: None,
+            events_runner: false,
+            events_dir: PathBuf::from(".pi/events"),
+            events_state_path: PathBuf::from(".pi/events/state.json"),
+            events_poll_interval_ms: 1_000,
+            events_queue_limit: 64,
+            events_stale_immediate_max_age_seconds: 86_400,
+            event_webhook_ingest_file: None,
+            event_webhook_channel: None,
+            event_webhook_prompt_prefix: "Handle webhook-triggered event.".to_string(),
+            event_webhook_debounce_key: None,
+            event_webhook_debounce_window_seconds: 60,
             github_issues_bridge: false,
             github_repo: None,
             github_token: None,
@@ -15879,6 +16078,35 @@ mod tests {
         assert!(error
             .to_string()
             .contains("--slack-bot-token (or PI_SLACK_BOT_TOKEN) is required"));
+    }
+
+    #[test]
+    fn unit_validate_events_runner_cli_accepts_minimum_configuration() {
+        let mut cli = test_cli();
+        cli.events_runner = true;
+        validate_events_runner_cli(&cli).expect("events runner config should validate");
+    }
+
+    #[test]
+    fn functional_validate_events_runner_cli_rejects_prompt_conflicts() {
+        let mut cli = test_cli();
+        cli.events_runner = true;
+        cli.prompt = Some("conflict".to_string());
+        let error = validate_events_runner_cli(&cli).expect_err("prompt conflict");
+        assert!(error
+            .to_string()
+            .contains("--events-runner cannot be combined"));
+    }
+
+    #[test]
+    fn regression_validate_event_webhook_ingest_cli_requires_channel() {
+        let mut cli = test_cli();
+        cli.event_webhook_ingest_file = Some(PathBuf::from("payload.json"));
+        cli.event_webhook_channel = None;
+        let error = validate_event_webhook_ingest_cli(&cli).expect_err("missing channel");
+        assert!(error
+            .to_string()
+            .contains("--event-webhook-channel is required"));
     }
 
     #[test]
