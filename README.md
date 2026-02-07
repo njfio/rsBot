@@ -79,6 +79,9 @@ Set an API key for your provider:
 # OpenAI-compatible
 export OPENAI_API_KEY=...your-key...
 
+# OpenRouter (OpenAI-compatible alias path)
+export OPENROUTER_API_KEY=...your-openrouter-key...
+
 # Anthropic
 export ANTHROPIC_API_KEY=...your-key...
 
@@ -102,6 +105,14 @@ Use Google Gemini:
 
 ```bash
 cargo run -p pi-coding-agent -- --model google/gemini-2.5-pro
+```
+
+Use OpenRouter via OpenAI-compatible endpoint:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model openrouter/openai/gpt-4o-mini \
+  --api-base https://openrouter.ai/api/v1
 ```
 
 Run one prompt:

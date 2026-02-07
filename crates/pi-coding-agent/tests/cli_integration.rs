@@ -1968,6 +1968,38 @@ fn fallback_model_flag_routes_to_secondary_model_on_retryable_failure() {
 }
 
 #[test]
+fn integration_openrouter_alias_uses_openai_compatible_runtime_with_env_key() {
+    let server = MockServer::start();
+    let openrouter = server.mock(|_, then| {
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "integration openrouter response"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openrouter/openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "hello",
+        "--no-session",
+    ])
+    .env("OPENROUTER_API_KEY", "test-openrouter-key");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("integration openrouter response"));
+
+    openrouter.assert_calls(1);
+}
+
+#[test]
 fn anthropic_prompt_works_end_to_end() {
     let server = MockServer::start();
     let anthropic = server.mock(|when, then| {
