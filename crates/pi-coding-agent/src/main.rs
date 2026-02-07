@@ -18,6 +18,7 @@ mod session;
 mod session_commands;
 mod session_graph_commands;
 mod session_navigation_commands;
+mod session_runtime_helpers;
 mod skills;
 mod skills_commands;
 mod slack;
@@ -164,6 +165,10 @@ pub(crate) use crate::session_navigation_commands::{
 };
 pub(crate) use crate::session_navigation_commands::{
     execute_branch_alias_command, execute_session_bookmark_command,
+};
+pub(crate) use crate::session_runtime_helpers::{
+    format_id_list, format_remap_ids, initialize_session, reload_agent_from_active_head,
+    validate_session_file,
 };
 use crate::skills::{
     augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
@@ -2021,85 +2026,6 @@ pub(crate) fn write_text_atomic(path: &Path, content: &str) -> Result<()> {
             path.display()
         )
     })?;
-    Ok(())
-}
-
-fn validate_session_file(cli: &Cli) -> Result<()> {
-    if cli.no_session {
-        bail!("--session-validate cannot be used together with --no-session");
-    }
-
-    let store = SessionStore::load(&cli.session)?;
-    let report = store.validation_report();
-    println!(
-        "session validation: path={} entries={} duplicates={} invalid_parent={} cycles={}",
-        cli.session.display(),
-        report.entries,
-        report.duplicates,
-        report.invalid_parent,
-        report.cycles
-    );
-    if report.is_valid() {
-        println!("session validation passed");
-        Ok(())
-    } else {
-        bail!(
-            "session validation failed: duplicates={} invalid_parent={} cycles={}",
-            report.duplicates,
-            report.invalid_parent,
-            report.cycles
-        );
-    }
-}
-
-fn initialize_session(agent: &mut Agent, cli: &Cli, system_prompt: &str) -> Result<SessionRuntime> {
-    let mut store = SessionStore::load(&cli.session)?;
-    store.set_lock_policy(cli.session_lock_wait_ms.max(1), cli.session_lock_stale_ms);
-
-    let mut active_head = store.ensure_initialized(system_prompt)?;
-    if let Some(branch_id) = cli.branch_from {
-        if !store.contains(branch_id) {
-            bail!(
-                "session {} does not contain entry id {}",
-                store.path().display(),
-                branch_id
-            );
-        }
-        active_head = Some(branch_id);
-    }
-
-    let lineage = store.lineage_messages(active_head)?;
-    if !lineage.is_empty() {
-        agent.replace_messages(lineage);
-    }
-
-    Ok(SessionRuntime { store, active_head })
-}
-
-fn format_id_list(ids: &[u64]) -> String {
-    if ids.is_empty() {
-        return "none".to_string();
-    }
-    ids.iter()
-        .map(|id| id.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn format_remap_ids(remapped: &[(u64, u64)]) -> String {
-    if remapped.is_empty() {
-        return "none".to_string();
-    }
-    remapped
-        .iter()
-        .map(|(from, to)| format!("{from}->{to}"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn reload_agent_from_active_head(agent: &mut Agent, runtime: &SessionRuntime) -> Result<()> {
-    let lineage = runtime.store.lineage_messages(runtime.active_head)?;
-    agent.replace_messages(lineage);
     Ok(())
 }
 
