@@ -649,16 +649,9 @@ pub(crate) fn handle_command_with_session_import_mode(
     }
 
     if command_name == "/doctor" {
-        let format = match parse_doctor_command_args(command_args) {
-            Ok(format) => format,
-            Err(_) => {
-                println!("usage: /doctor [--json]");
-                return Ok(CommandAction::Continue);
-            }
-        };
         println!(
             "{}",
-            execute_doctor_command(&skills_command_config.doctor_config, format)
+            execute_doctor_cli_command(&skills_command_config.doctor_config, command_args)
         );
         return Ok(CommandAction::Continue);
     }
@@ -740,24 +733,15 @@ pub(crate) fn handle_command_with_session_import_mode(
     }
 
     if command_name == "/policy" {
-        if !command_args.is_empty() {
-            println!("usage: /policy");
-            return Ok(CommandAction::Continue);
+        match execute_policy_command(command_args, tool_policy_json) {
+            Ok(output) => println!("{output}"),
+            Err(_) => println!("usage: /policy"),
         }
-        println!("{tool_policy_json}");
         return Ok(CommandAction::Continue);
     }
 
     if command_name == "/audit-summary" {
-        if command_args.is_empty() {
-            println!("usage: /audit-summary <path>");
-            return Ok(CommandAction::Continue);
-        }
-        let path = PathBuf::from(command_args);
-        match summarize_audit_file(&path) {
-            Ok(summary) => println!("{}", render_audit_summary(&path, &summary)),
-            Err(error) => println!("audit summary error: {error}"),
-        }
+        println!("{}", execute_audit_summary_command(command_args));
         return Ok(CommandAction::Continue);
     }
 
