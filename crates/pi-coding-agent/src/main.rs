@@ -22,6 +22,7 @@ mod session_runtime_helpers;
 mod skills;
 mod skills_commands;
 mod slack;
+mod time_utils;
 mod tool_policy_config;
 mod tools;
 #[cfg(test)]
@@ -33,7 +34,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -197,6 +198,9 @@ pub(crate) use crate::skills_commands::{
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command,
     render_skills_lock_write_success, render_skills_sync_drift_details, render_skills_sync_in_sync,
+};
+pub(crate) use crate::time_utils::{
+    current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix,
 };
 #[cfg(test)]
 pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
@@ -1505,15 +1509,6 @@ fn build_auth_command_config(cli: &Cli) -> AuthCommandConfig {
     }
 }
 
-fn current_unix_timestamp_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
@@ -1980,17 +1975,6 @@ fn resolve_skill_trust_roots(cli: &Cli) -> Result<Vec<TrustedKey>> {
     }
 
     Ok(roots)
-}
-
-fn current_unix_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn is_expired_unix(expires_unix: Option<u64>, now_unix: u64) -> bool {
-    matches!(expires_unix, Some(value) if value <= now_unix)
 }
 
 pub(crate) fn write_text_atomic(path: &Path, content: &str) -> Result<()> {
