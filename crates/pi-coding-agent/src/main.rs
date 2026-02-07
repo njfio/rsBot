@@ -888,11 +888,11 @@ const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/session-search",
-        usage: "/session-search <query>",
+        usage: "/session-search <query> [--role <role>] [--limit <n>]",
         description: "Search session entries by role/text across all branches",
         details:
-            "Case-insensitive search over role and message text. Output is deterministic and capped.",
-        example: "/session-search retry budget",
+            "Case-insensitive search over role and message text. Optional --role scopes by message role and --limit controls displayed row count.",
+        example: "/session-search retry budget --role user --limit 10",
     },
     CommandSpec {
         name: "/session-stats",
@@ -2687,7 +2687,7 @@ fn handle_command_with_session_import_mode(
             return Ok(CommandAction::Continue);
         };
         if command_args.trim().is_empty() {
-            println!("usage: /session-search <query>");
+            println!("usage: /session-search <query> [--role <role>] [--limit <n>]");
             return Ok(CommandAction::Continue);
         }
 
@@ -3189,7 +3189,8 @@ fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
     }
 }
 
-const SESSION_SEARCH_MAX_RESULTS: usize = 50;
+const SESSION_SEARCH_DEFAULT_RESULTS: usize = 50;
+const SESSION_SEARCH_MAX_RESULTS: usize = 200;
 const SESSION_SEARCH_PREVIEW_CHARS: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3200,12 +3201,94 @@ struct SessionSearchMatch {
     preview: String,
 }
 
-fn parse_session_search_args(command_args: &str) -> Result<String> {
-    let query = command_args.trim();
-    if query.is_empty() {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionSearchArgs {
+    query: String,
+    role: Option<String>,
+    limit: usize,
+}
+
+fn parse_session_search_role(raw: &str) -> Result<String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "system" | "user" | "assistant" | "tool" => Ok(normalized),
+        _ => bail!(
+            "invalid role '{}'; expected one of: system, user, assistant, tool",
+            raw
+        ),
+    }
+}
+
+fn parse_session_search_limit(raw: &str) -> Result<usize> {
+    let value = raw
+        .trim()
+        .parse::<usize>()
+        .with_context(|| format!("invalid limit '{}'; expected an integer", raw))?;
+    if value == 0 {
+        bail!("limit must be greater than 0");
+    }
+    if value > SESSION_SEARCH_MAX_RESULTS {
+        bail!(
+            "limit {} exceeds maximum {}",
+            value,
+            SESSION_SEARCH_MAX_RESULTS
+        );
+    }
+    Ok(value)
+}
+
+fn parse_session_search_args(command_args: &str) -> Result<SessionSearchArgs> {
+    let mut query_parts = Vec::new();
+    let mut role = None;
+    let mut limit = SESSION_SEARCH_DEFAULT_RESULTS;
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if token == "--role" {
+            let value = tokens
+                .get(index + 1)
+                .ok_or_else(|| anyhow!("missing value for --role"))?;
+            role = Some(parse_session_search_role(value)?);
+            index += 2;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--role=") {
+            role = Some(parse_session_search_role(value)?);
+            index += 1;
+            continue;
+        }
+        if token == "--limit" {
+            let value = tokens
+                .get(index + 1)
+                .ok_or_else(|| anyhow!("missing value for --limit"))?;
+            limit = parse_session_search_limit(value)?;
+            index += 2;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--limit=") {
+            limit = parse_session_search_limit(value)?;
+            index += 1;
+            continue;
+        }
+        if token.starts_with("--") {
+            bail!("unknown flag '{}'", token);
+        }
+
+        query_parts.push(token.to_string());
+        index += 1;
+    }
+
+    let query = query_parts.join(" ");
+    if query.trim().is_empty() {
         bail!("query is required");
     }
-    Ok(query.to_string())
+
+    Ok(SessionSearchArgs { query, role, limit })
 }
 
 fn normalize_preview_text(raw: &str) -> String {
@@ -3237,6 +3320,7 @@ fn session_message_role(message: &Message) -> String {
 fn search_session_entries(
     entries: &[crate::session::SessionEntry],
     query: &str,
+    role_filter: Option<&str>,
     max_results: usize,
 ) -> (Vec<SessionSearchMatch>, usize) {
     let normalized_query = query.to_lowercase();
@@ -3247,6 +3331,11 @@ fn search_session_entries(
     let mut total_matches = 0usize;
     for entry in ordered_entries {
         let role = session_message_role(&entry.message);
+        if let Some(role_filter) = role_filter {
+            if role != role_filter {
+                continue;
+            }
+        }
         let text = entry.message.text_content();
         let role_hit = role.contains(&normalized_query);
         let text_hit = text.to_lowercase().contains(&normalized_query);
@@ -3271,14 +3360,17 @@ fn search_session_entries(
 
 fn render_session_search(
     query: &str,
+    role_filter: Option<&str>,
     entries_count: usize,
     matches: &[SessionSearchMatch],
     total_matches: usize,
     max_results: usize,
 ) -> String {
+    let role = role_filter.unwrap_or("any");
     let mut lines = vec![format!(
-        "session search: query=\"{}\" entries={} matches={} shown={} max_results={}",
+        "session search: query=\"{}\" role={} entries={} matches={} shown={} limit={}",
         query,
+        role,
         entries_count,
         total_matches,
         matches.len(),
@@ -3304,19 +3396,24 @@ fn render_session_search(
 }
 
 fn execute_session_search_command(runtime: &SessionRuntime, command_args: &str) -> String {
-    let query = match parse_session_search_args(command_args) {
-        Ok(query) => query,
+    let args = match parse_session_search_args(command_args) {
+        Ok(args) => args,
         Err(error) => return format!("session search error: error={error}"),
     };
 
-    let (matches, total_matches) =
-        search_session_entries(runtime.store.entries(), &query, SESSION_SEARCH_MAX_RESULTS);
+    let (matches, total_matches) = search_session_entries(
+        runtime.store.entries(),
+        &args.query,
+        args.role.as_deref(),
+        args.limit,
+    );
     render_session_search(
-        &query,
+        &args.query,
+        args.role.as_deref(),
         runtime.store.entries().len(),
         &matches,
         total_matches,
-        SESSION_SEARCH_MAX_RESULTS,
+        args.limit,
     )
 }
 
@@ -9489,12 +9586,12 @@ mod tests {
         MacroCommand, MacroFile, ProfileCommand, ProfileDefaults, ProfileStoreFile,
         PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
         RenderOptions, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
-        SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionStats,
+        SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats,
         SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
         SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
         ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
         MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
-        SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_MAX_RESULTS,
+        SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
         SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
         SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
     };
@@ -10955,13 +11052,61 @@ mod tests {
     }
 
     #[test]
-    fn unit_parse_session_search_args_trims_and_rejects_empty_query() {
+    fn unit_parse_session_search_args_supports_query_role_and_limit() {
         assert_eq!(
             parse_session_search_args("  retry budget  ").expect("parse query"),
-            "retry budget"
+            SessionSearchArgs {
+                query: "retry budget".to_string(),
+                role: None,
+                limit: SESSION_SEARCH_DEFAULT_RESULTS,
+            }
         );
-        let error = parse_session_search_args(" \n\t ").expect_err("empty query should fail");
-        assert!(error.to_string().contains("query is required"));
+        assert_eq!(
+            parse_session_search_args("target --role user --limit 5").expect("parse flags"),
+            SessionSearchArgs {
+                query: "target".to_string(),
+                role: Some("user".to_string()),
+                limit: 5,
+            }
+        );
+        assert_eq!(
+            parse_session_search_args("--role=assistant --limit=9 delta").expect("parse inline"),
+            SessionSearchArgs {
+                query: "delta".to_string(),
+                role: Some("assistant".to_string()),
+                limit: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn regression_parse_session_search_args_rejects_invalid_role_limit_and_flags() {
+        let empty = parse_session_search_args(" \n\t ").expect_err("empty query should fail");
+        assert!(empty.to_string().contains("query is required"));
+
+        let invalid_role =
+            parse_session_search_args("retry --role owner").expect_err("invalid role should fail");
+        assert!(invalid_role.to_string().contains("invalid role"));
+
+        let invalid_limit =
+            parse_session_search_args("retry --limit 0").expect_err("limit zero should fail");
+        assert!(invalid_limit
+            .to_string()
+            .contains("limit must be greater than 0"));
+
+        let too_large = parse_session_search_args("retry --limit 9999")
+            .expect_err("too large limit should fail");
+        assert!(too_large.to_string().contains("exceeds maximum"));
+
+        let missing_role =
+            parse_session_search_args("retry --role").expect_err("missing role value should fail");
+        assert!(missing_role
+            .to_string()
+            .contains("missing value for --role"));
+
+        let unknown_flag =
+            parse_session_search_args("retry --unknown").expect_err("unknown flag should fail");
+        assert!(unknown_flag.to_string().contains("unknown flag"));
     }
 
     #[test]
@@ -10990,15 +11135,20 @@ mod tests {
             },
         ];
 
-        let (role_matches, role_total) = search_session_entries(&entries, "USER", 10);
+        let (role_matches, role_total) = search_session_entries(&entries, "USER", None, 10);
         assert_eq!(role_total, 1);
         assert_eq!(role_matches[0].id, 1);
         assert_eq!(role_matches[0].role, "user");
 
-        let (text_matches, text_total) = search_session_entries(&entries, "budget", 10);
+        let (text_matches, text_total) = search_session_entries(&entries, "budget", None, 10);
         assert_eq!(text_total, 1);
         assert_eq!(text_matches[0].id, 2);
         assert_eq!(text_matches[0].role, "assistant");
+
+        let (assistant_only, assistant_total) =
+            search_session_entries(&entries, "budget", Some("assistant"), 10);
+        assert_eq!(assistant_total, 1);
+        assert_eq!(assistant_only[0].id, 2);
     }
 
     #[test]
@@ -11017,9 +11167,10 @@ mod tests {
         };
 
         let output = execute_session_search_command(&runtime, "retry");
-        assert!(output.contains("session search: query=\"retry\""));
+        assert!(output.contains("session search: query=\"retry\" role=any"));
         assert!(output.contains("matches=1"));
         assert!(output.contains("shown=1"));
+        assert!(output.contains("limit=50"));
         assert!(output.contains("result: id=2 parent=1 role=user"));
         assert!(output.contains("preview=Retry budget fix in progress"));
     }
@@ -11034,13 +11185,13 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let (matches, total_matches) =
-            search_session_entries(&entries, "needle", SESSION_SEARCH_MAX_RESULTS);
+            search_session_entries(&entries, "needle", None, SESSION_SEARCH_DEFAULT_RESULTS);
         assert_eq!(total_matches, 200);
-        assert_eq!(matches.len(), SESSION_SEARCH_MAX_RESULTS);
+        assert_eq!(matches.len(), SESSION_SEARCH_DEFAULT_RESULTS);
         assert_eq!(matches[0].id, 1);
         assert_eq!(
             matches.last().map(|item| item.id),
-            Some(SESSION_SEARCH_MAX_RESULTS as u64)
+            Some(SESSION_SEARCH_DEFAULT_RESULTS as u64)
         );
     }
 
@@ -11066,6 +11217,48 @@ mod tests {
         let main_index = output.find("result: id=2").expect("main result");
         let branch_index = output.find("result: id=3").expect("branch result");
         assert!(main_index < branch_index);
+    }
+
+    #[test]
+    fn integration_execute_session_search_command_applies_role_filter_and_limit() {
+        let temp = tempdir().expect("tempdir");
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root target")])
+            .expect("append root");
+        let user_id = store
+            .append_messages(root, &[Message::user("target user message")])
+            .expect("append user");
+        let _assistant_id = store
+            .append_messages(
+                user_id,
+                &[Message::assistant_text("target assistant message")],
+            )
+            .expect("append assistant");
+        let _tool_id = store
+            .append_messages(
+                user_id,
+                &[Message::tool_result(
+                    "tool-call-1",
+                    "tool_call",
+                    "{}",
+                    false,
+                )],
+            )
+            .expect("append tool");
+        let runtime = SessionRuntime {
+            store,
+            active_head: user_id,
+        };
+
+        let output = execute_session_search_command(&runtime, "target --role user --limit 1");
+        assert!(output.contains("role=user"));
+        assert!(output.contains("matches=1"));
+        assert!(output.contains("shown=1"));
+        assert!(output.contains("limit=1"));
+        assert!(output.contains("result: id=2 parent=1 role=user"));
+        assert!(!output.contains("role=assistant"));
+        assert!(!output.contains("role=tool"));
     }
 
     #[test]
@@ -13311,7 +13504,7 @@ mod tests {
         let help = render_help_overview();
         assert!(help.contains("/help [command]"));
         assert!(help.contains("/session"));
-        assert!(help.contains("/session-search <query>"));
+        assert!(help.contains("/session-search <query> [--role <role>] [--limit <n>]"));
         assert!(help.contains("/session-stats"));
         assert!(help.contains("/session-diff [<left-id> <right-id>]"));
         assert!(help.contains("/doctor"));
@@ -13383,7 +13576,7 @@ mod tests {
     fn functional_render_command_help_supports_session_search_topic_without_slash() {
         let help = render_command_help("session-search").expect("render help");
         assert!(help.contains("command: /session-search"));
-        assert!(help.contains("usage: /session-search <query>"));
+        assert!(help.contains("usage: /session-search <query> [--role <role>] [--limit <n>]"));
     }
 
     #[test]
