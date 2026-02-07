@@ -593,6 +593,16 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             json_output: false,
         }
     );
+
+    let groq_login = parse_auth_command("login groq --mode api-key").expect("parse groq login");
+    assert_eq!(
+        groq_login,
+        AuthCommand::Login {
+            provider: Provider::OpenAi,
+            mode: Some(ProviderAuthMethod::ApiKey),
+            json_output: false,
+        }
+    );
 }
 
 #[test]
@@ -1453,12 +1463,15 @@ fn resolve_api_key_returns_none_when_all_candidates_are_empty() {
 }
 
 #[test]
-fn functional_openai_api_key_candidates_include_openrouter_env_slot() {
+fn functional_openai_api_key_candidates_include_openrouter_and_groq_env_slots() {
     let candidates =
         provider_api_key_candidates_with_inputs(Provider::OpenAi, None, None, None, None);
     assert!(candidates
         .iter()
         .any(|(source, _)| *source == "OPENROUTER_API_KEY"));
+    assert!(candidates
+        .iter()
+        .any(|(source, _)| *source == "GROQ_API_KEY"));
 }
 
 #[test]

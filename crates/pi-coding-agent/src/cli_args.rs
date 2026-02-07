@@ -18,7 +18,7 @@ pub(crate) struct Cli {
         long,
         env = "PI_MODEL",
         default_value = "openai/gpt-4o-mini",
-        help = "Model in provider/model format. Supported providers: openai, openrouter (alias), anthropic, google."
+        help = "Model in provider/model format. Supported providers: openai, openrouter (alias), groq (alias), anthropic, google."
     )]
     pub(crate) model: String,
 

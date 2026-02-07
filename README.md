@@ -82,6 +82,9 @@ export OPENAI_API_KEY=...your-key...
 # OpenRouter (OpenAI-compatible alias path)
 export OPENROUTER_API_KEY=...your-openrouter-key...
 
+# Groq (OpenAI-compatible alias path)
+export GROQ_API_KEY=...your-groq-key...
+
 # Anthropic
 export ANTHROPIC_API_KEY=...your-key...
 
@@ -113,6 +116,14 @@ Use OpenRouter via OpenAI-compatible endpoint:
 cargo run -p pi-coding-agent -- \
   --model openrouter/openai/gpt-4o-mini \
   --api-base https://openrouter.ai/api/v1
+```
+
+Use Groq via OpenAI-compatible endpoint:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model groq/llama-3.3-70b \
+  --api-base https://api.groq.com/openai/v1
 ```
 
 Run one prompt:
