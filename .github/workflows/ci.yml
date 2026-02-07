@@ -5,17 +5,15 @@ on:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
-  push:
-    branches:
-      - master
-      - main
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
   workflow_dispatch:
     inputs:
       run_coverage:
         description: "Run llvm-cov coverage job"
+        required: false
+        default: false
+        type: boolean
+      run_cross_platform:
+        description: "Run cross-platform compile smoke jobs"
         required: false
         default: false
         type: boolean
@@ -57,7 +55,7 @@ jobs:
 
   cross-platform-smoke:
     name: Cross-platform compile smoke (${{ matrix.os }})
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && inputs.run_cross_platform
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
