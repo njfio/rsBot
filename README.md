@@ -30,6 +30,7 @@ Implemented now:
 - Remote skill fetch/install with optional checksum verification
 - Registry-based skill installation (`--skill-registry-url`, `--install-skill-from-registry`)
 - Signed registry skill installation with trust roots (`--skill-trust-root`, `--require-signed-skills`)
+- Remote/registry download cache with offline replay (`--skills-cache-dir`, `--skills-offline`)
 - Skills lockfile write/sync workflow (`--skills-lock-write`, `--skills-sync`)
 - Unit tests for serialization, tool loop, renderer diffing, and tool behaviors
 
@@ -207,12 +208,49 @@ cargo run -p pi-coding-agent -- \
   --skill review
 ```
 
+Warm the remote skill cache, then replay installs offline:
+
+```bash
+# Online warm-cache run
+cargo run -p pi-coding-agent -- \
+  --prompt "Audit this module" \
+  --skills-dir .pi/skills \
+  --skills-cache-dir .pi/skills-cache \
+  --install-skill-url https://example.com/skills/review.md \
+  --install-skill-sha256 2f7d0... \
+  --skill review
+
+# Offline replay run (no remote fetches; requires cache hit)
+cargo run -p pi-coding-agent -- \
+  --prompt "Audit this module" \
+  --skills-dir .pi/skills \
+  --skills-cache-dir .pi/skills-cache \
+  --skills-offline \
+  --install-skill-url https://example.com/skills/review.md \
+  --install-skill-sha256 2f7d0... \
+  --skill review
+```
+
 Install skills from a remote registry manifest:
 
 ```bash
 cargo run -p pi-coding-agent -- \
   --prompt "Audit this module" \
   --skills-dir .pi/skills \
+  --skill-registry-url https://example.com/registry.json \
+  --skill-registry-sha256 3ac10... \
+  --install-skill-from-registry review \
+  --skill review
+```
+
+Replay registry installs offline from cache:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --prompt "Audit this module" \
+  --skills-dir .pi/skills \
+  --skills-cache-dir .pi/skills-cache \
+  --skills-offline \
   --skill-registry-url https://example.com/registry.json \
   --skill-registry-sha256 3ac10... \
   --install-skill-from-registry review \
