@@ -327,6 +327,12 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /branch-alias list
 /branch-alias use hotfix
 
+# Persist and use named bookmarks for investigation checkpoints
+/session-bookmark set investigation 12
+/session-bookmark list
+/session-bookmark use investigation
+/session-bookmark delete investigation
+
 # Switch to an older entry and fork a new branch
 /branch 12
 

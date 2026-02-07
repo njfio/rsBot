@@ -896,6 +896,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/branch-alias set hotfix 42",
     },
     CommandSpec {
+        name: "/session-bookmark",
+        usage: "/session-bookmark <set|list|use|delete> ...",
+        description: "Manage persistent session bookmarks",
+        details:
+            "Bookmarks are stored in project-local metadata and can switch active head by name.",
+        example: "/session-bookmark set investigation 42",
+    },
+    CommandSpec {
         name: "/branch",
         usage: "/branch <id>",
         description: "Switch active branch head to a specific entry id",
@@ -956,6 +964,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/macro",
     "/profile",
     "/branch-alias",
+    "/session-bookmark",
     "/branch",
     "/resume",
     "/session-repair",
@@ -2719,6 +2728,19 @@ fn handle_command_with_session_import_mode(
         println!(
             "{}",
             execute_branch_alias_command(command_args, agent, runtime)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session-bookmark" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        println!(
+            "{}",
+            execute_session_bookmark_command(command_args, agent, runtime)
         );
         return Ok(CommandAction::Continue);
     }
@@ -4921,6 +4943,254 @@ fn execute_branch_alias_command(
     }
 }
 
+const SESSION_BOOKMARK_SCHEMA_VERSION: u32 = 1;
+const SESSION_BOOKMARK_USAGE: &str = "usage: /session-bookmark <set|list|use|delete> ...";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionBookmarkCommand {
+    List,
+    Set { name: String, id: u64 },
+    Use { name: String },
+    Delete { name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SessionBookmarkFile {
+    schema_version: u32,
+    bookmarks: BTreeMap<String, u64>,
+}
+
+fn session_bookmark_path_for_session(session_path: &Path) -> PathBuf {
+    session_path.with_extension("bookmarks.json")
+}
+
+fn parse_session_bookmark_command(command_args: &str) -> Result<SessionBookmarkCommand> {
+    const USAGE_LIST: &str = "usage: /session-bookmark list";
+    const USAGE_SET: &str = "usage: /session-bookmark set <name> <id>";
+    const USAGE_USE: &str = "usage: /session-bookmark use <name>";
+    const USAGE_DELETE: &str = "usage: /session-bookmark delete <name>";
+
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        bail!("{SESSION_BOOKMARK_USAGE}");
+    }
+
+    match tokens[0] {
+        "list" => {
+            if tokens.len() != 1 {
+                bail!("{USAGE_LIST}");
+            }
+            Ok(SessionBookmarkCommand::List)
+        }
+        "set" => {
+            if tokens.len() != 3 {
+                bail!("{USAGE_SET}");
+            }
+            validate_branch_alias_name(tokens[1])?;
+            let id = tokens[2]
+                .parse::<u64>()
+                .map_err(|_| anyhow!("invalid bookmark id '{}'; expected an integer", tokens[2]))?;
+            Ok(SessionBookmarkCommand::Set {
+                name: tokens[1].to_string(),
+                id,
+            })
+        }
+        "use" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_USE}");
+            }
+            validate_branch_alias_name(tokens[1])?;
+            Ok(SessionBookmarkCommand::Use {
+                name: tokens[1].to_string(),
+            })
+        }
+        "delete" => {
+            if tokens.len() != 2 {
+                bail!("{USAGE_DELETE}");
+            }
+            validate_branch_alias_name(tokens[1])?;
+            Ok(SessionBookmarkCommand::Delete {
+                name: tokens[1].to_string(),
+            })
+        }
+        other => bail!("unknown subcommand '{}'; {SESSION_BOOKMARK_USAGE}", other),
+    }
+}
+
+fn load_session_bookmarks(path: &Path) -> Result<BTreeMap<String, u64>> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read session bookmark file {}", path.display()))?;
+    let parsed = serde_json::from_str::<SessionBookmarkFile>(&raw)
+        .with_context(|| format!("failed to parse session bookmark file {}", path.display()))?;
+    if parsed.schema_version != SESSION_BOOKMARK_SCHEMA_VERSION {
+        bail!(
+            "unsupported session bookmark schema_version {} in {} (expected {})",
+            parsed.schema_version,
+            path.display(),
+            SESSION_BOOKMARK_SCHEMA_VERSION
+        );
+    }
+    Ok(parsed.bookmarks)
+}
+
+fn save_session_bookmarks(path: &Path, bookmarks: &BTreeMap<String, u64>) -> Result<()> {
+    let payload = SessionBookmarkFile {
+        schema_version: SESSION_BOOKMARK_SCHEMA_VERSION,
+        bookmarks: bookmarks.clone(),
+    };
+    let mut encoded =
+        serde_json::to_string_pretty(&payload).context("failed to encode session bookmarks")?;
+    encoded.push('\n');
+    write_text_atomic(path, &encoded)
+}
+
+fn render_session_bookmark_list(
+    path: &Path,
+    bookmarks: &BTreeMap<String, u64>,
+    runtime: &SessionRuntime,
+) -> String {
+    let mut lines = vec![format!(
+        "session bookmark list: path={} count={}",
+        path.display(),
+        bookmarks.len()
+    )];
+    if bookmarks.is_empty() {
+        lines.push("bookmarks: none".to_string());
+        return lines.join("\n");
+    }
+    for (name, id) in bookmarks {
+        let status = if runtime.store.contains(*id) {
+            "ok"
+        } else {
+            "stale"
+        };
+        lines.push(format!(
+            "bookmark: name={} id={} status={}",
+            name, id, status
+        ));
+    }
+    lines.join("\n")
+}
+
+fn execute_session_bookmark_command(
+    command_args: &str,
+    agent: &mut Agent,
+    runtime: &mut SessionRuntime,
+) -> String {
+    let bookmark_path = session_bookmark_path_for_session(runtime.store.path());
+    let command = match parse_session_bookmark_command(command_args) {
+        Ok(command) => command,
+        Err(error) => {
+            return format!(
+                "session bookmark error: path={} error={error}",
+                bookmark_path.display()
+            );
+        }
+    };
+
+    let mut bookmarks = match load_session_bookmarks(&bookmark_path) {
+        Ok(bookmarks) => bookmarks,
+        Err(error) => {
+            return format!(
+                "session bookmark error: path={} error={error}",
+                bookmark_path.display()
+            );
+        }
+    };
+
+    match command {
+        SessionBookmarkCommand::List => {
+            render_session_bookmark_list(&bookmark_path, &bookmarks, runtime)
+        }
+        SessionBookmarkCommand::Set { name, id } => {
+            if !runtime.store.contains(id) {
+                return format!(
+                    "session bookmark error: path={} name={} error=unknown session id {}",
+                    bookmark_path.display(),
+                    name,
+                    id
+                );
+            }
+            bookmarks.insert(name.clone(), id);
+            match save_session_bookmarks(&bookmark_path, &bookmarks) {
+                Ok(()) => format!(
+                    "session bookmark set: path={} name={} id={}",
+                    bookmark_path.display(),
+                    name,
+                    id
+                ),
+                Err(error) => format!(
+                    "session bookmark error: path={} name={} error={error}",
+                    bookmark_path.display(),
+                    name
+                ),
+            }
+        }
+        SessionBookmarkCommand::Use { name } => {
+            let Some(id) = bookmarks.get(&name).copied() else {
+                return format!(
+                    "session bookmark error: path={} name={} error=unknown bookmark '{}'",
+                    bookmark_path.display(),
+                    name,
+                    name
+                );
+            };
+            if !runtime.store.contains(id) {
+                return format!(
+                    "session bookmark error: path={} name={} error=bookmark points to unknown session id {}",
+                    bookmark_path.display(),
+                    name,
+                    id
+                );
+            }
+            runtime.active_head = Some(id);
+            match reload_agent_from_active_head(agent, runtime) {
+                Ok(()) => format!(
+                    "session bookmark use: path={} name={} id={}",
+                    bookmark_path.display(),
+                    name,
+                    id
+                ),
+                Err(error) => format!(
+                    "session bookmark error: path={} name={} error={error}",
+                    bookmark_path.display(),
+                    name
+                ),
+            }
+        }
+        SessionBookmarkCommand::Delete { name } => {
+            if bookmarks.remove(&name).is_none() {
+                return format!(
+                    "session bookmark error: path={} name={} error=unknown bookmark '{}'",
+                    bookmark_path.display(),
+                    name,
+                    name
+                );
+            }
+            match save_session_bookmarks(&bookmark_path, &bookmarks) {
+                Ok(()) => format!(
+                    "session bookmark delete: path={} name={} status=deleted remaining={}",
+                    bookmark_path.display(),
+                    name,
+                    bookmarks.len()
+                ),
+                Err(error) => format!(
+                    "session bookmark error: path={} name={} error={error}",
+                    bookmark_path.display(),
+                    name
+                ),
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SkillsSearchMatch {
     name: String,
@@ -6497,7 +6767,7 @@ mod tests {
         default_profile_store_path, default_skills_lock_path, derive_skills_prune_candidates,
         ensure_non_empty_text, escape_graph_label, execute_branch_alias_command,
         execute_command_file, execute_doctor_command, execute_macro_command,
-        execute_profile_command, execute_session_diff_command,
+        execute_profile_command, execute_session_bookmark_command, execute_session_diff_command,
         execute_session_graph_export_command, execute_session_search_command,
         execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
@@ -6505,38 +6775,41 @@ mod tests {
         execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
         initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
-        load_profile_store, parse_branch_alias_command, parse_command, parse_command_file,
-        parse_doctor_command_args, parse_macro_command, parse_profile_command,
-        parse_sandbox_command_tokens, parse_session_diff_args, parse_session_search_args,
-        parse_session_stats_args, parse_skills_lock_diff_args, parse_skills_prune_args,
-        parse_skills_search_args, parse_skills_trust_list_args, parse_trust_rotation_spec,
-        parse_trusted_root_spec, percentile_duration_ms, render_audit_summary, render_command_help,
-        render_doctor_report, render_doctor_report_json, render_help_overview, render_macro_list,
-        render_macro_show, render_profile_diffs, render_profile_list, render_profile_show,
-        render_session_diff, render_session_graph_dot, render_session_graph_mermaid,
-        render_session_stats, render_session_stats_json, render_skills_list,
-        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        load_profile_store, load_session_bookmarks, parse_branch_alias_command, parse_command,
+        parse_command_file, parse_doctor_command_args, parse_macro_command, parse_profile_command,
+        parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
+        parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
+        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
+        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
+        render_audit_summary, render_command_help, render_doctor_report, render_doctor_report_json,
+        render_help_overview, render_macro_list, render_macro_show, render_profile_diffs,
+        render_profile_list, render_profile_show, render_session_diff, render_session_graph_dot,
+        render_session_graph_mermaid, render_session_stats, render_session_stats_json,
+        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
         render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
         resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
         resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
         run_doctor_checks, run_prompt_with_cancellation, save_branch_aliases, save_macro_file,
-        save_profile_store, search_session_entries, session_message_preview,
-        shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
-        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-        validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
-        validate_profile_name, validate_session_file, validate_skills_prune_file_name,
-        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-        CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        save_profile_store, save_session_bookmarks, search_session_entries,
+        session_bookmark_path_for_session, session_message_preview, shared_lineage_prefix_depth,
+        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
+        trust_record_status, unknown_command_message, validate_branch_alias_name,
+        validate_macro_command_entry, validate_macro_name, validate_profile_name,
+        validate_session_file, validate_skills_prune_file_name, BranchAliasCommand,
+        BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode, CliOsSandboxMode,
+        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         CommandExecutionContext, CommandFileEntry, CommandFileReport, DoctorCheckResult,
         DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus,
         FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand, ProfileDefaults,
-        ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions, SessionDiffEntry,
-        SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionStats,
-        SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger,
-        TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-        MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_SEARCH_MAX_RESULTS,
-        SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
+        ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
+        SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
+        SessionGraphFormat, SessionRuntime, SessionStats, SessionStatsOutputFormat,
+        SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger, TrustedRootRecord,
+        BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
+        PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
+        SESSION_BOOKMARK_USAGE, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+        SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -9117,6 +9390,169 @@ mod tests {
     }
 
     #[test]
+    fn functional_parse_session_bookmark_command_supports_lifecycle_subcommands() {
+        assert_eq!(
+            parse_session_bookmark_command("list").expect("parse list"),
+            SessionBookmarkCommand::List
+        );
+        assert_eq!(
+            parse_session_bookmark_command("set checkpoint 42").expect("parse set"),
+            SessionBookmarkCommand::Set {
+                name: "checkpoint".to_string(),
+                id: 42,
+            }
+        );
+        assert_eq!(
+            parse_session_bookmark_command("use checkpoint").expect("parse use"),
+            SessionBookmarkCommand::Use {
+                name: "checkpoint".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_session_bookmark_command("delete checkpoint").expect("parse delete"),
+            SessionBookmarkCommand::Delete {
+                name: "checkpoint".to_string(),
+            }
+        );
+
+        let error = parse_session_bookmark_command("").expect_err("empty args should fail");
+        assert!(error.to_string().contains(SESSION_BOOKMARK_USAGE));
+
+        let error = parse_session_bookmark_command("set checkpoint nope")
+            .expect_err("invalid id should fail");
+        assert!(error.to_string().contains("invalid bookmark id 'nope'"));
+
+        let error =
+            parse_session_bookmark_command("unknown checkpoint").expect_err("unknown subcommand");
+        assert!(error.to_string().contains("unknown subcommand 'unknown'"));
+    }
+
+    #[test]
+    fn unit_save_and_load_session_bookmarks_round_trip_schema_and_values() {
+        let temp = tempdir().expect("tempdir");
+        let bookmark_path = temp.path().join("session.bookmarks.json");
+        let bookmarks = BTreeMap::from([
+            ("checkpoint".to_string(), 7_u64),
+            ("investigation".to_string(), 42_u64),
+        ]);
+
+        save_session_bookmarks(&bookmark_path, &bookmarks).expect("save bookmarks");
+        let loaded = load_session_bookmarks(&bookmark_path).expect("load bookmarks");
+        assert_eq!(loaded, bookmarks);
+
+        let raw = std::fs::read_to_string(&bookmark_path).expect("read bookmark file");
+        let parsed =
+            serde_json::from_str::<SessionBookmarkFile>(&raw).expect("parse bookmark file");
+        assert_eq!(parsed.schema_version, SESSION_BOOKMARK_SCHEMA_VERSION);
+        assert_eq!(parsed.bookmarks, bookmarks);
+    }
+
+    #[test]
+    fn integration_execute_session_bookmark_command_supports_set_use_list_delete_flow() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let stable = store
+            .append_messages(Some(root), &[Message::user("stable branch")])
+            .expect("append stable branch")
+            .expect("stable id");
+
+        let mut runtime = SessionRuntime {
+            store,
+            active_head: Some(root),
+        };
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let initial_lineage = runtime
+            .store
+            .lineage_messages(runtime.active_head)
+            .expect("initial lineage");
+        agent.replace_messages(initial_lineage);
+
+        let set_output = execute_session_bookmark_command(
+            &format!("set checkpoint {stable}"),
+            &mut agent,
+            &mut runtime,
+        );
+        assert!(set_output.contains("session bookmark set: path="));
+        assert!(set_output.contains("name=checkpoint"));
+        assert!(set_output.contains(&format!("id={stable}")));
+
+        let list_output = execute_session_bookmark_command("list", &mut agent, &mut runtime);
+        assert!(list_output.contains("session bookmark list: path="));
+        assert!(list_output.contains("count=1"));
+        assert!(list_output.contains(&format!("bookmark: name=checkpoint id={stable} status=ok")));
+
+        let use_output =
+            execute_session_bookmark_command("use checkpoint", &mut agent, &mut runtime);
+        assert!(use_output.contains("session bookmark use: path="));
+        assert!(use_output.contains(&format!("id={stable}")));
+        assert_eq!(runtime.active_head, Some(stable));
+
+        let delete_output =
+            execute_session_bookmark_command("delete checkpoint", &mut agent, &mut runtime);
+        assert!(delete_output.contains("session bookmark delete: path="));
+        assert!(delete_output.contains("status=deleted"));
+        assert!(delete_output.contains("remaining=0"));
+
+        let final_list = execute_session_bookmark_command("list", &mut agent, &mut runtime);
+        assert!(final_list.contains("count=0"));
+        assert!(final_list.contains("bookmarks: none"));
+    }
+
+    #[test]
+    fn regression_execute_session_bookmark_command_reports_stale_ids() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let mut runtime = SessionRuntime {
+            store,
+            active_head: Some(root),
+        };
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let bookmark_path = session_bookmark_path_for_session(&session_path);
+        let bookmarks = BTreeMap::from([("legacy".to_string(), 999_u64)]);
+        save_session_bookmarks(&bookmark_path, &bookmarks).expect("save stale bookmark");
+
+        let list_output = execute_session_bookmark_command("list", &mut agent, &mut runtime);
+        assert!(list_output.contains("count=1"));
+        assert!(list_output.contains("bookmark: name=legacy id=999 status=stale"));
+
+        let use_output = execute_session_bookmark_command("use legacy", &mut agent, &mut runtime);
+        assert!(use_output.contains("session bookmark error: path="));
+        assert!(use_output.contains("bookmark points to unknown session id 999"));
+    }
+
+    #[test]
+    fn regression_execute_session_bookmark_command_reports_corrupt_bookmark_file() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load");
+        let root = store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root")
+            .expect("root id");
+        let mut runtime = SessionRuntime {
+            store,
+            active_head: Some(root),
+        };
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let bookmark_path = session_bookmark_path_for_session(&session_path);
+        std::fs::write(&bookmark_path, "{invalid-json").expect("write malformed bookmark file");
+
+        let output = execute_session_bookmark_command("list", &mut agent, &mut runtime);
+        assert!(output.contains("session bookmark error: path="));
+        assert!(output.contains("failed to parse session bookmark file"));
+    }
+
+    #[test]
     fn functional_render_help_overview_lists_known_commands() {
         let help = render_help_overview();
         assert!(help.contains("/help [command]"));
@@ -9141,6 +9577,7 @@ mod tests {
         assert!(help.contains("/profile <save|load|list|show|delete> ..."));
         assert!(help.contains("/branch <id>"));
         assert!(help.contains("/branch-alias <set|list|use> ..."));
+        assert!(help.contains("/session-bookmark <set|list|use|delete> ..."));
         assert!(help.contains("/quit"));
     }
 
@@ -9158,6 +9595,14 @@ mod tests {
         assert!(help.contains("command: /branch-alias"));
         assert!(help.contains("usage: /branch-alias <set|list|use> ..."));
         assert!(help.contains("example: /branch-alias set hotfix 42"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_session_bookmark_topic_without_slash() {
+        let help = render_command_help("session-bookmark").expect("render help");
+        assert!(help.contains("command: /session-bookmark"));
+        assert!(help.contains("usage: /session-bookmark <set|list|use|delete> ..."));
+        assert!(help.contains("example: /session-bookmark set investigation 42"));
     }
 
     #[test]

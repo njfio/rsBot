@@ -1020,6 +1020,182 @@ fn regression_interactive_branch_alias_command_corrupt_file_reports_parse_error(
 }
 
 #[test]
+fn integration_interactive_session_bookmark_command_set_use_list_delete_flow() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-bookmark.jsonl");
+    let bookmark_path = session.with_extension("bookmarks.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":2,
+            "parent_id":1,
+            "message":{
+                "role":"assistant",
+                "content":[{"type":"text","text":"stable branch"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+        json!({
+            "record_type":"entry",
+            "id":3,
+            "parent_id":1,
+            "message":{
+                "role":"assistant",
+                "content":[{"type":"text","text":"hot branch"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/session-bookmark set checkpoint 2\n/branch 3\n/session\n/session-bookmark use checkpoint\n/session\n/session-bookmark list\n/session-bookmark delete checkpoint\n/session-bookmark list\n/quit\n");
+
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let stdout = String::from_utf8(output).expect("stdout should be utf8");
+    assert!(stdout.contains("session bookmark set: path="));
+    assert!(stdout.contains("name=checkpoint id=2"));
+    assert!(stdout.contains("session bookmark use: path="));
+    assert!(stdout.contains("name=checkpoint id=2"));
+    assert!(stdout.contains("session bookmark list: path="));
+    assert!(stdout.contains("bookmark: name=checkpoint id=2 status=ok"));
+    assert!(stdout.contains("session bookmark delete: path="));
+    assert!(stdout.contains("status=deleted"));
+
+    let use_index = stdout
+        .find("session bookmark use: path=")
+        .expect("use output");
+    let after_use = &stdout[use_index..];
+    assert!(after_use.contains("active_head=2"));
+
+    let bookmarks_raw = fs::read_to_string(&bookmark_path).expect("read bookmark file");
+    assert!(bookmarks_raw.contains("\"schema_version\": 1"));
+}
+
+#[test]
+fn regression_interactive_session_bookmark_command_stale_entry_reports_error() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-bookmark-stale.jsonl");
+    let bookmark_path = session.with_extension("bookmarks.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+    let bookmarks = json!({
+        "schema_version": 1,
+        "bookmarks": {
+            "legacy": 999
+        }
+    });
+    fs::write(&bookmark_path, format!("{bookmarks}\n")).expect("write bookmark file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin(
+        "/session-bookmark list\n/session-bookmark use legacy\n/help session-bookmark\n/quit\n",
+    );
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "bookmark: name=legacy id=999 status=stale",
+        ))
+        .stdout(predicate::str::contains(
+            "bookmark points to unknown session id 999",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /session-bookmark <set|list|use|delete> ...",
+        ));
+}
+
+#[test]
+fn regression_interactive_session_bookmark_command_corrupt_file_reports_parse_error() {
+    let temp = tempdir().expect("tempdir");
+    let session = temp.path().join("session-bookmark-corrupt.jsonl");
+    let bookmark_path = session.with_extension("bookmarks.json");
+    let raw = [
+        json!({"record_type":"meta","schema_version":1}).to_string(),
+        json!({
+            "record_type":"entry",
+            "id":1,
+            "parent_id":null,
+            "message":{
+                "role":"system",
+                "content":[{"type":"text","text":"root"}],
+                "is_error":false
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+    fs::write(&session, format!("{raw}\n")).expect("write session");
+    fs::write(&bookmark_path, "{invalid-json").expect("write malformed bookmark file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--session",
+        session.to_str().expect("utf8 path"),
+    ])
+    .write_stdin("/session-bookmark list\n/help session-bookmark\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("session bookmark error: path="))
+        .stdout(predicate::str::contains(
+            "failed to parse session bookmark file",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /session-bookmark <set|list|use|delete> ...",
+        ));
+}
+
+#[test]
 fn integration_interactive_macro_command_lifecycle_flow() {
     let temp = tempdir().expect("tempdir");
     let session = temp.path().join("session-macro.jsonl");
