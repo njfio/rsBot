@@ -18,7 +18,7 @@ pub(crate) struct Cli {
         long,
         env = "PI_MODEL",
         default_value = "openai/gpt-4o-mini",
-        help = "Model in provider/model format. Supported providers: openai, openrouter (alias), groq (alias), xai (alias), mistral (alias), anthropic, google."
+        help = "Model in provider/model format. Supported providers: openai, openrouter (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google."
     )]
     pub(crate) model: String,
 
@@ -37,6 +37,14 @@ pub(crate) struct Cli {
         help = "Base URL for OpenAI-compatible APIs"
     )]
     pub(crate) api_base: String,
+
+    #[arg(
+        long = "azure-openai-api-version",
+        env = "PI_AZURE_OPENAI_API_VERSION",
+        default_value = "2024-10-21",
+        help = "Azure OpenAI api-version query value used when --api-base points to an Azure deployment endpoint"
+    )]
+    pub(crate) azure_openai_api_version: String,
 
     #[arg(
         long,

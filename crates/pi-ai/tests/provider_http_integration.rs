@@ -1,7 +1,7 @@
 use httpmock::prelude::*;
 use pi_ai::{
     AnthropicClient, AnthropicConfig, ChatRequest, GoogleClient, GoogleConfig, LlmClient, Message,
-    OpenAiClient, OpenAiConfig, PiAiError, ToolDefinition,
+    OpenAiAuthScheme, OpenAiClient, OpenAiConfig, PiAiError, ToolDefinition,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -48,6 +48,8 @@ async fn openai_client_sends_expected_http_request() {
         max_retries: 2,
         retry_budget_ms: 0,
         retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
     })
     .expect("openai client should be created");
 
@@ -71,6 +73,65 @@ async fn openai_client_sends_expected_http_request() {
     mock.assert();
     assert_eq!(response.message.text_content(), "openai ok");
     assert_eq!(response.usage.total_tokens, 8);
+}
+
+#[tokio::test]
+async fn integration_openai_client_supports_azure_api_key_header_and_api_version_query() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/openai/deployments/test-deployment/chat/completions")
+            .query_param("api-version", "2024-10-21")
+            .header("api-key", "test-azure-key")
+            .header_exists("x-pi-request-id")
+            .header("x-pi-retry-attempt", "0")
+            .json_body_includes(
+                json!({
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user"}]
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "azure ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 4,
+                "completion_tokens": 3,
+                "total_tokens": 7
+            }
+        }));
+    });
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: format!("{}/openai/deployments/test-deployment", server.base_url()),
+        api_key: "test-azure-key".to_string(),
+        organization: None,
+        request_timeout_ms: 5_000,
+        max_retries: 2,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::ApiKeyHeader,
+        api_version: Some("2024-10-21".to_string()),
+    })
+    .expect("openai client should be created");
+
+    let response = client
+        .complete(ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+        })
+        .await
+        .expect("azure-compatible completion should succeed");
+
+    mock.assert_calls(1);
+    assert_eq!(response.message.text_content(), "azure ok");
+    assert_eq!(response.usage.total_tokens, 7);
 }
 
 #[tokio::test]
@@ -220,6 +281,8 @@ async fn openai_client_surfaces_http_status_error() {
         max_retries: 2,
         retry_budget_ms: 0,
         retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
     })
     .expect("openai client should be created");
 
@@ -275,6 +338,8 @@ async fn openai_client_retries_on_rate_limit_then_succeeds() {
         max_retries: 2,
         retry_budget_ms: 0,
         retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
     })
     .expect("openai client should be created");
 
@@ -324,6 +389,8 @@ async fn openai_client_retry_budget_can_block_retries() {
         max_retries: 2,
         retry_budget_ms: 10,
         retry_jitter: true,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
     })
     .expect("openai client should be created");
 
@@ -374,6 +441,8 @@ async fn regression_openai_client_returns_timeout_error_when_server_is_slow() {
         max_retries: 2,
         retry_budget_ms: 0,
         retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
     })
     .expect("openai client should be created");
 
@@ -425,6 +494,8 @@ async fn integration_openai_client_streams_incremental_text_deltas() {
         max_retries: 2,
         retry_budget_ms: 0,
         retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
     })
     .expect("openai client should be created");
 

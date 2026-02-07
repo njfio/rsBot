@@ -2096,6 +2096,46 @@ fn integration_mistral_alias_uses_openai_compatible_runtime_with_env_key() {
 }
 
 #[test]
+fn integration_azure_alias_uses_openai_client_with_api_key_header_and_api_version() {
+    let server = MockServer::start();
+    let azure = server.mock(|when, then| {
+        when.method(POST)
+            .path("/openai/deployments/test-deployment/chat/completions")
+            .query_param("api-version", "2024-10-21")
+            .header_exists("api-key");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "integration azure response"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "azure/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/openai/deployments/test-deployment", server.base_url()),
+        "--azure-openai-api-version",
+        "2024-10-21",
+        "--prompt",
+        "hello",
+        "--no-session",
+    ])
+    .env("AZURE_OPENAI_API_KEY", "test-azure-key")
+    .env_remove("OPENAI_API_KEY")
+    .env_remove("PI_API_KEY");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("integration azure response"));
+
+    azure.assert_calls(1);
+}
+
+#[test]
 fn anthropic_prompt_works_end_to_end() {
     let server = MockServer::start();
     let anthropic = server.mock(|when, then| {

@@ -27,6 +27,11 @@ fn log_provider_auth_resolution(
     );
 }
 
+fn is_azure_openai_endpoint(api_base: &str) -> bool {
+    let normalized = api_base.trim().to_ascii_lowercase();
+    normalized.contains(".openai.azure.com") || normalized.contains("/openai/deployments/")
+}
+
 pub(crate) fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn LlmClient>> {
     let auth_mode = configured_provider_auth_method(cli, provider);
     let capability = provider_auth_capability(provider, auth_mode);
@@ -47,6 +52,7 @@ pub(crate) fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc
     match provider {
         Provider::OpenAi => {
             let api_key = resolved_secret_for_provider(&resolved, provider)?;
+            let azure_mode = is_azure_openai_endpoint(&cli.api_base);
             let client = OpenAiClient::new(OpenAiConfig {
                 api_base: cli.api_base.clone(),
                 api_key,
@@ -55,6 +61,16 @@ pub(crate) fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc
                 max_retries: cli.provider_max_retries,
                 retry_budget_ms: cli.provider_retry_budget_ms,
                 retry_jitter: cli.provider_retry_jitter,
+                auth_scheme: if azure_mode {
+                    OpenAiAuthScheme::ApiKeyHeader
+                } else {
+                    OpenAiAuthScheme::Bearer
+                },
+                api_version: if azure_mode {
+                    Some(cli.azure_openai_api_version.clone())
+                } else {
+                    None
+                },
             })?;
             log_provider_auth_resolution(provider, &resolved, auth_source);
             Ok(Arc::new(client))
