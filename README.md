@@ -33,6 +33,7 @@ Implemented now:
 - Remote/registry download cache with offline replay (`--skills-cache-dir`, `--skills-offline`)
 - Skills lockfile write/sync workflow (`--skills-lock-write`, `--skills-sync`)
 - Unit tests for serialization, tool loop, renderer diffing, and tool behaviors
+- Provider auth/login feasibility matrix and implementation gates (`docs/provider-auth/provider-auth-capability-matrix.md`)
 
 ## Build & Test
 
