@@ -849,6 +849,30 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/skills-trust-list .pi/skills/trust-roots.json",
     },
     CommandSpec {
+        name: "/skills-trust-add",
+        usage: "/skills-trust-add <id=base64_key> [trust_root_file]",
+        description: "Add or update a trust-root key",
+        details:
+            "Mutates trust-root file atomically. Uses configured --skill-trust-root-file when path is omitted.",
+        example: "/skills-trust-add root-v2=AbC... .pi/skills/trust-roots.json",
+    },
+    CommandSpec {
+        name: "/skills-trust-revoke",
+        usage: "/skills-trust-revoke <id> [trust_root_file]",
+        description: "Revoke a trust-root key id",
+        details:
+            "Marks key as revoked in trust-root file. Uses configured --skill-trust-root-file when path is omitted.",
+        example: "/skills-trust-revoke root-v1 .pi/skills/trust-roots.json",
+    },
+    CommandSpec {
+        name: "/skills-trust-rotate",
+        usage: "/skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]",
+        description: "Rotate trust-root key id to a new key",
+        details:
+            "Revokes old id and adds/updates new id atomically. Uses configured --skill-trust-root-file when path is omitted.",
+        example: "/skills-trust-rotate root-v1:root-v2=AbC... .pi/skills/trust-roots.json",
+    },
+    CommandSpec {
         name: "/skills-lock-write",
         usage: "/skills-lock-write [lockfile_path]",
         description: "Write/update skills lockfile from installed skills",
@@ -958,6 +982,9 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-lock-diff",
     "/skills-prune",
     "/skills-trust-list",
+    "/skills-trust-add",
+    "/skills-trust-revoke",
+    "/skills-trust-rotate",
     "/skills-lock-write",
     "/skills-sync",
     "/branches",
@@ -1827,7 +1854,7 @@ fn parse_trust_rotation_spec(raw: &str) -> Result<(String, TrustedKey)> {
     Ok((old_id.to_string(), new_key))
 }
 
-fn load_trust_root_records(path: &PathBuf) -> Result<Vec<TrustedRootRecord>> {
+fn load_trust_root_records(path: &Path) -> Result<Vec<TrustedRootRecord>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -1845,18 +1872,20 @@ fn load_trust_root_records(path: &PathBuf) -> Result<Vec<TrustedRootRecord>> {
     Ok(records)
 }
 
-fn save_trust_root_records(path: &PathBuf, records: &[TrustedRootRecord]) -> Result<()> {
+fn save_trust_root_records(path: &Path, records: &[TrustedRootRecord]) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
     }
-    let payload = serde_json::to_string_pretty(&TrustedRootFileFormat::Wrapped {
+    let mut payload = serde_json::to_string_pretty(&TrustedRootFileFormat::Wrapped {
         roots: records.to_vec(),
     })
     .context("failed to serialize trusted root records")?;
-    std::fs::write(path, payload).with_context(|| format!("failed to write {}", path.display()))?;
+    payload.push('\n');
+    write_text_atomic(path, &payload)
+        .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -1864,9 +1893,23 @@ fn apply_trust_root_mutations(
     records: &mut Vec<TrustedRootRecord>,
     cli: &Cli,
 ) -> Result<TrustMutationReport> {
+    apply_trust_root_mutation_specs(
+        records,
+        &cli.skill_trust_add,
+        &cli.skill_trust_revoke,
+        &cli.skill_trust_rotate,
+    )
+}
+
+fn apply_trust_root_mutation_specs(
+    records: &mut Vec<TrustedRootRecord>,
+    add_specs: &[String],
+    revoke_ids: &[String],
+    rotate_specs: &[String],
+) -> Result<TrustMutationReport> {
     let mut report = TrustMutationReport::default();
 
-    for spec in &cli.skill_trust_add {
+    for spec in add_specs {
         let key = parse_trusted_root_spec(spec)?;
         if let Some(existing) = records.iter_mut().find(|record| record.id == key.id) {
             existing.public_key = key.public_key;
@@ -1885,7 +1928,7 @@ fn apply_trust_root_mutations(
         }
     }
 
-    for id in &cli.skill_trust_revoke {
+    for id in revoke_ids {
         let id = id.trim();
         if id.is_empty() {
             continue;
@@ -1900,7 +1943,7 @@ fn apply_trust_root_mutations(
         }
     }
 
-    for spec in &cli.skill_trust_rotate {
+    for spec in rotate_specs {
         let (old_id, new_key) = parse_trust_rotation_spec(spec)?;
         let old = records
             .iter_mut()
@@ -2607,6 +2650,30 @@ fn handle_command_with_session_import_mode(
         println!(
             "{}",
             execute_skills_trust_list_command(default_trust_root_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/skills-trust-add" {
+        println!(
+            "{}",
+            execute_skills_trust_add_command(default_trust_root_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/skills-trust-revoke" {
+        println!(
+            "{}",
+            execute_skills_trust_revoke_command(default_trust_root_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/skills-trust-rotate" {
+        println!(
+            "{}",
+            execute_skills_trust_rotate_command(default_trust_root_path, command_args)
         );
         return Ok(CommandAction::Continue);
     }
@@ -5718,6 +5785,36 @@ fn execute_skills_prune_command(
 }
 
 const SKILLS_TRUST_LIST_USAGE: &str = "usage: /skills-trust-list [trust_root_file]";
+const SKILLS_TRUST_ADD_USAGE: &str = "usage: /skills-trust-add <id=base64_key> [trust_root_file]";
+const SKILLS_TRUST_REVOKE_USAGE: &str = "usage: /skills-trust-revoke <id> [trust_root_file]";
+const SKILLS_TRUST_ROTATE_USAGE: &str =
+    "usage: /skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]";
+
+fn parse_skills_trust_mutation_args(
+    command_args: &str,
+    default_trust_root_path: Option<&Path>,
+    usage: &str,
+) -> Result<(String, PathBuf)> {
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        bail!("{usage}");
+    }
+    if tokens.len() > 2 {
+        bail!("unexpected argument '{}'; {usage}", tokens[2]);
+    }
+
+    let trust_root_path = if tokens.len() == 2 {
+        PathBuf::from(tokens[1])
+    } else {
+        default_trust_root_path
+            .map(Path::to_path_buf)
+            .ok_or_else(|| anyhow!("trust root file is required; {usage}"))?
+    };
+    Ok((tokens[0].to_string(), trust_root_path))
+}
 
 fn parse_skills_trust_list_args(
     command_args: &str,
@@ -5741,6 +5838,201 @@ fn parse_skills_trust_list_args(
     }
 
     Ok(PathBuf::from(tokens[0]))
+}
+
+fn execute_skills_trust_add_command(
+    default_trust_root_path: Option<&Path>,
+    command_args: &str,
+) -> String {
+    let (spec, trust_root_path) = match parse_skills_trust_mutation_args(
+        command_args,
+        default_trust_root_path,
+        SKILLS_TRUST_ADD_USAGE,
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let configured_path = default_trust_root_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            return format!(
+                "skills trust add error: path={} error={error}",
+                configured_path
+            );
+        }
+    };
+
+    let key = match parse_trusted_root_spec(&spec) {
+        Ok(key) => key,
+        Err(error) => {
+            return format!(
+                "skills trust add error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+
+    let mut records = match load_trust_root_records(&trust_root_path) {
+        Ok(records) => records,
+        Err(error) => {
+            return format!(
+                "skills trust add error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+    let add_specs = vec![spec];
+    let report = match apply_trust_root_mutation_specs(&mut records, &add_specs, &[], &[]) {
+        Ok(report) => report,
+        Err(error) => {
+            return format!(
+                "skills trust add error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+
+    match save_trust_root_records(&trust_root_path, &records) {
+        Ok(()) => format!(
+            "skills trust add: path={} id={} added={} updated={} revoked={} rotated={}",
+            trust_root_path.display(),
+            key.id,
+            report.added,
+            report.updated,
+            report.revoked,
+            report.rotated
+        ),
+        Err(error) => format!(
+            "skills trust add error: path={} error={error}",
+            trust_root_path.display()
+        ),
+    }
+}
+
+fn execute_skills_trust_revoke_command(
+    default_trust_root_path: Option<&Path>,
+    command_args: &str,
+) -> String {
+    let (spec, trust_root_path) = match parse_skills_trust_mutation_args(
+        command_args,
+        default_trust_root_path,
+        SKILLS_TRUST_REVOKE_USAGE,
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let configured_path = default_trust_root_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            return format!(
+                "skills trust revoke error: path={} error={error}",
+                configured_path
+            );
+        }
+    };
+
+    let mut records = match load_trust_root_records(&trust_root_path) {
+        Ok(records) => records,
+        Err(error) => {
+            return format!(
+                "skills trust revoke error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+    let revoke_ids = vec![spec.clone()];
+    let report = match apply_trust_root_mutation_specs(&mut records, &[], &revoke_ids, &[]) {
+        Ok(report) => report,
+        Err(error) => {
+            return format!(
+                "skills trust revoke error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+
+    match save_trust_root_records(&trust_root_path, &records) {
+        Ok(()) => format!(
+            "skills trust revoke: path={} id={} added={} updated={} revoked={} rotated={}",
+            trust_root_path.display(),
+            spec,
+            report.added,
+            report.updated,
+            report.revoked,
+            report.rotated
+        ),
+        Err(error) => format!(
+            "skills trust revoke error: path={} error={error}",
+            trust_root_path.display()
+        ),
+    }
+}
+
+fn execute_skills_trust_rotate_command(
+    default_trust_root_path: Option<&Path>,
+    command_args: &str,
+) -> String {
+    let (spec, trust_root_path) = match parse_skills_trust_mutation_args(
+        command_args,
+        default_trust_root_path,
+        SKILLS_TRUST_ROTATE_USAGE,
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let configured_path = default_trust_root_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string());
+            return format!(
+                "skills trust rotate error: path={} error={error}",
+                configured_path
+            );
+        }
+    };
+
+    let (old_id, new_key) = match parse_trust_rotation_spec(&spec) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return format!(
+                "skills trust rotate error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+
+    let mut records = match load_trust_root_records(&trust_root_path) {
+        Ok(records) => records,
+        Err(error) => {
+            return format!(
+                "skills trust rotate error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+    let rotate_specs = vec![spec];
+    let report = match apply_trust_root_mutation_specs(&mut records, &[], &[], &rotate_specs) {
+        Ok(report) => report,
+        Err(error) => {
+            return format!(
+                "skills trust rotate error: path={} error={error}",
+                trust_root_path.display()
+            );
+        }
+    };
+
+    match save_trust_root_records(&trust_root_path, &records) {
+        Ok(()) => format!(
+            "skills trust rotate: path={} old_id={} new_id={} added={} updated={} revoked={} rotated={}",
+            trust_root_path.display(),
+            old_id,
+            new_key.id,
+            report.added,
+            report.updated,
+            report.revoked,
+            report.rotated
+        ),
+        Err(error) => format!(
+            "skills trust rotate error: path={} error={error}",
+            trust_root_path.display()
+        ),
+    }
 }
 
 fn trust_record_status(record: &TrustedRootRecord, now_unix: u64) -> &'static str {
@@ -6772,33 +7064,35 @@ mod tests {
         execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-        execute_skills_sync_command, execute_skills_trust_list_command, format_id_list,
-        format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
-        load_profile_store, load_session_bookmarks, parse_branch_alias_command, parse_command,
-        parse_command_file, parse_doctor_command_args, parse_macro_command, parse_profile_command,
+        execute_skills_sync_command, execute_skills_trust_add_command,
+        execute_skills_trust_list_command, execute_skills_trust_revoke_command,
+        execute_skills_trust_rotate_command, format_id_list, format_remap_ids, handle_command,
+        handle_command_with_session_import_mode, initialize_session, is_retryable_provider_error,
+        load_branch_aliases, load_macro_file, load_profile_store, load_session_bookmarks,
+        load_trust_root_records, parse_branch_alias_command, parse_command, parse_command_file,
+        parse_doctor_command_args, parse_macro_command, parse_profile_command,
         parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
         parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
         parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-        parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-        render_audit_summary, render_command_help, render_doctor_report, render_doctor_report_json,
-        render_help_overview, render_macro_list, render_macro_show, render_profile_diffs,
-        render_profile_list, render_profile_show, render_session_diff, render_session_graph_dot,
-        render_session_graph_mermaid, render_session_stats, render_session_stats_json,
-        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
-        render_skills_lock_write_success, render_skills_search, render_skills_show,
-        render_skills_sync_drift_details, render_skills_trust_list, resolve_fallback_models,
-        resolve_prompt_input, resolve_prunable_skill_file_name, resolve_session_graph_format,
-        resolve_skill_trust_roots, resolve_skills_lock_path, resolve_system_prompt,
-        run_doctor_checks, run_prompt_with_cancellation, save_branch_aliases, save_macro_file,
-        save_profile_store, save_session_bookmarks, search_session_entries,
-        session_bookmark_path_for_session, session_message_preview, shared_lineage_prefix_depth,
-        stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
-        trust_record_status, unknown_command_message, validate_branch_alias_name,
-        validate_macro_command_entry, validate_macro_name, validate_profile_name,
-        validate_session_file, validate_skills_prune_file_name, BranchAliasCommand,
-        BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode, CliOsSandboxMode,
-        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        parse_skills_trust_mutation_args, parse_trust_rotation_spec, parse_trusted_root_spec,
+        percentile_duration_ms, render_audit_summary, render_command_help, render_doctor_report,
+        render_doctor_report_json, render_help_overview, render_macro_list, render_macro_show,
+        render_profile_diffs, render_profile_list, render_profile_show, render_session_diff,
+        render_session_graph_dot, render_session_graph_mermaid, render_session_stats,
+        render_session_stats_json, render_skills_list, render_skills_lock_diff_drift,
+        render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
+        render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
+        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
+        resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
+        resolve_system_prompt, run_doctor_checks, run_prompt_with_cancellation,
+        save_branch_aliases, save_macro_file, save_profile_store, save_session_bookmarks,
+        search_session_entries, session_bookmark_path_for_session, session_message_preview,
+        shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
+        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
+        validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
+        validate_profile_name, validate_session_file, validate_skills_prune_file_name,
+        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+        CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         CommandExecutionContext, CommandFileEntry, CommandFileReport, DoctorCheckResult,
         DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus,
         FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand, ProfileDefaults,
@@ -6809,7 +7103,7 @@ mod tests {
         BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
         PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
         SESSION_BOOKMARK_USAGE, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-        SKILLS_PRUNE_USAGE, SKILLS_TRUST_LIST_USAGE,
+        SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -9571,6 +9865,9 @@ mod tests {
         assert!(help.contains("/skills-lock-diff [lockfile_path] [--json]"));
         assert!(help.contains("/skills-prune [lockfile_path] [--dry-run|--apply]"));
         assert!(help.contains("/skills-trust-list [trust_root_file]"));
+        assert!(help.contains("/skills-trust-add <id=base64_key> [trust_root_file]"));
+        assert!(help.contains("/skills-trust-revoke <id> [trust_root_file]"));
+        assert!(help.contains("/skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/macro <save|run|list|show|delete> ..."));
@@ -9711,6 +10008,28 @@ mod tests {
         let help = render_command_help("skills-trust-list").expect("render help");
         assert!(help.contains("command: /skills-trust-list"));
         assert!(help.contains("usage: /skills-trust-list [trust_root_file]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_trust_add_topic_without_slash() {
+        let help = render_command_help("skills-trust-add").expect("render help");
+        assert!(help.contains("command: /skills-trust-add"));
+        assert!(help.contains("usage: /skills-trust-add <id=base64_key> [trust_root_file]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_trust_revoke_topic_without_slash() {
+        let help = render_command_help("skills-trust-revoke").expect("render help");
+        assert!(help.contains("command: /skills-trust-revoke"));
+        assert!(help.contains("usage: /skills-trust-revoke <id> [trust_root_file]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_trust_rotate_topic_without_slash() {
+        let help = render_command_help("skills-trust-rotate").expect("render help");
+        assert!(help.contains("command: /skills-trust-rotate"));
+        assert!(help
+            .contains("usage: /skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]"));
     }
 
     #[test]
@@ -9927,6 +10246,45 @@ mod tests {
             resolve_prunable_skill_file_name(skills_dir, Path::new(".pi/skills/nested/a.md"))
                 .expect_err("nested path should fail");
         assert!(error.to_string().contains("nested paths are not allowed"));
+    }
+
+    #[test]
+    fn unit_parse_skills_trust_mutation_args_supports_configured_and_explicit_paths() {
+        let configured = PathBuf::from("/tmp/trust-roots.json");
+        assert_eq!(
+            parse_skills_trust_mutation_args(
+                "root=YQ==",
+                Some(configured.as_path()),
+                SKILLS_TRUST_ADD_USAGE
+            )
+            .expect("configured path should be used"),
+            ("root=YQ==".to_string(), configured)
+        );
+
+        assert_eq!(
+            parse_skills_trust_mutation_args(
+                "root=YQ== /tmp/override.json",
+                Some(Path::new("/tmp/default.json")),
+                SKILLS_TRUST_ADD_USAGE
+            )
+            .expect("explicit path should override configured path"),
+            ("root=YQ==".to_string(), PathBuf::from("/tmp/override.json"))
+        );
+    }
+
+    #[test]
+    fn regression_parse_skills_trust_mutation_args_requires_path_without_configuration() {
+        let missing = parse_skills_trust_mutation_args("root=YQ==", None, SKILLS_TRUST_ADD_USAGE)
+            .expect_err("command should fail without configured/default path");
+        assert!(missing.to_string().contains(SKILLS_TRUST_ADD_USAGE));
+
+        let extra = parse_skills_trust_mutation_args(
+            "one two three",
+            Some(Path::new("/tmp/default.json")),
+            SKILLS_TRUST_ADD_USAGE,
+        )
+        .expect_err("extra positional args should fail");
+        assert!(extra.to_string().contains(SKILLS_TRUST_ADD_USAGE));
     }
 
     #[test]
@@ -10269,6 +10627,80 @@ mod tests {
         );
         assert!(explicit_output.contains("skills trust list: path="));
         assert!(explicit_output.contains("count=3"));
+    }
+
+    #[test]
+    fn functional_execute_skills_trust_mutation_commands_round_trip_updates_store() {
+        let temp = tempdir().expect("tempdir");
+        let trust_path = temp.path().join("trust-roots.json");
+        let payload = serde_json::json!({
+            "roots": [
+                {
+                    "id": "old",
+                    "public_key": "YQ==",
+                    "revoked": false,
+                    "expires_unix": null,
+                    "rotated_from": null
+                }
+            ]
+        });
+        std::fs::write(&trust_path, format!("{payload}\n")).expect("write trust file");
+
+        let add_output = execute_skills_trust_add_command(Some(trust_path.as_path()), "extra=Yg==");
+        assert!(add_output.contains("skills trust add: path="));
+        assert!(add_output.contains("id=extra"));
+        assert!(add_output.contains("added=1"));
+
+        let revoke_output =
+            execute_skills_trust_revoke_command(Some(trust_path.as_path()), "extra");
+        assert!(revoke_output.contains("skills trust revoke: path="));
+        assert!(revoke_output.contains("id=extra"));
+        assert!(revoke_output.contains("revoked=1"));
+
+        let rotate_output =
+            execute_skills_trust_rotate_command(Some(trust_path.as_path()), "old:new=Yw==");
+        assert!(rotate_output.contains("skills trust rotate: path="));
+        assert!(rotate_output.contains("old_id=old"));
+        assert!(rotate_output.contains("new_id=new"));
+        assert!(rotate_output.contains("rotated=1"));
+
+        let list_output = execute_skills_trust_list_command(Some(trust_path.as_path()), "");
+        assert!(list_output.contains("skills trust list: path="));
+        assert!(list_output.contains("root: id=old"));
+        assert!(list_output.contains("status=revoked"));
+        assert!(list_output.contains("root: id=new"));
+        assert!(list_output.contains("rotated_from=old status=active"));
+        assert!(list_output.contains("root: id=extra"));
+        assert!(list_output.contains("status=revoked"));
+    }
+
+    #[test]
+    fn regression_execute_skills_trust_add_command_requires_path_without_configuration() {
+        let output = execute_skills_trust_add_command(None, "root=YQ==");
+        assert!(output.contains("skills trust add error: path=none"));
+        assert!(output.contains(SKILLS_TRUST_ADD_USAGE));
+    }
+
+    #[test]
+    fn regression_execute_skills_trust_revoke_command_reports_unknown_id() {
+        let temp = tempdir().expect("tempdir");
+        let trust_path = temp.path().join("trust-roots.json");
+        std::fs::write(&trust_path, "[]\n").expect("write trust file");
+
+        let output = execute_skills_trust_revoke_command(Some(trust_path.as_path()), "missing");
+        assert!(output.contains("skills trust revoke error: path="));
+        assert!(output.contains("cannot revoke unknown trust key id 'missing'"));
+    }
+
+    #[test]
+    fn regression_execute_skills_trust_rotate_command_reports_invalid_spec() {
+        let temp = tempdir().expect("tempdir");
+        let trust_path = temp.path().join("trust-roots.json");
+        std::fs::write(&trust_path, "[]\n").expect("write trust file");
+
+        let output = execute_skills_trust_rotate_command(Some(trust_path.as_path()), "bad-shape");
+        assert!(output.contains("skills trust rotate error: path="));
+        assert!(output.contains("expected old_id:new_id=base64_key"));
     }
 
     #[test]
@@ -10820,6 +11252,94 @@ mod tests {
         assert_eq!(runtime.active_head, Some(head));
         assert_eq!(runtime.store.entries().len(), 2);
         assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let trust_path = temp.path().join("trust-roots.json");
+        std::fs::write(&trust_path, "[]\n").expect("write empty trust file");
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
+        let skills_command_config =
+            skills_command_config(&skills_dir, &lock_path, Some(trust_path.as_path()));
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-trust-add root=YQ==",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &profile_defaults,
+            &skills_command_config,
+        )
+        .expect("skills trust add command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-trust-revoke root",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &profile_defaults,
+            &skills_command_config,
+        )
+        .expect("skills trust revoke command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-trust-rotate root:new=Yg==",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &profile_defaults,
+            &skills_command_config,
+        )
+        .expect("skills trust rotate command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+
+        let records = load_trust_root_records(&trust_path).expect("load trust records");
+        let root_record = records
+            .iter()
+            .find(|record| record.id == "root")
+            .expect("root");
+        let new_record = records
+            .iter()
+            .find(|record| record.id == "new")
+            .expect("new");
+        assert!(root_record.revoked);
+        assert!(!new_record.revoked);
+        assert_eq!(new_record.rotated_from.as_deref(), Some("root"));
     }
 
     #[test]

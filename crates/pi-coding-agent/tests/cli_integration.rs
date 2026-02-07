@@ -3402,6 +3402,117 @@ fn regression_interactive_skills_trust_list_command_malformed_json_reports_error
 }
 
 #[test]
+fn integration_interactive_skills_trust_mutation_commands_roundtrip() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    let trust_path = temp.path().join("trust-roots.json");
+    let payload = json!({
+        "roots": [
+            {
+                "id": "old",
+                "public_key": "YQ==",
+                "revoked": false,
+                "expires_unix": null,
+                "rotated_from": null
+            }
+        ]
+    });
+    fs::write(&trust_path, format!("{payload}\n")).expect("write trust file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skill-trust-root-file",
+        trust_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin(
+        "/skills-trust-add extra=Yg==\n/skills-trust-revoke extra\n/skills-trust-rotate old:new=Yw==\n/skills-trust-list\n/quit\n",
+    );
+
+    let output = cmd.assert().success().get_output().stdout.clone();
+    let stdout = String::from_utf8(output).expect("stdout should be utf8");
+    assert!(stdout.contains("skills trust add: path="));
+    assert!(stdout.contains("id=extra"));
+    assert!(stdout.contains("skills trust revoke: path="));
+    assert!(stdout.contains("id=extra"));
+    assert!(stdout.contains("skills trust rotate: path="));
+    assert!(stdout.contains("old_id=old new_id=new"));
+    assert!(stdout.contains("root: id=old"));
+    assert!(stdout.contains("root: id=new"));
+    assert!(stdout.contains("rotated_from=old status=active"));
+    assert!(stdout.contains("root: id=extra"));
+    assert!(stdout.contains("status=revoked"));
+
+    let trust_raw = fs::read_to_string(&trust_path).expect("read trust file");
+    assert!(trust_raw.contains("\"id\": \"old\""));
+    assert!(trust_raw.contains("\"revoked\": true"));
+    assert!(trust_raw.contains("\"id\": \"new\""));
+    assert!(trust_raw.contains("\"rotated_from\": \"old\""));
+}
+
+#[test]
+fn regression_interactive_skills_trust_add_without_configured_path_reports_error() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-trust-add root=YQ==\n/help skills-trust-add\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "skills trust add error: path=none",
+        ))
+        .stdout(predicate::str::contains(
+            "usage: /skills-trust-add <id=base64_key> [trust_root_file]",
+        ));
+}
+
+#[test]
+fn regression_interactive_skills_trust_revoke_unknown_id_reports_error() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    let trust_path = temp.path().join("trust-roots.json");
+    fs::write(&trust_path, "[]\n").expect("write trust file");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skill-trust-root-file",
+        trust_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-trust-revoke missing\n/quit\n");
+
+    cmd.assert().success().stdout(predicate::str::contains(
+        "cannot revoke unknown trust key id 'missing'",
+    ));
+}
+
+#[test]
 fn interactive_skills_lock_write_command_writes_default_lockfile() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");

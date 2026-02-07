@@ -370,6 +370,11 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /skills-trust-list
 /skills-trust-list /tmp/trust-roots.json
 
+# Mutate trust-root keys interactively (uses configured trust-root path by default)
+/skills-trust-add root-v2=AbC...
+/skills-trust-revoke root-v1
+/skills-trust-rotate root-v1:root-v2=AbC...
+
 # List currently installed skills
 /skills-list
 
