@@ -1,10 +1,9 @@
 use std::{
-    collections::HashSet,
-    future::pending,
+    collections::{HashMap, HashSet},
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -13,6 +12,7 @@ use pi_ai::LlmClient;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::sync::watch;
 
 use crate::{
     current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, PromptRunStatus,
@@ -407,6 +407,23 @@ impl GithubApiClient {
         .await
     }
 
+    async fn update_issue_comment(
+        &self,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<GithubCommentCreateResponse> {
+        let payload = json!({ "body": body });
+        self.request_json("update issue comment", || {
+            self.http
+                .patch(format!(
+                    "{}/repos/{}/{}/issues/comments/{}",
+                    self.api_base, self.repo.owner, self.repo.name, comment_id
+                ))
+                .json(&payload)
+        })
+        .await
+    }
+
     async fn request_json<T, F>(&self, operation: &str, mut request_builder: F) -> Result<T>
     where
         T: DeserializeOwned,
@@ -514,6 +531,70 @@ struct PromptRunReport {
     usage: PromptUsageSummary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PiIssueCommand {
+    Run { prompt: String },
+    Stop,
+    Status,
+    Compact,
+    Summarize { focus: Option<String> },
+    Invalid { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EventAction {
+    RunPrompt { prompt: String },
+    Command(PiIssueCommand),
+}
+
+#[derive(Debug)]
+struct ActiveIssueRun {
+    run_id: String,
+    event_key: String,
+    started_unix_ms: u64,
+    started: Instant,
+    cancel_tx: watch::Sender<bool>,
+    handle: tokio::task::JoinHandle<RunTaskResult>,
+}
+
+#[derive(Debug, Clone)]
+struct IssueLatestRun {
+    run_id: String,
+    event_key: String,
+    status: String,
+    started_unix_ms: u64,
+    completed_unix_ms: u64,
+    duration_ms: u64,
+}
+
+#[derive(Debug)]
+struct RunTaskResult {
+    issue_number: u64,
+    event_key: String,
+    run_id: String,
+    started_unix_ms: u64,
+    completed_unix_ms: u64,
+    duration_ms: u64,
+    status: String,
+    posted_comment_id: Option<u64>,
+    model: String,
+    usage: PromptUsageSummary,
+    error: Option<String>,
+}
+
+struct IssueRunTaskParams {
+    github_client: GithubApiClient,
+    config: GithubIssuesBridgeRuntimeConfig,
+    repo: RepoRef,
+    repository_state_dir: PathBuf,
+    event: GithubBridgeEvent,
+    prompt: String,
+    run_id: String,
+    working_comment_id: u64,
+    cancel_rx: watch::Receiver<bool>,
+    started_unix_ms: u64,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct PollCycleReport {
     pub discovered_events: usize,
@@ -538,6 +619,8 @@ struct GithubIssuesBridgeRuntime {
     outbound_log: JsonlEventLog,
     bot_login: String,
     repository_state_dir: PathBuf,
+    active_runs: HashMap<u64, ActiveIssueRun>,
+    latest_runs: HashMap<u64, IssueLatestRun>,
 }
 
 impl GithubIssuesBridgeRuntime {
@@ -576,6 +659,8 @@ impl GithubIssuesBridgeRuntime {
             outbound_log,
             bot_login,
             repository_state_dir,
+            active_runs: HashMap::new(),
+            latest_runs: HashMap::new(),
         })
     }
 
@@ -608,11 +693,14 @@ impl GithubIssuesBridgeRuntime {
     }
 
     async fn poll_once(&mut self) -> Result<PollCycleReport> {
+        let mut report = PollCycleReport::default();
+        tokio::task::yield_now().await;
+        self.drain_finished_runs(&mut report).await?;
+
         let issues = self
             .github_client
             .list_updated_issues(self.state_store.last_issue_scan_at())
             .await?;
-        let mut report = PollCycleReport::default();
         let mut state_dirty = false;
         let mut latest_issue_scan = self.state_store.last_issue_scan_at().map(str::to_string);
 
@@ -657,35 +745,33 @@ impl GithubIssuesBridgeRuntime {
                     continue;
                 }
 
+                let action = event_action_from_body(&event.body);
                 self.inbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
                     "repo": self.repo.as_slug(),
-                    "event_key": event.key,
+                    "event_key": event.key.clone(),
                     "kind": event.kind.as_str(),
                     "issue_number": event.issue_number,
+                    "action": format!("{action:?}"),
                     "payload": event.raw_payload,
                 }))?;
 
-                match self.process_event(&event).await {
-                    Ok(outbound) => {
-                        self.outbound_log.append(&outbound)?;
-                        if self.state_store.mark_processed(&event.key) {
-                            state_dirty = true;
-                        }
-                        report.processed_events = report.processed_events.saturating_add(1);
-                    }
-                    Err(error) => {
-                        report.failed_events = report.failed_events.saturating_add(1);
-                        eprintln!(
-                            "github bridge event failed: repo={} issue=#{} key={} error={error}",
-                            self.repo.as_slug(),
-                            event.issue_number,
-                            event.key
-                        );
-                    }
+                if let Err(error) = self
+                    .handle_event_action(&event, action, &mut report, &mut state_dirty)
+                    .await
+                {
+                    report.failed_events = report.failed_events.saturating_add(1);
+                    eprintln!(
+                        "github bridge event failed: repo={} issue=#{} key={} error={error}",
+                        self.repo.as_slug(),
+                        event.issue_number,
+                        event.key
+                    );
                 }
             }
         }
+
+        self.drain_finished_runs(&mut report).await?;
 
         if self
             .state_store
@@ -699,113 +785,548 @@ impl GithubIssuesBridgeRuntime {
         Ok(report)
     }
 
-    async fn process_event(&self, event: &GithubBridgeEvent) -> Result<Value> {
-        let run = self.run_prompt_for_event(event).await?;
-        let comment_body = render_issue_comment_response(event, &run);
-        let posted = self
-            .github_client
-            .create_issue_comment(event.issue_number, &comment_body)
-            .await?;
+    async fn drain_finished_runs(&mut self, report: &mut PollCycleReport) -> Result<()> {
+        let finished_issues = self
+            .active_runs
+            .iter()
+            .filter_map(|(issue_number, run)| run.handle.is_finished().then_some(*issue_number))
+            .collect::<Vec<_>>();
 
-        Ok(json!({
-            "timestamp_unix_ms": current_unix_timestamp_ms(),
-            "repo": self.repo.as_slug(),
-            "event_key": event.key,
-            "issue_number": event.issue_number,
-            "run_id": run.run_id,
-            "status": format!("{:?}", run.status).to_lowercase(),
-            "posted_comment_id": posted.id,
-            "posted_comment_url": posted.html_url,
-            "model": run.model,
-            "usage": {
-                "input_tokens": run.usage.input_tokens,
-                "output_tokens": run.usage.output_tokens,
-                "total_tokens": run.usage.total_tokens,
-                "request_duration_ms": run.usage.request_duration_ms,
-                "finish_reason": run.usage.finish_reason,
-            }
-        }))
-    }
-
-    async fn run_prompt_for_event(&self, event: &GithubBridgeEvent) -> Result<PromptRunReport> {
-        let session_path = session_path_for_issue(&self.repository_state_dir, event.issue_number);
-        let mut agent = Agent::new(
-            self.config.client.clone(),
-            AgentConfig {
-                model: self.config.model.clone(),
-                system_prompt: self.config.system_prompt.clone(),
-                max_turns: self.config.max_turns,
-                temperature: Some(0.0),
-                max_tokens: None,
-            },
-        );
-        crate::tools::register_builtin_tools(&mut agent, self.config.tool_policy.clone());
-
-        let usage = Arc::new(Mutex::new(PromptUsageSummary::default()));
-        agent.subscribe({
-            let usage = usage.clone();
-            move |event| {
-                if let AgentEvent::TurnEnd {
-                    usage: turn_usage,
-                    request_duration_ms,
-                    finish_reason,
-                    ..
-                } = event
-                {
-                    if let Ok(mut guard) = usage.lock() {
-                        guard.input_tokens =
-                            guard.input_tokens.saturating_add(turn_usage.input_tokens);
-                        guard.output_tokens =
-                            guard.output_tokens.saturating_add(turn_usage.output_tokens);
-                        guard.total_tokens =
-                            guard.total_tokens.saturating_add(turn_usage.total_tokens);
-                        guard.request_duration_ms = guard
-                            .request_duration_ms
-                            .saturating_add(*request_duration_ms);
-                        guard.finish_reason = finish_reason.clone();
+        for issue_number in finished_issues {
+            let Some(active) = self.active_runs.remove(&issue_number) else {
+                continue;
+            };
+            match active.handle.await {
+                Ok(result) => {
+                    self.latest_runs.insert(
+                        issue_number,
+                        IssueLatestRun {
+                            run_id: result.run_id.clone(),
+                            event_key: result.event_key.clone(),
+                            status: result.status.clone(),
+                            started_unix_ms: result.started_unix_ms,
+                            completed_unix_ms: result.completed_unix_ms,
+                            duration_ms: result.duration_ms,
+                        },
+                    );
+                    self.outbound_log.append(&json!({
+                        "timestamp_unix_ms": current_unix_timestamp_ms(),
+                        "repo": self.repo.as_slug(),
+                        "event_key": result.event_key,
+                        "issue_number": result.issue_number,
+                        "run_id": result.run_id,
+                        "status": result.status,
+                        "posted_comment_id": result.posted_comment_id,
+                        "model": result.model,
+                        "usage": {
+                            "input_tokens": result.usage.input_tokens,
+                            "output_tokens": result.usage.output_tokens,
+                            "total_tokens": result.usage.total_tokens,
+                            "request_duration_ms": result.usage.request_duration_ms,
+                            "finish_reason": result.usage.finish_reason,
+                        },
+                        "error": result.error,
+                    }))?;
+                    if result.error.is_some() {
+                        report.failed_events = report.failed_events.saturating_add(1);
                     }
                 }
+                Err(error) => {
+                    report.failed_events = report.failed_events.saturating_add(1);
+                    eprintln!(
+                        "github bridge run join failed: repo={} issue=#{} run_id={} key={} error={error}",
+                        self.repo.as_slug(),
+                        issue_number,
+                        active.run_id,
+                        active.event_key
+                    );
+                }
             }
-        });
+        }
 
-        let mut session_runtime = Some(initialize_issue_session_runtime(
-            &session_path,
-            &self.config.system_prompt,
-            self.config.session_lock_wait_ms,
-            self.config.session_lock_stale_ms,
-            &mut agent,
-        )?);
+        Ok(())
+    }
 
-        let prompt = render_event_prompt(&self.repo, event);
-        let start_index = agent.messages().len();
-        let status = run_prompt_with_cancellation(
-            &mut agent,
-            &mut session_runtime,
-            &prompt,
-            self.config.turn_timeout_ms,
-            pending::<()>(),
-            self.config.render_options,
-        )
-        .await?;
-        let assistant_reply = collect_assistant_reply(&agent.messages()[start_index..]);
-        let usage = usage
-            .lock()
-            .map_err(|_| anyhow!("prompt usage lock is poisoned"))?
-            .clone();
+    async fn handle_event_action(
+        &mut self,
+        event: &GithubBridgeEvent,
+        action: EventAction,
+        report: &mut PollCycleReport,
+        state_dirty: &mut bool,
+    ) -> Result<()> {
+        match action {
+            EventAction::RunPrompt { prompt } => {
+                self.enqueue_issue_run(event, prompt, report, state_dirty)
+                    .await
+            }
+            EventAction::Command(command) => {
+                self.execute_issue_command(event, command, report, state_dirty)
+                    .await
+            }
+        }
+    }
+
+    async fn enqueue_issue_run(
+        &mut self,
+        event: &GithubBridgeEvent,
+        prompt: String,
+        report: &mut PollCycleReport,
+        state_dirty: &mut bool,
+    ) -> Result<()> {
+        if self.active_runs.contains_key(&event.issue_number) {
+            let status_text = self.render_issue_status(event.issue_number);
+            let posted = self
+                .github_client
+                .create_issue_comment(
+                    event.issue_number,
+                    &format!(
+                        "A run is already active for this issue.\n\n{}\n\nUse `/pi stop` to cancel it first.",
+                        status_text
+                    ),
+                )
+                .await?;
+            self.outbound_log.append(&json!({
+                "timestamp_unix_ms": current_unix_timestamp_ms(),
+                "repo": self.repo.as_slug(),
+                "event_key": event.key,
+                "issue_number": event.issue_number,
+                "command": "run",
+                "status": "rejected_active_run",
+                "posted_comment_id": posted.id,
+                "posted_comment_url": posted.html_url,
+            }))?;
+            if self.state_store.mark_processed(&event.key) {
+                *state_dirty = true;
+            }
+            report.processed_events = report.processed_events.saturating_add(1);
+            return Ok(());
+        }
+
         let run_id = format!(
             "gh-{}-{}-{}",
             event.issue_number,
             current_unix_timestamp_ms(),
             short_key_hash(&event.key)
         );
-        Ok(PromptRunReport {
-            run_id,
-            model: self.config.model.clone(),
-            status,
-            assistant_reply,
-            usage,
-        })
+        let started_unix_ms = current_unix_timestamp_ms();
+        let working_comment = self
+            .github_client
+            .create_issue_comment(
+                event.issue_number,
+                &format!(
+                    "⏳ rsBot is working on run `{}` for event `{}`.",
+                    run_id, event.key
+                ),
+            )
+            .await?;
+        let working_comment_id = working_comment.id;
+
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let github_client = self.github_client.clone();
+        let repo = self.repo.clone();
+        let event_clone = event.clone();
+        let repository_state_dir = self.repository_state_dir.clone();
+        let config = self.config.clone();
+        let run_id_for_task = run_id.clone();
+        let prompt_for_task = prompt.clone();
+        let handle = tokio::spawn(async move {
+            execute_issue_run_task(IssueRunTaskParams {
+                github_client,
+                config,
+                repo,
+                repository_state_dir,
+                event: event_clone,
+                prompt: prompt_for_task,
+                run_id: run_id_for_task,
+                working_comment_id,
+                cancel_rx,
+                started_unix_ms,
+            })
+            .await
+        });
+        self.active_runs.insert(
+            event.issue_number,
+            ActiveIssueRun {
+                run_id: run_id.clone(),
+                event_key: event.key.clone(),
+                started_unix_ms,
+                started: Instant::now(),
+                cancel_tx,
+                handle,
+            },
+        );
+        if self.state_store.mark_processed(&event.key) {
+            *state_dirty = true;
+        }
+        report.processed_events = report.processed_events.saturating_add(1);
+        self.outbound_log.append(&json!({
+            "timestamp_unix_ms": current_unix_timestamp_ms(),
+            "repo": self.repo.as_slug(),
+            "event_key": event.key,
+            "issue_number": event.issue_number,
+            "run_id": run_id,
+            "status": "run_started",
+            "working_comment_id": working_comment_id,
+        }))?;
+        Ok(())
     }
+
+    async fn execute_issue_command(
+        &mut self,
+        event: &GithubBridgeEvent,
+        command: PiIssueCommand,
+        report: &mut PollCycleReport,
+        state_dirty: &mut bool,
+    ) -> Result<()> {
+        match command {
+            PiIssueCommand::Run { prompt } => {
+                return self
+                    .enqueue_issue_run(event, prompt, report, state_dirty)
+                    .await;
+            }
+            PiIssueCommand::Summarize { focus } => {
+                let prompt = build_summarize_prompt(&self.repo, event, focus.as_deref());
+                return self
+                    .enqueue_issue_run(event, prompt, report, state_dirty)
+                    .await;
+            }
+            PiIssueCommand::Stop => {
+                let message = if let Some(active) = self.active_runs.get(&event.issue_number) {
+                    if *active.cancel_tx.borrow() {
+                        format!(
+                            "Stop has already been requested for run `{}`.",
+                            active.run_id
+                        )
+                    } else {
+                        let _ = active.cancel_tx.send(true);
+                        format!(
+                            "Cancellation requested for run `{}` (event `{}`).",
+                            active.run_id, active.event_key
+                        )
+                    }
+                } else {
+                    "No active run for this issue. Current state is idle.".to_string()
+                };
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "stop",
+                    "status": "acknowledged",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                }))?;
+            }
+            PiIssueCommand::Status => {
+                let status = self.render_issue_status(event.issue_number);
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &status)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "status",
+                    "status": "reported",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                }))?;
+            }
+            PiIssueCommand::Compact => {
+                let session_path =
+                    session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                let compact_report = compact_issue_session(
+                    &session_path,
+                    self.config.session_lock_wait_ms,
+                    self.config.session_lock_stale_ms,
+                )?;
+                let posted = self
+                    .github_client
+                    .create_issue_comment(
+                        event.issue_number,
+                        &format!(
+                            "Session compact complete for issue #{}.\n\nremoved_entries={} retained_entries={} head={}",
+                            event.issue_number,
+                            compact_report.removed_entries,
+                            compact_report.retained_entries,
+                            compact_report
+                                .head_id
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|| "none".to_string())
+                        ),
+                    )
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "compact",
+                    "status": "completed",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                    "compact_report": {
+                        "removed_entries": compact_report.removed_entries,
+                        "retained_entries": compact_report.retained_entries,
+                        "head_id": compact_report.head_id,
+                    }
+                }))?;
+            }
+            PiIssueCommand::Invalid { message } => {
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "invalid",
+                    "status": "usage_reported",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                }))?;
+            }
+        }
+
+        if self.state_store.mark_processed(&event.key) {
+            *state_dirty = true;
+        }
+        report.processed_events = report.processed_events.saturating_add(1);
+        Ok(())
+    }
+
+    fn render_issue_status(&self, issue_number: u64) -> String {
+        let active = self.active_runs.get(&issue_number);
+        let latest = self.latest_runs.get(&issue_number);
+        let state = if active.is_some() { "running" } else { "idle" };
+        let mut lines = vec![format!("rsBot status for issue #{issue_number}: {state}")];
+        if let Some(active) = active {
+            lines.push(format!("active_run_id: {}", active.run_id));
+            lines.push(format!("active_event_key: {}", active.event_key));
+            lines.push(format!(
+                "active_elapsed_ms: {}",
+                active.started.elapsed().as_millis()
+            ));
+            lines.push(format!(
+                "active_started_unix_ms: {}",
+                active.started_unix_ms
+            ));
+            lines.push(format!(
+                "cancellation_requested: {}",
+                if *active.cancel_tx.borrow() {
+                    "true"
+                } else {
+                    "false"
+                }
+            ));
+        } else {
+            lines.push("active_run_id: none".to_string());
+        }
+
+        if let Some(latest) = latest {
+            lines.push(format!("latest_run_id: {}", latest.run_id));
+            lines.push(format!("latest_event_key: {}", latest.event_key));
+            lines.push(format!("latest_status: {}", latest.status));
+            lines.push(format!(
+                "latest_started_unix_ms: {}",
+                latest.started_unix_ms
+            ));
+            lines.push(format!(
+                "latest_completed_unix_ms: {}",
+                latest.completed_unix_ms
+            ));
+            lines.push(format!("latest_duration_ms: {}", latest.duration_ms));
+        } else {
+            lines.push("latest_run_id: none".to_string());
+        }
+        lines.join("\n")
+    }
+}
+
+async fn execute_issue_run_task(params: IssueRunTaskParams) -> RunTaskResult {
+    let IssueRunTaskParams {
+        github_client,
+        config,
+        repo,
+        repository_state_dir,
+        event,
+        prompt,
+        run_id,
+        working_comment_id,
+        cancel_rx,
+        started_unix_ms,
+    } = params;
+    let started = Instant::now();
+    let run_result = run_prompt_for_event(
+        &config,
+        &repo,
+        &repository_state_dir,
+        &event,
+        &prompt,
+        &run_id,
+        cancel_rx,
+    )
+    .await;
+
+    let completed_unix_ms = current_unix_timestamp_ms();
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    let (status, usage, body, error) = match run_result {
+        Ok(run) => {
+            let status = prompt_status_label(run.status).to_string();
+            (
+                status,
+                run.usage.clone(),
+                render_issue_comment_response(&event, &run),
+                None,
+            )
+        }
+        Err(error) => (
+            "failed".to_string(),
+            PromptUsageSummary::default(),
+            render_issue_run_error_comment(&event, &run_id, &error),
+            Some(error.to_string()),
+        ),
+    };
+
+    let posted_comment_id = match github_client
+        .update_issue_comment(working_comment_id, &body)
+        .await
+    {
+        Ok(comment) => Some(comment.id),
+        Err(update_error) => {
+            let fallback_body = format!(
+                "{body}\n\n_(warning: failed to update placeholder comment: {})_",
+                truncate_for_error(&update_error.to_string(), 200)
+            );
+            match github_client
+                .create_issue_comment(event.issue_number, &fallback_body)
+                .await
+            {
+                Ok(comment) => Some(comment.id),
+                Err(_) => None,
+            }
+        }
+    };
+
+    RunTaskResult {
+        issue_number: event.issue_number,
+        event_key: event.key,
+        run_id,
+        started_unix_ms,
+        completed_unix_ms,
+        duration_ms,
+        status,
+        posted_comment_id,
+        model: config.model,
+        usage,
+        error,
+    }
+}
+
+async fn run_prompt_for_event(
+    config: &GithubIssuesBridgeRuntimeConfig,
+    repo: &RepoRef,
+    repository_state_dir: &Path,
+    event: &GithubBridgeEvent,
+    prompt: &str,
+    run_id: &str,
+    mut cancel_rx: watch::Receiver<bool>,
+) -> Result<PromptRunReport> {
+    let session_path = session_path_for_issue(repository_state_dir, event.issue_number);
+    let mut agent = Agent::new(
+        config.client.clone(),
+        AgentConfig {
+            model: config.model.clone(),
+            system_prompt: config.system_prompt.clone(),
+            max_turns: config.max_turns,
+            temperature: Some(0.0),
+            max_tokens: None,
+        },
+    );
+    crate::tools::register_builtin_tools(&mut agent, config.tool_policy.clone());
+
+    let usage = Arc::new(Mutex::new(PromptUsageSummary::default()));
+    agent.subscribe({
+        let usage = usage.clone();
+        move |event| {
+            if let AgentEvent::TurnEnd {
+                usage: turn_usage,
+                request_duration_ms,
+                finish_reason,
+                ..
+            } = event
+            {
+                if let Ok(mut guard) = usage.lock() {
+                    guard.input_tokens = guard.input_tokens.saturating_add(turn_usage.input_tokens);
+                    guard.output_tokens =
+                        guard.output_tokens.saturating_add(turn_usage.output_tokens);
+                    guard.total_tokens = guard.total_tokens.saturating_add(turn_usage.total_tokens);
+                    guard.request_duration_ms = guard
+                        .request_duration_ms
+                        .saturating_add(*request_duration_ms);
+                    guard.finish_reason = finish_reason.clone();
+                }
+            }
+        }
+    });
+
+    let mut session_runtime = Some(initialize_issue_session_runtime(
+        &session_path,
+        &config.system_prompt,
+        config.session_lock_wait_ms,
+        config.session_lock_stale_ms,
+        &mut agent,
+    )?);
+
+    let formatted_prompt = render_event_prompt(repo, event, prompt);
+    let start_index = agent.messages().len();
+    let cancellation_signal = async move {
+        loop {
+            if *cancel_rx.borrow() {
+                break;
+            }
+            if cancel_rx.changed().await.is_err() {
+                break;
+            }
+        }
+    };
+    let status = run_prompt_with_cancellation(
+        &mut agent,
+        &mut session_runtime,
+        &formatted_prompt,
+        config.turn_timeout_ms,
+        cancellation_signal,
+        config.render_options,
+    )
+    .await?;
+    let assistant_reply = if status == PromptRunStatus::Cancelled {
+        "Run cancelled by /pi stop.".to_string()
+    } else if status == PromptRunStatus::TimedOut {
+        "Run timed out before completion.".to_string()
+    } else {
+        collect_assistant_reply(&agent.messages()[start_index..])
+    };
+    let usage = usage
+        .lock()
+        .map_err(|_| anyhow!("prompt usage lock is poisoned"))?
+        .clone();
+    Ok(PromptRunReport {
+        run_id: run_id.to_string(),
+        model: config.model.clone(),
+        status,
+        assistant_reply,
+        usage,
+    })
 }
 
 fn initialize_issue_session_runtime(
@@ -846,7 +1367,7 @@ fn collect_assistant_reply(messages: &[pi_ai::Message]) -> String {
     }
 }
 
-fn render_event_prompt(repo: &RepoRef, event: &GithubBridgeEvent) -> String {
+fn render_event_prompt(repo: &RepoRef, event: &GithubBridgeEvent, prompt: &str) -> String {
     format!(
         "You are responding as rsBot inside GitHub issues.\nRepository: {}\nIssue: #{} ({})\nAuthor: @{}\nEvent: {}\n\nUser message:\n{}\n\nProvide a direct, actionable response suitable for a GitHub issue comment.",
         repo.as_slug(),
@@ -854,7 +1375,7 @@ fn render_event_prompt(repo: &RepoRef, event: &GithubBridgeEvent) -> String {
         event.issue_title,
         event.author_login,
         event.kind.as_str(),
-        event.body
+        prompt
     )
 }
 
@@ -877,6 +1398,153 @@ fn render_issue_comment_response(event: &GithubBridgeEvent, run: &PromptRunRepor
         usage.total_tokens
     ));
     body
+}
+
+fn render_issue_run_error_comment(
+    event: &GithubBridgeEvent,
+    run_id: &str,
+    error: &anyhow::Error,
+) -> String {
+    format!(
+        "rsBot run `{}` failed for event `{}`.\n\nError: `{}`\n\n---\n{EVENT_KEY_MARKER_PREFIX}{}{EVENT_KEY_MARKER_SUFFIX}\n_rsBot run `{}` | status `failed` | model `unavailable` | tokens in/out/total `0/0/0` | cost `unavailable`_",
+        run_id,
+        event.key,
+        truncate_for_error(&error.to_string(), 600),
+        event.key,
+        run_id
+    )
+}
+
+fn event_action_from_body(body: &str) -> EventAction {
+    match parse_pi_issue_command(body) {
+        Some(command) => EventAction::Command(command),
+        None => EventAction::RunPrompt {
+            prompt: body.trim().to_string(),
+        },
+    }
+}
+
+fn parse_pi_issue_command(body: &str) -> Option<PiIssueCommand> {
+    let trimmed = body.trim();
+    let mut pieces = trimmed.split_whitespace();
+    let command_prefix = pieces.next()?;
+    if command_prefix != "/pi" {
+        return None;
+    }
+
+    let args = trimmed[command_prefix.len()..].trim();
+    if args.is_empty() {
+        return Some(PiIssueCommand::Invalid {
+            message: pi_command_usage(),
+        });
+    }
+    let mut parts = args.splitn(2, char::is_whitespace);
+    let command = parts.next().unwrap_or_default();
+    let remainder = parts.next().unwrap_or_default().trim();
+    let parsed = match command {
+        "run" => {
+            if remainder.is_empty() {
+                PiIssueCommand::Invalid {
+                    message: "Usage: /pi run <prompt>".to_string(),
+                }
+            } else {
+                PiIssueCommand::Run {
+                    prompt: remainder.to_string(),
+                }
+            }
+        }
+        "stop" => {
+            if remainder.is_empty() {
+                PiIssueCommand::Stop
+            } else {
+                PiIssueCommand::Invalid {
+                    message: "Usage: /pi stop".to_string(),
+                }
+            }
+        }
+        "status" => {
+            if remainder.is_empty() {
+                PiIssueCommand::Status
+            } else {
+                PiIssueCommand::Invalid {
+                    message: "Usage: /pi status".to_string(),
+                }
+            }
+        }
+        "compact" => {
+            if remainder.is_empty() {
+                PiIssueCommand::Compact
+            } else {
+                PiIssueCommand::Invalid {
+                    message: "Usage: /pi compact".to_string(),
+                }
+            }
+        }
+        "summarize" => {
+            let focus = (!remainder.is_empty()).then(|| remainder.to_string());
+            PiIssueCommand::Summarize { focus }
+        }
+        _ => PiIssueCommand::Invalid {
+            message: format!("Unknown command `{}`.\n\n{}", command, pi_command_usage()),
+        },
+    };
+    Some(parsed)
+}
+
+fn pi_command_usage() -> String {
+    [
+        "Supported `/pi` commands:",
+        "- `/pi run <prompt>`",
+        "- `/pi stop`",
+        "- `/pi status`",
+        "- `/pi compact`",
+        "- `/pi summarize [focus]`",
+    ]
+    .join("\n")
+}
+
+fn build_summarize_prompt(
+    repo: &RepoRef,
+    event: &GithubBridgeEvent,
+    focus: Option<&str>,
+) -> String {
+    match focus {
+        Some(focus) => format!(
+            "Summarize the current GitHub issue thread for {} issue #{} with focus on: {}.\nInclude decisions, open questions, blockers, and immediate next steps.",
+            repo.as_slug(),
+            event.issue_number,
+            focus
+        ),
+        None => format!(
+            "Summarize the current GitHub issue thread for {} issue #{}.\nInclude decisions, open questions, blockers, and immediate next steps.",
+            repo.as_slug(),
+            event.issue_number
+        ),
+    }
+}
+
+fn compact_issue_session(
+    session_path: &Path,
+    lock_wait_ms: u64,
+    lock_stale_ms: u64,
+) -> Result<crate::session::CompactReport> {
+    if let Some(parent) = session_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let mut store = SessionStore::load(session_path)?;
+    store.set_lock_policy(lock_wait_ms.max(1), lock_stale_ms);
+    store.compact_to_lineage(store.head_id())
+}
+
+fn prompt_status_label(status: PromptRunStatus) -> &'static str {
+    match status {
+        PromptRunStatus::Completed => "completed",
+        PromptRunStatus::Cancelled => "cancelled",
+        PromptRunStatus::TimedOut => "timed_out",
+    }
 }
 
 fn collect_issue_events(
@@ -1039,12 +1707,14 @@ mod tests {
     use pi_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, PiAiError};
     use serde_json::json;
     use tempfile::tempdir;
+    use tokio::time::sleep;
 
     use super::{
-        collect_issue_events, extract_footer_event_keys, is_retryable_github_status, retry_delay,
-        sanitize_for_path, session_path_for_issue, GithubApiClient, GithubBridgeEventKind,
-        GithubIssue, GithubIssueComment, GithubIssuesBridgeRuntime,
-        GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore, GithubUser, RepoRef,
+        collect_issue_events, event_action_from_body, extract_footer_event_keys,
+        is_retryable_github_status, parse_pi_issue_command, retry_delay, sanitize_for_path,
+        session_path_for_issue, EventAction, GithubApiClient, GithubBridgeEventKind, GithubIssue,
+        GithubIssueComment, GithubIssuesBridgeRuntime, GithubIssuesBridgeRuntimeConfig,
+        GithubIssuesBridgeStateStore, GithubUser, PiIssueCommand, RepoRef,
     };
     use crate::{tools::ToolPolicy, RenderOptions};
 
@@ -1065,9 +1735,35 @@ mod tests {
         }
     }
 
+    struct SlowReplyClient;
+
+    #[async_trait]
+    impl LlmClient for SlowReplyClient {
+        async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+            sleep(Duration::from_millis(500)).await;
+            Ok(ChatResponse {
+                message: Message::assistant_text("slow bridge reply"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage {
+                    input_tokens: 5,
+                    output_tokens: 3,
+                    total_tokens: 8,
+                },
+            })
+        }
+    }
+
     fn test_bridge_config(base_url: &str, state_dir: &Path) -> GithubIssuesBridgeRuntimeConfig {
+        test_bridge_config_with_client(base_url, state_dir, Arc::new(StaticReplyClient))
+    }
+
+    fn test_bridge_config_with_client(
+        base_url: &str,
+        state_dir: &Path,
+        client: Arc<dyn LlmClient>,
+    ) -> GithubIssuesBridgeRuntimeConfig {
         GithubIssuesBridgeRuntimeConfig {
-            client: Arc::new(StaticReplyClient),
+            client,
             model: "openai/gpt-4o-mini".to_string(),
             system_prompt: "You are rsBot.".to_string(),
             max_turns: 4,
@@ -1179,6 +1875,43 @@ mod tests {
         assert_eq!(sanitize_for_path("owner/repo"), "owner_repo");
     }
 
+    #[test]
+    fn unit_parse_pi_issue_command_supports_known_commands() {
+        assert_eq!(
+            parse_pi_issue_command("/pi run investigate failures"),
+            Some(PiIssueCommand::Run {
+                prompt: "investigate failures".to_string()
+            })
+        );
+        assert_eq!(
+            parse_pi_issue_command("/pi status"),
+            Some(PiIssueCommand::Status)
+        );
+        assert_eq!(
+            parse_pi_issue_command("/pi stop"),
+            Some(PiIssueCommand::Stop)
+        );
+        assert_eq!(
+            parse_pi_issue_command("/pi summarize release blockers"),
+            Some(PiIssueCommand::Summarize {
+                focus: Some("release blockers".to_string())
+            })
+        );
+        assert_eq!(parse_pi_issue_command("plain message"), None);
+    }
+
+    #[test]
+    fn regression_parse_pi_issue_command_rejects_slash_like_inputs() {
+        assert_eq!(parse_pi_issue_command("/pii run nope"), None);
+        let parsed = parse_pi_issue_command("/pi run").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let action = event_action_from_body("/pi unknown");
+        assert!(matches!(
+            action,
+            EventAction::Command(PiIssueCommand::Invalid { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn integration_github_api_client_retries_rate_limits() {
         let server = MockServer::start();
@@ -1235,14 +1968,32 @@ mod tests {
                 "user": {"login":"alice"}
             }]));
         });
-        let post = server.mock(|when, then| {
+        let working_post = server.mock(|when, then| {
             when.method(POST)
                 .path("/repos/owner/repo/issues/7/comments")
-                .body_includes("bridge reply")
-                .body_includes("rsbot-event-key:issue-comment-created:200");
+                .body_includes("rsBot is working on run");
             then.status(201).json_body(json!({
                 "id": 901,
                 "html_url": "https://example.test/comment/901"
+            }));
+        });
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/repos/owner/repo/issues/comments/901")
+                .body_includes("bridge reply")
+                .body_includes("rsbot-event-key:issue-comment-created:200");
+            then.status(200).json_body(json!({
+                "id": 901,
+                "html_url": "https://example.test/comment/901"
+            }));
+        });
+        let fallback_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/7/comments")
+                .body_includes("warning: failed to update placeholder comment");
+            then.status(201).json_body(json!({
+                "id": 999,
+                "html_url": "https://example.test/comment/999"
             }));
         });
 
@@ -1251,13 +2002,17 @@ mod tests {
         let mut runtime = GithubIssuesBridgeRuntime::new(config)
             .await
             .expect("runtime");
-        let report = runtime.poll_once().await.expect("poll");
-        assert_eq!(report.discovered_events, 1);
-        assert_eq!(report.processed_events, 1);
-        assert_eq!(report.failed_events, 0);
-        issues.assert_calls(1);
-        comments.assert_calls(1);
-        post.assert_calls(1);
+        let first = runtime.poll_once().await.expect("first poll");
+        assert_eq!(first.discovered_events, 1);
+        assert_eq!(first.processed_events, 1);
+        assert_eq!(first.failed_events, 0);
+        let second = runtime.poll_once().await.expect("second poll");
+        assert_eq!(second.processed_events, 0);
+        issues.assert_calls(2);
+        comments.assert_calls(2);
+        working_post.assert_calls(1);
+        update.assert_calls(1);
+        fallback_post.assert_calls(0);
 
         let outbound = std::fs::read_to_string(
             temp.path()
@@ -1293,12 +2048,31 @@ mod tests {
                 "user": {"login":"alice"}
             }]));
         });
-        let post = server.mock(|when, then| {
+        let working_post = server.mock(|when, then| {
             when.method(POST)
-                .path("/repos/owner/repo/issues/8/comments");
+                .path("/repos/owner/repo/issues/8/comments")
+                .body_includes("rsBot is working on run");
             then.status(201).json_body(json!({
                 "id": 902,
                 "html_url": "https://example.test/comment/902"
+            }));
+        });
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/repos/owner/repo/issues/comments/902")
+                .body_includes("rsbot-event-key:issue-comment-created:201");
+            then.status(200).json_body(json!({
+                "id": 902,
+                "html_url": "https://example.test/comment/902"
+            }));
+        });
+        let fallback_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/8/comments")
+                .body_includes("warning: failed to update placeholder comment");
+            then.status(201).json_body(json!({
+                "id": 903,
+                "html_url": "https://example.test/comment/903"
             }));
         });
 
@@ -1312,6 +2086,155 @@ mod tests {
         let second = runtime.poll_once().await.expect("second poll");
         assert_eq!(second.processed_events, 0);
         assert_eq!(second.skipped_duplicate_events, 1);
-        post.assert_calls(1);
+        working_post.assert_calls(1);
+        update.assert_calls(1);
+        fallback_post.assert_calls(0);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_commands_status_and_stop_produce_control_comments() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 12,
+                "number": 9,
+                "title": "Control",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues/9/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 301,
+                    "body": "/pi status",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                },
+                {
+                    "id": 302,
+                    "body": "/pi stop",
+                    "created_at": "2026-01-01T00:00:02Z",
+                    "updated_at": "2026-01-01T00:00:02Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let status_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/9/comments")
+                .body_includes("rsBot status for issue #9: idle");
+            then.status(201).json_body(json!({
+                "id": 930,
+                "html_url": "https://example.test/comment/930"
+            }));
+        });
+        let stop_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/9/comments")
+                .body_includes("No active run for this issue. Current state is idle.");
+            then.status(201).json_body(json!({
+                "id": 931,
+                "html_url": "https://example.test/comment/931"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 2);
+        assert_eq!(report.failed_events, 0);
+        status_post.assert_calls(1);
+        stop_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_stop_cancels_active_run_and_updates_state() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 13,
+                "number": 10,
+                "title": "Cancelable",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/10/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 401,
+                    "body": "/pi run long diagnostic run",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                },
+                {
+                    "id": 402,
+                    "body": "/pi stop",
+                    "created_at": "2026-01-01T00:00:02Z",
+                    "updated_at": "2026-01-01T00:00:02Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let working_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/10/comments")
+                .body_includes("rsBot is working on run");
+            then.status(201).json_body(json!({
+                "id": 940,
+                "html_url": "https://example.test/comment/940"
+            }));
+        });
+        let stop_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/10/comments")
+                .body_includes("Cancellation requested for run");
+            then.status(201).json_body(json!({
+                "id": 941,
+                "html_url": "https://example.test/comment/941"
+            }));
+        });
+        let update = server.mock(|when, then| {
+            when.method(PATCH)
+                .path("/repos/owner/repo/issues/comments/940")
+                .body_includes("status `cancelled`")
+                .body_includes("Run cancelled by /pi stop.");
+            then.status(200).json_body(json!({
+                "id": 940,
+                "html_url": "https://example.test/comment/940"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config_with_client(
+            &server.base_url(),
+            temp.path(),
+            Arc::new(SlowReplyClient),
+        );
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let first = runtime.poll_once().await.expect("first poll");
+        assert_eq!(first.processed_events, 2);
+        let second = runtime.poll_once().await.expect("second poll");
+        assert_eq!(second.failed_events, 0);
+        working_post.assert_calls(1);
+        stop_post.assert_calls(1);
+        update.assert_calls(1);
     }
 }
