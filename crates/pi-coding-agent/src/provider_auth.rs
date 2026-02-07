@@ -129,7 +129,7 @@ pub(crate) fn provider_auth_mode_flag(provider: Provider) -> &'static str {
 pub(crate) fn missing_provider_api_key_message(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAi => {
-            "missing OpenAI-compatible API key. Set OPENAI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, PI_API_KEY, --openai-api-key, or --api-key"
+            "missing OpenAI-compatible API key. Set OPENAI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, XAI_API_KEY, PI_API_KEY, --openai-api-key, or --api-key"
         }
         Provider::Anthropic => {
             "missing Anthropic API key. Set ANTHROPIC_API_KEY, PI_API_KEY, --anthropic-api-key, or --api-key"
@@ -157,6 +157,7 @@ pub(crate) fn provider_api_key_candidates_with_inputs(
                 std::env::var("OPENROUTER_API_KEY").ok(),
             ),
             ("GROQ_API_KEY", std::env::var("GROQ_API_KEY").ok()),
+            ("XAI_API_KEY", std::env::var("XAI_API_KEY").ok()),
             ("PI_API_KEY", std::env::var("PI_API_KEY").ok()),
         ],
         Provider::Anthropic => vec![
