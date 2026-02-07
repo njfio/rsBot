@@ -31,6 +31,7 @@ mod skills_commands;
 mod slack;
 mod startup_config;
 mod startup_dispatch;
+mod startup_local_runtime;
 mod startup_preflight;
 mod startup_resolution;
 mod startup_transport_modes;
@@ -227,6 +228,7 @@ pub(crate) use crate::startup_config::{
     build_auth_command_config, build_profile_defaults, default_provider_auth_method,
 };
 use crate::startup_dispatch::run_cli;
+pub(crate) use crate::startup_local_runtime::{run_local_runtime, LocalRuntimeConfig};
 pub(crate) use crate::startup_preflight::execute_startup_preflight;
 pub(crate) use crate::startup_resolution::{
     ensure_non_empty_text, resolve_skill_trust_roots, resolve_system_prompt,
