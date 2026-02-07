@@ -3513,6 +3513,98 @@ fn regression_interactive_skills_trust_revoke_unknown_id_reports_error() {
 }
 
 #[test]
+fn integration_interactive_skills_verify_command_reports_combined_compliance() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+    fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+    fs::write(skills_dir.join("extra.md"), "untracked body").expect("write extra");
+
+    let lock_path = skills_dir.join("skills.lock.json");
+    let trust_path = temp.path().join("trust-roots.json");
+    let skill_sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+    let signature = "c2ln";
+    let signature_sha = format!("{:x}", Sha256::digest(signature.as_bytes()));
+    let lockfile = json!({
+        "schema_version": 1,
+        "entries": [{
+            "name": "focus",
+            "file": "focus.md",
+            "sha256": skill_sha,
+            "source": {
+                "kind": "remote",
+                "url": "https://example.com/focus.md",
+                "expected_sha256": skill_sha,
+                "signing_key_id": "unknown",
+                "signature": signature,
+                "signer_public_key": "YQ==",
+                "signature_sha256": signature_sha
+            }
+        }]
+    });
+    fs::write(&lock_path, format!("{lockfile}\n")).expect("write lock");
+    let trust = json!({
+        "roots": [{
+            "id": "root",
+            "public_key": "YQ==",
+            "revoked": false,
+            "expires_unix": null,
+            "rotated_from": null
+        }]
+    });
+    fs::write(&trust_path, format!("{trust}\n")).expect("write trust");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--skill-trust-root-file",
+        trust_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-verify\n/skills-verify --json\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills verify: status=fail"))
+        .stdout(predicate::str::contains(
+            "sync: expected_entries=1 actual_entries=2",
+        ))
+        .stdout(predicate::str::contains("signature=untrusted key=unknown"))
+        .stdout(predicate::str::contains("\"status\":\"fail\""));
+}
+
+#[test]
+fn regression_interactive_skills_verify_command_invalid_args_report_usage() {
+    let temp = tempdir().expect("tempdir");
+    let skills_dir = temp.path().join("skills");
+    fs::create_dir_all(&skills_dir).expect("mkdir");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--skills-dir",
+        skills_dir.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/skills-verify one two three\n/help skills-verify\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("skills verify error: path="))
+        .stdout(predicate::str::contains(
+            "usage: /skills-verify [lockfile_path] [trust_root_file] [--json]",
+        ));
+}
+
+#[test]
 fn interactive_skills_lock_write_command_writes_default_lockfile() {
     let temp = tempdir().expect("tempdir");
     let skills_dir = temp.path().join("skills");
