@@ -173,6 +173,20 @@ In Slack bridge mode:
 - stale events are skipped based on `--slack-max-event-age-seconds`
 - attached files are downloaded into channel-local attachment folders and surfaced in prompt context
 
+Inspect or repair ChannelStore state for a specific channel:
+
+```bash
+# Inspect one channel
+cargo run -p pi-coding-agent -- \
+  --channel-store-root .pi/channel-store \
+  --channel-store-inspect github/issue-9
+
+# Repair malformed log/context JSONL lines for one channel
+cargo run -p pi-coding-agent -- \
+  --channel-store-root .pi/channel-store \
+  --channel-store-repair slack/C123
+```
+
 Load the base system prompt from a file:
 
 ```bash

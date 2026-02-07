@@ -1,3 +1,4 @@
+mod channel_store;
 mod github_issues;
 mod session;
 mod skills;
@@ -33,6 +34,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
+use crate::channel_store::ChannelStore;
 use crate::session::{SessionImportMode, SessionStore};
 use crate::skills::{
     augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
@@ -568,6 +570,32 @@ struct Cli {
         help = "Behavior when command-file execution hits malformed or failing commands"
     )]
     command_file_error_mode: CliCommandFileErrorMode,
+
+    #[arg(
+        long = "channel-store-root",
+        env = "PI_CHANNEL_STORE_ROOT",
+        default_value = ".pi/channel-store",
+        help = "Base directory for transport-agnostic ChannelStore data"
+    )]
+    channel_store_root: PathBuf,
+
+    #[arg(
+        long = "channel-store-inspect",
+        env = "PI_CHANNEL_STORE_INSPECT",
+        conflicts_with = "channel_store_repair",
+        value_name = "transport/channel_id",
+        help = "Inspect ChannelStore state for one channel and exit"
+    )]
+    channel_store_inspect: Option<String>,
+
+    #[arg(
+        long = "channel-store-repair",
+        env = "PI_CHANNEL_STORE_REPAIR",
+        conflicts_with = "channel_store_inspect",
+        value_name = "transport/channel_id",
+        help = "Repair malformed ChannelStore JSONL files for one channel and exit"
+    )]
+    channel_store_repair: Option<String>,
 
     #[arg(
         long = "github-issues-bridge",
@@ -1959,6 +1987,10 @@ async fn main() -> Result<()> {
         validate_session_file(&cli)?;
         return Ok(());
     }
+    if cli.channel_store_inspect.is_some() || cli.channel_store_repair.is_some() {
+        execute_channel_store_admin_command(&cli)?;
+        return Ok(());
+    }
 
     if cli.no_session && cli.branch_from.is_some() {
         bail!("--branch-from cannot be used together with --no-session");
@@ -2353,6 +2385,61 @@ fn validate_slack_bridge_cli(cli: &Cli) -> Result<()> {
     }
     if cli.slack_retry_base_delay_ms == 0 {
         bail!("--slack-retry-base-delay-ms must be greater than 0");
+    }
+
+    Ok(())
+}
+
+fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
+    if let Some(raw_ref) = cli.channel_store_inspect.as_deref() {
+        let channel_ref = ChannelStore::parse_channel_ref(raw_ref)?;
+        let store = ChannelStore::open(
+            &cli.channel_store_root,
+            &channel_ref.transport,
+            &channel_ref.channel_id,
+        )?;
+        let report = store.inspect()?;
+        println!(
+            "channel store inspect: transport={} channel_id={} dir={} log_records={} context_records={} invalid_log_lines={} invalid_context_lines={} memory_exists={} memory_bytes={}",
+            report.transport,
+            report.channel_id,
+            report.channel_dir.display(),
+            report.log_records,
+            report.context_records,
+            report.invalid_log_lines,
+            report.invalid_context_lines,
+            report.memory_exists,
+            report.memory_bytes,
+        );
+        return Ok(());
+    }
+
+    if let Some(raw_ref) = cli.channel_store_repair.as_deref() {
+        let channel_ref = ChannelStore::parse_channel_ref(raw_ref)?;
+        let store = ChannelStore::open(
+            &cli.channel_store_root,
+            &channel_ref.transport,
+            &channel_ref.channel_id,
+        )?;
+        let report = store.repair()?;
+        println!(
+            "channel store repair: transport={} channel_id={} log_removed_lines={} context_removed_lines={} log_backup_path={} context_backup_path={}",
+            channel_ref.transport,
+            channel_ref.channel_id,
+            report.log_removed_lines,
+            report.context_removed_lines,
+            report
+                .log_backup_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            report
+                .context_backup_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        );
+        return Ok(());
     }
 
     Ok(())
@@ -9936,10 +10023,10 @@ mod tests {
         default_macro_config_path, default_profile_store_path, default_skills_lock_path,
         derive_skills_prune_candidates, encrypt_credential_store_secret, ensure_non_empty_text,
         escape_graph_label, execute_auth_command, execute_branch_alias_command,
-        execute_command_file, execute_doctor_command, execute_macro_command,
-        execute_profile_command, execute_session_bookmark_command, execute_session_diff_command,
-        execute_session_graph_export_command, execute_session_search_command,
-        execute_session_stats_command, execute_skills_list_command,
+        execute_channel_store_admin_command, execute_command_file, execute_doctor_command,
+        execute_macro_command, execute_profile_command, execute_session_bookmark_command,
+        execute_session_diff_command, execute_session_graph_export_command,
+        execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
         execute_skills_sync_command, execute_skills_trust_add_command,
@@ -10139,6 +10226,9 @@ mod tests {
             prompt_file: None,
             command_file: None,
             command_file_error_mode: CliCommandFileErrorMode::FailFast,
+            channel_store_root: PathBuf::from(".pi/channel-store"),
+            channel_store_inspect: None,
+            channel_store_repair: None,
             github_issues_bridge: false,
             github_repo: None,
             github_token: None,
@@ -15789,6 +15879,46 @@ mod tests {
         assert!(error
             .to_string()
             .contains("--slack-bot-token (or PI_SLACK_BOT_TOKEN) is required"));
+    }
+
+    #[test]
+    fn functional_execute_channel_store_admin_inspect_succeeds() {
+        let temp = tempdir().expect("tempdir");
+        let store = crate::channel_store::ChannelStore::open(temp.path(), "github", "issue-1")
+            .expect("open channel store");
+        store
+            .append_log_entry(&crate::channel_store::ChannelLogEntry {
+                timestamp_unix_ms: 1,
+                direction: "inbound".to_string(),
+                event_key: Some("e1".to_string()),
+                source: "github".to_string(),
+                payload: serde_json::json!({"body":"hello"}),
+            })
+            .expect("append log");
+
+        let mut cli = test_cli();
+        cli.channel_store_root = temp.path().to_path_buf();
+        cli.channel_store_inspect = Some("github/issue-1".to_string());
+
+        execute_channel_store_admin_command(&cli).expect("inspect should succeed");
+    }
+
+    #[test]
+    fn regression_execute_channel_store_admin_repair_removes_invalid_lines() {
+        let temp = tempdir().expect("tempdir");
+        let store = crate::channel_store::ChannelStore::open(temp.path(), "slack", "C123")
+            .expect("open channel store");
+        std::fs::write(store.log_path(), "{\"ok\":true}\ninvalid-json-line\n")
+            .expect("seed invalid log");
+
+        let mut cli = test_cli();
+        cli.channel_store_root = temp.path().to_path_buf();
+        cli.channel_store_repair = Some("slack/C123".to_string());
+        execute_channel_store_admin_command(&cli).expect("repair should succeed");
+
+        let report = store.inspect().expect("inspect after repair");
+        assert_eq!(report.invalid_log_lines, 0);
+        assert_eq!(report.log_records, 1);
     }
 
     #[test]

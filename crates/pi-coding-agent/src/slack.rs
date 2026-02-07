@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
+use crate::channel_store::{ChannelLogEntry, ChannelStore};
 use crate::{
     current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, PromptRunStatus,
     RenderOptions, SessionRuntime,
@@ -825,6 +826,23 @@ impl SlackBridgeRuntime {
             "event_id": event.event_id,
             "payload": event.raw_payload,
         }))?;
+        ChannelStore::open(
+            &self.state_dir.join("channel-store"),
+            "slack",
+            &event.channel_id,
+        )?
+        .append_log_entry(&ChannelLogEntry {
+            timestamp_unix_ms: now_unix_ms,
+            direction: "inbound".to_string(),
+            event_key: Some(event.key.clone()),
+            source: "slack".to_string(),
+            payload: json!({
+                "kind": event.kind.as_str(),
+                "event_id": event.event_id,
+                "user_id": event.user_id,
+                "text": event.text,
+            }),
+        })?;
 
         if self.state_store.mark_processed(&event.key) {
             self.state_store.save()?;
@@ -1038,13 +1056,17 @@ async fn run_prompt_for_event(
     slack_client: &SlackApiClient,
     bot_user_id: &str,
 ) -> Result<PromptRunReport> {
-    let channel_dir = channel_workspace_dir(state_dir, &event.channel_id);
-    std::fs::create_dir_all(&channel_dir)
-        .with_context(|| format!("failed to create {}", channel_dir.display()))?;
-    let session_path = session_path_for_channel(state_dir, &event.channel_id);
+    let channel_store =
+        ChannelStore::open(&state_dir.join("channel-store"), "slack", &event.channel_id)?;
+    let session_path = channel_store.session_path();
 
-    let downloaded_files =
-        download_attachments(slack_client, &channel_dir, &event.key, &event.files).await?;
+    let downloaded_files = download_attachments(
+        slack_client,
+        &channel_store.attachments_dir(),
+        &event.key,
+        &event.files,
+    )
+    .await?;
 
     let mut agent = Agent::new(
         config.client.clone(),
@@ -1126,6 +1148,23 @@ async fn run_prompt_for_event(
         .lock()
         .map_err(|_| anyhow!("prompt usage lock is poisoned"))?
         .clone();
+    channel_store.sync_context_from_messages(agent.messages())?;
+    channel_store.append_log_entry(&ChannelLogEntry {
+        timestamp_unix_ms: current_unix_timestamp_ms(),
+        direction: "outbound".to_string(),
+        event_key: Some(event.key.clone()),
+        source: "slack".to_string(),
+        payload: json!({
+            "run_id": run_id,
+            "status": prompt_status_label(status),
+            "assistant_reply": assistant_reply.clone(),
+            "tokens": {
+                "input": usage.input_tokens,
+                "output": usage.output_tokens,
+                "total": usage.total_tokens,
+            }
+        }),
+    })?;
 
     Ok(PromptRunReport {
         run_id: run_id.to_string(),
@@ -1139,7 +1178,7 @@ async fn run_prompt_for_event(
 
 async fn download_attachments(
     slack_client: &SlackApiClient,
-    channel_dir: &Path,
+    attachments_root: &Path,
     event_key: &str,
     files: &[SlackFileAttachment],
 ) -> Result<Vec<DownloadedSlackFile>> {
@@ -1147,9 +1186,7 @@ async fn download_attachments(
         return Ok(Vec::new());
     }
 
-    let file_dir = channel_dir
-        .join("attachments")
-        .join(sanitize_for_path(event_key));
+    let file_dir = attachments_root.join(sanitize_for_path(event_key));
     std::fs::create_dir_all(&file_dir)
         .with_context(|| format!("failed to create {}", file_dir.display()))?;
 
@@ -1526,14 +1563,6 @@ fn sanitize_for_path(raw: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-fn channel_workspace_dir(root: &Path, channel_id: &str) -> PathBuf {
-    root.join("channels").join(sanitize_for_path(channel_id))
-}
-
-fn session_path_for_channel(root: &Path, channel_id: &str) -> PathBuf {
-    channel_workspace_dir(root, channel_id).join("session.jsonl")
 }
 
 #[cfg(test)]
@@ -1958,6 +1987,15 @@ mod tests {
         assert!(post_working.calls() >= 1);
         assert!(post_working_dm.calls() >= 1);
         assert!(update.calls() >= 1);
+
+        let channel_dir = temp.path().join("channel-store/channels/slack/C1");
+        let channel_log =
+            std::fs::read_to_string(channel_dir.join("log.jsonl")).expect("channel log exists");
+        let channel_context = std::fs::read_to_string(channel_dir.join("context.jsonl"))
+            .expect("channel context exists");
+        assert!(channel_log.contains("\"direction\":\"inbound\""));
+        assert!(channel_log.contains("\"direction\":\"outbound\""));
+        assert!(channel_context.contains("slack bridge reply"));
     }
 
     #[tokio::test]

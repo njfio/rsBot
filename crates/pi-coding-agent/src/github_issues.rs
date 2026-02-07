@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
+use crate::channel_store::{ChannelLogEntry, ChannelStore};
 use crate::{
     current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, PromptRunStatus,
     RenderOptions, SessionRuntime,
@@ -854,6 +855,16 @@ impl GithubIssuesBridgeRuntime {
         report: &mut PollCycleReport,
         state_dirty: &mut bool,
     ) -> Result<()> {
+        self.append_channel_log(
+            event,
+            "inbound",
+            json!({
+                "kind": event.kind.as_str(),
+                "author_login": event.author_login,
+                "body": event.body,
+                "action": format!("{action:?}"),
+            }),
+        )?;
         match action {
             EventAction::RunPrompt { prompt } => {
                 self.enqueue_issue_run(event, prompt, report, state_dirty)
@@ -1150,6 +1161,26 @@ impl GithubIssuesBridgeRuntime {
         }
         lines.join("\n")
     }
+
+    fn append_channel_log(
+        &self,
+        event: &GithubBridgeEvent,
+        direction: &str,
+        payload: Value,
+    ) -> Result<()> {
+        let store = ChannelStore::open(
+            &self.repository_state_dir.join("channel-store"),
+            "github",
+            &format!("issue-{}", event.issue_number),
+        )?;
+        store.append_log_entry(&ChannelLogEntry {
+            timestamp_unix_ms: current_unix_timestamp_ms(),
+            direction: direction.to_string(),
+            event_key: Some(event.key.clone()),
+            source: "github".to_string(),
+            payload,
+        })
+    }
 }
 
 async fn execute_issue_run_task(params: IssueRunTaskParams) -> RunTaskResult {
@@ -1242,7 +1273,12 @@ async fn run_prompt_for_event(
     run_id: &str,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<PromptRunReport> {
-    let session_path = session_path_for_issue(repository_state_dir, event.issue_number);
+    let channel_store = ChannelStore::open(
+        &repository_state_dir.join("channel-store"),
+        "github",
+        &format!("issue-{}", event.issue_number),
+    )?;
+    let session_path = channel_store.session_path();
     let mut agent = Agent::new(
         config.client.clone(),
         AgentConfig {
@@ -1320,6 +1356,23 @@ async fn run_prompt_for_event(
         .lock()
         .map_err(|_| anyhow!("prompt usage lock is poisoned"))?
         .clone();
+    channel_store.sync_context_from_messages(agent.messages())?;
+    channel_store.append_log_entry(&ChannelLogEntry {
+        timestamp_unix_ms: current_unix_timestamp_ms(),
+        direction: "outbound".to_string(),
+        event_key: Some(event.key.clone()),
+        source: "github".to_string(),
+        payload: json!({
+            "run_id": run_id,
+            "status": prompt_status_label(status),
+            "assistant_reply": assistant_reply.clone(),
+            "tokens": {
+                "input": usage.input_tokens,
+                "output": usage.output_tokens,
+                "total": usage.total_tokens,
+            }
+        }),
+    })?;
     Ok(PromptRunReport {
         run_id: run_id.to_string(),
         model: config.model.clone(),
@@ -2021,6 +2074,17 @@ mod tests {
         )
         .expect("read outbound log");
         assert!(outbound.contains("\"posted_comment_id\":901"));
+        let channel_dir = temp
+            .path()
+            .join("owner__repo")
+            .join("channel-store/channels/github/issue-7");
+        let channel_log =
+            std::fs::read_to_string(channel_dir.join("log.jsonl")).expect("channel log exists");
+        let channel_context = std::fs::read_to_string(channel_dir.join("context.jsonl"))
+            .expect("channel context exists");
+        assert!(channel_log.contains("\"direction\":\"inbound\""));
+        assert!(channel_log.contains("\"direction\":\"outbound\""));
+        assert!(channel_context.contains("bridge reply"));
     }
 
     #[tokio::test]
