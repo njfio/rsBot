@@ -14,6 +14,7 @@ mod github_issues;
 mod macro_profile_commands;
 mod model_catalog;
 mod observability_loggers;
+mod orchestrator;
 mod provider_auth;
 mod provider_client;
 mod provider_credentials;
@@ -78,8 +79,9 @@ use crate::channel_store::ChannelStore;
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
 pub(crate) use crate::cli_types::{
-    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOsSandboxMode,
-    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOrchestratorMode,
+    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
+    CliWebhookSignatureAlgorithm,
 };
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
@@ -141,6 +143,9 @@ pub(crate) use crate::model_catalog::{
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
+#[cfg(test)]
+pub(crate) use crate::orchestrator::parse_numbered_plan_steps;
+pub(crate) use crate::orchestrator::run_plan_first_prompt;
 pub(crate) use crate::provider_auth::{
     configured_provider_auth_method, configured_provider_auth_method_from_config,
     missing_provider_api_key_message, provider_api_key_candidates,

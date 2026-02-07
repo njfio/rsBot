@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser};
 
 use crate::{
-    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOsSandboxMode,
-    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOrchestratorMode,
+    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
+    CliWebhookSignatureAlgorithm,
 };
 
 #[derive(Debug, Parser)]
@@ -409,6 +410,23 @@ pub(crate) struct Cli {
 
     #[arg(long, help = "Run one prompt and exit")]
     pub(crate) prompt: Option<String>,
+
+    #[arg(
+        long = "orchestrator-mode",
+        env = "PI_ORCHESTRATOR_MODE",
+        value_enum,
+        default_value_t = CliOrchestratorMode::Off,
+        help = "Optional orchestration mode for prompt execution"
+    )]
+    pub(crate) orchestrator_mode: CliOrchestratorMode,
+
+    #[arg(
+        long = "orchestrator-max-plan-steps",
+        env = "PI_ORCHESTRATOR_MAX_PLAN_STEPS",
+        default_value_t = 8,
+        help = "Maximum planner step count allowed in plan-first orchestrator mode"
+    )]
+    pub(crate) orchestrator_max_plan_steps: usize,
 
     #[arg(
         long,

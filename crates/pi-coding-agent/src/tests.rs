@@ -39,48 +39,50 @@ use super::{
     is_retryable_provider_error, load_branch_aliases, load_credential_store, load_macro_file,
     load_profile_store, load_session_bookmarks, load_trust_root_records, parse_auth_command,
     parse_branch_alias_command, parse_command, parse_command_file, parse_doctor_command_args,
-    parse_integration_auth_command, parse_macro_command, parse_profile_command,
-    parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
-    parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
-    parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-    parse_skills_trust_mutation_args, parse_skills_verify_args, parse_trust_rotation_spec,
-    parse_trusted_root_spec, percentile_duration_ms, provider_auth_capability,
-    refresh_provider_access_token, render_audit_summary, render_command_help, render_doctor_report,
-    render_doctor_report_json, render_help_overview, render_macro_list, render_macro_show,
-    render_profile_diffs, render_profile_list, render_profile_show, render_session_diff,
-    render_session_graph_dot, render_session_graph_mermaid, render_session_stats,
-    render_session_stats_json, render_skills_list, render_skills_lock_diff_drift,
-    render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
-    render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
-    render_skills_verify_report, resolve_credential_store_encryption_mode, resolve_fallback_models,
-    resolve_prompt_input, resolve_prunable_skill_file_name, resolve_secret_from_cli_or_store_id,
+    parse_integration_auth_command, parse_macro_command, parse_numbered_plan_steps,
+    parse_profile_command, parse_sandbox_command_tokens, parse_session_bookmark_command,
+    parse_session_diff_args, parse_session_search_args, parse_session_stats_args,
+    parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
+    parse_skills_trust_list_args, parse_skills_trust_mutation_args, parse_skills_verify_args,
+    parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
+    provider_auth_capability, refresh_provider_access_token, render_audit_summary,
+    render_command_help, render_doctor_report, render_doctor_report_json, render_help_overview,
+    render_macro_list, render_macro_show, render_profile_diffs, render_profile_list,
+    render_profile_show, render_session_diff, render_session_graph_dot,
+    render_session_graph_mermaid, render_session_stats, render_session_stats_json,
+    render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+    render_skills_lock_write_success, render_skills_search, render_skills_show,
+    render_skills_sync_drift_details, render_skills_trust_list, render_skills_verify_report,
+    resolve_credential_store_encryption_mode, resolve_fallback_models, resolve_prompt_input,
+    resolve_prunable_skill_file_name, resolve_secret_from_cli_or_store_id,
     resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
     resolve_store_backed_provider_credential, resolve_system_prompt, run_doctor_checks,
-    run_prompt_with_cancellation, save_branch_aliases, save_credential_store, save_macro_file,
-    save_profile_store, save_session_bookmarks, search_session_entries,
-    session_bookmark_path_for_session, session_message_preview, shared_lineage_prefix_depth,
-    stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
-    trust_record_status, unknown_command_message, validate_branch_alias_name,
+    run_plan_first_prompt, run_prompt_with_cancellation, save_branch_aliases,
+    save_credential_store, save_macro_file, save_profile_store, save_session_bookmarks,
+    search_session_entries, session_bookmark_path_for_session, session_message_preview,
+    shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file, tool_audit_event_json,
+    tool_policy_to_json, trust_record_status, unknown_command_message, validate_branch_alias_name,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
     validate_profile_name, validate_session_file, validate_skills_prune_file_name,
     validate_slack_bridge_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile,
     Cli, CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode,
-    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
-    CliWebhookSignatureAlgorithm, ClientRoute, CommandAction, CommandExecutionContext,
-    CommandFileEntry, CommandFileReport, CredentialStoreData, CredentialStoreEncryptionMode,
-    DoctorCheckResult, DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus,
-    DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord,
-    MacroCommand, MacroFile, ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus,
-    PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions,
-    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
-    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
-    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
-    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
-    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
+    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
+    CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
+    DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
+    IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
+    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
+    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, SessionBookmarkCommand,
+    SessionBookmarkFile, SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime,
+    SessionSearchArgs, SessionStats, SessionStatsOutputFormat, SkillsPruneMode,
+    SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus,
+    SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord,
+    BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
+    PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE,
+    SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
+    SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
@@ -233,6 +235,8 @@ fn test_cli() -> Cli {
         stream_output: true,
         stream_delay_ms: 0,
         prompt: None,
+        orchestrator_mode: CliOrchestratorMode::Off,
+        orchestrator_max_plan_steps: 8,
         prompt_file: None,
         command_file: None,
         command_file_error_mode: CliCommandFileErrorMode::FailFast,
@@ -496,6 +500,26 @@ fn functional_cli_model_catalog_flags_accept_overrides() {
     assert_eq!(cli.model_catalog_cache, PathBuf::from("/tmp/catalog.json"));
     assert!(cli.model_catalog_offline);
     assert_eq!(cli.model_catalog_stale_after_hours, 48);
+}
+
+#[test]
+fn unit_cli_orchestrator_flags_default_values_are_stable() {
+    let cli = Cli::parse_from(["pi-rs"]);
+    assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::Off);
+    assert_eq!(cli.orchestrator_max_plan_steps, 8);
+}
+
+#[test]
+fn functional_cli_orchestrator_flags_accept_overrides() {
+    let cli = Cli::parse_from([
+        "pi-rs",
+        "--orchestrator-mode",
+        "plan-first",
+        "--orchestrator-max-plan-steps",
+        "5",
+    ]);
+    assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::PlanFirst);
+    assert_eq!(cli.orchestrator_max_plan_steps, 5);
 }
 
 #[test]
@@ -6956,6 +6980,104 @@ async fn integration_run_prompt_with_cancellation_completes_when_not_cancelled()
     assert_eq!(agent.messages().len(), 3);
     assert_eq!(agent.messages()[1].role, MessageRole::User);
     assert_eq!(agent.messages()[2].role, MessageRole::Assistant);
+}
+
+#[test]
+fn unit_parse_numbered_plan_steps_accepts_deterministic_step_format() {
+    let steps = parse_numbered_plan_steps("1. Gather context\n2) Implement fix\n3. Verify");
+    assert_eq!(
+        steps,
+        vec![
+            "Gather context".to_string(),
+            "Implement fix".to_string(),
+            "Verify".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn functional_run_plan_first_prompt_executes_planner_then_executor() {
+    let planner_response = ChatResponse {
+        message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let executor_response = ChatResponse {
+        message: Message::assistant_text("final implementation response"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(planner_response),
+                Ok(executor_response),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    run_plan_first_prompt(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+    )
+    .await
+    .expect("plan-first prompt should succeed");
+
+    assert_eq!(agent.messages().len(), 5);
+    assert_eq!(
+        agent
+            .messages()
+            .last()
+            .expect("assistant response")
+            .text_content(),
+        "final implementation response"
+    );
+}
+
+#[tokio::test]
+async fn regression_run_plan_first_prompt_rejects_overlong_plans_before_executor_phase() {
+    let planner_response = ChatResponse {
+        message: Message::assistant_text("1. Step one\n2. Step two\n3. Step three"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let executor_response = ChatResponse {
+        message: Message::assistant_text("should not execute"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(planner_response),
+                Ok(executor_response),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    let error = run_plan_first_prompt(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        2,
+    )
+    .await
+    .expect_err("overlong plan should fail");
+    assert!(error.to_string().contains("planner produced 3 steps"));
+    assert!(!agent
+        .messages()
+        .iter()
+        .any(|message| message.text_content() == "should not execute"));
 }
 
 #[tokio::test]

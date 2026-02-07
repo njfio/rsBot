@@ -69,14 +69,26 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     }
 
     if let Some(prompt) = resolve_prompt_input(cli)? {
-        run_prompt(
-            &mut agent,
-            &mut session_runtime,
-            &prompt,
-            cli.turn_timeout_ms,
-            render_options,
-        )
-        .await?;
+        if cli.orchestrator_mode == CliOrchestratorMode::PlanFirst {
+            run_plan_first_prompt(
+                &mut agent,
+                &mut session_runtime,
+                &prompt,
+                cli.turn_timeout_ms,
+                render_options,
+                cli.orchestrator_max_plan_steps,
+            )
+            .await?;
+        } else {
+            run_prompt(
+                &mut agent,
+                &mut session_runtime,
+                &prompt,
+                cli.turn_timeout_ms,
+                render_options,
+            )
+            .await?;
+        }
         return Ok(());
     }
 
