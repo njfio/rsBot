@@ -260,6 +260,73 @@ pub(crate) fn parse_doctor_command_args(command_args: &str) -> Result<DoctorComm
     bail!("{DOCTOR_USAGE}");
 }
 
+pub(crate) fn provider_key_env_var(provider: Provider) -> &'static str {
+    match provider {
+        Provider::OpenAi => "OPENAI_API_KEY",
+        Provider::Anthropic => "ANTHROPIC_API_KEY",
+        Provider::Google => "GEMINI_API_KEY",
+    }
+}
+
+pub(crate) fn provider_key_present(cli: &Cli, provider: Provider) -> bool {
+    match provider {
+        Provider::OpenAi => {
+            resolve_api_key(vec![cli.openai_api_key.clone(), cli.api_key.clone()]).is_some()
+        }
+        Provider::Anthropic => {
+            resolve_api_key(vec![cli.anthropic_api_key.clone(), cli.api_key.clone()]).is_some()
+        }
+        Provider::Google => {
+            resolve_api_key(vec![cli.google_api_key.clone(), cli.api_key.clone()]).is_some()
+        }
+    }
+}
+
+pub(crate) fn build_doctor_command_config(
+    cli: &Cli,
+    primary_model: &ModelRef,
+    fallback_models: &[ModelRef],
+    skills_lock_path: &Path,
+) -> DoctorCommandConfig {
+    let mut providers = Vec::new();
+    providers.push(primary_model.provider);
+    for model in fallback_models {
+        if !providers.contains(&model.provider) {
+            providers.push(model.provider);
+        }
+    }
+    providers.sort_by_key(|provider| provider.as_str().to_string());
+    let provider_keys = providers
+        .into_iter()
+        .map(|provider| {
+            let auth_mode = configured_provider_auth_method(cli, provider);
+            let capability = provider_auth_capability(provider, auth_mode);
+            DoctorProviderKeyStatus {
+                provider_kind: provider,
+                provider: provider.as_str().to_string(),
+                key_env_var: provider_key_env_var(provider).to_string(),
+                present: provider_key_present(cli, provider),
+                auth_mode,
+                mode_supported: capability.supported,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    DoctorCommandConfig {
+        model: format!(
+            "{}/{}",
+            primary_model.provider.as_str(),
+            primary_model.model
+        ),
+        provider_keys,
+        session_enabled: !cli.no_session,
+        session_path: cli.session.clone(),
+        skills_dir: cli.skills_dir.clone(),
+        skills_lock_path: skills_lock_path.to_path_buf(),
+        trust_root_path: cli.skill_trust_root_file.clone(),
+    }
+}
+
 pub(crate) fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheckResult> {
     let mut checks = Vec::new();
     checks.push(DoctorCheckResult {
