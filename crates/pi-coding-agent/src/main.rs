@@ -32,6 +32,7 @@ mod slack;
 mod startup_config;
 mod startup_dispatch;
 mod startup_local_runtime;
+mod startup_model_resolution;
 mod startup_preflight;
 mod startup_prompt_composition;
 mod startup_resolution;
@@ -231,6 +232,7 @@ pub(crate) use crate::startup_config::{
 };
 use crate::startup_dispatch::run_cli;
 pub(crate) use crate::startup_local_runtime::{run_local_runtime, LocalRuntimeConfig};
+pub(crate) use crate::startup_model_resolution::{resolve_startup_models, StartupModelResolution};
 pub(crate) use crate::startup_preflight::execute_startup_preflight;
 pub(crate) use crate::startup_prompt_composition::compose_startup_system_prompt;
 pub(crate) use crate::startup_resolution::{

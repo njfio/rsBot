@@ -5,13 +5,10 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    if cli.no_session && cli.branch_from.is_some() {
-        bail!("--branch-from cannot be used together with --no-session");
-    }
-
-    let model_ref = ModelRef::parse(&cli.model)
-        .map_err(|error| anyhow!("failed to parse --model '{}': {error}", cli.model))?;
-    let fallback_model_refs = resolve_fallback_models(&cli, &model_ref)?;
+    let StartupModelResolution {
+        model_ref,
+        fallback_model_refs,
+    } = resolve_startup_models(&cli)?;
 
     let client = build_client_with_fallbacks(&cli, &model_ref, &fallback_model_refs)?;
     let skills_bootstrap = run_startup_skills_bootstrap(&cli).await?;
