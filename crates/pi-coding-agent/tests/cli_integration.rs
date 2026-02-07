@@ -481,6 +481,87 @@ fn regression_startup_rejects_tool_incompatible_model_from_catalog() {
 }
 
 #[test]
+fn integration_prompt_plan_first_mode_emits_trace_and_executes_two_phases() {
+    let server = MockServer::start();
+    let planner = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "1. Inspect requirements\n2. Apply implementation"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "prepare release plan",
+        "--orchestrator-mode",
+        "plan-first",
+        "--orchestrator-max-plan-steps",
+        "4",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "orchestrator trace: mode=plan-first phase=planner approved_steps=2",
+        ))
+        .stdout(predicate::str::contains(
+            "orchestrator trace: mode=plan-first phase=executor",
+        ));
+
+    planner.assert_calls(2);
+}
+
+#[test]
+fn regression_prompt_plan_first_mode_fails_closed_on_overlong_plan() {
+    let server = MockServer::start();
+    let planner = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "1. Step one\n2. Step two\n3. Step three"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "prepare release plan",
+        "--orchestrator-mode",
+        "plan-first",
+        "--orchestrator-max-plan-steps",
+        "2",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("planner produced 3 steps"));
+
+    planner.assert_calls(1);
+}
+
+#[test]
 fn integration_interactive_session_search_command_finds_results_across_branches() {
     let temp = tempdir().expect("tempdir");
     let session = temp.path().join("session-search.jsonl");

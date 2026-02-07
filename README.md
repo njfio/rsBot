@@ -182,6 +182,15 @@ Run one prompt:
 cargo run -p pi-coding-agent -- --prompt "Summarize src/lib.rs"
 ```
 
+Run one prompt with plan-first orchestration:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --prompt "Summarize src/lib.rs" \
+  --orchestrator-mode plan-first \
+  --orchestrator-max-plan-steps 8
+```
+
 Run one prompt from a file:
 
 ```bash

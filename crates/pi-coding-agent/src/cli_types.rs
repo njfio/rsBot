@@ -119,3 +119,9 @@ pub(crate) enum CliCredentialStoreEncryptionMode {
     None,
     Keyed,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliOrchestratorMode {
+    Off,
+    PlanFirst,
+}
