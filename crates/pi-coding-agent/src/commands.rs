@@ -1,4 +1,8 @@
 use super::*;
+use crate::session_commands::{
+    execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
+    parse_session_diff_args, parse_session_stats_args,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandAction {
