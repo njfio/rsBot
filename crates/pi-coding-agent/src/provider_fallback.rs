@@ -205,3 +205,297 @@ pub(crate) fn build_client_with_fallbacks(
     };
     Ok(Arc::new(FallbackRoutingClient::new(routes, event_sink)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    #[derive(Clone)]
+    struct MockLlmClient {
+        complete_responses: Arc<Mutex<VecDeque<Result<ChatResponse, PiAiError>>>>,
+        stream_responses: Arc<Mutex<VecDeque<MockStreamResponse>>>,
+        observed_models: Arc<Mutex<Vec<String>>>,
+    }
+
+    struct MockStreamResponse {
+        deltas: Vec<String>,
+        result: Result<ChatResponse, PiAiError>,
+    }
+
+    impl MockLlmClient {
+        fn new(
+            complete_responses: Vec<Result<ChatResponse, PiAiError>>,
+            stream_responses: Vec<MockStreamResponse>,
+        ) -> Self {
+            Self {
+                complete_responses: Arc::new(Mutex::new(complete_responses.into())),
+                stream_responses: Arc::new(Mutex::new(stream_responses.into())),
+                observed_models: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn observed_models(&self) -> Vec<String> {
+            self.observed_models
+                .lock()
+                .expect("observed models lock")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for MockLlmClient {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, PiAiError> {
+            self.observed_models
+                .lock()
+                .expect("observed models lock")
+                .push(request.model);
+
+            self.complete_responses
+                .lock()
+                .expect("complete responses lock")
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(PiAiError::InvalidResponse(
+                        "no mock complete response configured".to_string(),
+                    ))
+                })
+        }
+
+        async fn complete_with_stream(
+            &self,
+            request: ChatRequest,
+            on_delta: Option<StreamDeltaHandler>,
+        ) -> Result<ChatResponse, PiAiError> {
+            self.observed_models
+                .lock()
+                .expect("observed models lock")
+                .push(request.model);
+
+            let next = self
+                .stream_responses
+                .lock()
+                .expect("stream responses lock")
+                .pop_front()
+                .unwrap_or(MockStreamResponse {
+                    deltas: Vec::new(),
+                    result: Err(PiAiError::InvalidResponse(
+                        "no mock stream response configured".to_string(),
+                    )),
+                });
+
+            if let Some(handler) = on_delta {
+                for delta in next.deltas {
+                    handler(delta);
+                }
+            }
+
+            next.result
+        }
+    }
+
+    fn assistant_text_response(text: &str) -> ChatResponse {
+        ChatResponse {
+            message: Message::assistant_text(text),
+            finish_reason: Some("stop".to_string()),
+            usage: Default::default(),
+        }
+    }
+
+    fn test_request() -> ChatRequest {
+        ChatRequest {
+            model: "placeholder-model".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: Vec::new(),
+            max_tokens: None,
+            temperature: None,
+        }
+    }
+
+    #[test]
+    fn unit_retryable_provider_error_classifies_expected_statuses() {
+        assert!(is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 408,
+            body: "timeout".to_string(),
+        }));
+        assert!(is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 409,
+            body: "conflict".to_string(),
+        }));
+        assert!(is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 425,
+            body: "too early".to_string(),
+        }));
+        assert!(is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 429,
+            body: "rate limit".to_string(),
+        }));
+        assert!(is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 500,
+            body: "server error".to_string(),
+        }));
+        assert!(!is_retryable_provider_error(&PiAiError::HttpStatus {
+            status: 401,
+            body: "unauthorized".to_string(),
+        }));
+        assert!(!is_retryable_provider_error(&PiAiError::InvalidResponse(
+            "bad payload".to_string(),
+        )));
+    }
+
+    #[tokio::test]
+    async fn functional_fallback_client_handoffs_on_retryable_error_and_emits_event() {
+        let primary = MockLlmClient::new(
+            vec![Err(PiAiError::HttpStatus {
+                status: 429,
+                body: "rate limited".to_string(),
+            })],
+            Vec::new(),
+        );
+        let secondary =
+            MockLlmClient::new(vec![Ok(assistant_text_response("fallback ok"))], Vec::new());
+
+        let events = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let events_sink = events.clone();
+        let event_sink: FallbackEventSink =
+            Arc::new(move |event| events_sink.lock().expect("events lock").push(event));
+
+        let router = FallbackRoutingClient::new(
+            vec![
+                ClientRoute {
+                    provider: Provider::OpenAi,
+                    model: "gpt-4o-mini".to_string(),
+                    client: Arc::new(primary.clone()),
+                },
+                ClientRoute {
+                    provider: Provider::Anthropic,
+                    model: "claude-sonnet-4-20250514".to_string(),
+                    client: Arc::new(secondary.clone()),
+                },
+            ],
+            Some(event_sink),
+        );
+
+        let response = router
+            .complete(test_request())
+            .await
+            .expect("fallback route should succeed");
+
+        assert_eq!(response.message.text_content(), "fallback ok");
+        assert_eq!(primary.observed_models(), vec!["gpt-4o-mini".to_string()]);
+        assert_eq!(
+            secondary.observed_models(),
+            vec!["claude-sonnet-4-20250514".to_string()]
+        );
+
+        let events = events.lock().expect("events lock");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "provider_fallback");
+        assert_eq!(events[0]["from_model"], "openai/gpt-4o-mini");
+        assert_eq!(events[0]["to_model"], "anthropic/claude-sonnet-4-20250514");
+        assert_eq!(events[0]["error_kind"], "http_status");
+        assert_eq!(events[0]["status"], 429);
+        assert_eq!(events[0]["fallback_index"], 1);
+    }
+
+    #[tokio::test]
+    async fn integration_streaming_fallback_preserves_deltas_and_returns_response() {
+        let primary = MockLlmClient::new(
+            Vec::new(),
+            vec![MockStreamResponse {
+                deltas: Vec::new(),
+                result: Err(PiAiError::HttpStatus {
+                    status: 503,
+                    body: "service unavailable".to_string(),
+                }),
+            }],
+        );
+        let secondary = MockLlmClient::new(
+            Vec::new(),
+            vec![MockStreamResponse {
+                deltas: vec!["Hel".to_string(), "lo".to_string()],
+                result: Ok(assistant_text_response("Hello")),
+            }],
+        );
+
+        let router = FallbackRoutingClient::new(
+            vec![
+                ClientRoute {
+                    provider: Provider::OpenAi,
+                    model: "gpt-4o-mini".to_string(),
+                    client: Arc::new(primary.clone()),
+                },
+                ClientRoute {
+                    provider: Provider::Google,
+                    model: "gemini-2.5-pro".to_string(),
+                    client: Arc::new(secondary.clone()),
+                },
+            ],
+            None,
+        );
+
+        let deltas = Arc::new(Mutex::new(String::new()));
+        let delta_sink = deltas.clone();
+        let sink: StreamDeltaHandler = Arc::new(move |delta| {
+            delta_sink.lock().expect("delta lock").push_str(&delta);
+        });
+
+        let response = router
+            .complete_with_stream(test_request(), Some(sink))
+            .await
+            .expect("streaming fallback should succeed");
+
+        assert_eq!(deltas.lock().expect("delta lock").as_str(), "Hello");
+        assert_eq!(response.message.text_content(), "Hello");
+        assert_eq!(primary.observed_models(), vec!["gpt-4o-mini".to_string()]);
+        assert_eq!(
+            secondary.observed_models(),
+            vec!["gemini-2.5-pro".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_non_retryable_error_does_not_fallback_to_next_route() {
+        let primary = MockLlmClient::new(
+            vec![Err(PiAiError::HttpStatus {
+                status: 401,
+                body: "unauthorized".to_string(),
+            })],
+            Vec::new(),
+        );
+        let secondary =
+            MockLlmClient::new(vec![Ok(assistant_text_response("unexpected"))], Vec::new());
+
+        let router = FallbackRoutingClient::new(
+            vec![
+                ClientRoute {
+                    provider: Provider::OpenAi,
+                    model: "gpt-4o-mini".to_string(),
+                    client: Arc::new(primary.clone()),
+                },
+                ClientRoute {
+                    provider: Provider::Anthropic,
+                    model: "claude-sonnet-4-20250514".to_string(),
+                    client: Arc::new(secondary.clone()),
+                },
+            ],
+            None,
+        );
+
+        let error = router
+            .complete(test_request())
+            .await
+            .expect_err("non-retryable failure should be returned directly");
+
+        match error {
+            PiAiError::HttpStatus { status, body } => {
+                assert_eq!(status, 401);
+                assert!(body.contains("unauthorized"));
+            }
+            other => panic!("expected HttpStatus error, got {other:?}"),
+        }
+
+        assert_eq!(primary.observed_models(), vec!["gpt-4o-mini".to_string()]);
+        assert!(secondary.observed_models().is_empty());
+    }
+}
