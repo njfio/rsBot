@@ -187,6 +187,31 @@ cargo run -p pi-coding-agent -- \
   --channel-store-repair slack/C123
 ```
 
+Run the autonomous events scheduler (immediate, one-shot, periodic):
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --events-runner \
+  --events-dir .pi/events \
+  --events-state-path .pi/events/state.json \
+  --events-poll-interval-ms 1000 \
+  --events-queue-limit 64
+```
+
+Queue a webhook-triggered immediate event from a payload file (debounced):
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --events-dir .pi/events \
+  --events-state-path .pi/events/state.json \
+  --event-webhook-ingest-file /tmp/webhook.json \
+  --event-webhook-channel slack/C123 \
+  --event-webhook-prompt-prefix "Handle incoming deployment signal." \
+  --event-webhook-debounce-key deploy-hook \
+  --event-webhook-debounce-window-seconds 60
+```
+
 Load the base system prompt from a file:
 
 ```bash

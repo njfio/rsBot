@@ -617,6 +617,7 @@ struct DownloadedSlackFile {
 #[derive(Debug)]
 struct ActiveChannelRun {
     handle: tokio::task::JoinHandle<RunTaskResult>,
+    _cancel_tx: watch::Sender<bool>,
 }
 
 #[derive(Debug)]
@@ -881,7 +882,7 @@ impl SlackBridgeRuntime {
                 )
                 .await?;
 
-            let (_cancel_tx, cancel_rx) = watch::channel(false);
+            let (cancel_tx, cancel_rx) = watch::channel(false);
             let started_unix_ms = current_unix_timestamp_ms();
             let task_params = SlackRunTaskParams {
                 slack_client: self.slack_client.clone(),
@@ -896,8 +897,13 @@ impl SlackBridgeRuntime {
             };
             let handle = tokio::spawn(async move { execute_channel_run_task(task_params).await });
 
-            self.active_runs
-                .insert(channel, ActiveChannelRun { handle });
+            self.active_runs.insert(
+                channel,
+                ActiveChannelRun {
+                    handle,
+                    _cancel_tx: cancel_tx,
+                },
+            );
             report.queued_events = report.queued_events.saturating_add(1);
         }
 
