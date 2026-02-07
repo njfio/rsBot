@@ -1064,6 +1064,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/macro save quick-check /tmp/quick-check.commands",
     },
     CommandSpec {
+        name: "/auth",
+        usage: "/auth <login|status|logout> ...",
+        description: "Manage provider authentication state and credential-store sessions",
+        details:
+            "Supports login/status/logout flows with provider capability checks and optional --json output.",
+        example: "/auth status openai --json",
+    },
+    CommandSpec {
         name: "/profile",
         usage: "/profile <save|load|list|show|delete> ...",
         description: "Manage model, policy, and session default profiles",
@@ -1150,6 +1158,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-verify",
     "/branches",
     "/macro",
+    "/auth",
     "/profile",
     "/branch-alias",
     "/session-bookmark",
@@ -1189,6 +1198,36 @@ struct CommandExecutionContext<'a> {
     session_import_mode: SessionImportMode,
     profile_defaults: &'a ProfileDefaults,
     skills_command_config: &'a SkillsSyncCommandConfig,
+    auth_command_config: &'a AuthCommandConfig,
+}
+
+#[derive(Debug, Clone)]
+struct AuthCommandConfig {
+    credential_store: PathBuf,
+    credential_store_key: Option<String>,
+    credential_store_encryption: CredentialStoreEncryptionMode,
+    api_key: Option<String>,
+    openai_api_key: Option<String>,
+    anthropic_api_key: Option<String>,
+    google_api_key: Option<String>,
+    openai_auth_mode: ProviderAuthMethod,
+    anthropic_auth_mode: ProviderAuthMethod,
+    google_auth_mode: ProviderAuthMethod,
+}
+
+fn build_auth_command_config(cli: &Cli) -> AuthCommandConfig {
+    AuthCommandConfig {
+        credential_store: cli.credential_store.clone(),
+        credential_store_key: cli.credential_store_key.clone(),
+        credential_store_encryption: resolve_credential_store_encryption_mode(cli),
+        api_key: cli.api_key.clone(),
+        openai_api_key: cli.openai_api_key.clone(),
+        anthropic_api_key: cli.anthropic_api_key.clone(),
+        google_api_key: cli.google_api_key.clone(),
+        openai_auth_mode: cli.openai_auth_mode.into(),
+        anthropic_auth_mode: cli.anthropic_auth_mode.into(),
+        google_auth_mode: cli.google_auth_mode.into(),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1868,11 +1907,13 @@ async fn main() -> Result<()> {
         ),
     };
     let profile_defaults = build_profile_defaults(&cli);
+    let auth_command_config = build_auth_command_config(&cli);
     let command_context = CommandExecutionContext {
         tool_policy_json: &tool_policy_json,
         session_import_mode: cli.session_import_mode.into(),
         profile_defaults: &profile_defaults,
         skills_command_config: &skills_sync_command_config,
+        auth_command_config: &auth_command_config,
     };
     let interactive_config = InteractiveRuntimeConfig {
         turn_timeout_ms: cli.turn_timeout_ms,
@@ -2289,6 +2330,7 @@ fn execute_command_file(
             command_context.session_import_mode,
             command_context.profile_defaults,
             command_context.skills_command_config,
+            command_context.auth_command_config,
         ) {
             Ok(CommandAction::Continue) => {
                 report.succeeded += 1;
@@ -2399,6 +2441,7 @@ async fn run_interactive(
                 config.command_context.session_import_mode,
                 config.command_context.profile_defaults,
                 config.command_context.skills_command_config,
+                config.command_context.auth_command_config,
             )? == CommandAction::Exit
             {
                 break;
@@ -2553,6 +2596,18 @@ fn handle_command(
         },
         auth: ProfileAuthDefaults::default(),
     };
+    let auth_command_config = AuthCommandConfig {
+        credential_store: PathBuf::from(".pi/credentials.json"),
+        credential_store_key: None,
+        credential_store_encryption: CredentialStoreEncryptionMode::None,
+        api_key: None,
+        openai_api_key: None,
+        anthropic_api_key: None,
+        google_api_key: None,
+        openai_auth_mode: ProviderAuthMethod::ApiKey,
+        anthropic_auth_mode: ProviderAuthMethod::ApiKey,
+        google_auth_mode: ProviderAuthMethod::ApiKey,
+    };
     handle_command_with_session_import_mode(
         command,
         agent,
@@ -2561,9 +2616,11 @@ fn handle_command(
         SessionImportMode::Merge,
         &profile_defaults,
         &skills_command_config,
+        &auth_command_config,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_command_with_session_import_mode(
     command: &str,
     agent: &mut Agent,
@@ -2572,6 +2629,7 @@ fn handle_command_with_session_import_mode(
     session_import_mode: SessionImportMode,
     profile_defaults: &ProfileDefaults,
     skills_command_config: &SkillsSyncCommandConfig,
+    auth_command_config: &AuthCommandConfig,
 ) -> Result<CommandAction> {
     let skills_dir = skills_command_config.skills_dir.as_path();
     let default_skills_lock_path = skills_command_config.default_lock_path.as_path();
@@ -2962,6 +3020,7 @@ fn handle_command_with_session_import_mode(
                     session_import_mode,
                     profile_defaults,
                     skills_command_config,
+                    auth_command_config,
                 }
             )
         );
@@ -2979,6 +3038,14 @@ fn handle_command_with_session_import_mode(
         println!(
             "{}",
             execute_profile_command(command_args, &profile_path, profile_defaults)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/auth" {
+        println!(
+            "{}",
+            execute_auth_command(auth_command_config, command_args)
         );
         return Ok(CommandAction::Continue);
     }
@@ -4150,6 +4217,875 @@ fn execute_doctor_command(
     }
 }
 
+const AUTH_USAGE: &str = "usage: /auth <login|status|logout> ...";
+const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
+const AUTH_STATUS_USAGE: &str = "usage: /auth status [provider] [--json]";
+const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AuthCommand {
+    Login {
+        provider: Provider,
+        mode: Option<ProviderAuthMethod>,
+        json_output: bool,
+    },
+    Status {
+        provider: Option<Provider>,
+        json_output: bool,
+    },
+    Logout {
+        provider: Provider,
+        json_output: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AuthStatusRow {
+    provider: String,
+    mode: String,
+    mode_supported: bool,
+    available: bool,
+    state: String,
+    source: String,
+    reason: String,
+    expires_unix: Option<u64>,
+    revoked: bool,
+}
+
+fn parse_auth_provider(token: &str) -> Result<Provider> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "openai" => Ok(Provider::OpenAi),
+        "anthropic" => Ok(Provider::Anthropic),
+        "google" => Ok(Provider::Google),
+        other => bail!(
+            "unknown provider '{}'; supported providers: openai, anthropic, google",
+            other
+        ),
+    }
+}
+
+fn parse_provider_auth_method_token(token: &str) -> Result<ProviderAuthMethod> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "api-key" | "api_key" => Ok(ProviderAuthMethod::ApiKey),
+        "oauth-token" | "oauth_token" => Ok(ProviderAuthMethod::OauthToken),
+        "adc" => Ok(ProviderAuthMethod::Adc),
+        "session-token" | "session_token" => Ok(ProviderAuthMethod::SessionToken),
+        other => bail!(
+            "unknown auth mode '{}'; supported modes: api-key, oauth-token, adc, session-token",
+            other
+        ),
+    }
+}
+
+fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        bail!("{AUTH_USAGE}");
+    }
+
+    match tokens[0] {
+        "login" => {
+            if tokens.len() < 2 {
+                bail!("{AUTH_LOGIN_USAGE}");
+            }
+            let provider = parse_auth_provider(tokens[1])?;
+            let mut mode = None;
+            let mut json_output = false;
+
+            let mut index = 2usize;
+            while index < tokens.len() {
+                match tokens[index] {
+                    "--json" => {
+                        json_output = true;
+                        index += 1;
+                    }
+                    "--mode" => {
+                        if mode.is_some() {
+                            bail!("duplicate --mode flag; {AUTH_LOGIN_USAGE}");
+                        }
+                        let Some(raw_mode) = tokens.get(index + 1) else {
+                            bail!("missing auth mode after --mode; {AUTH_LOGIN_USAGE}");
+                        };
+                        mode = Some(parse_provider_auth_method_token(raw_mode)?);
+                        index += 2;
+                    }
+                    other => bail!("unexpected argument '{}'; {AUTH_LOGIN_USAGE}", other),
+                }
+            }
+
+            Ok(AuthCommand::Login {
+                provider,
+                mode,
+                json_output,
+            })
+        }
+        "status" => {
+            let mut provider: Option<Provider> = None;
+            let mut json_output = false;
+            for token in tokens.into_iter().skip(1) {
+                if token == "--json" {
+                    json_output = true;
+                    continue;
+                }
+                if provider.is_some() {
+                    bail!("unexpected argument '{}'; {AUTH_STATUS_USAGE}", token);
+                }
+                provider = Some(parse_auth_provider(token)?);
+            }
+            Ok(AuthCommand::Status {
+                provider,
+                json_output,
+            })
+        }
+        "logout" => {
+            if tokens.len() < 2 {
+                bail!("{AUTH_LOGOUT_USAGE}");
+            }
+            let provider = parse_auth_provider(tokens[1])?;
+            let mut json_output = false;
+            for token in tokens.into_iter().skip(2) {
+                if token == "--json" {
+                    json_output = true;
+                } else {
+                    bail!("unexpected argument '{}'; {AUTH_LOGOUT_USAGE}", token);
+                }
+            }
+            Ok(AuthCommand::Logout {
+                provider,
+                json_output,
+            })
+        }
+        other => bail!("unknown subcommand '{}'; {AUTH_USAGE}", other),
+    }
+}
+
+fn provider_api_key_candidates_from_auth_config(
+    config: &AuthCommandConfig,
+    provider: Provider,
+) -> Vec<(&'static str, Option<String>)> {
+    provider_api_key_candidates_with_inputs(
+        provider,
+        config.api_key.clone(),
+        config.openai_api_key.clone(),
+        config.anthropic_api_key.clone(),
+        config.google_api_key.clone(),
+    )
+}
+
+fn provider_login_access_token_candidates(
+    provider: Provider,
+) -> Vec<(&'static str, Option<String>)> {
+    match provider {
+        Provider::OpenAi => vec![
+            (
+                "PI_AUTH_ACCESS_TOKEN",
+                std::env::var("PI_AUTH_ACCESS_TOKEN").ok(),
+            ),
+            (
+                "OPENAI_ACCESS_TOKEN",
+                std::env::var("OPENAI_ACCESS_TOKEN").ok(),
+            ),
+        ],
+        Provider::Anthropic => vec![
+            (
+                "PI_AUTH_ACCESS_TOKEN",
+                std::env::var("PI_AUTH_ACCESS_TOKEN").ok(),
+            ),
+            (
+                "ANTHROPIC_ACCESS_TOKEN",
+                std::env::var("ANTHROPIC_ACCESS_TOKEN").ok(),
+            ),
+        ],
+        Provider::Google => vec![
+            (
+                "PI_AUTH_ACCESS_TOKEN",
+                std::env::var("PI_AUTH_ACCESS_TOKEN").ok(),
+            ),
+            (
+                "GOOGLE_ACCESS_TOKEN",
+                std::env::var("GOOGLE_ACCESS_TOKEN").ok(),
+            ),
+        ],
+    }
+}
+
+fn provider_login_refresh_token_candidates(
+    provider: Provider,
+) -> Vec<(&'static str, Option<String>)> {
+    match provider {
+        Provider::OpenAi => vec![
+            (
+                "PI_AUTH_REFRESH_TOKEN",
+                std::env::var("PI_AUTH_REFRESH_TOKEN").ok(),
+            ),
+            (
+                "OPENAI_REFRESH_TOKEN",
+                std::env::var("OPENAI_REFRESH_TOKEN").ok(),
+            ),
+        ],
+        Provider::Anthropic => vec![
+            (
+                "PI_AUTH_REFRESH_TOKEN",
+                std::env::var("PI_AUTH_REFRESH_TOKEN").ok(),
+            ),
+            (
+                "ANTHROPIC_REFRESH_TOKEN",
+                std::env::var("ANTHROPIC_REFRESH_TOKEN").ok(),
+            ),
+        ],
+        Provider::Google => vec![
+            (
+                "PI_AUTH_REFRESH_TOKEN",
+                std::env::var("PI_AUTH_REFRESH_TOKEN").ok(),
+            ),
+            (
+                "GOOGLE_REFRESH_TOKEN",
+                std::env::var("GOOGLE_REFRESH_TOKEN").ok(),
+            ),
+        ],
+    }
+}
+
+fn provider_login_expires_candidates(provider: Provider) -> Vec<(&'static str, Option<String>)> {
+    match provider {
+        Provider::OpenAi => vec![
+            (
+                "PI_AUTH_EXPIRES_UNIX",
+                std::env::var("PI_AUTH_EXPIRES_UNIX").ok(),
+            ),
+            (
+                "OPENAI_AUTH_EXPIRES_UNIX",
+                std::env::var("OPENAI_AUTH_EXPIRES_UNIX").ok(),
+            ),
+        ],
+        Provider::Anthropic => vec![
+            (
+                "PI_AUTH_EXPIRES_UNIX",
+                std::env::var("PI_AUTH_EXPIRES_UNIX").ok(),
+            ),
+            (
+                "ANTHROPIC_AUTH_EXPIRES_UNIX",
+                std::env::var("ANTHROPIC_AUTH_EXPIRES_UNIX").ok(),
+            ),
+        ],
+        Provider::Google => vec![
+            (
+                "PI_AUTH_EXPIRES_UNIX",
+                std::env::var("PI_AUTH_EXPIRES_UNIX").ok(),
+            ),
+            (
+                "GOOGLE_AUTH_EXPIRES_UNIX",
+                std::env::var("GOOGLE_AUTH_EXPIRES_UNIX").ok(),
+            ),
+        ],
+    }
+}
+
+fn resolve_auth_login_expires_unix(provider: Provider) -> Result<Option<u64>> {
+    for (source, value) in provider_login_expires_candidates(provider) {
+        let Some(value) = value else {
+            continue;
+        };
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed = trimmed
+            .parse::<u64>()
+            .with_context(|| format!("invalid unix timestamp in {}", source))?;
+        return Ok(Some(parsed));
+    }
+    Ok(None)
+}
+
+fn execute_auth_login_command(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    mode_override: Option<ProviderAuthMethod>,
+    json_output: bool,
+) -> String {
+    let mode = mode_override
+        .unwrap_or_else(|| configured_provider_auth_method_from_config(config, provider));
+    let capability = provider_auth_capability(provider, mode);
+    if !capability.supported {
+        let reason = format!(
+            "auth mode '{}' is not supported for provider '{}': {}",
+            mode.as_str(),
+            provider.as_str(),
+            capability.reason
+        );
+        if json_output {
+            return serde_json::json!({
+                "command": "auth.login",
+                "provider": provider.as_str(),
+                "mode": mode.as_str(),
+                "status": "error",
+                "reason": reason,
+            })
+            .to_string();
+        }
+        return format!(
+            "auth login error: provider={} mode={} error={reason}",
+            provider.as_str(),
+            mode.as_str()
+        );
+    }
+
+    match mode {
+        ProviderAuthMethod::ApiKey => {
+            match resolve_non_empty_secret_with_source(
+                provider_api_key_candidates_from_auth_config(config, provider),
+            ) {
+                Some((_secret, source)) => {
+                    if json_output {
+                        return serde_json::json!({
+                            "command": "auth.login",
+                            "provider": provider.as_str(),
+                            "mode": mode.as_str(),
+                            "status": "ready",
+                            "source": source,
+                            "persisted": false,
+                        })
+                        .to_string();
+                    }
+                    format!(
+                        "auth login: provider={} mode={} status=ready source={} persisted=false",
+                        provider.as_str(),
+                        mode.as_str(),
+                        source
+                    )
+                }
+                None => {
+                    let reason = missing_provider_api_key_message(provider).to_string();
+                    if json_output {
+                        return serde_json::json!({
+                            "command": "auth.login",
+                            "provider": provider.as_str(),
+                            "mode": mode.as_str(),
+                            "status": "error",
+                            "reason": reason,
+                        })
+                        .to_string();
+                    }
+                    format!(
+                        "auth login error: provider={} mode={} error={reason}",
+                        provider.as_str(),
+                        mode.as_str()
+                    )
+                }
+            }
+        }
+        ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken => {
+            let Some((access_token, access_source)) = resolve_non_empty_secret_with_source(
+                provider_login_access_token_candidates(provider),
+            ) else {
+                let reason = "missing access token for login. Set PI_AUTH_ACCESS_TOKEN or provider-specific *_ACCESS_TOKEN env var".to_string();
+                if json_output {
+                    return serde_json::json!({
+                        "command": "auth.login",
+                        "provider": provider.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "error",
+                        "reason": reason,
+                    })
+                    .to_string();
+                }
+                return format!(
+                    "auth login error: provider={} mode={} error={reason}",
+                    provider.as_str(),
+                    mode.as_str()
+                );
+            };
+
+            let refresh_token = resolve_non_empty_secret_with_source(
+                provider_login_refresh_token_candidates(provider),
+            )
+            .map(|(secret, _source)| secret);
+            let expires_unix = match resolve_auth_login_expires_unix(provider)
+                .map(|value| value.unwrap_or_else(|| current_unix_timestamp().saturating_add(3600)))
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    if json_output {
+                        return serde_json::json!({
+                            "command": "auth.login",
+                            "provider": provider.as_str(),
+                            "mode": mode.as_str(),
+                            "status": "error",
+                            "reason": error.to_string(),
+                        })
+                        .to_string();
+                    }
+                    return format!(
+                        "auth login error: provider={} mode={} error={error}",
+                        provider.as_str(),
+                        mode.as_str()
+                    );
+                }
+            };
+
+            let mut store = match load_credential_store(
+                &config.credential_store,
+                config.credential_store_encryption,
+                config.credential_store_key.as_deref(),
+            ) {
+                Ok(store) => store,
+                Err(error) => {
+                    if json_output {
+                        return serde_json::json!({
+                            "command": "auth.login",
+                            "provider": provider.as_str(),
+                            "mode": mode.as_str(),
+                            "status": "error",
+                            "reason": error.to_string(),
+                        })
+                        .to_string();
+                    }
+                    return format!(
+                        "auth login error: provider={} mode={} error={error}",
+                        provider.as_str(),
+                        mode.as_str()
+                    );
+                }
+            };
+            store.providers.insert(
+                provider.as_str().to_string(),
+                ProviderCredentialStoreRecord {
+                    auth_method: mode,
+                    access_token: Some(access_token),
+                    refresh_token,
+                    expires_unix: Some(expires_unix),
+                    revoked: false,
+                },
+            );
+            if let Err(error) = save_credential_store(
+                &config.credential_store,
+                &store,
+                config.credential_store_key.as_deref(),
+            ) {
+                if json_output {
+                    return serde_json::json!({
+                        "command": "auth.login",
+                        "provider": provider.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "error",
+                        "reason": error.to_string(),
+                    })
+                    .to_string();
+                }
+                return format!(
+                    "auth login error: provider={} mode={} error={error}",
+                    provider.as_str(),
+                    mode.as_str()
+                );
+            }
+
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.login",
+                    "provider": provider.as_str(),
+                    "mode": mode.as_str(),
+                    "status": "saved",
+                    "source": access_source,
+                    "credential_store": config.credential_store.display().to_string(),
+                    "expires_unix": expires_unix,
+                })
+                .to_string();
+            }
+            format!(
+                "auth login: provider={} mode={} status=saved source={} credential_store={} expires_unix={}",
+                provider.as_str(),
+                mode.as_str(),
+                access_source,
+                config.credential_store.display(),
+                expires_unix
+            )
+        }
+        ProviderAuthMethod::Adc => {
+            let reason = "adc login flow is not implemented".to_string();
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.login",
+                    "provider": provider.as_str(),
+                    "mode": mode.as_str(),
+                    "status": "error",
+                    "reason": reason,
+                })
+                .to_string();
+            }
+            format!(
+                "auth login error: provider={} mode={} error={reason}",
+                provider.as_str(),
+                mode.as_str()
+            )
+        }
+    }
+}
+
+fn auth_status_row_for_provider(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    store: Option<&CredentialStoreData>,
+    store_error: Option<&str>,
+) -> AuthStatusRow {
+    let mode = configured_provider_auth_method_from_config(config, provider);
+    let capability = provider_auth_capability(provider, mode);
+    if !capability.supported {
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: false,
+            available: false,
+            state: "unsupported_mode".to_string(),
+            source: "none".to_string(),
+            reason: capability.reason.to_string(),
+            expires_unix: None,
+            revoked: false,
+        };
+    }
+
+    if mode == ProviderAuthMethod::ApiKey {
+        if let Some((_secret, source)) = resolve_non_empty_secret_with_source(
+            provider_api_key_candidates_from_auth_config(config, provider),
+        ) {
+            return AuthStatusRow {
+                provider: provider.as_str().to_string(),
+                mode: mode.as_str().to_string(),
+                mode_supported: true,
+                available: true,
+                state: "ready".to_string(),
+                source,
+                reason: "api_key_available".to_string(),
+                expires_unix: None,
+                revoked: false,
+            };
+        }
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: "missing_api_key".to_string(),
+            source: "none".to_string(),
+            reason: missing_provider_api_key_message(provider).to_string(),
+            expires_unix: None,
+            revoked: false,
+        };
+    }
+
+    if let Some(error) = store_error {
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: "store_error".to_string(),
+            source: "none".to_string(),
+            reason: error.to_string(),
+            expires_unix: None,
+            revoked: false,
+        };
+    }
+
+    let Some(store) = store else {
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: "missing_credential_store".to_string(),
+            source: "none".to_string(),
+            reason: "credential store is unavailable".to_string(),
+            expires_unix: None,
+            revoked: false,
+        };
+    };
+
+    let Some(entry) = store.providers.get(provider.as_str()) else {
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: "missing_credential".to_string(),
+            source: "credential_store".to_string(),
+            reason: "credential store entry is missing".to_string(),
+            expires_unix: None,
+            revoked: false,
+        };
+    };
+    if entry.auth_method != mode {
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: "mode_mismatch".to_string(),
+            source: "credential_store".to_string(),
+            reason: format!(
+                "credential store entry mode '{}' does not match configured mode '{}'",
+                entry.auth_method.as_str(),
+                mode.as_str()
+            ),
+            expires_unix: entry.expires_unix,
+            revoked: entry.revoked,
+        };
+    }
+    if entry.revoked {
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: "revoked".to_string(),
+            source: "credential_store".to_string(),
+            reason: "credential has been revoked".to_string(),
+            expires_unix: entry.expires_unix,
+            revoked: true,
+        };
+    }
+    if entry
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+    {
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: "missing_access_token".to_string(),
+            source: "credential_store".to_string(),
+            reason: "credential store entry has no access token".to_string(),
+            expires_unix: entry.expires_unix,
+            revoked: false,
+        };
+    }
+
+    let now_unix = current_unix_timestamp();
+    if entry
+        .expires_unix
+        .map(|value| value <= now_unix)
+        .unwrap_or(false)
+    {
+        let refresh_pending = entry
+            .refresh_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some();
+        return AuthStatusRow {
+            provider: provider.as_str().to_string(),
+            mode: mode.as_str().to_string(),
+            mode_supported: true,
+            available: false,
+            state: if refresh_pending {
+                "expired_refresh_pending".to_string()
+            } else {
+                "expired".to_string()
+            },
+            source: "credential_store".to_string(),
+            reason: if refresh_pending {
+                "access token expired; refresh will run on next provider use".to_string()
+            } else {
+                "access token expired and no refresh token is available".to_string()
+            },
+            expires_unix: entry.expires_unix,
+            revoked: false,
+        };
+    }
+
+    AuthStatusRow {
+        provider: provider.as_str().to_string(),
+        mode: mode.as_str().to_string(),
+        mode_supported: true,
+        available: true,
+        state: "ready".to_string(),
+        source: "credential_store".to_string(),
+        reason: "credential available".to_string(),
+        expires_unix: entry.expires_unix,
+        revoked: false,
+    }
+}
+
+fn execute_auth_status_command(
+    config: &AuthCommandConfig,
+    provider: Option<Provider>,
+    json_output: bool,
+) -> String {
+    let providers = if let Some(provider) = provider {
+        vec![provider]
+    } else {
+        vec![Provider::OpenAi, Provider::Anthropic, Provider::Google]
+    };
+
+    let requires_store = providers.iter().any(|provider| {
+        configured_provider_auth_method_from_config(config, *provider) != ProviderAuthMethod::ApiKey
+    });
+    let (store, store_error) = if requires_store {
+        match load_credential_store(
+            &config.credential_store,
+            config.credential_store_encryption,
+            config.credential_store_key.as_deref(),
+        ) {
+            Ok(store) => (Some(store), None),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+
+    let rows = providers
+        .iter()
+        .map(|provider| {
+            auth_status_row_for_provider(config, *provider, store.as_ref(), store_error.as_deref())
+        })
+        .collect::<Vec<_>>();
+    let available = rows.iter().filter(|row| row.available).count();
+    let unavailable = rows.len().saturating_sub(available);
+
+    if json_output {
+        return serde_json::json!({
+            "command": "auth.status",
+            "providers": rows.len(),
+            "available": available,
+            "unavailable": unavailable,
+            "entries": rows,
+        })
+        .to_string();
+    }
+
+    let mut lines = vec![format!(
+        "auth status: providers={} available={} unavailable={}",
+        rows.len(),
+        available,
+        unavailable
+    )];
+    for row in rows {
+        lines.push(format!(
+            "auth provider: name={} mode={} mode_supported={} available={} state={} source={} reason={} expires_unix={} revoked={}",
+            row.provider,
+            row.mode,
+            row.mode_supported,
+            row.available,
+            row.state,
+            row.source,
+            row.reason,
+            row.expires_unix
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.revoked
+        ));
+    }
+    lines.join("\n")
+}
+
+fn execute_auth_logout_command(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    json_output: bool,
+) -> String {
+    let mut store = match load_credential_store(
+        &config.credential_store,
+        config.credential_store_encryption,
+        config.credential_store_key.as_deref(),
+    ) {
+        Ok(store) => store,
+        Err(error) => {
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.logout",
+                    "provider": provider.as_str(),
+                    "status": "error",
+                    "reason": error.to_string(),
+                })
+                .to_string();
+            }
+            return format!(
+                "auth logout error: provider={} error={error}",
+                provider.as_str()
+            );
+        }
+    };
+
+    let status = if let Some(entry) = store.providers.get_mut(provider.as_str()) {
+        entry.revoked = true;
+        entry.access_token = None;
+        entry.refresh_token = None;
+        entry.expires_unix = None;
+        "revoked"
+    } else {
+        "not_found"
+    };
+
+    if status == "revoked" {
+        if let Err(error) = save_credential_store(
+            &config.credential_store,
+            &store,
+            config.credential_store_key.as_deref(),
+        ) {
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.logout",
+                    "provider": provider.as_str(),
+                    "status": "error",
+                    "reason": error.to_string(),
+                })
+                .to_string();
+            }
+            return format!(
+                "auth logout error: provider={} error={error}",
+                provider.as_str()
+            );
+        }
+    }
+
+    if json_output {
+        return serde_json::json!({
+            "command": "auth.logout",
+            "provider": provider.as_str(),
+            "status": status,
+            "credential_store": config.credential_store.display().to_string(),
+        })
+        .to_string();
+    }
+
+    format!(
+        "auth logout: provider={} status={} credential_store={}",
+        provider.as_str(),
+        status,
+        config.credential_store.display()
+    )
+}
+
+fn execute_auth_command(config: &AuthCommandConfig, command_args: &str) -> String {
+    let command = match parse_auth_command(command_args) {
+        Ok(command) => command,
+        Err(error) => return format!("auth error: {error}"),
+    };
+
+    match command {
+        AuthCommand::Login {
+            provider,
+            mode,
+            json_output,
+        } => execute_auth_login_command(config, provider, mode, json_output),
+        AuthCommand::Status {
+            provider,
+            json_output,
+        } => execute_auth_status_command(config, provider, json_output),
+        AuthCommand::Logout {
+            provider,
+            json_output,
+        } => execute_auth_logout_command(config, provider, json_output),
+    }
+}
+
 const MACRO_SCHEMA_VERSION: u32 = 1;
 const MACRO_USAGE: &str = "usage: /macro <save|run|list|show|delete> ...";
 
@@ -4486,6 +5422,7 @@ fn execute_macro_command(
                     command_context.session_import_mode,
                     command_context.profile_defaults,
                     command_context.skills_command_config,
+                    command_context.auth_command_config,
                 ) {
                     Ok(CommandAction::Continue) => {}
                     Ok(CommandAction::Exit) => {
@@ -7943,6 +8880,17 @@ fn configured_provider_auth_method(cli: &Cli, provider: Provider) -> ProviderAut
     }
 }
 
+fn configured_provider_auth_method_from_config(
+    config: &AuthCommandConfig,
+    provider: Provider,
+) -> ProviderAuthMethod {
+    match provider {
+        Provider::OpenAi => config.openai_auth_mode,
+        Provider::Anthropic => config.anthropic_auth_mode,
+        Provider::Google => config.google_auth_mode,
+    }
+}
+
 fn provider_auth_mode_flag(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAi => "--openai-auth-mode",
@@ -7965,31 +8913,47 @@ fn missing_provider_api_key_message(provider: Provider) -> &'static str {
     }
 }
 
-fn provider_api_key_candidates(
-    cli: &Cli,
+fn provider_api_key_candidates_with_inputs(
     provider: Provider,
+    api_key: Option<String>,
+    openai_api_key: Option<String>,
+    anthropic_api_key: Option<String>,
+    google_api_key: Option<String>,
 ) -> Vec<(&'static str, Option<String>)> {
     match provider {
         Provider::OpenAi => vec![
-            ("--openai-api-key", cli.openai_api_key.clone()),
-            ("--api-key", cli.api_key.clone()),
+            ("--openai-api-key", openai_api_key),
+            ("--api-key", api_key),
             ("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").ok()),
             ("PI_API_KEY", std::env::var("PI_API_KEY").ok()),
         ],
         Provider::Anthropic => vec![
-            ("--anthropic-api-key", cli.anthropic_api_key.clone()),
-            ("--api-key", cli.api_key.clone()),
+            ("--anthropic-api-key", anthropic_api_key),
+            ("--api-key", api_key),
             ("ANTHROPIC_API_KEY", std::env::var("ANTHROPIC_API_KEY").ok()),
             ("PI_API_KEY", std::env::var("PI_API_KEY").ok()),
         ],
         Provider::Google => vec![
-            ("--google-api-key", cli.google_api_key.clone()),
-            ("--api-key", cli.api_key.clone()),
+            ("--google-api-key", google_api_key),
+            ("--api-key", api_key),
             ("GEMINI_API_KEY", std::env::var("GEMINI_API_KEY").ok()),
             ("GOOGLE_API_KEY", std::env::var("GOOGLE_API_KEY").ok()),
             ("PI_API_KEY", std::env::var("PI_API_KEY").ok()),
         ],
     }
+}
+
+fn provider_api_key_candidates(
+    cli: &Cli,
+    provider: Provider,
+) -> Vec<(&'static str, Option<String>)> {
+    provider_api_key_candidates_with_inputs(
+        provider,
+        cli.api_key.clone(),
+        cli.openai_api_key.clone(),
+        cli.anthropic_api_key.clone(),
+        cli.google_api_key.clone(),
+    )
 }
 
 fn resolve_non_empty_secret_with_source(
@@ -8472,16 +9436,17 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        apply_trust_root_mutations, branch_alias_path_for_session, build_doctor_command_config,
-        build_profile_defaults, build_provider_client, build_tool_policy,
-        command_file_error_mode_label, compute_session_entry_depths, compute_session_stats,
-        current_unix_timestamp, decrypt_credential_store_secret, default_macro_config_path,
-        default_profile_store_path, default_skills_lock_path, derive_skills_prune_candidates,
-        encrypt_credential_store_secret, ensure_non_empty_text, escape_graph_label,
-        execute_branch_alias_command, execute_command_file, execute_doctor_command,
-        execute_macro_command, execute_profile_command, execute_session_bookmark_command,
-        execute_session_diff_command, execute_session_graph_export_command,
-        execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+        apply_trust_root_mutations, branch_alias_path_for_session, build_auth_command_config,
+        build_doctor_command_config, build_profile_defaults, build_provider_client,
+        build_tool_policy, command_file_error_mode_label, compute_session_entry_depths,
+        compute_session_stats, current_unix_timestamp, decrypt_credential_store_secret,
+        default_macro_config_path, default_profile_store_path, default_skills_lock_path,
+        derive_skills_prune_candidates, encrypt_credential_store_secret, ensure_non_empty_text,
+        escape_graph_label, execute_auth_command, execute_branch_alias_command,
+        execute_command_file, execute_doctor_command, execute_macro_command,
+        execute_profile_command, execute_session_bookmark_command, execute_session_diff_command,
+        execute_session_graph_export_command, execute_session_search_command,
+        execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
         execute_skills_sync_command, execute_skills_trust_add_command,
@@ -8490,8 +9455,8 @@ mod tests {
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
         initialize_session, is_retryable_provider_error, load_branch_aliases,
         load_credential_store, load_macro_file, load_profile_store, load_session_bookmarks,
-        load_trust_root_records, parse_branch_alias_command, parse_command, parse_command_file,
-        parse_doctor_command_args, parse_macro_command, parse_profile_command,
+        load_trust_root_records, parse_auth_command, parse_branch_alias_command, parse_command,
+        parse_command_file, parse_doctor_command_args, parse_macro_command, parse_profile_command,
         parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
         parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
         parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
@@ -8514,10 +9479,10 @@ mod tests {
         shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
         tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
         validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
-        validate_profile_name, validate_session_file, validate_skills_prune_file_name,
-        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-        CliCredentialStoreEncryptionMode, CliOsSandboxMode, CliProviderAuthMode,
-        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        validate_profile_name, validate_session_file, validate_skills_prune_file_name, AuthCommand,
+        AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+        CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOsSandboxMode,
+        CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
         CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
         CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
         DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
@@ -8757,16 +9722,22 @@ mod tests {
         build_profile_defaults(&test_cli())
     }
 
+    fn test_auth_command_config() -> AuthCommandConfig {
+        build_auth_command_config(&test_cli())
+    }
+
     fn test_command_context<'a>(
         tool_policy_json: &'a serde_json::Value,
         profile_defaults: &'a ProfileDefaults,
         skills_command_config: &'a SkillsSyncCommandConfig,
+        auth_command_config: &'a AuthCommandConfig,
     ) -> CommandExecutionContext<'a> {
         CommandExecutionContext {
             tool_policy_json,
             session_import_mode: SessionImportMode::Merge,
             profile_defaults,
             skills_command_config,
+            auth_command_config,
         }
     }
 
@@ -8872,6 +9843,145 @@ mod tests {
             cli.credential_store_encryption,
             CliCredentialStoreEncryptionMode::Keyed
         );
+    }
+
+    #[test]
+    fn unit_parse_auth_command_supports_login_status_logout_and_json() {
+        let login =
+            parse_auth_command("login openai --mode oauth-token --json").expect("parse auth login");
+        assert_eq!(
+            login,
+            AuthCommand::Login {
+                provider: Provider::OpenAi,
+                mode: Some(ProviderAuthMethod::OauthToken),
+                json_output: true,
+            }
+        );
+
+        let status = parse_auth_command("status anthropic --json").expect("parse auth status");
+        assert_eq!(
+            status,
+            AuthCommand::Status {
+                provider: Some(Provider::Anthropic),
+                json_output: true,
+            }
+        );
+
+        let logout = parse_auth_command("logout google").expect("parse auth logout");
+        assert_eq!(
+            logout,
+            AuthCommand::Logout {
+                provider: Provider::Google,
+                json_output: false,
+            }
+        );
+    }
+
+    #[test]
+    fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors() {
+        let unknown_provider =
+            parse_auth_command("login mystery --mode oauth-token").expect_err("provider fail");
+        assert!(unknown_provider.to_string().contains("unknown provider"));
+
+        let unknown_mode =
+            parse_auth_command("login openai --mode unknown").expect_err("mode fail");
+        assert!(unknown_mode.to_string().contains("unknown auth mode"));
+
+        let missing_login_provider = parse_auth_command("login").expect_err("usage fail for login");
+        assert!(missing_login_provider
+            .to_string()
+            .contains("usage: /auth login"));
+
+        let unknown_subcommand = parse_auth_command("noop").expect_err("subcommand fail");
+        assert!(unknown_subcommand.to_string().contains("usage: /auth"));
+    }
+
+    #[test]
+    fn functional_execute_auth_command_login_status_logout_lifecycle() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = test_auth_command_config();
+        config.credential_store = temp.path().join("credentials.json");
+        config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+        config.openai_auth_mode = ProviderAuthMethod::OauthToken;
+
+        let expires_unix = current_unix_timestamp().saturating_add(3600);
+        std::env::set_var("OPENAI_ACCESS_TOKEN", "openai-access-token");
+        std::env::set_var("OPENAI_REFRESH_TOKEN", "openai-refresh-token");
+        std::env::set_var("OPENAI_AUTH_EXPIRES_UNIX", expires_unix.to_string());
+
+        let login_output = execute_auth_command(&config, "login openai --json");
+        let login_json: serde_json::Value =
+            serde_json::from_str(&login_output).expect("parse login output");
+        assert_eq!(login_json["status"], "saved");
+        assert_eq!(login_json["provider"], "openai");
+        assert_eq!(login_json["mode"], "oauth_token");
+        assert_eq!(login_json["expires_unix"], expires_unix);
+
+        let status_output = execute_auth_command(&config, "status openai --json");
+        let status_json: serde_json::Value =
+            serde_json::from_str(&status_output).expect("parse status output");
+        assert_eq!(status_json["available"], 1);
+        assert_eq!(status_json["entries"][0]["provider"], "openai");
+        assert_eq!(status_json["entries"][0]["state"], "ready");
+        assert_eq!(status_json["entries"][0]["source"], "credential_store");
+
+        let logout_output = execute_auth_command(&config, "logout openai --json");
+        let logout_json: serde_json::Value =
+            serde_json::from_str(&logout_output).expect("parse logout output");
+        assert_eq!(logout_json["status"], "revoked");
+
+        let post_logout_status = execute_auth_command(&config, "status openai --json");
+        let post_logout_json: serde_json::Value =
+            serde_json::from_str(&post_logout_status).expect("parse post logout status");
+        assert_eq!(post_logout_json["entries"][0]["state"], "revoked");
+        assert_eq!(post_logout_json["entries"][0]["available"], false);
+
+        std::env::remove_var("OPENAI_ACCESS_TOKEN");
+        std::env::remove_var("OPENAI_REFRESH_TOKEN");
+        std::env::remove_var("OPENAI_AUTH_EXPIRES_UNIX");
+    }
+
+    #[test]
+    fn integration_execute_auth_command_status_reports_store_backed_state() {
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join("credentials.json");
+        write_test_provider_credential(
+            &store_path,
+            CredentialStoreEncryptionMode::None,
+            None,
+            Provider::OpenAi,
+            ProviderCredentialStoreRecord {
+                auth_method: ProviderAuthMethod::SessionToken,
+                access_token: Some("session-access".to_string()),
+                refresh_token: Some("session-refresh".to_string()),
+                expires_unix: Some(current_unix_timestamp().saturating_add(1200)),
+                revoked: false,
+            },
+        );
+
+        let mut config = test_auth_command_config();
+        config.credential_store = store_path;
+        config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+        config.openai_auth_mode = ProviderAuthMethod::SessionToken;
+
+        let output = execute_auth_command(&config, "status openai --json");
+        let payload: serde_json::Value = serde_json::from_str(&output).expect("parse status");
+        assert_eq!(payload["entries"][0]["provider"], "openai");
+        assert_eq!(payload["entries"][0]["mode"], "session_token");
+        assert_eq!(payload["entries"][0]["state"], "ready");
+        assert_eq!(payload["entries"][0]["available"], true);
+    }
+
+    #[test]
+    fn regression_execute_auth_command_login_rejects_unsupported_provider_mode() {
+        let config = test_auth_command_config();
+        let output = execute_auth_command(&config, "login google --mode oauth-token --json");
+        let payload: serde_json::Value = serde_json::from_str(&output).expect("parse output");
+        assert_eq!(payload["status"], "error");
+        assert!(payload["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not supported"));
     }
 
     #[test]
@@ -10357,6 +11467,7 @@ mod tests {
         });
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let mut skills_command_config =
             skills_command_config(&skills_dir, &lock_path, Some(&trust_root_path));
         skills_command_config.doctor_config.session_path = temp.path().join("session.jsonl");
@@ -10369,6 +11480,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &auth_command_config,
         )
         .expect("doctor command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -10761,6 +11873,7 @@ mod tests {
 
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -10769,6 +11882,7 @@ mod tests {
             session_import_mode: SessionImportMode::Merge,
             profile_defaults: &profile_defaults,
             skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
         };
 
         let save_output = execute_macro_command(
@@ -10868,6 +11982,7 @@ mod tests {
         let missing_commands_file = temp.path().join("missing.commands");
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -10876,6 +11991,7 @@ mod tests {
             session_import_mode: SessionImportMode::Merge,
             profile_defaults: &profile_defaults,
             skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
         };
         let mut session_runtime = None;
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -10905,6 +12021,7 @@ mod tests {
 
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -10913,6 +12030,7 @@ mod tests {
             session_import_mode: SessionImportMode::Merge,
             profile_defaults: &profile_defaults,
             skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
         };
         let mut session_runtime = None;
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -10937,6 +12055,7 @@ mod tests {
 
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -10945,6 +12064,7 @@ mod tests {
             session_import_mode: SessionImportMode::Merge,
             profile_defaults: &profile_defaults,
             skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
         };
         let mut session_runtime = None;
         let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -11343,11 +12463,16 @@ mod tests {
         let mut session_runtime = None;
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
-        let command_context =
-            test_command_context(&tool_policy_json, &profile_defaults, &skills_command_config);
+        let command_context = test_command_context(
+            &tool_policy_json,
+            &profile_defaults,
+            &skills_command_config,
+            &auth_command_config,
+        );
 
         let report = execute_command_file(
             &command_file,
@@ -11381,11 +12506,16 @@ mod tests {
         let mut session_runtime = None;
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
-        let command_context =
-            test_command_context(&tool_policy_json, &profile_defaults, &skills_command_config);
+        let command_context = test_command_context(
+            &tool_policy_json,
+            &profile_defaults,
+            &skills_command_config,
+            &auth_command_config,
+        );
 
         let report = execute_command_file(
             &command_file,
@@ -11419,11 +12549,16 @@ mod tests {
         let mut session_runtime = None;
         let tool_policy_json = test_tool_policy_json();
         let profile_defaults = test_profile_defaults();
+        let auth_command_config = test_auth_command_config();
         let skills_dir = temp.path().join("skills");
         let lock_path = default_skills_lock_path(&skills_dir);
         let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
-        let command_context =
-            test_command_context(&tool_policy_json, &profile_defaults, &skills_command_config);
+        let command_context = test_command_context(
+            &tool_policy_json,
+            &profile_defaults,
+            &skills_command_config,
+            &auth_command_config,
+        );
 
         let error = execute_command_file(
             &command_file,
@@ -13045,6 +14180,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills sync command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13095,6 +14231,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills lock write command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13144,6 +14281,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills list command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13192,6 +14330,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills show command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13240,6 +14379,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills search command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13288,6 +14428,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills lock diff command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13336,6 +14477,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills verify command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13384,6 +14526,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills prune command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13435,6 +14578,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills trust list command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13486,6 +14630,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills trust add command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13498,6 +14643,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills trust revoke command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -13510,6 +14656,7 @@ mod tests {
             SessionImportMode::Merge,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("skills trust rotate command should continue");
         assert_eq!(action, CommandAction::Continue);
@@ -14463,6 +15610,7 @@ mod tests {
             SessionImportMode::Replace,
             &profile_defaults,
             &skills_command_config,
+            &test_auth_command_config(),
         )
         .expect("session replace import should succeed");
         assert_eq!(action, CommandAction::Continue);
