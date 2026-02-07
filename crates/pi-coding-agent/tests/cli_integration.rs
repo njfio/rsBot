@@ -64,6 +64,14 @@ fn binary_command() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("pi-coding-agent"))
 }
 
+fn write_model_catalog(path: &std::path::Path, entries: serde_json::Value) {
+    let payload = json!({
+        "schema_version": 1,
+        "entries": entries,
+    });
+    fs::write(path, format!("{payload}\n")).expect("write model catalog");
+}
+
 #[test]
 fn help_hides_environment_variable_values() {
     let mut cmd = binary_command();
@@ -305,6 +313,171 @@ fn regression_command_file_fail_fast_stops_on_malformed_line_and_exits_failure()
         .stdout(predicate::str::contains("failed=1"))
         .stdout(predicate::str::contains("halted_early=true"))
         .stderr(predicate::str::contains("command file execution failed"));
+}
+
+#[test]
+fn integration_models_list_command_filters_catalog_entries() {
+    let temp = tempdir().expect("tempdir");
+    let catalog_path = temp.path().join("models.json");
+    write_model_catalog(
+        &catalog_path,
+        json!([
+            {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "context_window_tokens": 128000,
+                "supports_tools": true,
+                "supports_multimodal": true,
+                "supports_reasoning": true,
+                "input_cost_per_million": 0.15,
+                "output_cost_per_million": 0.6
+            },
+            {
+                "provider": "openai",
+                "model": "legacy-no-tools",
+                "context_window_tokens": 8192,
+                "supports_tools": false,
+                "supports_multimodal": false,
+                "supports_reasoning": false,
+                "input_cost_per_million": null,
+                "output_cost_per_million": null
+            }
+        ]),
+    );
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--model-catalog-cache",
+        catalog_path.to_str().expect("utf8 path"),
+        "--model-catalog-offline",
+        "--no-session",
+    ])
+    .write_stdin("/models-list gpt --provider openai --tools true --limit 5\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("models list: source=cache:"))
+        .stdout(predicate::str::contains("model: openai/gpt-4o-mini"))
+        .stdout(predicate::str::contains("legacy-no-tools").not());
+}
+
+#[test]
+fn regression_model_show_command_reports_not_found_and_continues() {
+    let temp = tempdir().expect("tempdir");
+    let catalog_path = temp.path().join("models.json");
+    write_model_catalog(
+        &catalog_path,
+        json!([{
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "context_window_tokens": 128000,
+            "supports_tools": true,
+            "supports_multimodal": true,
+            "supports_reasoning": true,
+            "input_cost_per_million": 0.15,
+            "output_cost_per_million": 0.6
+        }]),
+    );
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--model-catalog-cache",
+        catalog_path.to_str().expect("utf8 path"),
+        "--model-catalog-offline",
+        "--no-session",
+    ])
+    .write_stdin("/model-show openai/missing-model\n/help model-show\n/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("model show: not found"))
+        .stdout(predicate::str::contains("command: /model-show"));
+}
+
+#[test]
+fn integration_startup_model_catalog_remote_refresh_is_reported() {
+    let temp = tempdir().expect("tempdir");
+    let catalog_path = temp.path().join("models.json");
+    let server = MockServer::start();
+    let refresh = server.mock(|when, then| {
+        when.method(GET).path("/models.json");
+        then.status(200).json_body(json!({
+            "schema_version": 1,
+            "entries": [{
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "context_window_tokens": 128000,
+                "supports_tools": true,
+                "supports_multimodal": true,
+                "supports_reasoning": true,
+                "input_cost_per_million": 0.15,
+                "output_cost_per_million": 0.6
+            }]
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--model-catalog-url",
+        &format!("{}/models.json", server.base_url()),
+        "--model-catalog-cache",
+        catalog_path.to_str().expect("utf8 path"),
+        "--no-session",
+    ])
+    .write_stdin("/quit\n");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "model catalog: source=remote url=",
+        ))
+        .stdout(predicate::str::contains("entries=1"));
+    refresh.assert_calls(1);
+}
+
+#[test]
+fn regression_startup_rejects_tool_incompatible_model_from_catalog() {
+    let temp = tempdir().expect("tempdir");
+    let catalog_path = temp.path().join("models.json");
+    write_model_catalog(
+        &catalog_path,
+        json!([{
+            "provider": "openai",
+            "model": "no-tools-model",
+            "context_window_tokens": 8192,
+            "supports_tools": false,
+            "supports_multimodal": false,
+            "supports_reasoning": false,
+            "input_cost_per_million": null,
+            "output_cost_per_million": null
+        }]),
+    );
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/no-tools-model",
+        "--model-catalog-cache",
+        catalog_path.to_str().expect("utf8 path"),
+        "--model-catalog-offline",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("tool-incompatible"));
 }
 
 #[test]

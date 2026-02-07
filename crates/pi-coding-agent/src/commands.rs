@@ -111,6 +111,22 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/audit-summary .pi/audit/tool-events.jsonl",
     },
     CommandSpec {
+        name: "/models-list",
+        usage: MODELS_LIST_USAGE,
+        description: "List/search/filter model catalog entries and capabilities",
+        details:
+            "Supports provider and capability filters (`--tools`, `--multimodal`, `--reasoning`) plus text query and result limits.",
+        example: "/models-list gpt --provider openai --tools true --limit 20",
+    },
+    CommandSpec {
+        name: "/model-show",
+        usage: MODEL_SHOW_USAGE,
+        description: "Show detailed capability metadata for one model catalog entry",
+        details:
+            "Accepts provider/model format and reports context window, capability flags, and configured cost metadata.",
+        example: "/model-show openai/gpt-4o-mini",
+    },
+    CommandSpec {
         name: "/skills-search",
         usage: "/skills-search <query> [max_results]",
         description: "Search installed skills by name and content",
@@ -306,6 +322,8 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "/session-import",
     "/policy",
     "/audit-summary",
+    "/models-list",
+    "/model-show",
     "/skills-search",
     "/skills-show",
     "/skills-list",
@@ -408,6 +426,7 @@ pub(crate) fn execute_command_file(
             command_context.profile_defaults,
             command_context.skills_command_config,
             command_context.auth_command_config,
+            command_context.model_catalog,
         ) {
             Ok(CommandAction::Continue) => {
                 report.succeeded += 1;
@@ -527,6 +546,7 @@ pub(crate) fn handle_command(
         anthropic_auth_mode: ProviderAuthMethod::ApiKey,
         google_auth_mode: ProviderAuthMethod::ApiKey,
     };
+    let model_catalog = ModelCatalog::built_in();
     handle_command_with_session_import_mode(
         command,
         agent,
@@ -536,6 +556,7 @@ pub(crate) fn handle_command(
         &profile_defaults,
         &skills_command_config,
         &auth_command_config,
+        &model_catalog,
     )
 }
 
@@ -549,6 +570,7 @@ pub(crate) fn handle_command_with_session_import_mode(
     profile_defaults: &ProfileDefaults,
     skills_command_config: &SkillsSyncCommandConfig,
     auth_command_config: &AuthCommandConfig,
+    model_catalog: &ModelCatalog,
 ) -> Result<CommandAction> {
     let skills_dir = skills_command_config.skills_dir.as_path();
     let default_skills_lock_path = skills_command_config.default_lock_path.as_path();
@@ -745,6 +767,32 @@ pub(crate) fn handle_command_with_session_import_mode(
         return Ok(CommandAction::Continue);
     }
 
+    if command_name == "/models-list" {
+        match parse_models_list_args(command_args) {
+            Ok(args) => println!("{}", render_models_list(model_catalog, &args)),
+            Err(error) => {
+                println!("models list error: {error}");
+                println!("usage: {MODELS_LIST_USAGE}");
+            }
+        }
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/model-show" {
+        if command_args.is_empty() {
+            println!("usage: {MODEL_SHOW_USAGE}");
+            return Ok(CommandAction::Continue);
+        }
+        match render_model_show(model_catalog, command_args) {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                println!("model show error: {error}");
+                println!("usage: {MODEL_SHOW_USAGE}");
+            }
+        }
+        return Ok(CommandAction::Continue);
+    }
+
     if command_name == "/skills-search" {
         if command_args.is_empty() {
             println!("usage: /skills-search <query> [max_results]");
@@ -924,6 +972,7 @@ pub(crate) fn handle_command_with_session_import_mode(
                     profile_defaults,
                     skills_command_config,
                     auth_command_config,
+                    model_catalog,
                 }
             )
         );

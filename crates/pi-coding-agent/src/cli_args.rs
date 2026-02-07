@@ -47,6 +47,41 @@ pub(crate) struct Cli {
     pub(crate) azure_openai_api_version: String,
 
     #[arg(
+        long = "model-catalog-url",
+        env = "PI_MODEL_CATALOG_URL",
+        help = "Optional remote URL for model catalog refresh (JSON payload)"
+    )]
+    pub(crate) model_catalog_url: Option<String>,
+
+    #[arg(
+        long = "model-catalog-cache",
+        env = "PI_MODEL_CATALOG_CACHE",
+        default_value = ".pi/models/catalog.json",
+        help = "Model catalog cache path used for startup and interactive model discovery"
+    )]
+    pub(crate) model_catalog_cache: PathBuf,
+
+    #[arg(
+        long = "model-catalog-offline",
+        env = "PI_MODEL_CATALOG_OFFLINE",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Disable remote model catalog refresh and rely on local cache/built-in entries"
+    )]
+    pub(crate) model_catalog_offline: bool,
+
+    #[arg(
+        long = "model-catalog-stale-after-hours",
+        env = "PI_MODEL_CATALOG_STALE_AFTER_HOURS",
+        default_value_t = 24,
+        help = "Cache staleness threshold in hours for model catalog diagnostics"
+    )]
+    pub(crate) model_catalog_stale_after_hours: u64,
+
+    #[arg(
         long,
         env = "PI_ANTHROPIC_API_BASE",
         default_value = "https://api.anthropic.com/v1",

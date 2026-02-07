@@ -12,6 +12,7 @@ mod diagnostics_commands;
 mod events;
 mod github_issues;
 mod macro_profile_commands;
+mod model_catalog;
 mod observability_loggers;
 mod provider_auth;
 mod provider_client;
@@ -32,6 +33,7 @@ mod slack;
 mod startup_config;
 mod startup_dispatch;
 mod startup_local_runtime;
+mod startup_model_catalog;
 mod startup_model_resolution;
 mod startup_policy;
 mod startup_preflight;
@@ -128,6 +130,13 @@ pub(crate) use crate::macro_profile_commands::{
     render_profile_show, save_macro_file, save_profile_store, validate_macro_command_entry,
     validate_macro_name, validate_profile_name, MacroCommand, MacroFile, ProfileCommand,
     ProfileStoreFile, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+};
+#[cfg(test)]
+pub(crate) use crate::model_catalog::default_model_catalog_cache_path;
+pub(crate) use crate::model_catalog::{
+    ensure_model_supports_tools, load_model_catalog_with_cache, parse_models_list_args,
+    render_model_show, render_models_list, ModelCatalog, ModelCatalogLoadOptions,
+    MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
 };
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
@@ -233,6 +242,9 @@ pub(crate) use crate::startup_config::{
 };
 use crate::startup_dispatch::run_cli;
 pub(crate) use crate::startup_local_runtime::{run_local_runtime, LocalRuntimeConfig};
+pub(crate) use crate::startup_model_catalog::{
+    resolve_startup_model_catalog, validate_startup_model_catalog,
+};
 pub(crate) use crate::startup_model_resolution::{resolve_startup_models, StartupModelResolution};
 pub(crate) use crate::startup_policy::{resolve_startup_policy, StartupPolicyBundle};
 pub(crate) use crate::startup_preflight::execute_startup_preflight;

@@ -160,6 +160,22 @@ cargo run -p pi-coding-agent -- \
   --azure-openai-api-version 2024-10-21
 ```
 
+Refresh model catalog metadata from a remote JSON URL (cached locally):
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --model-catalog-url https://example.com/models.json \
+  --model-catalog-cache .pi/models/catalog.json
+```
+
+Inspect model capabilities in interactive mode:
+
+```text
+/models-list gpt --provider openai --tools true --limit 20
+/model-show openai/gpt-4o-mini
+```
+
 Run one prompt:
 
 ```bash

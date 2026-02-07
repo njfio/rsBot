@@ -9,6 +9,8 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         model_ref,
         fallback_model_refs,
     } = resolve_startup_models(&cli)?;
+    let model_catalog = resolve_startup_model_catalog(&cli).await?;
+    validate_startup_model_catalog(&model_catalog, &model_ref, &fallback_model_refs)?;
 
     let client = build_client_with_fallbacks(&cli, &model_ref, &fallback_model_refs)?;
     let skills_bootstrap = run_startup_skills_bootstrap(&cli).await?;
@@ -37,6 +39,7 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         client,
         model_ref: &model_ref,
         fallback_model_refs: &fallback_model_refs,
+        model_catalog: &model_catalog,
         system_prompt: &system_prompt,
         tool_policy,
         tool_policy_json: &tool_policy_json,

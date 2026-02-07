@@ -86,6 +86,7 @@ use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
 use crate::session::{SessionImportMode, SessionStore};
 use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
+use crate::{default_model_catalog_cache_path, ModelCatalog, MODELS_LIST_USAGE, MODEL_SHOW_USAGE};
 
 struct NoopClient;
 
@@ -185,6 +186,10 @@ fn test_cli() -> Cli {
         fallback_model: vec![],
         api_base: "https://api.openai.com/v1".to_string(),
         azure_openai_api_version: "2024-10-21".to_string(),
+        model_catalog_url: None,
+        model_catalog_cache: default_model_catalog_cache_path(),
+        model_catalog_offline: false,
+        model_catalog_stale_after_hours: 24,
         anthropic_api_base: "https://api.anthropic.com/v1".to_string(),
         google_api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
         api_key: None,
@@ -384,6 +389,7 @@ fn test_command_context<'a>(
     profile_defaults: &'a ProfileDefaults,
     skills_command_config: &'a SkillsSyncCommandConfig,
     auth_command_config: &'a AuthCommandConfig,
+    model_catalog: &'a ModelCatalog,
 ) -> CommandExecutionContext<'a> {
     CommandExecutionContext {
         tool_policy_json,
@@ -391,6 +397,7 @@ fn test_command_context<'a>(
         profile_defaults,
         skills_command_config,
         auth_command_config,
+        model_catalog,
     }
 }
 
@@ -456,6 +463,39 @@ fn functional_cli_provider_retry_flags_accept_overrides() {
     assert_eq!(cli.provider_max_retries, 5);
     assert_eq!(cli.provider_retry_budget_ms, 1500);
     assert!(!cli.provider_retry_jitter);
+}
+
+#[test]
+fn unit_cli_model_catalog_flags_default_values_are_stable() {
+    let cli = Cli::parse_from(["pi-rs"]);
+    assert_eq!(cli.model_catalog_url, None);
+    assert_eq!(
+        cli.model_catalog_cache,
+        PathBuf::from(".pi/models/catalog.json")
+    );
+    assert!(!cli.model_catalog_offline);
+    assert_eq!(cli.model_catalog_stale_after_hours, 24);
+}
+
+#[test]
+fn functional_cli_model_catalog_flags_accept_overrides() {
+    let cli = Cli::parse_from([
+        "pi-rs",
+        "--model-catalog-url",
+        "https://example.com/models.json",
+        "--model-catalog-cache",
+        "/tmp/catalog.json",
+        "--model-catalog-offline=true",
+        "--model-catalog-stale-after-hours",
+        "48",
+    ]);
+    assert_eq!(
+        cli.model_catalog_url.as_deref(),
+        Some("https://example.com/models.json")
+    );
+    assert_eq!(cli.model_catalog_cache, PathBuf::from("/tmp/catalog.json"));
+    assert!(cli.model_catalog_offline);
+    assert_eq!(cli.model_catalog_stale_after_hours, 48);
 }
 
 #[test]
@@ -2909,6 +2949,7 @@ fn integration_doctor_command_preserves_session_runtime() {
         &profile_defaults,
         &skills_command_config,
         &auth_command_config,
+        &ModelCatalog::built_in(),
     )
     .expect("doctor command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -3297,6 +3338,7 @@ fn integration_execute_macro_command_save_show_run_delete_lifecycle() {
     let tool_policy_json = test_tool_policy_json();
     let profile_defaults = test_profile_defaults();
     let auth_command_config = test_auth_command_config();
+    let model_catalog = ModelCatalog::built_in();
     let skills_dir = temp.path().join("skills");
     let lock_path = default_skills_lock_path(&skills_dir);
     let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -3306,6 +3348,7 @@ fn integration_execute_macro_command_save_show_run_delete_lifecycle() {
         profile_defaults: &profile_defaults,
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
+        model_catalog: &model_catalog,
     };
 
     let save_output = execute_macro_command(
@@ -3406,6 +3449,7 @@ fn regression_execute_macro_command_reports_missing_commands_file() {
     let tool_policy_json = test_tool_policy_json();
     let profile_defaults = test_profile_defaults();
     let auth_command_config = test_auth_command_config();
+    let model_catalog = ModelCatalog::built_in();
     let skills_dir = temp.path().join("skills");
     let lock_path = default_skills_lock_path(&skills_dir);
     let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -3415,6 +3459,7 @@ fn regression_execute_macro_command_reports_missing_commands_file() {
         profile_defaults: &profile_defaults,
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
+        model_catalog: &model_catalog,
     };
     let mut session_runtime = None;
     let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -3445,6 +3490,7 @@ fn regression_execute_macro_command_reports_corrupt_macro_file() {
     let tool_policy_json = test_tool_policy_json();
     let profile_defaults = test_profile_defaults();
     let auth_command_config = test_auth_command_config();
+    let model_catalog = ModelCatalog::built_in();
     let skills_dir = temp.path().join("skills");
     let lock_path = default_skills_lock_path(&skills_dir);
     let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -3454,6 +3500,7 @@ fn regression_execute_macro_command_reports_corrupt_macro_file() {
         profile_defaults: &profile_defaults,
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
+        model_catalog: &model_catalog,
     };
     let mut session_runtime = None;
     let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -3479,6 +3526,7 @@ fn regression_execute_macro_command_rejects_unknown_macro_and_invalid_entries() 
     let tool_policy_json = test_tool_policy_json();
     let profile_defaults = test_profile_defaults();
     let auth_command_config = test_auth_command_config();
+    let model_catalog = ModelCatalog::built_in();
     let skills_dir = temp.path().join("skills");
     let lock_path = default_skills_lock_path(&skills_dir);
     let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -3488,6 +3536,7 @@ fn regression_execute_macro_command_rejects_unknown_macro_and_invalid_entries() 
         profile_defaults: &profile_defaults,
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
+        model_catalog: &model_catalog,
     };
     let mut session_runtime = None;
     let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -3887,6 +3936,7 @@ fn functional_execute_command_file_runs_script_and_returns_summary() {
     let tool_policy_json = test_tool_policy_json();
     let profile_defaults = test_profile_defaults();
     let auth_command_config = test_auth_command_config();
+    let model_catalog = ModelCatalog::built_in();
     let skills_dir = temp.path().join("skills");
     let lock_path = default_skills_lock_path(&skills_dir);
     let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -3895,6 +3945,7 @@ fn functional_execute_command_file_runs_script_and_returns_summary() {
         &profile_defaults,
         &skills_command_config,
         &auth_command_config,
+        &model_catalog,
     );
 
     let report = execute_command_file(
@@ -3930,6 +3981,7 @@ fn integration_execute_command_file_continue_on_error_runs_remaining_commands() 
     let tool_policy_json = test_tool_policy_json();
     let profile_defaults = test_profile_defaults();
     let auth_command_config = test_auth_command_config();
+    let model_catalog = ModelCatalog::built_in();
     let skills_dir = temp.path().join("skills");
     let lock_path = default_skills_lock_path(&skills_dir);
     let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -3938,6 +3990,7 @@ fn integration_execute_command_file_continue_on_error_runs_remaining_commands() 
         &profile_defaults,
         &skills_command_config,
         &auth_command_config,
+        &model_catalog,
     );
 
     let report = execute_command_file(
@@ -3973,6 +4026,7 @@ fn regression_execute_command_file_fail_fast_stops_on_malformed_line() {
     let tool_policy_json = test_tool_policy_json();
     let profile_defaults = test_profile_defaults();
     let auth_command_config = test_auth_command_config();
+    let model_catalog = ModelCatalog::built_in();
     let skills_dir = temp.path().join("skills");
     let lock_path = default_skills_lock_path(&skills_dir);
     let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
@@ -3981,6 +4035,7 @@ fn regression_execute_command_file_fail_fast_stops_on_malformed_line() {
         &profile_defaults,
         &skills_command_config,
         &auth_command_config,
+        &model_catalog,
     );
 
     let error = execute_command_file(
@@ -4345,6 +4400,8 @@ fn functional_render_help_overview_lists_known_commands() {
     assert!(help.contains("/session-export <path>"));
     assert!(help.contains("/session-import <path>"));
     assert!(help.contains("/audit-summary <path>"));
+    assert!(help.contains(MODELS_LIST_USAGE));
+    assert!(help.contains(MODEL_SHOW_USAGE));
     assert!(help.contains("/skills-search <query> [max_results]"));
     assert!(help.contains("/skills-show <name>"));
     assert!(help.contains("/skills-list"));
@@ -4449,6 +4506,20 @@ fn functional_render_command_help_supports_session_graph_export_topic_without_sl
     let help = render_command_help("session-graph-export").expect("render help");
     assert!(help.contains("command: /session-graph-export"));
     assert!(help.contains("usage: /session-graph-export <path>"));
+}
+
+#[test]
+fn functional_render_command_help_supports_models_list_topic_without_slash() {
+    let help = render_command_help("models-list").expect("render help");
+    assert!(help.contains("command: /models-list"));
+    assert!(help.contains(&format!("usage: {MODELS_LIST_USAGE}")));
+}
+
+#[test]
+fn functional_render_command_help_supports_model_show_topic_without_slash() {
+    let help = render_command_help("model-show").expect("render help");
+    assert!(help.contains("command: /model-show"));
+    assert!(help.contains(&format!("usage: {MODEL_SHOW_USAGE}")));
 }
 
 #[test]
@@ -5599,6 +5670,7 @@ fn integration_skills_sync_command_preserves_session_runtime_on_drift() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills sync command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5650,6 +5722,7 @@ fn integration_skills_lock_write_command_preserves_session_runtime_on_error() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills lock write command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5700,6 +5773,7 @@ fn integration_skills_list_command_preserves_session_runtime() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills list command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5749,6 +5823,7 @@ fn integration_skills_show_command_preserves_session_runtime_on_unknown_skill() 
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills show command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5798,6 +5873,7 @@ fn integration_skills_search_command_preserves_session_runtime_on_invalid_args()
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills search command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5847,6 +5923,7 @@ fn integration_skills_lock_diff_command_preserves_session_runtime_on_error() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills lock diff command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5896,6 +5973,7 @@ fn integration_skills_verify_command_preserves_session_runtime_on_error() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills verify command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5945,6 +6023,7 @@ fn integration_skills_prune_command_preserves_session_runtime_on_error() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills prune command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5997,6 +6076,7 @@ fn integration_skills_trust_list_command_preserves_session_runtime_on_error() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills trust list command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6049,6 +6129,7 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills trust add command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6062,6 +6143,7 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills trust revoke command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6075,6 +6157,7 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("skills trust rotate command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -7315,6 +7398,7 @@ fn integration_session_import_command_replace_mode_overwrites_runtime_state() {
         &profile_defaults,
         &skills_command_config,
         &test_auth_command_config(),
+        &ModelCatalog::built_in(),
     )
     .expect("session replace import should succeed");
     assert_eq!(action, CommandAction::Continue);

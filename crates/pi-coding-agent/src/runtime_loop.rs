@@ -86,6 +86,7 @@ pub(crate) async fn run_interactive(
                 config.command_context.profile_defaults,
                 config.command_context.skills_command_config,
                 config.command_context.auth_command_config,
+                config.command_context.model_catalog,
             )? == CommandAction::Exit
             {
                 break;
