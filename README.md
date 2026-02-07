@@ -386,6 +386,10 @@ cargo run -p pi-coding-agent -- --model openai/gpt-4o-mini
 /skills-sync
 /skills-sync /tmp/custom-skills.lock.json
 
+# Run combined lockfile + trust/signature compliance diagnostics
+/skills-verify
+/skills-verify /tmp/custom-skills.lock.json /tmp/trust-roots.json --json
+
 # Repair/import output includes affected IDs and remap pairs for diagnostics
 ```
 

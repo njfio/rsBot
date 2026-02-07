@@ -889,6 +889,14 @@ const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/skills-sync .pi/skills/skills.lock.json",
     },
     CommandSpec {
+        name: "/skills-verify",
+        usage: "/skills-verify [lockfile_path] [trust_root_file] [--json]",
+        description: "Audit lockfile drift and trust/signature policy in one report",
+        details:
+            "Read-only compliance diagnostics across sync drift, signature metadata, and trust-root key status.",
+        example: "/skills-verify .pi/skills/skills.lock.json .pi/skills/trust-roots.json --json",
+    },
+    CommandSpec {
         name: "/branches",
         usage: "/branches",
         description: "List branch tips in the current session graph",
@@ -987,6 +995,7 @@ const COMMAND_NAMES: &[&str] = &[
     "/skills-trust-rotate",
     "/skills-lock-write",
     "/skills-sync",
+    "/skills-verify",
     "/branches",
     "/macro",
     "/profile",
@@ -2690,6 +2699,19 @@ fn handle_command_with_session_import_mode(
         println!(
             "{}",
             execute_skills_sync_command(skills_dir, default_skills_lock_path, command_args)
+        );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/skills-verify" {
+        println!(
+            "{}",
+            execute_skills_verify_command(
+                skills_dir,
+                default_skills_lock_path,
+                default_trust_root_path,
+                command_args
+            )
         );
         return Ok(CommandAction::Continue);
     }
@@ -6257,6 +6279,445 @@ fn execute_skills_sync_command(
     }
 }
 
+const SKILLS_VERIFY_USAGE: &str =
+    "usage: /skills-verify [lockfile_path] [trust_root_file] [--json]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SkillsVerifyArgs {
+    lock_path: PathBuf,
+    trust_root_path: Option<PathBuf>,
+    json_output: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SkillsVerifyStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl SkillsVerifyStatus {
+    fn severity(self) -> u8 {
+        match self {
+            Self::Pass => 0,
+            Self::Warn => 1,
+            Self::Fail => 2,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SkillsVerifyEntry {
+    file: String,
+    name: String,
+    status: SkillsVerifyStatus,
+    checks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct SkillsVerifyTrustSummary {
+    total: usize,
+    active: usize,
+    revoked: usize,
+    expired: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct SkillsVerifySummary {
+    entries: usize,
+    pass: usize,
+    warn: usize,
+    fail: usize,
+    status: SkillsVerifyStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SkillsVerifyReport {
+    lock_path: String,
+    trust_root_path: Option<String>,
+    expected_entries: usize,
+    actual_entries: usize,
+    missing: Vec<String>,
+    extra: Vec<String>,
+    changed: Vec<String>,
+    metadata_mismatch: Vec<String>,
+    trust: Option<SkillsVerifyTrustSummary>,
+    summary: SkillsVerifySummary,
+    entries: Vec<SkillsVerifyEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrustRootState {
+    Active,
+    Revoked,
+    Expired,
+}
+
+fn parse_skills_verify_args(
+    command_args: &str,
+    default_lock_path: &Path,
+    default_trust_root_path: Option<&Path>,
+) -> Result<SkillsVerifyArgs> {
+    let tokens = command_args
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let mut positional = Vec::new();
+    let mut json_output = false;
+    for token in tokens {
+        if token == "--json" {
+            json_output = true;
+            continue;
+        }
+        positional.push(token);
+    }
+
+    if positional.len() > 2 {
+        bail!(
+            "unexpected argument '{}'; {SKILLS_VERIFY_USAGE}",
+            positional[2]
+        );
+    }
+
+    let lock_path = positional
+        .first()
+        .map(|token| PathBuf::from(*token))
+        .unwrap_or_else(|| default_lock_path.to_path_buf());
+    let trust_root_path = positional
+        .get(1)
+        .map(|token| PathBuf::from(*token))
+        .or_else(|| default_trust_root_path.map(Path::to_path_buf));
+
+    Ok(SkillsVerifyArgs {
+        lock_path,
+        trust_root_path,
+        json_output,
+    })
+}
+
+fn update_verify_status(
+    status: &mut SkillsVerifyStatus,
+    checks: &mut Vec<String>,
+    next_status: SkillsVerifyStatus,
+    check: String,
+) {
+    if next_status.severity() > status.severity() {
+        *status = next_status;
+    }
+    checks.push(check);
+}
+
+fn build_skills_verify_report(
+    skills_dir: &Path,
+    lock_path: &Path,
+    trust_root_path: Option<&Path>,
+) -> Result<SkillsVerifyReport> {
+    let lockfile = load_skills_lockfile(lock_path)?;
+    let sync_report = sync_skills_with_lockfile(skills_dir, lock_path)?;
+
+    let trust_data = if let Some(path) = trust_root_path {
+        let records = load_trust_root_records(path)?;
+        let now_unix = current_unix_timestamp();
+        let mut trust_index = HashMap::new();
+        let mut summary = SkillsVerifyTrustSummary {
+            total: records.len(),
+            active: 0,
+            revoked: 0,
+            expired: 0,
+        };
+        for record in records {
+            let state = if record.revoked {
+                summary.revoked += 1;
+                TrustRootState::Revoked
+            } else if is_expired_unix(record.expires_unix, now_unix) {
+                summary.expired += 1;
+                TrustRootState::Expired
+            } else {
+                summary.active += 1;
+                TrustRootState::Active
+            };
+            trust_index.insert(record.id, state);
+        }
+        Some((summary, trust_index))
+    } else {
+        None
+    };
+
+    let mut metadata_by_file: HashMap<String, Vec<String>> = HashMap::new();
+    for item in &sync_report.metadata_mismatch {
+        if let Some((file, reason)) = item.split_once(": ") {
+            metadata_by_file
+                .entry(file.to_string())
+                .or_default()
+                .push(reason.to_string());
+        }
+    }
+
+    let missing_files = sync_report.missing.iter().cloned().collect::<HashSet<_>>();
+    let changed_files = sync_report.changed.iter().cloned().collect::<HashSet<_>>();
+    let extra_files = sync_report.extra.iter().cloned().collect::<HashSet<_>>();
+
+    let mut lock_entries = lockfile.entries.clone();
+    lock_entries.sort_by(|left, right| left.file.cmp(&right.file));
+
+    let mut entries = Vec::new();
+    for lock_entry in lock_entries {
+        let mut status = SkillsVerifyStatus::Pass;
+        let mut checks = Vec::new();
+
+        if missing_files.contains(&lock_entry.file) {
+            update_verify_status(
+                &mut status,
+                &mut checks,
+                SkillsVerifyStatus::Fail,
+                "sync=missing".to_string(),
+            );
+        } else if changed_files.contains(&lock_entry.file) {
+            update_verify_status(
+                &mut status,
+                &mut checks,
+                SkillsVerifyStatus::Fail,
+                "sync=changed".to_string(),
+            );
+        } else {
+            checks.push("sync=ok".to_string());
+        }
+
+        if let Some(reasons) = metadata_by_file.get(&lock_entry.file) {
+            for reason in reasons {
+                update_verify_status(
+                    &mut status,
+                    &mut checks,
+                    SkillsVerifyStatus::Fail,
+                    format!("metadata={reason}"),
+                );
+            }
+        }
+
+        match &lock_entry.source {
+            crate::skills::SkillLockSource::Remote {
+                signing_key_id,
+                signature,
+                ..
+            }
+            | crate::skills::SkillLockSource::Registry {
+                signing_key_id,
+                signature,
+                ..
+            } => match (signing_key_id.as_deref(), signature.as_deref()) {
+                (None, None) => update_verify_status(
+                    &mut status,
+                    &mut checks,
+                    SkillsVerifyStatus::Warn,
+                    "signature=unsigned".to_string(),
+                ),
+                (Some(_), None) | (None, Some(_)) => update_verify_status(
+                    &mut status,
+                    &mut checks,
+                    SkillsVerifyStatus::Fail,
+                    "signature=incomplete_metadata".to_string(),
+                ),
+                (Some(key_id), Some(_)) => {
+                    if let Some((_, trust_index)) = &trust_data {
+                        match trust_index.get(key_id) {
+                            Some(TrustRootState::Active) => {
+                                checks.push(format!("signature=trusted key={key_id}"));
+                            }
+                            Some(TrustRootState::Revoked) => update_verify_status(
+                                &mut status,
+                                &mut checks,
+                                SkillsVerifyStatus::Fail,
+                                format!("signature=revoked key={key_id}"),
+                            ),
+                            Some(TrustRootState::Expired) => update_verify_status(
+                                &mut status,
+                                &mut checks,
+                                SkillsVerifyStatus::Fail,
+                                format!("signature=expired key={key_id}"),
+                            ),
+                            None => update_verify_status(
+                                &mut status,
+                                &mut checks,
+                                SkillsVerifyStatus::Fail,
+                                format!("signature=untrusted key={key_id}"),
+                            ),
+                        }
+                    } else {
+                        update_verify_status(
+                            &mut status,
+                            &mut checks,
+                            SkillsVerifyStatus::Warn,
+                            format!("signature=unverified key={key_id} trust_root=none"),
+                        );
+                    }
+                }
+            },
+            crate::skills::SkillLockSource::Unknown => checks.push("source=unknown".to_string()),
+            crate::skills::SkillLockSource::Local { .. } => checks.push("source=local".to_string()),
+        }
+
+        entries.push(SkillsVerifyEntry {
+            file: lock_entry.file,
+            name: lock_entry.name,
+            status,
+            checks,
+        });
+    }
+
+    for file in extra_files {
+        entries.push(SkillsVerifyEntry {
+            name: file.trim_end_matches(".md").to_string(),
+            file,
+            status: SkillsVerifyStatus::Fail,
+            checks: vec!["sync=extra_not_in_lockfile".to_string()],
+        });
+    }
+    entries.sort_by(|left, right| left.file.cmp(&right.file));
+
+    let mut pass = 0usize;
+    let mut warn = 0usize;
+    let mut fail = 0usize;
+    for entry in &entries {
+        match entry.status {
+            SkillsVerifyStatus::Pass => pass += 1,
+            SkillsVerifyStatus::Warn => warn += 1,
+            SkillsVerifyStatus::Fail => fail += 1,
+        }
+    }
+    let overall_status = if fail > 0 {
+        SkillsVerifyStatus::Fail
+    } else if warn > 0 {
+        SkillsVerifyStatus::Warn
+    } else {
+        SkillsVerifyStatus::Pass
+    };
+
+    Ok(SkillsVerifyReport {
+        lock_path: lock_path.display().to_string(),
+        trust_root_path: trust_root_path.map(|path| path.display().to_string()),
+        expected_entries: sync_report.expected_entries,
+        actual_entries: sync_report.actual_entries,
+        missing: sync_report.missing,
+        extra: sync_report.extra,
+        changed: sync_report.changed,
+        metadata_mismatch: sync_report.metadata_mismatch,
+        trust: trust_data.map(|(summary, _)| summary),
+        summary: SkillsVerifySummary {
+            entries: entries.len(),
+            pass,
+            warn,
+            fail,
+            status: overall_status,
+        },
+        entries,
+    })
+}
+
+fn render_skills_verify_report(report: &SkillsVerifyReport) -> String {
+    let mut lines = vec![format!(
+        "skills verify: status={} lock_path={} trust_root_path={} entries={} pass={} warn={} fail={}",
+        report.summary.status.as_str(),
+        report.lock_path,
+        report.trust_root_path.as_deref().unwrap_or("none"),
+        report.summary.entries,
+        report.summary.pass,
+        report.summary.warn,
+        report.summary.fail
+    )];
+    lines.push(format!(
+        "sync: expected_entries={} actual_entries={} missing={} extra={} changed={} metadata={}",
+        report.expected_entries,
+        report.actual_entries,
+        render_skills_sync_field(&report.missing, ","),
+        render_skills_sync_field(&report.extra, ","),
+        render_skills_sync_field(&report.changed, ","),
+        render_skills_sync_field(&report.metadata_mismatch, ";")
+    ));
+    if let Some(trust) = report.trust {
+        lines.push(format!(
+            "trust: total={} active={} revoked={} expired={}",
+            trust.total, trust.active, trust.revoked, trust.expired
+        ));
+    } else {
+        lines.push("trust: none".to_string());
+    }
+
+    if report.entries.is_empty() {
+        lines.push("entry: none".to_string());
+        return lines.join("\n");
+    }
+
+    for entry in &report.entries {
+        lines.push(format!(
+            "entry: file={} name={} status={} checks={}",
+            entry.file,
+            entry.name,
+            entry.status.as_str(),
+            entry.checks.join(";")
+        ));
+    }
+    lines.join("\n")
+}
+
+fn execute_skills_verify_command(
+    skills_dir: &Path,
+    default_lock_path: &Path,
+    default_trust_root_path: Option<&Path>,
+    command_args: &str,
+) -> String {
+    let args =
+        match parse_skills_verify_args(command_args, default_lock_path, default_trust_root_path) {
+            Ok(args) => args,
+            Err(error) => {
+                return format!(
+                    "skills verify error: path={} error={error}",
+                    default_lock_path.display()
+                );
+            }
+        };
+
+    match build_skills_verify_report(skills_dir, &args.lock_path, args.trust_root_path.as_deref()) {
+        Ok(report) => {
+            if args.json_output {
+                serde_json::to_string(&report).unwrap_or_else(|error| {
+                    serde_json::json!({
+                        "status": "error",
+                        "path": args.lock_path.display().to_string(),
+                        "error": format!("failed to serialize skills verify report: {error}"),
+                    })
+                    .to_string()
+                })
+            } else {
+                render_skills_verify_report(&report)
+            }
+        }
+        Err(error) => {
+            if args.json_output {
+                serde_json::json!({
+                    "status": "error",
+                    "path": args.lock_path.display().to_string(),
+                    "error": error.to_string(),
+                })
+                .to_string()
+            } else {
+                format!(
+                    "skills verify error: path={} error={error}",
+                    args.lock_path.display()
+                )
+            }
+        }
+    }
+}
+
 fn format_id_list(ids: &[u64]) -> String {
     if ids.is_empty() {
         return "none".to_string();
@@ -7066,15 +7527,16 @@ mod tests {
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
         execute_skills_sync_command, execute_skills_trust_add_command,
         execute_skills_trust_list_command, execute_skills_trust_revoke_command,
-        execute_skills_trust_rotate_command, format_id_list, format_remap_ids, handle_command,
-        handle_command_with_session_import_mode, initialize_session, is_retryable_provider_error,
-        load_branch_aliases, load_macro_file, load_profile_store, load_session_bookmarks,
-        load_trust_root_records, parse_branch_alias_command, parse_command, parse_command_file,
-        parse_doctor_command_args, parse_macro_command, parse_profile_command,
-        parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
-        parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
-        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-        parse_skills_trust_mutation_args, parse_trust_rotation_spec, parse_trusted_root_spec,
+        execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
+        format_remap_ids, handle_command, handle_command_with_session_import_mode,
+        initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
+        load_profile_store, load_session_bookmarks, load_trust_root_records,
+        parse_branch_alias_command, parse_command, parse_command_file, parse_doctor_command_args,
+        parse_macro_command, parse_profile_command, parse_sandbox_command_tokens,
+        parse_session_bookmark_command, parse_session_diff_args, parse_session_search_args,
+        parse_session_stats_args, parse_skills_lock_diff_args, parse_skills_prune_args,
+        parse_skills_search_args, parse_skills_trust_list_args, parse_skills_trust_mutation_args,
+        parse_skills_verify_args, parse_trust_rotation_spec, parse_trusted_root_spec,
         percentile_duration_ms, render_audit_summary, render_command_help, render_doctor_report,
         render_doctor_report_json, render_help_overview, render_macro_list, render_macro_show,
         render_profile_diffs, render_profile_list, render_profile_show, render_session_diff,
@@ -7082,28 +7544,29 @@ mod tests {
         render_session_stats_json, render_skills_list, render_skills_lock_diff_drift,
         render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
         render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
-        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
-        resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
-        resolve_system_prompt, run_doctor_checks, run_prompt_with_cancellation,
-        save_branch_aliases, save_macro_file, save_profile_store, save_session_bookmarks,
-        search_session_entries, session_bookmark_path_for_session, session_message_preview,
-        shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
-        tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-        validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
-        validate_profile_name, validate_session_file, validate_skills_prune_file_name,
-        BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-        CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
-        CommandExecutionContext, CommandFileEntry, CommandFileReport, DoctorCheckResult,
-        DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus,
-        FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand, ProfileDefaults,
-        ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
+        render_skills_verify_report, resolve_fallback_models, resolve_prompt_input,
+        resolve_prunable_skill_file_name, resolve_session_graph_format, resolve_skill_trust_roots,
+        resolve_skills_lock_path, resolve_system_prompt, run_doctor_checks,
+        run_prompt_with_cancellation, save_branch_aliases, save_macro_file, save_profile_store,
+        save_session_bookmarks, search_session_entries, session_bookmark_path_for_session,
+        session_message_preview, shared_lineage_prefix_depth, stream_text_chunks,
+        summarize_audit_file, tool_audit_event_json, tool_policy_to_json, trust_record_status,
+        unknown_command_message, validate_branch_alias_name, validate_macro_command_entry,
+        validate_macro_name, validate_profile_name, validate_session_file,
+        validate_skills_prune_file_name, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+        CliCommandFileErrorMode, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
+        ClientRoute, CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+        DoctorCheckResult, DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus,
+        DoctorStatus, FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand,
+        ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, RenderOptions,
         SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
         SessionGraphFormat, SessionRuntime, SessionStats, SessionStatsOutputFormat,
-        SkillsPruneMode, SkillsSyncCommandConfig, ToolAuditLogger, TrustedRootRecord,
-        BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
-        PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
+        SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
+        SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
+        TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
+        MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
         SESSION_BOOKMARK_USAGE, SESSION_SEARCH_MAX_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-        SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE,
+        SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
     };
     use crate::resolve_api_key;
     use crate::session::{SessionImportMode, SessionStore};
@@ -9868,6 +10331,7 @@ mod tests {
         assert!(help.contains("/skills-trust-add <id=base64_key> [trust_root_file]"));
         assert!(help.contains("/skills-trust-revoke <id> [trust_root_file]"));
         assert!(help.contains("/skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]"));
+        assert!(help.contains("/skills-verify [lockfile_path] [trust_root_file] [--json]"));
         assert!(help.contains("/skills-lock-write [lockfile_path]"));
         assert!(help.contains("/skills-sync [lockfile_path]"));
         assert!(help.contains("/macro <save|run|list|show|delete> ..."));
@@ -10030,6 +10494,13 @@ mod tests {
         assert!(help.contains("command: /skills-trust-rotate"));
         assert!(help
             .contains("usage: /skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]"));
+    }
+
+    #[test]
+    fn functional_render_command_help_supports_skills_verify_topic_without_slash() {
+        let help = render_command_help("skills-verify").expect("render help");
+        assert!(help.contains("command: /skills-verify"));
+        assert!(help.contains("usage: /skills-verify [lockfile_path] [trust_root_file] [--json]"));
     }
 
     #[test]
@@ -10285,6 +10756,42 @@ mod tests {
         )
         .expect_err("extra positional args should fail");
         assert!(extra.to_string().contains(SKILLS_TRUST_ADD_USAGE));
+    }
+
+    #[test]
+    fn unit_parse_skills_verify_args_supports_defaults_overrides_and_json() {
+        let default_lock = Path::new("/tmp/default.lock.json");
+        let default_trust = Path::new("/tmp/default-trust.json");
+
+        let parsed = parse_skills_verify_args("", default_lock, Some(default_trust))
+            .expect("parse defaults");
+        assert_eq!(parsed.lock_path, PathBuf::from(default_lock));
+        assert_eq!(parsed.trust_root_path, Some(PathBuf::from(default_trust)));
+        assert!(!parsed.json_output);
+
+        let parsed = parse_skills_verify_args(
+            "/tmp/custom.lock.json /tmp/custom-trust.json --json",
+            default_lock,
+            Some(default_trust),
+        )
+        .expect("parse explicit args");
+        assert_eq!(parsed.lock_path, PathBuf::from("/tmp/custom.lock.json"));
+        assert_eq!(
+            parsed.trust_root_path,
+            Some(PathBuf::from("/tmp/custom-trust.json"))
+        );
+        assert!(parsed.json_output);
+    }
+
+    #[test]
+    fn regression_parse_skills_verify_args_rejects_unexpected_extra_positionals() {
+        let error = parse_skills_verify_args(
+            "a b c",
+            Path::new("/tmp/default.lock.json"),
+            Some(Path::new("/tmp/default-trust.json")),
+        )
+        .expect_err("unexpected positional arguments should fail");
+        assert!(error.to_string().contains(SKILLS_VERIFY_USAGE));
     }
 
     #[test]
@@ -10627,6 +11134,174 @@ mod tests {
         );
         assert!(explicit_output.contains("skills trust list: path="));
         assert!(explicit_output.contains("count=3"));
+    }
+
+    #[test]
+    fn functional_render_skills_verify_report_includes_summary_sync_and_entries() {
+        let report = SkillsVerifyReport {
+            lock_path: "/tmp/skills.lock.json".to_string(),
+            trust_root_path: Some("/tmp/trust-roots.json".to_string()),
+            expected_entries: 2,
+            actual_entries: 2,
+            missing: vec![],
+            extra: vec![],
+            changed: vec![],
+            metadata_mismatch: vec![],
+            trust: Some(SkillsVerifyTrustSummary {
+                total: 1,
+                active: 1,
+                revoked: 0,
+                expired: 0,
+            }),
+            summary: SkillsVerifySummary {
+                entries: 2,
+                pass: 2,
+                warn: 0,
+                fail: 0,
+                status: SkillsVerifyStatus::Pass,
+            },
+            entries: vec![SkillsVerifyEntry {
+                file: "focus.md".to_string(),
+                name: "focus".to_string(),
+                status: SkillsVerifyStatus::Pass,
+                checks: vec![
+                    "sync=ok".to_string(),
+                    "signature=trusted key=root".to_string(),
+                ],
+            }],
+        };
+
+        let rendered = render_skills_verify_report(&report);
+        assert!(rendered.contains(
+            "skills verify: status=pass lock_path=/tmp/skills.lock.json trust_root_path=/tmp/trust-roots.json"
+        ));
+        assert!(rendered.contains(
+            "sync: expected_entries=2 actual_entries=2 missing=none extra=none changed=none metadata=none"
+        ));
+        assert!(rendered.contains("trust: total=1 active=1 revoked=0 expired=0"));
+        assert!(rendered.contains(
+            "entry: file=focus.md name=focus status=pass checks=sync=ok;signature=trusted key=root"
+        ));
+    }
+
+    #[test]
+    fn integration_execute_skills_verify_command_reports_pass_and_json_modes() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let trust_path = temp.path().join("trust-roots.json");
+        let skill_sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+        let signature = "c2ln";
+        let signature_sha = format!("{:x}", Sha256::digest(signature.as_bytes()));
+        let lockfile = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "name": "focus",
+                "file": "focus.md",
+                "sha256": skill_sha,
+                "source": {
+                    "kind": "remote",
+                    "url": "https://example.com/focus.md",
+                    "expected_sha256": skill_sha,
+                    "signing_key_id": "root",
+                    "signature": signature,
+                    "signer_public_key": "YQ==",
+                    "signature_sha256": signature_sha
+                }
+            }]
+        });
+        std::fs::write(&lock_path, format!("{lockfile}\n")).expect("write lock");
+        let trust = serde_json::json!({
+            "roots": [{
+                "id": "root",
+                "public_key": "YQ==",
+                "revoked": false,
+                "expires_unix": null,
+                "rotated_from": null
+            }]
+        });
+        std::fs::write(&trust_path, format!("{trust}\n")).expect("write trust");
+
+        let output =
+            execute_skills_verify_command(&skills_dir, &lock_path, Some(trust_path.as_path()), "");
+        assert!(output.contains("skills verify: status=pass"));
+        assert!(output.contains("sync: expected_entries=1 actual_entries=1"));
+        assert!(output.contains("entry: file=focus.md name=focus status=pass"));
+        assert!(output.contains("signature=trusted key=root"));
+
+        let json_output = execute_skills_verify_command(
+            &skills_dir,
+            &lock_path,
+            Some(trust_path.as_path()),
+            "--json",
+        );
+        let payload: serde_json::Value =
+            serde_json::from_str(&json_output).expect("parse verify json");
+        assert_eq!(payload["summary"]["status"], "pass");
+        assert_eq!(payload["summary"]["fail"], 0);
+        assert_eq!(payload["entries"][0]["status"], "pass");
+    }
+
+    #[test]
+    fn regression_execute_skills_verify_command_reports_untrusted_signing_key() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("focus.md"), "deterministic body").expect("write skill");
+
+        let lock_path = default_skills_lock_path(&skills_dir);
+        let trust_path = temp.path().join("trust-roots.json");
+        let skill_sha = format!("{:x}", Sha256::digest("deterministic body".as_bytes()));
+        let signature = "c2ln";
+        let signature_sha = format!("{:x}", Sha256::digest(signature.as_bytes()));
+        let lockfile = serde_json::json!({
+            "schema_version": 1,
+            "entries": [{
+                "name": "focus",
+                "file": "focus.md",
+                "sha256": skill_sha,
+                "source": {
+                    "kind": "remote",
+                    "url": "https://example.com/focus.md",
+                    "expected_sha256": skill_sha,
+                    "signing_key_id": "unknown",
+                    "signature": signature,
+                    "signer_public_key": "YQ==",
+                    "signature_sha256": signature_sha
+                }
+            }]
+        });
+        std::fs::write(&lock_path, format!("{lockfile}\n")).expect("write lock");
+        let trust = serde_json::json!({
+            "roots": [{
+                "id": "root",
+                "public_key": "YQ==",
+                "revoked": false,
+                "expires_unix": null,
+                "rotated_from": null
+            }]
+        });
+        std::fs::write(&trust_path, format!("{trust}\n")).expect("write trust");
+
+        let output =
+            execute_skills_verify_command(&skills_dir, &lock_path, Some(trust_path.as_path()), "");
+        assert!(output.contains("skills verify: status=fail"));
+        assert!(output.contains("signature=untrusted key=unknown"));
+    }
+
+    #[test]
+    fn regression_execute_skills_verify_command_reports_missing_lockfile() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        let lock_path = temp.path().join("missing.lock.json");
+
+        let output = execute_skills_verify_command(&skills_dir, &lock_path, None, "");
+        assert!(output.contains("skills verify error: path="));
+        assert!(output.contains("failed to read skills lockfile"));
     }
 
     #[test]
@@ -11147,6 +11822,54 @@ mod tests {
             &skills_command_config,
         )
         .expect("skills lock diff command should continue");
+        assert_eq!(action, CommandAction::Continue);
+
+        let runtime = runtime.expect("runtime");
+        assert_eq!(runtime.active_head, Some(head));
+        assert_eq!(runtime.store.entries().len(), 2);
+        assert_eq!(agent.messages().len(), lineage.len());
+    }
+
+    #[test]
+    fn integration_skills_verify_command_preserves_session_runtime_on_error() {
+        let temp = tempdir().expect("tempdir");
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).expect("mkdir");
+        std::fs::write(skills_dir.join("alpha.md"), "alpha body").expect("write alpha");
+        let lock_path = default_skills_lock_path(&skills_dir);
+
+        let mut store = SessionStore::load(temp.path().join("session.jsonl")).expect("load");
+        let root = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append root")
+            .expect("root id");
+        let head = store
+            .append_messages(Some(root), &[pi_ai::Message::user("hello")])
+            .expect("append user")
+            .expect("head id");
+
+        let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+        let lineage = store.lineage_messages(Some(head)).expect("lineage");
+        agent.replace_messages(lineage.clone());
+
+        let mut runtime = Some(SessionRuntime {
+            store,
+            active_head: Some(head),
+        });
+        let tool_policy_json = test_tool_policy_json();
+        let profile_defaults = test_profile_defaults();
+        let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+
+        let action = handle_command_with_session_import_mode(
+            "/skills-verify /tmp/missing.lock.json",
+            &mut agent,
+            &mut runtime,
+            &tool_policy_json,
+            SessionImportMode::Merge,
+            &profile_defaults,
+            &skills_command_config,
+        )
+        .expect("skills verify command should continue");
         assert_eq!(action, CommandAction::Continue);
 
         let runtime = runtime.expect("runtime");
