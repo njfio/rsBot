@@ -1,5 +1,6 @@
 mod auth_commands;
 mod channel_store;
+mod channel_store_admin;
 mod commands;
 mod credentials;
 mod diagnostics_commands;
@@ -57,6 +58,7 @@ pub(crate) use crate::auth_commands::execute_auth_command;
 #[cfg(test)]
 pub(crate) use crate::auth_commands::{parse_auth_command, AuthCommand};
 use crate::channel_store::ChannelStore;
+pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
 pub(crate) use crate::commands::{
@@ -1849,61 +1851,6 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     run_interactive(agent, session_runtime, interactive_config).await
-}
-
-fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
-    if let Some(raw_ref) = cli.channel_store_inspect.as_deref() {
-        let channel_ref = ChannelStore::parse_channel_ref(raw_ref)?;
-        let store = ChannelStore::open(
-            &cli.channel_store_root,
-            &channel_ref.transport,
-            &channel_ref.channel_id,
-        )?;
-        let report = store.inspect()?;
-        println!(
-            "channel store inspect: transport={} channel_id={} dir={} log_records={} context_records={} invalid_log_lines={} invalid_context_lines={} memory_exists={} memory_bytes={}",
-            report.transport,
-            report.channel_id,
-            report.channel_dir.display(),
-            report.log_records,
-            report.context_records,
-            report.invalid_log_lines,
-            report.invalid_context_lines,
-            report.memory_exists,
-            report.memory_bytes,
-        );
-        return Ok(());
-    }
-
-    if let Some(raw_ref) = cli.channel_store_repair.as_deref() {
-        let channel_ref = ChannelStore::parse_channel_ref(raw_ref)?;
-        let store = ChannelStore::open(
-            &cli.channel_store_root,
-            &channel_ref.transport,
-            &channel_ref.channel_id,
-        )?;
-        let report = store.repair()?;
-        println!(
-            "channel store repair: transport={} channel_id={} log_removed_lines={} context_removed_lines={} log_backup_path={} context_backup_path={}",
-            channel_ref.transport,
-            channel_ref.channel_id,
-            report.log_removed_lines,
-            report.context_removed_lines,
-            report
-                .log_backup_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none".to_string()),
-            report
-                .context_backup_path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none".to_string()),
-        );
-        return Ok(());
-    }
-
-    Ok(())
 }
 
 pub(crate) fn write_text_atomic(path: &Path, content: &str) -> Result<()> {
