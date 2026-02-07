@@ -16,6 +16,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use clap::{ArgAction, Parser, ValueEnum};
 use pi_agent_core::{Agent, AgentConfig, AgentEvent};
 use pi_ai::{
@@ -25,6 +26,7 @@ use pi_ai::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -129,6 +131,20 @@ enum CliProviderAuthMode {
     OauthToken,
     Adc,
     SessionToken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliCredentialStoreEncryptionMode {
+    Auto,
+    None,
+    Keyed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CredentialStoreEncryptionMode {
+    None,
+    Keyed,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -267,6 +283,31 @@ struct Cli {
         help = "Authentication mode preference for Google provider"
     )]
     google_auth_mode: CliProviderAuthMode,
+
+    #[arg(
+        long = "credential-store",
+        env = "PI_CREDENTIAL_STORE",
+        default_value = ".pi/credentials.json",
+        help = "Credential store file path for non-API-key provider auth modes"
+    )]
+    credential_store: PathBuf,
+
+    #[arg(
+        long = "credential-store-key",
+        env = "PI_CREDENTIAL_STORE_KEY",
+        hide_env_values = true,
+        help = "Optional encryption key for credential store entries when keyed encryption is enabled"
+    )]
+    credential_store_key: Option<String>,
+
+    #[arg(
+        long = "credential-store-encryption",
+        env = "PI_CREDENTIAL_STORE_ENCRYPTION",
+        value_enum,
+        default_value_t = CliCredentialStoreEncryptionMode::Auto,
+        help = "Credential store encryption mode: auto, none, or keyed"
+    )]
+    credential_store_encryption: CliCredentialStoreEncryptionMode,
 
     #[arg(
         long,
@@ -7319,6 +7360,485 @@ fn fallback_error_metadata(error: &PiAiError) -> (&'static str, Option<u16>) {
     }
 }
 
+const CREDENTIAL_STORE_SCHEMA_VERSION: u32 = 1;
+const CREDENTIAL_STORE_ENCRYPTED_PREFIX: &str = "enc:v1:";
+const CREDENTIAL_STORE_NONCE_BYTES: usize = 16;
+const CREDENTIAL_STORE_TAG_BYTES: usize = 32;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CredentialStoreFile {
+    schema_version: u32,
+    encryption: CredentialStoreEncryptionMode,
+    providers: BTreeMap<String, StoredProviderCredential>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct StoredProviderCredential {
+    auth_method: ProviderAuthMethod,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    expires_unix: Option<u64>,
+    revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderCredentialStoreRecord {
+    auth_method: ProviderAuthMethod,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    expires_unix: Option<u64>,
+    revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CredentialStoreData {
+    encryption: CredentialStoreEncryptionMode,
+    providers: BTreeMap<String, ProviderCredentialStoreRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RefreshedProviderCredential {
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_unix: Option<u64>,
+}
+
+fn resolve_credential_store_encryption_mode(cli: &Cli) -> CredentialStoreEncryptionMode {
+    match cli.credential_store_encryption {
+        CliCredentialStoreEncryptionMode::None => CredentialStoreEncryptionMode::None,
+        CliCredentialStoreEncryptionMode::Keyed => CredentialStoreEncryptionMode::Keyed,
+        CliCredentialStoreEncryptionMode::Auto => {
+            if cli
+                .credential_store_key
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                CredentialStoreEncryptionMode::Keyed
+            } else {
+                CredentialStoreEncryptionMode::None
+            }
+        }
+    }
+}
+
+fn derive_credential_store_key_material(key: Option<&str>) -> Result<[u8; 32]> {
+    let key = key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!("credential store key is required for keyed encryption (set --credential-store-key or PI_CREDENTIAL_STORE_KEY)")
+        })?;
+    if key.len() < 8 {
+        bail!("credential store key must be at least 8 characters");
+    }
+
+    let digest = Sha256::digest(key.as_bytes());
+    let mut material = [0u8; 32];
+    material.copy_from_slice(&digest);
+    Ok(material)
+}
+
+fn derive_credential_store_nonce() -> [u8; CREDENTIAL_STORE_NONCE_BYTES] {
+    let mut seed = Vec::new();
+    seed.extend_from_slice(&current_unix_timestamp().to_le_bytes());
+    seed.extend_from_slice(&(std::process::id() as u64).to_le_bytes());
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    seed.extend_from_slice(&now_nanos.to_le_bytes());
+    let digest = Sha256::digest(seed);
+    let mut nonce = [0u8; CREDENTIAL_STORE_NONCE_BYTES];
+    nonce.copy_from_slice(&digest[..CREDENTIAL_STORE_NONCE_BYTES]);
+    nonce
+}
+
+fn xor_with_keyed_stream(data: &[u8], key: &[u8; 32], nonce: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(data.len());
+    let mut offset = 0usize;
+    let mut counter = 0u64;
+    while offset < data.len() {
+        let mut hasher = Sha256::new();
+        hasher.update(key);
+        hasher.update(nonce);
+        hasher.update(counter.to_le_bytes());
+        let block = hasher.finalize();
+        for byte in block {
+            if offset >= data.len() {
+                break;
+            }
+            output.push(data[offset] ^ byte);
+            offset += 1;
+        }
+        counter = counter.saturating_add(1);
+    }
+    output
+}
+
+fn credential_store_tag(key: &[u8; 32], nonce: &[u8], ciphertext: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    hasher.update(nonce);
+    hasher.update(ciphertext);
+    hasher.update(b"pi-credential-store-v1");
+    let digest = hasher.finalize();
+    let mut tag = [0u8; 32];
+    tag.copy_from_slice(&digest);
+    tag
+}
+
+fn timing_safe_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (lhs, rhs) in left.iter().zip(right) {
+        diff |= lhs ^ rhs;
+    }
+    diff == 0
+}
+
+fn encrypt_credential_store_secret(
+    secret: &str,
+    mode: CredentialStoreEncryptionMode,
+    key: Option<&str>,
+) -> Result<String> {
+    let secret = secret.trim();
+    if secret.is_empty() {
+        bail!("credential secret must not be empty");
+    }
+
+    match mode {
+        CredentialStoreEncryptionMode::None => Ok(secret.to_string()),
+        CredentialStoreEncryptionMode::Keyed => {
+            let key = derive_credential_store_key_material(key)?;
+            let nonce = derive_credential_store_nonce();
+            let ciphertext = xor_with_keyed_stream(secret.as_bytes(), &key, &nonce);
+            let tag = credential_store_tag(&key, &nonce, &ciphertext);
+
+            let mut payload = Vec::with_capacity(
+                CREDENTIAL_STORE_NONCE_BYTES + CREDENTIAL_STORE_TAG_BYTES + ciphertext.len(),
+            );
+            payload.extend_from_slice(&nonce);
+            payload.extend_from_slice(&tag);
+            payload.extend_from_slice(&ciphertext);
+
+            Ok(format!(
+                "{CREDENTIAL_STORE_ENCRYPTED_PREFIX}{}",
+                BASE64_STANDARD.encode(payload)
+            ))
+        }
+    }
+}
+
+fn decrypt_credential_store_secret(
+    encoded: &str,
+    mode: CredentialStoreEncryptionMode,
+    key: Option<&str>,
+) -> Result<String> {
+    match mode {
+        CredentialStoreEncryptionMode::None => {
+            let value = encoded.trim();
+            if value.is_empty() {
+                bail!("credential secret must not be empty");
+            }
+            Ok(value.to_string())
+        }
+        CredentialStoreEncryptionMode::Keyed => {
+            let key = derive_credential_store_key_material(key)?;
+            let payload = encoded
+                .strip_prefix(CREDENTIAL_STORE_ENCRYPTED_PREFIX)
+                .ok_or_else(|| anyhow!("credential payload prefix is invalid"))?;
+            let raw = BASE64_STANDARD
+                .decode(payload)
+                .map_err(|_| anyhow!("credential payload encoding is invalid"))?;
+            if raw.len() < CREDENTIAL_STORE_NONCE_BYTES + CREDENTIAL_STORE_TAG_BYTES {
+                bail!("credential payload is truncated");
+            }
+
+            let nonce_end = CREDENTIAL_STORE_NONCE_BYTES;
+            let tag_end = nonce_end + CREDENTIAL_STORE_TAG_BYTES;
+            let nonce = &raw[..nonce_end];
+            let tag = &raw[nonce_end..tag_end];
+            let ciphertext = &raw[tag_end..];
+
+            let expected_tag = credential_store_tag(&key, nonce, ciphertext);
+            if !timing_safe_equal(tag, &expected_tag) {
+                bail!("credential payload integrity check failed");
+            }
+
+            let plaintext = xor_with_keyed_stream(ciphertext, &key, nonce);
+            let secret = String::from_utf8(plaintext)
+                .map_err(|_| anyhow!("credential payload is not valid UTF-8"))?;
+            if secret.trim().is_empty() {
+                bail!("credential payload resolves to an empty secret");
+            }
+            Ok(secret)
+        }
+    }
+}
+
+fn load_credential_store(
+    path: &Path,
+    default_mode: CredentialStoreEncryptionMode,
+    key: Option<&str>,
+) -> Result<CredentialStoreData> {
+    if !path.exists() {
+        return Ok(CredentialStoreData {
+            encryption: default_mode,
+            providers: BTreeMap::new(),
+        });
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read credential store {}", path.display()))?;
+    let parsed = serde_json::from_str::<CredentialStoreFile>(&raw)
+        .with_context(|| format!("failed to parse credential store {}", path.display()))?;
+    if parsed.schema_version != CREDENTIAL_STORE_SCHEMA_VERSION {
+        bail!(
+            "unsupported credential store schema_version {} in {} (expected {})",
+            parsed.schema_version,
+            path.display(),
+            CREDENTIAL_STORE_SCHEMA_VERSION
+        );
+    }
+
+    let mut providers = BTreeMap::new();
+    for (provider, record) in parsed.providers {
+        let access_token = record
+            .access_token
+            .map(|value| {
+                decrypt_credential_store_secret(&value, parsed.encryption, key).with_context(|| {
+                    format!(
+                        "credential store entry '{}' access token is invalid or corrupted",
+                        provider
+                    )
+                })
+            })
+            .transpose()?;
+        let refresh_token = record
+            .refresh_token
+            .map(|value| {
+                decrypt_credential_store_secret(&value, parsed.encryption, key).with_context(|| {
+                    format!(
+                        "credential store entry '{}' refresh token is invalid or corrupted",
+                        provider
+                    )
+                })
+            })
+            .transpose()?;
+        providers.insert(
+            provider,
+            ProviderCredentialStoreRecord {
+                auth_method: record.auth_method,
+                access_token,
+                refresh_token,
+                expires_unix: record.expires_unix,
+                revoked: record.revoked,
+            },
+        );
+    }
+
+    Ok(CredentialStoreData {
+        encryption: parsed.encryption,
+        providers,
+    })
+}
+
+fn save_credential_store(
+    path: &Path,
+    store: &CredentialStoreData,
+    key: Option<&str>,
+) -> Result<()> {
+    let mut providers = BTreeMap::new();
+    for (provider, record) in &store.providers {
+        let access_token = record
+            .access_token
+            .as_deref()
+            .map(|value| {
+                encrypt_credential_store_secret(value, store.encryption, key).with_context(|| {
+                    format!(
+                        "failed to encode credential store entry '{}' access token",
+                        provider
+                    )
+                })
+            })
+            .transpose()?;
+        let refresh_token = record
+            .refresh_token
+            .as_deref()
+            .map(|value| {
+                encrypt_credential_store_secret(value, store.encryption, key).with_context(|| {
+                    format!(
+                        "failed to encode credential store entry '{}' refresh token",
+                        provider
+                    )
+                })
+            })
+            .transpose()?;
+        providers.insert(
+            provider.clone(),
+            StoredProviderCredential {
+                auth_method: record.auth_method,
+                access_token,
+                refresh_token,
+                expires_unix: record.expires_unix,
+                revoked: record.revoked,
+            },
+        );
+    }
+
+    let payload = CredentialStoreFile {
+        schema_version: CREDENTIAL_STORE_SCHEMA_VERSION,
+        encryption: store.encryption,
+        providers,
+    };
+    let mut encoded =
+        serde_json::to_string_pretty(&payload).context("failed to encode credential store")?;
+    encoded.push('\n');
+    write_text_atomic(path, &encoded)
+}
+
+fn refresh_provider_access_token(
+    provider: Provider,
+    refresh_token: &str,
+    now_unix: u64,
+) -> Result<RefreshedProviderCredential> {
+    let refresh_token = refresh_token.trim();
+    if refresh_token.is_empty() {
+        bail!("refresh token is empty");
+    }
+    if refresh_token.starts_with("revoked") {
+        bail!("refresh token revoked");
+    }
+    if refresh_token.starts_with("invalid") {
+        bail!("refresh token invalid");
+    }
+
+    let seed = format!("{}:{refresh_token}:{now_unix}", provider.as_str());
+    let digest = format!("{:x}", Sha256::digest(seed.as_bytes()));
+    Ok(RefreshedProviderCredential {
+        access_token: format!("{}_access_{}", provider.as_str(), &digest[..24]),
+        refresh_token: Some(format!("{}_refresh_{}", provider.as_str(), &digest[24..48])),
+        expires_unix: Some(now_unix.saturating_add(3600)),
+    })
+}
+
+fn reauth_required_error(provider: Provider, reason: &str) -> anyhow::Error {
+    anyhow!(
+        "provider '{}' requires re-authentication: {reason}",
+        provider.as_str()
+    )
+}
+
+fn resolve_store_backed_provider_credential(
+    cli: &Cli,
+    provider: Provider,
+    method: ProviderAuthMethod,
+) -> Result<ResolvedProviderCredential> {
+    let key = cli.credential_store_key.as_deref();
+    let default_mode = resolve_credential_store_encryption_mode(cli);
+    let mut store =
+        load_credential_store(&cli.credential_store, default_mode, key).with_context(|| {
+            format!(
+                "failed to load provider credential store {}",
+                cli.credential_store.display()
+            )
+        })?;
+    let provider_key = provider.as_str().to_string();
+    let Some(mut entry) = store.providers.get(&provider_key).cloned() else {
+        return Err(reauth_required_error(
+            provider,
+            "credential store entry is missing",
+        ));
+    };
+
+    if entry.auth_method != method {
+        return Err(reauth_required_error(
+            provider,
+            "credential store auth mode does not match requested mode",
+        ));
+    }
+    if entry.revoked {
+        return Err(reauth_required_error(provider, "credential is revoked"));
+    }
+
+    let now_unix = current_unix_timestamp();
+    let is_expired = entry
+        .expires_unix
+        .map(|value| value <= now_unix)
+        .unwrap_or(false);
+    let mut store_dirty = false;
+    if is_expired {
+        let Some(refresh_token) = entry
+            .refresh_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+        else {
+            return Err(reauth_required_error(
+                provider,
+                "credential expired and no refresh token is available",
+            ));
+        };
+
+        match refresh_provider_access_token(provider, &refresh_token, now_unix) {
+            Ok(refreshed) => {
+                entry.access_token = Some(refreshed.access_token.clone());
+                entry.refresh_token = refreshed
+                    .refresh_token
+                    .clone()
+                    .or(Some(refresh_token));
+                entry.expires_unix = refreshed.expires_unix;
+                entry.revoked = false;
+                store_dirty = true;
+            }
+            Err(error) => {
+                if error.to_string().contains("revoked") {
+                    entry.revoked = true;
+                    store.providers.insert(provider_key.clone(), entry.clone());
+                    let _ = save_credential_store(&cli.credential_store, &store, key);
+                    return Err(reauth_required_error(
+                        provider,
+                        "refresh token has been revoked",
+                    ));
+                }
+                return Err(reauth_required_error(provider, "credential refresh failed"));
+            }
+        }
+    }
+
+    let access_token = entry
+        .access_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            reauth_required_error(
+                provider,
+                "credential store entry does not contain an access token",
+            )
+        })?;
+
+    if store_dirty {
+        store.providers.insert(provider_key, entry.clone());
+        save_credential_store(&cli.credential_store, &store, key).with_context(|| {
+            format!(
+                "failed to persist refreshed provider credential store {}",
+                cli.credential_store.display()
+            )
+        })?;
+    }
+
+    Ok(ResolvedProviderCredential {
+        method,
+        secret: Some(access_token),
+        source: Some("credential_store".to_string()),
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProviderAuthCapability {
     method: ProviderAuthMethod,
@@ -7334,8 +7854,8 @@ const OPENAI_AUTH_CAPABILITIES: &[ProviderAuthCapability] = &[
     },
     ProviderAuthCapability {
         method: ProviderAuthMethod::OauthToken,
-        supported: false,
-        reason: "not_implemented",
+        supported: true,
+        reason: "supported",
     },
     ProviderAuthCapability {
         method: ProviderAuthMethod::Adc,
@@ -7344,8 +7864,8 @@ const OPENAI_AUTH_CAPABILITIES: &[ProviderAuthCapability] = &[
     },
     ProviderAuthCapability {
         method: ProviderAuthMethod::SessionToken,
-        supported: false,
-        reason: "unsupported",
+        supported: true,
+        reason: "supported",
     },
 ];
 
@@ -7524,9 +8044,10 @@ impl ProviderCredentialResolver for CliProviderCredentialResolver<'_> {
                     source: Some(source),
                 })
             }
-            ProviderAuthMethod::OauthToken
-            | ProviderAuthMethod::Adc
-            | ProviderAuthMethod::SessionToken => Ok(ResolvedProviderCredential {
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken => {
+                resolve_store_backed_provider_credential(self.cli, provider, method)
+            }
+            ProviderAuthMethod::Adc => Ok(ResolvedProviderCredential {
                 method,
                 secret: None,
                 source: None,
@@ -7957,51 +8478,57 @@ mod tests {
         apply_trust_root_mutations, branch_alias_path_for_session, build_doctor_command_config,
         build_profile_defaults, build_provider_client, build_tool_policy,
         command_file_error_mode_label, compute_session_entry_depths, compute_session_stats,
-        default_macro_config_path, default_profile_store_path, default_skills_lock_path,
-        derive_skills_prune_candidates, ensure_non_empty_text, escape_graph_label,
-        execute_branch_alias_command, execute_command_file, execute_doctor_command,
-        execute_macro_command, execute_profile_command, execute_session_bookmark_command,
-        execute_session_diff_command, execute_session_graph_export_command,
-        execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+        decrypt_credential_store_secret, default_macro_config_path, default_profile_store_path,
+        default_skills_lock_path, derive_skills_prune_candidates, encrypt_credential_store_secret,
+        ensure_non_empty_text, escape_graph_label, execute_branch_alias_command,
+        execute_command_file, execute_doctor_command, execute_macro_command,
+        execute_profile_command, execute_session_bookmark_command, execute_session_diff_command,
+        execute_session_graph_export_command, execute_session_search_command,
+        execute_session_stats_command, execute_skills_list_command,
         execute_skills_lock_diff_command, execute_skills_lock_write_command,
         execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
         execute_skills_sync_command, execute_skills_trust_add_command,
         execute_skills_trust_list_command, execute_skills_trust_revoke_command,
         execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
         format_remap_ids, handle_command, handle_command_with_session_import_mode,
-        initialize_session, is_retryable_provider_error, load_branch_aliases, load_macro_file,
-        load_profile_store, load_session_bookmarks, load_trust_root_records,
-        parse_branch_alias_command, parse_command, parse_command_file, parse_doctor_command_args,
-        parse_macro_command, parse_profile_command, parse_sandbox_command_tokens,
-        parse_session_bookmark_command, parse_session_diff_args, parse_session_search_args,
-        parse_session_stats_args, parse_skills_lock_diff_args, parse_skills_prune_args,
-        parse_skills_search_args, parse_skills_trust_list_args, parse_skills_trust_mutation_args,
-        parse_skills_verify_args, parse_trust_rotation_spec, parse_trusted_root_spec,
-        percentile_duration_ms, provider_auth_capability, render_audit_summary,
-        render_command_help, render_doctor_report, render_doctor_report_json, render_help_overview,
-        render_macro_list, render_macro_show, render_profile_diffs, render_profile_list,
-        render_profile_show, render_session_diff, render_session_graph_dot,
-        render_session_graph_mermaid, render_session_stats, render_session_stats_json,
-        render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+        initialize_session, is_retryable_provider_error, load_branch_aliases,
+        load_credential_store, load_macro_file, load_profile_store, load_session_bookmarks,
+        load_trust_root_records, parse_branch_alias_command, parse_command, parse_command_file,
+        parse_doctor_command_args, parse_macro_command, parse_profile_command,
+        parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
+        parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
+        parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
+        parse_skills_trust_mutation_args, parse_skills_verify_args, parse_trust_rotation_spec,
+        parse_trusted_root_spec, percentile_duration_ms, provider_auth_capability,
+        current_unix_timestamp, refresh_provider_access_token, render_audit_summary,
+        render_command_help,
+        render_doctor_report, render_doctor_report_json, render_help_overview, render_macro_list,
+        render_macro_show, render_profile_diffs, render_profile_list, render_profile_show,
+        render_session_diff, render_session_graph_dot, render_session_graph_mermaid,
+        render_session_stats, render_session_stats_json, render_skills_list,
+        render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
         render_skills_lock_write_success, render_skills_search, render_skills_show,
         render_skills_sync_drift_details, render_skills_trust_list, render_skills_verify_report,
-        resolve_fallback_models, resolve_prompt_input, resolve_prunable_skill_file_name,
-        resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
-        resolve_system_prompt, run_doctor_checks, run_prompt_with_cancellation,
-        save_branch_aliases, save_macro_file, save_profile_store, save_session_bookmarks,
+        resolve_credential_store_encryption_mode, resolve_fallback_models, resolve_prompt_input,
+        resolve_prunable_skill_file_name, resolve_session_graph_format, resolve_skill_trust_roots,
+        resolve_skills_lock_path, resolve_store_backed_provider_credential, resolve_system_prompt,
+        run_doctor_checks, run_prompt_with_cancellation, save_branch_aliases,
+        save_credential_store, save_macro_file, save_profile_store, save_session_bookmarks,
         search_session_entries, session_bookmark_path_for_session, session_message_preview,
         shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
         tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
         validate_branch_alias_name, validate_macro_command_entry, validate_macro_name,
         validate_profile_name, validate_session_file, validate_skills_prune_file_name,
         BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-        CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
-        ClientRoute, CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
-        DoctorCheckResult, DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus,
-        DoctorStatus, FallbackRoutingClient, MacroCommand, MacroFile, ProfileCommand,
-        ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
-        ProviderAuthMethod, RenderOptions, SessionBookmarkCommand, SessionBookmarkFile,
-        SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionStats,
+        CliCredentialStoreEncryptionMode, CliOsSandboxMode, CliProviderAuthMode,
+        CliSessionImportMode, CliToolPolicyPreset, ClientRoute, CommandAction,
+        CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
+        CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
+        DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
+        MacroCommand, MacroFile, ProfileCommand, ProfileDefaults, ProfileStoreFile,
+        PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
+        RenderOptions, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
+        SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionStats,
         SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
         SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
         ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
@@ -8120,6 +8647,9 @@ mod tests {
             openai_auth_mode: CliProviderAuthMode::ApiKey,
             anthropic_auth_mode: CliProviderAuthMode::ApiKey,
             google_auth_mode: CliProviderAuthMode::ApiKey,
+            credential_store: PathBuf::from(".pi/credentials.json"),
+            credential_store_key: None,
+            credential_store_encryption: CliCredentialStoreEncryptionMode::Auto,
             system_prompt: "sys".to_string(),
             system_prompt_file: None,
             skills_dir: PathBuf::from(".pi/skills"),
@@ -8180,6 +8710,21 @@ mod tests {
             os_sandbox_command: vec![],
             enforce_regular_files: true,
         }
+    }
+
+    fn write_test_provider_credential(
+        path: &Path,
+        encryption: CredentialStoreEncryptionMode,
+        key: Option<&str>,
+        provider: Provider,
+        record: ProviderCredentialStoreRecord,
+    ) {
+        let mut store = CredentialStoreData {
+            encryption,
+            providers: BTreeMap::new(),
+        };
+        store.providers.insert(provider.as_str().to_string(), record);
+        save_credential_store(path, &store, key).expect("save credential store");
     }
 
     fn skills_command_config(
@@ -8293,6 +8838,42 @@ mod tests {
         assert_eq!(cli.openai_auth_mode, CliProviderAuthMode::OauthToken);
         assert_eq!(cli.anthropic_auth_mode, CliProviderAuthMode::SessionToken);
         assert_eq!(cli.google_auth_mode, CliProviderAuthMode::Adc);
+    }
+
+    #[test]
+    fn unit_cli_credential_store_flags_default_to_auto_mode_and_default_path() {
+        let cli = Cli::parse_from(["pi-rs"]);
+        assert_eq!(cli.credential_store, PathBuf::from(".pi/credentials.json"));
+        assert!(cli.credential_store_key.is_none());
+        assert_eq!(
+            cli.credential_store_encryption,
+            CliCredentialStoreEncryptionMode::Auto
+        );
+    }
+
+    #[test]
+    fn functional_cli_credential_store_flags_accept_explicit_overrides() {
+        let cli = Cli::parse_from([
+            "pi-rs",
+            "--credential-store",
+            "custom/credentials.json",
+            "--credential-store-key",
+            "secret-store-key",
+            "--credential-store-encryption",
+            "keyed",
+        ]);
+        assert_eq!(
+            cli.credential_store,
+            PathBuf::from("custom/credentials.json")
+        );
+        assert_eq!(
+            cli.credential_store_key.as_deref(),
+            Some("secret-store-key")
+        );
+        assert_eq!(
+            cli.credential_store_encryption,
+            CliCredentialStoreEncryptionMode::Keyed
+        );
     }
 
     #[test]
@@ -8567,13 +9148,13 @@ mod tests {
     #[test]
     fn regression_build_provider_client_rejects_unsupported_auth_mode() {
         let mut cli = test_cli();
-        cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+        cli.google_auth_mode = CliProviderAuthMode::OauthToken;
 
-        match build_provider_client(&cli, Provider::OpenAi) {
+        match build_provider_client(&cli, Provider::Google) {
             Ok(_) => panic!("unsupported auth mode should fail"),
             Err(error) => {
                 assert!(error.to_string().contains("unsupported auth mode"));
-                assert!(error.to_string().contains("--openai-auth-mode api-key"));
+                assert!(error.to_string().contains("--google-auth-mode api-key"));
             }
         }
     }
@@ -8586,6 +9167,254 @@ mod tests {
         let client = build_provider_client(&cli, Provider::OpenAi).expect("build client");
         let ptr = Arc::as_ptr(&client);
         assert!(!ptr.is_null());
+    }
+
+    #[test]
+    fn unit_encrypt_and_decrypt_credential_store_secret_roundtrip_keyed() {
+        let secret = "secret-token-123";
+        let encoded = encrypt_credential_store_secret(
+            secret,
+            CredentialStoreEncryptionMode::Keyed,
+            Some("very-strong-key"),
+        )
+        .expect("encode credential");
+        assert!(encoded.starts_with("enc:v1:"));
+        assert!(!encoded.contains(secret));
+
+        let decoded = decrypt_credential_store_secret(
+            &encoded,
+            CredentialStoreEncryptionMode::Keyed,
+            Some("very-strong-key"),
+        )
+        .expect("decode credential");
+        assert_eq!(decoded, secret);
+    }
+
+    #[test]
+    fn regression_decrypt_credential_store_secret_rejects_wrong_key() {
+        let encoded = encrypt_credential_store_secret(
+            "secret-token-xyz",
+            CredentialStoreEncryptionMode::Keyed,
+            Some("correct-key-123"),
+        )
+        .expect("encode credential");
+
+        let error = decrypt_credential_store_secret(
+            &encoded,
+            CredentialStoreEncryptionMode::Keyed,
+            Some("wrong-key-123"),
+        )
+        .expect_err("wrong key should fail");
+        assert!(error.to_string().contains("integrity check failed"));
+    }
+
+    #[test]
+    fn functional_credential_store_roundtrip_preserves_provider_records() {
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join("credentials.json");
+        write_test_provider_credential(
+            &store_path,
+            CredentialStoreEncryptionMode::Keyed,
+            Some("credential-key"),
+            Provider::OpenAi,
+            ProviderCredentialStoreRecord {
+                auth_method: ProviderAuthMethod::OauthToken,
+                access_token: Some("openai-access".to_string()),
+                refresh_token: Some("openai-refresh".to_string()),
+                expires_unix: Some(12345),
+                revoked: false,
+            },
+        );
+
+        let loaded = load_credential_store(
+            &store_path,
+            CredentialStoreEncryptionMode::None,
+            Some("credential-key"),
+        )
+        .expect("load credential store");
+        let entry = loaded
+            .providers
+            .get("openai")
+            .expect("openai entry should exist");
+        assert_eq!(entry.auth_method, ProviderAuthMethod::OauthToken);
+        assert_eq!(entry.access_token.as_deref(), Some("openai-access"));
+        assert_eq!(entry.refresh_token.as_deref(), Some("openai-refresh"));
+        assert_eq!(entry.expires_unix, Some(12345));
+        assert!(!entry.revoked);
+    }
+
+    #[test]
+    fn functional_resolve_store_backed_provider_credential_refreshes_expired_token() {
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join("credentials.json");
+        let now = current_unix_timestamp();
+
+        write_test_provider_credential(
+            &store_path,
+            CredentialStoreEncryptionMode::None,
+            None,
+            Provider::OpenAi,
+            ProviderCredentialStoreRecord {
+                auth_method: ProviderAuthMethod::OauthToken,
+                access_token: Some("stale-access".to_string()),
+                refresh_token: Some("refresh-token".to_string()),
+                expires_unix: Some(now.saturating_sub(30)),
+                revoked: false,
+            },
+        );
+
+        let mut cli = test_cli();
+        cli.credential_store = store_path.clone();
+        cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+        cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+
+        let resolved = resolve_store_backed_provider_credential(
+            &cli,
+            Provider::OpenAi,
+            ProviderAuthMethod::OauthToken,
+        )
+        .expect("resolve refreshed credential");
+        assert_eq!(resolved.method, ProviderAuthMethod::OauthToken);
+        assert_eq!(resolved.source.as_deref(), Some("credential_store"));
+        let access = resolved.secret.expect("access token");
+        assert!(access.starts_with("openai_access_"));
+        assert_ne!(access, "stale-access");
+
+        let persisted =
+            load_credential_store(&store_path, CredentialStoreEncryptionMode::None, None)
+                .expect("reload store");
+        let entry = persisted.providers.get("openai").expect("openai entry");
+        assert_eq!(entry.access_token.as_deref(), Some(access.as_str()));
+        assert!(entry.expires_unix.unwrap_or(0) > now);
+    }
+
+    #[test]
+    fn functional_refresh_provider_access_token_generates_deterministic_shape() {
+        let refreshed = refresh_provider_access_token(Provider::OpenAi, "refresh-token", 1700)
+            .expect("refresh token");
+        assert!(refreshed.access_token.starts_with("openai_access_"));
+        assert!(refreshed
+            .refresh_token
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("openai_refresh_"));
+        assert_eq!(refreshed.expires_unix, Some(1700 + 3600));
+    }
+
+    #[test]
+    fn regression_resolve_store_backed_provider_credential_marks_revoked_refresh_token() {
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join("credentials.json");
+        let now = current_unix_timestamp();
+
+        write_test_provider_credential(
+            &store_path,
+            CredentialStoreEncryptionMode::None,
+            None,
+            Provider::OpenAi,
+            ProviderCredentialStoreRecord {
+                auth_method: ProviderAuthMethod::OauthToken,
+                access_token: Some("stale-access".to_string()),
+                refresh_token: Some("revoked-refresh-token".to_string()),
+                expires_unix: Some(now.saturating_sub(5)),
+                revoked: false,
+            },
+        );
+
+        let mut cli = test_cli();
+        cli.credential_store = store_path.clone();
+        cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+        cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+
+        let error = resolve_store_backed_provider_credential(
+            &cli,
+            Provider::OpenAi,
+            ProviderAuthMethod::OauthToken,
+        )
+        .expect_err("revoked refresh should require re-auth");
+        assert!(error.to_string().contains("requires re-authentication"));
+        assert!(error.to_string().contains("revoked"));
+
+        let persisted =
+            load_credential_store(&store_path, CredentialStoreEncryptionMode::None, None)
+                .expect("reload store");
+        let entry = persisted.providers.get("openai").expect("openai entry");
+        assert!(entry.revoked);
+    }
+
+    #[test]
+    fn regression_resolve_store_backed_provider_credential_hides_corrupted_payload_values() {
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join("credentials.json");
+        let leaked_value = "leaky-secret-token";
+        let payload = format!(
+            "{{\"schema_version\":1,\"encryption\":\"keyed\",\"providers\":{{\"openai\":{{\"auth_method\":\"oauth_token\",\"access_token\":\"enc:v1:not-base64-{leaked_value}\",\"refresh_token\":null,\"expires_unix\":null,\"revoked\":false}}}}}}"
+        );
+        std::fs::write(&store_path, payload).expect("write corrupted store");
+
+        let mut cli = test_cli();
+        cli.credential_store = store_path;
+        cli.credential_store_key = Some("valid-key-123".to_string());
+        cli.credential_store_encryption = CliCredentialStoreEncryptionMode::Keyed;
+        cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+
+        let error = resolve_store_backed_provider_credential(
+            &cli,
+            Provider::OpenAi,
+            ProviderAuthMethod::OauthToken,
+        )
+        .expect_err("corrupted store should fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("failed to load provider credential store")
+                || message.contains("invalid or corrupted")
+        );
+        assert!(!error.to_string().contains(leaked_value));
+    }
+
+    #[test]
+    fn integration_build_provider_client_supports_openai_oauth_from_credential_store() {
+        let temp = tempdir().expect("tempdir");
+        let store_path = temp.path().join("credentials.json");
+        write_test_provider_credential(
+            &store_path,
+            CredentialStoreEncryptionMode::None,
+            None,
+            Provider::OpenAi,
+            ProviderCredentialStoreRecord {
+                auth_method: ProviderAuthMethod::OauthToken,
+                access_token: Some("openai-oauth-access".to_string()),
+                refresh_token: Some("refresh-token".to_string()),
+                expires_unix: Some(current_unix_timestamp().saturating_add(900)),
+                revoked: false,
+            },
+        );
+
+        let mut cli = test_cli();
+        cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+        cli.credential_store = store_path;
+        cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+
+        let client = build_provider_client(&cli, Provider::OpenAi).expect("build oauth client");
+        let ptr = Arc::as_ptr(&client);
+        assert!(!ptr.is_null());
+    }
+
+    #[test]
+    fn unit_resolve_credential_store_encryption_mode_auto_uses_key_presence() {
+        let mut cli = test_cli();
+        cli.credential_store_encryption = CliCredentialStoreEncryptionMode::Auto;
+        cli.credential_store_key = None;
+        assert_eq!(
+            resolve_credential_store_encryption_mode(&cli),
+            CredentialStoreEncryptionMode::None
+        );
+
+        cli.credential_store_key = Some("configured-key".to_string());
+        assert_eq!(
+            resolve_credential_store_encryption_mode(&cli),
+            CredentialStoreEncryptionMode::Keyed
+        );
     }
 
     #[test]
