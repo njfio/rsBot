@@ -1,4 +1,5 @@
 mod auth_commands;
+mod bootstrap_helpers;
 mod channel_store;
 mod channel_store_admin;
 mod commands;
@@ -51,12 +52,11 @@ use pi_ai::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
 
 pub(crate) use crate::auth_commands::execute_auth_command;
 #[cfg(test)]
 pub(crate) use crate::auth_commands::{parse_auth_command, AuthCommand};
+pub(crate) use crate::bootstrap_helpers::{command_file_error_mode_label, init_tracing};
 use crate::channel_store::ChannelStore;
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 #[cfg(test)]
@@ -278,13 +278,6 @@ impl From<CliSessionImportMode> for SessionImportMode {
 enum CliCommandFileErrorMode {
     FailFast,
     ContinueOnError,
-}
-
-fn command_file_error_mode_label(mode: CliCommandFileErrorMode) -> &'static str {
-    match mode {
-        CliCommandFileErrorMode::FailFast => "fail-fast",
-        CliCommandFileErrorMode::ContinueOnError => "continue-on-error",
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1887,18 +1880,6 @@ pub(crate) fn write_text_atomic(path: &Path, content: &str) -> Result<()> {
         )
     })?;
     Ok(())
-}
-
-fn init_tracing() {
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::WARN.into())
-        .from_env_lossy();
-
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .compact()
-        .init();
 }
 
 #[cfg(test)]
