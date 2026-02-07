@@ -32,10 +32,11 @@ use tracing_subscriber::EnvFilter;
 use crate::session::{SessionImportMode, SessionStore};
 use crate::skills::{
     augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
-    build_remote_skill_lock_hints, default_skills_lock_path, fetch_registry_manifest,
-    install_remote_skills, install_skills, load_catalog, load_skills_lockfile,
-    resolve_registry_skill_sources, resolve_remote_skill_sources, resolve_selected_skills,
-    sync_skills_with_lockfile, write_skills_lockfile, TrustedKey,
+    build_remote_skill_lock_hints, default_skills_cache_dir, default_skills_lock_path,
+    fetch_registry_manifest_with_cache, install_remote_skills_with_cache, install_skills,
+    load_catalog, load_skills_lockfile, resolve_registry_skill_sources,
+    resolve_remote_skill_sources, resolve_selected_skills, sync_skills_with_lockfile,
+    write_skills_lockfile, SkillsDownloadOptions, TrustedKey,
 };
 use crate::tools::{
     tool_policy_preset_name, BashCommandProfile, OsSandboxMode, ToolPolicy, ToolPolicyPreset,
@@ -277,6 +278,21 @@ struct Cli {
         help = "Skill name(s) to install from the remote registry"
     )]
     install_skill_from_registry: Vec<String>,
+
+    #[arg(
+        long = "skills-cache-dir",
+        env = "PI_SKILLS_CACHE_DIR",
+        help = "Cache directory for downloaded registry manifests and remote skill artifacts (defaults to <skills-dir>/.cache)"
+    )]
+    skills_cache_dir: Option<PathBuf>,
+
+    #[arg(
+        long = "skills-offline",
+        env = "PI_SKILLS_OFFLINE",
+        default_value_t = false,
+        help = "Disable network fetches for remote/registry skills and require cache hits"
+    )]
+    skills_offline: bool,
 
     #[arg(
         long = "skill-trust-root",
@@ -1560,10 +1576,23 @@ async fn main() -> Result<()> {
             report.installed, report.updated, report.skipped
         );
     }
+    let skills_download_options = SkillsDownloadOptions {
+        cache_dir: Some(
+            cli.skills_cache_dir
+                .clone()
+                .unwrap_or_else(|| default_skills_cache_dir(&cli.skills_dir)),
+        ),
+        offline: cli.skills_offline,
+    };
     let remote_skill_sources =
         resolve_remote_skill_sources(&cli.install_skill_url, &cli.install_skill_sha256)?;
     if !remote_skill_sources.is_empty() {
-        let report = install_remote_skills(&remote_skill_sources, &cli.skills_dir).await?;
+        let report = install_remote_skills_with_cache(
+            &remote_skill_sources,
+            &cli.skills_dir,
+            &skills_download_options,
+        )
+        .await?;
         skill_lock_hints.extend(build_remote_skill_lock_hints(&remote_skill_sources)?);
         println!(
             "remote skills install: installed={} updated={} skipped={}",
@@ -1575,15 +1604,21 @@ async fn main() -> Result<()> {
         let registry_url = cli.skill_registry_url.as_deref().ok_or_else(|| {
             anyhow!("--skill-registry-url is required when using --install-skill-from-registry")
         })?;
-        let manifest =
-            fetch_registry_manifest(registry_url, cli.skill_registry_sha256.as_deref()).await?;
+        let manifest = fetch_registry_manifest_with_cache(
+            registry_url,
+            cli.skill_registry_sha256.as_deref(),
+            &skills_download_options,
+        )
+        .await?;
         let sources = resolve_registry_skill_sources(
             &manifest,
             &cli.install_skill_from_registry,
             &trusted_skill_roots,
             cli.require_signed_skills,
         )?;
-        let report = install_remote_skills(&sources, &cli.skills_dir).await?;
+        let report =
+            install_remote_skills_with_cache(&sources, &cli.skills_dir, &skills_download_options)
+                .await?;
         skill_lock_hints.extend(build_registry_skill_lock_hints(
             registry_url,
             &cli.install_skill_from_registry,
@@ -7685,6 +7720,8 @@ mod tests {
             skill_registry_url: None,
             skill_registry_sha256: None,
             install_skill_from_registry: vec![],
+            skills_cache_dir: None,
+            skills_offline: false,
             skill_trust_root: vec![],
             skill_trust_root_file: None,
             skill_trust_add: vec![],
@@ -7843,6 +7880,28 @@ mod tests {
         assert_eq!(
             cli.skills_lock_file,
             Some(PathBuf::from("custom/skills.lock.json"))
+        );
+    }
+
+    #[test]
+    fn unit_cli_skills_cache_flags_default_to_online_mode() {
+        let cli = Cli::parse_from(["pi-rs"]);
+        assert!(!cli.skills_offline);
+        assert!(cli.skills_cache_dir.is_none());
+    }
+
+    #[test]
+    fn functional_cli_skills_cache_flags_accept_explicit_values() {
+        let cli = Cli::parse_from([
+            "pi-rs",
+            "--skills-offline",
+            "--skills-cache-dir",
+            "custom/skills-cache",
+        ]);
+        assert!(cli.skills_offline);
+        assert_eq!(
+            cli.skills_cache_dir,
+            Some(PathBuf::from("custom/skills-cache"))
         );
     }
 

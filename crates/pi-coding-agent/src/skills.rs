@@ -27,6 +27,15 @@ pub struct SkillInstallReport {
 
 const SKILLS_LOCK_SCHEMA_VERSION: u32 = 1;
 const SKILLS_LOCK_FILE_NAME: &str = "skills.lock.json";
+const SKILLS_CACHE_DIR_NAME: &str = ".cache";
+const SKILLS_CACHE_ARTIFACTS_DIR: &str = "artifacts";
+const SKILLS_CACHE_MANIFESTS_DIR: &str = "manifests";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillsDownloadOptions {
+    pub cache_dir: Option<PathBuf>,
+    pub offline: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteSkillSource {
@@ -237,9 +246,10 @@ pub fn resolve_remote_skill_sources(
         .collect())
 }
 
-pub async fn install_remote_skills(
+pub async fn install_remote_skills_with_cache(
     sources: &[RemoteSkillSource],
     destination_dir: &Path,
+    options: &SkillsDownloadOptions,
 ) -> Result<SkillInstallReport> {
     if sources.is_empty() {
         return Ok(SkillInstallReport::default());
@@ -258,51 +268,22 @@ pub async fn install_remote_skills(
             bail!("unsupported skill URL scheme '{}'", url.scheme());
         }
 
-        let response = client
-            .get(url.clone())
-            .send()
-            .await
-            .with_context(|| format!("failed to fetch skill URL '{}'", source.url))?;
-        if !response.status().is_success() {
-            bail!(
-                "failed to fetch skill URL '{}' with status {}",
-                source.url,
-                response.status()
-            );
-        }
-
-        let bytes = response
-            .bytes()
-            .await
-            .with_context(|| format!("failed to read skill response '{}'", source.url))?;
-        if let Some(expected_sha256) = &source.sha256 {
-            let actual_sha256 = sha256_hex(&bytes);
-            let expected_sha256 = normalize_sha256(expected_sha256);
-            if actual_sha256 != expected_sha256 {
-                bail!(
-                    "sha256 mismatch for '{}': expected {}, got {}",
-                    source.url,
-                    expected_sha256,
-                    actual_sha256
-                );
-            }
-        }
-        if source.signature.is_some() ^ source.signer_public_key.is_some() {
-            bail!(
-                "incomplete signature metadata for '{}': both signature and signer public key are required",
-                source.url
-            );
-        }
-        if let (Some(signature), Some(signer_public_key)) =
-            (&source.signature, &source.signer_public_key)
-        {
-            verify_ed25519_signature(bytes.as_ref(), signature, signer_public_key)
-                .with_context(|| format!("signature verification failed for '{}'", source.url))?;
-        }
+        let cache_path = options
+            .cache_dir
+            .as_deref()
+            .map(|cache_dir| remote_skill_cache_path(cache_dir, &source.url));
+        let bytes = fetch_remote_skill_bytes(
+            &client,
+            &url,
+            source,
+            cache_path.as_deref(),
+            options.offline,
+        )
+        .await?;
 
         let file_name = remote_skill_file_name(&url, index);
         let destination = destination_dir.join(file_name);
-        let content = String::from_utf8(bytes.to_vec())
+        let content = String::from_utf8(bytes)
             .with_context(|| format!("skill content from '{}' is not UTF-8", source.url))?;
 
         upsert_skill_file(&destination, &content, &mut report)?;
@@ -311,8 +292,107 @@ pub async fn install_remote_skills(
     Ok(report)
 }
 
+async fn fetch_remote_skill_bytes(
+    client: &reqwest::Client,
+    url: &Url,
+    source: &RemoteSkillSource,
+    cache_path: Option<&Path>,
+    offline: bool,
+) -> Result<Vec<u8>> {
+    validate_remote_skill_source_metadata(source)?;
+    if offline {
+        let cache_path = cache_path
+            .ok_or_else(|| anyhow!("offline mode requires a configured skills cache directory"))?;
+        let bytes = read_cached_payload(cache_path)
+            .with_context(|| format!("offline cache miss for skill URL '{}'", source.url))?;
+        validate_remote_skill_payload(source, &bytes).with_context(|| {
+            format!(
+                "cached skill payload validation failed for '{}'",
+                source.url
+            )
+        })?;
+        return Ok(bytes);
+    }
+
+    if let Some(cache_path) = cache_path {
+        if should_reuse_cached_remote_payload(source) {
+            if let Ok(bytes) = read_cached_payload(cache_path) {
+                if validate_remote_skill_payload(source, &bytes).is_ok() {
+                    return Ok(bytes);
+                }
+            }
+        }
+    }
+
+    let response = client
+        .get(url.clone())
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch skill URL '{}'", source.url))?;
+    if !response.status().is_success() {
+        bail!(
+            "failed to fetch skill URL '{}' with status {}",
+            source.url,
+            response.status()
+        );
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read skill response '{}'", source.url))?
+        .to_vec();
+
+    validate_remote_skill_payload(source, &bytes)?;
+    if let Some(cache_path) = cache_path {
+        write_cached_payload(cache_path, &bytes)
+            .with_context(|| format!("failed to cache skill URL '{}'", source.url))?;
+    }
+    Ok(bytes)
+}
+
+fn validate_remote_skill_source_metadata(source: &RemoteSkillSource) -> Result<()> {
+    if source.signature.is_some() ^ source.signer_public_key.is_some() {
+        bail!(
+            "incomplete signature metadata for '{}': both signature and signer public key are required",
+            source.url
+        );
+    }
+    Ok(())
+}
+
+fn validate_remote_skill_payload(source: &RemoteSkillSource, bytes: &[u8]) -> Result<()> {
+    if let Some(expected_sha256) = &source.sha256 {
+        let actual_sha256 = sha256_hex(bytes);
+        let expected_sha256 = normalize_sha256(expected_sha256);
+        if actual_sha256 != expected_sha256 {
+            bail!(
+                "sha256 mismatch for '{}': expected {}, got {}",
+                source.url,
+                expected_sha256,
+                actual_sha256
+            );
+        }
+    }
+
+    if let (Some(signature), Some(signer_public_key)) =
+        (&source.signature, &source.signer_public_key)
+    {
+        verify_ed25519_signature(bytes, signature, signer_public_key)
+            .with_context(|| format!("signature verification failed for '{}'", source.url))?;
+    }
+    Ok(())
+}
+
+fn should_reuse_cached_remote_payload(source: &RemoteSkillSource) -> bool {
+    source.sha256.is_some() || source.signature.is_some()
+}
+
 pub fn default_skills_lock_path(skills_dir: &Path) -> PathBuf {
     skills_dir.join(SKILLS_LOCK_FILE_NAME)
+}
+
+pub fn default_skills_cache_dir(skills_dir: &Path) -> PathBuf {
+    skills_dir.join(SKILLS_CACHE_DIR_NAME)
 }
 
 pub fn build_local_skill_lock_hints(sources: &[PathBuf]) -> Result<Vec<SkillLockHint>> {
@@ -521,14 +601,42 @@ pub fn sync_skills_with_lockfile(skills_dir: &Path, lock_path: &Path) -> Result<
     Ok(report)
 }
 
-pub async fn fetch_registry_manifest(
+pub async fn fetch_registry_manifest_with_cache(
     registry_url: &str,
     expected_sha256: Option<&str>,
+    options: &SkillsDownloadOptions,
 ) -> Result<SkillRegistryManifest> {
     let url = Url::parse(registry_url)
         .with_context(|| format!("invalid registry URL '{}'", registry_url))?;
     if !matches!(url.scheme(), "http" | "https") {
         bail!("unsupported registry URL scheme '{}'", url.scheme());
+    }
+
+    let cache_path = options
+        .cache_dir
+        .as_deref()
+        .map(|cache_dir| registry_manifest_cache_path(cache_dir, registry_url));
+    if options.offline {
+        let cache_path = cache_path
+            .ok_or_else(|| anyhow!("offline mode requires a configured skills cache directory"))?;
+        let bytes = read_cached_payload(&cache_path)
+            .with_context(|| format!("offline cache miss for registry '{}'", registry_url))?;
+        validate_registry_manifest_checksum(registry_url, expected_sha256, &bytes)?;
+        return parse_registry_manifest(registry_url, &bytes);
+    }
+
+    if let Some(cache_path) = cache_path.as_deref() {
+        if expected_sha256.is_some() {
+            if let Ok(bytes) = read_cached_payload(cache_path) {
+                if validate_registry_manifest_checksum(registry_url, expected_sha256, &bytes)
+                    .is_ok()
+                {
+                    if let Ok(manifest) = parse_registry_manifest(registry_url, &bytes) {
+                        return Ok(manifest);
+                    }
+                }
+            }
+        }
     }
 
     let response = reqwest::Client::new()
@@ -543,14 +651,37 @@ pub async fn fetch_registry_manifest(
             response.status()
         );
     }
-
     let bytes = response
         .bytes()
         .await
-        .with_context(|| format!("failed to read registry response '{}'", registry_url))?;
+        .with_context(|| format!("failed to read registry response '{}'", registry_url))?
+        .to_vec();
 
+    validate_registry_manifest_checksum(registry_url, expected_sha256, &bytes)?;
+    let manifest = parse_registry_manifest(registry_url, &bytes)?;
+    if let Some(cache_path) = cache_path.as_deref() {
+        write_cached_payload(cache_path, &bytes)
+            .with_context(|| format!("failed to cache registry '{}'", registry_url))?;
+    }
+    Ok(manifest)
+}
+
+fn parse_registry_manifest(registry_url: &str, bytes: &[u8]) -> Result<SkillRegistryManifest> {
+    let manifest = serde_json::from_slice::<SkillRegistryManifest>(bytes)
+        .with_context(|| format!("failed to parse registry '{}'", registry_url))?;
+    if manifest.version == 0 {
+        bail!("registry '{}' has invalid version 0", registry_url);
+    }
+    Ok(manifest)
+}
+
+fn validate_registry_manifest_checksum(
+    registry_url: &str,
+    expected_sha256: Option<&str>,
+    bytes: &[u8],
+) -> Result<()> {
     if let Some(expected_sha256) = expected_sha256 {
-        let actual_sha256 = sha256_hex(&bytes);
+        let actual_sha256 = sha256_hex(bytes);
         let expected_sha256 = normalize_sha256(expected_sha256);
         if actual_sha256 != expected_sha256 {
             bail!(
@@ -561,13 +692,7 @@ pub async fn fetch_registry_manifest(
             );
         }
     }
-
-    let manifest = serde_json::from_slice::<SkillRegistryManifest>(&bytes)
-        .with_context(|| format!("failed to parse registry '{}'", registry_url))?;
-    if manifest.version == 0 {
-        bail!("registry '{}' has invalid version 0", registry_url);
-    }
-    Ok(manifest)
+    Ok(())
 }
 
 pub fn resolve_registry_skill_sources(
@@ -942,6 +1067,30 @@ fn upsert_skill_file(
     Ok(())
 }
 
+fn remote_skill_cache_path(cache_dir: &Path, source_url: &str) -> PathBuf {
+    cache_dir
+        .join(SKILLS_CACHE_ARTIFACTS_DIR)
+        .join(format!("{}.bin", sha256_hex(source_url.as_bytes())))
+}
+
+fn registry_manifest_cache_path(cache_dir: &Path, registry_url: &str) -> PathBuf {
+    cache_dir
+        .join(SKILLS_CACHE_MANIFESTS_DIR)
+        .join(format!("{}.json", sha256_hex(registry_url.as_bytes())))
+}
+
+fn read_cached_payload(path: &Path) -> Result<Vec<u8>> {
+    fs::read(path).with_context(|| format!("failed to read cache file {}", path.display()))
+}
+
+fn write_cached_payload(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create cache directory {}", parent.display()))?;
+    }
+    fs::write(path, bytes).with_context(|| format!("failed to write cache file {}", path.display()))
+}
+
 fn remote_skill_file_name(url: &Url, index: usize) -> String {
     let base_name = url
         .path_segments()
@@ -984,13 +1133,38 @@ mod tests {
 
     use super::{
         augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
-        build_remote_skill_lock_hints, default_skills_lock_path, fetch_registry_manifest,
-        install_remote_skills, install_skills, load_catalog, load_skills_lockfile,
-        remote_skill_file_name_for_source, resolve_registry_skill_sources,
-        resolve_remote_skill_sources, resolve_selected_skills, sync_skills_with_lockfile,
-        write_skills_lockfile, RegistryKeyEntry, RemoteSkillSource, Skill, SkillInstallReport,
-        SkillLockSource, SkillRegistryManifest, TrustedKey,
+        build_remote_skill_lock_hints, default_skills_cache_dir, default_skills_lock_path,
+        fetch_registry_manifest_with_cache, install_remote_skills_with_cache, install_skills,
+        load_catalog, load_skills_lockfile, remote_skill_file_name_for_source,
+        resolve_registry_skill_sources, resolve_remote_skill_sources, resolve_selected_skills,
+        sync_skills_with_lockfile, write_skills_lockfile, RegistryKeyEntry, RemoteSkillSource,
+        Skill, SkillInstallReport, SkillLockSource, SkillRegistryManifest, SkillsDownloadOptions,
+        TrustedKey,
     };
+
+    async fn install_remote_skills(
+        sources: &[RemoteSkillSource],
+        destination_dir: &std::path::Path,
+    ) -> anyhow::Result<SkillInstallReport> {
+        install_remote_skills_with_cache(
+            sources,
+            destination_dir,
+            &SkillsDownloadOptions::default(),
+        )
+        .await
+    }
+
+    async fn fetch_registry_manifest(
+        registry_url: &str,
+        expected_sha256: Option<&str>,
+    ) -> anyhow::Result<SkillRegistryManifest> {
+        fetch_registry_manifest_with_cache(
+            registry_url,
+            expected_sha256,
+            &SkillsDownloadOptions::default(),
+        )
+        .await
+    }
 
     #[test]
     fn unit_load_catalog_reads_markdown_files_only() {
@@ -1133,6 +1307,13 @@ mod tests {
         let root = PathBuf::from("skills");
         let lock_path = default_skills_lock_path(&root);
         assert_eq!(lock_path, PathBuf::from("skills").join("skills.lock.json"));
+    }
+
+    #[test]
+    fn unit_default_skills_cache_dir_appends_cache_folder() {
+        let root = PathBuf::from("skills");
+        let cache_dir = default_skills_cache_dir(&root);
+        assert_eq!(cache_dir, PathBuf::from("skills").join(".cache"));
     }
 
     #[test]
@@ -1417,6 +1598,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn functional_install_remote_skills_with_cache_reuses_cached_payload() {
+        let server = MockServer::start();
+        let body = "cached remote skill";
+        let checksum = format!("{:x}", Sha256::digest(body.as_bytes()));
+        let remote = server.mock(|when, then| {
+            when.method(GET).path("/skills/cache.md");
+            then.status(200).body(body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let destination = temp.path().join("skills");
+        let cache_dir = temp.path().join("cache");
+        let source = RemoteSkillSource {
+            url: format!("{}/skills/cache.md", server.base_url()),
+            sha256: Some(checksum),
+            signing_key_id: None,
+            signature: None,
+            signer_public_key: None,
+        };
+
+        let online = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir.clone()),
+            offline: false,
+        };
+        let first =
+            install_remote_skills_with_cache(std::slice::from_ref(&source), &destination, &online)
+                .await
+                .expect("first install");
+        let second = install_remote_skills_with_cache(&[source], &destination, &online)
+            .await
+            .expect("second install");
+
+        assert_eq!(first.installed, 1);
+        assert_eq!(second.skipped, 1);
+        remote.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_install_remote_skills_with_cache_supports_offline_replay() {
+        let server = MockServer::start();
+        let body = "offline replay payload";
+        let checksum = format!("{:x}", Sha256::digest(body.as_bytes()));
+        let remote = server.mock(|when, then| {
+            when.method(GET).path("/skills/offline.md");
+            then.status(200).body(body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let destination = temp.path().join("skills");
+        let cache_dir = temp.path().join("cache");
+        let source = RemoteSkillSource {
+            url: format!("{}/skills/offline.md", server.base_url()),
+            sha256: Some(checksum),
+            signing_key_id: None,
+            signature: None,
+            signer_public_key: None,
+        };
+
+        let online = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir.clone()),
+            offline: false,
+        };
+        let offline = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir),
+            offline: true,
+        };
+
+        install_remote_skills_with_cache(std::slice::from_ref(&source), &destination, &online)
+            .await
+            .expect("online warm cache");
+        let report = install_remote_skills_with_cache(&[source], &destination, &offline)
+            .await
+            .expect("offline replay");
+
+        assert_eq!(report.skipped, 1);
+        remote.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn regression_install_remote_skills_with_cache_offline_reports_cache_miss() {
+        let temp = tempdir().expect("tempdir");
+        let destination = temp.path().join("skills");
+        let cache_dir = temp.path().join("cache");
+        let source = RemoteSkillSource {
+            url: "https://example.com/skills/missing.md".to_string(),
+            sha256: Some("deadbeef".to_string()),
+            signing_key_id: None,
+            signature: None,
+            signer_public_key: None,
+        };
+
+        let options = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir),
+            offline: true,
+        };
+        let error = install_remote_skills_with_cache(&[source], &destination, &options)
+            .await
+            .expect_err("offline without warm cache should fail");
+        assert!(error
+            .to_string()
+            .contains("offline cache miss for skill URL"));
+    }
+
+    #[tokio::test]
+    async fn regression_install_remote_skills_with_cache_refreshes_corrupt_cache_online() {
+        let server = MockServer::start();
+        let body = "fresh payload";
+        let checksum = format!("{:x}", Sha256::digest(body.as_bytes()));
+        let remote = server.mock(|when, then| {
+            when.method(GET).path("/skills/fresh.md");
+            then.status(200).body(body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let destination = temp.path().join("skills");
+        let cache_dir = temp.path().join("cache");
+        let source = RemoteSkillSource {
+            url: format!("{}/skills/fresh.md", server.base_url()),
+            sha256: Some(checksum),
+            signing_key_id: None,
+            signature: None,
+            signer_public_key: None,
+        };
+        let cache_path = super::remote_skill_cache_path(&cache_dir, &source.url);
+        std::fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("mkdir cache");
+        std::fs::write(&cache_path, b"corrupt").expect("write corrupt cache");
+
+        let options = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir),
+            offline: false,
+        };
+        let report = install_remote_skills_with_cache(&[source], &destination, &options)
+            .await
+            .expect("online install should recover cache");
+        assert_eq!(report.installed, 1);
+        assert_eq!(
+            std::fs::read(&cache_path).expect("read cache"),
+            body.as_bytes()
+        );
+        remote.assert_calls(1);
+    }
+
+    #[tokio::test]
     async fn regression_install_remote_skills_fails_on_checksum_mismatch() {
         let server = MockServer::start();
         let remote = server.mock(|when, then| {
@@ -1509,6 +1833,101 @@ mod tests {
         .expect("fetch should succeed");
         assert_eq!(manifest.version, 1);
         assert_eq!(manifest.skills.len(), 1);
+        registry.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_fetch_registry_manifest_with_cache_supports_offline_replay() {
+        let server = MockServer::start();
+        let body = serde_json::json!({
+            "version": 1,
+            "skills": [
+                {"name":"cached","url":"https://example.com/cached.md","sha256":"abc"}
+            ]
+        })
+        .to_string();
+        let checksum = format!("{:x}", Sha256::digest(body.as_bytes()));
+        let registry = server.mock(|when, then| {
+            when.method(GET).path("/registry-cache.json");
+            then.status(200).body(body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let cache_dir = temp.path().join("cache");
+        let online = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir.clone()),
+            offline: false,
+        };
+        let offline = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir),
+            offline: true,
+        };
+        let url = format!("{}/registry-cache.json", server.base_url());
+
+        let warm = fetch_registry_manifest_with_cache(&url, Some(&checksum), &online)
+            .await
+            .expect("warm cache");
+        let replay = fetch_registry_manifest_with_cache(&url, Some(&checksum), &offline)
+            .await
+            .expect("offline replay");
+
+        assert_eq!(warm, replay);
+        registry.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn regression_fetch_registry_manifest_with_cache_offline_reports_cache_miss() {
+        let temp = tempdir().expect("tempdir");
+        let options = SkillsDownloadOptions {
+            cache_dir: Some(temp.path().join("cache")),
+            offline: true,
+        };
+        let error =
+            fetch_registry_manifest_with_cache("https://example.com/registry.json", None, &options)
+                .await
+                .expect_err("offline cache miss should fail");
+        assert!(error
+            .to_string()
+            .contains("offline cache miss for registry"));
+    }
+
+    #[tokio::test]
+    async fn regression_fetch_registry_manifest_with_cache_refreshes_corrupt_cache_online() {
+        let server = MockServer::start();
+        let body = serde_json::json!({
+            "version": 1,
+            "skills": [{"name":"fresh","url":"https://example.com/fresh.md","sha256":"abc"}]
+        })
+        .to_string();
+        let checksum = format!("{:x}", Sha256::digest(body.as_bytes()));
+        let registry = server.mock(|when, then| {
+            when.method(GET).path("/registry-fresh.json");
+            then.status(200).body(body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let cache_dir = temp.path().join("cache");
+        let url = format!("{}/registry-fresh.json", server.base_url());
+        let cache_path = super::registry_manifest_cache_path(&cache_dir, &url);
+        std::fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("mkdir cache");
+        std::fs::write(&cache_path, b"corrupt").expect("write corrupt cache");
+        let options = SkillsDownloadOptions {
+            cache_dir: Some(cache_dir),
+            offline: false,
+        };
+
+        let manifest = fetch_registry_manifest_with_cache(&url, Some(&checksum), &options)
+            .await
+            .expect("online fetch should recover cache");
+        assert_eq!(manifest.version, 1);
+        assert_eq!(
+            std::fs::read_to_string(cache_path).expect("read cache"),
+            serde_json::json!({
+                "version": 1,
+                "skills": [{"name":"fresh","url":"https://example.com/fresh.md","sha256":"abc"}]
+            })
+            .to_string()
+        );
         registry.assert_calls(1);
     }
 
