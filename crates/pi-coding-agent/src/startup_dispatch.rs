@@ -16,11 +16,7 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
     let client = build_client_with_fallbacks(&cli, &model_ref, &fallback_model_refs)?;
     let skills_bootstrap = run_startup_skills_bootstrap(&cli).await?;
     let skills_lock_path = skills_bootstrap.skills_lock_path;
-    let base_system_prompt = resolve_system_prompt(&cli)?;
-    let catalog = load_catalog(&cli.skills_dir)
-        .with_context(|| format!("failed to load skills from {}", cli.skills_dir.display()))?;
-    let selected_skills = resolve_selected_skills(&catalog, &cli.skills)?;
-    let system_prompt = augment_system_prompt(&base_system_prompt, &selected_skills);
+    let system_prompt = compose_startup_system_prompt(&cli)?;
 
     let tool_policy = build_tool_policy(&cli)?;
     let tool_policy_json = tool_policy_to_json(&tool_policy);
