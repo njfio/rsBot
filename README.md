@@ -91,6 +91,9 @@ export XAI_API_KEY=...your-xai-key...
 # Mistral (OpenAI-compatible alias path)
 export MISTRAL_API_KEY=...your-mistral-key...
 
+# Azure OpenAI (OpenAI-compatible runtime with Azure auth/query mode)
+export AZURE_OPENAI_API_KEY=...your-azure-openai-key...
+
 # Anthropic
 export ANTHROPIC_API_KEY=...your-key...
 
@@ -146,6 +149,15 @@ Use Mistral via OpenAI-compatible endpoint:
 cargo run -p pi-coding-agent -- \
   --model mistral/mistral-large-latest \
   --api-base https://api.mistral.ai/v1
+```
+
+Use Azure OpenAI deployment endpoint:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model azure/gpt-4o-mini \
+  --api-base https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT \
+  --azure-openai-api-version 2024-10-21
 ```
 
 Run one prompt:

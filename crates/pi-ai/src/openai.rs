@@ -14,6 +14,13 @@ use crate::{
     StreamDeltaHandler, ToolDefinition,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpenAiAuthScheme {
+    #[default]
+    Bearer,
+    ApiKeyHeader,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpenAiConfig {
     pub api_base: String,
@@ -23,6 +30,8 @@ pub struct OpenAiConfig {
     pub max_retries: usize,
     pub retry_budget_ms: u64,
     pub retry_jitter: bool,
+    pub auth_scheme: OpenAiAuthScheme,
+    pub api_version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -40,12 +49,25 @@ impl OpenAiClient {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        let bearer = format!("Bearer {}", config.api_key.trim());
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&bearer)
-                .map_err(|e| PiAiError::InvalidResponse(format!("invalid API key header: {e}")))?,
-        );
+        match config.auth_scheme {
+            OpenAiAuthScheme::Bearer => {
+                let bearer = format!("Bearer {}", config.api_key.trim());
+                headers.insert(
+                    AUTHORIZATION,
+                    HeaderValue::from_str(&bearer).map_err(|e| {
+                        PiAiError::InvalidResponse(format!("invalid API key header: {e}"))
+                    })?,
+                );
+            }
+            OpenAiAuthScheme::ApiKeyHeader => {
+                headers.insert(
+                    "api-key",
+                    HeaderValue::from_str(config.api_key.trim()).map_err(|e| {
+                        PiAiError::InvalidResponse(format!("invalid API key header: {e}"))
+                    })?,
+                );
+            }
+        }
 
         if let Some(org) = &config.organization {
             headers.insert(
@@ -108,14 +130,15 @@ impl OpenAiClient {
 
         for attempt in 0..=max_retries {
             let request_id = new_request_id();
-            let response = self
+            let mut request_builder = self
                 .client
                 .post(&url)
                 .header("x-pi-request-id", request_id)
-                .header("x-pi-retry-attempt", attempt.to_string())
-                .json(&body)
-                .send()
-                .await;
+                .header("x-pi-retry-attempt", attempt.to_string());
+            if let Some(api_version) = self.config.api_version.as_deref() {
+                request_builder = request_builder.query(&[("api-version", api_version)]);
+            }
+            let response = request_builder.json(&body).send().await;
 
             match response {
                 Ok(response) => {

@@ -1,7 +1,7 @@
 use httpmock::prelude::*;
 use pi_ai::{
     AnthropicClient, AnthropicConfig, ChatRequest, ChatResponse, GoogleClient, GoogleConfig,
-    LlmClient, Message, OpenAiClient, OpenAiConfig, PiAiError, ToolDefinition,
+    LlmClient, Message, OpenAiAuthScheme, OpenAiClient, OpenAiConfig, PiAiError, ToolDefinition,
 };
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -88,6 +88,8 @@ fn openai_client(api_base: String) -> OpenAiClient {
         max_retries: 1,
         retry_budget_ms: 0,
         retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
     })
     .expect("openai client should be created")
 }

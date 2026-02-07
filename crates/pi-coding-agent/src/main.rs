@@ -60,8 +60,8 @@ use clap::Parser;
 use pi_agent_core::{Agent, AgentConfig, AgentEvent};
 use pi_ai::{
     AnthropicClient, AnthropicConfig, ChatRequest, ChatResponse, GoogleClient, GoogleConfig,
-    LlmClient, Message, MessageRole, ModelRef, OpenAiClient, OpenAiConfig, PiAiError, Provider,
-    StreamDeltaHandler,
+    LlmClient, Message, MessageRole, ModelRef, OpenAiAuthScheme, OpenAiClient, OpenAiConfig,
+    PiAiError, Provider, StreamDeltaHandler,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
