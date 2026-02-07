@@ -5,6 +5,7 @@ pub(crate) struct LocalRuntimeConfig<'a> {
     pub(crate) client: Arc<dyn LlmClient>,
     pub(crate) model_ref: &'a ModelRef,
     pub(crate) fallback_model_refs: &'a [ModelRef],
+    pub(crate) model_catalog: &'a ModelCatalog,
     pub(crate) system_prompt: &'a str,
     pub(crate) tool_policy: ToolPolicy,
     pub(crate) tool_policy_json: &'a Value,
@@ -18,6 +19,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         client,
         model_ref,
         fallback_model_refs,
+        model_catalog,
         system_prompt,
         tool_policy,
         tool_policy_json,
@@ -97,6 +99,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         profile_defaults: &profile_defaults,
         skills_command_config: &skills_sync_command_config,
         auth_command_config: &auth_command_config,
+        model_catalog,
     };
     let interactive_config = InteractiveRuntimeConfig {
         turn_timeout_ms: cli.turn_timeout_ms,
