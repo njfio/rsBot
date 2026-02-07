@@ -24,6 +24,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +36,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Detect auth/runtime changes
+        id: auth_changes
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            auth_runtime:
+              - 'crates/pi-coding-agent/src/**'
+              - 'crates/pi-ai/src/**'
+              - 'crates/pi-agent-core/src/**'
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -49,6 +61,12 @@ jobs:
 
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run auth conformance and security regression suite
+        if: github.event_name != 'pull_request' || steps.auth_changes.outputs.auth_runtime == 'true'
+        run: |
+          cargo test -p pi-coding-agent auth_conformance_ -- --nocapture
+          cargo test -p pi-coding-agent auth_security_ -- --nocapture
 
       - name: Run workspace tests
         run: cargo test --workspace

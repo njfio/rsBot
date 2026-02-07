@@ -9741,6 +9741,26 @@ mod tests {
         }
     }
 
+    fn set_provider_auth_mode(
+        config: &mut AuthCommandConfig,
+        provider: Provider,
+        mode: ProviderAuthMethod,
+    ) {
+        match provider {
+            Provider::OpenAi => config.openai_auth_mode = mode,
+            Provider::Anthropic => config.anthropic_auth_mode = mode,
+            Provider::Google => config.google_auth_mode = mode,
+        }
+    }
+
+    fn set_provider_api_key(config: &mut AuthCommandConfig, provider: Provider, value: &str) {
+        match provider {
+            Provider::OpenAi => config.openai_api_key = Some(value.to_string()),
+            Provider::Anthropic => config.anthropic_api_key = Some(value.to_string()),
+            Provider::Google => config.google_api_key = Some(value.to_string()),
+        }
+    }
+
     #[test]
     fn resolve_api_key_uses_first_non_empty_candidate() {
         let key = resolve_api_key(vec![
@@ -9894,6 +9914,380 @@ mod tests {
 
         let unknown_subcommand = parse_auth_command("noop").expect_err("subcommand fail");
         assert!(unknown_subcommand.to_string().contains("usage: /auth"));
+    }
+
+    #[test]
+    fn unit_auth_conformance_provider_capability_matrix_matches_expected_support() {
+        let cases = vec![
+            (
+                Provider::OpenAi,
+                ProviderAuthMethod::ApiKey,
+                true,
+                "supported",
+            ),
+            (
+                Provider::OpenAi,
+                ProviderAuthMethod::OauthToken,
+                true,
+                "supported",
+            ),
+            (
+                Provider::OpenAi,
+                ProviderAuthMethod::SessionToken,
+                true,
+                "supported",
+            ),
+            (
+                Provider::OpenAi,
+                ProviderAuthMethod::Adc,
+                false,
+                "not_implemented",
+            ),
+            (
+                Provider::Anthropic,
+                ProviderAuthMethod::ApiKey,
+                true,
+                "supported",
+            ),
+            (
+                Provider::Anthropic,
+                ProviderAuthMethod::OauthToken,
+                false,
+                "not_implemented",
+            ),
+            (
+                Provider::Anthropic,
+                ProviderAuthMethod::SessionToken,
+                false,
+                "unsupported",
+            ),
+            (
+                Provider::Anthropic,
+                ProviderAuthMethod::Adc,
+                false,
+                "not_implemented",
+            ),
+            (
+                Provider::Google,
+                ProviderAuthMethod::ApiKey,
+                true,
+                "supported",
+            ),
+            (
+                Provider::Google,
+                ProviderAuthMethod::OauthToken,
+                false,
+                "not_implemented",
+            ),
+            (
+                Provider::Google,
+                ProviderAuthMethod::SessionToken,
+                false,
+                "unsupported",
+            ),
+            (
+                Provider::Google,
+                ProviderAuthMethod::Adc,
+                false,
+                "not_implemented",
+            ),
+        ];
+
+        for (provider, mode, expected_supported, expected_reason) in cases {
+            let capability = provider_auth_capability(provider, mode);
+            assert_eq!(capability.supported, expected_supported);
+            assert_eq!(capability.reason, expected_reason);
+        }
+    }
+
+    #[test]
+    fn functional_auth_conformance_status_matrix_reports_expected_rows() {
+        #[derive(Debug)]
+        struct AuthConformanceCase {
+            provider: Provider,
+            mode: ProviderAuthMethod,
+            api_key: Option<&'static str>,
+            store_record: Option<ProviderCredentialStoreRecord>,
+            expected_state: &'static str,
+            expected_available: bool,
+            expected_source: &'static str,
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let future_expiry = current_unix_timestamp().saturating_add(600);
+        let cases = vec![
+            AuthConformanceCase {
+                provider: Provider::OpenAi,
+                mode: ProviderAuthMethod::ApiKey,
+                api_key: Some("openai-conformance-key"),
+                store_record: None,
+                expected_state: "ready",
+                expected_available: true,
+                expected_source: "--openai-api-key",
+            },
+            AuthConformanceCase {
+                provider: Provider::Anthropic,
+                mode: ProviderAuthMethod::ApiKey,
+                api_key: Some("anthropic-conformance-key"),
+                store_record: None,
+                expected_state: "ready",
+                expected_available: true,
+                expected_source: "--anthropic-api-key",
+            },
+            AuthConformanceCase {
+                provider: Provider::Google,
+                mode: ProviderAuthMethod::ApiKey,
+                api_key: Some("google-conformance-key"),
+                store_record: None,
+                expected_state: "ready",
+                expected_available: true,
+                expected_source: "--google-api-key",
+            },
+            AuthConformanceCase {
+                provider: Provider::OpenAi,
+                mode: ProviderAuthMethod::OauthToken,
+                api_key: None,
+                store_record: Some(ProviderCredentialStoreRecord {
+                    auth_method: ProviderAuthMethod::OauthToken,
+                    access_token: Some("oauth-access".to_string()),
+                    refresh_token: Some("oauth-refresh".to_string()),
+                    expires_unix: Some(future_expiry),
+                    revoked: false,
+                }),
+                expected_state: "ready",
+                expected_available: true,
+                expected_source: "credential_store",
+            },
+            AuthConformanceCase {
+                provider: Provider::OpenAi,
+                mode: ProviderAuthMethod::SessionToken,
+                api_key: None,
+                store_record: Some(ProviderCredentialStoreRecord {
+                    auth_method: ProviderAuthMethod::SessionToken,
+                    access_token: Some("session-access".to_string()),
+                    refresh_token: Some("session-refresh".to_string()),
+                    expires_unix: Some(future_expiry),
+                    revoked: false,
+                }),
+                expected_state: "ready",
+                expected_available: true,
+                expected_source: "credential_store",
+            },
+            AuthConformanceCase {
+                provider: Provider::Anthropic,
+                mode: ProviderAuthMethod::OauthToken,
+                api_key: None,
+                store_record: None,
+                expected_state: "unsupported_mode",
+                expected_available: false,
+                expected_source: "none",
+            },
+            AuthConformanceCase {
+                provider: Provider::Google,
+                mode: ProviderAuthMethod::SessionToken,
+                api_key: None,
+                store_record: None,
+                expected_state: "unsupported_mode",
+                expected_available: false,
+                expected_source: "none",
+            },
+        ];
+
+        let mut matrix_rows = Vec::new();
+        for (index, case) in cases.into_iter().enumerate() {
+            let mut config = test_auth_command_config();
+            config.credential_store = temp.path().join(format!("auth-conformance-{index}.json"));
+            config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+            config.api_key = None;
+            config.openai_api_key = None;
+            config.anthropic_api_key = None;
+            config.google_api_key = None;
+            set_provider_auth_mode(&mut config, case.provider, case.mode);
+            if let Some(api_key) = case.api_key {
+                set_provider_api_key(&mut config, case.provider, api_key);
+            }
+            if let Some(record) = case.store_record {
+                write_test_provider_credential(
+                    &config.credential_store,
+                    CredentialStoreEncryptionMode::None,
+                    None,
+                    case.provider,
+                    record,
+                );
+            }
+
+            let output = execute_auth_command(
+                &config,
+                &format!("status {} --json", case.provider.as_str()),
+            );
+            let payload: serde_json::Value = serde_json::from_str(&output).expect("parse status");
+            let row = &payload["entries"][0];
+            matrix_rows.push(format!(
+                "{}:{}:{}:{}",
+                case.provider.as_str(),
+                case.mode.as_str(),
+                row["state"].as_str().unwrap_or("unknown"),
+                row["available"].as_bool().unwrap_or(false)
+            ));
+            assert_eq!(row["provider"], case.provider.as_str());
+            assert_eq!(row["mode"], case.mode.as_str());
+            assert_eq!(row["state"], case.expected_state);
+            assert_eq!(row["available"], case.expected_available);
+            assert_eq!(row["source"], case.expected_source);
+        }
+
+        assert_eq!(
+            matrix_rows,
+            vec![
+                "openai:api_key:ready:true",
+                "anthropic:api_key:ready:true",
+                "google:api_key:ready:true",
+                "openai:oauth_token:ready:true",
+                "openai:session_token:ready:true",
+                "anthropic:oauth_token:unsupported_mode:false",
+                "google:session_token:unsupported_mode:false",
+            ]
+        );
+    }
+
+    #[test]
+    fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_scenarios() {
+        #[derive(Debug)]
+        struct StaleCase {
+            mode: ProviderAuthMethod,
+            record: ProviderCredentialStoreRecord,
+            expected_state: &'static str,
+            access_secret: &'static str,
+            refresh_secret: Option<&'static str>,
+        }
+
+        let temp = tempdir().expect("tempdir");
+        let now = current_unix_timestamp();
+        let cases = vec![
+            StaleCase {
+                mode: ProviderAuthMethod::OauthToken,
+                record: ProviderCredentialStoreRecord {
+                    auth_method: ProviderAuthMethod::OauthToken,
+                    access_token: Some("oauth-access-secret".to_string()),
+                    refresh_token: Some("oauth-refresh-secret".to_string()),
+                    expires_unix: Some(now.saturating_sub(1)),
+                    revoked: false,
+                },
+                expected_state: "expired_refresh_pending",
+                access_secret: "oauth-access-secret",
+                refresh_secret: Some("oauth-refresh-secret"),
+            },
+            StaleCase {
+                mode: ProviderAuthMethod::SessionToken,
+                record: ProviderCredentialStoreRecord {
+                    auth_method: ProviderAuthMethod::SessionToken,
+                    access_token: Some("session-access-secret".to_string()),
+                    refresh_token: None,
+                    expires_unix: Some(now.saturating_sub(1)),
+                    revoked: false,
+                },
+                expected_state: "expired",
+                access_secret: "session-access-secret",
+                refresh_secret: None,
+            },
+            StaleCase {
+                mode: ProviderAuthMethod::SessionToken,
+                record: ProviderCredentialStoreRecord {
+                    auth_method: ProviderAuthMethod::SessionToken,
+                    access_token: Some("revoked-access-secret".to_string()),
+                    refresh_token: Some("revoked-refresh-secret".to_string()),
+                    expires_unix: Some(now.saturating_add(60)),
+                    revoked: true,
+                },
+                expected_state: "revoked",
+                access_secret: "revoked-access-secret",
+                refresh_secret: Some("revoked-refresh-secret"),
+            },
+            StaleCase {
+                mode: ProviderAuthMethod::OauthToken,
+                record: ProviderCredentialStoreRecord {
+                    auth_method: ProviderAuthMethod::OauthToken,
+                    access_token: None,
+                    refresh_token: Some("missing-access-refresh-secret".to_string()),
+                    expires_unix: Some(now.saturating_add(60)),
+                    revoked: false,
+                },
+                expected_state: "missing_access_token",
+                access_secret: "not-present-access-secret",
+                refresh_secret: Some("missing-access-refresh-secret"),
+            },
+        ];
+
+        for (index, case) in cases.into_iter().enumerate() {
+            let mut config = test_auth_command_config();
+            config.credential_store = temp.path().join(format!("auth-stale-{index}.json"));
+            config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+            config.api_key = None;
+            config.openai_api_key = None;
+            set_provider_auth_mode(&mut config, Provider::OpenAi, case.mode);
+            write_test_provider_credential(
+                &config.credential_store,
+                CredentialStoreEncryptionMode::None,
+                None,
+                Provider::OpenAi,
+                case.record,
+            );
+
+            let json_output = execute_auth_command(&config, "status openai --json");
+            let payload: serde_json::Value =
+                serde_json::from_str(&json_output).expect("parse status json");
+            let row = &payload["entries"][0];
+            assert_eq!(row["provider"], "openai");
+            assert_eq!(row["mode"], case.mode.as_str());
+            assert_eq!(row["state"], case.expected_state);
+            assert_eq!(row["available"], false);
+            assert!(!json_output.contains(case.access_secret));
+            if let Some(refresh_secret) = case.refresh_secret {
+                assert!(!json_output.contains(refresh_secret));
+            }
+
+            let text_output = execute_auth_command(&config, "status openai");
+            assert!(!text_output.contains(case.access_secret));
+            if let Some(refresh_secret) = case.refresh_secret {
+                assert!(!text_output.contains(refresh_secret));
+            }
+        }
+    }
+
+    #[test]
+    fn regression_auth_security_matrix_blocks_unsupported_mode_bypass_attempts() {
+        let unsupported_cases = vec![
+            (Provider::Anthropic, ProviderAuthMethod::OauthToken),
+            (Provider::Anthropic, ProviderAuthMethod::SessionToken),
+            (Provider::Anthropic, ProviderAuthMethod::Adc),
+            (Provider::Google, ProviderAuthMethod::OauthToken),
+            (Provider::Google, ProviderAuthMethod::SessionToken),
+            (Provider::Google, ProviderAuthMethod::Adc),
+        ];
+
+        for (provider, mode) in unsupported_cases {
+            let capability = provider_auth_capability(provider, mode);
+            assert!(!capability.supported);
+
+            let output = execute_auth_command(
+                &test_auth_command_config(),
+                &format!(
+                    "login {} --mode {} --json",
+                    provider.as_str(),
+                    mode.as_str()
+                ),
+            );
+            let payload: serde_json::Value =
+                serde_json::from_str(&output).expect("parse login output");
+            assert_eq!(payload["command"], "auth.login");
+            assert_eq!(payload["provider"], provider.as_str());
+            assert_eq!(payload["mode"], mode.as_str());
+            assert_eq!(payload["status"], "error");
+            assert!(payload["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not supported"));
+        }
     }
 
     #[test]
