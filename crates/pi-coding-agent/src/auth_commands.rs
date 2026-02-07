@@ -37,11 +37,11 @@ pub(crate) struct AuthStatusRow {
 
 pub(crate) fn parse_auth_provider(token: &str) -> Result<Provider> {
     match token.trim().to_ascii_lowercase().as_str() {
-        "openai" => Ok(Provider::OpenAi),
+        "openai" | "openrouter" => Ok(Provider::OpenAi),
         "anthropic" => Ok(Provider::Anthropic),
         "google" => Ok(Provider::Google),
         other => bail!(
-            "unknown provider '{}'; supported providers: openai, anthropic, google",
+            "unknown provider '{}'; supported providers: openai, openrouter (alias), anthropic, google",
             other
         ),
     }

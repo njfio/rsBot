@@ -82,6 +82,7 @@ use super::{
     SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
     SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
+use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
 use crate::session::{SessionImportMode, SessionStore};
 use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
@@ -578,6 +579,17 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         logout,
         AuthCommand::Logout {
             provider: Provider::Google,
+            json_output: false,
+        }
+    );
+
+    let openrouter_login =
+        parse_auth_command("login openrouter --mode api-key").expect("parse openrouter login");
+    assert_eq!(
+        openrouter_login,
+        AuthCommand::Login {
+            provider: Provider::OpenAi,
+            mode: Some(ProviderAuthMethod::ApiKey),
             json_output: false,
         }
     );
@@ -1438,6 +1450,15 @@ async fn integration_fallback_routing_client_emits_json_event_on_failover() {
 fn resolve_api_key_returns_none_when_all_candidates_are_empty() {
     let key = resolve_api_key(vec![None, Some("".to_string())]);
     assert!(key.is_none());
+}
+
+#[test]
+fn functional_openai_api_key_candidates_include_openrouter_env_slot() {
+    let candidates =
+        provider_api_key_candidates_with_inputs(Provider::OpenAi, None, None, None, None);
+    assert!(candidates
+        .iter()
+        .any(|(source, _)| *source == "OPENROUTER_API_KEY"));
 }
 
 #[test]
