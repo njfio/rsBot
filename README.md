@@ -35,6 +35,10 @@ Implemented now:
 - Unit tests for serialization, tool loop, renderer diffing, and tool behaviors
 - Provider auth/login feasibility matrix and implementation gates (`docs/provider-auth/provider-auth-capability-matrix.md`)
 
+## Contributor Map
+
+- `pi-coding-agent` architecture and module guide: `docs/pi-coding-agent/code-map.md`
+
 ## Build & Test
 
 ```bash
