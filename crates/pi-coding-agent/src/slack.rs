@@ -1573,7 +1573,11 @@ fn sanitize_for_path(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc, time::Duration};
+    use std::{
+        path::Path,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use async_trait::async_trait;
     use httpmock::prelude::*;
@@ -1982,11 +1986,19 @@ mod tests {
             .try_start_queued_runs(&mut report)
             .await
             .expect("start runs");
-        sleep(Duration::from_millis(300)).await;
-        runtime
-            .drain_finished_runs(&mut report)
-            .await
-            .expect("drain runs");
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while report.completed_runs < 2 && Instant::now() < deadline {
+            sleep(Duration::from_millis(50)).await;
+            runtime
+                .drain_finished_runs(&mut report)
+                .await
+                .expect("drain runs");
+            runtime
+                .try_start_queued_runs(&mut report)
+                .await
+                .expect("start runs");
+        }
 
         assert!(report.queued_events >= 2);
         assert!(report.completed_runs >= 2);

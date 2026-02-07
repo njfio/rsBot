@@ -34,6 +34,7 @@ mod startup_dispatch;
 mod startup_local_runtime;
 mod startup_preflight;
 mod startup_resolution;
+mod startup_skills_bootstrap;
 mod startup_transport_modes;
 mod time_utils;
 mod tool_policy_config;
@@ -233,6 +234,7 @@ pub(crate) use crate::startup_preflight::execute_startup_preflight;
 pub(crate) use crate::startup_resolution::{
     ensure_non_empty_text, resolve_skill_trust_roots, resolve_system_prompt,
 };
+pub(crate) use crate::startup_skills_bootstrap::run_startup_skills_bootstrap;
 pub(crate) use crate::startup_transport_modes::run_transport_mode_if_requested;
 pub(crate) use crate::time_utils::{
     current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix,
