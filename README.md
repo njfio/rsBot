@@ -113,11 +113,12 @@ Run interactive mode with plan-first orchestration on each user turn:
 cargo run -p pi-coding-agent -- \
   --model openai/gpt-4o-mini \
   --orchestrator-mode plan-first \
+  --orchestrator-delegate-steps \
   --orchestrator-max-plan-steps 8 \
   --orchestrator-max-executor-response-chars 20000
 ```
 
-Plan-first mode emits deterministic orchestration traces for `planner`, `executor`, `review`, and `consolidation` phases, including executor response budget metadata and accept/reject consolidation decisions.
+Plan-first mode emits deterministic orchestration traces for `planner`, `executor`, `delegated-step` (when enabled), `review`, and `consolidation` phases, including response budget metadata and accept/reject consolidation decisions.
 
 Use Anthropic:
 
@@ -200,6 +201,7 @@ Run one prompt with plan-first orchestration:
 cargo run -p pi-coding-agent -- \
   --prompt "Summarize src/lib.rs" \
   --orchestrator-mode plan-first \
+  --orchestrator-delegate-steps \
   --orchestrator-max-plan-steps 8 \
   --orchestrator-max-executor-response-chars 20000
 ```

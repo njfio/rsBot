@@ -252,6 +252,7 @@ fn test_cli() -> Cli {
         orchestrator_mode: CliOrchestratorMode::Off,
         orchestrator_max_plan_steps: 8,
         orchestrator_max_executor_response_chars: 20_000,
+        orchestrator_delegate_steps: false,
         prompt_file: None,
         prompt_template_file: None,
         prompt_template_var: vec![],
@@ -686,6 +687,7 @@ fn unit_cli_orchestrator_flags_default_values_are_stable() {
     assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::Off);
     assert_eq!(cli.orchestrator_max_plan_steps, 8);
     assert_eq!(cli.orchestrator_max_executor_response_chars, 20_000);
+    assert!(!cli.orchestrator_delegate_steps);
 }
 
 #[test]
@@ -698,10 +700,12 @@ fn functional_cli_orchestrator_flags_accept_overrides() {
         "5",
         "--orchestrator-max-executor-response-chars",
         "160",
+        "--orchestrator-delegate-steps",
     ]);
     assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::PlanFirst);
     assert_eq!(cli.orchestrator_max_plan_steps, 5);
     assert_eq!(cli.orchestrator_max_executor_response_chars, 160);
+    assert!(cli.orchestrator_delegate_steps);
 }
 
 #[test]
@@ -9031,6 +9035,7 @@ async fn functional_run_plan_first_prompt_executes_planner_then_executor() {
         test_render_options(),
         4,
         512,
+        false,
     )
     .await
     .expect("plan-first prompt should succeed");
@@ -9044,6 +9049,117 @@ async fn functional_run_plan_first_prompt_executes_planner_then_executor() {
             .text_content(),
         "final implementation response"
     );
+}
+
+#[tokio::test]
+async fn functional_run_plan_first_prompt_delegate_steps_executes_and_consolidates() {
+    let planner_response = ChatResponse {
+        message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let delegated_step_one = ChatResponse {
+        message: Message::assistant_text("constraints reviewed"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let delegated_step_two = ChatResponse {
+        message: Message::assistant_text("change applied"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let consolidation_response = ChatResponse {
+        message: Message::assistant_text("final delegated response"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(planner_response),
+                Ok(delegated_step_one),
+                Ok(delegated_step_two),
+                Ok(consolidation_response),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    run_plan_first_prompt(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        512,
+        true,
+    )
+    .await
+    .expect("delegated plan-first prompt should succeed");
+
+    let messages = agent.messages();
+    assert_eq!(
+        messages.last().expect("assistant response").text_content(),
+        "final delegated response"
+    );
+    assert!(messages
+        .iter()
+        .any(|message| message.text_content() == "constraints reviewed"));
+    assert!(messages
+        .iter()
+        .any(|message| message.text_content() == "change applied"));
+}
+
+#[tokio::test]
+async fn regression_run_plan_first_prompt_delegate_steps_fails_on_empty_step_output() {
+    let planner_response = ChatResponse {
+        message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let delegated_empty_response = ChatResponse {
+        message: Message::assistant_text(""),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let delegated_unused_response = ChatResponse {
+        message: Message::assistant_text("should not execute"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(planner_response),
+                Ok(delegated_empty_response),
+                Ok(delegated_unused_response),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    let error = run_plan_first_prompt(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        512,
+        true,
+    )
+    .await
+    .expect_err("empty delegated output should fail");
+    assert!(error
+        .to_string()
+        .contains("delegated step 1 produced no text output"));
+    assert!(!agent
+        .messages()
+        .iter()
+        .any(|message| message.text_content() == "should not execute"));
 }
 
 #[tokio::test]
@@ -9077,6 +9193,7 @@ async fn regression_run_plan_first_prompt_rejects_overlong_plans_before_executor
         test_render_options(),
         2,
         512,
+        false,
     )
     .await
     .expect_err("overlong plan should fail");
@@ -9118,6 +9235,7 @@ async fn regression_run_plan_first_prompt_fails_when_executor_output_is_empty() 
         test_render_options(),
         4,
         512,
+        false,
     )
     .await
     .expect_err("empty executor output should fail");
@@ -9157,6 +9275,7 @@ async fn regression_run_plan_first_prompt_fails_when_executor_output_exceeds_bud
         test_render_options(),
         4,
         8,
+        false,
     )
     .await
     .expect_err("oversized executor output should fail");

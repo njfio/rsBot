@@ -64,6 +64,7 @@ pub(crate) struct InteractiveRuntimeConfig<'a> {
     pub(crate) orchestrator_mode: CliOrchestratorMode,
     pub(crate) orchestrator_max_plan_steps: usize,
     pub(crate) orchestrator_max_executor_response_chars: usize,
+    pub(crate) orchestrator_delegate_steps: bool,
     pub(crate) command_context: CommandExecutionContext<'a>,
 }
 
@@ -140,6 +141,7 @@ pub(crate) async fn run_interactive(
                 config.render_options,
                 config.orchestrator_max_plan_steps,
                 config.orchestrator_max_executor_response_chars,
+                config.orchestrator_delegate_steps,
                 config.extension_runtime_hooks,
             )
             .await?;
@@ -236,6 +238,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
     render_options: RenderOptions,
     orchestrator_max_plan_steps: usize,
     orchestrator_max_executor_response_chars: usize,
+    orchestrator_delegate_steps: bool,
     extension_runtime_hooks: &RuntimeExtensionHooksConfig,
 ) -> Result<()> {
     let effective_prompt = apply_runtime_message_transform(extension_runtime_hooks, prompt);
@@ -253,6 +256,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
         render_options,
         orchestrator_max_plan_steps,
         orchestrator_max_executor_response_chars,
+        orchestrator_delegate_steps,
     )
     .await;
 

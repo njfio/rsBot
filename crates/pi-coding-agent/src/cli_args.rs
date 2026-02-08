@@ -456,6 +456,14 @@ pub(crate) struct Cli {
     pub(crate) orchestrator_max_executor_response_chars: usize,
 
     #[arg(
+        long = "orchestrator-delegate-steps",
+        env = "PI_ORCHESTRATOR_DELEGATE_STEPS",
+        default_value_t = false,
+        help = "Enable delegated step execution and final consolidation in plan-first orchestrator mode"
+    )]
+    pub(crate) orchestrator_delegate_steps: bool,
+
+    #[arg(
         long,
         env = "PI_PROMPT_FILE",
         conflicts_with = "prompt",
