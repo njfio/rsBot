@@ -94,9 +94,10 @@ use super::{
     SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
-    auth_revoked_counts, auth_source_kind, auth_source_kind_counts, auth_state_counts,
-    auth_status_row_for_provider, format_auth_state_counts, AuthMatrixAvailabilityFilter,
-    AuthMatrixModeSupportFilter, AuthRevokedFilter, AuthSourceKindFilter,
+    auth_mode_counts, auth_revoked_counts, auth_source_kind, auth_source_kind_counts,
+    auth_state_counts, auth_status_row_for_provider, format_auth_state_counts,
+    AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter, AuthRevokedFilter,
+    AuthSourceKindFilter,
 };
 use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
@@ -1642,6 +1643,13 @@ fn unit_auth_state_count_helpers_are_deterministic() {
         auth_status_row_for_provider(&config, Provider::Anthropic, None, None),
         auth_status_row_for_provider(&config, Provider::Google, None, None),
     ];
+    let mode_counts = auth_mode_counts(&rows);
+    assert_eq!(mode_counts.get("session_token"), Some(&1));
+    assert_eq!(mode_counts.get("api_key"), Some(&2));
+    assert_eq!(
+        format_auth_state_counts(&mode_counts),
+        "api_key:2,session_token:1"
+    );
     let counts = auth_state_counts(&rows);
     assert_eq!(counts.get("revoked"), Some(&1));
     assert_eq!(counts.get("missing_api_key"), Some(&2));
@@ -1866,6 +1874,14 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert_eq!(payload["mode_unsupported"], 7);
     assert_eq!(payload["mode_supported_total"], 5);
     assert_eq!(payload["mode_unsupported_total"], 7);
+    assert_eq!(payload["mode_counts_total"]["api_key"], 3);
+    assert_eq!(payload["mode_counts_total"]["oauth_token"], 3);
+    assert_eq!(payload["mode_counts_total"]["adc"], 3);
+    assert_eq!(payload["mode_counts_total"]["session_token"], 3);
+    assert_eq!(payload["mode_counts"]["api_key"], 3);
+    assert_eq!(payload["mode_counts"]["oauth_token"], 3);
+    assert_eq!(payload["mode_counts"]["adc"], 3);
+    assert_eq!(payload["mode_counts"]["session_token"], 3);
     assert_eq!(payload["available"], 4);
     assert_eq!(payload["unavailable"], 8);
     assert_eq!(payload["state_counts_total"]["ready"], 4);
@@ -1912,6 +1928,8 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert!(text_output.contains("auth matrix: providers=3 modes=4 rows=12"));
     assert!(text_output.contains("mode_supported_total=5"));
     assert!(text_output.contains("mode_unsupported_total=7"));
+    assert!(text_output.contains("mode_counts=adc:3,api_key:3,oauth_token:3,session_token:3"));
+    assert!(text_output.contains("mode_counts_total=adc:3,api_key:3,oauth_token:3,session_token:3"));
     assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_filter=all"));
     assert!(text_output.contains("source_kind_filter=all"));
@@ -1964,6 +1982,8 @@ fn functional_execute_auth_command_matrix_supports_provider_and_mode_filters() {
     assert_eq!(payload["mode_unsupported"], 0);
     assert_eq!(payload["mode_supported_total"], 1);
     assert_eq!(payload["mode_unsupported_total"], 0);
+    assert_eq!(payload["mode_counts_total"]["oauth_token"], 1);
+    assert_eq!(payload["mode_counts"]["oauth_token"], 1);
     assert_eq!(payload["available"], 1);
     assert_eq!(payload["source_kind_counts_total"]["credential_store"], 1);
     assert_eq!(payload["source_kind_counts"]["credential_store"], 1);
@@ -2019,6 +2039,12 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
     assert_eq!(available_payload["rows"], 4);
     assert_eq!(available_payload["mode_supported_total"], 5);
     assert_eq!(available_payload["mode_unsupported_total"], 7);
+    assert_eq!(available_payload["mode_counts_total"]["api_key"], 3);
+    assert_eq!(available_payload["mode_counts_total"]["oauth_token"], 3);
+    assert_eq!(available_payload["mode_counts_total"]["adc"], 3);
+    assert_eq!(available_payload["mode_counts_total"]["session_token"], 3);
+    assert_eq!(available_payload["mode_counts"]["api_key"], 3);
+    assert_eq!(available_payload["mode_counts"]["oauth_token"], 1);
     assert_eq!(available_payload["source_kind_counts_total"]["flag"], 3);
     assert_eq!(
         available_payload["source_kind_counts_total"]["credential_store"],
@@ -2062,6 +2088,13 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
     assert_eq!(unavailable_payload["rows"], 8);
     assert_eq!(unavailable_payload["mode_supported_total"], 5);
     assert_eq!(unavailable_payload["mode_unsupported_total"], 7);
+    assert_eq!(unavailable_payload["mode_counts_total"]["api_key"], 3);
+    assert_eq!(unavailable_payload["mode_counts_total"]["oauth_token"], 3);
+    assert_eq!(unavailable_payload["mode_counts_total"]["adc"], 3);
+    assert_eq!(unavailable_payload["mode_counts_total"]["session_token"], 3);
+    assert_eq!(unavailable_payload["mode_counts"]["oauth_token"], 2);
+    assert_eq!(unavailable_payload["mode_counts"]["adc"], 3);
+    assert_eq!(unavailable_payload["mode_counts"]["session_token"], 3);
     assert_eq!(unavailable_payload["source_kind_counts_total"]["flag"], 3);
     assert_eq!(
         unavailable_payload["source_kind_counts_total"]["credential_store"],
@@ -2377,6 +2410,12 @@ fn functional_execute_auth_command_matrix_supports_revoked_filter() {
     assert_eq!(revoked_payload["rows"], 2);
     assert_eq!(revoked_payload["mode_supported"], 2);
     assert_eq!(revoked_payload["mode_unsupported"], 0);
+    assert_eq!(revoked_payload["mode_counts_total"]["api_key"], 1);
+    assert_eq!(revoked_payload["mode_counts_total"]["oauth_token"], 1);
+    assert_eq!(revoked_payload["mode_counts_total"]["adc"], 1);
+    assert_eq!(revoked_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(revoked_payload["mode_counts"]["oauth_token"], 1);
+    assert_eq!(revoked_payload["mode_counts"]["session_token"], 1);
     assert_eq!(revoked_payload["available"], 0);
     assert_eq!(revoked_payload["unavailable"], 2);
     assert_eq!(revoked_payload["state_counts"]["mode_mismatch"], 1);
@@ -2398,6 +2437,12 @@ fn functional_execute_auth_command_matrix_supports_revoked_filter() {
     assert_eq!(not_revoked_payload["revoked_filter"], "not_revoked");
     assert_eq!(not_revoked_payload["rows_total"], 4);
     assert_eq!(not_revoked_payload["rows"], 2);
+    assert_eq!(not_revoked_payload["mode_counts_total"]["api_key"], 1);
+    assert_eq!(not_revoked_payload["mode_counts_total"]["oauth_token"], 1);
+    assert_eq!(not_revoked_payload["mode_counts_total"]["adc"], 1);
+    assert_eq!(not_revoked_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(not_revoked_payload["mode_counts"]["api_key"], 1);
+    assert_eq!(not_revoked_payload["mode_counts"]["adc"], 1);
     assert_eq!(
         not_revoked_payload["revoked_counts_total"]["not_revoked"],
         2
@@ -2415,6 +2460,8 @@ fn functional_execute_auth_command_matrix_supports_revoked_filter() {
     let text_output = execute_auth_command(&config, "matrix openai --revoked revoked");
     assert!(text_output.contains("revoked_filter=revoked"));
     assert!(text_output.contains("rows=2"));
+    assert!(text_output.contains("mode_counts=oauth_token:1,session_token:1"));
+    assert!(text_output.contains("mode_counts_total=adc:1,api_key:1,oauth_token:1,session_token:1"));
     assert!(text_output.contains("revoked_counts=revoked:2"));
     assert!(text_output.contains("revoked_counts_total=not_revoked:2,revoked:2"));
 }
@@ -2459,6 +2506,8 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
     assert_eq!(filtered_payload["rows"], 1);
     assert_eq!(filtered_payload["mode_supported_total"], 1);
     assert_eq!(filtered_payload["mode_unsupported_total"], 0);
+    assert_eq!(filtered_payload["mode_counts_total"]["oauth_token"], 1);
+    assert_eq!(filtered_payload["mode_counts"]["oauth_token"], 1);
     assert_eq!(
         filtered_payload["source_kind_counts_total"]["credential_store"],
         1
@@ -2579,6 +2628,14 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
     assert_eq!(zero_row_payload["mode_unsupported"], 0);
     assert_eq!(zero_row_payload["mode_supported_total"], 1);
     assert_eq!(zero_row_payload["mode_unsupported_total"], 0);
+    assert_eq!(zero_row_payload["mode_counts_total"]["oauth_token"], 1);
+    assert_eq!(
+        zero_row_payload["mode_counts"]
+            .as_object()
+            .expect("zero-row mode counts")
+            .len(),
+        0
+    );
     assert_eq!(
         zero_row_payload["source_kind_counts_total"]["credential_store"],
         1
@@ -2621,6 +2678,8 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
     assert!(zero_row_text.contains("rows=0"));
     assert!(zero_row_text.contains("mode_supported_total=1"));
     assert!(zero_row_text.contains("mode_unsupported_total=0"));
+    assert!(zero_row_text.contains("mode_counts=none"));
+    assert!(zero_row_text.contains("mode_counts_total=oauth_token:1"));
     assert!(zero_row_text.contains("provider_filter=openai"));
     assert!(zero_row_text.contains("mode_filter=oauth_token"));
     assert!(zero_row_text.contains("source_kind_filter=credential_store"));
@@ -2670,6 +2729,8 @@ fn integration_execute_auth_command_matrix_revoked_filter_composes_with_other_fi
     assert_eq!(revoked_payload["revoked_filter"], "revoked");
     assert_eq!(revoked_payload["rows_total"], 1);
     assert_eq!(revoked_payload["rows"], 1);
+    assert_eq!(revoked_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(revoked_payload["mode_counts"]["session_token"], 1);
     assert_eq!(revoked_payload["revoked_counts_total"]["revoked"], 1);
     assert_eq!(revoked_payload["revoked_counts"]["revoked"], 1);
     assert_eq!(revoked_payload["entries"][0]["revoked"], true);
@@ -2683,6 +2744,14 @@ fn integration_execute_auth_command_matrix_revoked_filter_composes_with_other_fi
     assert_eq!(zero_row_payload["revoked_filter"], "not_revoked");
     assert_eq!(zero_row_payload["rows_total"], 1);
     assert_eq!(zero_row_payload["rows"], 0);
+    assert_eq!(zero_row_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(
+        zero_row_payload["mode_counts"]
+            .as_object()
+            .expect("zero-row revoked mode counts")
+            .len(),
+        0
+    );
     assert_eq!(zero_row_payload["revoked_counts_total"]["revoked"], 1);
     assert_eq!(
         zero_row_payload["revoked_counts"]
@@ -3229,6 +3298,8 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(available_payload["rows"], 2);
     assert_eq!(available_payload["mode_supported_total"], 3);
     assert_eq!(available_payload["mode_unsupported_total"], 0);
+    assert_eq!(available_payload["mode_counts_total"]["api_key"], 3);
+    assert_eq!(available_payload["mode_counts"]["api_key"], 2);
     assert_eq!(available_payload["available"], 2);
     assert_eq!(available_payload["unavailable"], 0);
     assert_eq!(available_payload["source_kind_counts_total"]["flag"], 2);
@@ -3268,6 +3339,8 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(unavailable_payload["rows"], 1);
     assert_eq!(unavailable_payload["mode_supported_total"], 3);
     assert_eq!(unavailable_payload["mode_unsupported_total"], 0);
+    assert_eq!(unavailable_payload["mode_counts_total"]["api_key"], 3);
+    assert_eq!(unavailable_payload["mode_counts"]["api_key"], 1);
     assert_eq!(unavailable_payload["available"], 0);
     assert_eq!(unavailable_payload["unavailable"], 1);
     assert_eq!(unavailable_payload["source_kind_counts_total"]["flag"], 2);
@@ -3305,6 +3378,8 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(state_payload["rows"], 1);
     assert_eq!(state_payload["mode_supported_total"], 3);
     assert_eq!(state_payload["mode_unsupported_total"], 0);
+    assert_eq!(state_payload["mode_counts_total"]["api_key"], 3);
+    assert_eq!(state_payload["mode_counts"]["api_key"], 1);
     assert_eq!(state_payload["state_counts"]["missing_api_key"], 1);
     assert_eq!(state_payload["source_kind_counts_total"]["flag"], 2);
     assert_eq!(state_payload["source_kind_counts_total"]["none"], 1);
@@ -3323,6 +3398,8 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_supported_total=3"));
     assert!(text_output.contains("mode_unsupported_total=0"));
+    assert!(text_output.contains("mode_counts=api_key:1"));
+    assert!(text_output.contains("mode_counts_total=api_key:3"));
     assert!(text_output.contains("source_kind_counts=none:1"));
     assert!(text_output.contains("source_kind_counts_total=flag:2,none:1"));
     assert!(text_output.contains("revoked_counts=not_revoked:1"));
@@ -3361,6 +3438,8 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
     assert_eq!(api_key_payload["providers"], 3);
     assert_eq!(api_key_payload["rows_total"], 3);
     assert_eq!(api_key_payload["rows"], 3);
+    assert_eq!(api_key_payload["mode_counts_total"]["api_key"], 3);
+    assert_eq!(api_key_payload["mode_counts"]["api_key"], 3);
     assert_eq!(
         api_key_payload["mode_supported_total"]
             .as_u64()
@@ -3419,6 +3498,8 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
     assert_eq!(oauth_payload["providers"], 3);
     assert_eq!(oauth_payload["rows_total"], 3);
     assert_eq!(oauth_payload["rows"], 3);
+    assert_eq!(oauth_payload["mode_counts_total"]["oauth_token"], 3);
+    assert_eq!(oauth_payload["mode_counts"]["oauth_token"], 3);
     assert_eq!(
         oauth_payload["mode_supported_total"].as_u64().unwrap_or(0)
             + oauth_payload["mode_unsupported_total"]
@@ -3448,6 +3529,8 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
     assert!(text_output.contains("mode_filter=api_key"));
     assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("revoked_filter=all"));
+    assert!(text_output.contains("mode_counts=api_key:3"));
+    assert!(text_output.contains("mode_counts_total=api_key:3"));
     assert!(text_output.contains("source_kind_counts="));
     assert!(text_output.contains("source_kind_counts_total="));
     assert!(text_output.contains("flag:1"));
@@ -3651,6 +3734,9 @@ fn functional_execute_auth_command_status_supports_revoked_filter() {
     assert_eq!(revoked_payload["revoked_filter"], "revoked");
     assert_eq!(revoked_payload["rows_total"], 3);
     assert_eq!(revoked_payload["rows"], 1);
+    assert_eq!(revoked_payload["mode_counts_total"]["api_key"], 2);
+    assert_eq!(revoked_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(revoked_payload["mode_counts"]["session_token"], 1);
     assert_eq!(revoked_payload["state_counts"]["revoked"], 1);
     assert_eq!(revoked_payload["source_kind_counts"]["credential_store"], 1);
     assert_eq!(revoked_payload["revoked_counts_total"]["not_revoked"], 2);
@@ -3665,6 +3751,9 @@ fn functional_execute_auth_command_status_supports_revoked_filter() {
     assert_eq!(not_revoked_payload["revoked_filter"], "not_revoked");
     assert_eq!(not_revoked_payload["rows_total"], 3);
     assert_eq!(not_revoked_payload["rows"], 2);
+    assert_eq!(not_revoked_payload["mode_counts_total"]["api_key"], 2);
+    assert_eq!(not_revoked_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(not_revoked_payload["mode_counts"]["api_key"], 2);
     assert_eq!(
         not_revoked_payload["revoked_counts_total"]["not_revoked"],
         2
@@ -3682,6 +3771,8 @@ fn functional_execute_auth_command_status_supports_revoked_filter() {
     let text_output = execute_auth_command(&config, "status --revoked revoked");
     assert!(text_output.contains("revoked_filter=revoked"));
     assert!(text_output.contains("rows=1"));
+    assert!(text_output.contains("mode_counts=session_token:1"));
+    assert!(text_output.contains("mode_counts_total=api_key:2,session_token:1"));
     assert!(text_output.contains("revoked_counts=revoked:1"));
     assert!(text_output.contains("revoked_counts_total=not_revoked:2,revoked:1"));
 }
@@ -3728,6 +3819,8 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     assert_eq!(filtered_payload["mode_unsupported"], 0);
     assert_eq!(filtered_payload["mode_supported_total"], 1);
     assert_eq!(filtered_payload["mode_unsupported_total"], 0);
+    assert_eq!(filtered_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(filtered_payload["mode_counts"]["session_token"], 1);
     assert_eq!(
         filtered_payload["source_kind_counts_total"]["credential_store"],
         1
@@ -3765,6 +3858,14 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     assert_eq!(zero_row_payload["mode_unsupported"], 0);
     assert_eq!(zero_row_payload["mode_supported_total"], 1);
     assert_eq!(zero_row_payload["mode_unsupported_total"], 0);
+    assert_eq!(zero_row_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(
+        zero_row_payload["mode_counts"]
+            .as_object()
+            .expect("zero-row status mode counts")
+            .len(),
+        0
+    );
     assert_eq!(
         zero_row_payload["source_kind_counts_total"]["credential_store"],
         1
@@ -3812,6 +3913,8 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     assert!(zero_row_text.contains("revoked_filter=all"));
     assert!(zero_row_text.contains("mode_supported_total=1"));
     assert!(zero_row_text.contains("mode_unsupported_total=0"));
+    assert!(zero_row_text.contains("mode_counts=none"));
+    assert!(zero_row_text.contains("mode_counts_total=session_token:1"));
     assert!(zero_row_text.contains("source_kind_counts=none"));
     assert!(zero_row_text.contains("source_kind_counts_total=credential_store:1"));
     assert!(zero_row_text.contains("revoked_counts=none"));
@@ -3866,6 +3969,8 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     assert_eq!(filtered_payload["mode_unsupported"], 0);
     assert_eq!(filtered_payload["mode_supported_total"], 1);
     assert_eq!(filtered_payload["mode_unsupported_total"], 0);
+    assert_eq!(filtered_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(filtered_payload["mode_counts"]["session_token"], 1);
     assert_eq!(
         filtered_payload["source_kind_counts_total"]["credential_store"],
         1
@@ -3898,6 +4003,14 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     assert_eq!(zero_row_payload["mode_unsupported"], 0);
     assert_eq!(zero_row_payload["mode_supported_total"], 1);
     assert_eq!(zero_row_payload["mode_unsupported_total"], 0);
+    assert_eq!(zero_row_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(
+        zero_row_payload["mode_counts"]
+            .as_object()
+            .expect("zero-row status mode-support mode counts")
+            .len(),
+        0
+    );
     assert_eq!(
         zero_row_payload["source_kind_counts_total"]["credential_store"],
         1
@@ -3937,6 +4050,8 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     assert!(zero_row_text.contains("revoked_filter=all"));
     assert!(zero_row_text.contains("mode_supported_total=1"));
     assert!(zero_row_text.contains("mode_unsupported_total=0"));
+    assert!(zero_row_text.contains("mode_counts=none"));
+    assert!(zero_row_text.contains("mode_counts_total=session_token:1"));
     assert!(zero_row_text.contains("source_kind_counts=none"));
     assert!(zero_row_text.contains("source_kind_counts_total=credential_store:1"));
     assert!(zero_row_text.contains("revoked_counts=none"));
@@ -3984,6 +4099,8 @@ fn integration_execute_auth_command_status_revoked_filter_composes_with_other_fi
     assert_eq!(revoked_payload["revoked_filter"], "revoked");
     assert_eq!(revoked_payload["rows_total"], 1);
     assert_eq!(revoked_payload["rows"], 1);
+    assert_eq!(revoked_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(revoked_payload["mode_counts"]["session_token"], 1);
     assert_eq!(revoked_payload["revoked_counts_total"]["revoked"], 1);
     assert_eq!(revoked_payload["revoked_counts"]["revoked"], 1);
     assert_eq!(revoked_payload["entries"][0]["revoked"], true);
@@ -3997,6 +4114,14 @@ fn integration_execute_auth_command_status_revoked_filter_composes_with_other_fi
     assert_eq!(zero_row_payload["revoked_filter"], "not_revoked");
     assert_eq!(zero_row_payload["rows_total"], 1);
     assert_eq!(zero_row_payload["rows"], 0);
+    assert_eq!(zero_row_payload["mode_counts_total"]["session_token"], 1);
+    assert_eq!(
+        zero_row_payload["mode_counts"]
+            .as_object()
+            .expect("zero-row revoked status mode counts")
+            .len(),
+        0
+    );
     assert_eq!(zero_row_payload["revoked_counts_total"]["revoked"], 1);
     assert_eq!(
         zero_row_payload["revoked_counts"]

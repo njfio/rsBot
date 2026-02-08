@@ -1126,6 +1126,16 @@ pub(crate) fn auth_state_counts(
     counts
 }
 
+pub(crate) fn auth_mode_counts(
+    rows: &[AuthStatusRow],
+) -> std::collections::BTreeMap<String, usize> {
+    let mut counts = std::collections::BTreeMap::new();
+    for row in rows {
+        *counts.entry(row.mode.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
 pub(crate) fn auth_source_kind(source: &str) -> &'static str {
     let normalized = source.trim();
     if normalized == "credential_store" {
@@ -1246,6 +1256,7 @@ pub(crate) fn execute_auth_status_command(
     let total_rows = rows.len();
     let mode_supported_total = rows.iter().filter(|row| row.mode_supported).count();
     let mode_unsupported_total = total_rows.saturating_sub(mode_supported_total);
+    let mode_counts_total = auth_mode_counts(&rows);
     let state_counts_total = auth_state_counts(&rows);
     let source_kind_counts_total = auth_source_kind_counts(&rows);
     let revoked_counts_total = auth_revoked_counts(&rows);
@@ -1284,6 +1295,7 @@ pub(crate) fn execute_auth_status_command(
     let unavailable = rows.len().saturating_sub(available);
     let mode_supported = rows.iter().filter(|row| row.mode_supported).count();
     let mode_unsupported = rows.len().saturating_sub(mode_supported);
+    let mode_counts = auth_mode_counts(&rows);
     let state_counts = auth_state_counts(&rows);
     let source_kind_counts = auth_source_kind_counts(&rows);
     let revoked_counts = auth_revoked_counts(&rows);
@@ -1305,6 +1317,8 @@ pub(crate) fn execute_auth_status_command(
             "mode_unsupported": mode_unsupported,
             "mode_supported_total": mode_supported_total,
             "mode_unsupported_total": mode_unsupported_total,
+            "mode_counts_total": mode_counts_total,
+            "mode_counts": mode_counts,
             "available": available,
             "unavailable": unavailable,
             "state_counts_total": state_counts_total,
@@ -1319,7 +1333,7 @@ pub(crate) fn execute_auth_status_command(
     }
 
     let mut lines = vec![format!(
-        "auth status: providers={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
+        "auth status: providers={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} mode_counts={} mode_counts_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
         selected_providers.len(),
         rows.len(),
         mode_supported,
@@ -1336,6 +1350,8 @@ pub(crate) fn execute_auth_status_command(
         total_rows,
         mode_supported_total,
         mode_unsupported_total,
+        format_auth_state_counts(&mode_counts),
+        format_auth_state_counts(&mode_counts_total),
         format_auth_state_counts(&state_counts),
         format_auth_state_counts(&state_counts_total),
         format_auth_state_counts(&source_kind_counts),
@@ -1431,6 +1447,7 @@ pub(crate) fn execute_auth_matrix_command(
     let total_rows = rows.len();
     let mode_supported_total = rows.iter().filter(|row| row.mode_supported).count();
     let mode_unsupported_total = total_rows.saturating_sub(mode_supported_total);
+    let mode_counts_total = auth_mode_counts(&rows);
     let state_counts_total = auth_state_counts(&rows);
     let source_kind_counts_total = auth_source_kind_counts(&rows);
     let revoked_counts_total = auth_revoked_counts(&rows);
@@ -1469,6 +1486,7 @@ pub(crate) fn execute_auth_matrix_command(
     let unavailable = rows.len().saturating_sub(available);
     let mode_supported = rows.iter().filter(|row| row.mode_supported).count();
     let mode_unsupported = rows.len().saturating_sub(mode_supported);
+    let mode_counts = auth_mode_counts(&rows);
     let state_counts = auth_state_counts(&rows);
     let source_kind_counts = auth_source_kind_counts(&rows);
     let revoked_counts = auth_revoked_counts(&rows);
@@ -1491,6 +1509,8 @@ pub(crate) fn execute_auth_matrix_command(
             "mode_unsupported": mode_unsupported,
             "mode_supported_total": mode_supported_total,
             "mode_unsupported_total": mode_unsupported_total,
+            "mode_counts_total": mode_counts_total,
+            "mode_counts": mode_counts,
             "available": available,
             "unavailable": unavailable,
             "state_counts_total": state_counts_total,
@@ -1505,7 +1525,7 @@ pub(crate) fn execute_auth_matrix_command(
     }
 
     let mut lines = vec![format!(
-        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
+        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} mode_counts={} mode_counts_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
         selected_providers.len(),
         selected_modes.len(),
         rows.len(),
@@ -1523,6 +1543,8 @@ pub(crate) fn execute_auth_matrix_command(
         total_rows,
         mode_supported_total,
         mode_unsupported_total,
+        format_auth_state_counts(&mode_counts),
+        format_auth_state_counts(&mode_counts_total),
         format_auth_state_counts(&state_counts),
         format_auth_state_counts(&state_counts_total),
         format_auth_state_counts(&source_kind_counts),
