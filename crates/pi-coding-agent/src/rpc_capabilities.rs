@@ -50,6 +50,14 @@ const RPC_PROTOCOL_RESPONSE_KINDS: &[&str] = &[
 ];
 const RPC_PROTOCOL_STREAM_EVENT_KINDS: &[&str] =
     &["run.stream.tool_events", "run.stream.assistant_text"];
+const RPC_LIFECYCLE_NON_TERMINAL_TRANSITIONS: &[(&str, &str, &[&str])] = &[
+    (
+        "run.start",
+        "run.accepted",
+        &["run.stream.tool_events", "run.stream.assistant_text"],
+    ),
+    ("run.status", "run.status", &[]),
+];
 const RPC_LIFECYCLE_TERMINAL_TRANSITIONS: &[(&str, &str, &str, &str)] = &[
     ("run.cancel", "run.cancelled", "cancelled", "run.cancelled"),
     (
@@ -70,6 +78,16 @@ pub(crate) fn rpc_capabilities_payload() -> Value {
                 "code": contract.code,
                 "category": contract.category,
                 "description": contract.description,
+            })
+        })
+        .collect::<Vec<_>>();
+    let lifecycle_non_terminal_transitions = RPC_LIFECYCLE_NON_TERMINAL_TRANSITIONS
+        .iter()
+        .map(|(request_kind, response_kind, stream_event_kinds)| {
+            json!({
+                "request_kind": request_kind,
+                "response_kind": response_kind,
+                "stream_event_kinds": stream_event_kinds,
             })
         })
         .collect::<Vec<_>>();
@@ -109,6 +127,7 @@ pub(crate) fn rpc_capabilities_payload() -> Value {
             },
             "lifecycle": {
                 "terminal_assistant_stream_final_required": true,
+                "non_terminal_transitions": lifecycle_non_terminal_transitions,
                 "terminal_transitions": lifecycle_transitions,
             },
         }
@@ -183,6 +202,12 @@ mod tests {
                 .as_array()
                 .map(|transitions| transitions.len()),
             Some(4)
+        );
+        assert_eq!(
+            payload["contracts"]["lifecycle"]["non_terminal_transitions"]
+                .as_array()
+                .map(|transitions| transitions.len()),
+            Some(2)
         );
     }
 
@@ -375,6 +400,27 @@ mod tests {
             payload["contracts"]["lifecycle"]["terminal_assistant_stream_final_required"].as_bool(),
             Some(true)
         );
+        let non_terminal_transitions = payload["contracts"]["lifecycle"]
+            ["non_terminal_transitions"]
+            .as_array()
+            .expect("lifecycle non-terminal transitions should be an array");
+        assert_eq!(non_terminal_transitions.len(), 2);
+        assert_eq!(
+            non_terminal_transitions[0],
+            json!({
+                "request_kind": "run.start",
+                "response_kind": "run.accepted",
+                "stream_event_kinds": ["run.stream.tool_events", "run.stream.assistant_text"],
+            })
+        );
+        assert_eq!(
+            non_terminal_transitions[1],
+            json!({
+                "request_kind": "run.status",
+                "response_kind": "run.status",
+                "stream_event_kinds": [],
+            })
+        );
         let transitions = payload["contracts"]["lifecycle"]["terminal_transitions"]
             .as_array()
             .expect("lifecycle transitions should be an array");
@@ -441,8 +487,63 @@ mod tests {
     }
 
     #[test]
-    fn regression_rpc_capabilities_payload_lifecycle_transition_request_kinds_are_unique() {
+    fn regression_rpc_capabilities_payload_lifecycle_transition_kinds_are_unique() {
         let payload = rpc_capabilities_payload();
+        let non_terminal_transitions = payload["contracts"]["lifecycle"]
+            ["non_terminal_transitions"]
+            .as_array()
+            .expect("lifecycle non-terminal transitions should be an array");
+        let non_terminal_request_kinds = non_terminal_transitions
+            .iter()
+            .map(|entry| {
+                entry["request_kind"]
+                    .as_str()
+                    .expect("request kind should be string")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let unique_non_terminal_request_kinds = non_terminal_request_kinds
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            unique_non_terminal_request_kinds.len(),
+            non_terminal_request_kinds.len()
+        );
+        let non_terminal_response_kinds = non_terminal_transitions
+            .iter()
+            .map(|entry| {
+                entry["response_kind"]
+                    .as_str()
+                    .expect("response kind should be string")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let unique_non_terminal_response_kinds = non_terminal_response_kinds
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            unique_non_terminal_response_kinds.len(),
+            non_terminal_response_kinds.len()
+        );
+        for transition in non_terminal_transitions {
+            let stream_event_kinds = transition["stream_event_kinds"]
+                .as_array()
+                .expect("stream event kinds should be an array")
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_str()
+                        .expect("stream event kind should be string")
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            let unique_stream_event_kinds =
+                stream_event_kinds.iter().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(unique_stream_event_kinds.len(), stream_event_kinds.len());
+        }
+
         let transitions = payload["contracts"]["lifecycle"]["terminal_transitions"]
             .as_array()
             .expect("lifecycle transitions should be an array");

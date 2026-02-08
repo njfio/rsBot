@@ -1435,6 +1435,42 @@ mod tests {
                 .as_bool(),
             Some(true)
         );
+        let lifecycle_non_terminal_transitions = capabilities_response.payload["contracts"]
+            ["lifecycle"]["non_terminal_transitions"]
+            .as_array()
+            .expect("lifecycle non-terminal transitions array");
+        assert_eq!(lifecycle_non_terminal_transitions.len(), 2);
+        assert_eq!(
+            lifecycle_non_terminal_transitions[0]["request_kind"].as_str(),
+            Some("run.start")
+        );
+        assert_eq!(
+            lifecycle_non_terminal_transitions[0]["response_kind"].as_str(),
+            Some("run.accepted")
+        );
+        let lifecycle_non_terminal_transition_stream_events = lifecycle_non_terminal_transitions[0]
+            ["stream_event_kinds"]
+            .as_array()
+            .expect("lifecycle non-terminal stream event kinds array");
+        assert_eq!(lifecycle_non_terminal_transition_stream_events.len(), 2);
+        assert_eq!(
+            lifecycle_non_terminal_transition_stream_events[0].as_str(),
+            Some("run.stream.tool_events")
+        );
+        assert_eq!(
+            lifecycle_non_terminal_transitions[1]["request_kind"].as_str(),
+            Some("run.status")
+        );
+        assert_eq!(
+            lifecycle_non_terminal_transitions[1]["response_kind"].as_str(),
+            Some("run.status")
+        );
+        assert_eq!(
+            lifecycle_non_terminal_transitions[1]["stream_event_kinds"]
+                .as_array()
+                .map(|events| events.len()),
+            Some(0)
+        );
         let lifecycle_transitions = capabilities_response.payload["contracts"]["lifecycle"]
             ["terminal_transitions"]
             .as_array()
