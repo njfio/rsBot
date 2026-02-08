@@ -96,6 +96,7 @@ use super::{
 use crate::auth_commands::{
     auth_source_kind, auth_source_kind_counts, auth_state_counts, auth_status_row_for_provider,
     format_auth_state_counts, AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter,
+    AuthSourceKindFilter,
 };
 use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
@@ -956,6 +957,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
+            source_kind: AuthSourceKindFilter::All,
             json_output: true,
         }
     );
@@ -971,6 +973,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::Unavailable,
             state: Some("ready".to_string()),
+            source_kind: AuthSourceKindFilter::All,
             json_output: true,
         }
     );
@@ -985,6 +988,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
+            source_kind: AuthSourceKindFilter::All,
             json_output: true,
         }
     );
@@ -999,6 +1003,22 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::Supported,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
+            source_kind: AuthSourceKindFilter::All,
+            json_output: true,
+        }
+    );
+
+    let source_kind_filtered_status = parse_auth_command("status --source-kind env --json")
+        .expect("parse source-kind filtered auth status");
+    assert_eq!(
+        source_kind_filtered_status,
+        AuthCommand::Status {
+            provider: None,
+            mode: None,
+            mode_support: AuthMatrixModeSupportFilter::All,
+            availability: AuthMatrixAvailabilityFilter::All,
+            state: None,
+            source_kind: AuthSourceKindFilter::Env,
             json_output: true,
         }
     );
@@ -1073,6 +1093,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
+            source_kind: AuthSourceKindFilter::All,
             json_output: true,
         }
     );
@@ -1087,6 +1108,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
+            source_kind: AuthSourceKindFilter::All,
             json_output: true,
         }
     );
@@ -1101,6 +1123,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::Available,
             state: None,
+            source_kind: AuthSourceKindFilter::All,
             json_output: true,
         }
     );
@@ -1115,6 +1138,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: Some("ready".to_string()),
+            source_kind: AuthSourceKindFilter::All,
             json_output: true,
         }
     );
@@ -1129,6 +1153,23 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             mode_support: AuthMatrixModeSupportFilter::Supported,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
+            source_kind: AuthSourceKindFilter::All,
+            json_output: true,
+        }
+    );
+
+    let source_kind_filtered_matrix =
+        parse_auth_command("matrix --source-kind credential-store --json")
+            .expect("parse source-kind filtered auth matrix");
+    assert_eq!(
+        source_kind_filtered_matrix,
+        AuthCommand::Matrix {
+            provider: None,
+            mode: None,
+            mode_support: AuthMatrixModeSupportFilter::All,
+            availability: AuthMatrixAvailabilityFilter::All,
+            state: None,
+            source_kind: AuthSourceKindFilter::CredentialStore,
             json_output: true,
         }
     );
@@ -1268,6 +1309,44 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(duplicate_matrix_state
         .to_string()
         .contains("usage: /auth matrix"));
+
+    let missing_status_source_kind =
+        parse_auth_command("status --source-kind").expect_err("missing status source-kind");
+    assert!(missing_status_source_kind
+        .to_string()
+        .contains("usage: /auth status"));
+
+    let duplicate_status_source_kind =
+        parse_auth_command("status --source-kind all --source-kind env")
+            .expect_err("duplicate status source-kind");
+    assert!(duplicate_status_source_kind
+        .to_string()
+        .contains("usage: /auth status"));
+
+    let unknown_status_source_kind = parse_auth_command("status --source-kind wildcard")
+        .expect_err("unknown status source-kind");
+    assert!(unknown_status_source_kind
+        .to_string()
+        .contains("unknown source-kind filter"));
+
+    let missing_matrix_source_kind =
+        parse_auth_command("matrix --source-kind").expect_err("missing matrix source-kind");
+    assert!(missing_matrix_source_kind
+        .to_string()
+        .contains("usage: /auth matrix"));
+
+    let duplicate_matrix_source_kind =
+        parse_auth_command("matrix --source-kind all --source-kind env")
+            .expect_err("duplicate matrix source-kind");
+    assert!(duplicate_matrix_source_kind
+        .to_string()
+        .contains("usage: /auth matrix"));
+
+    let unknown_matrix_source_kind = parse_auth_command("matrix --source-kind wildcard")
+        .expect_err("unknown matrix source-kind");
+    assert!(unknown_matrix_source_kind
+        .to_string()
+        .contains("unknown source-kind filter"));
 
     let unknown_subcommand = parse_auth_command("noop").expect_err("subcommand fail");
     assert!(unknown_subcommand.to_string().contains("usage: /auth"));
@@ -1667,6 +1746,7 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert_eq!(payload["command"], "auth.matrix");
     assert_eq!(payload["provider_filter"], "all");
     assert_eq!(payload["mode_filter"], "all");
+    assert_eq!(payload["source_kind_filter"], "all");
     assert_eq!(payload["providers"], 3);
     assert_eq!(payload["modes"], 4);
     assert_eq!(payload["rows_total"], 12);
@@ -1721,6 +1801,7 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert!(text_output.contains("mode_unsupported_total=7"));
     assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_filter=all"));
+    assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("source_kind_counts=credential_store:2,flag:3,none:7"));
     assert!(text_output.contains("source_kind_counts_total=credential_store:2,flag:3,none:7"));
     assert!(text_output.contains("state_counts=mode_mismatch:1,ready:4,unsupported_mode:7"));
@@ -1757,6 +1838,7 @@ fn functional_execute_auth_command_matrix_supports_provider_and_mode_filters() {
     assert_eq!(payload["command"], "auth.matrix");
     assert_eq!(payload["provider_filter"], "openai");
     assert_eq!(payload["mode_filter"], "oauth_token");
+    assert_eq!(payload["source_kind_filter"], "all");
     assert_eq!(payload["providers"], 1);
     assert_eq!(payload["modes"], 1);
     assert_eq!(payload["rows_total"], 1);
@@ -1779,6 +1861,7 @@ fn functional_execute_auth_command_matrix_supports_provider_and_mode_filters() {
     assert!(text_output.contains("auth matrix: providers=1 modes=1 rows=1"));
     assert!(text_output.contains("provider_filter=openai"));
     assert!(text_output.contains("mode_filter=oauth_token"));
+    assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains(
         "auth matrix row: provider=openai mode=oauth_token mode_supported=true available=true state=ready"
     ));
@@ -1811,6 +1894,7 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
         serde_json::from_str(&available_output).expect("parse available matrix payload");
     assert_eq!(available_payload["provider_filter"], "all");
     assert_eq!(available_payload["mode_filter"], "all");
+    assert_eq!(available_payload["source_kind_filter"], "all");
     assert_eq!(available_payload["availability_filter"], "available");
     assert_eq!(available_payload["rows_total"], 12);
     assert_eq!(available_payload["rows"], 4);
@@ -1850,6 +1934,7 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
         serde_json::from_str(&unavailable_output).expect("parse unavailable matrix payload");
     assert_eq!(unavailable_payload["provider_filter"], "all");
     assert_eq!(unavailable_payload["mode_filter"], "all");
+    assert_eq!(unavailable_payload["source_kind_filter"], "all");
     assert_eq!(unavailable_payload["availability_filter"], "unavailable");
     assert_eq!(unavailable_payload["rows_total"], 12);
     assert_eq!(unavailable_payload["rows"], 8);
@@ -1917,6 +2002,7 @@ fn functional_execute_auth_command_matrix_supports_state_filter() {
     assert_eq!(ready_payload["provider_filter"], "all");
     assert_eq!(ready_payload["mode_filter"], "all");
     assert_eq!(ready_payload["state_filter"], "ready");
+    assert_eq!(ready_payload["source_kind_filter"], "all");
     assert_eq!(ready_payload["rows_total"], 12);
     assert_eq!(ready_payload["rows"], 4);
     assert_eq!(ready_payload["mode_supported_total"], 5);
@@ -1941,6 +2027,7 @@ fn functional_execute_auth_command_matrix_supports_state_filter() {
     assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_filter=all"));
     assert!(text_output.contains("state_filter=ready"));
+    assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("source_kind_counts=credential_store:1,flag:3"));
     assert!(text_output.contains("source_kind_counts_total=credential_store:2,flag:3,none:7"));
     assert!(text_output.contains("state_counts=ready:4"));
@@ -1976,6 +2063,7 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
     assert_eq!(supported_payload["provider_filter"], "all");
     assert_eq!(supported_payload["mode_filter"], "all");
     assert_eq!(supported_payload["mode_support_filter"], "supported");
+    assert_eq!(supported_payload["source_kind_filter"], "all");
     assert_eq!(supported_payload["rows_total"], 12);
     assert_eq!(supported_payload["rows"], 5);
     assert_eq!(supported_payload["mode_supported"], 5);
@@ -2016,6 +2104,7 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
     assert_eq!(unsupported_payload["provider_filter"], "all");
     assert_eq!(unsupported_payload["mode_filter"], "all");
     assert_eq!(unsupported_payload["mode_support_filter"], "unsupported");
+    assert_eq!(unsupported_payload["source_kind_filter"], "all");
     assert_eq!(unsupported_payload["rows_total"], 12);
     assert_eq!(unsupported_payload["rows"], 7);
     assert_eq!(unsupported_payload["mode_supported"], 0);
@@ -2051,6 +2140,7 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
     assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_filter=all"));
     assert!(text_output.contains("mode_support_filter=supported"));
+    assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("mode_supported_total=5"));
     assert!(text_output.contains("mode_unsupported_total=7"));
     assert!(text_output.contains("source_kind_counts=credential_store:2,flag:3"));
@@ -2058,6 +2148,67 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
     assert!(text_output.contains("state_counts=mode_mismatch:1,ready:4"));
     assert!(text_output.contains("state_counts_total=mode_mismatch:1,ready:4,unsupported_mode:7"));
     assert!(!text_output.contains("mode_supported=false"));
+}
+
+#[test]
+fn functional_execute_auth_command_matrix_supports_source_kind_filter() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-matrix-source-kind-filter.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = Some("shared-api-key".to_string());
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("source-kind-access".to_string()),
+            refresh_token: Some("source-kind-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(600)),
+            revoked: false,
+        },
+    );
+
+    let filtered_output =
+        execute_auth_command(&config, "matrix --source-kind credential-store --json");
+    let filtered_payload: serde_json::Value =
+        serde_json::from_str(&filtered_output).expect("parse source-kind filtered matrix payload");
+    assert_eq!(filtered_payload["provider_filter"], "all");
+    assert_eq!(filtered_payload["mode_filter"], "all");
+    assert_eq!(filtered_payload["source_kind_filter"], "credential_store");
+    assert_eq!(filtered_payload["rows_total"], 12);
+    assert_eq!(filtered_payload["rows"], 2);
+    assert_eq!(filtered_payload["mode_supported"], 2);
+    assert_eq!(filtered_payload["mode_unsupported"], 0);
+    assert_eq!(filtered_payload["available"], 1);
+    assert_eq!(filtered_payload["unavailable"], 1);
+    assert_eq!(
+        filtered_payload["source_kind_counts_total"]["credential_store"],
+        2
+    );
+    assert_eq!(filtered_payload["source_kind_counts_total"]["flag"], 3);
+    assert_eq!(filtered_payload["source_kind_counts_total"]["none"], 7);
+    assert_eq!(
+        filtered_payload["source_kind_counts"]["credential_store"],
+        2
+    );
+    assert_eq!(filtered_payload["state_counts"]["ready"], 1);
+    assert_eq!(filtered_payload["state_counts"]["mode_mismatch"], 1);
+    let filtered_entries = filtered_payload["entries"]
+        .as_array()
+        .expect("source-kind filtered entries");
+    assert_eq!(filtered_entries.len(), 2);
+    assert!(filtered_entries
+        .iter()
+        .all(|entry| entry["source"] == "credential_store"));
+
+    let text_output = execute_auth_command(&config, "matrix --source-kind credential-store");
+    assert!(text_output.contains("source_kind_filter=credential_store"));
+    assert!(text_output.contains("rows=2"));
+    assert!(text_output.contains("source_kind_counts=credential_store:2"));
 }
 
 #[test]
@@ -2084,7 +2235,7 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
 
     let filtered_output = execute_auth_command(
         &config,
-        "matrix openai --mode oauth-token --availability available --state ready --json",
+        "matrix openai --mode oauth-token --availability available --state ready --source-kind credential-store --json",
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed filter payload");
@@ -2092,6 +2243,7 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
     assert_eq!(filtered_payload["mode_filter"], "oauth_token");
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["state_filter"], "ready");
+    assert_eq!(filtered_payload["source_kind_filter"], "credential_store");
     assert_eq!(filtered_payload["providers"], 1);
     assert_eq!(filtered_payload["modes"], 1);
     assert_eq!(filtered_payload["rows_total"], 1);
@@ -2115,13 +2267,14 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
 
     let mismatch_output = execute_auth_command(
         &config,
-        "matrix openai --mode session-token --state mode_mismatch --json",
+        "matrix openai --mode session-token --state mode_mismatch --source-kind credential-store --json",
     );
     let mismatch_payload: serde_json::Value =
         serde_json::from_str(&mismatch_output).expect("parse mismatch filter payload");
     assert_eq!(mismatch_payload["provider_filter"], "openai");
     assert_eq!(mismatch_payload["mode_filter"], "session_token");
     assert_eq!(mismatch_payload["state_filter"], "mode_mismatch");
+    assert_eq!(mismatch_payload["source_kind_filter"], "credential_store");
     assert_eq!(mismatch_payload["rows_total"], 1);
     assert_eq!(mismatch_payload["rows"], 1);
     assert_eq!(mismatch_payload["mode_supported_total"], 1);
@@ -2165,7 +2318,7 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
 
     let filtered_output = execute_auth_command(
         &config,
-        "matrix openai --mode oauth-token --mode-support supported --availability available --state ready --json",
+        "matrix openai --mode oauth-token --mode-support supported --availability available --state ready --source-kind credential-store --json",
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse mode-support composed filter payload");
@@ -2174,6 +2327,7 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
     assert_eq!(filtered_payload["mode_support_filter"], "supported");
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["state_filter"], "ready");
+    assert_eq!(filtered_payload["source_kind_filter"], "credential_store");
     assert_eq!(filtered_payload["providers"], 1);
     assert_eq!(filtered_payload["modes"], 1);
     assert_eq!(filtered_payload["rows_total"], 1);
@@ -2197,13 +2351,14 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
 
     let zero_row_output = execute_auth_command(
         &config,
-        "matrix openai --mode oauth-token --mode-support unsupported --json",
+        "matrix openai --mode oauth-token --mode-support unsupported --source-kind credential-store --json",
     );
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row mode-support payload");
     assert_eq!(zero_row_payload["provider_filter"], "openai");
     assert_eq!(zero_row_payload["mode_filter"], "oauth_token");
     assert_eq!(zero_row_payload["mode_support_filter"], "unsupported");
+    assert_eq!(zero_row_payload["source_kind_filter"], "credential_store");
     assert_eq!(zero_row_payload["rows_total"], 1);
     assert_eq!(zero_row_payload["rows"], 0);
     assert_eq!(zero_row_payload["mode_supported"], 0);
@@ -2239,13 +2394,14 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
 
     let zero_row_text = execute_auth_command(
         &config,
-        "matrix openai --mode oauth-token --mode-support unsupported",
+        "matrix openai --mode oauth-token --mode-support unsupported --source-kind credential-store",
     );
     assert!(zero_row_text.contains("rows=0"));
     assert!(zero_row_text.contains("mode_supported_total=1"));
     assert!(zero_row_text.contains("mode_unsupported_total=0"));
     assert!(zero_row_text.contains("provider_filter=openai"));
     assert!(zero_row_text.contains("mode_filter=oauth_token"));
+    assert!(zero_row_text.contains("source_kind_filter=credential_store"));
     assert!(zero_row_text.contains("source_kind_counts=none"));
     assert!(zero_row_text.contains("source_kind_counts_total=credential_store:1"));
     assert!(zero_row_text.contains("state_counts=none"));
@@ -2267,6 +2423,17 @@ fn regression_execute_auth_command_matrix_rejects_missing_and_duplicate_mode_sup
     );
     assert!(duplicate_mode_support.contains("auth error: duplicate --mode-support flag"));
     assert!(duplicate_mode_support.contains("usage: /auth matrix"));
+
+    let missing_source_kind = execute_auth_command(&config, "matrix --source-kind");
+    assert!(
+        missing_source_kind.contains("auth error: missing source-kind filter after --source-kind")
+    );
+    assert!(missing_source_kind.contains("usage: /auth matrix"));
+
+    let duplicate_source_kind =
+        execute_auth_command(&config, "matrix --source-kind all --source-kind env");
+    assert!(duplicate_source_kind.contains("auth error: duplicate --source-kind flag"));
+    assert!(duplicate_source_kind.contains("usage: /auth matrix"));
 }
 
 #[test]
@@ -2755,6 +2922,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(available_payload["mode_filter"], "all");
     assert_eq!(available_payload["availability_filter"], "available");
     assert_eq!(available_payload["state_filter"], "all");
+    assert_eq!(available_payload["source_kind_filter"], "all");
     assert_eq!(available_payload["providers"], 3);
     assert_eq!(available_payload["rows_total"], 3);
     assert_eq!(available_payload["rows"], 2);
@@ -2790,6 +2958,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(unavailable_payload["availability_filter"], "unavailable");
     assert_eq!(unavailable_payload["mode_filter"], "all");
     assert_eq!(unavailable_payload["state_filter"], "all");
+    assert_eq!(unavailable_payload["source_kind_filter"], "all");
     assert_eq!(unavailable_payload["providers"], 3);
     assert_eq!(unavailable_payload["rows_total"], 3);
     assert_eq!(unavailable_payload["rows"], 1);
@@ -2820,6 +2989,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(state_payload["availability_filter"], "all");
     assert_eq!(state_payload["mode_filter"], "all");
     assert_eq!(state_payload["state_filter"], "missing_api_key");
+    assert_eq!(state_payload["source_kind_filter"], "all");
     assert_eq!(state_payload["providers"], 3);
     assert_eq!(state_payload["rows_total"], 3);
     assert_eq!(state_payload["rows"], 1);
@@ -2845,6 +3015,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert!(text_output.contains("source_kind_counts_total=flag:2,none:1"));
     assert!(text_output.contains("availability_filter=unavailable"));
     assert!(text_output.contains("state_filter=missing_api_key"));
+    assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("rows_total=3"));
     assert!(text_output.contains("state_counts=missing_api_key:1"));
     assert!(text_output.contains("state_counts_total=missing_api_key:1,ready:2"));
@@ -2870,6 +3041,7 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
     assert_eq!(api_key_payload["provider_filter"], "all");
     assert_eq!(api_key_payload["mode_filter"], "api_key");
     assert_eq!(api_key_payload["mode_support_filter"], "all");
+    assert_eq!(api_key_payload["source_kind_filter"], "all");
     assert_eq!(api_key_payload["providers"], 3);
     assert_eq!(api_key_payload["rows_total"], 3);
     assert_eq!(api_key_payload["rows"], 3);
@@ -2926,6 +3098,7 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
         serde_json::from_str(&oauth_output).expect("parse oauth mode-filtered status payload");
     assert_eq!(oauth_payload["provider_filter"], "all");
     assert_eq!(oauth_payload["mode_filter"], "oauth_token");
+    assert_eq!(oauth_payload["source_kind_filter"], "all");
     assert_eq!(oauth_payload["providers"], 3);
     assert_eq!(oauth_payload["rows_total"], 3);
     assert_eq!(oauth_payload["rows"], 3);
@@ -2956,6 +3129,7 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
     let text_output = execute_auth_command(&config, "status --mode api-key");
     assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_filter=api_key"));
+    assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("source_kind_counts="));
     assert!(text_output.contains("source_kind_counts_total="));
     assert!(text_output.contains("flag:1"));
@@ -2979,6 +3153,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     assert_eq!(supported_payload["provider_filter"], "all");
     assert_eq!(supported_payload["mode_support_filter"], "supported");
     assert_eq!(supported_payload["mode_filter"], "all");
+    assert_eq!(supported_payload["source_kind_filter"], "all");
     assert_eq!(supported_payload["providers"], 3);
     assert_eq!(supported_payload["rows_total"], 3);
     assert_eq!(supported_payload["rows"], 2);
@@ -3032,6 +3207,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     assert_eq!(unsupported_payload["provider_filter"], "all");
     assert_eq!(unsupported_payload["mode_support_filter"], "unsupported");
     assert_eq!(unsupported_payload["mode_filter"], "all");
+    assert_eq!(unsupported_payload["source_kind_filter"], "all");
     assert_eq!(unsupported_payload["rows_total"], 3);
     assert_eq!(unsupported_payload["rows"], 1);
     assert_eq!(unsupported_payload["mode_supported"], 0);
@@ -3060,6 +3236,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     let text_output = execute_auth_command(&config, "status --mode-support unsupported");
     assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_support_filter=unsupported"));
+    assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("mode_supported_total=2"));
     assert!(text_output.contains("mode_unsupported_total=1"));
     assert!(text_output.contains("source_kind_counts=none:1"));
@@ -3068,6 +3245,56 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     assert!(text_output.contains("state_counts=unsupported_mode:1"));
     assert!(text_output.contains("auth provider: name=anthropic"));
     assert!(!text_output.contains("auth provider: name=openai"));
+}
+
+#[test]
+fn functional_execute_auth_command_status_supports_source_kind_filter() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-status-source-kind-filter.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = None;
+    config.openai_api_key = Some("openai-source-kind-key".to_string());
+    config.anthropic_api_key = Some("anthropic-source-kind-key".to_string());
+    config.google_api_key = None;
+
+    let flag_output = execute_auth_command(&config, "status --source-kind flag --json");
+    let flag_payload: serde_json::Value =
+        serde_json::from_str(&flag_output).expect("parse flag source-kind status payload");
+    assert_eq!(flag_payload["provider_filter"], "all");
+    assert_eq!(flag_payload["mode_filter"], "all");
+    assert_eq!(flag_payload["source_kind_filter"], "flag");
+    assert_eq!(flag_payload["rows_total"], 3);
+    assert_eq!(flag_payload["rows"], 2);
+    assert_eq!(flag_payload["available"], 2);
+    assert_eq!(flag_payload["unavailable"], 0);
+    assert_eq!(flag_payload["source_kind_counts_total"]["flag"], 2);
+    assert_eq!(flag_payload["source_kind_counts_total"]["none"], 1);
+    assert_eq!(flag_payload["source_kind_counts"]["flag"], 2);
+    let flag_entries = flag_payload["entries"]
+        .as_array()
+        .expect("flag source-kind entries");
+    assert_eq!(flag_entries.len(), 2);
+    assert!(flag_entries
+        .iter()
+        .all(|entry| entry["source"].as_str().unwrap_or("").starts_with("--")));
+
+    let none_output = execute_auth_command(&config, "status --source-kind none --json");
+    let none_payload: serde_json::Value =
+        serde_json::from_str(&none_output).expect("parse none source-kind status payload");
+    assert_eq!(none_payload["source_kind_filter"], "none");
+    assert_eq!(none_payload["rows_total"], 3);
+    assert_eq!(none_payload["rows"], 1);
+    assert_eq!(none_payload["available"], 0);
+    assert_eq!(none_payload["unavailable"], 1);
+    assert_eq!(none_payload["source_kind_counts"]["none"], 1);
+    assert_eq!(none_payload["entries"][0]["provider"], "google");
+    assert_eq!(none_payload["entries"][0]["state"], "missing_api_key");
+
+    let text_output = execute_auth_command(&config, "status --source-kind none");
+    assert!(text_output.contains("source_kind_filter=none"));
+    assert!(text_output.contains("rows=1"));
+    assert!(text_output.contains("source_kind_counts=none:1"));
 }
 
 #[test]
@@ -3095,7 +3322,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
 
     let filtered_output = execute_auth_command(
         &config,
-        "status openai --availability available --state ready --json",
+        "status openai --availability available --state ready --source-kind credential-store --json",
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed status payload");
@@ -3103,6 +3330,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["mode_filter"], "all");
     assert_eq!(filtered_payload["state_filter"], "ready");
+    assert_eq!(filtered_payload["source_kind_filter"], "credential_store");
     assert_eq!(filtered_payload["providers"], 1);
     assert_eq!(filtered_payload["rows_total"], 1);
     assert_eq!(filtered_payload["rows"], 1);
@@ -3128,7 +3356,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
 
     let zero_row_output = execute_auth_command(
         &config,
-        "status openai --availability unavailable --state ready --json",
+        "status openai --availability unavailable --state ready --source-kind credential-store --json",
     );
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row composed status payload");
@@ -3136,6 +3364,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     assert_eq!(zero_row_payload["availability_filter"], "unavailable");
     assert_eq!(zero_row_payload["mode_filter"], "all");
     assert_eq!(zero_row_payload["state_filter"], "ready");
+    assert_eq!(zero_row_payload["source_kind_filter"], "credential_store");
     assert_eq!(zero_row_payload["providers"], 1);
     assert_eq!(zero_row_payload["rows_total"], 1);
     assert_eq!(zero_row_payload["rows"], 0);
@@ -3174,10 +3403,11 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
 
     let zero_row_text = execute_auth_command(
         &config,
-        "status openai --availability unavailable --state ready",
+        "status openai --availability unavailable --state ready --source-kind credential-store",
     );
     assert!(zero_row_text.contains("providers=1 rows=0"));
     assert!(zero_row_text.contains("provider_filter=openai"));
+    assert!(zero_row_text.contains("source_kind_filter=credential_store"));
     assert!(zero_row_text.contains("mode_supported_total=1"));
     assert!(zero_row_text.contains("mode_unsupported_total=0"));
     assert!(zero_row_text.contains("source_kind_counts=none"));
@@ -3214,7 +3444,7 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
 
     let filtered_output = execute_auth_command(
         &config,
-        "status openai --mode session-token --mode-support supported --availability available --state ready --json",
+        "status openai --mode session-token --mode-support supported --availability available --state ready --source-kind credential-store --json",
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed mode-support payload");
@@ -3223,6 +3453,7 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     assert_eq!(filtered_payload["mode_support_filter"], "supported");
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["state_filter"], "ready");
+    assert_eq!(filtered_payload["source_kind_filter"], "credential_store");
     assert_eq!(filtered_payload["providers"], 1);
     assert_eq!(filtered_payload["rows_total"], 1);
     assert_eq!(filtered_payload["rows"], 1);
@@ -3245,13 +3476,14 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
 
     let zero_row_output = execute_auth_command(
         &config,
-        "status openai --mode session-token --mode-support unsupported --json",
+        "status openai --mode session-token --mode-support unsupported --source-kind credential-store --json",
     );
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row mode-support payload");
     assert_eq!(zero_row_payload["provider_filter"], "openai");
     assert_eq!(zero_row_payload["mode_filter"], "session_token");
     assert_eq!(zero_row_payload["mode_support_filter"], "unsupported");
+    assert_eq!(zero_row_payload["source_kind_filter"], "credential_store");
     assert_eq!(zero_row_payload["rows_total"], 1);
     assert_eq!(zero_row_payload["rows"], 0);
     assert_eq!(zero_row_payload["mode_supported"], 0);
@@ -3280,11 +3512,12 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
 
     let zero_row_text = execute_auth_command(
         &config,
-        "status openai --mode session-token --mode-support unsupported",
+        "status openai --mode session-token --mode-support unsupported --source-kind credential-store",
     );
     assert!(zero_row_text.contains("rows=0"));
     assert!(zero_row_text.contains("provider_filter=openai"));
     assert!(zero_row_text.contains("mode_filter=session_token"));
+    assert!(zero_row_text.contains("source_kind_filter=credential_store"));
     assert!(zero_row_text.contains("mode_supported_total=1"));
     assert!(zero_row_text.contains("mode_unsupported_total=0"));
     assert!(zero_row_text.contains("source_kind_counts=none"));
@@ -3326,6 +3559,17 @@ fn regression_execute_auth_command_status_rejects_missing_and_duplicate_filter_f
     let duplicate_state = execute_auth_command(&config, "status --state ready --state revoked");
     assert!(duplicate_state.contains("auth error: duplicate --state flag"));
     assert!(duplicate_state.contains("usage: /auth status"));
+
+    let missing_source_kind = execute_auth_command(&config, "status --source-kind");
+    assert!(
+        missing_source_kind.contains("auth error: missing source-kind filter after --source-kind")
+    );
+    assert!(missing_source_kind.contains("usage: /auth status"));
+
+    let duplicate_source_kind =
+        execute_auth_command(&config, "status --source-kind all --source-kind env");
+    assert!(duplicate_source_kind.contains("auth error: duplicate --source-kind flag"));
+    assert!(duplicate_source_kind.contains("usage: /auth status"));
 }
 
 #[test]

@@ -3,10 +3,10 @@ use super::*;
 pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> ...";
 pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
 pub(crate) const AUTH_STATUS_USAGE: &str =
-    "usage: /auth status [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
+    "usage: /auth status [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--source-kind <all|flag|env|credential-store|none>] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
 pub(crate) const AUTH_MATRIX_USAGE: &str =
-    "usage: /auth matrix [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
+    "usage: /auth matrix [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--source-kind <all|flag|env|credential-store|none>] [--json]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuthMatrixAvailabilityFilter {
@@ -42,6 +42,27 @@ impl AuthMatrixModeSupportFilter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthSourceKindFilter {
+    All,
+    Flag,
+    Env,
+    CredentialStore,
+    None,
+}
+
+impl AuthSourceKindFilter {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Flag => "flag",
+            Self::Env => "env",
+            Self::CredentialStore => "credential_store",
+            Self::None => "none",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthCommand {
     Login {
@@ -55,6 +76,7 @@ pub(crate) enum AuthCommand {
         mode_support: AuthMatrixModeSupportFilter,
         availability: AuthMatrixAvailabilityFilter,
         state: Option<String>,
+        source_kind: AuthSourceKindFilter,
         json_output: bool,
     },
     Logout {
@@ -67,8 +89,18 @@ pub(crate) enum AuthCommand {
         mode_support: AuthMatrixModeSupportFilter,
         availability: AuthMatrixAvailabilityFilter,
         state: Option<String>,
+        source_kind: AuthSourceKindFilter,
         json_output: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthQueryFilters {
+    pub(crate) mode: Option<ProviderAuthMethod>,
+    pub(crate) mode_support: AuthMatrixModeSupportFilter,
+    pub(crate) availability: AuthMatrixAvailabilityFilter,
+    pub(crate) state: Option<String>,
+    pub(crate) source_kind: AuthSourceKindFilter,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -173,6 +205,8 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             let mut availability = AuthMatrixAvailabilityFilter::All;
             let mut availability_explicit = false;
             let mut state: Option<String> = None;
+            let mut source_kind = AuthSourceKindFilter::All;
+            let mut source_kind_explicit = false;
             let mut json_output = false;
             let mut index = 1usize;
             while index < tokens.len() {
@@ -223,6 +257,17 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                         state = Some(parse_auth_matrix_state_filter(raw_state)?);
                         index += 2;
                     }
+                    "--source-kind" => {
+                        if source_kind_explicit {
+                            bail!("duplicate --source-kind flag; {AUTH_STATUS_USAGE}");
+                        }
+                        let Some(raw_source_kind) = tokens.get(index + 1) else {
+                            bail!("missing source-kind filter after --source-kind; {AUTH_STATUS_USAGE}");
+                        };
+                        source_kind = parse_auth_source_kind_filter(raw_source_kind)?;
+                        source_kind_explicit = true;
+                        index += 2;
+                    }
                     token if token.starts_with("--") => {
                         bail!("unexpected argument '{}'; {AUTH_STATUS_USAGE}", token);
                     }
@@ -241,6 +286,7 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                 mode_support,
                 availability,
                 state,
+                source_kind,
                 json_output,
             })
         }
@@ -270,6 +316,8 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             let mut availability = AuthMatrixAvailabilityFilter::All;
             let mut availability_explicit = false;
             let mut state: Option<String> = None;
+            let mut source_kind = AuthSourceKindFilter::All;
+            let mut source_kind_explicit = false;
             let mut json_output = false;
             let mut index = 1usize;
             while index < tokens.len() {
@@ -320,6 +368,17 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                         state = Some(parse_auth_matrix_state_filter(raw_state)?);
                         index += 2;
                     }
+                    "--source-kind" => {
+                        if source_kind_explicit {
+                            bail!("duplicate --source-kind flag; {AUTH_MATRIX_USAGE}");
+                        }
+                        let Some(raw_source_kind) = tokens.get(index + 1) else {
+                            bail!("missing source-kind filter after --source-kind; {AUTH_MATRIX_USAGE}");
+                        };
+                        source_kind = parse_auth_source_kind_filter(raw_source_kind)?;
+                        source_kind_explicit = true;
+                        index += 2;
+                    }
                     token if token.starts_with("--") => {
                         bail!("unexpected argument '{}'; {AUTH_MATRIX_USAGE}", token);
                     }
@@ -338,6 +397,7 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                 mode_support,
                 availability,
                 state,
+                source_kind,
                 json_output,
             })
         }
@@ -379,6 +439,20 @@ pub(crate) fn parse_auth_matrix_state_filter(token: &str) -> Result<String> {
         bail!("state filter must not be empty");
     }
     Ok(normalized)
+}
+
+pub(crate) fn parse_auth_source_kind_filter(token: &str) -> Result<AuthSourceKindFilter> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "all" => Ok(AuthSourceKindFilter::All),
+        "flag" => Ok(AuthSourceKindFilter::Flag),
+        "env" => Ok(AuthSourceKindFilter::Env),
+        "credential-store" | "credential_store" => Ok(AuthSourceKindFilter::CredentialStore),
+        "none" => Ok(AuthSourceKindFilter::None),
+        other => bail!(
+            "unknown source-kind filter '{}'; supported values: all, flag, env, credential-store, none",
+            other
+        ),
+    }
 }
 
 pub(crate) fn provider_api_key_candidates_from_auth_config(
@@ -1006,6 +1080,16 @@ pub(crate) fn auth_source_kind(source: &str) -> &'static str {
     "env"
 }
 
+fn auth_source_kind_matches_filter(source: &str, source_kind_filter: AuthSourceKindFilter) -> bool {
+    match source_kind_filter {
+        AuthSourceKindFilter::All => true,
+        AuthSourceKindFilter::Flag => auth_source_kind(source) == "flag",
+        AuthSourceKindFilter::Env => auth_source_kind(source) == "env",
+        AuthSourceKindFilter::CredentialStore => auth_source_kind(source) == "credential_store",
+        AuthSourceKindFilter::None => auth_source_kind(source) == "none",
+    }
+}
+
 pub(crate) fn auth_source_kind_counts(
     rows: &[AuthStatusRow],
 ) -> std::collections::BTreeMap<String, usize> {
@@ -1034,12 +1118,16 @@ pub(crate) fn format_auth_state_counts(
 pub(crate) fn execute_auth_status_command(
     config: &AuthCommandConfig,
     provider: Option<Provider>,
-    mode: Option<ProviderAuthMethod>,
-    mode_support: AuthMatrixModeSupportFilter,
-    availability: AuthMatrixAvailabilityFilter,
-    state: Option<String>,
+    filters: AuthQueryFilters,
     json_output: bool,
 ) -> String {
+    let AuthQueryFilters {
+        mode,
+        mode_support,
+        availability,
+        state,
+        source_kind,
+    } = filters;
     let provider_filter = provider.map(|value| value.as_str()).unwrap_or("all");
     let selected_providers = if let Some(provider) = provider {
         vec![provider]
@@ -1108,6 +1196,7 @@ pub(crate) fn execute_auth_status_command(
     if let Some(state_filter) = state_filter.as_deref() {
         rows.retain(|row| row.state == state_filter);
     }
+    rows.retain(|row| auth_source_kind_matches_filter(&row.source, source_kind));
 
     let available = rows.iter().filter(|row| row.available).count();
     let unavailable = rows.len().saturating_sub(available);
@@ -1124,6 +1213,7 @@ pub(crate) fn execute_auth_status_command(
             "mode_support_filter": mode_support.as_str(),
             "availability_filter": availability.as_str(),
             "state_filter": state_filter.as_deref().unwrap_or("all"),
+            "source_kind_filter": source_kind.as_str(),
             "providers": selected_providers.len(),
             "rows_total": total_rows,
             "rows": rows.len(),
@@ -1143,7 +1233,7 @@ pub(crate) fn execute_auth_status_command(
     }
 
     let mut lines = vec![format!(
-        "auth status: providers={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={}",
+        "auth status: providers={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={}",
         selected_providers.len(),
         rows.len(),
         mode_supported,
@@ -1155,6 +1245,7 @@ pub(crate) fn execute_auth_status_command(
         mode_support.as_str(),
         availability.as_str(),
         state_filter.as_deref().unwrap_or("all"),
+        source_kind.as_str(),
         total_rows,
         mode_supported_total,
         mode_unsupported_total,
@@ -1199,12 +1290,16 @@ fn auth_config_with_provider_mode(
 pub(crate) fn execute_auth_matrix_command(
     config: &AuthCommandConfig,
     provider: Option<Provider>,
-    mode: Option<ProviderAuthMethod>,
-    mode_support: AuthMatrixModeSupportFilter,
-    availability: AuthMatrixAvailabilityFilter,
-    state: Option<String>,
+    filters: AuthQueryFilters,
     json_output: bool,
 ) -> String {
+    let AuthQueryFilters {
+        mode,
+        mode_support,
+        availability,
+        state,
+        source_kind,
+    } = filters;
     let provider_filter = provider.map(|value| value.as_str()).unwrap_or("all");
     let mode_filter = mode.map(|value| value.as_str()).unwrap_or("all");
     let selected_providers = provider
@@ -1272,6 +1367,7 @@ pub(crate) fn execute_auth_matrix_command(
     if let Some(state_filter) = state_filter.as_deref() {
         rows.retain(|row| row.state == state_filter);
     }
+    rows.retain(|row| auth_source_kind_matches_filter(&row.source, source_kind));
 
     let available = rows.iter().filter(|row| row.available).count();
     let unavailable = rows.len().saturating_sub(available);
@@ -1288,6 +1384,7 @@ pub(crate) fn execute_auth_matrix_command(
             "mode_support_filter": mode_support.as_str(),
             "availability_filter": availability.as_str(),
             "state_filter": state_filter.as_deref().unwrap_or("all"),
+            "source_kind_filter": source_kind.as_str(),
             "providers": selected_providers.len(),
             "modes": selected_modes.len(),
             "rows_total": total_rows,
@@ -1308,7 +1405,7 @@ pub(crate) fn execute_auth_matrix_command(
     }
 
     let mut lines = vec![format!(
-        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={}",
+        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={}",
         selected_providers.len(),
         selected_modes.len(),
         rows.len(),
@@ -1321,6 +1418,7 @@ pub(crate) fn execute_auth_matrix_command(
         mode_support.as_str(),
         availability.as_str(),
         state_filter.as_deref().unwrap_or("all"),
+        source_kind.as_str(),
         total_rows,
         mode_supported_total,
         mode_unsupported_total,
@@ -1444,14 +1542,18 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
             mode_support,
             availability,
             state,
+            source_kind,
             json_output,
         } => execute_auth_status_command(
             config,
             provider,
-            mode,
-            mode_support,
-            availability,
-            state,
+            AuthQueryFilters {
+                mode,
+                mode_support,
+                availability,
+                state,
+                source_kind,
+            },
             json_output,
         ),
         AuthCommand::Logout {
@@ -1464,14 +1566,18 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
             mode_support,
             availability,
             state,
+            source_kind,
             json_output,
         } => execute_auth_matrix_command(
             config,
             provider,
-            mode,
-            mode_support,
-            availability,
-            state,
+            AuthQueryFilters {
+                mode,
+                mode_support,
+                availability,
+                state,
+                source_kind,
+            },
             json_output,
         ),
     }
