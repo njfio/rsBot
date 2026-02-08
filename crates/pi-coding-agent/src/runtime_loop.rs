@@ -33,6 +33,7 @@ pub(crate) struct InteractiveRuntimeConfig<'a> {
     pub(crate) render_options: RenderOptions,
     pub(crate) orchestrator_mode: CliOrchestratorMode,
     pub(crate) orchestrator_max_plan_steps: usize,
+    pub(crate) orchestrator_max_executor_response_chars: usize,
     pub(crate) command_context: CommandExecutionContext<'a>,
 }
 
@@ -105,6 +106,7 @@ pub(crate) async fn run_interactive(
                 config.turn_timeout_ms,
                 config.render_options,
                 config.orchestrator_max_plan_steps,
+                config.orchestrator_max_executor_response_chars,
             )
             .await?;
         } else {

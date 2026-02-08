@@ -79,6 +79,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 cli.turn_timeout_ms,
                 render_options,
                 cli.orchestrator_max_plan_steps,
+                cli.orchestrator_max_executor_response_chars,
             )
             .await?;
         } else {
@@ -121,6 +122,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         render_options,
         orchestrator_mode: cli.orchestrator_mode,
         orchestrator_max_plan_steps: cli.orchestrator_max_plan_steps,
+        orchestrator_max_executor_response_chars: cli.orchestrator_max_executor_response_chars,
         command_context,
     };
     if let Some(command_file_path) = cli.command_file.as_deref() {

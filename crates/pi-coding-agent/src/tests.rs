@@ -245,6 +245,7 @@ fn test_cli() -> Cli {
         prompt: None,
         orchestrator_mode: CliOrchestratorMode::Off,
         orchestrator_max_plan_steps: 8,
+        orchestrator_max_executor_response_chars: 20_000,
         prompt_file: None,
         prompt_template_file: None,
         prompt_template_var: vec![],
@@ -542,6 +543,7 @@ fn unit_cli_orchestrator_flags_default_values_are_stable() {
     let cli = Cli::parse_from(["pi-rs"]);
     assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::Off);
     assert_eq!(cli.orchestrator_max_plan_steps, 8);
+    assert_eq!(cli.orchestrator_max_executor_response_chars, 20_000);
 }
 
 #[test]
@@ -552,9 +554,19 @@ fn functional_cli_orchestrator_flags_accept_overrides() {
         "plan-first",
         "--orchestrator-max-plan-steps",
         "5",
+        "--orchestrator-max-executor-response-chars",
+        "160",
     ]);
     assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::PlanFirst);
     assert_eq!(cli.orchestrator_max_plan_steps, 5);
+    assert_eq!(cli.orchestrator_max_executor_response_chars, 160);
+}
+
+#[test]
+fn regression_cli_orchestrator_executor_response_budget_rejects_zero() {
+    let parse = Cli::try_parse_from(["pi-rs", "--orchestrator-max-executor-response-chars", "0"]);
+    let error = parse.expect_err("zero executor budget should be rejected");
+    assert!(error.to_string().contains("greater than 0"));
 }
 
 #[test]
@@ -8081,6 +8093,7 @@ async fn functional_run_plan_first_prompt_executes_planner_then_executor() {
         0,
         test_render_options(),
         4,
+        512,
     )
     .await
     .expect("plan-first prompt should succeed");
@@ -8126,6 +8139,7 @@ async fn regression_run_plan_first_prompt_rejects_overlong_plans_before_executor
         0,
         test_render_options(),
         2,
+        512,
     )
     .await
     .expect_err("overlong plan should fail");
@@ -8166,12 +8180,52 @@ async fn regression_run_plan_first_prompt_fails_when_executor_output_is_empty() 
         0,
         test_render_options(),
         4,
+        512,
     )
     .await
     .expect_err("empty executor output should fail");
     assert!(error
         .to_string()
         .contains("executor produced no text output"));
+}
+
+#[tokio::test]
+async fn regression_run_plan_first_prompt_fails_when_executor_output_exceeds_budget() {
+    let planner_response = ChatResponse {
+        message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let executor_response = ChatResponse {
+        message: Message::assistant_text("final implementation response"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(planner_response),
+                Ok(executor_response),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    let error = run_plan_first_prompt(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        8,
+    )
+    .await
+    .expect_err("oversized executor output should fail");
+    assert!(error
+        .to_string()
+        .contains("executor response exceeded budget"));
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ pub(crate) async fn run_plan_first_prompt(
     turn_timeout_ms: u64,
     render_options: RenderOptions,
     max_plan_steps: usize,
+    max_executor_response_chars: usize,
 ) -> Result<()> {
     let planner_prompt = build_plan_first_planner_prompt(user_prompt, max_plan_steps);
     let planner_render_options = RenderOptions {
@@ -77,13 +78,28 @@ pub(crate) async fn run_plan_first_prompt(
     if execution_text.trim().is_empty() {
         bail!("plan-first orchestrator failed: executor produced no text output");
     }
+    let response_chars = execution_text.chars().count();
     let covered_steps = count_reviewed_plan_steps(&plan_steps, &execution_text);
+    let within_budget =
+        executor_response_within_budget(response_chars, max_executor_response_chars);
     println!(
-        "orchestrator trace: mode=plan-first phase=review covered_steps={} total_steps={} response_chars={}",
+        "orchestrator trace: mode=plan-first phase=review covered_steps={} total_steps={} response_chars={} max_response_chars={} within_budget={}",
         covered_steps,
         plan_steps.len(),
-        execution_text.chars().count()
+        response_chars,
+        max_executor_response_chars,
+        within_budget
     );
+    if !within_budget {
+        println!(
+            "orchestrator trace: mode=plan-first phase=consolidation decision=reject reason=executor_response_budget_exceeded"
+        );
+        bail!(
+            "plan-first orchestrator failed: executor response exceeded budget (chars {} > max {})",
+            response_chars,
+            max_executor_response_chars
+        );
+    }
     println!("orchestrator trace: mode=plan-first phase=consolidation decision=accept");
     Ok(())
 }
@@ -170,6 +186,10 @@ fn step_review_tokens(step: &str) -> Vec<String> {
         .collect()
 }
 
+fn executor_response_within_budget(response_chars: usize, max_response_chars: usize) -> bool {
+    response_chars <= max_response_chars
+}
+
 fn flatten_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -184,7 +204,9 @@ fn report_prompt_status_internal(status: PromptRunStatus) {
 
 #[cfg(test)]
 mod tests {
-    use super::{count_reviewed_plan_steps, parse_numbered_plan_steps};
+    use super::{
+        count_reviewed_plan_steps, executor_response_within_budget, parse_numbered_plan_steps,
+    };
 
     #[test]
     fn unit_parse_numbered_plan_steps_extracts_dot_and_paren_prefixes() {
@@ -221,5 +243,12 @@ mod tests {
             count_reviewed_plan_steps(&plan_steps, "no related content"),
             0
         );
+    }
+
+    #[test]
+    fn unit_executor_response_within_budget_respects_boundary() {
+        assert!(executor_response_within_budget(24, 24));
+        assert!(executor_response_within_budget(12, 24));
+        assert!(!executor_response_within_budget(25, 24));
     }
 }
