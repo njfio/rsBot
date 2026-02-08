@@ -949,6 +949,21 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         status,
         AuthCommand::Status {
             provider: Some(Provider::Anthropic),
+            availability: AuthMatrixAvailabilityFilter::All,
+            state: None,
+            json_output: true,
+        }
+    );
+
+    let filtered_status =
+        parse_auth_command("status --availability unavailable openai --state Ready --json")
+            .expect("parse filtered auth status");
+    assert_eq!(
+        filtered_status,
+        AuthCommand::Status {
+            provider: Some(Provider::OpenAi),
+            availability: AuthMatrixAvailabilityFilter::Unavailable,
+            state: Some("ready".to_string()),
             json_output: true,
         }
     );
@@ -1097,9 +1112,28 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
         .to_string()
         .contains("usage: /auth matrix"));
 
+    let missing_status_availability =
+        parse_auth_command("status --availability").expect_err("missing status availability");
+    assert!(missing_status_availability
+        .to_string()
+        .contains("usage: /auth status"));
+
+    let duplicate_status_availability =
+        parse_auth_command("status --availability all --availability unavailable")
+            .expect_err("duplicate status availability");
+    assert!(duplicate_status_availability
+        .to_string()
+        .contains("usage: /auth status"));
+
     let unknown_matrix_availability = parse_auth_command("matrix --availability sometimes")
         .expect_err("unknown matrix availability");
     assert!(unknown_matrix_availability
+        .to_string()
+        .contains("unknown availability filter"));
+
+    let unknown_status_availability = parse_auth_command("status --availability sometimes")
+        .expect_err("unknown status availability");
+    assert!(unknown_status_availability
         .to_string()
         .contains("unknown availability filter"));
 
@@ -1108,6 +1142,18 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(missing_matrix_state
         .to_string()
         .contains("usage: /auth matrix"));
+
+    let missing_status_state =
+        parse_auth_command("status --state").expect_err("missing status state filter");
+    assert!(missing_status_state
+        .to_string()
+        .contains("usage: /auth status"));
+
+    let duplicate_status_state = parse_auth_command("status --state ready --state revoked")
+        .expect_err("duplicate status state filter");
+    assert!(duplicate_status_state
+        .to_string()
+        .contains("usage: /auth status"));
 
     let duplicate_matrix_state = parse_auth_command("matrix --state ready --state revoked")
         .expect_err("duplicate matrix state filter");
@@ -2122,6 +2168,162 @@ fn integration_execute_auth_command_status_reports_store_backed_state() {
     assert_eq!(payload["entries"][0]["mode"], "session_token");
     assert_eq!(payload["entries"][0]["state"], "ready");
     assert_eq!(payload["entries"][0]["available"], true);
+}
+
+#[test]
+fn functional_execute_auth_command_status_supports_availability_and_state_filters() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-status-filters.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = None;
+    config.openai_api_key = Some("openai-status-filter-key".to_string());
+    config.anthropic_api_key = Some("anthropic-status-filter-key".to_string());
+    config.google_api_key = None;
+
+    let available_output = execute_auth_command(&config, "status --availability available --json");
+    let available_payload: serde_json::Value =
+        serde_json::from_str(&available_output).expect("parse available status payload");
+    assert_eq!(available_payload["command"], "auth.status");
+    assert_eq!(available_payload["availability_filter"], "available");
+    assert_eq!(available_payload["state_filter"], "all");
+    assert_eq!(available_payload["providers"], 3);
+    assert_eq!(available_payload["rows_total"], 3);
+    assert_eq!(available_payload["rows"], 2);
+    assert_eq!(available_payload["available"], 2);
+    assert_eq!(available_payload["unavailable"], 0);
+    let available_entries = available_payload["entries"]
+        .as_array()
+        .expect("available status entries");
+    assert_eq!(available_entries.len(), 2);
+    assert!(available_entries
+        .iter()
+        .all(|entry| entry["available"].as_bool() == Some(true)));
+    assert!(available_entries
+        .iter()
+        .all(|entry| entry["state"] == "ready"));
+
+    let unavailable_output =
+        execute_auth_command(&config, "status --availability unavailable --json");
+    let unavailable_payload: serde_json::Value =
+        serde_json::from_str(&unavailable_output).expect("parse unavailable status payload");
+    assert_eq!(unavailable_payload["availability_filter"], "unavailable");
+    assert_eq!(unavailable_payload["state_filter"], "all");
+    assert_eq!(unavailable_payload["providers"], 3);
+    assert_eq!(unavailable_payload["rows_total"], 3);
+    assert_eq!(unavailable_payload["rows"], 1);
+    assert_eq!(unavailable_payload["available"], 0);
+    assert_eq!(unavailable_payload["unavailable"], 1);
+    assert_eq!(unavailable_payload["entries"][0]["provider"], "google");
+    assert_eq!(
+        unavailable_payload["entries"][0]["state"],
+        "missing_api_key"
+    );
+    assert_eq!(unavailable_payload["entries"][0]["available"], false);
+
+    let state_output = execute_auth_command(&config, "status --state missing_api_key --json");
+    let state_payload: serde_json::Value =
+        serde_json::from_str(&state_output).expect("parse state-filtered status payload");
+    assert_eq!(state_payload["availability_filter"], "all");
+    assert_eq!(state_payload["state_filter"], "missing_api_key");
+    assert_eq!(state_payload["providers"], 3);
+    assert_eq!(state_payload["rows_total"], 3);
+    assert_eq!(state_payload["rows"], 1);
+    assert_eq!(state_payload["entries"][0]["provider"], "google");
+    assert_eq!(state_payload["entries"][0]["state"], "missing_api_key");
+
+    let text_output = execute_auth_command(
+        &config,
+        "status --availability unavailable --state missing_api_key",
+    );
+    assert!(text_output.contains("availability_filter=unavailable"));
+    assert!(text_output.contains("state_filter=missing_api_key"));
+    assert!(text_output.contains("rows_total=3"));
+    assert!(text_output.contains("auth provider: name=google"));
+    assert!(!text_output.contains("auth provider: name=openai"));
+}
+
+#[test]
+fn integration_execute_auth_command_status_filters_compose_with_provider_and_zero_rows() {
+    let temp = tempdir().expect("tempdir");
+    let store_path = temp.path().join("auth-status-composition.json");
+    write_test_provider_credential(
+        &store_path,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::SessionToken,
+            access_token: Some("composition-session-access".to_string()),
+            refresh_token: Some("composition-session-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(1200)),
+            revoked: false,
+        },
+    );
+
+    let mut config = test_auth_command_config();
+    config.credential_store = store_path;
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.openai_auth_mode = ProviderAuthMethod::SessionToken;
+
+    let filtered_output = execute_auth_command(
+        &config,
+        "status openai --availability available --state ready --json",
+    );
+    let filtered_payload: serde_json::Value =
+        serde_json::from_str(&filtered_output).expect("parse composed status payload");
+    assert_eq!(filtered_payload["availability_filter"], "available");
+    assert_eq!(filtered_payload["state_filter"], "ready");
+    assert_eq!(filtered_payload["providers"], 1);
+    assert_eq!(filtered_payload["rows_total"], 1);
+    assert_eq!(filtered_payload["rows"], 1);
+    assert_eq!(filtered_payload["available"], 1);
+    assert_eq!(filtered_payload["unavailable"], 0);
+    assert_eq!(filtered_payload["entries"][0]["provider"], "openai");
+    assert_eq!(filtered_payload["entries"][0]["state"], "ready");
+    assert_eq!(filtered_payload["entries"][0]["available"], true);
+
+    let zero_row_output = execute_auth_command(
+        &config,
+        "status openai --availability unavailable --state ready --json",
+    );
+    let zero_row_payload: serde_json::Value =
+        serde_json::from_str(&zero_row_output).expect("parse zero-row composed status payload");
+    assert_eq!(zero_row_payload["availability_filter"], "unavailable");
+    assert_eq!(zero_row_payload["state_filter"], "ready");
+    assert_eq!(zero_row_payload["providers"], 1);
+    assert_eq!(zero_row_payload["rows_total"], 1);
+    assert_eq!(zero_row_payload["rows"], 0);
+    assert_eq!(zero_row_payload["available"], 0);
+    assert_eq!(zero_row_payload["unavailable"], 0);
+    assert_eq!(
+        zero_row_payload["entries"]
+            .as_array()
+            .expect("zero-row entries")
+            .len(),
+        0
+    );
+
+    let zero_row_text = execute_auth_command(
+        &config,
+        "status openai --availability unavailable --state ready",
+    );
+    assert!(zero_row_text.contains("providers=1 rows=0"));
+    assert!(zero_row_text.contains("rows_total=1"));
+}
+
+#[test]
+fn regression_execute_auth_command_status_rejects_missing_and_duplicate_filter_flags() {
+    let config = test_auth_command_config();
+
+    let missing_availability = execute_auth_command(&config, "status --availability");
+    assert!(missing_availability
+        .contains("auth error: missing availability filter after --availability"));
+    assert!(missing_availability.contains("usage: /auth status"));
+
+    let duplicate_state = execute_auth_command(&config, "status --state ready --state revoked");
+    assert!(duplicate_state.contains("auth error: duplicate --state flag"));
+    assert!(duplicate_state.contains("usage: /auth status"));
 }
 
 #[test]
