@@ -952,6 +952,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         status,
         AuthCommand::Status {
             provider: Some(Provider::Anthropic),
+            mode: None,
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
@@ -966,9 +967,24 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         filtered_status,
         AuthCommand::Status {
             provider: Some(Provider::OpenAi),
+            mode: None,
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::Unavailable,
             state: Some("ready".to_string()),
+            json_output: true,
+        }
+    );
+
+    let mode_filtered_status = parse_auth_command("status openai --mode session-token --json")
+        .expect("parse mode-filtered auth status");
+    assert_eq!(
+        mode_filtered_status,
+        AuthCommand::Status {
+            provider: Some(Provider::OpenAi),
+            mode: Some(ProviderAuthMethod::SessionToken),
+            mode_support: AuthMatrixModeSupportFilter::All,
+            availability: AuthMatrixAvailabilityFilter::All,
+            state: None,
             json_output: true,
         }
     );
@@ -979,6 +995,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         supported_status,
         AuthCommand::Status {
             provider: None,
+            mode: None,
             mode_support: AuthMatrixModeSupportFilter::Supported,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
@@ -1179,10 +1196,21 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
         .to_string()
         .contains("usage: /auth status"));
 
+    let missing_status_mode = parse_auth_command("status --mode").expect_err("missing status mode");
+    assert!(missing_status_mode
+        .to_string()
+        .contains("usage: /auth status"));
+
     let duplicate_status_availability =
         parse_auth_command("status --availability all --availability unavailable")
             .expect_err("duplicate status availability");
     assert!(duplicate_status_availability
+        .to_string()
+        .contains("usage: /auth status"));
+
+    let duplicate_status_mode =
+        parse_auth_command("status --mode api-key --mode adc").expect_err("duplicate status mode");
+    assert!(duplicate_status_mode
         .to_string()
         .contains("usage: /auth status"));
 
@@ -1210,6 +1238,12 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(unknown_status_mode_support
         .to_string()
         .contains("unknown mode-support filter"));
+
+    let unknown_status_mode =
+        parse_auth_command("status --mode impossible").expect_err("unknown status mode");
+    assert!(unknown_status_mode
+        .to_string()
+        .contains("unknown auth mode"));
 
     let missing_matrix_state =
         parse_auth_command("matrix --state").expect_err("missing matrix state filter");
@@ -2532,6 +2566,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     let available_payload: serde_json::Value =
         serde_json::from_str(&available_output).expect("parse available status payload");
     assert_eq!(available_payload["command"], "auth.status");
+    assert_eq!(available_payload["mode_filter"], "all");
     assert_eq!(available_payload["availability_filter"], "available");
     assert_eq!(available_payload["state_filter"], "all");
     assert_eq!(available_payload["providers"], 3);
@@ -2561,6 +2596,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     let unavailable_payload: serde_json::Value =
         serde_json::from_str(&unavailable_output).expect("parse unavailable status payload");
     assert_eq!(unavailable_payload["availability_filter"], "unavailable");
+    assert_eq!(unavailable_payload["mode_filter"], "all");
     assert_eq!(unavailable_payload["state_filter"], "all");
     assert_eq!(unavailable_payload["providers"], 3);
     assert_eq!(unavailable_payload["rows_total"], 3);
@@ -2584,6 +2620,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     let state_payload: serde_json::Value =
         serde_json::from_str(&state_output).expect("parse state-filtered status payload");
     assert_eq!(state_payload["availability_filter"], "all");
+    assert_eq!(state_payload["mode_filter"], "all");
     assert_eq!(state_payload["state_filter"], "missing_api_key");
     assert_eq!(state_payload["providers"], 3);
     assert_eq!(state_payload["rows_total"], 3);
@@ -2608,6 +2645,65 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
 }
 
 #[test]
+fn functional_execute_auth_command_status_supports_mode_filter() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-status-mode-filter.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = None;
+    config.openai_api_key = Some("openai-mode-filter-key".to_string());
+    config.anthropic_api_key = None;
+    config.google_api_key = None;
+
+    let api_key_output = execute_auth_command(&config, "status --mode api-key --json");
+    let api_key_payload: serde_json::Value =
+        serde_json::from_str(&api_key_output).expect("parse api-key mode-filtered status payload");
+    assert_eq!(api_key_payload["command"], "auth.status");
+    assert_eq!(api_key_payload["mode_filter"], "api_key");
+    assert_eq!(api_key_payload["mode_support_filter"], "all");
+    assert_eq!(api_key_payload["providers"], 3);
+    assert_eq!(api_key_payload["rows_total"], 3);
+    assert_eq!(api_key_payload["rows"], 3);
+    assert_eq!(
+        api_key_payload["available"].as_u64().unwrap_or(0)
+            + api_key_payload["unavailable"].as_u64().unwrap_or(0),
+        3
+    );
+    let api_key_entries = api_key_payload["entries"]
+        .as_array()
+        .expect("api-key mode-filtered status entries");
+    assert_eq!(api_key_entries.len(), 3);
+    assert!(api_key_entries
+        .iter()
+        .all(|entry| entry["mode"] == "api_key"));
+    let openai_entry = api_key_entries
+        .iter()
+        .find(|entry| entry["provider"] == "openai")
+        .expect("openai status row");
+    assert_eq!(openai_entry["available"], true);
+    assert_eq!(openai_entry["state"], "ready");
+
+    let oauth_output = execute_auth_command(&config, "status --mode oauth-token --json");
+    let oauth_payload: serde_json::Value =
+        serde_json::from_str(&oauth_output).expect("parse oauth mode-filtered status payload");
+    assert_eq!(oauth_payload["mode_filter"], "oauth_token");
+    assert_eq!(oauth_payload["providers"], 3);
+    assert_eq!(oauth_payload["rows_total"], 3);
+    assert_eq!(oauth_payload["rows"], 3);
+    let oauth_entries = oauth_payload["entries"]
+        .as_array()
+        .expect("oauth mode-filtered status entries");
+    assert_eq!(oauth_entries.len(), 3);
+    assert!(oauth_entries
+        .iter()
+        .all(|entry| entry["mode"] == "oauth_token"));
+
+    let text_output = execute_auth_command(&config, "status --mode api-key");
+    assert!(text_output.contains("mode_filter=api_key"));
+    assert!(text_output.contains("auth provider: name=openai mode=api_key"));
+}
+
+#[test]
 fn functional_execute_auth_command_status_supports_mode_support_filter() {
     let temp = tempdir().expect("tempdir");
     let mut config = test_auth_command_config();
@@ -2622,6 +2718,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     let supported_payload: serde_json::Value =
         serde_json::from_str(&supported_output).expect("parse supported-only status payload");
     assert_eq!(supported_payload["mode_support_filter"], "supported");
+    assert_eq!(supported_payload["mode_filter"], "all");
     assert_eq!(supported_payload["providers"], 3);
     assert_eq!(supported_payload["rows_total"], 3);
     assert_eq!(supported_payload["rows"], 2);
@@ -2649,6 +2746,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     let unsupported_payload: serde_json::Value =
         serde_json::from_str(&unsupported_output).expect("parse unsupported-only status payload");
     assert_eq!(unsupported_payload["mode_support_filter"], "unsupported");
+    assert_eq!(unsupported_payload["mode_filter"], "all");
     assert_eq!(unsupported_payload["rows_total"], 3);
     assert_eq!(unsupported_payload["rows"], 1);
     assert_eq!(unsupported_payload["state_counts"]["unsupported_mode"], 1);
@@ -2696,6 +2794,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed status payload");
     assert_eq!(filtered_payload["availability_filter"], "available");
+    assert_eq!(filtered_payload["mode_filter"], "all");
     assert_eq!(filtered_payload["state_filter"], "ready");
     assert_eq!(filtered_payload["providers"], 1);
     assert_eq!(filtered_payload["rows_total"], 1);
@@ -2715,6 +2814,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row composed status payload");
     assert_eq!(zero_row_payload["availability_filter"], "unavailable");
+    assert_eq!(zero_row_payload["mode_filter"], "all");
     assert_eq!(zero_row_payload["state_filter"], "ready");
     assert_eq!(zero_row_payload["providers"], 1);
     assert_eq!(zero_row_payload["rows_total"], 1);
@@ -2774,10 +2874,11 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
 
     let filtered_output = execute_auth_command(
         &config,
-        "status openai --mode-support supported --availability available --state ready --json",
+        "status openai --mode session-token --mode-support supported --availability available --state ready --json",
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed mode-support payload");
+    assert_eq!(filtered_payload["mode_filter"], "session_token");
     assert_eq!(filtered_payload["mode_support_filter"], "supported");
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["state_filter"], "ready");
@@ -2789,10 +2890,13 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     assert_eq!(filtered_payload["state_counts"]["ready"], 1);
     assert_eq!(filtered_payload["state_counts_total"]["ready"], 1);
 
-    let zero_row_output =
-        execute_auth_command(&config, "status openai --mode-support unsupported --json");
+    let zero_row_output = execute_auth_command(
+        &config,
+        "status openai --mode session-token --mode-support unsupported --json",
+    );
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row mode-support payload");
+    assert_eq!(zero_row_payload["mode_filter"], "session_token");
     assert_eq!(zero_row_payload["mode_support_filter"], "unsupported");
     assert_eq!(zero_row_payload["rows_total"], 1);
     assert_eq!(zero_row_payload["rows"], 0);
@@ -2805,8 +2909,12 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     );
     assert_eq!(zero_row_payload["state_counts_total"]["ready"], 1);
 
-    let zero_row_text = execute_auth_command(&config, "status openai --mode-support unsupported");
+    let zero_row_text = execute_auth_command(
+        &config,
+        "status openai --mode session-token --mode-support unsupported",
+    );
     assert!(zero_row_text.contains("rows=0"));
+    assert!(zero_row_text.contains("mode_filter=session_token"));
     assert!(zero_row_text.contains("mode_support_filter=unsupported"));
     assert!(zero_row_text.contains("state_counts=none"));
     assert!(zero_row_text.contains("state_counts_total=ready:1"));
@@ -2815,6 +2923,10 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
 #[test]
 fn regression_execute_auth_command_status_rejects_missing_and_duplicate_filter_flags() {
     let config = test_auth_command_config();
+
+    let missing_mode = execute_auth_command(&config, "status --mode");
+    assert!(missing_mode.contains("auth error: missing auth mode after --mode"));
+    assert!(missing_mode.contains("usage: /auth status"));
 
     let missing_mode_support = execute_auth_command(&config, "status --mode-support");
     assert!(missing_mode_support
@@ -2825,6 +2937,10 @@ fn regression_execute_auth_command_status_rejects_missing_and_duplicate_filter_f
     assert!(missing_availability
         .contains("auth error: missing availability filter after --availability"));
     assert!(missing_availability.contains("usage: /auth status"));
+
+    let duplicate_mode = execute_auth_command(&config, "status --mode api-key --mode adc");
+    assert!(duplicate_mode.contains("auth error: duplicate --mode flag"));
+    assert!(duplicate_mode.contains("usage: /auth status"));
 
     let duplicate_mode_support = execute_auth_command(
         &config,

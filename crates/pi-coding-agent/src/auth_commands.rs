@@ -3,7 +3,7 @@ use super::*;
 pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> ...";
 pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
 pub(crate) const AUTH_STATUS_USAGE: &str =
-    "usage: /auth status [provider] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
+    "usage: /auth status [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
 pub(crate) const AUTH_MATRIX_USAGE: &str =
     "usage: /auth matrix [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
@@ -51,6 +51,7 @@ pub(crate) enum AuthCommand {
     },
     Status {
         provider: Option<Provider>,
+        mode: Option<ProviderAuthMethod>,
         mode_support: AuthMatrixModeSupportFilter,
         availability: AuthMatrixAvailabilityFilter,
         state: Option<String>,
@@ -166,6 +167,7 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
         }
         "status" => {
             let mut provider: Option<Provider> = None;
+            let mut mode: Option<ProviderAuthMethod> = None;
             let mut mode_support = AuthMatrixModeSupportFilter::All;
             let mut mode_support_explicit = false;
             let mut availability = AuthMatrixAvailabilityFilter::All;
@@ -178,6 +180,16 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                     "--json" => {
                         json_output = true;
                         index += 1;
+                    }
+                    "--mode" => {
+                        if mode.is_some() {
+                            bail!("duplicate --mode flag; {AUTH_STATUS_USAGE}");
+                        }
+                        let Some(raw_mode) = tokens.get(index + 1) else {
+                            bail!("missing auth mode after --mode; {AUTH_STATUS_USAGE}");
+                        };
+                        mode = Some(parse_provider_auth_method_token(raw_mode)?);
+                        index += 2;
                     }
                     "--mode-support" => {
                         if mode_support_explicit {
@@ -225,6 +237,7 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             }
             Ok(AuthCommand::Status {
                 provider,
+                mode,
                 mode_support,
                 availability,
                 state,
@@ -995,6 +1008,7 @@ pub(crate) fn format_auth_state_counts(
 pub(crate) fn execute_auth_status_command(
     config: &AuthCommandConfig,
     provider: Option<Provider>,
+    mode: Option<ProviderAuthMethod>,
     mode_support: AuthMatrixModeSupportFilter,
     availability: AuthMatrixAvailabilityFilter,
     state: Option<String>,
@@ -1006,8 +1020,10 @@ pub(crate) fn execute_auth_status_command(
         vec![Provider::OpenAi, Provider::Anthropic, Provider::Google]
     };
 
+    let mode_filter = mode.map(|value| value.as_str()).unwrap_or("all");
     let requires_store = selected_providers.iter().any(|provider| {
-        configured_provider_auth_method_from_config(config, *provider) != ProviderAuthMethod::ApiKey
+        mode.unwrap_or_else(|| configured_provider_auth_method_from_config(config, *provider))
+            != ProviderAuthMethod::ApiKey
     });
     let (store, store_error) = if requires_store {
         match load_credential_store(
@@ -1025,7 +1041,15 @@ pub(crate) fn execute_auth_status_command(
     let mut rows = selected_providers
         .iter()
         .map(|provider| {
-            auth_status_row_for_provider(config, *provider, store.as_ref(), store_error.as_deref())
+            let mode_for_provider = mode
+                .unwrap_or_else(|| configured_provider_auth_method_from_config(config, *provider));
+            let mode_config = auth_config_with_provider_mode(config, *provider, mode_for_provider);
+            auth_status_row_for_provider(
+                &mode_config,
+                *provider,
+                store.as_ref(),
+                store_error.as_deref(),
+            )
         })
         .collect::<Vec<_>>();
     let total_rows = rows.len();
@@ -1062,6 +1086,7 @@ pub(crate) fn execute_auth_status_command(
     if json_output {
         return serde_json::json!({
             "command": "auth.status",
+            "mode_filter": mode_filter,
             "mode_support_filter": mode_support.as_str(),
             "availability_filter": availability.as_str(),
             "state_filter": state_filter.as_deref().unwrap_or("all"),
@@ -1078,11 +1103,12 @@ pub(crate) fn execute_auth_status_command(
     }
 
     let mut lines = vec![format!(
-        "auth status: providers={} rows={} available={} unavailable={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} state_counts={} state_counts_total={}",
+        "auth status: providers={} rows={} available={} unavailable={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} state_counts={} state_counts_total={}",
         selected_providers.len(),
         rows.len(),
         available,
         unavailable,
+        mode_filter,
         mode_support.as_str(),
         availability.as_str(),
         state_filter.as_deref().unwrap_or("all"),
@@ -1349,6 +1375,7 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
         } => execute_auth_login_command(config, provider, mode, json_output),
         AuthCommand::Status {
             provider,
+            mode,
             mode_support,
             availability,
             state,
@@ -1356,6 +1383,7 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
         } => execute_auth_status_command(
             config,
             provider,
+            mode,
             mode_support,
             availability,
             state,
