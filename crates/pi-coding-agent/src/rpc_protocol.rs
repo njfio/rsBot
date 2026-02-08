@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{BufRead, BufReader, Write},
     path::Path,
     str::FromStr,
@@ -25,6 +25,7 @@ const RPC_ERROR_CODE_IO_ERROR: &str = "io_error";
 const RPC_ERROR_CODE_INTERNAL_ERROR: &str = "internal_error";
 const RPC_RUN_STREAM_ASSISTANT_TEXT_KIND: &str = "run.stream.assistant_text";
 const RPC_RUN_STREAM_TOOL_EVENTS_KIND: &str = "run.stream.tool_events";
+const RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RpcFrameKind {
@@ -103,6 +104,7 @@ pub(crate) struct RpcNdjsonServeReport {
 struct RpcServeSessionState {
     active_run_ids: BTreeSet<String>,
     closed_run_states: BTreeMap<String, RpcTerminalRunState>,
+    closed_run_order: VecDeque<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +139,36 @@ impl RpcTerminalRunState {
         Self {
             terminal_state: "timed_out",
             reason: Some(reason.to_string()),
+        }
+    }
+}
+
+fn forget_closed_run_state(state: &mut RpcServeSessionState, run_id: &str) {
+    if state.closed_run_states.remove(run_id).is_some() {
+        if let Some(position) = state
+            .closed_run_order
+            .iter()
+            .position(|existing| existing == run_id)
+        {
+            state.closed_run_order.remove(position);
+        }
+    }
+}
+
+fn remember_closed_run_state(
+    state: &mut RpcServeSessionState,
+    run_id: &str,
+    terminal_state: RpcTerminalRunState,
+) {
+    forget_closed_run_state(state, run_id);
+    state
+        .closed_run_states
+        .insert(run_id.to_string(), terminal_state);
+    state.closed_run_order.push_back(run_id.to_string());
+
+    while state.closed_run_order.len() > RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY {
+        if let Some(evicted) = state.closed_run_order.pop_front() {
+            state.closed_run_states.remove(&evicted);
         }
     }
 }
@@ -376,7 +408,7 @@ fn dispatch_rpc_frame_for_serve(
                     run_id
                 );
             }
-            state.closed_run_states.remove(&run_id);
+            forget_closed_run_state(state, &run_id);
             let prompt_chars = response
                 .payload
                 .get("prompt_chars")
@@ -401,9 +433,7 @@ fn dispatch_rpc_frame_for_serve(
                     run_id
                 );
             }
-            state
-                .closed_run_states
-                .insert(run_id.clone(), RpcTerminalRunState::cancelled());
+            remember_closed_run_state(state, &run_id, RpcTerminalRunState::cancelled());
             let mut responses = vec![dispatch_rpc_frame(frame)?];
             responses.push(build_run_cancel_stream_frame(&frame.request_id, &run_id));
             Ok(responses)
@@ -417,9 +447,7 @@ fn dispatch_rpc_frame_for_serve(
                     run_id
                 );
             }
-            state
-                .closed_run_states
-                .insert(run_id.clone(), RpcTerminalRunState::completed());
+            remember_closed_run_state(state, &run_id, RpcTerminalRunState::completed());
             let mut responses = vec![dispatch_rpc_frame(frame)?];
             responses.push(build_run_complete_stream_frame(&frame.request_id, &run_id));
             Ok(responses)
@@ -434,9 +462,7 @@ fn dispatch_rpc_frame_for_serve(
                 );
             }
             let reason = resolve_run_fail_reason(&frame.payload)?;
-            state
-                .closed_run_states
-                .insert(run_id.clone(), RpcTerminalRunState::failed(&reason));
+            remember_closed_run_state(state, &run_id, RpcTerminalRunState::failed(&reason));
             let mut responses = vec![dispatch_rpc_frame(frame)?];
             responses.push(build_run_failed_stream_frame(
                 &frame.request_id,
@@ -455,9 +481,7 @@ fn dispatch_rpc_frame_for_serve(
                 );
             }
             let reason = resolve_run_timeout_reason(&frame.payload)?;
-            state
-                .closed_run_states
-                .insert(run_id.clone(), RpcTerminalRunState::timed_out(&reason));
+            remember_closed_run_state(state, &run_id, RpcTerminalRunState::timed_out(&reason));
             let mut responses = vec![dispatch_rpc_frame(frame)?];
             responses.push(build_run_timeout_stream_frame(
                 &frame.request_id,
@@ -929,11 +953,12 @@ mod tests {
 
     use super::{
         classify_rpc_error_message, dispatch_rpc_frame, dispatch_rpc_frame_file,
-        dispatch_rpc_ndjson_input, dispatch_rpc_raw_with_error_envelope, parse_rpc_frame,
-        serve_rpc_ndjson_reader, validate_rpc_frame_file, RpcFrameKind, RpcResponseFrame,
+        dispatch_rpc_frame_for_serve, dispatch_rpc_ndjson_input,
+        dispatch_rpc_raw_with_error_envelope, parse_rpc_frame, serve_rpc_ndjson_reader,
+        validate_rpc_frame_file, RpcFrameKind, RpcResponseFrame, RpcServeSessionState,
         RPC_ERROR_CODE_INVALID_JSON, RPC_ERROR_CODE_INVALID_PAYLOAD,
         RPC_ERROR_CODE_INVALID_REQUEST_ID, RPC_ERROR_CODE_UNSUPPORTED_KIND,
-        RPC_ERROR_CODE_UNSUPPORTED_SCHEMA,
+        RPC_ERROR_CODE_UNSUPPORTED_SCHEMA, RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY,
     };
 
     const RPC_SCHEMA_COMPAT_FIXTURE_SCHEMA_VERSION: u32 = 1;
@@ -1944,6 +1969,68 @@ not-json
         assert_eq!(rows[9]["payload"]["status"], "active");
         assert_eq!(rows[9]["payload"].get("terminal_state"), None);
         assert_eq!(rows[9]["payload"].get("terminal"), None);
+    }
+
+    #[test]
+    fn regression_serve_rpc_closed_status_memory_evicts_oldest_entries_at_capacity() {
+        let mut state = RpcServeSessionState::default();
+
+        for index in 0..=RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY {
+            let run_id = format!("run-{index}");
+            let start = parse_rpc_frame(&format!(
+                r#"{{"schema_version":1,"request_id":"req-start-{index}","kind":"run.start","payload":{{"prompt":"x","run_id":"{run_id}"}}}}"#
+            ))
+            .expect("parse start");
+            dispatch_rpc_frame_for_serve(&start, &mut state).expect("dispatch start");
+
+            let complete = parse_rpc_frame(&format!(
+                r#"{{"schema_version":1,"request_id":"req-complete-{index}","kind":"run.complete","payload":{{"run_id":"{run_id}"}}}}"#
+            ))
+            .expect("parse complete");
+            dispatch_rpc_frame_for_serve(&complete, &mut state).expect("dispatch complete");
+        }
+
+        assert_eq!(
+            state.closed_run_states.len(),
+            RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY
+        );
+        assert_eq!(
+            state.closed_run_order.len(),
+            RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY
+        );
+        assert!(!state.closed_run_states.contains_key("run-0"));
+        assert!(state
+            .closed_run_states
+            .contains_key(&format!("run-{}", RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY)));
+
+        let oldest_status = parse_rpc_frame(
+            r#"{
+  "schema_version": 1,
+  "request_id": "req-status-oldest",
+  "kind": "run.status",
+  "payload": {"run_id":"run-0"}
+}"#,
+        )
+        .expect("parse oldest status");
+        let oldest = dispatch_rpc_frame_for_serve(&oldest_status, &mut state)
+            .expect("dispatch oldest status");
+        assert_eq!(oldest.len(), 1);
+        assert_eq!(oldest[0].kind, "run.status");
+        assert_eq!(oldest[0].payload["known"], false);
+
+        let newest_id = format!("run-{}", RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY);
+        let newest_status = parse_rpc_frame(&format!(
+            r#"{{"schema_version":1,"request_id":"req-status-newest","kind":"run.status","payload":{{"run_id":"{newest_id}"}}}}"#
+        ))
+        .expect("parse newest status");
+        let newest = dispatch_rpc_frame_for_serve(&newest_status, &mut state)
+            .expect("dispatch newest status");
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].kind, "run.status");
+        assert_eq!(newest[0].payload["known"], true);
+        assert_eq!(newest[0].payload["status"], "completed");
+        assert_eq!(newest[0].payload["terminal"], true);
+        assert_eq!(newest[0].payload["terminal_state"], "completed");
     }
 
     #[test]

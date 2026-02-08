@@ -11,3 +11,4 @@ This fixture corpus locks deterministic RPC behavior across request schema versi
 Each fixture file includes input lines, expected processing/error counts, and expected response envelopes.
 Terminal fixture expectations assert explicit `terminal` and `terminal_state` metadata for terminal lifecycle envelopes/events.
 Serve-mode fixtures also lock `run.status` semantics for closed known runs (`known: true` with terminal metadata).
+Closed-run status retention is intentionally bounded in serve mode; these fixtures cover behavior within that deterministic retention window.
