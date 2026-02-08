@@ -15,6 +15,9 @@ use wait_timeout::ChildExt;
 
 use crate::Cli;
 
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
 const EXTENSION_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const EXTENSION_TIMEOUT_MS_DEFAULT: u64 = 5_000;
 const EXTENSION_TIMEOUT_MS_MAX: u64 = 300_000;
@@ -1571,17 +1574,47 @@ fn resolve_extension_entrypoint(manifest_path: &Path, entrypoint: &str) -> Resul
     Ok(resolved)
 }
 
+#[cfg(test)]
+fn extension_process_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("extension process test lock")
+}
+
 fn run_extension_process_with_timeout(
     entrypoint: &Path,
     request_json: &str,
     timeout_ms: u64,
 ) -> Result<Output> {
-    let mut child = Command::new(entrypoint)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to spawn extension process {}", entrypoint.display()))?;
+    #[cfg(test)]
+    let _guard = extension_process_test_guard();
+
+    let spawn_child = |command: &mut Command| {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    };
+    let mut child = match spawn_child(&mut Command::new(entrypoint)) {
+        Ok(child) => child,
+        Err(error) => {
+            let mut fallback = Command::new("sh");
+            fallback.arg(entrypoint);
+            match spawn_child(&mut fallback) {
+                Ok(child) => child,
+                Err(fallback_error) => {
+                    return Err(anyhow!(
+                        "failed to spawn extension process {}: {} (fallback to sh failed: {})",
+                        entrypoint.display(),
+                        error,
+                        fallback_error
+                    ));
+                }
+            }
+        }
+    };
 
     {
         let stdin = child
