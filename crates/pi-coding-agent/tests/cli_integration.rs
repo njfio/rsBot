@@ -2745,6 +2745,61 @@ fn tool_policy_preset_and_bash_dry_run_flags_are_accepted_in_prompt_mode() {
 }
 
 #[test]
+fn package_validate_flag_reports_manifest_summary_and_exits() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}],
+  "skills": [{"id":"checks","path":"skills/checks/SKILL.md"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--package-validate",
+        manifest_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("package validate:"))
+        .stdout(predicate::str::contains("name=starter-bundle"))
+        .stdout(predicate::str::contains("total_components=2"));
+}
+
+#[test]
+fn regression_package_validate_flag_rejects_invalid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 9,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--package-validate",
+        manifest_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "unsupported package manifest schema",
+    ));
+}
+
+#[test]
 fn prompt_file_flag_runs_one_shot_prompt() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {

@@ -296,6 +296,13 @@ cargo run -p pi-coding-agent -- \
 
 Inspect now reports artifact health counters (records, invalid index lines, active/expired), and repair also purges expired artifacts plus invalid artifact index rows.
 
+Validate a reusable package manifest JSON and exit:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --package-validate .pi/packages/starter/package.json
+```
+
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 
 ```bash

@@ -501,6 +501,14 @@ pub(crate) struct Cli {
     pub(crate) channel_store_repair: Option<String>,
 
     #[arg(
+        long = "package-validate",
+        env = "PI_PACKAGE_VALIDATE",
+        value_name = "path",
+        help = "Validate a package manifest JSON file and exit"
+    )]
+    pub(crate) package_validate: Option<PathBuf>,
+
+    #[arg(
         long = "events-runner",
         env = "PI_EVENTS_RUNNER",
         default_value_t = false,

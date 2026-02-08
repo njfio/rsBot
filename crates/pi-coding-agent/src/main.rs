@@ -15,6 +15,7 @@ mod macro_profile_commands;
 mod model_catalog;
 mod observability_loggers;
 mod orchestrator;
+mod package_manifest;
 mod provider_auth;
 mod provider_client;
 mod provider_credentials;
@@ -146,6 +147,7 @@ pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLo
 #[cfg(test)]
 pub(crate) use crate::orchestrator::parse_numbered_plan_steps;
 pub(crate) use crate::orchestrator::run_plan_first_prompt;
+pub(crate) use crate::package_manifest::execute_package_validate_command;
 pub(crate) use crate::provider_auth::{
     configured_provider_auth_method, configured_provider_auth_method_from_config,
     missing_provider_api_key_message, provider_api_key_candidates,
