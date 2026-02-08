@@ -10,6 +10,7 @@ pub(crate) struct LocalRuntimeConfig<'a> {
     pub(crate) tool_policy: ToolPolicy,
     pub(crate) tool_policy_json: &'a Value,
     pub(crate) render_options: RenderOptions,
+    pub(crate) skills_dir: &'a Path,
     pub(crate) skills_lock_path: &'a Path,
 }
 
@@ -24,6 +25,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         tool_policy,
         tool_policy_json,
         render_options,
+        skills_dir,
         skills_lock_path,
     } = config;
 
@@ -93,15 +95,16 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     }
 
     let skills_sync_command_config = SkillsSyncCommandConfig {
-        skills_dir: cli.skills_dir.clone(),
+        skills_dir: skills_dir.to_path_buf(),
         default_lock_path: skills_lock_path.to_path_buf(),
         default_trust_root_path: cli.skill_trust_root_file.clone(),
-        doctor_config: build_doctor_command_config(
-            cli,
-            model_ref,
-            fallback_model_refs,
-            skills_lock_path,
-        ),
+        doctor_config: {
+            let mut doctor_config =
+                build_doctor_command_config(cli, model_ref, fallback_model_refs, skills_lock_path);
+            doctor_config.skills_dir = skills_dir.to_path_buf();
+            doctor_config.skills_lock_path = skills_lock_path.to_path_buf();
+            doctor_config
+        },
     };
     let profile_defaults = build_profile_defaults(cli);
     let auth_command_config = build_auth_command_config(cli);

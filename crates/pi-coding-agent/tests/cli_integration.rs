@@ -3502,6 +3502,99 @@ fn package_activate_flag_materializes_components_and_exits() {
             .expect("read activated skill"),
         "# checks"
     );
+    assert_eq!(
+        fs::read_to_string(destination_root.join("skills/checks.md"))
+            .expect("read activated skill alias"),
+        "# checks"
+    );
+}
+
+#[test]
+fn integration_package_activate_on_startup_loads_activated_skill_for_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let source_root = temp.path().join("bundle");
+    fs::create_dir_all(source_root.join("skills/checks")).expect("create skills dir");
+    fs::write(
+        source_root.join("skills/checks/SKILL.md"),
+        "Activated checks body",
+    )
+    .expect("write skill source");
+    let manifest_path = source_root.join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "skills": [{"id":"checks","path":"skills/checks/SKILL.md"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut install_cmd = binary_command();
+    install_cmd.current_dir(temp.path()).args([
+        "--package-install",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-install-root",
+        ".pi/packages",
+    ]);
+    install_cmd.assert().success();
+
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .json_body_includes(
+                json!({
+                    "messages": [{
+                        "role": "system",
+                        "content": "base\n\n# Skill: checks\nActivated checks body"
+                    }]
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "ok startup activation"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path()).args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt",
+        "hello",
+        "--system-prompt",
+        "base",
+        "--package-activate-on-startup",
+        "--package-activate-root",
+        ".pi/packages",
+        "--package-activate-destination",
+        ".pi/packages-active",
+        "--skill",
+        "checks",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("package activate:"))
+        .stdout(predicate::str::contains("ok startup activation"));
+    openai.assert_calls(1);
+    assert_eq!(
+        fs::read_to_string(temp.path().join(".pi/packages-active/skills/checks.md"))
+            .expect("read activated alias"),
+        "Activated checks body"
+    );
 }
 
 #[test]

@@ -696,6 +696,7 @@ pub(crate) struct Cli {
     #[arg(
         long = "package-activate",
         env = "PI_PACKAGE_ACTIVATE",
+        conflicts_with = "package_activate_on_startup",
         conflicts_with = "package_validate",
         conflicts_with = "package_show",
         conflicts_with = "package_install",
@@ -710,10 +711,26 @@ pub(crate) struct Cli {
     pub(crate) package_activate: bool,
 
     #[arg(
+        long = "package-activate-on-startup",
+        env = "PI_PACKAGE_ACTIVATE_ON_STARTUP",
+        conflicts_with = "package_activate",
+        conflicts_with = "package_validate",
+        conflicts_with = "package_show",
+        conflicts_with = "package_install",
+        conflicts_with = "package_update",
+        conflicts_with = "package_list",
+        conflicts_with = "package_remove",
+        conflicts_with = "package_rollback",
+        conflicts_with = "package_conflicts",
+        default_value_t = false,
+        help = "Activate installed package components during startup before runtime execution"
+    )]
+    pub(crate) package_activate_on_startup: bool,
+
+    #[arg(
         long = "package-activate-root",
         env = "PI_PACKAGE_ACTIVATE_ROOT",
         default_value = ".pi/packages",
-        requires = "package_activate",
         value_name = "path",
         help = "Source root containing installed package bundles for activation"
     )]
@@ -723,7 +740,6 @@ pub(crate) struct Cli {
         long = "package-activate-destination",
         env = "PI_PACKAGE_ACTIVATE_DESTINATION",
         default_value = ".pi/packages-active",
-        requires = "package_activate",
         value_name = "path",
         help = "Destination root where resolved package components are materialized"
     )]
@@ -733,7 +749,6 @@ pub(crate) struct Cli {
         long = "package-activate-conflict-policy",
         env = "PI_PACKAGE_ACTIVATE_CONFLICT_POLICY",
         default_value = "error",
-        requires = "package_activate",
         value_name = "error|keep-first|keep-last",
         help = "Conflict strategy when multiple packages contain the same kind/path component"
     )]
