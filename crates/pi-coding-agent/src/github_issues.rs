@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
+use crate::session_commands::{parse_session_search_args, search_session_entries};
 use crate::{
     current_unix_timestamp_ms, run_prompt_with_cancellation, session_message_preview,
     session_message_role, write_text_atomic, PromptRunStatus, RenderOptions, SessionRuntime,
@@ -27,6 +28,7 @@ const EVENT_KEY_MARKER_PREFIX: &str = "<!-- rsbot-event-key:";
 const EVENT_KEY_MARKER_SUFFIX: &str = " -->";
 const CHAT_SHOW_DEFAULT_LIMIT: usize = 10;
 const CHAT_SHOW_MAX_LIMIT: usize = 50;
+const CHAT_SEARCH_MAX_LIMIT: usize = 50;
 
 #[derive(Clone)]
 pub(crate) struct GithubIssuesBridgeRuntimeConfig {
@@ -613,7 +615,9 @@ struct CommentUpdateOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PiIssueCommand {
-    Run { prompt: String },
+    Run {
+        prompt: String,
+    },
     Stop,
     Status,
     Compact,
@@ -623,11 +627,27 @@ enum PiIssueCommand {
     ChatReset,
     ChatExport,
     ChatStatus,
-    ChatShow { limit: usize },
-    Artifacts { purge: bool, run_id: Option<String> },
-    ArtifactShow { artifact_id: String },
-    Summarize { focus: Option<String> },
-    Invalid { message: String },
+    ChatShow {
+        limit: usize,
+    },
+    ChatSearch {
+        query: String,
+        role: Option<String>,
+        limit: usize,
+    },
+    Artifacts {
+        purge: bool,
+        run_id: Option<String>,
+    },
+    ArtifactShow {
+        artifact_id: String,
+    },
+    Summarize {
+        focus: Option<String>,
+    },
+    Invalid {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1637,6 +1657,64 @@ impl GithubIssuesBridgeRuntime {
                     }
                 }))?;
             }
+            PiIssueCommand::ChatSearch { query, role, limit } => {
+                let session_path =
+                    session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                let store = SessionStore::load(&session_path)?;
+                let entries = store.entries();
+                let has_session = self.state_store.issue_session(event.issue_number).is_some();
+                let (matches, total_matches) =
+                    search_session_entries(entries, &query, role.as_deref(), limit);
+                let message = if entries.is_empty() && !has_session {
+                    format!(
+                        "No chat session found for issue #{}.\n\nentries=0",
+                        event.issue_number
+                    )
+                } else {
+                    let mut lines = vec![format!(
+                        "Chat session search for issue #{}.",
+                        event.issue_number
+                    )];
+                    lines.push(format!(
+                        "query={} role={} limit={} matches={}",
+                        query,
+                        role.as_deref().unwrap_or("any"),
+                        limit,
+                        total_matches
+                    ));
+                    if matches.is_empty() {
+                        lines.push("no matches".to_string());
+                    } else {
+                        for entry in matches {
+                            lines.push(format!(
+                                "- id={} role={} preview={}",
+                                entry.id, entry.role, entry.preview
+                            ));
+                        }
+                    }
+                    lines.join("\n")
+                };
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "chat-search",
+                    "status": "reported",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                    "search": {
+                        "query": query,
+                        "role": role,
+                        "limit": limit,
+                        "matches": total_matches,
+                    }
+                }))?;
+            }
             PiIssueCommand::Invalid { message } => {
                 let posted = self
                     .github_client
@@ -2430,30 +2508,67 @@ fn parse_pi_issue_command(body: &str) -> Option<PiIssueCommand> {
             }
         }
         "chat" => {
-            let mut chat_parts = remainder.split_whitespace();
-            match (chat_parts.next(), chat_parts.next(), chat_parts.next()) {
-                (Some("start"), None, None) => PiIssueCommand::ChatStart,
-                (Some("resume"), None, None) => PiIssueCommand::ChatResume,
-                (Some("reset"), None, None) => PiIssueCommand::ChatReset,
-                (Some("export"), None, None) => PiIssueCommand::ChatExport,
-                (Some("status"), None, None) => PiIssueCommand::ChatStatus,
-                (Some("show"), None, None) => PiIssueCommand::ChatShow {
-                    limit: CHAT_SHOW_DEFAULT_LIMIT,
-                },
-                (Some("show"), Some(raw), None) => match raw.parse::<usize>() {
-                    Ok(limit) if limit > 0 => PiIssueCommand::ChatShow {
-                        limit: limit.min(CHAT_SHOW_MAX_LIMIT),
-                    },
-                    _ => PiIssueCommand::Invalid {
-                        message: "Usage: /pi chat show [limit]".to_string(),
-                    },
-                },
-                (None, _, _) => PiIssueCommand::Invalid {
-                    message: "Usage: /pi chat <start|resume|reset|export|status|show [limit]>"
+            let mut chat_parts = remainder.splitn(2, char::is_whitespace);
+            let chat_command = chat_parts.next();
+            let chat_remainder = chat_parts.next().unwrap_or_default().trim();
+            match chat_command {
+                Some("start") if chat_remainder.is_empty() => PiIssueCommand::ChatStart,
+                Some("resume") if chat_remainder.is_empty() => PiIssueCommand::ChatResume,
+                Some("reset") if chat_remainder.is_empty() => PiIssueCommand::ChatReset,
+                Some("export") if chat_remainder.is_empty() => PiIssueCommand::ChatExport,
+                Some("status") if chat_remainder.is_empty() => PiIssueCommand::ChatStatus,
+                Some("show") => {
+                    if chat_remainder.is_empty() {
+                        PiIssueCommand::ChatShow {
+                            limit: CHAT_SHOW_DEFAULT_LIMIT,
+                        }
+                    } else {
+                        let mut show_parts = chat_remainder.split_whitespace();
+                        match (show_parts.next(), show_parts.next()) {
+                            (Some(raw), None) => match raw.parse::<usize>() {
+                                Ok(limit) if limit > 0 => PiIssueCommand::ChatShow {
+                                    limit: limit.min(CHAT_SHOW_MAX_LIMIT),
+                                },
+                                _ => PiIssueCommand::Invalid {
+                                    message: "Usage: /pi chat show [limit]".to_string(),
+                                },
+                            },
+                            _ => PiIssueCommand::Invalid {
+                                message: "Usage: /pi chat show [limit]".to_string(),
+                            },
+                        }
+                    }
+                }
+                Some("search") => {
+                    if chat_remainder.is_empty() {
+                        PiIssueCommand::Invalid {
+                            message:
+                                "Usage: /pi chat search <query> [--role <role>] [--limit <n>]"
+                                    .to_string(),
+                        }
+                    } else {
+                        match parse_session_search_args(chat_remainder) {
+                            Ok(args) if args.limit <= CHAT_SEARCH_MAX_LIMIT => {
+                                PiIssueCommand::ChatSearch {
+                                    query: args.query,
+                                    role: args.role,
+                                    limit: args.limit,
+                                }
+                            }
+                            _ => PiIssueCommand::Invalid {
+                                message:
+                                    "Usage: /pi chat search <query> [--role <role>] [--limit <n>]"
+                                        .to_string(),
+                            },
+                        }
+                    }
+                }
+                None => PiIssueCommand::Invalid {
+                    message: "Usage: /pi chat <start|resume|reset|export|status|show [limit]|search <query>>"
                         .to_string(),
                 },
                 _ => PiIssueCommand::Invalid {
-                    message: "Usage: /pi chat <start|resume|reset|export|status|show [limit]>"
+                    message: "Usage: /pi chat <start|resume|reset|export|status|show [limit]|search <query>>"
                         .to_string(),
                 },
             }
@@ -2509,7 +2624,7 @@ fn pi_command_usage() -> String {
         "- `/pi status`",
         "- `/pi compact`",
         "- `/pi help`",
-        "- `/pi chat <start|resume|reset|export|status|show [limit]>`",
+        "- `/pi chat <start|resume|reset|export|status|show [limit]|search <query>>`",
         "- `/pi artifacts [purge|run <run_id>|show <artifact_id>]`",
         "- `/pi summarize [focus]`",
     ]
@@ -3281,6 +3396,22 @@ mod tests {
             Some(PiIssueCommand::ChatShow { limit: 25 })
         );
         assert_eq!(
+            parse_pi_issue_command("/pi chat search alpha"),
+            Some(PiIssueCommand::ChatSearch {
+                query: "alpha".to_string(),
+                role: None,
+                limit: crate::session_commands::SESSION_SEARCH_DEFAULT_RESULTS,
+            })
+        );
+        assert_eq!(
+            parse_pi_issue_command("/pi chat search alpha --role user --limit 25"),
+            Some(PiIssueCommand::ChatSearch {
+                query: "alpha".to_string(),
+                role: Some("user".to_string()),
+                limit: 25,
+            })
+        );
+        assert_eq!(
             parse_pi_issue_command("/pi artifacts"),
             Some(PiIssueCommand::Artifacts {
                 purge: false,
@@ -3340,6 +3471,17 @@ mod tests {
         let parsed = parse_pi_issue_command("/pi chat show foo").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi chat show 99 100").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi chat search").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed =
+            parse_pi_issue_command("/pi chat search alpha --role nope").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed =
+            parse_pi_issue_command("/pi chat search alpha --limit 0").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed =
+            parse_pi_issue_command("/pi chat search alpha --limit 99").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi chat unknown").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
@@ -4009,6 +4151,118 @@ mod tests {
         assert_eq!(report.processed_events, 1);
         assert_eq!(report.failed_events, 0);
         show_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_chat_search_reports_matches() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 24,
+                "number": 16,
+                "title": "Chat Search",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/16/comments");
+            then.status(200).json_body(json!([{
+                "id": 911,
+                "body": "/pi chat search alpha --limit 5",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let search_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/16/comments")
+                .body_includes("Chat session search for issue #16.")
+                .body_includes("query=alpha")
+                .body_includes("matches=");
+            then.status(201).json_body(json!({
+                "id": 974,
+                "html_url": "https://example.test/comment/974"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let session_path = session_path_for_issue(&runtime.repository_state_dir, 16);
+        if let Some(parent) = session_path.parent() {
+            std::fs::create_dir_all(parent).expect("create session dir");
+        }
+        let mut store = SessionStore::load(&session_path).expect("store");
+        store
+            .append_messages(
+                None,
+                &[
+                    Message::user("alpha message"),
+                    Message::assistant_text("beta response"),
+                ],
+            )
+            .expect("append messages");
+
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        search_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_chat_search_reports_missing_session() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 25,
+                "number": 17,
+                "title": "Chat Search None",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/17/comments");
+            then.status(200).json_body(json!([{
+                "id": 1011,
+                "body": "/pi chat search alpha",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let search_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/17/comments")
+                .body_includes("No chat session found for issue #17.")
+                .body_includes("entries=0");
+            then.status(201).json_body(json!({
+                "id": 975,
+                "html_url": "https://example.test/comment/975"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        search_post.assert_calls(1);
     }
 
     #[tokio::test]

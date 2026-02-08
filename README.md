@@ -269,7 +269,7 @@ In bridge mode:
 - each completed run emits a markdown artifact plus metadata index entry under `channel-store/.../artifacts/`
 - set `--github-artifact-retention-days 0` to disable artifact expiration
 - `/pi help` prints the supported GitHub issue commands
-- `/pi chat start` initializes an issue chat session; `/pi chat resume` acknowledges an existing session; `/pi chat reset` clears the stored session for the issue; `/pi chat export` writes a JSONL session export artifact; `/pi chat status` reports the current session metadata; `/pi chat show [limit]` posts recent message previews
+- `/pi chat start` initializes an issue chat session; `/pi chat resume` acknowledges an existing session; `/pi chat reset` clears the stored session for the issue; `/pi chat export` writes a JSONL session export artifact; `/pi chat status` reports the current session metadata; `/pi chat show [limit]` posts recent message previews; `/pi chat search <query>` searches the session
 - `/pi artifacts` posts the current issue artifact inventory; `/pi artifacts run <run_id>` filters inventory for one run; `/pi artifacts show <artifact_id>` shows one artifact record; `/pi artifacts purge` removes expired entries and reports lifecycle counts
 
 Run as a Slack Socket Mode conversational transport:
