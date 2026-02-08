@@ -19,6 +19,9 @@ use tempfile::tempdir;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::sleep;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use super::{
     apply_trust_root_mutations, branch_alias_path_for_session, build_auth_command_config,
     build_doctor_command_config, build_profile_defaults, build_provider_client, build_tool_policy,
@@ -127,6 +130,19 @@ fn restore_env_vars(snapshot: Vec<(String, Option<String>)>) {
             std::env::remove_var(key);
         }
     }
+}
+
+#[cfg(unix)]
+fn write_mock_codex_script(dir: &Path, body: &str) -> PathBuf {
+    let script = dir.join("mock-codex.sh");
+    let content = format!("#!/bin/sh\nset -eu\n{body}\n");
+    std::fs::write(&script, content).expect("write mock codex script");
+    let mut perms = std::fs::metadata(&script)
+        .expect("mock codex metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).expect("chmod mock codex script");
+    script
 }
 
 struct NoopClient;
@@ -238,6 +254,10 @@ fn test_cli() -> Cli {
         anthropic_api_key: None,
         google_api_key: None,
         openai_auth_mode: CliProviderAuthMode::ApiKey,
+        openai_codex_backend: true,
+        openai_codex_cli: "codex".to_string(),
+        openai_codex_args: vec![],
+        openai_codex_timeout_ms: 120_000,
         anthropic_auth_mode: CliProviderAuthMode::ApiKey,
         google_auth_mode: CliProviderAuthMode::ApiKey,
         credential_store: PathBuf::from(".tau/credentials.json"),
@@ -807,6 +827,39 @@ fn functional_cli_provider_auth_mode_flags_accept_overrides() {
     assert_eq!(cli.openai_auth_mode, CliProviderAuthMode::OauthToken);
     assert_eq!(cli.anthropic_auth_mode, CliProviderAuthMode::SessionToken);
     assert_eq!(cli.google_auth_mode, CliProviderAuthMode::Adc);
+}
+
+#[test]
+fn unit_cli_openai_codex_backend_flags_default_to_enabled() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert!(cli.openai_codex_backend);
+    assert_eq!(cli.openai_codex_cli, "codex");
+    assert!(cli.openai_codex_args.is_empty());
+    assert_eq!(cli.openai_codex_timeout_ms, 120_000);
+}
+
+#[test]
+fn functional_cli_openai_codex_backend_flags_accept_overrides() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--openai-codex-backend=false",
+        "--openai-codex-cli",
+        "/tmp/mock-codex",
+        "--openai-codex-args=--json,--profile,test",
+        "--openai-codex-timeout-ms",
+        "9000",
+    ]);
+    assert!(!cli.openai_codex_backend);
+    assert_eq!(cli.openai_codex_cli, "/tmp/mock-codex");
+    assert_eq!(
+        cli.openai_codex_args,
+        vec![
+            "--json".to_string(),
+            "--profile".to_string(),
+            "test".to_string()
+        ]
+    );
+    assert_eq!(cli.openai_codex_timeout_ms, 9000);
 }
 
 #[test]
@@ -3395,6 +3448,56 @@ fn integration_build_provider_client_supports_openai_oauth_from_env_when_store_e
     let client = build_provider_client(&cli, Provider::OpenAi).expect("build env oauth client");
     let ptr = Arc::as_ptr(&client);
     assert!(!ptr.is_null());
+
+    restore_env_vars(snapshot);
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_build_provider_client_uses_codex_backend_when_oauth_store_entry_missing() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let script = write_mock_codex_script(
+        temp.path(),
+        r#"
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) out="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+cat >/dev/null
+printf "codex fallback response" > "$out"
+"#,
+    );
+
+    let mut cli = test_cli();
+    cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+    cli.credential_store = temp.path().join("missing-store-entry.json");
+    cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+    cli.openai_codex_backend = true;
+    cli.openai_codex_cli = script.display().to_string();
+
+    let snapshot = snapshot_env_vars(&[
+        "TAU_AUTH_ACCESS_TOKEN",
+        "TAU_AUTH_EXPIRES_UNIX",
+        "OPENAI_ACCESS_TOKEN",
+        "OPENAI_AUTH_EXPIRES_UNIX",
+    ]);
+    std::env::remove_var("TAU_AUTH_ACCESS_TOKEN");
+    std::env::remove_var("TAU_AUTH_EXPIRES_UNIX");
+    std::env::remove_var("OPENAI_ACCESS_TOKEN");
+    std::env::remove_var("OPENAI_AUTH_EXPIRES_UNIX");
+
+    let client = build_provider_client(&cli, Provider::OpenAi).expect("build codex backend client");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let response = runtime
+        .block_on(client.complete(test_chat_request()))
+        .expect("codex backend completion");
+    assert_eq!(response.message.text_content(), "codex fallback response");
 
     restore_env_vars(snapshot);
 }
