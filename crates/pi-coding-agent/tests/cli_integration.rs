@@ -5150,7 +5150,8 @@ fn rpc_serve_ndjson_flag_streams_ordered_response_lines() {
     let mut cmd = binary_command();
     cmd.arg("--rpc-serve-ndjson").write_stdin(
         r#"{"schema_version":1,"request_id":"req-cap","kind":"capabilities.request","payload":{}}
-{"schema_version":1,"request_id":"req-cancel","kind":"run.cancel","payload":{"run_id":"run-1"}}
+{"schema_version":1,"request_id":"req-start","kind":"run.start","payload":{"prompt":"hello"}}
+{"schema_version":1,"request_id":"req-cancel","kind":"run.cancel","payload":{"run_id":"run-req-start"}}
 "#,
     );
 
@@ -5160,6 +5161,8 @@ fn rpc_serve_ndjson_flag_streams_ordered_response_lines() {
         .stdout(predicate::str::contains(
             "\"kind\":\"capabilities.response\"",
         ))
+        .stdout(predicate::str::contains("\"request_id\":\"req-start\""))
+        .stdout(predicate::str::contains("\"kind\":\"run.accepted\""))
         .stdout(predicate::str::contains("\"request_id\":\"req-cancel\""))
         .stdout(predicate::str::contains("\"kind\":\"run.cancelled\""));
 }
@@ -5168,7 +5171,7 @@ fn rpc_serve_ndjson_flag_streams_ordered_response_lines() {
 fn regression_rpc_serve_ndjson_continues_after_error_and_exits_failure() {
     let mut cmd = binary_command();
     cmd.arg("--rpc-serve-ndjson").write_stdin(
-        r#"{"schema_version":1,"request_id":"req-ok","kind":"run.cancel","payload":{"run_id":"run-1"}}
+        r#"{"schema_version":1,"request_id":"req-ok","kind":"run.cancel","payload":{"run_id":"run-missing"}}
 not-json
 {"schema_version":1,"request_id":"req-ok-2","kind":"run.start","payload":{"prompt":"x"}}
 "#,
@@ -5177,13 +5180,14 @@ not-json
     cmd.assert()
         .failure()
         .stdout(predicate::str::contains("\"request_id\":\"req-ok\""))
-        .stdout(predicate::str::contains("\"kind\":\"run.cancelled\""))
+        .stdout(predicate::str::contains("\"kind\":\"error\""))
+        .stdout(predicate::str::contains("\"code\":\"invalid_payload\""))
         .stdout(predicate::str::contains("\"kind\":\"error\""))
         .stdout(predicate::str::contains("\"code\":\"invalid_json\""))
         .stdout(predicate::str::contains("\"request_id\":\"req-ok-2\""))
         .stdout(predicate::str::contains("\"kind\":\"run.accepted\""))
         .stderr(predicate::str::contains(
-            "rpc ndjson serve completed with 1 error frame(s)",
+            "rpc ndjson serve completed with 2 error frame(s)",
         ));
 }
 
