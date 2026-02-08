@@ -268,6 +268,7 @@ In bridge mode:
 - bot replies include run/model/token metadata in the issue comment footer
 - each completed run emits a markdown artifact plus metadata index entry under `channel-store/.../artifacts/`
 - set `--github-artifact-retention-days 0` to disable artifact expiration
+- `/pi help` prints the supported GitHub issue commands
 - `/pi chat start` initializes an issue chat session; `/pi chat resume` acknowledges an existing session; `/pi chat reset` clears the stored session for the issue
 - `/pi artifacts` posts the current issue artifact inventory; `/pi artifacts run <run_id>` filters inventory for one run; `/pi artifacts show <artifact_id>` shows one artifact record; `/pi artifacts purge` removes expired entries and reports lifecycle counts
 

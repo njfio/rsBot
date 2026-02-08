@@ -615,6 +615,7 @@ enum PiIssueCommand {
     Stop,
     Status,
     Compact,
+    Help,
     ChatStart,
     ChatResume,
     ChatReset,
@@ -1251,6 +1252,23 @@ impl GithubIssuesBridgeRuntime {
                         "retained_entries": compact_report.retained_entries,
                         "head_id": compact_report.head_id,
                     }
+                }))?;
+            }
+            PiIssueCommand::Help => {
+                let message = pi_command_usage();
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "help",
+                    "status": "reported",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
                 }))?;
             }
             PiIssueCommand::ChatStart => {
@@ -2198,6 +2216,15 @@ fn parse_pi_issue_command(body: &str) -> Option<PiIssueCommand> {
                 }
             }
         }
+        "help" => {
+            if remainder.is_empty() {
+                PiIssueCommand::Help
+            } else {
+                PiIssueCommand::Invalid {
+                    message: "Usage: /pi help".to_string(),
+                }
+            }
+        }
         "chat" => {
             let mut chat_parts = remainder.split_whitespace();
             match (chat_parts.next(), chat_parts.next()) {
@@ -2262,6 +2289,7 @@ fn pi_command_usage() -> String {
         "- `/pi stop`",
         "- `/pi status`",
         "- `/pi compact`",
+        "- `/pi help`",
         "- `/pi chat <start|resume|reset>`",
         "- `/pi artifacts [purge|run <run_id>|show <artifact_id>]`",
         "- `/pi summarize [focus]`",
@@ -2993,6 +3021,10 @@ mod tests {
             Some(PiIssueCommand::Stop)
         );
         assert_eq!(
+            parse_pi_issue_command("/pi help"),
+            Some(PiIssueCommand::Help)
+        );
+        assert_eq!(
             parse_pi_issue_command("/pi summarize release blockers"),
             Some(PiIssueCommand::Summarize {
                 focus: Some("release blockers".to_string())
@@ -3056,6 +3088,8 @@ mod tests {
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed =
             parse_pi_issue_command("/pi artifacts show artifact-a extra").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi help extra").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi chat").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
@@ -3413,6 +3447,55 @@ mod tests {
         assert!(runtime.state_store.issue_session(9).is_none());
         let session_path = session_path_for_issue(&runtime.repository_state_dir, 9);
         assert!(!session_path.exists());
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_help_command_posts_usage() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 14,
+                "number": 10,
+                "title": "Help",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/10/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 321,
+                    "body": "/pi help",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let help_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/10/comments")
+                .body_includes("Supported `/pi` commands:");
+            then.status(201).json_body(json!({
+                "id": 950,
+                "html_url": "https://example.test/comment/950"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        help_post.assert_calls(1);
     }
 
     #[tokio::test]
