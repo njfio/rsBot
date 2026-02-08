@@ -102,6 +102,7 @@ pub(crate) struct ExtensionPolicyOverrideResult {
     pub reason: Option<String>,
     pub evaluated: usize,
     pub denied: usize,
+    pub permission_denied: usize,
     pub skipped_invalid: usize,
     pub skipped_unsupported_runtime: usize,
     pub skipped_undeclared_hook: usize,
@@ -216,6 +217,17 @@ impl ExtensionPermission {
             Self::RunCommands => "run-commands",
             Self::Network => "network",
         }
+    }
+}
+
+fn required_permission_for_hook(hook: &ExtensionHook) -> Option<ExtensionPermission> {
+    match hook {
+        ExtensionHook::PolicyOverride => Some(ExtensionPermission::RunCommands),
+        ExtensionHook::RunStart
+        | ExtensionHook::RunEnd
+        | ExtensionHook::PreToolCall
+        | ExtensionHook::PostToolCall
+        | ExtensionHook::MessageTransform => None,
     }
 }
 
@@ -647,6 +659,7 @@ pub(crate) fn evaluate_extension_policy_override(
         reason: None,
         evaluated: 0,
         denied: 0,
+        permission_denied: 0,
         skipped_invalid: 0,
         skipped_unsupported_runtime: 0,
         skipped_undeclared_hook: 0,
@@ -680,6 +693,33 @@ pub(crate) fn evaluate_extension_policy_override(
         }
 
         result.evaluated += 1;
+        if let Some(required_permission) = required_permission_for_hook(&hook) {
+            if !loaded_manifest
+                .manifest
+                .permissions
+                .contains(&required_permission)
+            {
+                result.allowed = false;
+                result.denied += 1;
+                result.permission_denied += 1;
+                result.denied_by = Some(format!(
+                    "{}@{}",
+                    loaded_manifest.summary.id, loaded_manifest.summary.version
+                ));
+                result.reason = Some(format!(
+                    "policy override hook requires '{}' permission",
+                    required_permission.as_str()
+                ));
+                result.diagnostics.push(format!(
+                    "extension runtime: hook={} id={} manifest={} denied: missing required permission={}",
+                    hook.as_str(),
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display(),
+                    required_permission.as_str()
+                ));
+                break;
+            }
+        }
         let exec_summary = match execute_extension_process_hook_with_loaded(
             &loaded_manifest.manifest,
             &loaded_manifest.summary,
@@ -1100,9 +1140,9 @@ mod tests {
         evaluate_extension_policy_override, execute_extension_process_hook,
         list_extension_manifests, parse_message_transform_response_prompt,
         parse_policy_override_response, render_extension_list_report,
-        render_extension_manifest_report, validate_extension_manifest, ExtensionHook,
-        ExtensionListReport, ExtensionManifest, ExtensionManifestSummary, ExtensionPermission,
-        ExtensionRuntime, PolicyOverrideDecision,
+        render_extension_manifest_report, required_permission_for_hook,
+        validate_extension_manifest, ExtensionHook, ExtensionListReport, ExtensionManifest,
+        ExtensionManifestSummary, ExtensionPermission, ExtensionRuntime, PolicyOverrideDecision,
     };
     use std::{fs, path::PathBuf};
     use tempfile::tempdir;
@@ -1363,8 +1403,7 @@ mod tests {
     fn regression_execute_extension_process_hook_enforces_timeout() {
         let temp = tempdir().expect("tempdir");
         let script_path = temp.path().join("slow.sh");
-        fs::write(&script_path, "#!/bin/sh\nsleep 1\nprintf '{\"ok\":true}'\n")
-            .expect("write script");
+        fs::write(&script_path, "#!/bin/sh\nwhile :; do :; done\n").expect("write script");
         make_executable(&script_path);
 
         let manifest_path = temp.path().join("extension.json");
@@ -1432,7 +1471,7 @@ mod tests {
         let alpha_script = alpha_dir.join("hook.sh");
         fs::write(
             &alpha_script,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"ok\":true}'\n",
         )
         .expect("write alpha script");
         make_executable(&alpha_script);
@@ -1440,7 +1479,7 @@ mod tests {
         let beta_script = beta_dir.join("hook.sh");
         fs::write(
             &beta_script,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"ok\":true}'\n",
         )
         .expect("write beta script");
         make_executable(&beta_script);
@@ -1494,7 +1533,7 @@ mod tests {
         let script_path = extension_dir.join("hook.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"ok\":true}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1535,14 +1574,13 @@ mod tests {
         let good_script = good_dir.join("hook.sh");
         fs::write(
             &good_script,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"ok\":true}'\n",
         )
         .expect("write good script");
         make_executable(&good_script);
 
         let bad_script = bad_dir.join("slow.sh");
-        fs::write(&bad_script, "#!/bin/sh\nsleep 1\nprintf '{\"ok\":true}'\n")
-            .expect("write bad script");
+        fs::write(&bad_script, "#!/bin/sh\nwhile :; do :; done\n").expect("write bad script");
         make_executable(&bad_script);
 
         fs::write(
@@ -1594,7 +1632,7 @@ mod tests {
         let script_path = valid_dir.join("hook.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"ok\":true}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1656,7 +1694,7 @@ mod tests {
         let script_path = extension_dir.join("transform.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":\"rewritten prompt\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":\"rewritten prompt\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1694,14 +1732,14 @@ mod tests {
         let a_script = a_dir.join("transform.sh");
         fs::write(
             &a_script,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":\"alpha\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":\"alpha\"}'\n",
         )
         .expect("write a script");
         make_executable(&a_script);
         let b_script = b_dir.join("transform.sh");
         fs::write(
             &b_script,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":\"beta\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":\"beta\"}'\n",
         )
         .expect("write b script");
         make_executable(&b_script);
@@ -1755,7 +1793,7 @@ mod tests {
         let script_path = extension_dir.join("transform.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":123}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":123}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1793,6 +1831,15 @@ mod tests {
     }
 
     #[test]
+    fn unit_required_permission_for_policy_override_hook_is_run_commands() {
+        assert_eq!(
+            required_permission_for_hook(&ExtensionHook::PolicyOverride),
+            Some(ExtensionPermission::RunCommands)
+        );
+        assert_eq!(required_permission_for_hook(&ExtensionHook::RunStart), None);
+    }
+
+    #[test]
     fn unit_parse_policy_override_response_accepts_deny_decision_with_reason() {
         let response = parse_policy_override_response(r#"{"decision":"deny","reason":"blocked"}"#)
             .expect("response parses");
@@ -1817,7 +1864,7 @@ mod tests {
         let script_path = extension_dir.join("policy.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"deny\",\"reason\":\"blocked by extension\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":\"deny\",\"reason\":\"blocked by extension\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1831,6 +1878,7 @@ mod tests {
   "runtime": "process",
   "entrypoint": "policy.sh",
   "hooks": ["policy-override"],
+  "permissions": ["run-commands"],
   "timeout_ms": 5000
 }"#,
         )
@@ -1857,7 +1905,7 @@ mod tests {
         let script_path = extension_dir.join("policy.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"allow\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":\"allow\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1871,6 +1919,7 @@ mod tests {
   "runtime": "process",
   "entrypoint": "policy.sh",
   "hooks": ["policy-override"],
+  "permissions": ["run-commands"],
   "timeout_ms": 5000
 }"#,
         )
@@ -1896,7 +1945,7 @@ mod tests {
         let script_path = extension_dir.join("policy.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":123}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":123}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1910,6 +1959,7 @@ mod tests {
   "runtime": "process",
   "entrypoint": "policy.sh",
   "hooks": ["policy-override"],
+  "permissions": ["run-commands"],
   "timeout_ms": 5000
 }"#,
         )
@@ -1931,5 +1981,56 @@ mod tests {
             .diagnostics
             .iter()
             .any(|line| line.contains("invalid response")));
+    }
+
+    #[test]
+    fn regression_evaluate_extension_policy_override_fails_closed_on_missing_permission() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("missing-permission");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":\"allow\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "missing-permission",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let result = evaluate_extension_policy_override(
+            &root,
+            &serde_json::json!({"command":"printf 'ok'","tool":"bash"}),
+        );
+        assert!(!result.allowed);
+        assert_eq!(result.denied, 1);
+        assert_eq!(result.permission_denied, 1);
+        assert_eq!(
+            result.denied_by.as_deref(),
+            Some("missing-permission@1.0.0")
+        );
+        assert!(result
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("requires 'run-commands' permission"));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("missing required permission=run-commands")));
     }
 }
