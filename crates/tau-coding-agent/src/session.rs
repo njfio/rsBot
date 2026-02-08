@@ -735,6 +735,13 @@ impl Drop for LockGuard {
 }
 
 fn acquire_lock(path: &Path, timeout: Duration, stale_after: Duration) -> Result<LockGuard> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create lock directory {}", parent.display()))?;
+        }
+    }
+
     let start = SystemTime::now();
 
     loop {
@@ -793,8 +800,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CompactReport, RepairReport, SessionEntry, SessionImportMode, SessionRecord, SessionStore,
-        SessionValidationReport,
+        acquire_lock, CompactReport, RepairReport, SessionEntry, SessionImportMode, SessionRecord,
+        SessionStore, SessionValidationReport,
     };
 
     #[test]
@@ -1843,5 +1850,50 @@ mod tests {
 
         assert_eq!(head, Some(1));
         assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn unit_acquire_lock_creates_missing_parent_directories() {
+        let temp = tempdir().expect("tempdir");
+        let lock_path = temp.path().join(".tau/sessions/default.lock");
+        let parent = lock_path.parent().expect("lock parent");
+        assert!(!parent.exists());
+
+        let guard = acquire_lock(&lock_path, Duration::from_millis(200), Duration::ZERO)
+            .expect("acquire lock");
+        assert!(parent.exists());
+
+        drop(guard);
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn functional_append_messages_creates_missing_session_parent_directory() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/sessions/default.jsonl");
+        let parent = path.parent().expect("session parent");
+        assert!(!parent.exists());
+
+        let mut store = SessionStore::load(&path).expect("load");
+        let head = store
+            .append_messages(None, &[tau_ai::Message::system("sys")])
+            .expect("append");
+        assert_eq!(head, Some(1));
+        assert!(parent.exists());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn regression_default_tau_session_initialization_succeeds_without_existing_dir() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/sessions/default.jsonl");
+        let parent = path.parent().expect("session parent");
+        assert!(!parent.exists());
+
+        let mut store = SessionStore::load(&path).expect("load");
+        let head = store.ensure_initialized("system").expect("initialize");
+        assert_eq!(head, Some(1));
+        assert!(parent.exists());
+        assert!(path.exists());
     }
 }
