@@ -9,6 +9,8 @@ pub(crate) async fn run_plan_first_prompt(
     render_options: RenderOptions,
     max_plan_steps: usize,
     max_executor_response_chars: usize,
+    max_delegated_step_response_chars: usize,
+    max_delegated_total_response_chars: usize,
     delegate_steps: bool,
 ) -> Result<()> {
     let planner_prompt = build_plan_first_planner_prompt(user_prompt, max_plan_steps);
@@ -63,6 +65,7 @@ pub(crate) async fn run_plan_first_prompt(
             plan_steps.len()
         );
         let mut delegated_outputs = Vec::new();
+        let mut delegated_total_response_chars = 0usize;
         for (index, step) in plan_steps.iter().enumerate() {
             println!(
                 "orchestrator trace: mode=plan-first phase=delegated-step step={} action=start text={}",
@@ -96,10 +99,49 @@ pub(crate) async fn run_plan_first_prompt(
                     index + 1
                 );
             }
+            let delegated_response_chars = delegated_text.chars().count();
+            if !executor_response_within_budget(
+                delegated_response_chars,
+                max_delegated_step_response_chars,
+            ) {
+                println!(
+                    "orchestrator trace: mode=plan-first phase=delegated-step step={} decision=reject reason=delegated_step_response_budget_exceeded response_chars={} max_response_chars={}",
+                    index + 1,
+                    delegated_response_chars,
+                    max_delegated_step_response_chars
+                );
+                bail!(
+                    "plan-first orchestrator failed: delegated step {} response exceeded budget (chars {} > max {})",
+                    index + 1,
+                    delegated_response_chars,
+                    max_delegated_step_response_chars
+                );
+            }
+            delegated_total_response_chars =
+                delegated_total_response_chars.saturating_add(delegated_response_chars);
+            if !executor_response_within_budget(
+                delegated_total_response_chars,
+                max_delegated_total_response_chars,
+            ) {
+                println!(
+                    "orchestrator trace: mode=plan-first phase=delegated-step step={} decision=reject reason=delegated_total_response_budget_exceeded total_response_chars={} max_total_response_chars={}",
+                    index + 1,
+                    delegated_total_response_chars,
+                    max_delegated_total_response_chars
+                );
+                bail!(
+                    "plan-first orchestrator failed: delegated responses exceeded cumulative budget (chars {} > max {})",
+                    delegated_total_response_chars,
+                    max_delegated_total_response_chars
+                );
+            }
             println!(
-                "orchestrator trace: mode=plan-first phase=delegated-step step={} action=complete response_chars={}",
+                "orchestrator trace: mode=plan-first phase=delegated-step step={} action=complete response_chars={} total_response_chars={} max_step_response_chars={} max_total_response_chars={}",
                 index + 1,
-                delegated_text.chars().count()
+                delegated_response_chars,
+                delegated_total_response_chars,
+                max_delegated_step_response_chars,
+                max_delegated_total_response_chars
             );
             delegated_outputs.push(delegated_text);
         }

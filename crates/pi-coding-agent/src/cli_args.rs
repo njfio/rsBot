@@ -456,6 +456,24 @@ pub(crate) struct Cli {
     pub(crate) orchestrator_max_executor_response_chars: usize,
 
     #[arg(
+        long = "orchestrator-max-delegated-step-response-chars",
+        env = "PI_ORCHESTRATOR_MAX_DELEGATED_STEP_RESPONSE_CHARS",
+        default_value_t = 20000,
+        value_parser = parse_positive_usize,
+        help = "Maximum delegated step response length (characters) allowed when --orchestrator-delegate-steps is enabled"
+    )]
+    pub(crate) orchestrator_max_delegated_step_response_chars: usize,
+
+    #[arg(
+        long = "orchestrator-max-delegated-total-response-chars",
+        env = "PI_ORCHESTRATOR_MAX_DELEGATED_TOTAL_RESPONSE_CHARS",
+        default_value_t = 160000,
+        value_parser = parse_positive_usize,
+        help = "Maximum cumulative delegated response length (characters) allowed when --orchestrator-delegate-steps is enabled"
+    )]
+    pub(crate) orchestrator_max_delegated_total_response_chars: usize,
+
+    #[arg(
         long = "orchestrator-delegate-steps",
         env = "PI_ORCHESTRATOR_DELEGATE_STEPS",
         default_value_t = false,

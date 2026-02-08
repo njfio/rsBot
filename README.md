@@ -115,7 +115,9 @@ cargo run -p pi-coding-agent -- \
   --orchestrator-mode plan-first \
   --orchestrator-delegate-steps \
   --orchestrator-max-plan-steps 8 \
-  --orchestrator-max-executor-response-chars 20000
+  --orchestrator-max-executor-response-chars 20000 \
+  --orchestrator-max-delegated-step-response-chars 20000 \
+  --orchestrator-max-delegated-total-response-chars 160000
 ```
 
 Plan-first mode emits deterministic orchestration traces for `planner`, `executor`, `delegated-step` (when enabled), `review`, and `consolidation` phases, including response budget metadata and accept/reject consolidation decisions.
@@ -203,7 +205,9 @@ cargo run -p pi-coding-agent -- \
   --orchestrator-mode plan-first \
   --orchestrator-delegate-steps \
   --orchestrator-max-plan-steps 8 \
-  --orchestrator-max-executor-response-chars 20000
+  --orchestrator-max-executor-response-chars 20000 \
+  --orchestrator-max-delegated-step-response-chars 20000 \
+  --orchestrator-max-delegated-total-response-chars 160000
 ```
 
 Run one prompt from a file:

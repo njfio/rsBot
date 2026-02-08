@@ -620,6 +620,100 @@ fn regression_prompt_plan_first_delegate_steps_fails_on_budget_overrun() {
 }
 
 #[test]
+fn regression_prompt_plan_first_delegate_steps_fail_on_step_budget_overrun() {
+    let server = MockServer::start();
+    let planner_delegate = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "1. Inspect requirements\n2. Apply implementation"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "prepare release plan",
+        "--orchestrator-mode",
+        "plan-first",
+        "--orchestrator-delegate-steps",
+        "--orchestrator-max-plan-steps",
+        "4",
+        "--orchestrator-max-delegated-step-response-chars",
+        "12",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "orchestrator trace: mode=plan-first phase=delegated-step step=1 decision=reject reason=delegated_step_response_budget_exceeded",
+        ))
+        .stderr(predicate::str::contains(
+            "delegated step 1 response exceeded budget",
+        ));
+
+    planner_delegate.assert_calls(2);
+}
+
+#[test]
+fn regression_prompt_plan_first_delegate_steps_fail_on_total_budget_overrun() {
+    let server = MockServer::start();
+    let planner_delegate = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "1. Inspect requirements\n2. Apply implementation"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "prepare release plan",
+        "--orchestrator-mode",
+        "plan-first",
+        "--orchestrator-delegate-steps",
+        "--orchestrator-max-plan-steps",
+        "4",
+        "--orchestrator-max-delegated-step-response-chars",
+        "80",
+        "--orchestrator-max-delegated-total-response-chars",
+        "70",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "orchestrator trace: mode=plan-first phase=delegated-step step=2 decision=reject reason=delegated_total_response_budget_exceeded",
+        ))
+        .stderr(predicate::str::contains(
+            "delegated responses exceeded cumulative budget",
+        ));
+
+    planner_delegate.assert_calls(3);
+}
+
+#[test]
 fn regression_prompt_plan_first_mode_fails_closed_on_overlong_plan() {
     let server = MockServer::start();
     let planner = server.mock(|when, then| {
