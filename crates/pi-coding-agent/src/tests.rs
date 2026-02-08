@@ -92,6 +92,7 @@ use super::{
     SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
     SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
+use crate::auth_commands::AuthMatrixAvailabilityFilter;
 use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
@@ -1000,6 +1001,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Matrix {
             provider: None,
             mode: None,
+            availability: AuthMatrixAvailabilityFilter::All,
             json_output: true,
         }
     );
@@ -1011,6 +1013,19 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Matrix {
             provider: Some(Provider::OpenAi),
             mode: Some(ProviderAuthMethod::OauthToken),
+            availability: AuthMatrixAvailabilityFilter::All,
+            json_output: true,
+        }
+    );
+
+    let available_only_matrix = parse_auth_command("matrix --availability available --json")
+        .expect("parse available-only auth matrix");
+    assert_eq!(
+        available_only_matrix,
+        AuthCommand::Matrix {
+            provider: None,
+            mode: None,
+            availability: AuthMatrixAvailabilityFilter::Available,
             json_output: true,
         }
     );
@@ -1040,6 +1055,18 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(missing_matrix_mode
         .to_string()
         .contains("usage: /auth matrix"));
+
+    let missing_matrix_availability =
+        parse_auth_command("matrix --availability").expect_err("missing matrix availability");
+    assert!(missing_matrix_availability
+        .to_string()
+        .contains("usage: /auth matrix"));
+
+    let unknown_matrix_availability = parse_auth_command("matrix --availability sometimes")
+        .expect_err("unknown matrix availability");
+    assert!(unknown_matrix_availability
+        .to_string()
+        .contains("unknown availability filter"));
 
     let unknown_subcommand = parse_auth_command("noop").expect_err("subcommand fail");
     assert!(unknown_subcommand.to_string().contains("usage: /auth"));
@@ -1453,6 +1480,62 @@ fn functional_execute_auth_command_matrix_supports_provider_and_mode_filters() {
 }
 
 #[test]
+fn functional_execute_auth_command_matrix_supports_availability_filter() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-matrix-availability.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = Some("shared-api-key".to_string());
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("availability-access".to_string()),
+            refresh_token: Some("availability-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(600)),
+            revoked: false,
+        },
+    );
+
+    let available_output = execute_auth_command(&config, "matrix --availability available --json");
+    let available_payload: serde_json::Value =
+        serde_json::from_str(&available_output).expect("parse available matrix payload");
+    assert_eq!(available_payload["availability_filter"], "available");
+    assert_eq!(available_payload["rows_total"], 12);
+    assert_eq!(available_payload["rows"], 4);
+    assert_eq!(available_payload["available"], 4);
+    assert_eq!(available_payload["unavailable"], 0);
+    let available_entries = available_payload["entries"]
+        .as_array()
+        .expect("available entries");
+    assert_eq!(available_entries.len(), 4);
+    assert!(available_entries
+        .iter()
+        .all(|entry| entry["available"].as_bool() == Some(true)));
+
+    let unavailable_output =
+        execute_auth_command(&config, "matrix --availability unavailable --json");
+    let unavailable_payload: serde_json::Value =
+        serde_json::from_str(&unavailable_output).expect("parse unavailable matrix payload");
+    assert_eq!(unavailable_payload["availability_filter"], "unavailable");
+    assert_eq!(unavailable_payload["rows_total"], 12);
+    assert_eq!(unavailable_payload["rows"], 8);
+    assert_eq!(unavailable_payload["available"], 0);
+    assert_eq!(unavailable_payload["unavailable"], 8);
+    let unavailable_entries = unavailable_payload["entries"]
+        .as_array()
+        .expect("unavailable entries");
+    assert_eq!(unavailable_entries.len(), 8);
+    assert!(unavailable_entries
+        .iter()
+        .all(|entry| entry["available"].as_bool() == Some(false)));
+}
+
+#[test]
 fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_scenarios() {
     #[derive(Debug)]
     struct StaleCase {
@@ -1598,6 +1681,13 @@ fn regression_execute_auth_command_matrix_rejects_invalid_filter_combinations() 
     let duplicate_provider = execute_auth_command(&config, "matrix openai anthropic");
     assert!(duplicate_provider.contains("auth error:"));
     assert!(duplicate_provider.contains("usage: /auth matrix"));
+
+    let duplicate_availability = execute_auth_command(
+        &config,
+        "matrix --availability available --availability unavailable",
+    );
+    assert!(duplicate_availability.contains("auth error:"));
+    assert!(duplicate_availability.contains("usage: /auth matrix"));
 }
 
 #[test]

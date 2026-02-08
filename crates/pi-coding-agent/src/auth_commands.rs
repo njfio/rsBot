@@ -5,7 +5,24 @@ pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode
 pub(crate) const AUTH_STATUS_USAGE: &str = "usage: /auth status [provider] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
 pub(crate) const AUTH_MATRIX_USAGE: &str =
-    "usage: /auth matrix [provider] [--mode <mode>] [--json]";
+    "usage: /auth matrix [provider] [--mode <mode>] [--availability <all|available|unavailable>] [--json]";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthMatrixAvailabilityFilter {
+    All,
+    Available,
+    Unavailable,
+}
+
+impl AuthMatrixAvailabilityFilter {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Available => "available",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthCommand {
@@ -25,6 +42,7 @@ pub(crate) enum AuthCommand {
     Matrix {
         provider: Option<Provider>,
         mode: Option<ProviderAuthMethod>,
+        availability: AuthMatrixAvailabilityFilter,
         json_output: bool,
     },
 }
@@ -162,6 +180,8 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
         "matrix" => {
             let mut provider: Option<Provider> = None;
             let mut mode: Option<ProviderAuthMethod> = None;
+            let mut availability = AuthMatrixAvailabilityFilter::All;
+            let mut availability_explicit = false;
             let mut json_output = false;
             let mut index = 1usize;
             while index < tokens.len() {
@@ -180,6 +200,17 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                         mode = Some(parse_provider_auth_method_token(raw_mode)?);
                         index += 2;
                     }
+                    "--availability" => {
+                        if availability_explicit {
+                            bail!("duplicate --availability flag; {AUTH_MATRIX_USAGE}");
+                        }
+                        let Some(raw_availability) = tokens.get(index + 1) else {
+                            bail!("missing availability filter after --availability; {AUTH_MATRIX_USAGE}");
+                        };
+                        availability = parse_auth_matrix_availability_filter(raw_availability)?;
+                        availability_explicit = true;
+                        index += 2;
+                    }
                     token if token.starts_with("--") => {
                         bail!("unexpected argument '{}'; {AUTH_MATRIX_USAGE}", token);
                     }
@@ -195,10 +226,25 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             Ok(AuthCommand::Matrix {
                 provider,
                 mode,
+                availability,
                 json_output,
             })
         }
         other => bail!("unknown subcommand '{}'; {AUTH_USAGE}", other),
+    }
+}
+
+pub(crate) fn parse_auth_matrix_availability_filter(
+    token: &str,
+) -> Result<AuthMatrixAvailabilityFilter> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "all" => Ok(AuthMatrixAvailabilityFilter::All),
+        "available" => Ok(AuthMatrixAvailabilityFilter::Available),
+        "unavailable" => Ok(AuthMatrixAvailabilityFilter::Unavailable),
+        other => bail!(
+            "unknown availability filter '{}'; supported values: all, available, unavailable",
+            other
+        ),
     }
 }
 
@@ -845,6 +891,7 @@ pub(crate) fn execute_auth_matrix_command(
     config: &AuthCommandConfig,
     provider: Option<Provider>,
     mode: Option<ProviderAuthMethod>,
+    availability: AuthMatrixAvailabilityFilter,
     json_output: bool,
 ) -> String {
     let selected_providers = provider
@@ -883,6 +930,17 @@ pub(crate) fn execute_auth_matrix_command(
         }
     }
 
+    let total_rows = rows.len();
+    rows = match availability {
+        AuthMatrixAvailabilityFilter::All => rows,
+        AuthMatrixAvailabilityFilter::Available => {
+            rows.into_iter().filter(|row| row.available).collect()
+        }
+        AuthMatrixAvailabilityFilter::Unavailable => {
+            rows.into_iter().filter(|row| !row.available).collect()
+        }
+    };
+
     let available = rows.iter().filter(|row| row.available).count();
     let unavailable = rows.len().saturating_sub(available);
     let mode_supported = rows.iter().filter(|row| row.mode_supported).count();
@@ -891,8 +949,10 @@ pub(crate) fn execute_auth_matrix_command(
     if json_output {
         return serde_json::json!({
             "command": "auth.matrix",
+            "availability_filter": availability.as_str(),
             "providers": selected_providers.len(),
             "modes": selected_modes.len(),
+            "rows_total": total_rows,
             "rows": rows.len(),
             "mode_supported": mode_supported,
             "mode_unsupported": mode_unsupported,
@@ -904,14 +964,16 @@ pub(crate) fn execute_auth_matrix_command(
     }
 
     let mut lines = vec![format!(
-        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={}",
+        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} availability_filter={} rows_total={}",
         selected_providers.len(),
         selected_modes.len(),
         rows.len(),
         mode_supported,
         mode_unsupported,
         available,
-        unavailable
+        unavailable,
+        availability.as_str(),
+        total_rows
     )];
     for row in rows {
         lines.push(format!(
@@ -1033,7 +1095,8 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
         AuthCommand::Matrix {
             provider,
             mode,
+            availability,
             json_output,
-        } => execute_auth_matrix_command(config, provider, mode, json_output),
+        } => execute_auth_matrix_command(config, provider, mode, availability, json_output),
     }
 }
