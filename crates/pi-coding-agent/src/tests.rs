@@ -1654,6 +1654,8 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     let output = execute_auth_command(&config, "matrix --json");
     let payload: serde_json::Value = serde_json::from_str(&output).expect("parse matrix payload");
     assert_eq!(payload["command"], "auth.matrix");
+    assert_eq!(payload["provider_filter"], "all");
+    assert_eq!(payload["mode_filter"], "all");
     assert_eq!(payload["providers"], 3);
     assert_eq!(payload["modes"], 4);
     assert_eq!(payload["rows"], 12);
@@ -1695,6 +1697,8 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
 
     let text_output = execute_auth_command(&config, "matrix");
     assert!(text_output.contains("auth matrix: providers=3 modes=4 rows=12"));
+    assert!(text_output.contains("provider_filter=all"));
+    assert!(text_output.contains("mode_filter=all"));
     assert!(text_output.contains("state_counts=mode_mismatch:1,ready:4,unsupported_mode:7"));
     assert!(text_output.contains("state_counts_total=mode_mismatch:1,ready:4,unsupported_mode:7"));
     assert!(text_output.contains("auth matrix row: provider=openai mode=oauth_token"));
@@ -1727,6 +1731,8 @@ fn functional_execute_auth_command_matrix_supports_provider_and_mode_filters() {
     let payload: serde_json::Value =
         serde_json::from_str(&json_output).expect("parse filtered matrix payload");
     assert_eq!(payload["command"], "auth.matrix");
+    assert_eq!(payload["provider_filter"], "openai");
+    assert_eq!(payload["mode_filter"], "oauth_token");
     assert_eq!(payload["providers"], 1);
     assert_eq!(payload["modes"], 1);
     assert_eq!(payload["rows"], 1);
@@ -1741,6 +1747,8 @@ fn functional_execute_auth_command_matrix_supports_provider_and_mode_filters() {
 
     let text_output = execute_auth_command(&config, "matrix openai --mode oauth-token");
     assert!(text_output.contains("auth matrix: providers=1 modes=1 rows=1"));
+    assert!(text_output.contains("provider_filter=openai"));
+    assert!(text_output.contains("mode_filter=oauth_token"));
     assert!(text_output.contains(
         "auth matrix row: provider=openai mode=oauth_token mode_supported=true available=true state=ready"
     ));
@@ -1771,6 +1779,8 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
     let available_output = execute_auth_command(&config, "matrix --availability available --json");
     let available_payload: serde_json::Value =
         serde_json::from_str(&available_output).expect("parse available matrix payload");
+    assert_eq!(available_payload["provider_filter"], "all");
+    assert_eq!(available_payload["mode_filter"], "all");
     assert_eq!(available_payload["availability_filter"], "available");
     assert_eq!(available_payload["rows_total"], 12);
     assert_eq!(available_payload["rows"], 4);
@@ -1795,6 +1805,8 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
         execute_auth_command(&config, "matrix --availability unavailable --json");
     let unavailable_payload: serde_json::Value =
         serde_json::from_str(&unavailable_output).expect("parse unavailable matrix payload");
+    assert_eq!(unavailable_payload["provider_filter"], "all");
+    assert_eq!(unavailable_payload["mode_filter"], "all");
     assert_eq!(unavailable_payload["availability_filter"], "unavailable");
     assert_eq!(unavailable_payload["rows_total"], 12);
     assert_eq!(unavailable_payload["rows"], 8);
@@ -1846,6 +1858,8 @@ fn functional_execute_auth_command_matrix_supports_state_filter() {
     let ready_payload: serde_json::Value =
         serde_json::from_str(&ready_output).expect("parse state-filtered payload");
     assert_eq!(ready_payload["command"], "auth.matrix");
+    assert_eq!(ready_payload["provider_filter"], "all");
+    assert_eq!(ready_payload["mode_filter"], "all");
     assert_eq!(ready_payload["state_filter"], "ready");
     assert_eq!(ready_payload["rows_total"], 12);
     assert_eq!(ready_payload["rows"], 4);
@@ -1858,6 +1872,8 @@ fn functional_execute_auth_command_matrix_supports_state_filter() {
     assert!(ready_entries.iter().all(|entry| entry["state"] == "ready"));
 
     let text_output = execute_auth_command(&config, "matrix --state ready");
+    assert!(text_output.contains("provider_filter=all"));
+    assert!(text_output.contains("mode_filter=all"));
     assert!(text_output.contains("state_filter=ready"));
     assert!(text_output.contains("state_counts=ready:4"));
     assert!(text_output.contains("state_counts_total=mode_mismatch:1,ready:4,unsupported_mode:7"));
@@ -1889,6 +1905,8 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
     let supported_output = execute_auth_command(&config, "matrix --mode-support supported --json");
     let supported_payload: serde_json::Value =
         serde_json::from_str(&supported_output).expect("parse supported-only matrix payload");
+    assert_eq!(supported_payload["provider_filter"], "all");
+    assert_eq!(supported_payload["mode_filter"], "all");
     assert_eq!(supported_payload["mode_support_filter"], "supported");
     assert_eq!(supported_payload["rows_total"], 12);
     assert_eq!(supported_payload["rows"], 5);
@@ -1914,6 +1932,8 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
         execute_auth_command(&config, "matrix --mode-support unsupported --json");
     let unsupported_payload: serde_json::Value =
         serde_json::from_str(&unsupported_output).expect("parse unsupported-only matrix payload");
+    assert_eq!(unsupported_payload["provider_filter"], "all");
+    assert_eq!(unsupported_payload["mode_filter"], "all");
     assert_eq!(unsupported_payload["mode_support_filter"], "unsupported");
     assert_eq!(unsupported_payload["rows_total"], 12);
     assert_eq!(unsupported_payload["rows"], 7);
@@ -1938,6 +1958,8 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
         .all(|entry| entry["mode_supported"].as_bool() == Some(false)));
 
     let text_output = execute_auth_command(&config, "matrix --mode-support supported");
+    assert!(text_output.contains("provider_filter=all"));
+    assert!(text_output.contains("mode_filter=all"));
     assert!(text_output.contains("mode_support_filter=supported"));
     assert!(text_output.contains("state_counts=mode_mismatch:1,ready:4"));
     assert!(text_output.contains("state_counts_total=mode_mismatch:1,ready:4,unsupported_mode:7"));
@@ -1972,6 +1994,8 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed filter payload");
+    assert_eq!(filtered_payload["provider_filter"], "openai");
+    assert_eq!(filtered_payload["mode_filter"], "oauth_token");
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["state_filter"], "ready");
     assert_eq!(filtered_payload["providers"], 1);
@@ -1991,6 +2015,8 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
     );
     let mismatch_payload: serde_json::Value =
         serde_json::from_str(&mismatch_output).expect("parse mismatch filter payload");
+    assert_eq!(mismatch_payload["provider_filter"], "openai");
+    assert_eq!(mismatch_payload["mode_filter"], "session_token");
     assert_eq!(mismatch_payload["state_filter"], "mode_mismatch");
     assert_eq!(mismatch_payload["rows_total"], 1);
     assert_eq!(mismatch_payload["rows"], 1);
@@ -2029,6 +2055,8 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse mode-support composed filter payload");
+    assert_eq!(filtered_payload["provider_filter"], "openai");
+    assert_eq!(filtered_payload["mode_filter"], "oauth_token");
     assert_eq!(filtered_payload["mode_support_filter"], "supported");
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["state_filter"], "ready");
@@ -2049,6 +2077,8 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
     );
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row mode-support payload");
+    assert_eq!(zero_row_payload["provider_filter"], "openai");
+    assert_eq!(zero_row_payload["mode_filter"], "oauth_token");
     assert_eq!(zero_row_payload["mode_support_filter"], "unsupported");
     assert_eq!(zero_row_payload["rows_total"], 1);
     assert_eq!(zero_row_payload["rows"], 0);
@@ -2075,6 +2105,8 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
         "matrix openai --mode oauth-token --mode-support unsupported",
     );
     assert!(zero_row_text.contains("rows=0"));
+    assert!(zero_row_text.contains("provider_filter=openai"));
+    assert!(zero_row_text.contains("mode_filter=oauth_token"));
     assert!(zero_row_text.contains("state_counts=none"));
     assert!(zero_row_text.contains("state_counts_total=ready:1"));
 }
@@ -2543,6 +2575,8 @@ fn integration_execute_auth_command_status_reports_store_backed_state() {
 
     let output = execute_auth_command(&config, "status openai --json");
     let payload: serde_json::Value = serde_json::from_str(&output).expect("parse status");
+    assert_eq!(payload["provider_filter"], "openai");
+    assert_eq!(payload["mode_filter"], "all");
     assert_eq!(payload["entries"][0]["provider"], "openai");
     assert_eq!(payload["entries"][0]["mode"], "session_token");
     assert_eq!(payload["entries"][0]["state"], "ready");
@@ -2566,6 +2600,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     let available_payload: serde_json::Value =
         serde_json::from_str(&available_output).expect("parse available status payload");
     assert_eq!(available_payload["command"], "auth.status");
+    assert_eq!(available_payload["provider_filter"], "all");
     assert_eq!(available_payload["mode_filter"], "all");
     assert_eq!(available_payload["availability_filter"], "available");
     assert_eq!(available_payload["state_filter"], "all");
@@ -2595,6 +2630,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
         execute_auth_command(&config, "status --availability unavailable --json");
     let unavailable_payload: serde_json::Value =
         serde_json::from_str(&unavailable_output).expect("parse unavailable status payload");
+    assert_eq!(unavailable_payload["provider_filter"], "all");
     assert_eq!(unavailable_payload["availability_filter"], "unavailable");
     assert_eq!(unavailable_payload["mode_filter"], "all");
     assert_eq!(unavailable_payload["state_filter"], "all");
@@ -2619,6 +2655,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     let state_output = execute_auth_command(&config, "status --state missing_api_key --json");
     let state_payload: serde_json::Value =
         serde_json::from_str(&state_output).expect("parse state-filtered status payload");
+    assert_eq!(state_payload["provider_filter"], "all");
     assert_eq!(state_payload["availability_filter"], "all");
     assert_eq!(state_payload["mode_filter"], "all");
     assert_eq!(state_payload["state_filter"], "missing_api_key");
@@ -2635,6 +2672,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
         &config,
         "status --availability unavailable --state missing_api_key",
     );
+    assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("availability_filter=unavailable"));
     assert!(text_output.contains("state_filter=missing_api_key"));
     assert!(text_output.contains("rows_total=3"));
@@ -2659,6 +2697,7 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
     let api_key_payload: serde_json::Value =
         serde_json::from_str(&api_key_output).expect("parse api-key mode-filtered status payload");
     assert_eq!(api_key_payload["command"], "auth.status");
+    assert_eq!(api_key_payload["provider_filter"], "all");
     assert_eq!(api_key_payload["mode_filter"], "api_key");
     assert_eq!(api_key_payload["mode_support_filter"], "all");
     assert_eq!(api_key_payload["providers"], 3);
@@ -2686,6 +2725,7 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
     let oauth_output = execute_auth_command(&config, "status --mode oauth-token --json");
     let oauth_payload: serde_json::Value =
         serde_json::from_str(&oauth_output).expect("parse oauth mode-filtered status payload");
+    assert_eq!(oauth_payload["provider_filter"], "all");
     assert_eq!(oauth_payload["mode_filter"], "oauth_token");
     assert_eq!(oauth_payload["providers"], 3);
     assert_eq!(oauth_payload["rows_total"], 3);
@@ -2699,6 +2739,7 @@ fn functional_execute_auth_command_status_supports_mode_filter() {
         .all(|entry| entry["mode"] == "oauth_token"));
 
     let text_output = execute_auth_command(&config, "status --mode api-key");
+    assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_filter=api_key"));
     assert!(text_output.contains("auth provider: name=openai mode=api_key"));
 }
@@ -2717,6 +2758,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     let supported_output = execute_auth_command(&config, "status --mode-support supported --json");
     let supported_payload: serde_json::Value =
         serde_json::from_str(&supported_output).expect("parse supported-only status payload");
+    assert_eq!(supported_payload["provider_filter"], "all");
     assert_eq!(supported_payload["mode_support_filter"], "supported");
     assert_eq!(supported_payload["mode_filter"], "all");
     assert_eq!(supported_payload["providers"], 3);
@@ -2745,6 +2787,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
         execute_auth_command(&config, "status --mode-support unsupported --json");
     let unsupported_payload: serde_json::Value =
         serde_json::from_str(&unsupported_output).expect("parse unsupported-only status payload");
+    assert_eq!(unsupported_payload["provider_filter"], "all");
     assert_eq!(unsupported_payload["mode_support_filter"], "unsupported");
     assert_eq!(unsupported_payload["mode_filter"], "all");
     assert_eq!(unsupported_payload["rows_total"], 3);
@@ -2758,6 +2801,7 @@ fn functional_execute_auth_command_status_supports_mode_support_filter() {
     );
 
     let text_output = execute_auth_command(&config, "status --mode-support unsupported");
+    assert!(text_output.contains("provider_filter=all"));
     assert!(text_output.contains("mode_support_filter=unsupported"));
     assert!(text_output.contains("state_counts=unsupported_mode:1"));
     assert!(text_output.contains("auth provider: name=anthropic"));
@@ -2793,6 +2837,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed status payload");
+    assert_eq!(filtered_payload["provider_filter"], "openai");
     assert_eq!(filtered_payload["availability_filter"], "available");
     assert_eq!(filtered_payload["mode_filter"], "all");
     assert_eq!(filtered_payload["state_filter"], "ready");
@@ -2813,6 +2858,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     );
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row composed status payload");
+    assert_eq!(zero_row_payload["provider_filter"], "openai");
     assert_eq!(zero_row_payload["availability_filter"], "unavailable");
     assert_eq!(zero_row_payload["mode_filter"], "all");
     assert_eq!(zero_row_payload["state_filter"], "ready");
@@ -2842,6 +2888,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
         "status openai --availability unavailable --state ready",
     );
     assert!(zero_row_text.contains("providers=1 rows=0"));
+    assert!(zero_row_text.contains("provider_filter=openai"));
     assert!(zero_row_text.contains("rows_total=1"));
     assert!(zero_row_text.contains("state_counts=none"));
     assert!(zero_row_text.contains("state_counts_total=ready:1"));
@@ -2878,6 +2925,7 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     );
     let filtered_payload: serde_json::Value =
         serde_json::from_str(&filtered_output).expect("parse composed mode-support payload");
+    assert_eq!(filtered_payload["provider_filter"], "openai");
     assert_eq!(filtered_payload["mode_filter"], "session_token");
     assert_eq!(filtered_payload["mode_support_filter"], "supported");
     assert_eq!(filtered_payload["availability_filter"], "available");
@@ -2896,6 +2944,7 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
     );
     let zero_row_payload: serde_json::Value =
         serde_json::from_str(&zero_row_output).expect("parse zero-row mode-support payload");
+    assert_eq!(zero_row_payload["provider_filter"], "openai");
     assert_eq!(zero_row_payload["mode_filter"], "session_token");
     assert_eq!(zero_row_payload["mode_support_filter"], "unsupported");
     assert_eq!(zero_row_payload["rows_total"], 1);
@@ -2914,6 +2963,7 @@ fn integration_execute_auth_command_status_mode_support_filter_composes_with_oth
         "status openai --mode session-token --mode-support unsupported",
     );
     assert!(zero_row_text.contains("rows=0"));
+    assert!(zero_row_text.contains("provider_filter=openai"));
     assert!(zero_row_text.contains("mode_filter=session_token"));
     assert!(zero_row_text.contains("mode_support_filter=unsupported"));
     assert!(zero_row_text.contains("state_counts=none"));

@@ -1014,6 +1014,7 @@ pub(crate) fn execute_auth_status_command(
     state: Option<String>,
     json_output: bool,
 ) -> String {
+    let provider_filter = provider.map(|value| value.as_str()).unwrap_or("all");
     let selected_providers = if let Some(provider) = provider {
         vec![provider]
     } else {
@@ -1086,6 +1087,7 @@ pub(crate) fn execute_auth_status_command(
     if json_output {
         return serde_json::json!({
             "command": "auth.status",
+            "provider_filter": provider_filter,
             "mode_filter": mode_filter,
             "mode_support_filter": mode_support.as_str(),
             "availability_filter": availability.as_str(),
@@ -1103,11 +1105,12 @@ pub(crate) fn execute_auth_status_command(
     }
 
     let mut lines = vec![format!(
-        "auth status: providers={} rows={} available={} unavailable={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} state_counts={} state_counts_total={}",
+        "auth status: providers={} rows={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} state_counts={} state_counts_total={}",
         selected_providers.len(),
         rows.len(),
         available,
         unavailable,
+        provider_filter,
         mode_filter,
         mode_support.as_str(),
         availability.as_str(),
@@ -1158,6 +1161,8 @@ pub(crate) fn execute_auth_matrix_command(
     state: Option<String>,
     json_output: bool,
 ) -> String {
+    let provider_filter = provider.map(|value| value.as_str()).unwrap_or("all");
+    let mode_filter = mode.map(|value| value.as_str()).unwrap_or("all");
     let selected_providers = provider
         .map(|value| vec![value])
         .unwrap_or_else(|| AUTH_MATRIX_PROVIDERS.to_vec());
@@ -1230,6 +1235,8 @@ pub(crate) fn execute_auth_matrix_command(
     if json_output {
         return serde_json::json!({
             "command": "auth.matrix",
+            "provider_filter": provider_filter,
+            "mode_filter": mode_filter,
             "mode_support_filter": mode_support.as_str(),
             "availability_filter": availability.as_str(),
             "state_filter": state_filter.as_deref().unwrap_or("all"),
@@ -1249,7 +1256,7 @@ pub(crate) fn execute_auth_matrix_command(
     }
 
     let mut lines = vec![format!(
-        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} state_counts={} state_counts_total={}",
+        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} rows_total={} state_counts={} state_counts_total={}",
         selected_providers.len(),
         selected_modes.len(),
         rows.len(),
@@ -1257,6 +1264,8 @@ pub(crate) fn execute_auth_matrix_command(
         mode_unsupported,
         available,
         unavailable,
+        provider_filter,
+        mode_filter,
         mode_support.as_str(),
         availability.as_str(),
         state_filter.as_deref().unwrap_or("all"),
