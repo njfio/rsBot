@@ -1,8 +1,8 @@
 # rust-tau
 
-Pure Rust implementation of core `upstream mono` concepts.
+Pure Rust implementation of core `upstream pi mono` concepts.
 
-This workspace mirrors the high-level package boundaries from `badlogic/tau-mono` and provides a functional baseline:
+This workspace mirrors the high-level package boundaries from `badlogic/pi-mono` and provides a functional baseline:
 
 - `crates/tau-ai`: provider-agnostic message and tool model + OpenAI/Anthropic/Google adapters
 - `crates/tau-agent-core`: event-driven agent loop with tool execution
