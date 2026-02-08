@@ -125,7 +125,9 @@ use crate::events::{
     ingest_webhook_immediate_event, run_event_scheduler, EventSchedulerConfig,
     EventWebhookIngestConfig,
 };
-pub(crate) use crate::extension_manifest::execute_extension_validate_command;
+pub(crate) use crate::extension_manifest::{
+    execute_extension_show_command, execute_extension_validate_command,
+};
 pub(crate) use crate::macro_profile_commands::{
     default_macro_config_path, default_profile_store_path, execute_macro_command,
     execute_profile_command,

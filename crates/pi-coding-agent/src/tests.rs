@@ -91,12 +91,12 @@ use super::{
     SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
     SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
-use crate::execute_extension_validate_command;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
 use crate::session::{SessionImportMode, SessionStore};
 use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
 use crate::{default_model_catalog_cache_path, ModelCatalog, MODELS_LIST_USAGE, MODEL_SHOW_USAGE};
+use crate::{execute_extension_show_command, execute_extension_validate_command};
 
 struct NoopClient;
 
@@ -256,6 +256,7 @@ fn test_cli() -> Cli {
         channel_store_inspect: None,
         channel_store_repair: None,
         extension_validate: None,
+        extension_show: None,
         package_validate: None,
         package_show: None,
         package_install: None,
@@ -544,6 +545,7 @@ fn functional_cli_model_catalog_flags_accept_overrides() {
 fn unit_cli_extension_validate_flag_defaults_to_none() {
     let cli = Cli::parse_from(["pi-rs"]);
     assert!(cli.extension_validate.is_none());
+    assert!(cli.extension_show.is_none());
 }
 
 #[test]
@@ -553,6 +555,28 @@ fn functional_cli_extension_validate_flag_accepts_path() {
         cli.extension_validate,
         Some(PathBuf::from("extensions/issue.json"))
     );
+}
+
+#[test]
+fn functional_cli_extension_show_flag_accepts_path() {
+    let cli = Cli::parse_from(["pi-rs", "--extension-show", "extensions/issue.json"]);
+    assert_eq!(
+        cli.extension_show,
+        Some(PathBuf::from("extensions/issue.json"))
+    );
+}
+
+#[test]
+fn regression_cli_extension_show_and_validate_conflict() {
+    let parse = Cli::try_parse_from([
+        "pi-rs",
+        "--extension-show",
+        "extensions/issue.json",
+        "--extension-validate",
+        "extensions/issue.json",
+    ]);
+    let error = parse.expect_err("show and validate should conflict");
+    assert!(error.to_string().contains("cannot be used with"));
 }
 
 #[test]
@@ -6797,6 +6821,53 @@ fn regression_execute_extension_validate_command_rejects_invalid_manifest() {
     assert!(error
         .to_string()
         .contains("must not contain parent traversals"));
+}
+
+#[test]
+fn functional_execute_extension_show_command_succeeds_for_valid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "bin/assistant",
+  "hooks": ["run-end", "run-start"],
+  "permissions": ["network", "read-files"]
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let mut cli = test_cli();
+    cli.extension_show = Some(manifest_path);
+    execute_extension_show_command(&cli).expect("extension show should succeed");
+}
+
+#[test]
+fn regression_execute_extension_show_command_rejects_invalid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 9,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "bin/assistant"
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let mut cli = test_cli();
+    cli.extension_show = Some(manifest_path);
+    let error = execute_extension_show_command(&cli).expect_err("invalid schema should fail");
+    assert!(error
+        .to_string()
+        .contains("unsupported extension manifest schema"));
 }
 
 #[test]

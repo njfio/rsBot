@@ -71,6 +71,19 @@ enum ExtensionHook {
     PolicyOverride,
 }
 
+impl ExtensionHook {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::RunStart => "run-start",
+            Self::RunEnd => "run-end",
+            Self::PreToolCall => "pre-tool-call",
+            Self::PostToolCall => "post-tool-call",
+            Self::MessageTransform => "message-transform",
+            Self::PolicyOverride => "policy-override",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 enum ExtensionPermission {
@@ -78,6 +91,26 @@ enum ExtensionPermission {
     WriteFiles,
     RunCommands,
     Network,
+}
+
+impl ExtensionPermission {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadFiles => "read-files",
+            Self::WriteFiles => "write-files",
+            Self::RunCommands => "run-commands",
+            Self::Network => "network",
+        }
+    }
+}
+
+pub(crate) fn execute_extension_show_command(cli: &Cli) -> Result<()> {
+    let Some(path) = cli.extension_show.as_ref() else {
+        return Ok(());
+    };
+    let (manifest, summary) = load_and_validate_extension_manifest(path)?;
+    println!("{}", render_extension_manifest_report(&summary, &manifest));
+    Ok(())
 }
 
 pub(crate) fn execute_extension_validate_command(cli: &Cli) -> Result<()> {
@@ -100,6 +133,13 @@ pub(crate) fn execute_extension_validate_command(cli: &Cli) -> Result<()> {
 }
 
 pub(crate) fn validate_extension_manifest(path: &Path) -> Result<ExtensionManifestSummary> {
+    let (_, summary) = load_and_validate_extension_manifest(path)?;
+    Ok(summary)
+}
+
+fn load_and_validate_extension_manifest(
+    path: &Path,
+) -> Result<(ExtensionManifest, ExtensionManifestSummary)> {
     let manifest = load_extension_manifest(path)?;
     validate_manifest_schema(&manifest)?;
     validate_manifest_identifiers(&manifest)?;
@@ -107,16 +147,68 @@ pub(crate) fn validate_extension_manifest(path: &Path) -> Result<ExtensionManife
     validate_unique(&manifest.hooks, "hooks")?;
     validate_unique(&manifest.permissions, "permissions")?;
     validate_timeout_ms(manifest.timeout_ms)?;
-    Ok(ExtensionManifestSummary {
+    let summary = ExtensionManifestSummary {
         manifest_path: path.to_path_buf(),
-        id: manifest.id,
-        version: manifest.version,
+        id: manifest.id.clone(),
+        version: manifest.version.clone(),
         runtime: manifest.runtime.as_str().to_string(),
-        entrypoint: manifest.entrypoint,
+        entrypoint: manifest.entrypoint.clone(),
         hook_count: manifest.hooks.len(),
         permission_count: manifest.permissions.len(),
         timeout_ms: manifest.timeout_ms,
-    })
+    };
+    Ok((manifest, summary))
+}
+
+fn render_extension_manifest_report(
+    summary: &ExtensionManifestSummary,
+    manifest: &ExtensionManifest,
+) -> String {
+    let mut hooks = manifest
+        .hooks
+        .iter()
+        .map(|hook| hook.as_str().to_string())
+        .collect::<Vec<_>>();
+    hooks.sort();
+
+    let mut permissions = manifest
+        .permissions
+        .iter()
+        .map(|permission| permission.as_str().to_string())
+        .collect::<Vec<_>>();
+    permissions.sort();
+
+    let hook_lines = if hooks.is_empty() {
+        "- none".to_string()
+    } else {
+        hooks
+            .iter()
+            .map(|hook| format!("- {hook}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let permission_lines = if permissions.is_empty() {
+        "- none".to_string()
+    } else {
+        permissions
+            .iter()
+            .map(|permission| format!("- {permission}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "extension show:\n- path: {}\n- id: {}\n- version: {}\n- runtime: {}\n- entrypoint: {}\n- timeout_ms: {}\n- hooks ({}):\n{}\n- permissions ({}):\n{}",
+        summary.manifest_path.display(),
+        summary.id,
+        summary.version,
+        summary.runtime,
+        summary.entrypoint,
+        summary.timeout_ms,
+        summary.hook_count,
+        hook_lines,
+        summary.permission_count,
+        permission_lines
+    )
 }
 
 fn load_extension_manifest(path: &Path) -> Result<ExtensionManifest> {
@@ -213,7 +305,11 @@ fn validate_timeout_ms(timeout_ms: u64) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_extension_manifest;
+    use super::{
+        render_extension_manifest_report, validate_extension_manifest, ExtensionHook,
+        ExtensionManifest, ExtensionManifestSummary, ExtensionPermission, ExtensionRuntime,
+    };
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     #[test]
@@ -285,5 +381,35 @@ mod tests {
         let error =
             validate_extension_manifest(&manifest_path).expect_err("duplicate hooks should fail");
         assert!(error.to_string().contains("contains duplicate entries"));
+    }
+
+    #[test]
+    fn unit_render_extension_manifest_report_is_deterministic() {
+        let summary = ExtensionManifestSummary {
+            manifest_path: PathBuf::from("extensions/issue-assistant/extension.json"),
+            id: "issue-assistant".to_string(),
+            version: "0.1.0".to_string(),
+            runtime: "process".to_string(),
+            entrypoint: "bin/assistant".to_string(),
+            hook_count: 2,
+            permission_count: 2,
+            timeout_ms: 60_000,
+        };
+        let manifest = ExtensionManifest {
+            schema_version: 1,
+            id: "issue-assistant".to_string(),
+            version: "0.1.0".to_string(),
+            runtime: ExtensionRuntime::Process,
+            entrypoint: "bin/assistant".to_string(),
+            hooks: vec![ExtensionHook::RunStart, ExtensionHook::RunEnd],
+            permissions: vec![ExtensionPermission::Network, ExtensionPermission::ReadFiles],
+            timeout_ms: 60_000,
+        };
+
+        let report = render_extension_manifest_report(&summary, &manifest);
+        assert!(report.contains("extension show:"));
+        assert!(report.contains("- id: issue-assistant"));
+        assert!(report.contains("- hooks (2):\n- run-end\n- run-start"));
+        assert!(report.contains("- permissions (2):\n- network\n- read-files"));
     }
 }

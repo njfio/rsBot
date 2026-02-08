@@ -11,6 +11,11 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.extension_show.is_some() {
+        execute_extension_show_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.extension_validate.is_some() {
         execute_extension_validate_command(cli)?;
         return Ok(true);

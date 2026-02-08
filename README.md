@@ -311,6 +311,13 @@ cargo run -p pi-coding-agent -- \
   --extension-validate .pi/extensions/issue-assistant/extension.json
 ```
 
+Inspect extension manifest metadata and declared inventory:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --extension-show .pi/extensions/issue-assistant/extension.json
+```
+
 Validate a reusable package manifest JSON and exit:
 
 ```bash

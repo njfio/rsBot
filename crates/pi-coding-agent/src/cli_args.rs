@@ -530,10 +530,20 @@ pub(crate) struct Cli {
     #[arg(
         long = "extension-validate",
         env = "PI_EXTENSION_VALIDATE",
+        conflicts_with = "extension_show",
         value_name = "path",
         help = "Validate an extension manifest JSON file and exit"
     )]
     pub(crate) extension_validate: Option<PathBuf>,
+
+    #[arg(
+        long = "extension-show",
+        env = "PI_EXTENSION_SHOW",
+        conflicts_with = "extension_validate",
+        value_name = "path",
+        help = "Print extension manifest metadata and inventory"
+    )]
+    pub(crate) extension_show: Option<PathBuf>,
 
     #[arg(
         long = "package-validate",
