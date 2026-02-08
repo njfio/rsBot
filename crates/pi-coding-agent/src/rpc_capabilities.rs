@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use crate::rpc_protocol::RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY;
 use crate::Cli;
 
 pub(crate) const RPC_CAPABILITIES_SCHEMA_VERSION: u32 = 1;
@@ -23,6 +24,12 @@ pub(crate) fn rpc_capabilities_payload() -> Value {
         "schema_version": RPC_CAPABILITIES_SCHEMA_VERSION,
         "protocol_version": RPC_PROTOCOL_VERSION,
         "capabilities": RPC_CAPABILITIES,
+        "contracts": {
+            "run_status": {
+                "terminal_flag_always_present": true,
+                "serve_closed_status_retention_capacity": RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY,
+            }
+        }
     })
 }
 
@@ -41,6 +48,8 @@ pub(crate) fn execute_rpc_capabilities_command(cli: &Cli) -> Result<()> {
 mod tests {
     use std::collections::BTreeSet;
 
+    use crate::rpc_protocol::RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY;
+
     use super::{rpc_capabilities_payload, RPC_CAPABILITIES_SCHEMA_VERSION, RPC_PROTOCOL_VERSION};
 
     #[test]
@@ -53,6 +62,14 @@ mod tests {
         assert_eq!(
             payload["protocol_version"].as_str(),
             Some(RPC_PROTOCOL_VERSION)
+        );
+        assert_eq!(
+            payload["contracts"]["run_status"]["terminal_flag_always_present"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            payload["contracts"]["run_status"]["serve_closed_status_retention_capacity"].as_u64(),
+            Some(RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY as u64)
         );
     }
 

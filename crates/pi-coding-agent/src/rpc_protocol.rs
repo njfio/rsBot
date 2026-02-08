@@ -25,7 +25,7 @@ const RPC_ERROR_CODE_IO_ERROR: &str = "io_error";
 const RPC_ERROR_CODE_INTERNAL_ERROR: &str = "internal_error";
 const RPC_RUN_STREAM_ASSISTANT_TEXT_KIND: &str = "run.stream.assistant_text";
 const RPC_RUN_STREAM_TOOL_EVENTS_KIND: &str = "run.stream.tool_events";
-const RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY: usize = 1024;
+pub(crate) const RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RpcFrameKind {
@@ -227,6 +227,10 @@ pub(crate) fn dispatch_rpc_frame(frame: &RpcFrame) -> Result<RpcResponseFrame> {
                 .as_array()
                 .cloned()
                 .ok_or_else(|| anyhow!("rpc capabilities payload is missing capabilities array"))?;
+            let contracts = capabilities["contracts"]
+                .as_object()
+                .cloned()
+                .ok_or_else(|| anyhow!("rpc capabilities payload is missing contracts object"))?;
             Ok(build_response_frame(
                 &frame.request_id,
                 "capabilities.response",
@@ -235,6 +239,7 @@ pub(crate) fn dispatch_rpc_frame(frame: &RpcFrame) -> Result<RpcResponseFrame> {
                     "response_schema_version": RPC_FRAME_SCHEMA_VERSION,
                     "supported_request_schema_versions": RPC_COMPATIBLE_REQUEST_SCHEMA_VERSIONS,
                     "capabilities": capability_list,
+                    "contracts": contracts,
                 }),
             ))
         }
@@ -1264,6 +1269,18 @@ mod tests {
         assert_eq!(schema_versions.len(), 2);
         assert_eq!(schema_versions[0].as_u64(), Some(0));
         assert_eq!(schema_versions[1].as_u64(), Some(1));
+        assert_eq!(
+            capabilities_response.payload["contracts"]["run_status"]
+                ["terminal_flag_always_present"]
+                .as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            capabilities_response.payload["contracts"]["run_status"]
+                ["serve_closed_status_retention_capacity"]
+                .as_u64(),
+            Some(RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY as u64)
+        );
 
         let start = parse_rpc_frame(
             r#"{
