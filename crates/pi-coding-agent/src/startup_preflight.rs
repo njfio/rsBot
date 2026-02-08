@@ -31,6 +31,11 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.rpc_dispatch_ndjson_file.is_some() {
+        execute_rpc_dispatch_ndjson_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.event_webhook_ingest_file.is_some() {
         validate_event_webhook_ingest_cli(cli)?;
         let payload_file = cli

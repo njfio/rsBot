@@ -326,6 +326,13 @@ cargo run -p pi-coding-agent -- \
 
 For invalid request frames, dispatch still prints a structured JSON error envelope (`kind: "error"` with `payload.code` and `payload.message`) and exits non-zero.
 
+Dispatch newline-delimited RPC request frames (NDJSON) and emit one response JSON line per input frame:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --rpc-dispatch-ndjson-file /tmp/rpc-frames.ndjson
+```
+
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 
 ```bash

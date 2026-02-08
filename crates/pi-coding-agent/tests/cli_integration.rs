@@ -3024,6 +3024,66 @@ fn regression_rpc_dispatch_frame_file_takes_preflight_precedence_over_prompt() {
 }
 
 #[test]
+fn rpc_dispatch_ndjson_file_flag_outputs_ordered_response_lines() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frames.ndjson");
+    fs::write(
+        &frame_path,
+        r#"{"schema_version":1,"request_id":"req-cap","kind":"capabilities.request","payload":{}}
+{"schema_version":1,"request_id":"req-cancel","kind":"run.cancel","payload":{"run_id":"run-1"}}
+"#,
+    )
+    .expect("write frames");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-dispatch-ndjson-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"request_id\":\"req-cap\""))
+        .stdout(predicate::str::contains(
+            "\"kind\":\"capabilities.response\"",
+        ))
+        .stdout(predicate::str::contains("\"request_id\":\"req-cancel\""))
+        .stdout(predicate::str::contains("\"kind\":\"run.cancelled\""));
+}
+
+#[test]
+fn regression_rpc_dispatch_ndjson_file_continues_after_error_and_exits_failure() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frames.ndjson");
+    fs::write(
+        &frame_path,
+        r#"{"schema_version":1,"request_id":"req-ok","kind":"run.cancel","payload":{"run_id":"run-1"}}
+not-json
+{"schema_version":1,"request_id":"req-ok-2","kind":"run.start","payload":{"prompt":"x"}}
+"#,
+    )
+    .expect("write frames");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-dispatch-ndjson-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains("\"request_id\":\"req-ok\""))
+        .stdout(predicate::str::contains("\"kind\":\"run.cancelled\""))
+        .stdout(predicate::str::contains("\"kind\":\"error\""))
+        .stdout(predicate::str::contains("\"code\":\"invalid_json\""))
+        .stdout(predicate::str::contains("\"request_id\":\"req-ok-2\""))
+        .stdout(predicate::str::contains("\"kind\":\"run.accepted\""))
+        .stderr(predicate::str::contains(
+            "rpc ndjson dispatch completed with 1 error frame(s)",
+        ));
+}
+
+#[test]
 fn prompt_file_flag_runs_one_shot_prompt() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {

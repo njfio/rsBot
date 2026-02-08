@@ -533,6 +533,14 @@ pub(crate) struct Cli {
     pub(crate) rpc_dispatch_frame_file: Option<PathBuf>,
 
     #[arg(
+        long = "rpc-dispatch-ndjson-file",
+        env = "PI_RPC_DISPATCH_NDJSON_FILE",
+        value_name = "path",
+        help = "Dispatch newline-delimited RPC request frames and print one response JSON line per frame"
+    )]
+    pub(crate) rpc_dispatch_ndjson_file: Option<PathBuf>,
+
+    #[arg(
         long = "events-runner",
         env = "PI_EVENTS_RUNNER",
         default_value_t = false,

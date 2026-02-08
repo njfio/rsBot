@@ -66,6 +66,13 @@ pub(crate) struct RpcResponseFrame {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RpcNdjsonDispatchReport {
+    pub responses: Vec<RpcResponseFrame>,
+    pub processed_lines: usize,
+    pub error_count: usize,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RawRpcFrame {
     schema_version: u32,
@@ -181,6 +188,31 @@ pub(crate) fn dispatch_rpc_raw_with_error_envelope(raw: &str) -> RpcResponseFram
     }
 }
 
+pub(crate) fn dispatch_rpc_ndjson_input(raw: &str) -> RpcNdjsonDispatchReport {
+    let mut responses = Vec::new();
+    let mut processed_lines = 0_usize;
+    let mut error_count = 0_usize;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        processed_lines = processed_lines.saturating_add(1);
+        let response = dispatch_rpc_raw_with_error_envelope(trimmed);
+        if response.kind == RPC_ERROR_KIND {
+            error_count = error_count.saturating_add(1);
+        }
+        responses.push(response);
+    }
+
+    RpcNdjsonDispatchReport {
+        responses,
+        processed_lines,
+        error_count,
+    }
+}
+
 pub(crate) fn execute_rpc_validate_frame_command(cli: &Cli) -> Result<()> {
     let Some(path) = cli.rpc_validate_frame_file.as_ref() else {
         return Ok(());
@@ -233,6 +265,28 @@ pub(crate) fn execute_rpc_dispatch_frame_command(cli: &Cli) -> Result<()> {
             response.payload["message"]
                 .as_str()
                 .unwrap_or("rpc dispatch failed")
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_rpc_dispatch_ndjson_command(cli: &Cli) -> Result<()> {
+    let Some(path) = cli.rpc_dispatch_ndjson_file.as_ref() else {
+        return Ok(());
+    };
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read rpc ndjson dispatch file {}", path.display()))?;
+    let report = dispatch_rpc_ndjson_input(&raw);
+    for response in &report.responses {
+        let line =
+            serde_json::to_string(response).context("failed to serialize rpc response frame")?;
+        println!("{line}");
+    }
+    if report.error_count > 0 {
+        bail!(
+            "rpc ndjson dispatch completed with {} error frame(s)",
+            report.error_count
         );
     }
     Ok(())
@@ -313,10 +367,10 @@ mod tests {
 
     use super::{
         classify_rpc_error_message, dispatch_rpc_frame, dispatch_rpc_frame_file,
-        dispatch_rpc_raw_with_error_envelope, parse_rpc_frame, validate_rpc_frame_file,
-        RpcFrameKind, RPC_ERROR_CODE_INVALID_JSON, RPC_ERROR_CODE_INVALID_PAYLOAD,
-        RPC_ERROR_CODE_INVALID_REQUEST_ID, RPC_ERROR_CODE_UNSUPPORTED_KIND,
-        RPC_ERROR_CODE_UNSUPPORTED_SCHEMA,
+        dispatch_rpc_ndjson_input, dispatch_rpc_raw_with_error_envelope, parse_rpc_frame,
+        validate_rpc_frame_file, RpcFrameKind, RPC_ERROR_CODE_INVALID_JSON,
+        RPC_ERROR_CODE_INVALID_PAYLOAD, RPC_ERROR_CODE_INVALID_REQUEST_ID,
+        RPC_ERROR_CODE_UNSUPPORTED_KIND, RPC_ERROR_CODE_UNSUPPORTED_SCHEMA,
     };
 
     #[test]
@@ -548,5 +602,44 @@ mod tests {
             response.payload["code"].as_str(),
             Some(RPC_ERROR_CODE_INVALID_JSON)
         );
+    }
+
+    #[test]
+    fn unit_dispatch_rpc_ndjson_input_preserves_order_and_counts() {
+        let report = dispatch_rpc_ndjson_input(
+            r#"
+# comment
+{"schema_version":1,"request_id":"req-cap","kind":"capabilities.request","payload":{}}
+{"schema_version":1,"request_id":"req-start","kind":"run.start","payload":{"prompt":"hello"}}
+"#,
+        );
+        assert_eq!(report.processed_lines, 2);
+        assert_eq!(report.error_count, 0);
+        assert_eq!(report.responses.len(), 2);
+        assert_eq!(report.responses[0].request_id, "req-cap");
+        assert_eq!(report.responses[0].kind, "capabilities.response");
+        assert_eq!(report.responses[1].request_id, "req-start");
+        assert_eq!(report.responses[1].kind, "run.accepted");
+    }
+
+    #[test]
+    fn regression_dispatch_rpc_ndjson_input_keeps_processing_after_error() {
+        let report = dispatch_rpc_ndjson_input(
+            r#"
+{"schema_version":1,"request_id":"req-ok","kind":"run.cancel","payload":{"run_id":"run-1"}}
+not-json
+{"schema_version":1,"request_id":"req-ok-2","kind":"run.start","payload":{"prompt":"x"}}
+"#,
+        );
+        assert_eq!(report.processed_lines, 3);
+        assert_eq!(report.error_count, 1);
+        assert_eq!(report.responses.len(), 3);
+        assert_eq!(report.responses[0].kind, "run.cancelled");
+        assert_eq!(report.responses[1].kind, "error");
+        assert_eq!(
+            report.responses[1].payload["code"].as_str(),
+            Some(RPC_ERROR_CODE_INVALID_JSON)
+        );
+        assert_eq!(report.responses[2].kind, "run.accepted");
     }
 }
