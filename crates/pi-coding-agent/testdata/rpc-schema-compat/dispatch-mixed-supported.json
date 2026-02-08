@@ -16,6 +16,8 @@
       "kind": "run.cancelled",
       "payload": {
         "status": "cancelled",
+        "terminal": true,
+        "terminal_state": "cancelled",
         "mode": "preflight",
         "run_id": "run-legacy"
       }
@@ -38,6 +40,8 @@
       "kind": "run.timed_out",
       "payload": {
         "status": "timed_out",
+        "terminal": true,
+        "terminal_state": "timed_out",
         "mode": "preflight",
         "run_id": "run-legacy",
         "reason": "deadline"

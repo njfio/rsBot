@@ -192,6 +192,8 @@ pub(crate) fn dispatch_rpc_frame(frame: &RpcFrame) -> Result<RpcResponseFrame> {
                 "run.cancelled",
                 json!({
                     "status": "cancelled",
+                    "terminal": true,
+                    "terminal_state": "cancelled",
                     "mode": RPC_STUB_MODE,
                     "run_id": run_id,
                 }),
@@ -205,6 +207,8 @@ pub(crate) fn dispatch_rpc_frame(frame: &RpcFrame) -> Result<RpcResponseFrame> {
                 "run.completed",
                 json!({
                     "status": "completed",
+                    "terminal": true,
+                    "terminal_state": "completed",
                     "mode": RPC_STUB_MODE,
                     "run_id": run_id,
                 }),
@@ -219,6 +223,8 @@ pub(crate) fn dispatch_rpc_frame(frame: &RpcFrame) -> Result<RpcResponseFrame> {
                 "run.failed",
                 json!({
                     "status": "failed",
+                    "terminal": true,
+                    "terminal_state": "failed",
                     "mode": RPC_STUB_MODE,
                     "run_id": run_id,
                     "reason": reason,
@@ -234,6 +240,8 @@ pub(crate) fn dispatch_rpc_frame(frame: &RpcFrame) -> Result<RpcResponseFrame> {
                 "run.timed_out",
                 json!({
                     "status": "timed_out",
+                    "terminal": true,
+                    "terminal_state": "timed_out",
                     "mode": RPC_STUB_MODE,
                     "run_id": run_id,
                     "reason": reason,
@@ -720,6 +728,8 @@ fn build_run_complete_stream_frame(request_id: &str, run_id: &str) -> RpcRespons
         json!({
             "run_id": run_id,
             "event": "run.completed",
+            "terminal": true,
+            "terminal_state": "completed",
             "mode": RPC_STUB_MODE,
             "sequence": 2,
         }),
@@ -733,6 +743,8 @@ fn build_run_failed_stream_frame(request_id: &str, run_id: &str, reason: &str) -
         json!({
             "run_id": run_id,
             "event": "run.failed",
+            "terminal": true,
+            "terminal_state": "failed",
             "reason": reason,
             "mode": RPC_STUB_MODE,
             "sequence": 2,
@@ -751,6 +763,8 @@ fn build_run_timeout_stream_frame(
         json!({
             "run_id": run_id,
             "event": "run.timed_out",
+            "terminal": true,
+            "terminal_state": "timed_out",
             "reason": reason,
             "mode": RPC_STUB_MODE,
             "sequence": 2,
@@ -1062,6 +1076,11 @@ mod tests {
         let cancel_response = dispatch_rpc_frame(&cancel).expect("dispatch cancel");
         assert_eq!(cancel_response.kind, "run.cancelled");
         assert_eq!(cancel_response.payload["run_id"].as_str(), Some("run-1"));
+        assert_eq!(cancel_response.payload["terminal"].as_bool(), Some(true));
+        assert_eq!(
+            cancel_response.payload["terminal_state"].as_str(),
+            Some("cancelled")
+        );
 
         let complete = parse_rpc_frame(
             r#"{
@@ -1075,6 +1094,11 @@ mod tests {
         let complete_response = dispatch_rpc_frame(&complete).expect("dispatch complete");
         assert_eq!(complete_response.kind, "run.completed");
         assert_eq!(complete_response.payload["run_id"].as_str(), Some("run-1"));
+        assert_eq!(complete_response.payload["terminal"].as_bool(), Some(true));
+        assert_eq!(
+            complete_response.payload["terminal_state"].as_str(),
+            Some("completed")
+        );
 
         let fail = parse_rpc_frame(
             r#"{
@@ -1092,6 +1116,11 @@ mod tests {
             fail_response.payload["reason"].as_str(),
             Some("tool failure")
         );
+        assert_eq!(fail_response.payload["terminal"].as_bool(), Some(true));
+        assert_eq!(
+            fail_response.payload["terminal_state"].as_str(),
+            Some("failed")
+        );
 
         let timeout = parse_rpc_frame(
             r#"{
@@ -1108,6 +1137,11 @@ mod tests {
         assert_eq!(
             timeout_response.payload["reason"].as_str(),
             Some("request timeout")
+        );
+        assert_eq!(timeout_response.payload["terminal"].as_bool(), Some(true));
+        assert_eq!(
+            timeout_response.payload["terminal_state"].as_str(),
+            Some("timed_out")
         );
 
         let status = parse_rpc_frame(
@@ -1460,17 +1494,41 @@ mod tests {
         assert_eq!(report.responses[2].payload["active"].as_bool(), Some(false));
         assert_eq!(report.responses[3].request_id, "req-complete");
         assert_eq!(report.responses[3].kind, "run.completed");
+        assert_eq!(
+            report.responses[3].payload["terminal"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            report.responses[3].payload["terminal_state"].as_str(),
+            Some("completed")
+        );
         assert_eq!(report.responses[4].request_id, "req-fail");
         assert_eq!(report.responses[4].kind, "run.failed");
         assert_eq!(
             report.responses[4].payload["reason"].as_str(),
             Some("failed for testing")
         );
+        assert_eq!(
+            report.responses[4].payload["terminal"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            report.responses[4].payload["terminal_state"].as_str(),
+            Some("failed")
+        );
         assert_eq!(report.responses[5].request_id, "req-timeout");
         assert_eq!(report.responses[5].kind, "run.timed_out");
         assert_eq!(
             report.responses[5].payload["reason"].as_str(),
             Some("timeout in dispatch")
+        );
+        assert_eq!(
+            report.responses[5].payload["terminal"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            report.responses[5].payload["terminal_state"].as_str(),
+            Some("timed_out")
         );
     }
 
@@ -1486,6 +1544,14 @@ mod tests {
         assert_eq!(report.error_count, 0);
         assert_eq!(report.responses.len(), 2);
         assert_eq!(report.responses[0].kind, "run.cancelled");
+        assert_eq!(
+            report.responses[0].payload["terminal"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            report.responses[0].payload["terminal_state"].as_str(),
+            Some("cancelled")
+        );
         assert_eq!(report.responses[1].kind, "run.accepted");
     }
 
@@ -1573,6 +1639,8 @@ not-json
         assert_eq!(rows[4]["payload"]["active"], true);
         assert_eq!(rows[5]["request_id"], "req-cancel");
         assert_eq!(rows[5]["kind"], "run.cancelled");
+        assert_eq!(rows[5]["payload"]["terminal"], true);
+        assert_eq!(rows[5]["payload"]["terminal_state"], "cancelled");
         assert_eq!(rows[6]["request_id"], "req-status-inactive");
         assert_eq!(rows[6]["kind"], "run.status");
         assert_eq!(rows[6]["payload"]["active"], false);
@@ -1610,9 +1678,13 @@ not-json
         assert_eq!(rows[3]["payload"]["active"], true);
         assert_eq!(rows[4]["request_id"], "req-complete");
         assert_eq!(rows[4]["kind"], "run.completed");
+        assert_eq!(rows[4]["payload"]["terminal"], true);
+        assert_eq!(rows[4]["payload"]["terminal_state"], "completed");
         assert_eq!(rows[5]["request_id"], "req-complete");
         assert_eq!(rows[5]["kind"], "run.stream.tool_events");
         assert_eq!(rows[5]["payload"]["event"], "run.completed");
+        assert_eq!(rows[5]["payload"]["terminal"], true);
+        assert_eq!(rows[5]["payload"]["terminal_state"], "completed");
         assert_eq!(rows[6]["request_id"], "req-status-inactive");
         assert_eq!(rows[6]["kind"], "run.status");
         assert_eq!(rows[6]["payload"]["active"], false);
@@ -1650,10 +1722,14 @@ not-json
         assert_eq!(rows[4]["request_id"], "req-fail");
         assert_eq!(rows[4]["kind"], "run.failed");
         assert_eq!(rows[4]["payload"]["reason"], "provider timeout");
+        assert_eq!(rows[4]["payload"]["terminal"], true);
+        assert_eq!(rows[4]["payload"]["terminal_state"], "failed");
         assert_eq!(rows[5]["request_id"], "req-fail");
         assert_eq!(rows[5]["kind"], "run.stream.tool_events");
         assert_eq!(rows[5]["payload"]["event"], "run.failed");
         assert_eq!(rows[5]["payload"]["reason"], "provider timeout");
+        assert_eq!(rows[5]["payload"]["terminal"], true);
+        assert_eq!(rows[5]["payload"]["terminal_state"], "failed");
         assert_eq!(rows[6]["request_id"], "req-status-inactive");
         assert_eq!(rows[6]["kind"], "run.status");
         assert_eq!(rows[6]["payload"]["active"], false);
@@ -1691,10 +1767,14 @@ not-json
         assert_eq!(rows[4]["request_id"], "req-timeout");
         assert_eq!(rows[4]["kind"], "run.timed_out");
         assert_eq!(rows[4]["payload"]["reason"], "client timeout");
+        assert_eq!(rows[4]["payload"]["terminal"], true);
+        assert_eq!(rows[4]["payload"]["terminal_state"], "timed_out");
         assert_eq!(rows[5]["request_id"], "req-timeout");
         assert_eq!(rows[5]["kind"], "run.stream.tool_events");
         assert_eq!(rows[5]["payload"]["event"], "run.timed_out");
         assert_eq!(rows[5]["payload"]["reason"], "client timeout");
+        assert_eq!(rows[5]["payload"]["terminal"], true);
+        assert_eq!(rows[5]["payload"]["terminal_state"], "timed_out");
         assert_eq!(rows[6]["request_id"], "req-status-inactive");
         assert_eq!(rows[6]["kind"], "run.status");
         assert_eq!(rows[6]["payload"]["active"], false);

@@ -63,6 +63,8 @@
       "kind": "run.completed",
       "payload": {
         "status": "completed",
+        "terminal": true,
+        "terminal_state": "completed",
         "mode": "preflight",
         "run_id": "run-req-start-legacy"
       }
@@ -74,6 +76,8 @@
       "payload": {
         "run_id": "run-req-start-legacy",
         "event": "run.completed",
+        "terminal": true,
+        "terminal_state": "completed",
         "mode": "preflight",
         "sequence": 2
       }
