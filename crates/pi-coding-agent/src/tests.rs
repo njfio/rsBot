@@ -8588,9 +8588,15 @@ async fn integration_tool_hook_subscriber_dispatches_pre_and_post_tool_call_hook
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["hook"], "pre-tool-call");
     assert_eq!(rows[1]["hook"], "post-tool-call");
-    assert_eq!(rows[0]["payload"]["tool_name"], "read");
-    assert_eq!(rows[1]["payload"]["tool_name"], "read");
-    assert_eq!(rows[1]["payload"]["result"]["is_error"], false);
+    assert_eq!(rows[0]["payload"]["schema_version"], 1);
+    assert_eq!(rows[1]["payload"]["schema_version"], 1);
+    assert_eq!(rows[0]["payload"]["hook"], "pre-tool-call");
+    assert_eq!(rows[1]["payload"]["hook"], "post-tool-call");
+    assert!(rows[0]["payload"]["emitted_at_ms"].as_u64().is_some());
+    assert!(rows[1]["payload"]["emitted_at_ms"].as_u64().is_some());
+    assert_eq!(rows[0]["payload"]["data"]["tool_name"], "read");
+    assert_eq!(rows[1]["payload"]["data"]["tool_name"], "read");
+    assert_eq!(rows[1]["payload"]["data"]["result"]["is_error"], false);
 }
 
 #[tokio::test]

@@ -18,6 +18,7 @@ use crate::Cli;
 const EXTENSION_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const EXTENSION_TIMEOUT_MS_DEFAULT: u64 = 5_000;
 const EXTENSION_TIMEOUT_MS_MAX: u64 = 300_000;
+const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct ExtensionManifestSummary {
@@ -641,7 +642,13 @@ pub(crate) fn apply_extension_message_transforms(
 
         result.executed += 1;
         let payload = serde_json::json!({
+            "schema_version": EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION,
+            "hook": hook.as_str(),
+            "emitted_at_ms": crate::current_unix_timestamp_ms(),
             "prompt": result.prompt.clone(),
+            "data": {
+                "prompt": result.prompt.clone(),
+            },
         });
         match execute_extension_process_hook_with_loaded(
             &loaded_manifest.manifest,
