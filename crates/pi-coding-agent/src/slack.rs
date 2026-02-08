@@ -26,7 +26,6 @@ use crate::{session::SessionStore, tools::ToolPolicy};
 const SLACK_STATE_SCHEMA_VERSION: u32 = 1;
 const SLACK_METADATA_MARKER_PREFIX: &str = "<!-- rsbot-slack-event:";
 const SLACK_METADATA_MARKER_SUFFIX: &str = " -->";
-const SLACK_ARTIFACT_RETENTION_DAYS: u64 = 30;
 
 #[derive(Clone)]
 pub(crate) struct SlackBridgeRuntimeConfig {
@@ -52,6 +51,7 @@ pub(crate) struct SlackBridgeRuntimeConfig {
     pub reconnect_delay: Duration,
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
+    pub artifact_retention_days: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1160,7 +1160,7 @@ async fn run_prompt_for_event(
         run_id,
         "slack-reply",
         "private",
-        Some(SLACK_ARTIFACT_RETENTION_DAYS),
+        normalize_artifact_retention_days(config.artifact_retention_days),
         "md",
         &render_slack_artifact_markdown(event, run_id, status, &assistant_reply, &downloaded_files),
     )?;
@@ -1544,6 +1544,14 @@ fn render_slack_artifact_markdown(
     lines.join("\n")
 }
 
+fn normalize_artifact_retention_days(days: u64) -> Option<u64> {
+    if days == 0 {
+        None
+    } else {
+        Some(days)
+    }
+}
+
 fn collect_assistant_reply(messages: &[Message]) -> String {
     let content = messages
         .iter()
@@ -1643,13 +1651,16 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
     use super::{
-        event_is_stale, normalize_socket_envelope, parse_socket_envelope, render_event_prompt,
-        render_slack_artifact_markdown, render_slack_response, DownloadedSlackFile,
-        PollCycleReport, SlackApiClient, SlackBridgeEvent, SlackBridgeEventKind,
-        SlackBridgeRuntime, SlackBridgeRuntimeConfig, SlackBridgeStateStore, SlackSocketEnvelope,
+        event_is_stale, normalize_artifact_retention_days, normalize_socket_envelope,
+        parse_socket_envelope, render_event_prompt, render_slack_artifact_markdown,
+        render_slack_response, run_prompt_for_event, DownloadedSlackFile, PollCycleReport,
+        SlackApiClient, SlackBridgeEvent, SlackBridgeEventKind, SlackBridgeRuntime,
+        SlackBridgeRuntimeConfig, SlackBridgeStateStore, SlackSocketEnvelope,
     };
     use crate::{
-        channel_store::ChannelArtifactRecord, current_unix_timestamp_ms, tools::ToolPolicy,
+        channel_store::{ChannelArtifactRecord, ChannelStore},
+        current_unix_timestamp_ms,
+        tools::ToolPolicy,
         RenderOptions,
     };
 
@@ -1723,7 +1734,98 @@ mod tests {
             reconnect_delay: Duration::from_millis(10),
             retry_max_attempts: 3,
             retry_base_delay_ms: 5,
+            artifact_retention_days: 30,
         }
+    }
+
+    fn test_event() -> SlackBridgeEvent {
+        SlackBridgeEvent {
+            key: "event-c1-ts-10.0".to_string(),
+            kind: SlackBridgeEventKind::AppMention,
+            event_id: "Ev1".to_string(),
+            occurred_unix_ms: 10_000,
+            channel_id: "C1".to_string(),
+            user_id: "U1".to_string(),
+            text: "<@UBOT> hello".to_string(),
+            ts: "10.0".to_string(),
+            thread_ts: None,
+            files: Vec::new(),
+            raw_payload: json!({"event_id": "Ev1"}),
+        }
+    }
+
+    #[test]
+    fn unit_normalize_artifact_retention_days_maps_zero_to_none() {
+        assert_eq!(normalize_artifact_retention_days(0), None);
+        assert_eq!(normalize_artifact_retention_days(30), Some(30));
+    }
+
+    #[tokio::test]
+    async fn functional_run_prompt_for_event_sets_expiry_with_default_retention() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_config("http://unused.local/api", temp.path());
+        let event = test_event();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let slack_client = SlackApiClient::new(
+            config.api_base.clone(),
+            config.app_token.clone(),
+            config.bot_token.clone(),
+            config.request_timeout_ms,
+            config.retry_max_attempts,
+            config.retry_base_delay_ms,
+        )
+        .expect("slack client");
+
+        let report = run_prompt_for_event(
+            &config,
+            temp.path(),
+            &event,
+            "run-default-retention",
+            cancel_rx,
+            &slack_client,
+            "UBOT",
+        )
+        .await
+        .expect("run prompt");
+        assert!(report.artifact.expires_unix_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn regression_run_prompt_for_event_zero_retention_disables_expiry() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = test_config("http://unused.local/api", temp.path());
+        config.artifact_retention_days = 0;
+        let event = test_event();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let slack_client = SlackApiClient::new(
+            config.api_base.clone(),
+            config.app_token.clone(),
+            config.bot_token.clone(),
+            config.request_timeout_ms,
+            config.retry_max_attempts,
+            config.retry_base_delay_ms,
+        )
+        .expect("slack client");
+
+        let report = run_prompt_for_event(
+            &config,
+            temp.path(),
+            &event,
+            "run-zero-retention",
+            cancel_rx,
+            &slack_client,
+            "UBOT",
+        )
+        .await
+        .expect("run prompt");
+        assert_eq!(report.artifact.expires_unix_ms, None);
+
+        let store =
+            ChannelStore::open(&temp.path().join("channel-store"), "slack", "C1").expect("store");
+        let active = store
+            .list_active_artifacts(current_unix_timestamp_ms())
+            .expect("active artifacts");
+        assert_eq!(active.len(), 1);
     }
 
     #[test]

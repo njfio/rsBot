@@ -1002,6 +1002,15 @@ pub(crate) struct Cli {
     pub(crate) github_poll_interval_seconds: u64,
 
     #[arg(
+        long = "github-artifact-retention-days",
+        env = "PI_GITHUB_ARTIFACT_RETENTION_DAYS",
+        default_value_t = 30,
+        requires = "github_issues_bridge",
+        help = "Retention window for GitHub bridge artifacts in days (0 disables expiration)"
+    )]
+    pub(crate) github_artifact_retention_days: u64,
+
+    #[arg(
         long = "github-include-issue-body",
         env = "PI_GITHUB_INCLUDE_ISSUE_BODY",
         default_value_t = false,
@@ -1115,6 +1124,15 @@ pub(crate) struct Cli {
         help = "Directory for slack bridge state/session/event logs"
     )]
     pub(crate) slack_state_dir: PathBuf,
+
+    #[arg(
+        long = "slack-artifact-retention-days",
+        env = "PI_SLACK_ARTIFACT_RETENTION_DAYS",
+        default_value_t = 30,
+        requires = "slack_bridge",
+        help = "Retention window for Slack bridge artifacts in days (0 disables expiration)"
+    )]
+    pub(crate) slack_artifact_retention_days: u64,
 
     #[arg(
         long = "slack-thread-detail-output",

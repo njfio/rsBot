@@ -49,6 +49,7 @@ pub(crate) async fn run_transport_mode_if_requested(
             processed_event_cap: cli.github_processed_event_cap.max(1),
             retry_max_attempts: cli.github_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.github_retry_base_delay_ms.max(1),
+            artifact_retention_days: cli.github_artifact_retention_days,
         })
         .await?;
         return Ok(true);
@@ -100,6 +101,7 @@ pub(crate) async fn run_transport_mode_if_requested(
             reconnect_delay: Duration::from_millis(cli.slack_reconnect_delay_ms.max(1)),
             retry_max_attempts: cli.slack_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.slack_retry_base_delay_ms.max(1),
+            artifact_retention_days: cli.slack_artifact_retention_days,
         })
         .await?;
         return Ok(true);

@@ -301,6 +301,7 @@ fn test_cli() -> Cli {
         github_api_base: "https://api.github.com".to_string(),
         github_state_dir: PathBuf::from(".pi/github-issues"),
         github_poll_interval_seconds: 30,
+        github_artifact_retention_days: 30,
         github_include_issue_body: false,
         github_include_edited_comments: true,
         github_processed_event_cap: 10_000,
@@ -314,6 +315,7 @@ fn test_cli() -> Cli {
         slack_bot_user_id: None,
         slack_api_base: "https://slack.com/api".to_string(),
         slack_state_dir: PathBuf::from(".pi/slack"),
+        slack_artifact_retention_days: 30,
         slack_thread_detail_output: true,
         slack_thread_detail_threshold_chars: 1500,
         slack_processed_event_cap: 10_000,
@@ -648,6 +650,28 @@ fn functional_cli_integration_secret_id_flags_accept_explicit_values() {
     assert_eq!(cli.github_token_id.as_deref(), Some("github-token"));
     assert_eq!(cli.slack_app_token_id.as_deref(), Some("slack-app-token"));
     assert_eq!(cli.slack_bot_token_id.as_deref(), Some("slack-bot-token"));
+}
+
+#[test]
+fn unit_cli_artifact_retention_flags_default_to_30_days() {
+    let cli = Cli::parse_from(["pi-rs"]);
+    assert_eq!(cli.github_artifact_retention_days, 30);
+    assert_eq!(cli.slack_artifact_retention_days, 30);
+}
+
+#[test]
+fn functional_cli_artifact_retention_flags_accept_explicit_values() {
+    let cli = Cli::parse_from([
+        "pi-rs",
+        "--github-issues-bridge",
+        "--slack-bridge",
+        "--github-artifact-retention-days",
+        "14",
+        "--slack-artifact-retention-days",
+        "0",
+    ]);
+    assert_eq!(cli.github_artifact_retention_days, 14);
+    assert_eq!(cli.slack_artifact_retention_days, 0);
 }
 
 #[test]

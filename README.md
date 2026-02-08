@@ -244,7 +244,8 @@ cargo run -p pi-coding-agent -- \
   --github-repo owner/repo \
   --github-bot-login your-bot-login \
   --github-state-dir .pi/github-issues \
-  --github-poll-interval-seconds 30
+  --github-poll-interval-seconds 30 \
+  --github-artifact-retention-days 30
 ```
 
 In bridge mode:
@@ -254,6 +255,7 @@ In bridge mode:
 - duplicate deliveries are deduplicated using persisted event keys and response footers
 - bot replies include run/model/token metadata in the issue comment footer
 - each completed run emits a markdown artifact plus metadata index entry under `channel-store/.../artifacts/`
+- set `--github-artifact-retention-days 0` to disable artifact expiration
 - `/pi artifacts` posts the current issue artifact inventory; `/pi artifacts run <run_id>` filters inventory for one run; `/pi artifacts show <artifact_id>` shows one artifact record; `/pi artifacts purge` removes expired entries and reports lifecycle counts
 
 Run as a Slack Socket Mode conversational transport:
@@ -266,6 +268,7 @@ cargo run -p pi-coding-agent -- \
   --model openai/gpt-4o-mini \
   --slack-bridge \
   --slack-state-dir .pi/slack \
+  --slack-artifact-retention-days 30 \
   --slack-thread-detail-output true \
   --slack-thread-detail-threshold-chars 1500
 ```
@@ -279,6 +282,7 @@ In Slack bridge mode:
 - stale events are skipped based on `--slack-max-event-age-seconds`
 - attached files are downloaded into channel-local attachment folders and surfaced in prompt context
 - each completed run emits a markdown artifact + metadata under `channel-store/channels/slack/<channel>/artifacts/`
+- set `--slack-artifact-retention-days 0` to disable artifact expiration
 
 Inspect or repair ChannelStore state for a specific channel:
 

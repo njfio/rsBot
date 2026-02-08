@@ -24,7 +24,6 @@ use crate::{session::SessionStore, tools::ToolPolicy};
 const GITHUB_STATE_SCHEMA_VERSION: u32 = 1;
 const EVENT_KEY_MARKER_PREFIX: &str = "<!-- rsbot-event-key:";
 const EVENT_KEY_MARKER_SUFFIX: &str = " -->";
-const ISSUE_ARTIFACT_RETENTION_DAYS: u64 = 30;
 
 #[derive(Clone)]
 pub(crate) struct GithubIssuesBridgeRuntimeConfig {
@@ -49,6 +48,7 @@ pub(crate) struct GithubIssuesBridgeRuntimeConfig {
     pub processed_event_cap: usize,
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
+    pub artifact_retention_days: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1566,7 +1566,7 @@ async fn run_prompt_for_event(
         run_id,
         "github-issue-reply",
         "private",
-        Some(ISSUE_ARTIFACT_RETENTION_DAYS),
+        normalize_artifact_retention_days(config.artifact_retention_days),
         "md",
         &render_issue_artifact_markdown(repo, event, run_id, status, &assistant_reply),
     )?;
@@ -1699,6 +1699,14 @@ fn render_issue_artifact_markdown(
         assistant_reply.trim().to_string(),
     ]
     .join("\n")
+}
+
+fn normalize_artifact_retention_days(days: u64) -> Option<u64> {
+    if days == 0 {
+        None
+    } else {
+        Some(days)
+    }
 }
 
 fn render_issue_run_error_comment(
@@ -2045,10 +2053,11 @@ mod tests {
 
     use super::{
         collect_issue_events, event_action_from_body, extract_footer_event_keys,
-        is_retryable_github_status, parse_pi_issue_command, retry_delay, sanitize_for_path,
-        session_path_for_issue, EventAction, GithubApiClient, GithubBridgeEventKind, GithubIssue,
-        GithubIssueComment, GithubIssuesBridgeRuntime, GithubIssuesBridgeRuntimeConfig,
-        GithubIssuesBridgeStateStore, GithubUser, PiIssueCommand, RepoRef,
+        is_retryable_github_status, normalize_artifact_retention_days, parse_pi_issue_command,
+        retry_delay, run_prompt_for_event, sanitize_for_path, session_path_for_issue, EventAction,
+        GithubApiClient, GithubBridgeEvent, GithubBridgeEventKind, GithubIssue, GithubIssueComment,
+        GithubIssuesBridgeRuntime, GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore,
+        GithubUser, PiIssueCommand, RepoRef,
     };
     use crate::{channel_store::ChannelStore, tools::ToolPolicy, RenderOptions};
 
@@ -2121,7 +2130,27 @@ mod tests {
             processed_event_cap: 32,
             retry_max_attempts: 3,
             retry_base_delay_ms: 5,
+            artifact_retention_days: 30,
         }
+    }
+
+    fn test_issue_event() -> GithubBridgeEvent {
+        GithubBridgeEvent {
+            key: "issue-comment-created:200".to_string(),
+            kind: GithubBridgeEventKind::CommentCreated,
+            issue_number: 7,
+            issue_title: "Bridge me".to_string(),
+            author_login: "alice".to_string(),
+            occurred_at: "2026-01-01T00:00:01Z".to_string(),
+            body: "hello from issue stream".to_string(),
+            raw_payload: json!({"id": 200}),
+        }
+    }
+
+    #[test]
+    fn unit_normalize_artifact_retention_days_maps_zero_to_none() {
+        assert_eq!(normalize_artifact_retention_days(0), None);
+        assert_eq!(normalize_artifact_retention_days(30), Some(30));
     }
 
     #[test]
@@ -2173,6 +2202,58 @@ mod tests {
         assert_eq!(events[0].kind, GithubBridgeEventKind::Opened);
         assert_eq!(events[1].kind, GithubBridgeEventKind::CommentCreated);
         assert_eq!(events[2].kind, GithubBridgeEventKind::CommentEdited);
+    }
+
+    #[tokio::test]
+    async fn functional_run_prompt_for_event_sets_expiry_with_default_retention() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config("http://unused.local", temp.path());
+        let repo = RepoRef::parse("owner/repo").expect("repo");
+        let event = test_issue_event();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        let report = run_prompt_for_event(
+            &config,
+            &repo,
+            temp.path(),
+            &event,
+            "hello from test",
+            "run-default-retention",
+            cancel_rx,
+        )
+        .await
+        .expect("run prompt");
+        assert!(report.artifact.expires_unix_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn regression_run_prompt_for_event_zero_retention_disables_expiry() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = test_bridge_config("http://unused.local", temp.path());
+        config.artifact_retention_days = 0;
+        let repo = RepoRef::parse("owner/repo").expect("repo");
+        let event = test_issue_event();
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        let report = run_prompt_for_event(
+            &config,
+            &repo,
+            temp.path(),
+            &event,
+            "hello from test",
+            "run-zero-retention",
+            cancel_rx,
+        )
+        .await
+        .expect("run prompt");
+        assert_eq!(report.artifact.expires_unix_ms, None);
+
+        let store = ChannelStore::open(&temp.path().join("channel-store"), "github", "issue-7")
+            .expect("open store");
+        let active = store
+            .list_active_artifacts(crate::current_unix_timestamp_ms())
+            .expect("list active");
+        assert_eq!(active.len(), 1);
     }
 
     #[test]
