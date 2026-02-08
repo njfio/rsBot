@@ -269,6 +269,7 @@ In Slack bridge mode:
 - duplicate deliveries are deduplicated via persisted event keys
 - stale events are skipped based on `--slack-max-event-age-seconds`
 - attached files are downloaded into channel-local attachment folders and surfaced in prompt context
+- each completed run emits a markdown artifact + metadata under `channel-store/channels/slack/<channel>/artifacts/`
 
 Inspect or repair ChannelStore state for a specific channel:
 

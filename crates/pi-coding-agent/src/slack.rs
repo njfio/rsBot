@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
-use crate::channel_store::{ChannelLogEntry, ChannelStore};
+use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
 use crate::{
     current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, PromptRunStatus,
     RenderOptions, SessionRuntime,
@@ -26,6 +26,7 @@ use crate::{session::SessionStore, tools::ToolPolicy};
 const SLACK_STATE_SCHEMA_VERSION: u32 = 1;
 const SLACK_METADATA_MARKER_PREFIX: &str = "<!-- rsbot-slack-event:";
 const SLACK_METADATA_MARKER_SUFFIX: &str = " -->";
+const SLACK_ARTIFACT_RETENTION_DAYS: u64 = 30;
 
 #[derive(Clone)]
 pub(crate) struct SlackBridgeRuntimeConfig {
@@ -603,6 +604,7 @@ struct PromptRunReport {
     assistant_reply: String,
     usage: PromptUsageSummary,
     downloaded_files: Vec<DownloadedSlackFile>,
+    artifact: ChannelArtifactRecord,
 }
 
 #[derive(Debug, Clone)]
@@ -1154,6 +1156,14 @@ async fn run_prompt_for_event(
         .lock()
         .map_err(|_| anyhow!("prompt usage lock is poisoned"))?
         .clone();
+    let artifact = channel_store.write_text_artifact(
+        run_id,
+        "slack-reply",
+        "private",
+        Some(SLACK_ARTIFACT_RETENTION_DAYS),
+        "md",
+        &render_slack_artifact_markdown(event, run_id, status, &assistant_reply, &downloaded_files),
+    )?;
     channel_store.sync_context_from_messages(agent.messages())?;
     channel_store.append_log_entry(&ChannelLogEntry {
         timestamp_unix_ms: current_unix_timestamp_ms(),
@@ -1168,7 +1178,14 @@ async fn run_prompt_for_event(
                 "input": usage.input_tokens,
                 "output": usage.output_tokens,
                 "total": usage.total_tokens,
-            }
+            },
+            "artifact": {
+                "id": artifact.id,
+                "path": artifact.relative_path,
+                "checksum_sha256": artifact.checksum_sha256,
+                "bytes": artifact.bytes,
+                "expires_unix_ms": artifact.expires_unix_ms,
+            },
         }),
     })?;
 
@@ -1179,6 +1196,7 @@ async fn run_prompt_for_event(
         assistant_reply,
         usage,
         downloaded_files,
+        artifact,
     })
 }
 
@@ -1457,6 +1475,10 @@ fn render_slack_response(
         usage.output_tokens,
         usage.total_tokens
     ));
+    summary_body.push_str(&format!(
+        "\nartifact {} | sha256 {} | bytes {}",
+        run.artifact.relative_path, run.artifact.checksum_sha256, run.artifact.bytes
+    ));
 
     if !run.downloaded_files.is_empty() {
         summary_body.push_str("\nattachments downloaded:");
@@ -1487,6 +1509,39 @@ fn render_slack_run_error_message(
         ),
         38_000,
     )
+}
+
+fn render_slack_artifact_markdown(
+    event: &SlackBridgeEvent,
+    run_id: &str,
+    status: PromptRunStatus,
+    assistant_reply: &str,
+    downloaded_files: &[DownloadedSlackFile],
+) -> String {
+    let mut lines = vec![
+        "# rsBot Slack Artifact".to_string(),
+        format!("channel_id: {}", event.channel_id),
+        format!("event_key: {}", event.key),
+        format!("event_kind: {}", event.kind.as_str()),
+        format!("run_id: {}", run_id),
+        format!("status: {}", prompt_status_label(status)),
+    ];
+    if downloaded_files.is_empty() {
+        lines.push("attachments: none".to_string());
+    } else {
+        lines.push(format!("attachments: {}", downloaded_files.len()));
+        for file in downloaded_files {
+            lines.push(format!(
+                "- {} ({})",
+                file.original_name,
+                file.path.display()
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push("## Assistant Reply".to_string());
+    lines.push(assistant_reply.trim().to_string());
+    lines.join("\n")
 }
 
 fn collect_assistant_reply(messages: &[Message]) -> String {
@@ -1589,11 +1644,14 @@ mod tests {
 
     use super::{
         event_is_stale, normalize_socket_envelope, parse_socket_envelope, render_event_prompt,
-        render_slack_response, DownloadedSlackFile, PollCycleReport, SlackApiClient,
-        SlackBridgeEvent, SlackBridgeEventKind, SlackBridgeRuntime, SlackBridgeRuntimeConfig,
-        SlackBridgeStateStore, SlackSocketEnvelope,
+        render_slack_artifact_markdown, render_slack_response, DownloadedSlackFile,
+        PollCycleReport, SlackApiClient, SlackBridgeEvent, SlackBridgeEventKind,
+        SlackBridgeRuntime, SlackBridgeRuntimeConfig, SlackBridgeStateStore, SlackSocketEnvelope,
     };
-    use crate::{current_unix_timestamp_ms, tools::ToolPolicy, RenderOptions};
+    use crate::{
+        channel_store::ChannelArtifactRecord, current_unix_timestamp_ms, tools::ToolPolicy,
+        RenderOptions,
+    };
 
     struct StaticReplyClient;
 
@@ -1796,6 +1854,37 @@ mod tests {
     }
 
     #[test]
+    fn functional_render_slack_artifact_markdown_includes_event_and_run_metadata() {
+        let event = SlackBridgeEvent {
+            key: "k1".to_string(),
+            kind: SlackBridgeEventKind::DirectMessage,
+            event_id: "Ev1".to_string(),
+            occurred_unix_ms: 1,
+            channel_id: "D1".to_string(),
+            user_id: "U1".to_string(),
+            text: "hello".to_string(),
+            ts: "1.1".to_string(),
+            thread_ts: None,
+            files: vec![],
+            raw_payload: json!({}),
+        };
+        let markdown = render_slack_artifact_markdown(
+            &event,
+            "run-1",
+            crate::PromptRunStatus::Completed,
+            "reply body",
+            &[],
+        );
+        assert!(markdown.contains("# rsBot Slack Artifact"));
+        assert!(markdown.contains("channel_id: D1"));
+        assert!(markdown.contains("run_id: run-1"));
+        assert!(markdown.contains("status: completed"));
+        assert!(markdown.contains("attachments: none"));
+        assert!(markdown.contains("## Assistant Reply"));
+        assert!(markdown.contains("reply body"));
+    }
+
+    #[test]
     fn functional_render_slack_response_thread_splits_long_output() {
         let event = SlackBridgeEvent {
             key: "k1".to_string(),
@@ -1823,9 +1912,22 @@ mod tests {
                 finish_reason: Some("stop".to_string()),
             },
             downloaded_files: vec![],
+            artifact: ChannelArtifactRecord {
+                id: "artifact-1".to_string(),
+                run_id: "run1".to_string(),
+                artifact_type: "slack-reply".to_string(),
+                visibility: "private".to_string(),
+                relative_path: "artifacts/run1/slack-reply-artifact-1.md".to_string(),
+                bytes: 42,
+                checksum_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    .to_string(),
+                created_unix_ms: 1,
+                expires_unix_ms: Some(2),
+            },
         };
         let (summary, detail) = render_slack_response(&event, &run, true, 10);
         assert!(summary.contains("full response posted in this thread"));
+        assert!(summary.contains("artifact artifacts/run1/slack-reply-artifact-1.md"));
         assert_eq!(detail.as_deref(), Some("abcdefghijklmnopqrstuvwxyz"));
     }
 
@@ -1928,7 +2030,9 @@ mod tests {
                 .json_body(json!({"ok": true, "channel": "D1", "ts": "3.0"}));
         });
         let update = server.mock(|when, then| {
-            when.method(POST).path("/chat.update");
+            when.method(POST)
+                .path("/chat.update")
+                .body_includes("artifact artifacts/");
             then.status(200)
                 .json_body(json!({"ok": true, "channel": "C1", "ts": "2.0"}));
         });
@@ -2013,7 +2117,11 @@ mod tests {
             .expect("channel context exists");
         assert!(channel_log.contains("\"direction\":\"inbound\""));
         assert!(channel_log.contains("\"direction\":\"outbound\""));
+        assert!(channel_log.contains("\"artifact\""));
         assert!(channel_context.contains("slack bridge reply"));
+        let artifact_index = std::fs::read_to_string(channel_dir.join("artifacts/index.jsonl"))
+            .expect("artifact index exists");
+        assert!(artifact_index.contains("\"artifact_type\":\"slack-reply\""));
     }
 
     #[tokio::test]
