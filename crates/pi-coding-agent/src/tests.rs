@@ -6494,12 +6494,31 @@ fn functional_execute_channel_store_admin_inspect_succeeds() {
             payload: serde_json::json!({"body":"hello"}),
         })
         .expect("append log");
+    store
+        .write_text_artifact(
+            "run-active",
+            "github-reply",
+            "private",
+            Some(30),
+            "md",
+            "artifact body",
+        )
+        .expect("write artifact");
+    let mut artifact_index =
+        std::fs::read_to_string(store.artifact_index_path()).expect("read artifact index");
+    artifact_index.push_str("invalid-artifact-line\n");
+    std::fs::write(store.artifact_index_path(), artifact_index).expect("seed invalid artifact");
 
     let mut cli = test_cli();
     cli.channel_store_root = temp.path().to_path_buf();
     cli.channel_store_inspect = Some("github/issue-1".to_string());
 
     execute_channel_store_admin_command(&cli).expect("inspect should succeed");
+    let report = store.inspect().expect("inspect report");
+    assert_eq!(report.artifact_records, 1);
+    assert_eq!(report.invalid_artifact_lines, 1);
+    assert_eq!(report.active_artifacts, 1);
+    assert_eq!(report.expired_artifacts, 0);
 }
 
 #[test]
@@ -6509,6 +6528,20 @@ fn regression_execute_channel_store_admin_repair_removes_invalid_lines() {
         .expect("open channel store");
     std::fs::write(store.log_path(), "{\"ok\":true}\ninvalid-json-line\n")
         .expect("seed invalid log");
+    let expired = store
+        .write_text_artifact(
+            "run-expired",
+            "slack-reply",
+            "private",
+            Some(0),
+            "md",
+            "expired artifact",
+        )
+        .expect("write expired artifact");
+    let mut artifact_index =
+        std::fs::read_to_string(store.artifact_index_path()).expect("read artifact index");
+    artifact_index.push_str("invalid-artifact-line\n");
+    std::fs::write(store.artifact_index_path(), artifact_index).expect("seed invalid artifact");
 
     let mut cli = test_cli();
     cli.channel_store_root = temp.path().to_path_buf();
@@ -6518,6 +6551,10 @@ fn regression_execute_channel_store_admin_repair_removes_invalid_lines() {
     let report = store.inspect().expect("inspect after repair");
     assert_eq!(report.invalid_log_lines, 0);
     assert_eq!(report.log_records, 1);
+    assert_eq!(report.invalid_artifact_lines, 0);
+    assert_eq!(report.expired_artifacts, 0);
+    assert_eq!(report.active_artifacts, 0);
+    assert!(!store.channel_dir().join(expired.relative_path).exists());
 }
 
 #[test]
