@@ -62,7 +62,21 @@ pub(crate) fn execute_package_validate_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn execute_package_show_command(cli: &Cli) -> Result<()> {
+    let Some(path) = cli.package_show.as_ref() else {
+        return Ok(());
+    };
+    let (manifest, summary) = load_and_validate_manifest(path)?;
+    println!("{}", render_package_manifest_report(&summary, &manifest));
+    Ok(())
+}
+
 pub(crate) fn validate_package_manifest(path: &Path) -> Result<PackageManifestSummary> {
+    let (_, summary) = load_and_validate_manifest(path)?;
+    Ok(summary)
+}
+
+fn load_and_validate_manifest(path: &Path) -> Result<(PackageManifest, PackageManifestSummary)> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read package manifest {}", path.display()))?;
     let manifest = serde_json::from_str::<PackageManifest>(&raw)
@@ -98,7 +112,7 @@ pub(crate) fn validate_package_manifest(path: &Path) -> Result<PackageManifestSu
         bail!("package manifest must declare at least one component");
     }
 
-    Ok(PackageManifestSummary {
+    let summary = PackageManifestSummary {
         manifest_path: path.to_path_buf(),
         name: name.to_string(),
         version: manifest.version.trim().to_string(),
@@ -107,7 +121,42 @@ pub(crate) fn validate_package_manifest(path: &Path) -> Result<PackageManifestSu
         extension_count: manifest.extensions.len(),
         theme_count: manifest.themes.len(),
         total_components,
-    })
+    };
+    Ok((manifest, summary))
+}
+
+fn render_package_manifest_report(
+    summary: &PackageManifestSummary,
+    manifest: &PackageManifest,
+) -> String {
+    let mut lines = vec![format!(
+        "package show: path={} name={} version={} schema_version={} total_components={}",
+        summary.manifest_path.display(),
+        summary.name,
+        summary.version,
+        PACKAGE_MANIFEST_SCHEMA_VERSION,
+        summary.total_components
+    )];
+    append_component_section(&mut lines, "templates", &manifest.templates);
+    append_component_section(&mut lines, "skills", &manifest.skills);
+    append_component_section(&mut lines, "extensions", &manifest.extensions);
+    append_component_section(&mut lines, "themes", &manifest.themes);
+    lines.join("\n")
+}
+
+fn append_component_section(lines: &mut Vec<String>, label: &str, components: &[PackageComponent]) {
+    lines.push(format!("{} ({}):", label, components.len()));
+    if components.is_empty() {
+        lines.push("none".to_string());
+        return;
+    }
+    for component in components {
+        lines.push(format!(
+            "- {} => {}",
+            component.id.trim(),
+            component.path.trim()
+        ));
+    }
 }
 
 fn validate_component_set(kind: &str, components: &[PackageComponent]) -> Result<()> {
@@ -177,7 +226,9 @@ fn is_semver_like(raw: &str) -> bool {
 mod tests {
     use tempfile::tempdir;
 
-    use super::validate_package_manifest;
+    use super::{
+        load_and_validate_manifest, render_package_manifest_report, validate_package_manifest,
+    };
 
     #[test]
     fn unit_validate_package_manifest_accepts_minimal_semver_shape() {
@@ -302,5 +353,31 @@ mod tests {
         let version_error =
             validate_package_manifest(&version_path).expect_err("invalid version should fail");
         assert!(version_error.to_string().contains("must follow x.y.z"));
+    }
+
+    #[test]
+    fn unit_render_package_manifest_report_includes_category_inventory() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("render.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "schema_version": 1,
+  "name": "bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}],
+  "skills": [{"id":"checks","path":"skills/checks/SKILL.md"}]
+}"#,
+        )
+        .expect("write manifest");
+
+        let (manifest, summary) = load_and_validate_manifest(&path).expect("load manifest");
+        let report = render_package_manifest_report(&summary, &manifest);
+        assert!(report.contains("package show:"));
+        assert!(report.contains("templates (1):"));
+        assert!(report.contains("- review => templates/review.txt"));
+        assert!(report.contains("skills (1):"));
+        assert!(report.contains("extensions (0):"));
+        assert!(report.contains("themes (0):"));
     }
 }

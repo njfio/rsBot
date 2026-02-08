@@ -2800,6 +2800,56 @@ fn regression_package_validate_flag_rejects_invalid_manifest() {
 }
 
 #[test]
+fn package_show_flag_reports_manifest_inventory_and_exits() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}],
+  "skills": [{"id":"checks","path":"skills/checks/SKILL.md"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cmd = binary_command();
+    cmd.args(["--package-show", manifest_path.to_str().expect("utf8 path")]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("package show:"))
+        .stdout(predicate::str::contains("templates (1):"))
+        .stdout(predicate::str::contains("- review => templates/review.txt"))
+        .stdout(predicate::str::contains("skills (1):"));
+}
+
+#[test]
+fn regression_package_show_flag_rejects_invalid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "invalid",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cmd = binary_command();
+    cmd.args(["--package-show", manifest_path.to_str().expect("utf8 path")]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("must follow x.y.z"));
+}
+
+#[test]
 fn rpc_capabilities_flag_outputs_versioned_json_and_exits() {
     let mut cmd = binary_command();
     cmd.arg("--rpc-capabilities");

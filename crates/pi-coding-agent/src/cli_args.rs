@@ -503,10 +503,20 @@ pub(crate) struct Cli {
     #[arg(
         long = "package-validate",
         env = "PI_PACKAGE_VALIDATE",
+        conflicts_with = "package_show",
         value_name = "path",
         help = "Validate a package manifest JSON file and exit"
     )]
     pub(crate) package_validate: Option<PathBuf>,
+
+    #[arg(
+        long = "package-show",
+        env = "PI_PACKAGE_SHOW",
+        conflicts_with = "package_validate",
+        value_name = "path",
+        help = "Print package manifest metadata and component inventory"
+    )]
+    pub(crate) package_show: Option<PathBuf>,
 
     #[arg(
         long = "rpc-capabilities",

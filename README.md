@@ -303,6 +303,13 @@ cargo run -p pi-coding-agent -- \
   --package-validate .pi/packages/starter/package.json
 ```
 
+Inspect package manifest metadata and component inventory:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --package-show .pi/packages/starter/package.json
+```
+
 Print versioned RPC protocol capabilities JSON and exit:
 
 ```bash

@@ -27,8 +27,8 @@ use super::{
     encrypt_credential_store_secret, ensure_non_empty_text, escape_graph_label,
     execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
     execute_command_file, execute_doctor_command, execute_integration_auth_command,
-    execute_macro_command, execute_package_validate_command, execute_profile_command,
-    execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
+    execute_macro_command, execute_package_show_command, execute_package_validate_command,
+    execute_profile_command, execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
     execute_rpc_dispatch_ndjson_command, execute_rpc_validate_frame_command,
     execute_session_bookmark_command, execute_session_diff_command,
     execute_session_graph_export_command, execute_session_search_command,
@@ -248,6 +248,7 @@ fn test_cli() -> Cli {
         channel_store_inspect: None,
         channel_store_repair: None,
         package_validate: None,
+        package_show: None,
         rpc_capabilities: false,
         rpc_validate_frame_file: None,
         rpc_dispatch_frame_file: None,
@@ -6714,6 +6715,48 @@ fn regression_execute_package_validate_command_rejects_invalid_manifest() {
     assert!(error
         .to_string()
         .contains("unsupported package manifest schema"));
+}
+
+#[test]
+fn functional_execute_package_show_command_succeeds_for_valid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}],
+  "skills": [{"id":"checks","path":"skills/checks/SKILL.md"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cli = test_cli();
+    cli.package_show = Some(manifest_path);
+    execute_package_show_command(&cli).expect("package show should succeed");
+}
+
+#[test]
+fn regression_execute_package_show_command_rejects_invalid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "invalid",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cli = test_cli();
+    cli.package_show = Some(manifest_path);
+    let error = execute_package_show_command(&cli).expect_err("invalid version should fail");
+    assert!(error.to_string().contains("must follow x.y.z"));
 }
 
 #[test]
