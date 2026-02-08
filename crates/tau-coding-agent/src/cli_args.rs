@@ -260,6 +260,14 @@ pub(crate) struct Cli {
     pub(crate) google_gemini_cli: String,
 
     #[arg(
+        long = "google-gcloud-cli",
+        env = "TAU_GOOGLE_GCLOUD_CLI",
+        default_value = "gcloud",
+        help = "gcloud executable path used for Google ADC login bootstrap"
+    )]
+    pub(crate) google_gcloud_cli: String,
+
+    #[arg(
         long = "google-gemini-args",
         env = "TAU_GOOGLE_GEMINI_ARGS",
         value_delimiter = ',',

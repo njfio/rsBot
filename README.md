@@ -85,6 +85,7 @@ Auth mode guidance (local subscription login vs CI):
 | Google | `--google-auth-mode oauth-token` (Gemini login) or `--google-auth-mode adc` (Vertex/ADC) with Gemini backend (`--google-gemini-backend=true`) | `--google-auth-mode api-key` with `GEMINI_API_KEY` |
 
 `/auth status` and `/auth matrix` include `supported`, `available`, `source`, `expires`, `refreshable`, and `next_action` fields for deterministic diagnostics and machine parsing.
+`/auth login` supports an opt-in `--launch` mode for provider CLI login bootstrap (`codex --login`, `claude`, `gemini`, `gcloud auth application-default login`).
 
 Set an API key for your provider:
 
@@ -117,7 +118,7 @@ export GEMINI_API_KEY=...your-key...
 Use OpenAI with Codex subscription login (without setting `OPENAI_API_KEY`):
 
 ```bash
-codex login
+codex --login
 
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
@@ -133,7 +134,7 @@ Use Anthropic with Claude Code subscription login (without setting `ANTHROPIC_AP
 
 ```bash
 claude
-# complete account login flow in the CLI
+# enter /login in the CLI prompt and complete account login
 
 cargo run -p tau-coding-agent -- \
   --model anthropic/claude-sonnet-4-20250514 \
@@ -180,7 +181,8 @@ cargo run -p tau-coding-agent -- \
   --model google/gemini-2.5-pro \
   --google-auth-mode adc \
   --google-gemini-backend=true \
-  --google-gemini-cli gemini
+  --google-gemini-cli gemini \
+  --google-gcloud-cli gcloud
 ```
 
 `/auth status google` and `/doctor` reflect Google oauth/adc backend readiness (`--google-gemini-backend`, executable availability) separately from API-key mode.

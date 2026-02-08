@@ -144,4 +144,5 @@ pub(crate) struct AuthCommandConfig {
     pub(crate) anthropic_claude_cli: String,
     pub(crate) google_gemini_backend: bool,
     pub(crate) google_gemini_cli: String,
+    pub(crate) google_gcloud_cli: String,
 }

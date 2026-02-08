@@ -171,6 +171,19 @@ fn write_mock_claude_script(dir: &Path, body: &str) -> PathBuf {
     script
 }
 
+#[cfg(unix)]
+fn write_mock_gcloud_script(dir: &Path, body: &str) -> PathBuf {
+    let script = dir.join("mock-gcloud.sh");
+    let content = format!("#!/bin/sh\nset -eu\n{body}\n");
+    std::fs::write(&script, content).expect("write mock gcloud script");
+    let mut perms = std::fs::metadata(&script)
+        .expect("mock gcloud metadata")
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).expect("chmod mock gcloud script");
+    script
+}
+
 struct NoopClient;
 
 #[async_trait]
@@ -292,6 +305,7 @@ fn test_cli() -> Cli {
         google_auth_mode: CliProviderAuthMode::ApiKey,
         google_gemini_backend: true,
         google_gemini_cli: "gemini".to_string(),
+        google_gcloud_cli: "gcloud".to_string(),
         google_gemini_args: vec![],
         google_gemini_timeout_ms: 120_000,
         credential_store: PathBuf::from(".tau/credentials.json"),
@@ -529,6 +543,7 @@ fn test_auth_command_config() -> AuthCommandConfig {
         config.openai_codex_cli = current_exe.display().to_string();
         config.anthropic_claude_cli = current_exe.display().to_string();
         config.google_gemini_cli = current_exe.display().to_string();
+        config.google_gcloud_cli = current_exe.display().to_string();
     }
     config
 }
@@ -939,6 +954,7 @@ fn unit_cli_google_gemini_backend_flags_default_to_enabled() {
     let cli = Cli::parse_from(["tau-rs"]);
     assert!(cli.google_gemini_backend);
     assert_eq!(cli.google_gemini_cli, "gemini");
+    assert_eq!(cli.google_gcloud_cli, "gcloud");
     assert!(cli.google_gemini_args.is_empty());
     assert_eq!(cli.google_gemini_timeout_ms, 120_000);
 }
@@ -950,12 +966,15 @@ fn functional_cli_google_gemini_backend_flags_accept_overrides() {
         "--google-gemini-backend=false",
         "--google-gemini-cli",
         "/tmp/mock-gemini",
+        "--google-gcloud-cli",
+        "/tmp/mock-gcloud",
         "--google-gemini-args=--sandbox,readonly,--profile,test",
         "--google-gemini-timeout-ms",
         "7000",
     ]);
     assert!(!cli.google_gemini_backend);
     assert_eq!(cli.google_gemini_cli, "/tmp/mock-gemini");
+    assert_eq!(cli.google_gcloud_cli, "/tmp/mock-gcloud");
     assert_eq!(
         cli.google_gemini_args,
         vec![
@@ -1098,13 +1117,14 @@ fn regression_cli_rpc_serve_ndjson_conflicts_with_rpc_dispatch_ndjson_file() {
 
 #[test]
 fn unit_parse_auth_command_supports_login_status_logout_and_json() {
-    let login =
-        parse_auth_command("login openai --mode oauth-token --json").expect("parse auth login");
+    let login = parse_auth_command("login openai --mode oauth-token --launch --json")
+        .expect("parse auth login");
     assert_eq!(
         login,
         AuthCommand::Login {
             provider: Provider::OpenAi,
             mode: Some(ProviderAuthMethod::OauthToken),
+            launch: true,
             json_output: true,
         }
     );
@@ -1221,6 +1241,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Login {
             provider: Provider::OpenAi,
             mode: Some(ProviderAuthMethod::ApiKey),
+            launch: false,
             json_output: false,
         }
     );
@@ -1231,6 +1252,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Login {
             provider: Provider::OpenAi,
             mode: Some(ProviderAuthMethod::ApiKey),
+            launch: false,
             json_output: false,
         }
     );
@@ -1241,6 +1263,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Login {
             provider: Provider::OpenAi,
             mode: Some(ProviderAuthMethod::ApiKey),
+            launch: false,
             json_output: false,
         }
     );
@@ -1252,6 +1275,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Login {
             provider: Provider::OpenAi,
             mode: Some(ProviderAuthMethod::ApiKey),
+            launch: false,
             json_output: false,
         }
     );
@@ -1262,6 +1286,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Login {
             provider: Provider::OpenAi,
             mode: Some(ProviderAuthMethod::ApiKey),
+            launch: false,
             json_output: false,
         }
     );
@@ -1390,6 +1415,12 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
 
     let missing_login_provider = parse_auth_command("login").expect_err("usage fail for login");
     assert!(missing_login_provider
+        .to_string()
+        .contains("usage: /auth login"));
+
+    let duplicate_login_launch =
+        parse_auth_command("login openai --launch --launch").expect_err("duplicate launch flag");
+    assert!(duplicate_login_launch
         .to_string()
         .contains("usage: /auth login"));
 
@@ -5058,6 +5089,105 @@ fn regression_execute_auth_command_login_rejects_unsupported_google_session_mode
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn functional_execute_auth_command_login_openai_launch_executes_codex_login_command() {
+    let temp = tempdir().expect("tempdir");
+    let args_file = temp.path().join("codex-login-args.txt");
+    let script = write_mock_codex_script(
+        temp.path(),
+        &format!("printf '%s' \"$*\" > \"{}\"", args_file.display()),
+    );
+
+    let mut config = test_auth_command_config();
+    config.openai_codex_backend = true;
+    config.openai_codex_cli = script.display().to_string();
+
+    let output = execute_auth_command(&config, "login openai --mode oauth-token --launch --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse output");
+    assert_eq!(payload["status"], "launched");
+    assert_eq!(payload["source"], "codex_cli");
+    assert_eq!(payload["launch_requested"], true);
+    assert_eq!(payload["launch_executed"], true);
+    assert_eq!(
+        payload["launch_command"],
+        format!("{} --login", script.display())
+    );
+
+    let launched_args = std::fs::read_to_string(&args_file).expect("read codex login args");
+    assert_eq!(launched_args, "--login");
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_execute_auth_command_login_google_adc_launch_executes_gcloud_flow() {
+    let temp = tempdir().expect("tempdir");
+    let gcloud_args = temp.path().join("gcloud-login-args.txt");
+    let gemini = write_mock_gemini_script(temp.path(), "printf 'ok'");
+    let gcloud = write_mock_gcloud_script(
+        temp.path(),
+        &format!("printf '%s' \"$*\" > \"{}\"", gcloud_args.display()),
+    );
+
+    let mut config = test_auth_command_config();
+    config.google_gemini_backend = true;
+    config.google_gemini_cli = gemini.display().to_string();
+    config.google_gcloud_cli = gcloud.display().to_string();
+
+    let output = execute_auth_command(&config, "login google --mode adc --launch --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse output");
+    assert_eq!(payload["status"], "launched");
+    assert_eq!(payload["source"], "gemini_cli");
+    assert_eq!(payload["launch_requested"], true);
+    assert_eq!(payload["launch_executed"], true);
+    assert_eq!(
+        payload["launch_command"],
+        format!("{} auth application-default login", gcloud.display())
+    );
+
+    let launched_args = std::fs::read_to_string(&gcloud_args).expect("read gcloud args");
+    assert_eq!(launched_args, "auth application-default login");
+}
+
+#[test]
+fn regression_execute_auth_command_login_launch_rejects_unsupported_api_key_mode() {
+    let config = test_auth_command_config();
+    let output = execute_auth_command(&config, "login openai --mode api-key --launch --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse output");
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["launch_requested"], true);
+    assert_eq!(payload["launch_executed"], false);
+    assert!(payload["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("--launch is only supported"));
+}
+
+#[cfg(unix)]
+#[test]
+fn regression_execute_auth_command_login_launch_reports_non_zero_exit() {
+    let temp = tempdir().expect("tempdir");
+    let script = write_mock_claude_script(temp.path(), "exit 9");
+
+    let mut config = test_auth_command_config();
+    config.anthropic_claude_backend = true;
+    config.anthropic_claude_cli = script.display().to_string();
+
+    let output = execute_auth_command(
+        &config,
+        "login anthropic --mode oauth-token --launch --json",
+    );
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse output");
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["launch_requested"], true);
+    assert_eq!(payload["launch_executed"], false);
+    assert_eq!(payload["launch_command"], script.display().to_string());
+    assert!(payload["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("exited with status 9"));
+}
+
 #[test]
 fn functional_execute_auth_command_login_anthropic_oauth_reports_backend_ready() {
     let mut config = test_auth_command_config();
@@ -5072,10 +5202,12 @@ fn functional_execute_auth_command_login_anthropic_oauth_reports_backend_ready()
     assert_eq!(payload["status"], "ready");
     assert_eq!(payload["source"], "claude_cli");
     assert_eq!(payload["persisted"], false);
+    assert_eq!(payload["launch_requested"], false);
+    assert_eq!(payload["launch_executed"], false);
     assert!(payload["action"]
         .as_str()
         .unwrap_or_default()
-        .contains("complete the account login flow"));
+        .contains("enter /login in the Claude prompt"));
 }
 
 #[test]
@@ -5131,6 +5263,8 @@ fn functional_execute_auth_command_login_google_oauth_reports_backend_ready() {
     assert_eq!(payload["status"], "ready");
     assert_eq!(payload["source"], "gemini_cli");
     assert_eq!(payload["persisted"], false);
+    assert_eq!(payload["launch_requested"], false);
+    assert_eq!(payload["launch_executed"], false);
     assert!(payload["action"]
         .as_str()
         .unwrap_or_default()

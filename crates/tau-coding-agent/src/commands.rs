@@ -558,6 +558,7 @@ pub(crate) fn handle_command(
         anthropic_claude_cli: "claude".to_string(),
         google_gemini_backend: true,
         google_gemini_cli: "gemini".to_string(),
+        google_gcloud_cli: "gcloud".to_string(),
     };
     let model_catalog = ModelCatalog::built_in();
     handle_command_with_session_import_mode(

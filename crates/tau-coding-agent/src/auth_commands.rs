@@ -2,9 +2,13 @@ use super::*;
 use crate::cli_executable::is_executable_available;
 use crate::provider_auth::provider_supported_auth_modes;
 use crate::provider_credentials::{provider_auth_snapshot_for_status, ProviderAuthSnapshot};
+use std::process::Command;
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> ...";
-pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
+pub(crate) const AUTH_LOGIN_USAGE: &str =
+    "usage: /auth login <provider> [--mode <mode>] [--launch] [--json]";
 pub(crate) const AUTH_STATUS_USAGE: &str =
     "usage: /auth status [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--source-kind <all|flag|env|credential-store|none>] [--revoked <all|revoked|not-revoked>] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
@@ -88,6 +92,7 @@ pub(crate) enum AuthCommand {
     Login {
         provider: Provider,
         mode: Option<ProviderAuthMethod>,
+        launch: bool,
         json_output: bool,
     },
     Status {
@@ -195,6 +200,7 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             }
             let provider = parse_auth_provider(tokens[1])?;
             let mut mode = None;
+            let mut launch = false;
             let mut json_output = false;
 
             let mut index = 2usize;
@@ -214,6 +220,13 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                         mode = Some(parse_provider_auth_method_token(raw_mode)?);
                         index += 2;
                     }
+                    "--launch" => {
+                        if launch {
+                            bail!("duplicate --launch flag; {AUTH_LOGIN_USAGE}");
+                        }
+                        launch = true;
+                        index += 1;
+                    }
                     other => bail!("unexpected argument '{}'; {AUTH_LOGIN_USAGE}", other),
                 }
             }
@@ -221,6 +234,7 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             Ok(AuthCommand::Login {
                 provider,
                 mode,
+                launch,
                 json_output,
             })
         }
@@ -682,10 +696,124 @@ fn redact_known_secrets(text: String, secrets: &[String]) -> String {
     redacted
 }
 
+const AUTH_LOGIN_LAUNCH_TIMEOUT_MS: u64 = 300_000;
+
+struct AuthLoginLaunchSpec {
+    executable: String,
+    args: Vec<String>,
+    timeout_ms: u64,
+}
+
+struct AuthLoginLaunchResult {
+    command: String,
+}
+
+fn shell_quote_token(token: &str) -> String {
+    if token
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':'))
+    {
+        return token.to_string();
+    }
+    format!("'{}'", token.replace('\'', "'\"'\"'"))
+}
+
+fn render_launch_command(executable: &str, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len().saturating_add(1));
+    parts.push(shell_quote_token(executable));
+    parts.extend(args.iter().map(|arg| shell_quote_token(arg)));
+    parts.join(" ")
+}
+
+fn execute_auth_login_launch(spec: &AuthLoginLaunchSpec) -> Result<AuthLoginLaunchResult> {
+    let mut command = Command::new(spec.executable.trim());
+    command.args(spec.args.iter().map(String::as_str));
+    command.stdin(std::process::Stdio::inherit());
+    command.stdout(std::process::Stdio::inherit());
+    command.stderr(std::process::Stdio::inherit());
+    let command_str = render_launch_command(spec.executable.as_str(), &spec.args);
+
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to spawn login command {}", command_str))?;
+
+    let timeout = Duration::from_millis(spec.timeout_ms.max(1));
+    let status = match child
+        .wait_timeout(timeout)
+        .with_context(|| format!("failed while waiting for login command {}", command_str))?
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "login command timed out after {} ms: {}",
+                spec.timeout_ms.max(1),
+                command_str
+            );
+        }
+    };
+    if !status.success() {
+        let code = status
+            .code()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "terminated_by_signal".to_string());
+        bail!("login command exited with status {}: {}", code, command_str);
+    }
+
+    Ok(AuthLoginLaunchResult {
+        command: command_str,
+    })
+}
+
+fn build_auth_login_launch_spec(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    mode: ProviderAuthMethod,
+) -> Result<AuthLoginLaunchSpec> {
+    let timeout_ms = AUTH_LOGIN_LAUNCH_TIMEOUT_MS;
+    match (provider, mode) {
+        (
+            Provider::OpenAi,
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
+        ) => Ok(AuthLoginLaunchSpec {
+            executable: config.openai_codex_cli.clone(),
+            args: vec!["--login".to_string()],
+            timeout_ms,
+        }),
+        (
+            Provider::Anthropic,
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
+        ) => Ok(AuthLoginLaunchSpec {
+            executable: config.anthropic_claude_cli.clone(),
+            args: Vec::new(),
+            timeout_ms,
+        }),
+        (Provider::Google, ProviderAuthMethod::OauthToken) => Ok(AuthLoginLaunchSpec {
+            executable: config.google_gemini_cli.clone(),
+            args: Vec::new(),
+            timeout_ms,
+        }),
+        (Provider::Google, ProviderAuthMethod::Adc) => Ok(AuthLoginLaunchSpec {
+            executable: config.google_gcloud_cli.clone(),
+            args: vec![
+                "auth".to_string(),
+                "application-default".to_string(),
+                "login".to_string(),
+            ],
+            timeout_ms,
+        }),
+        _ => bail!(
+            "--launch is only supported for openai oauth-token/session-token, anthropic oauth-token/session-token, and google oauth-token/adc"
+        ),
+    }
+}
+
 pub(crate) fn execute_auth_login_command(
     config: &AuthCommandConfig,
     provider: Provider,
     mode_override: Option<ProviderAuthMethod>,
+    launch: bool,
     json_output: bool,
 ) -> String {
     let mode = mode_override
@@ -738,13 +866,36 @@ pub(crate) fn execute_auth_login_command(
         );
     }
 
+    if launch {
+        if let Err(error) = build_auth_login_launch_spec(config, provider, mode) {
+            let reason = redact_known_secrets(error.to_string(), &redaction_secrets);
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.login",
+                    "provider": provider.as_str(),
+                    "mode": mode.as_str(),
+                    "status": "error",
+                    "reason": reason,
+                    "launch_requested": true,
+                    "launch_executed": false,
+                })
+                .to_string();
+            }
+            return format!(
+                "auth login error: provider={} mode={} launch_requested=true launch_executed=false error={reason}",
+                provider.as_str(),
+                mode.as_str()
+            );
+        }
+    }
+
     if provider == Provider::Google
         && matches!(
             mode,
             ProviderAuthMethod::OauthToken | ProviderAuthMethod::Adc
         )
     {
-        return execute_google_login_backend_ready(config, mode, json_output);
+        return execute_google_login_backend_ready(config, mode, launch, json_output);
     }
 
     if provider == Provider::OpenAi
@@ -756,8 +907,8 @@ pub(crate) fn execute_auth_login_command(
         let has_env_access_token =
             resolve_non_empty_secret_with_source(provider_login_access_token_candidates(provider))
                 .is_some();
-        if !has_env_access_token {
-            return execute_openai_login_backend_ready(config, mode, json_output);
+        if launch || !has_env_access_token {
+            return execute_openai_login_backend_ready(config, mode, launch, json_output);
         }
     }
 
@@ -767,7 +918,7 @@ pub(crate) fn execute_auth_login_command(
             ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
         )
     {
-        return execute_anthropic_login_backend_ready(config, mode, json_output);
+        return execute_anthropic_login_backend_ready(config, mode, launch, json_output);
     }
 
     match mode {
@@ -988,6 +1139,7 @@ pub(crate) fn execute_auth_login_command(
 fn execute_google_login_backend_ready(
     config: &AuthCommandConfig,
     mode: ProviderAuthMethod,
+    launch: bool,
     json_output: bool,
 ) -> String {
     if !config.google_gemini_backend {
@@ -1004,9 +1156,10 @@ fn execute_google_login_backend_ready(
             .to_string();
         }
         return format!(
-            "auth login error: provider={} mode={} error={reason}",
+            "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
             Provider::Google.as_str(),
-            mode.as_str()
+            mode.as_str(),
+            launch
         );
     }
 
@@ -1026,9 +1179,35 @@ fn execute_google_login_backend_ready(
             .to_string();
         }
         return format!(
-            "auth login error: provider={} mode={} error={reason}",
+            "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
             Provider::Google.as_str(),
-            mode.as_str()
+            mode.as_str(),
+            launch
+        );
+    }
+
+    if mode == ProviderAuthMethod::Adc && !is_executable_available(&config.google_gcloud_cli) {
+        let reason = format!(
+            "gcloud executable '{}' is not available",
+            config.google_gcloud_cli
+        );
+        if json_output {
+            return serde_json::json!({
+                "command": "auth.login",
+                "provider": Provider::Google.as_str(),
+                "mode": mode.as_str(),
+                "status": "error",
+                "reason": reason,
+                "launch_requested": launch,
+                "launch_executed": false,
+            })
+            .to_string();
+        }
+        return format!(
+            "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
+            Provider::Google.as_str(),
+            mode.as_str(),
+            launch
         );
     }
 
@@ -1037,6 +1216,85 @@ fn execute_google_login_backend_ready(
     } else {
         "run gemini and select Login with Google"
     };
+    let launch_spec = match build_auth_login_launch_spec(config, Provider::Google, mode) {
+        Ok(spec) => spec,
+        Err(error) => {
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.login",
+                    "provider": Provider::Google.as_str(),
+                    "mode": mode.as_str(),
+                    "status": "error",
+                    "reason": error.to_string(),
+                    "launch_requested": launch,
+                    "launch_executed": false,
+                })
+                .to_string();
+            }
+            return format!(
+                "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={error}",
+                Provider::Google.as_str(),
+                mode.as_str(),
+                launch
+            );
+        }
+    };
+    let launch_command = render_launch_command(&launch_spec.executable, &launch_spec.args);
+
+    if launch {
+        return match execute_auth_login_launch(&launch_spec) {
+            Ok(result) => {
+                if json_output {
+                    serde_json::json!({
+                        "command": "auth.login",
+                        "provider": Provider::Google.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "launched",
+                        "source": "gemini_cli",
+                        "backend_cli": config.google_gemini_cli,
+                        "persisted": false,
+                        "action": action,
+                        "launch_requested": true,
+                        "launch_executed": true,
+                        "launch_command": result.command,
+                    })
+                    .to_string()
+                } else {
+                    format!(
+                        "auth login: provider={} mode={} status=launched source=gemini_cli backend_cli={} persisted=false action={} launch_requested=true launch_executed=true launch_command={}",
+                        Provider::Google.as_str(),
+                        mode.as_str(),
+                        config.google_gemini_cli,
+                        action,
+                        result.command
+                    )
+                }
+            }
+            Err(error) => {
+                if json_output {
+                    serde_json::json!({
+                        "command": "auth.login",
+                        "provider": Provider::Google.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "error",
+                        "reason": error.to_string(),
+                        "launch_requested": true,
+                        "launch_executed": false,
+                        "launch_command": launch_command,
+                    })
+                    .to_string()
+                } else {
+                    format!(
+                        "auth login error: provider={} mode={} launch_requested=true launch_executed=false launch_command={} error={error}",
+                        Provider::Google.as_str(),
+                        mode.as_str(),
+                        launch_command
+                    )
+                }
+            }
+        };
+    }
+
     if json_output {
         return serde_json::json!({
             "command": "auth.login",
@@ -1047,21 +1305,26 @@ fn execute_google_login_backend_ready(
             "backend_cli": config.google_gemini_cli,
             "persisted": false,
             "action": action,
+            "launch_requested": false,
+            "launch_executed": false,
+            "launch_command": launch_command,
         })
         .to_string();
     }
     format!(
-        "auth login: provider={} mode={} status=ready source=gemini_cli backend_cli={} persisted=false action={}",
+        "auth login: provider={} mode={} status=ready source=gemini_cli backend_cli={} persisted=false action={} launch_requested=false launch_executed=false launch_command={}",
         Provider::Google.as_str(),
         mode.as_str(),
         config.google_gemini_cli,
-        action
+        action,
+        launch_command
     )
 }
 
 fn execute_openai_login_backend_ready(
     config: &AuthCommandConfig,
     mode: ProviderAuthMethod,
+    launch: bool,
     json_output: bool,
 ) -> String {
     if !config.openai_codex_backend {
@@ -1078,9 +1341,10 @@ fn execute_openai_login_backend_ready(
             .to_string();
         }
         return format!(
-            "auth login error: provider={} mode={} error={reason}",
+            "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
             Provider::OpenAi.as_str(),
-            mode.as_str()
+            mode.as_str(),
+            launch
         );
     }
 
@@ -1100,13 +1364,93 @@ fn execute_openai_login_backend_ready(
             .to_string();
         }
         return format!(
-            "auth login error: provider={} mode={} error={reason}",
+            "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
             Provider::OpenAi.as_str(),
-            mode.as_str()
+            mode.as_str(),
+            launch
         );
     }
 
-    let action = "run codex login";
+    let action = "run codex --login";
+    let launch_spec = match build_auth_login_launch_spec(config, Provider::OpenAi, mode) {
+        Ok(spec) => spec,
+        Err(error) => {
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.login",
+                    "provider": Provider::OpenAi.as_str(),
+                    "mode": mode.as_str(),
+                    "status": "error",
+                    "reason": error.to_string(),
+                    "launch_requested": launch,
+                    "launch_executed": false,
+                })
+                .to_string();
+            }
+            return format!(
+                "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={error}",
+                Provider::OpenAi.as_str(),
+                mode.as_str(),
+                launch
+            );
+        }
+    };
+    let launch_command = render_launch_command(&launch_spec.executable, &launch_spec.args);
+
+    if launch {
+        return match execute_auth_login_launch(&launch_spec) {
+            Ok(result) => {
+                if json_output {
+                    serde_json::json!({
+                        "command": "auth.login",
+                        "provider": Provider::OpenAi.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "launched",
+                        "source": "codex_cli",
+                        "backend_cli": config.openai_codex_cli,
+                        "persisted": false,
+                        "action": action,
+                        "launch_requested": true,
+                        "launch_executed": true,
+                        "launch_command": result.command,
+                    })
+                    .to_string()
+                } else {
+                    format!(
+                        "auth login: provider={} mode={} status=launched source=codex_cli backend_cli={} persisted=false action={} launch_requested=true launch_executed=true launch_command={}",
+                        Provider::OpenAi.as_str(),
+                        mode.as_str(),
+                        config.openai_codex_cli,
+                        action,
+                        result.command
+                    )
+                }
+            }
+            Err(error) => {
+                if json_output {
+                    serde_json::json!({
+                        "command": "auth.login",
+                        "provider": Provider::OpenAi.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "error",
+                        "reason": error.to_string(),
+                        "launch_requested": true,
+                        "launch_executed": false,
+                        "launch_command": launch_command,
+                    })
+                    .to_string()
+                } else {
+                    format!(
+                        "auth login error: provider={} mode={} launch_requested=true launch_executed=false launch_command={} error={error}",
+                        Provider::OpenAi.as_str(),
+                        mode.as_str(),
+                        launch_command
+                    )
+                }
+            }
+        };
+    }
+
     if json_output {
         return serde_json::json!({
             "command": "auth.login",
@@ -1117,21 +1461,26 @@ fn execute_openai_login_backend_ready(
             "backend_cli": config.openai_codex_cli,
             "persisted": false,
             "action": action,
+            "launch_requested": false,
+            "launch_executed": false,
+            "launch_command": launch_command,
         })
         .to_string();
     }
     format!(
-        "auth login: provider={} mode={} status=ready source=codex_cli backend_cli={} persisted=false action={}",
+        "auth login: provider={} mode={} status=ready source=codex_cli backend_cli={} persisted=false action={} launch_requested=false launch_executed=false launch_command={}",
         Provider::OpenAi.as_str(),
         mode.as_str(),
         config.openai_codex_cli,
-        action
+        action,
+        launch_command
     )
 }
 
 fn execute_anthropic_login_backend_ready(
     config: &AuthCommandConfig,
     mode: ProviderAuthMethod,
+    launch: bool,
     json_output: bool,
 ) -> String {
     if !config.anthropic_claude_backend {
@@ -1148,9 +1497,10 @@ fn execute_anthropic_login_backend_ready(
             .to_string();
         }
         return format!(
-            "auth login error: provider={} mode={} error={reason}",
+            "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
             Provider::Anthropic.as_str(),
-            mode.as_str()
+            mode.as_str(),
+            launch
         );
     }
 
@@ -1170,13 +1520,93 @@ fn execute_anthropic_login_backend_ready(
             .to_string();
         }
         return format!(
-            "auth login error: provider={} mode={} error={reason}",
+            "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
             Provider::Anthropic.as_str(),
-            mode.as_str()
+            mode.as_str(),
+            launch
         );
     }
 
-    let action = "run claude and complete the account login flow";
+    let action = "run claude, then enter /login in the Claude prompt";
+    let launch_spec = match build_auth_login_launch_spec(config, Provider::Anthropic, mode) {
+        Ok(spec) => spec,
+        Err(error) => {
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.login",
+                    "provider": Provider::Anthropic.as_str(),
+                    "mode": mode.as_str(),
+                    "status": "error",
+                    "reason": error.to_string(),
+                    "launch_requested": launch,
+                    "launch_executed": false,
+                })
+                .to_string();
+            }
+            return format!(
+                "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={error}",
+                Provider::Anthropic.as_str(),
+                mode.as_str(),
+                launch
+            );
+        }
+    };
+    let launch_command = render_launch_command(&launch_spec.executable, &launch_spec.args);
+
+    if launch {
+        return match execute_auth_login_launch(&launch_spec) {
+            Ok(result) => {
+                if json_output {
+                    serde_json::json!({
+                        "command": "auth.login",
+                        "provider": Provider::Anthropic.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "launched",
+                        "source": "claude_cli",
+                        "backend_cli": config.anthropic_claude_cli,
+                        "persisted": false,
+                        "action": action,
+                        "launch_requested": true,
+                        "launch_executed": true,
+                        "launch_command": result.command,
+                    })
+                    .to_string()
+                } else {
+                    format!(
+                        "auth login: provider={} mode={} status=launched source=claude_cli backend_cli={} persisted=false action={} launch_requested=true launch_executed=true launch_command={}",
+                        Provider::Anthropic.as_str(),
+                        mode.as_str(),
+                        config.anthropic_claude_cli,
+                        action,
+                        result.command
+                    )
+                }
+            }
+            Err(error) => {
+                if json_output {
+                    serde_json::json!({
+                        "command": "auth.login",
+                        "provider": Provider::Anthropic.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "error",
+                        "reason": error.to_string(),
+                        "launch_requested": true,
+                        "launch_executed": false,
+                        "launch_command": launch_command,
+                    })
+                    .to_string()
+                } else {
+                    format!(
+                        "auth login error: provider={} mode={} launch_requested=true launch_executed=false launch_command={} error={error}",
+                        Provider::Anthropic.as_str(),
+                        mode.as_str(),
+                        launch_command
+                    )
+                }
+            }
+        };
+    }
+
     if json_output {
         return serde_json::json!({
             "command": "auth.login",
@@ -1187,15 +1617,19 @@ fn execute_anthropic_login_backend_ready(
             "backend_cli": config.anthropic_claude_cli,
             "persisted": false,
             "action": action,
+            "launch_requested": false,
+            "launch_executed": false,
+            "launch_command": launch_command,
         })
         .to_string();
     }
     format!(
-        "auth login: provider={} mode={} status=ready source=claude_cli backend_cli={} persisted=false action={}",
+        "auth login: provider={} mode={} status=ready source=claude_cli backend_cli={} persisted=false action={} launch_requested=false launch_executed=false launch_command={}",
         Provider::Anthropic.as_str(),
         mode.as_str(),
         config.anthropic_claude_cli,
-        action
+        action,
+        launch_command
     )
 }
 
@@ -1869,8 +2303,9 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
         AuthCommand::Login {
             provider,
             mode,
+            launch,
             json_output,
-        } => execute_auth_login_command(config, provider, mode, json_output),
+        } => execute_auth_login_command(config, provider, mode, launch, json_output),
         AuthCommand::Status {
             provider,
             mode,

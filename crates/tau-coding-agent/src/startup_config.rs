@@ -22,6 +22,7 @@ pub(crate) fn build_auth_command_config(cli: &Cli) -> AuthCommandConfig {
         anthropic_claude_cli: cli.anthropic_claude_cli.clone(),
         google_gemini_backend: cli.google_gemini_backend,
         google_gemini_cli: cli.google_gemini_cli.clone(),
+        google_gcloud_cli: cli.google_gcloud_cli.clone(),
     }
 }
 

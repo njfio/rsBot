@@ -46,9 +46,12 @@ pub(crate) fn is_executable_available(executable: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    static PATH_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(unix)]
     fn set_exec(path: &Path, mode: u32) {
@@ -79,6 +82,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn functional_is_executable_available_checks_path_lookup() {
+        let _guard = PATH_ENV_LOCK.lock().expect("path env lock");
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("mock-gemini");
         std::fs::write(&path, "#!/bin/sh\n").expect("write script");
