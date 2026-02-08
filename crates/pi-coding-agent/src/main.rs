@@ -20,6 +20,7 @@ mod provider_auth;
 mod provider_client;
 mod provider_credentials;
 mod provider_fallback;
+mod rpc_capabilities;
 mod runtime_cli_validation;
 mod runtime_loop;
 mod runtime_output;
@@ -165,6 +166,9 @@ pub(crate) use crate::provider_fallback::{build_client_with_fallbacks, resolve_f
 pub(crate) use crate::provider_fallback::{
     is_retryable_provider_error, ClientRoute, FallbackRoutingClient,
 };
+pub(crate) use crate::rpc_capabilities::execute_rpc_capabilities_command;
+#[cfg(test)]
+pub(crate) use crate::rpc_capabilities::rpc_capabilities_payload;
 pub(crate) use crate::runtime_cli_validation::{
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_github_issues_bridge_cli, validate_slack_bridge_cli,

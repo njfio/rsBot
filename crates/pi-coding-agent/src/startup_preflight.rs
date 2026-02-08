@@ -16,6 +16,11 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.rpc_capabilities {
+        execute_rpc_capabilities_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.event_webhook_ingest_file.is_some() {
         validate_event_webhook_ingest_cli(cli)?;
         let payload_file = cli

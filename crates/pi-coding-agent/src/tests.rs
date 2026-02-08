@@ -28,11 +28,12 @@ use super::{
     execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
     execute_command_file, execute_doctor_command, execute_integration_auth_command,
     execute_macro_command, execute_package_validate_command, execute_profile_command,
-    execute_session_bookmark_command, execute_session_diff_command,
-    execute_session_graph_export_command, execute_session_search_command,
-    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
-    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
-    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_rpc_capabilities_command, execute_session_bookmark_command,
+    execute_session_diff_command, execute_session_graph_export_command,
+    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+    execute_skills_lock_diff_command, execute_skills_lock_write_command,
+    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+    execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
@@ -56,8 +57,8 @@ use super::{
     resolve_credential_store_encryption_mode, resolve_fallback_models, resolve_prompt_input,
     resolve_prunable_skill_file_name, resolve_secret_from_cli_or_store_id,
     resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
-    resolve_store_backed_provider_credential, resolve_system_prompt, run_doctor_checks,
-    run_plan_first_prompt, run_prompt_with_cancellation, save_branch_aliases,
+    resolve_store_backed_provider_credential, resolve_system_prompt, rpc_capabilities_payload,
+    run_doctor_checks, run_plan_first_prompt, run_prompt_with_cancellation, save_branch_aliases,
     save_credential_store, save_macro_file, save_profile_store, save_session_bookmarks,
     search_session_entries, session_bookmark_path_for_session, session_message_preview,
     shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file, tool_audit_event_json,
@@ -246,6 +247,7 @@ fn test_cli() -> Cli {
         channel_store_inspect: None,
         channel_store_repair: None,
         package_validate: None,
+        rpc_capabilities: false,
         events_runner: false,
         events_dir: PathBuf::from(".pi/events"),
         events_state_path: PathBuf::from(".pi/events/state.json"),
@@ -6708,6 +6710,31 @@ fn regression_execute_package_validate_command_rejects_invalid_manifest() {
     assert!(error
         .to_string()
         .contains("unsupported package manifest schema"));
+}
+
+#[test]
+fn unit_rpc_capabilities_payload_includes_protocol_and_capabilities() {
+    let payload = rpc_capabilities_payload();
+    assert_eq!(payload["schema_version"].as_u64(), Some(1));
+    assert_eq!(payload["protocol_version"].as_str(), Some("0.1.0"));
+    let capabilities = payload["capabilities"]
+        .as_array()
+        .expect("capabilities should be array");
+    assert!(capabilities.iter().any(|entry| entry == "run.start"));
+    assert!(capabilities.iter().any(|entry| entry == "run.cancel"));
+}
+
+#[test]
+fn functional_execute_rpc_capabilities_command_succeeds_when_enabled() {
+    let mut cli = test_cli();
+    cli.rpc_capabilities = true;
+    execute_rpc_capabilities_command(&cli).expect("rpc capabilities command should succeed");
+}
+
+#[test]
+fn regression_execute_rpc_capabilities_command_is_noop_when_disabled() {
+    let cli = test_cli();
+    execute_rpc_capabilities_command(&cli).expect("disabled rpc capabilities should be noop");
 }
 
 #[test]
