@@ -517,6 +517,14 @@ pub(crate) struct Cli {
     pub(crate) rpc_capabilities: bool,
 
     #[arg(
+        long = "rpc-validate-frame-file",
+        env = "PI_RPC_VALIDATE_FRAME_FILE",
+        value_name = "path",
+        help = "Validate one RPC frame JSON file and exit"
+    )]
+    pub(crate) rpc_validate_frame_file: Option<PathBuf>,
+
+    #[arg(
         long = "events-runner",
         env = "PI_EVENTS_RUNNER",
         default_value_t = false,

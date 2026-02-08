@@ -2823,6 +2823,61 @@ fn regression_rpc_capabilities_flag_takes_preflight_precedence_over_prompt() {
 }
 
 #[test]
+fn rpc_validate_frame_file_flag_reports_summary_and_exits() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-run",
+  "kind": "run.start",
+  "payload": {"prompt":"hello"}
+}"#,
+    )
+    .expect("write frame");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-validate-frame-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("rpc frame validate:"))
+        .stdout(predicate::str::contains("request_id=req-run"))
+        .stdout(predicate::str::contains("kind=run.start"))
+        .stdout(predicate::str::contains("payload_keys=1"));
+}
+
+#[test]
+fn regression_rpc_validate_frame_file_flag_rejects_invalid_kind() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-invalid",
+  "kind": "run.unknown",
+  "payload": {}
+}"#,
+    )
+    .expect("write frame");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-validate-frame-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("unsupported rpc frame kind"));
+}
+
+#[test]
 fn prompt_file_flag_runs_one_shot_prompt() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {

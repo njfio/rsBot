@@ -28,12 +28,12 @@ use super::{
     execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
     execute_command_file, execute_doctor_command, execute_integration_auth_command,
     execute_macro_command, execute_package_validate_command, execute_profile_command,
-    execute_rpc_capabilities_command, execute_session_bookmark_command,
-    execute_session_diff_command, execute_session_graph_export_command,
-    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
-    execute_skills_lock_diff_command, execute_skills_lock_write_command,
-    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-    execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_rpc_capabilities_command, execute_rpc_validate_frame_command,
+    execute_session_bookmark_command, execute_session_diff_command,
+    execute_session_graph_export_command, execute_session_search_command,
+    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
+    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
+    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
@@ -65,13 +65,13 @@ use super::{
     tool_policy_to_json, trust_record_status, unknown_command_message, validate_branch_alias_name,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
-    validate_profile_name, validate_session_file, validate_skills_prune_file_name,
-    validate_slack_bridge_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile,
-    Cli, CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
-    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
-    CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
+    validate_profile_name, validate_rpc_frame_file, validate_session_file,
+    validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand, AuthCommandConfig,
+    BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    CliCredentialStoreEncryptionMode, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
+    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+    CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
     DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
     IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
     ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
@@ -248,6 +248,7 @@ fn test_cli() -> Cli {
         channel_store_repair: None,
         package_validate: None,
         rpc_capabilities: false,
+        rpc_validate_frame_file: None,
         events_runner: false,
         events_dir: PathBuf::from(".pi/events"),
         events_state_path: PathBuf::from(".pi/events/state.json"),
@@ -6735,6 +6736,64 @@ fn functional_execute_rpc_capabilities_command_succeeds_when_enabled() {
 fn regression_execute_rpc_capabilities_command_is_noop_when_disabled() {
     let cli = test_cli();
     execute_rpc_capabilities_command(&cli).expect("disabled rpc capabilities should be noop");
+}
+
+#[test]
+fn unit_validate_rpc_frame_file_parses_supported_frame_shape() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    std::fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-1",
+  "kind": "run.start",
+  "payload": {"prompt":"hello"}
+}"#,
+    )
+    .expect("write frame");
+    let frame = validate_rpc_frame_file(&frame_path).expect("validate frame");
+    assert_eq!(frame.request_id, "req-1");
+    assert_eq!(frame.payload.len(), 1);
+}
+
+#[test]
+fn functional_execute_rpc_validate_frame_command_succeeds_for_valid_frame() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    std::fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-cancel",
+  "kind": "run.cancel",
+  "payload": {"run_id":"run-1"}
+}"#,
+    )
+    .expect("write frame");
+    let mut cli = test_cli();
+    cli.rpc_validate_frame_file = Some(frame_path);
+    execute_rpc_validate_frame_command(&cli).expect("rpc frame validate should succeed");
+}
+
+#[test]
+fn regression_execute_rpc_validate_frame_command_rejects_invalid_frame() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    std::fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-invalid",
+  "kind": "run.unknown",
+  "payload": {}
+}"#,
+    )
+    .expect("write frame");
+    let mut cli = test_cli();
+    cli.rpc_validate_frame_file = Some(frame_path);
+    let error = execute_rpc_validate_frame_command(&cli).expect_err("invalid kind should fail");
+    assert!(error.to_string().contains("unsupported rpc frame kind"));
 }
 
 #[test]
