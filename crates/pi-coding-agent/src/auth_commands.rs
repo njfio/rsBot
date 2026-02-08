@@ -1,5 +1,6 @@
 use super::*;
 use crate::provider_auth::provider_supported_auth_modes;
+use crate::provider_credentials::{provider_auth_snapshot_for_status, ProviderAuthSnapshot};
 
 pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> ...";
 pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
@@ -135,6 +136,7 @@ pub(crate) struct AuthStatusRow {
     reason: String,
     expires_unix: Option<u64>,
     revoked: bool,
+    refreshable: bool,
 }
 
 const AUTH_MATRIX_PROVIDERS: [Provider; 3] =
@@ -953,233 +955,22 @@ pub(crate) fn auth_status_row_for_provider(
     store: Option<&CredentialStoreData>,
     store_error: Option<&str>,
 ) -> AuthStatusRow {
-    let mode = configured_provider_auth_method_from_config(config, provider);
-    let capability = provider_auth_capability(provider, mode);
-    if !capability.supported {
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: false,
-            available: false,
-            state: "unsupported_mode".to_string(),
-            source: "none".to_string(),
-            reason: capability.reason.to_string(),
-            expires_unix: None,
-            revoked: false,
-        };
-    }
+    let snapshot = provider_auth_snapshot_for_status(config, provider, store, store_error);
+    auth_status_row_from_snapshot(&snapshot)
+}
 
-    if mode == ProviderAuthMethod::ApiKey {
-        if let Some((_secret, source)) = resolve_non_empty_secret_with_source(
-            provider_api_key_candidates_from_auth_config(config, provider),
-        ) {
-            return AuthStatusRow {
-                provider: provider.as_str().to_string(),
-                mode: mode.as_str().to_string(),
-                mode_supported: true,
-                available: true,
-                state: "ready".to_string(),
-                source,
-                reason: "api_key_available".to_string(),
-                expires_unix: None,
-                revoked: false,
-            };
-        }
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: "missing_api_key".to_string(),
-            source: "none".to_string(),
-            reason: missing_provider_api_key_message(provider).to_string(),
-            expires_unix: None,
-            revoked: false,
-        };
-    }
-
-    if let Some(error) = store_error {
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: "store_error".to_string(),
-            source: "none".to_string(),
-            reason: error.to_string(),
-            expires_unix: None,
-            revoked: false,
-        };
-    }
-
-    let Some(store) = store else {
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: "missing_credential_store".to_string(),
-            source: "none".to_string(),
-            reason: "credential store is unavailable".to_string(),
-            expires_unix: None,
-            revoked: false,
-        };
-    };
-
-    let Some(entry) = store.providers.get(provider.as_str()) else {
-        if let Some((_access_token, source)) =
-            resolve_non_empty_secret_with_source(provider_login_access_token_candidates(provider))
-        {
-            let expires_unix = match resolve_auth_login_expires_unix(provider) {
-                Ok(value) => value,
-                Err(error) => {
-                    return AuthStatusRow {
-                        provider: provider.as_str().to_string(),
-                        mode: mode.as_str().to_string(),
-                        mode_supported: true,
-                        available: false,
-                        state: "invalid_env_expires".to_string(),
-                        source,
-                        reason: error.to_string(),
-                        expires_unix: None,
-                        revoked: false,
-                    };
-                }
-            };
-            if expires_unix
-                .map(|value| value <= current_unix_timestamp())
-                .unwrap_or(false)
-            {
-                return AuthStatusRow {
-                    provider: provider.as_str().to_string(),
-                    mode: mode.as_str().to_string(),
-                    mode_supported: true,
-                    available: false,
-                    state: "expired_env_access_token".to_string(),
-                    source,
-                    reason: "environment access token is expired".to_string(),
-                    expires_unix,
-                    revoked: false,
-                };
-            }
-            return AuthStatusRow {
-                provider: provider.as_str().to_string(),
-                mode: mode.as_str().to_string(),
-                mode_supported: true,
-                available: true,
-                state: "ready".to_string(),
-                source,
-                reason: "env_access_token_available".to_string(),
-                expires_unix,
-                revoked: false,
-            };
-        }
-
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: "missing_credential".to_string(),
-            source: "credential_store".to_string(),
-            reason: "credential store entry is missing".to_string(),
-            expires_unix: None,
-            revoked: false,
-        };
-    };
-    if entry.auth_method != mode {
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: "mode_mismatch".to_string(),
-            source: "credential_store".to_string(),
-            reason: format!(
-                "credential store entry mode '{}' does not match configured mode '{}'",
-                entry.auth_method.as_str(),
-                mode.as_str()
-            ),
-            expires_unix: entry.expires_unix,
-            revoked: entry.revoked,
-        };
-    }
-    if entry.revoked {
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: "revoked".to_string(),
-            source: "credential_store".to_string(),
-            reason: "credential has been revoked".to_string(),
-            expires_unix: entry.expires_unix,
-            revoked: true,
-        };
-    }
-    if entry
-        .access_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: "missing_access_token".to_string(),
-            source: "credential_store".to_string(),
-            reason: "credential store entry has no access token".to_string(),
-            expires_unix: entry.expires_unix,
-            revoked: false,
-        };
-    }
-
-    let now_unix = current_unix_timestamp();
-    if entry
-        .expires_unix
-        .map(|value| value <= now_unix)
-        .unwrap_or(false)
-    {
-        let refresh_pending = entry
-            .refresh_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some();
-        return AuthStatusRow {
-            provider: provider.as_str().to_string(),
-            mode: mode.as_str().to_string(),
-            mode_supported: true,
-            available: false,
-            state: if refresh_pending {
-                "expired_refresh_pending".to_string()
-            } else {
-                "expired".to_string()
-            },
-            source: "credential_store".to_string(),
-            reason: if refresh_pending {
-                "access token expired; refresh will run on next provider use".to_string()
-            } else {
-                "access token expired and no refresh token is available".to_string()
-            },
-            expires_unix: entry.expires_unix,
-            revoked: false,
-        };
-    }
-
+fn auth_status_row_from_snapshot(snapshot: &ProviderAuthSnapshot) -> AuthStatusRow {
     AuthStatusRow {
-        provider: provider.as_str().to_string(),
-        mode: mode.as_str().to_string(),
-        mode_supported: true,
-        available: true,
-        state: "ready".to_string(),
-        source: "credential_store".to_string(),
-        reason: "credential available".to_string(),
-        expires_unix: entry.expires_unix,
-        revoked: false,
+        provider: snapshot.provider.as_str().to_string(),
+        mode: snapshot.method.as_str().to_string(),
+        mode_supported: snapshot.mode_supported,
+        available: snapshot.available,
+        state: snapshot.state.clone(),
+        source: snapshot.source.clone(),
+        reason: snapshot.reason.clone(),
+        expires_unix: snapshot.expires_unix,
+        revoked: snapshot.revoked,
+        refreshable: snapshot.refreshable,
     }
 }
 

@@ -10,6 +10,18 @@ This document defines which authentication paths are valid for this project, inc
 - `Supported with prerequisites`: official docs support this path, but it requires tooling/account setup checks.
 - `Not supported`: no official API auth path for this mode in this project context.
 
+## Provider-Neutral Auth Abstraction
+The agent now normalizes provider credentials and auth state via a single abstraction so diagnostics and client construction share the same source of truth.
+
+Core fields:
+- `method`: auth method in use (`api_key`, `oauth_token`, `session_token`, `adc`).
+- `source`: where the credential was sourced (`flag`, `env`, `credential_store`, `none`).
+- `expires_unix`: optional expiration timestamp for time-bound credentials.
+- `refreshable`: whether a non-revoked refresh token is present.
+- `revoked`: whether the credential has been revoked.
+
+Diagnostics (`/auth status` and `/auth matrix`) read from this abstraction and never emit secrets.
+
 ## Capability Matrix
 | Provider/Channel | Auth Method | Subscription Login Usable for API Calls | Status | Notes |
 |---|---|---|---|---|
@@ -42,7 +54,7 @@ This document defines which authentication paths are valid for this project, inc
 - Ensure capability diagnostics clearly distinguish OAuth identity from consumer subscription entitlements.
 
 4. Cross-provider implementation gates (`#106`, `#107`, `#108`, `#109`, `#118`)
-- Implement provider-neutral auth abstraction before adding login UX.
+- Provider-neutral auth abstraction is implemented and required before login UX changes.
 - Add secure token storage, refresh, revocation, and redaction controls before enabling login flows by default.
 - Enforce full unit/functional/integration/regression auth conformance in CI.
 
