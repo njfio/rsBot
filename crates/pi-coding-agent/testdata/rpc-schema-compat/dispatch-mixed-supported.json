@@ -31,7 +31,8 @@
         "mode": "preflight",
         "run_id": "run-legacy",
         "active": false,
-        "known": false
+        "known": false,
+        "terminal": false
       }
     },
     {

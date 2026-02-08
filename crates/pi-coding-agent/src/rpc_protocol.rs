@@ -329,6 +329,7 @@ pub(crate) fn dispatch_rpc_frame(frame: &RpcFrame) -> Result<RpcResponseFrame> {
                     "run_id": run_id,
                     "active": false,
                     "known": false,
+                    "terminal": false,
                 }),
             ))
         }
@@ -521,6 +522,7 @@ fn dispatch_rpc_frame_for_serve(
                         "run_id": run_id,
                         "active": true,
                         "known": true,
+                        "terminal": false,
                     }),
                 )]);
             }
@@ -553,6 +555,7 @@ fn dispatch_rpc_frame_for_serve(
                     "run_id": run_id,
                     "active": false,
                     "known": false,
+                    "terminal": false,
                 }),
             )])
         }
@@ -1373,6 +1376,7 @@ mod tests {
         assert_eq!(status_response.payload["run_id"].as_str(), Some("run-1"));
         assert_eq!(status_response.payload["active"].as_bool(), Some(false));
         assert_eq!(status_response.payload["known"].as_bool(), Some(false));
+        assert_eq!(status_response.payload["terminal"].as_bool(), Some(false));
     }
 
     #[test]
@@ -1744,6 +1748,10 @@ mod tests {
         assert_eq!(report.responses[2].request_id, "req-status");
         assert_eq!(report.responses[2].kind, "run.status");
         assert_eq!(report.responses[2].payload["active"].as_bool(), Some(false));
+        assert_eq!(
+            report.responses[2].payload["terminal"].as_bool(),
+            Some(false)
+        );
         assert_eq!(report.responses[3].request_id, "req-complete");
         assert_eq!(report.responses[3].kind, "run.completed");
         assert_eq!(
@@ -1889,6 +1897,7 @@ not-json
         assert_eq!(rows[4]["request_id"], "req-status-active");
         assert_eq!(rows[4]["kind"], "run.status");
         assert_eq!(rows[4]["payload"]["active"], true);
+        assert_eq!(rows[4]["payload"]["terminal"], false);
         assert_eq!(rows[5]["request_id"], "req-cancel");
         assert_eq!(rows[5]["kind"], "run.cancelled");
         assert_eq!(rows[5]["payload"]["terminal"], true);
@@ -1944,6 +1953,7 @@ not-json
         assert_eq!(rows[3]["request_id"], "req-status-active");
         assert_eq!(rows[3]["kind"], "run.status");
         assert_eq!(rows[3]["payload"]["active"], true);
+        assert_eq!(rows[3]["payload"]["terminal"], false);
         assert_eq!(rows[4]["request_id"], "req-complete");
         assert_eq!(rows[4]["kind"], "run.completed");
         assert_eq!(rows[4]["payload"]["terminal"], true);
@@ -1999,6 +2009,7 @@ not-json
         assert_eq!(rows[3]["request_id"], "req-status-active");
         assert_eq!(rows[3]["kind"], "run.status");
         assert_eq!(rows[3]["payload"]["active"], true);
+        assert_eq!(rows[3]["payload"]["terminal"], false);
         assert_eq!(rows[4]["request_id"], "req-fail");
         assert_eq!(rows[4]["kind"], "run.failed");
         assert_eq!(rows[4]["payload"]["reason"], "provider timeout");
@@ -2058,6 +2069,7 @@ not-json
         assert_eq!(rows[3]["request_id"], "req-status-active");
         assert_eq!(rows[3]["kind"], "run.status");
         assert_eq!(rows[3]["payload"]["active"], true);
+        assert_eq!(rows[3]["payload"]["terminal"], false);
         assert_eq!(rows[4]["request_id"], "req-timeout");
         assert_eq!(rows[4]["kind"], "run.timed_out");
         assert_eq!(rows[4]["payload"]["reason"], "client timeout");
@@ -2135,7 +2147,7 @@ not-json
         assert_eq!(rows[10]["payload"]["known"], true);
         assert_eq!(rows[10]["payload"]["status"], "active");
         assert_eq!(rows[10]["payload"].get("terminal_state"), None);
-        assert_eq!(rows[10]["payload"].get("terminal"), None);
+        assert_eq!(rows[10]["payload"]["terminal"], false);
     }
 
     #[test]
@@ -2184,6 +2196,7 @@ not-json
         assert_eq!(oldest.len(), 1);
         assert_eq!(oldest[0].kind, "run.status");
         assert_eq!(oldest[0].payload["known"], false);
+        assert_eq!(oldest[0].payload["terminal"], false);
 
         let newest_id = format!("run-{}", RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY);
         let newest_status = parse_rpc_frame(&format!(

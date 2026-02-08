@@ -12,4 +12,5 @@ Each fixture file includes input lines, expected processing/error counts, and ex
 Terminal fixture expectations assert explicit `terminal` and `terminal_state` metadata for terminal lifecycle envelopes/events.
 Terminal assistant stream expectations assert `final: true` plus deterministic summary deltas on closure transitions.
 Serve-mode fixtures also lock `run.status` semantics for closed known runs (`known: true` with terminal metadata).
+Status fixtures lock explicit `terminal` flag behavior across active, inactive/unknown, and closed states.
 Closed-run status retention is intentionally bounded in serve mode; these fixtures cover behavior within that deterministic retention window.

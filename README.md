@@ -548,7 +548,7 @@ cat /tmp/rpc-frames.ndjson | cargo run -p pi-coding-agent -- --rpc-serve-ndjson
 
 In `--rpc-serve-ndjson` mode, run lifecycle is stateful: `run.start` returns a `run_id` and emits deterministic `run.stream.tool_events` plus `run.stream.assistant_text` frames, `run.status` reports active/inactive state for that `run_id`, `run.complete` closes active runs with `run.completed`, `run.fail` closes active runs with `run.failed`, `run.timeout` closes active runs with `run.timed_out`, and `run.cancel` closes active runs with `run.cancelled` plus terminal `run.stream.tool_events` and terminal `run.stream.assistant_text` frames (unknown `run_id` still returns a structured `error` envelope).
 Terminal lifecycle envelopes (`run.cancelled`, `run.completed`, `run.failed`, `run.timed_out`) include explicit `terminal` and `terminal_state` payload fields; terminal serve-mode stream tool events and assistant_text frames mirror the same terminal metadata (`final: true` on assistant_text).
-In serve mode, `run.status` also retains closed-run terminal outcomes for known `run_id` values (`known: true`, `active: false`, terminal metadata, and `reason` when applicable). Closed-run retention is bounded to a fixed in-memory window to keep long-lived sessions stable.
+In serve mode, `run.status` also retains closed-run terminal outcomes for known `run_id` values (`known: true`, `active: false`, terminal metadata, and `reason` when applicable). `run.status` payloads always include an explicit `terminal` flag (`false` for active/unknown, `true` for closed terminal states). Closed-run retention is bounded to a fixed in-memory window to keep long-lived sessions stable.
 
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 

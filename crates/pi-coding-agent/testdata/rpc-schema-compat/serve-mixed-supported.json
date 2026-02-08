@@ -54,7 +54,8 @@
         "mode": "preflight",
         "run_id": "run-req-start-legacy",
         "active": true,
-        "known": true
+        "known": true,
+        "terminal": false
       }
     },
     {
