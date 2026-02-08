@@ -897,6 +897,18 @@ pub(crate) struct Cli {
     pub(crate) rpc_dispatch_ndjson_file: Option<PathBuf>,
 
     #[arg(
+        long = "rpc-serve-ndjson",
+        env = "PI_RPC_SERVE_NDJSON",
+        default_value_t = false,
+        conflicts_with = "rpc_capabilities",
+        conflicts_with = "rpc_validate_frame_file",
+        conflicts_with = "rpc_dispatch_frame_file",
+        conflicts_with = "rpc_dispatch_ndjson_file",
+        help = "Run long-lived RPC NDJSON server mode over stdin/stdout"
+    )]
+    pub(crate) rpc_serve_ndjson: bool,
+
+    #[arg(
         long = "events-runner",
         env = "PI_EVENTS_RUNNER",
         default_value_t = false,

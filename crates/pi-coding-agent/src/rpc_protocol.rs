@@ -1,4 +1,8 @@
-use std::{path::Path, str::FromStr};
+use std::{
+    io::{BufRead, BufReader, Write},
+    path::Path,
+    str::FromStr,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -70,6 +74,12 @@ pub(crate) struct RpcResponseFrame {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RpcNdjsonDispatchReport {
     pub responses: Vec<RpcResponseFrame>,
+    pub processed_lines: usize,
+    pub error_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RpcNdjsonServeReport {
     pub processed_lines: usize,
     pub error_count: usize,
 }
@@ -221,6 +231,51 @@ pub(crate) fn dispatch_rpc_ndjson_input(raw: &str) -> RpcNdjsonDispatchReport {
     }
 }
 
+pub(crate) fn serve_rpc_ndjson_reader<R, W>(
+    mut reader: R,
+    writer: &mut W,
+) -> Result<RpcNdjsonServeReport>
+where
+    R: BufRead,
+    W: Write,
+{
+    let mut line = String::new();
+    let mut processed_lines = 0_usize;
+    let mut error_count = 0_usize;
+
+    loop {
+        line.clear();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .context("failed to read rpc ndjson input line")?;
+        if bytes_read == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        processed_lines = processed_lines.saturating_add(1);
+        let response = dispatch_rpc_raw_with_error_envelope(trimmed);
+        if response.kind == RPC_ERROR_KIND {
+            error_count = error_count.saturating_add(1);
+        }
+        serde_json::to_writer(&mut *writer, &response)
+            .context("failed to serialize rpc response frame")?;
+        writer
+            .write_all(b"\n")
+            .context("failed to write rpc response delimiter")?;
+        writer
+            .flush()
+            .context("failed to flush rpc response line")?;
+    }
+
+    Ok(RpcNdjsonServeReport {
+        processed_lines,
+        error_count,
+    })
+}
+
 pub(crate) fn execute_rpc_validate_frame_command(cli: &Cli) -> Result<()> {
     let Some(path) = cli.rpc_validate_frame_file.as_ref() else {
         return Ok(());
@@ -294,6 +349,26 @@ pub(crate) fn execute_rpc_dispatch_ndjson_command(cli: &Cli) -> Result<()> {
     if report.error_count > 0 {
         bail!(
             "rpc ndjson dispatch completed with {} error frame(s)",
+            report.error_count
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_rpc_serve_ndjson_command(cli: &Cli) -> Result<()> {
+    if !cli.rpc_serve_ndjson {
+        return Ok(());
+    }
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let reader = BufReader::new(stdin.lock());
+    let mut writer = stdout.lock();
+
+    let report = serve_rpc_ndjson_reader(reader, &mut writer)?;
+    if report.error_count > 0 {
+        bail!(
+            "rpc ndjson serve completed with {} error frame(s)",
             report.error_count
         );
     }
@@ -376,9 +451,10 @@ mod tests {
     use super::{
         classify_rpc_error_message, dispatch_rpc_frame, dispatch_rpc_frame_file,
         dispatch_rpc_ndjson_input, dispatch_rpc_raw_with_error_envelope, parse_rpc_frame,
-        validate_rpc_frame_file, RpcFrameKind, RPC_ERROR_CODE_INVALID_JSON,
-        RPC_ERROR_CODE_INVALID_PAYLOAD, RPC_ERROR_CODE_INVALID_REQUEST_ID,
-        RPC_ERROR_CODE_UNSUPPORTED_KIND, RPC_ERROR_CODE_UNSUPPORTED_SCHEMA,
+        serve_rpc_ndjson_reader, validate_rpc_frame_file, RpcFrameKind,
+        RPC_ERROR_CODE_INVALID_JSON, RPC_ERROR_CODE_INVALID_PAYLOAD,
+        RPC_ERROR_CODE_INVALID_REQUEST_ID, RPC_ERROR_CODE_UNSUPPORTED_KIND,
+        RPC_ERROR_CODE_UNSUPPORTED_SCHEMA,
     };
 
     #[test]
@@ -704,5 +780,77 @@ not-json
             Some(RPC_ERROR_CODE_INVALID_JSON)
         );
         assert_eq!(report.responses[2].kind, "run.accepted");
+    }
+
+    #[test]
+    fn unit_serve_rpc_ndjson_reader_skips_blank_and_comment_lines() {
+        let input = r#"
+# comment
+
+{"schema_version":1,"request_id":"req-cap","kind":"capabilities.request","payload":{}}
+"#;
+        let mut output = Vec::new();
+        let report = serve_rpc_ndjson_reader(std::io::Cursor::new(input), &mut output)
+            .expect("serve should succeed");
+        assert_eq!(report.processed_lines, 1);
+        assert_eq!(report.error_count, 0);
+
+        let lines = String::from_utf8(output).expect("utf8 output");
+        let rows = lines.lines().collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1);
+        let response: serde_json::Value = serde_json::from_str(rows[0]).expect("json frame");
+        assert_eq!(response["request_id"], "req-cap");
+        assert_eq!(response["kind"], "capabilities.response");
+    }
+
+    #[test]
+    fn functional_serve_rpc_ndjson_reader_emits_ordered_responses_for_mixed_frames() {
+        let input = r#"
+{"schema_version":1,"request_id":"req-cap","kind":"capabilities.request","payload":{}}
+{"schema_version":1,"request_id":"req-cancel","kind":"run.cancel","payload":{"run_id":"run-1"}}
+"#;
+        let mut output = Vec::new();
+        let report = serve_rpc_ndjson_reader(std::io::Cursor::new(input), &mut output)
+            .expect("serve should succeed");
+        assert_eq!(report.processed_lines, 2);
+        assert_eq!(report.error_count, 0);
+
+        let lines = String::from_utf8(output).expect("utf8 output");
+        let rows = lines
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["request_id"], "req-cap");
+        assert_eq!(rows[0]["kind"], "capabilities.response");
+        assert_eq!(rows[1]["request_id"], "req-cancel");
+        assert_eq!(rows[1]["kind"], "run.cancelled");
+    }
+
+    #[test]
+    fn regression_serve_rpc_ndjson_reader_keeps_processing_after_malformed_json() {
+        let input = r#"
+{"schema_version":1,"request_id":"req-ok","kind":"run.cancel","payload":{"run_id":"run-1"}}
+not-json
+{"schema_version":1,"request_id":"req-ok-2","kind":"run.start","payload":{"prompt":"x"}}
+"#;
+        let mut output = Vec::new();
+        let report = serve_rpc_ndjson_reader(std::io::Cursor::new(input), &mut output)
+            .expect("serve should succeed");
+        assert_eq!(report.processed_lines, 3);
+        assert_eq!(report.error_count, 1);
+
+        let lines = String::from_utf8(output).expect("utf8 output");
+        let rows = lines
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0]["request_id"], "req-ok");
+        assert_eq!(rows[0]["kind"], "run.cancelled");
+        assert_eq!(rows[1]["kind"], "error");
+        assert_eq!(rows[1]["payload"]["code"], "invalid_json");
+        assert_eq!(rows[2]["request_id"], "req-ok-2");
+        assert_eq!(rows[2]["kind"], "run.accepted");
     }
 }

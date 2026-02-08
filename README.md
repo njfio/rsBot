@@ -531,6 +531,12 @@ cargo run -p pi-coding-agent -- \
   --rpc-dispatch-ndjson-file /tmp/rpc-frames.ndjson
 ```
 
+Run long-lived RPC NDJSON server mode over stdin/stdout:
+
+```bash
+cat /tmp/rpc-frames.ndjson | cargo run -p pi-coding-agent -- --rpc-serve-ndjson
+```
+
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 
 ```bash

@@ -185,7 +185,7 @@ pub(crate) use crate::rpc_capabilities::rpc_capabilities_payload;
 pub(crate) use crate::rpc_protocol::validate_rpc_frame_file;
 pub(crate) use crate::rpc_protocol::{
     execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
-    execute_rpc_validate_frame_command,
+    execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
 };
 pub(crate) use crate::runtime_cli_validation::{
     validate_event_webhook_ingest_cli, validate_events_runner_cli,

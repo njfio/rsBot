@@ -34,12 +34,12 @@ use super::{
     execute_package_rollback_command, execute_package_show_command, execute_package_update_command,
     execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
     execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
-    execute_rpc_validate_frame_command, execute_session_bookmark_command,
-    execute_session_diff_command, execute_session_graph_export_command,
-    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
-    execute_skills_lock_diff_command, execute_skills_lock_write_command,
-    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-    execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
+    execute_session_bookmark_command, execute_session_diff_command,
+    execute_session_graph_export_command, execute_session_search_command,
+    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
+    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
+    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
@@ -292,6 +292,7 @@ fn test_cli() -> Cli {
         rpc_validate_frame_file: None,
         rpc_dispatch_frame_file: None,
         rpc_dispatch_ndjson_file: None,
+        rpc_serve_ndjson: false,
         events_runner: false,
         events_dir: PathBuf::from(".pi/events"),
         events_state_path: PathBuf::from(".pi/events/state.json"),
@@ -825,6 +826,41 @@ fn functional_cli_artifact_retention_flags_accept_explicit_values() {
     ]);
     assert_eq!(cli.github_artifact_retention_days, 14);
     assert_eq!(cli.slack_artifact_retention_days, 0);
+}
+
+#[test]
+fn unit_cli_rpc_flags_default_to_disabled() {
+    let cli = Cli::parse_from(["pi-rs"]);
+    assert!(!cli.rpc_capabilities);
+    assert!(cli.rpc_validate_frame_file.is_none());
+    assert!(cli.rpc_dispatch_frame_file.is_none());
+    assert!(cli.rpc_dispatch_ndjson_file.is_none());
+    assert!(!cli.rpc_serve_ndjson);
+}
+
+#[test]
+fn functional_cli_rpc_serve_ndjson_flag_accepts_enablement() {
+    let cli = Cli::parse_from(["pi-rs", "--rpc-serve-ndjson"]);
+    assert!(cli.rpc_serve_ndjson);
+}
+
+#[test]
+fn regression_cli_rpc_serve_ndjson_conflicts_with_rpc_capabilities() {
+    let parse = Cli::try_parse_from(["pi-rs", "--rpc-serve-ndjson", "--rpc-capabilities"]);
+    let error = parse.expect_err("rpc serve ndjson and rpc capabilities should conflict");
+    assert!(error.to_string().contains("cannot be used with"));
+}
+
+#[test]
+fn regression_cli_rpc_serve_ndjson_conflicts_with_rpc_dispatch_ndjson_file() {
+    let parse = Cli::try_parse_from([
+        "pi-rs",
+        "--rpc-serve-ndjson",
+        "--rpc-dispatch-ndjson-file",
+        "fixtures/rpc.ndjson",
+    ]);
+    let error = parse.expect_err("rpc serve ndjson and rpc dispatch ndjson should conflict");
+    assert!(error.to_string().contains("cannot be used with"));
 }
 
 #[test]
@@ -8053,6 +8089,12 @@ not-json
     assert!(error
         .to_string()
         .contains("rpc ndjson dispatch completed with 1 error frame(s)"));
+}
+
+#[test]
+fn regression_execute_rpc_serve_ndjson_command_is_noop_when_disabled() {
+    let cli = test_cli();
+    execute_rpc_serve_ndjson_command(&cli).expect("disabled rpc ndjson serve should be noop");
 }
 
 #[test]
