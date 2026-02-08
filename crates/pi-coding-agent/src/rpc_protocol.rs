@@ -23,6 +23,8 @@ const RPC_ERROR_CODE_INVALID_REQUEST_ID: &str = "invalid_request_id";
 const RPC_ERROR_CODE_INVALID_PAYLOAD: &str = "invalid_payload";
 const RPC_ERROR_CODE_IO_ERROR: &str = "io_error";
 const RPC_ERROR_CODE_INTERNAL_ERROR: &str = "internal_error";
+const RPC_RUN_STREAM_ASSISTANT_TEXT_KIND: &str = "run.stream.assistant_text";
+const RPC_RUN_STREAM_TOOL_EVENTS_KIND: &str = "run.stream.tool_events";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RpcFrameKind {
@@ -235,24 +237,24 @@ pub(crate) fn dispatch_rpc_raw_with_error_envelope(raw: &str) -> RpcResponseFram
 fn dispatch_rpc_raw_with_error_envelope_for_serve(
     raw: &str,
     state: &mut RpcServeSessionState,
-) -> RpcResponseFrame {
+) -> Vec<RpcResponseFrame> {
     match parse_rpc_frame(raw) {
         Ok(frame) => match dispatch_rpc_frame_for_serve(&frame, state) {
-            Ok(response) => response,
-            Err(error) => build_error_response_frame(
+            Ok(responses) => responses,
+            Err(error) => vec![build_error_response_frame(
                 &frame.request_id,
                 classify_rpc_error_message(&error.to_string()),
                 &error.to_string(),
-            ),
+            )],
         },
         Err(error) => {
             let request_id =
                 best_effort_request_id_from_raw(raw).unwrap_or_else(|| "unknown".to_string());
-            build_error_response_frame(
+            vec![build_error_response_frame(
                 &request_id,
                 classify_rpc_error_message(&error.to_string()),
                 &error.to_string(),
-            )
+            )]
         }
     }
 }
@@ -260,23 +262,37 @@ fn dispatch_rpc_raw_with_error_envelope_for_serve(
 fn dispatch_rpc_frame_for_serve(
     frame: &RpcFrame,
     state: &mut RpcServeSessionState,
-) -> Result<RpcResponseFrame> {
+) -> Result<Vec<RpcResponseFrame>> {
     match frame.kind {
-        RpcFrameKind::CapabilitiesRequest => dispatch_rpc_frame(frame),
+        RpcFrameKind::CapabilitiesRequest => Ok(vec![dispatch_rpc_frame(frame)?]),
         RpcFrameKind::RunStart => {
             let response = dispatch_rpc_frame(frame)?;
             let run_id = response
                 .payload
                 .get("run_id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("rpc frame kind 'run.start' response is missing run_id"))?;
+                .ok_or_else(|| anyhow!("rpc frame kind 'run.start' response is missing run_id"))?
+                .to_string();
             if !state.active_run_ids.insert(run_id.to_string()) {
                 bail!(
                     "rpc frame kind 'run.start' references duplicate active run_id '{}'",
                     run_id
                 );
             }
-            Ok(response)
+            let prompt_chars = response
+                .payload
+                .get("prompt_chars")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    anyhow!("rpc frame kind 'run.start' response is missing prompt_chars")
+                })?;
+            let mut responses = vec![response];
+            responses.extend(build_run_start_stream_frames(
+                &frame.request_id,
+                &run_id,
+                prompt_chars,
+            ));
+            Ok(responses)
         }
         RpcFrameKind::RunCancel => {
             let run_id =
@@ -287,13 +303,13 @@ fn dispatch_rpc_frame_for_serve(
                     run_id
                 );
             }
-            dispatch_rpc_frame(frame)
+            Ok(vec![dispatch_rpc_frame(frame)?])
         }
         RpcFrameKind::RunStatus => {
             let run_id =
                 require_non_empty_payload_string(&frame.payload, "run_id", frame.kind.as_str())?;
             let active = state.active_run_ids.contains(&run_id);
-            Ok(build_response_frame(
+            Ok(vec![build_response_frame(
                 &frame.request_id,
                 "run.status",
                 json!({
@@ -303,7 +319,7 @@ fn dispatch_rpc_frame_for_serve(
                     "active": active,
                     "known": active,
                 }),
-            ))
+            )])
         }
     }
 }
@@ -359,18 +375,20 @@ where
             continue;
         }
         processed_lines = processed_lines.saturating_add(1);
-        let response = dispatch_rpc_raw_with_error_envelope_for_serve(trimmed, &mut state);
-        if response.kind == RPC_ERROR_KIND {
-            error_count = error_count.saturating_add(1);
+        let responses = dispatch_rpc_raw_with_error_envelope_for_serve(trimmed, &mut state);
+        for response in responses {
+            if response.kind == RPC_ERROR_KIND {
+                error_count = error_count.saturating_add(1);
+            }
+            serde_json::to_writer(&mut *writer, &response)
+                .context("failed to serialize rpc response frame")?;
+            writer
+                .write_all(b"\n")
+                .context("failed to write rpc response delimiter")?;
+            writer
+                .flush()
+                .context("failed to flush rpc response line")?;
         }
-        serde_json::to_writer(&mut *writer, &response)
-            .context("failed to serialize rpc response frame")?;
-        writer
-            .write_all(b"\n")
-            .context("failed to write rpc response delimiter")?;
-        writer
-            .flush()
-            .context("failed to flush rpc response line")?;
     }
 
     Ok(RpcNdjsonServeReport {
@@ -526,6 +544,36 @@ fn resolve_run_start_run_id(
         ),
         None => Ok(format!("run-{}", request_id.trim())),
     }
+}
+
+fn build_run_start_stream_frames(
+    request_id: &str,
+    run_id: &str,
+    prompt_chars: u64,
+) -> Vec<RpcResponseFrame> {
+    vec![
+        build_response_frame(
+            request_id,
+            RPC_RUN_STREAM_TOOL_EVENTS_KIND,
+            json!({
+                "run_id": run_id,
+                "event": "run.started",
+                "mode": RPC_STUB_MODE,
+                "sequence": 0,
+            }),
+        ),
+        build_response_frame(
+            request_id,
+            RPC_RUN_STREAM_ASSISTANT_TEXT_KIND,
+            json!({
+                "run_id": run_id,
+                "delta": format!("preflight run accepted ({} prompt chars)", prompt_chars),
+                "mode": RPC_STUB_MODE,
+                "sequence": 1,
+                "final": false,
+            }),
+        ),
+    ]
 }
 
 fn build_error_response_frame(request_id: &str, code: &str, message: &str) -> RpcResponseFrame {
@@ -1033,21 +1081,32 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 7);
         assert_eq!(rows[0]["request_id"], "req-cap");
         assert_eq!(rows[0]["kind"], "capabilities.response");
         assert_eq!(rows[1]["request_id"], "req-start");
         assert_eq!(rows[1]["kind"], "run.accepted");
         assert_eq!(rows[1]["payload"]["run_id"], "run-req-start");
-        assert_eq!(rows[2]["request_id"], "req-status-active");
-        assert_eq!(rows[2]["kind"], "run.status");
-        assert_eq!(rows[2]["payload"]["active"], true);
-        assert_eq!(rows[3]["request_id"], "req-cancel");
-        assert_eq!(rows[3]["kind"], "run.cancelled");
-        assert_eq!(rows[4]["request_id"], "req-status-inactive");
+        assert_eq!(rows[2]["request_id"], "req-start");
+        assert_eq!(rows[2]["kind"], "run.stream.tool_events");
+        assert_eq!(rows[2]["payload"]["run_id"], "run-req-start");
+        assert_eq!(rows[2]["payload"]["event"], "run.started");
+        assert_eq!(rows[3]["request_id"], "req-start");
+        assert_eq!(rows[3]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[3]["payload"]["run_id"], "run-req-start");
+        assert_eq!(
+            rows[3]["payload"]["delta"],
+            "preflight run accepted (5 prompt chars)"
+        );
+        assert_eq!(rows[4]["request_id"], "req-status-active");
         assert_eq!(rows[4]["kind"], "run.status");
-        assert_eq!(rows[4]["payload"]["active"], false);
-        assert_eq!(rows[4]["payload"]["known"], false);
+        assert_eq!(rows[4]["payload"]["active"], true);
+        assert_eq!(rows[5]["request_id"], "req-cancel");
+        assert_eq!(rows[5]["kind"], "run.cancelled");
+        assert_eq!(rows[6]["request_id"], "req-status-inactive");
+        assert_eq!(rows[6]["kind"], "run.status");
+        assert_eq!(rows[6]["payload"]["active"], false);
+        assert_eq!(rows[6]["payload"]["known"], false);
     }
 
     #[test]
@@ -1068,14 +1127,18 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 5);
         assert_eq!(rows[0]["request_id"], "req-ok");
         assert_eq!(rows[0]["kind"], "run.accepted");
         assert_eq!(rows[0]["payload"]["run_id"], "run-req-ok");
-        assert_eq!(rows[1]["kind"], "error");
-        assert_eq!(rows[1]["payload"]["code"], "invalid_json");
-        assert_eq!(rows[2]["request_id"], "req-ok-2");
-        assert_eq!(rows[2]["kind"], "run.cancelled");
+        assert_eq!(rows[1]["request_id"], "req-ok");
+        assert_eq!(rows[1]["kind"], "run.stream.tool_events");
+        assert_eq!(rows[2]["request_id"], "req-ok");
+        assert_eq!(rows[2]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[3]["kind"], "error");
+        assert_eq!(rows[3]["payload"]["code"], "invalid_json");
+        assert_eq!(rows[4]["request_id"], "req-ok-2");
+        assert_eq!(rows[4]["kind"], "run.cancelled");
     }
 
     #[test]
@@ -1095,12 +1158,16 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0]["request_id"], "req-bad-cancel");
         assert_eq!(rows[0]["kind"], "error");
         assert_eq!(rows[0]["payload"]["code"], "invalid_payload");
         assert_eq!(rows[1]["request_id"], "req-start");
         assert_eq!(rows[1]["kind"], "run.accepted");
+        assert_eq!(rows[2]["request_id"], "req-start");
+        assert_eq!(rows[2]["kind"], "run.stream.tool_events");
+        assert_eq!(rows[3]["request_id"], "req-start");
+        assert_eq!(rows[3]["kind"], "run.stream.assistant_text");
     }
 
     #[test]
@@ -1120,11 +1187,15 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0]["request_id"], "req-start-1");
         assert_eq!(rows[0]["kind"], "run.accepted");
-        assert_eq!(rows[1]["request_id"], "req-start-2");
-        assert_eq!(rows[1]["kind"], "error");
-        assert_eq!(rows[1]["payload"]["code"], "invalid_payload");
+        assert_eq!(rows[1]["request_id"], "req-start-1");
+        assert_eq!(rows[1]["kind"], "run.stream.tool_events");
+        assert_eq!(rows[2]["request_id"], "req-start-1");
+        assert_eq!(rows[2]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[3]["request_id"], "req-start-2");
+        assert_eq!(rows[3]["kind"], "error");
+        assert_eq!(rows[3]["payload"]["code"], "invalid_payload");
     }
 }

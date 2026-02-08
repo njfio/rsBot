@@ -5200,6 +5200,12 @@ fn rpc_serve_ndjson_flag_streams_ordered_response_lines() {
         .stdout(predicate::str::contains("\"request_id\":\"req-start\""))
         .stdout(predicate::str::contains("\"kind\":\"run.accepted\""))
         .stdout(predicate::str::contains(
+            "\"kind\":\"run.stream.tool_events\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"kind\":\"run.stream.assistant_text\"",
+        ))
+        .stdout(predicate::str::contains(
             "\"request_id\":\"req-status-active\"",
         ))
         .stdout(predicate::str::contains("\"kind\":\"run.status\""))
