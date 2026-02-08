@@ -509,6 +509,14 @@ pub(crate) struct Cli {
     pub(crate) package_validate: Option<PathBuf>,
 
     #[arg(
+        long = "rpc-capabilities",
+        env = "PI_RPC_CAPABILITIES",
+        default_value_t = false,
+        help = "Print versioned RPC protocol capabilities JSON and exit"
+    )]
+    pub(crate) rpc_capabilities: bool,
+
+    #[arg(
         long = "events-runner",
         env = "PI_EVENTS_RUNNER",
         default_value_t = false,

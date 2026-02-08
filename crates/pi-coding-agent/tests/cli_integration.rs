@@ -2800,6 +2800,29 @@ fn regression_package_validate_flag_rejects_invalid_manifest() {
 }
 
 #[test]
+fn rpc_capabilities_flag_outputs_versioned_json_and_exits() {
+    let mut cmd = binary_command();
+    cmd.arg("--rpc-capabilities");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"schema_version\": 1"))
+        .stdout(predicate::str::contains("\"protocol_version\": \"0.1.0\""))
+        .stdout(predicate::str::contains("\"run.cancel\""));
+}
+
+#[test]
+fn regression_rpc_capabilities_flag_takes_preflight_precedence_over_prompt() {
+    let mut cmd = binary_command();
+    cmd.args(["--rpc-capabilities", "--prompt", "ignored prompt"]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"schema_version\": 1"))
+        .stderr(predicate::str::contains("OPENAI_API_KEY").not());
+}
+
+#[test]
 fn prompt_file_flag_runs_one_shot_prompt() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {

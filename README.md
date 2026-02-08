@@ -303,6 +303,13 @@ cargo run -p pi-coding-agent -- \
   --package-validate .pi/packages/starter/package.json
 ```
 
+Print versioned RPC protocol capabilities JSON and exit:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --rpc-capabilities
+```
+
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 
 ```bash
