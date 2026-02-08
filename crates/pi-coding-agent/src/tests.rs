@@ -3152,6 +3152,8 @@ fn functional_execute_auth_command_login_status_logout_lifecycle() {
     assert_eq!(login_json["provider"], "openai");
     assert_eq!(login_json["mode"], "oauth_token");
     assert_eq!(login_json["expires_unix"], expires_unix);
+    assert!(!login_output.contains("openai-access-token"));
+    assert!(!login_output.contains("openai-refresh-token"));
 
     let status_output = execute_auth_command(&config, "status openai --json");
     let status_json: serde_json::Value =
@@ -3160,6 +3162,8 @@ fn functional_execute_auth_command_login_status_logout_lifecycle() {
     assert_eq!(status_json["entries"][0]["provider"], "openai");
     assert_eq!(status_json["entries"][0]["state"], "ready");
     assert_eq!(status_json["entries"][0]["source"], "credential_store");
+    assert!(!status_output.contains("openai-access-token"));
+    assert!(!status_output.contains("openai-refresh-token"));
 
     let logout_output = execute_auth_command(&config, "logout openai --json");
     let logout_json: serde_json::Value =

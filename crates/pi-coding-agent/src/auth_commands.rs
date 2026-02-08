@@ -657,6 +657,25 @@ pub(crate) fn resolve_auth_login_expires_unix(provider: Provider) -> Result<Opti
     Ok(None)
 }
 
+fn collect_non_empty_secrets(candidates: Vec<(&'static str, Option<String>)>) -> Vec<String> {
+    candidates
+        .into_iter()
+        .filter_map(|(_source, value)| value)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn redact_known_secrets(text: String, secrets: &[String]) -> String {
+    let mut redacted = text;
+    for secret in secrets {
+        if !secret.is_empty() {
+            redacted = redacted.replace(secret, "<redacted>");
+        }
+    }
+    redacted
+}
+
 pub(crate) fn execute_auth_login_command(
     config: &AuthCommandConfig,
     provider: Provider,
@@ -665,6 +684,15 @@ pub(crate) fn execute_auth_login_command(
 ) -> String {
     let mode = mode_override
         .unwrap_or_else(|| configured_provider_auth_method_from_config(config, provider));
+    let mut redaction_secrets = collect_non_empty_secrets(
+        provider_api_key_candidates_from_auth_config(config, provider),
+    );
+    redaction_secrets.extend(collect_non_empty_secrets(
+        provider_login_access_token_candidates(provider),
+    ));
+    redaction_secrets.extend(collect_non_empty_secrets(
+        provider_login_refresh_token_candidates(provider),
+    ));
     let capability = provider_auth_capability(provider, mode);
     if !capability.supported {
         let supported_modes = provider_supported_auth_modes(provider);
@@ -673,12 +701,15 @@ pub(crate) fn execute_auth_login_command(
             .map(|method| method.as_str())
             .collect::<Vec<_>>()
             .join(",");
-        let reason = format!(
-            "auth mode '{}' is not supported for provider '{}': {} (supported_modes={})",
-            mode.as_str(),
-            provider.as_str(),
-            capability.reason,
-            supported_mode_list
+        let reason = redact_known_secrets(
+            format!(
+                "auth mode '{}' is not supported for provider '{}': {} (supported_modes={})",
+                mode.as_str(),
+                provider.as_str(),
+                capability.reason,
+                supported_mode_list
+            ),
+            &redaction_secrets,
         );
         if json_output {
             return serde_json::json!({
@@ -726,7 +757,10 @@ pub(crate) fn execute_auth_login_command(
                     )
                 }
                 None => {
-                    let reason = missing_provider_api_key_message(provider).to_string();
+                    let reason = redact_known_secrets(
+                        missing_provider_api_key_message(provider).to_string(),
+                        &redaction_secrets,
+                    );
                     if json_output {
                         return serde_json::json!({
                             "command": "auth.login",
@@ -737,10 +771,13 @@ pub(crate) fn execute_auth_login_command(
                         })
                         .to_string();
                     }
-                    format!(
-                        "auth login error: provider={} mode={} error={reason}",
-                        provider.as_str(),
-                        mode.as_str()
+                    redact_known_secrets(
+                        format!(
+                            "auth login error: provider={} mode={} error={reason}",
+                            provider.as_str(),
+                            mode.as_str()
+                        ),
+                        &redaction_secrets,
                     )
                 }
             }
@@ -749,7 +786,10 @@ pub(crate) fn execute_auth_login_command(
             let Some((access_token, access_source)) = resolve_non_empty_secret_with_source(
                 provider_login_access_token_candidates(provider),
             ) else {
-                let reason = "missing access token for login. Set PI_AUTH_ACCESS_TOKEN or provider-specific *_ACCESS_TOKEN env var".to_string();
+                let reason = redact_known_secrets(
+                    "missing access token for login. Set PI_AUTH_ACCESS_TOKEN or provider-specific *_ACCESS_TOKEN env var".to_string(),
+                    &redaction_secrets,
+                );
                 if json_output {
                     return serde_json::json!({
                         "command": "auth.login",
@@ -760,10 +800,13 @@ pub(crate) fn execute_auth_login_command(
                     })
                     .to_string();
                 }
-                return format!(
-                    "auth login error: provider={} mode={} error={reason}",
-                    provider.as_str(),
-                    mode.as_str()
+                return redact_known_secrets(
+                    format!(
+                        "auth login error: provider={} mode={} error={reason}",
+                        provider.as_str(),
+                        mode.as_str()
+                    ),
+                    &redaction_secrets,
                 );
             };
 
@@ -782,14 +825,17 @@ pub(crate) fn execute_auth_login_command(
                             "provider": provider.as_str(),
                             "mode": mode.as_str(),
                             "status": "error",
-                            "reason": error.to_string(),
+                            "reason": redact_known_secrets(error.to_string(), &redaction_secrets),
                         })
                         .to_string();
                     }
-                    return format!(
-                        "auth login error: provider={} mode={} error={error}",
-                        provider.as_str(),
-                        mode.as_str()
+                    return redact_known_secrets(
+                        format!(
+                            "auth login error: provider={} mode={} error={error}",
+                            provider.as_str(),
+                            mode.as_str()
+                        ),
+                        &redaction_secrets,
                     );
                 }
             };
@@ -807,14 +853,17 @@ pub(crate) fn execute_auth_login_command(
                             "provider": provider.as_str(),
                             "mode": mode.as_str(),
                             "status": "error",
-                            "reason": error.to_string(),
+                            "reason": redact_known_secrets(error.to_string(), &redaction_secrets),
                         })
                         .to_string();
                     }
-                    return format!(
-                        "auth login error: provider={} mode={} error={error}",
-                        provider.as_str(),
-                        mode.as_str()
+                    return redact_known_secrets(
+                        format!(
+                            "auth login error: provider={} mode={} error={error}",
+                            provider.as_str(),
+                            mode.as_str()
+                        ),
+                        &redaction_secrets,
                     );
                 }
             };
@@ -839,14 +888,17 @@ pub(crate) fn execute_auth_login_command(
                         "provider": provider.as_str(),
                         "mode": mode.as_str(),
                         "status": "error",
-                        "reason": error.to_string(),
+                        "reason": redact_known_secrets(error.to_string(), &redaction_secrets),
                     })
                     .to_string();
                 }
-                return format!(
-                    "auth login error: provider={} mode={} error={error}",
-                    provider.as_str(),
-                    mode.as_str()
+                return redact_known_secrets(
+                    format!(
+                        "auth login error: provider={} mode={} error={error}",
+                        provider.as_str(),
+                        mode.as_str()
+                    ),
+                    &redaction_secrets,
                 );
             }
 
@@ -872,7 +924,10 @@ pub(crate) fn execute_auth_login_command(
             )
         }
         ProviderAuthMethod::Adc => {
-            let reason = "adc login flow is not implemented".to_string();
+            let reason = redact_known_secrets(
+                "adc login flow is not implemented".to_string(),
+                &redaction_secrets,
+            );
             if json_output {
                 return serde_json::json!({
                     "command": "auth.login",
