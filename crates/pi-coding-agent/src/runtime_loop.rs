@@ -18,8 +18,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::{
     apply_extension_message_transforms, current_unix_timestamp_ms, dispatch_extension_runtime_hook,
     ensure_non_empty_text, handle_command_with_session_import_mode, persist_messages,
-    print_assistant_messages, run_plan_first_prompt, Cli, CliOrchestratorMode, CommandAction,
-    CommandExecutionContext, RenderOptions, SessionRuntime,
+    print_assistant_messages, run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
+    Cli, CliOrchestratorMode, CommandAction, CommandExecutionContext, RenderOptions,
+    SessionRuntime,
 };
 
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
@@ -148,6 +149,7 @@ pub(crate) async fn run_interactive(
                 config.orchestrator_max_delegated_step_response_chars,
                 config.orchestrator_max_delegated_total_response_chars,
                 config.orchestrator_delegate_steps,
+                config.command_context.tool_policy_json,
                 config.extension_runtime_hooks,
             )
             .await?;
@@ -248,6 +250,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
     orchestrator_max_delegated_step_response_chars: usize,
     orchestrator_max_delegated_total_response_chars: usize,
     orchestrator_delegate_steps: bool,
+    tool_policy_json: &serde_json::Value,
     extension_runtime_hooks: &RuntimeExtensionHooksConfig,
 ) -> Result<()> {
     let effective_prompt = apply_runtime_message_transform(extension_runtime_hooks, prompt);
@@ -257,20 +260,52 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
         build_runtime_hook_payload("run-start", &effective_prompt, turn_timeout_ms, None, None),
     );
 
-    let result = run_plan_first_prompt(
-        agent,
-        session_runtime,
-        &effective_prompt,
-        turn_timeout_ms,
-        render_options,
-        orchestrator_max_plan_steps,
-        orchestrator_max_delegated_steps,
-        orchestrator_max_executor_response_chars,
-        orchestrator_max_delegated_step_response_chars,
-        orchestrator_max_delegated_total_response_chars,
-        orchestrator_delegate_steps,
-    )
-    .await;
+    let policy_context = if orchestrator_delegate_steps {
+        Some(
+            render_orchestrator_policy_inheritance_context(
+                tool_policy_json,
+                extension_runtime_hooks,
+            )
+            .context(
+                "plan-first orchestrator failed: delegated policy inheritance context build failed",
+            )?,
+        )
+    } else {
+        None
+    };
+
+    let result = if let Some(policy_context) = policy_context.as_deref() {
+        run_plan_first_prompt_with_policy_context(
+            agent,
+            session_runtime,
+            &effective_prompt,
+            turn_timeout_ms,
+            render_options,
+            orchestrator_max_plan_steps,
+            orchestrator_max_delegated_steps,
+            orchestrator_max_executor_response_chars,
+            orchestrator_max_delegated_step_response_chars,
+            orchestrator_max_delegated_total_response_chars,
+            orchestrator_delegate_steps,
+            Some(policy_context),
+        )
+        .await
+    } else {
+        run_plan_first_prompt(
+            agent,
+            session_runtime,
+            &effective_prompt,
+            turn_timeout_ms,
+            render_options,
+            orchestrator_max_plan_steps,
+            orchestrator_max_delegated_steps,
+            orchestrator_max_executor_response_chars,
+            orchestrator_max_delegated_step_response_chars,
+            orchestrator_max_delegated_total_response_chars,
+            orchestrator_delegate_steps,
+        )
+        .await
+    };
 
     match result {
         Ok(()) => {
@@ -313,6 +348,64 @@ fn apply_runtime_message_transform(config: &RuntimeExtensionHooksConfig, prompt:
         eprintln!("{diagnostic}");
     }
     transform.prompt
+}
+
+fn render_orchestrator_policy_inheritance_context(
+    tool_policy_json: &serde_json::Value,
+    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+) -> Result<String> {
+    let object = tool_policy_json
+        .as_object()
+        .ok_or_else(|| anyhow!("tool policy JSON must be an object"))?;
+    let schema_version = object
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("tool policy JSON missing numeric field 'schema_version'"))?;
+    let preset = object
+        .get("preset")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("tool policy JSON missing string field 'preset'"))?;
+    let bash_profile = object
+        .get("bash_profile")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("tool policy JSON missing string field 'bash_profile'"))?;
+    let os_sandbox_mode = object
+        .get("os_sandbox_mode")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("tool policy JSON missing string field 'os_sandbox_mode'"))?;
+    let bash_dry_run = object
+        .get("bash_dry_run")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| anyhow!("tool policy JSON missing boolean field 'bash_dry_run'"))?;
+    let enforce_regular_files = object
+        .get("enforce_regular_files")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| anyhow!("tool policy JSON missing boolean field 'enforce_regular_files'"))?;
+    let max_command_length = object
+        .get("max_command_length")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("tool policy JSON missing numeric field 'max_command_length'"))?;
+    let max_command_output_bytes = object
+        .get("max_command_output_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            anyhow!("tool policy JSON missing numeric field 'max_command_output_bytes'")
+        })?;
+    let allowed_roots = object
+        .get("allowed_roots")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("tool policy JSON missing array field 'allowed_roots'"))?;
+    let allowed_commands = object
+        .get("allowed_commands")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("tool policy JSON missing array field 'allowed_commands'"))?;
+
+    Ok(format!(
+        "schema_version={schema_version};preset={preset};bash_profile={bash_profile};os_sandbox_mode={os_sandbox_mode};bash_dry_run={bash_dry_run};enforce_regular_files={enforce_regular_files};max_command_length={max_command_length};max_command_output_bytes={max_command_output_bytes};allowed_roots={};allowed_commands={};extension_runtime_hooks_enabled={}",
+        allowed_roots.len(),
+        allowed_commands.len(),
+        extension_runtime_hooks.enabled,
+    ))
 }
 
 fn dispatch_runtime_hook(
@@ -569,7 +662,8 @@ fn report_prompt_status(status: PromptRunStatus) {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_runtime_message_transform, build_runtime_hook_payload, RuntimeExtensionHooksConfig,
+        apply_runtime_message_transform, build_runtime_hook_payload,
+        render_orchestrator_policy_inheritance_context, RuntimeExtensionHooksConfig,
         RuntimeHookRunStatus,
     };
     use tempfile::tempdir;
@@ -623,5 +717,50 @@ mod tests {
         };
         let transformed = apply_runtime_message_transform(&config, "hello");
         assert_eq!(transformed, "hello");
+    }
+
+    #[test]
+    fn unit_render_orchestrator_policy_inheritance_context_is_deterministic() {
+        let config = RuntimeExtensionHooksConfig {
+            enabled: true,
+            root: std::path::PathBuf::from(".pi/extensions"),
+        };
+        let tool_policy_json = serde_json::json!({
+            "schema_version": 1,
+            "preset": "balanced",
+            "bash_profile": "balanced",
+            "os_sandbox_mode": "off",
+            "bash_dry_run": false,
+            "enforce_regular_files": true,
+            "max_command_length": 4096,
+            "max_command_output_bytes": 16000,
+            "allowed_roots": ["/tmp/project"],
+            "allowed_commands": ["cat", "ls"],
+        });
+        let context = render_orchestrator_policy_inheritance_context(&tool_policy_json, &config)
+            .expect("policy context should render");
+        assert_eq!(
+            context,
+            "schema_version=1;preset=balanced;bash_profile=balanced;os_sandbox_mode=off;bash_dry_run=false;enforce_regular_files=true;max_command_length=4096;max_command_output_bytes=16000;allowed_roots=1;allowed_commands=2;extension_runtime_hooks_enabled=true"
+        );
+    }
+
+    #[test]
+    fn regression_render_orchestrator_policy_inheritance_context_fails_closed_on_invalid_payload() {
+        let config = RuntimeExtensionHooksConfig {
+            enabled: false,
+            root: std::path::PathBuf::from(".pi/extensions"),
+        };
+        let invalid_tool_policy_json = serde_json::json!({
+            "preset": "balanced",
+            "allowed_roots": ["/tmp/project"],
+            "allowed_commands": ["cat"],
+        });
+        let error =
+            render_orchestrator_policy_inheritance_context(&invalid_tool_policy_json, &config)
+                .expect_err("missing required fields should fail");
+        assert!(error
+            .to_string()
+            .contains("missing numeric field 'schema_version'"));
     }
 }

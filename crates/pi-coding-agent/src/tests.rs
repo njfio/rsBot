@@ -65,11 +65,12 @@ use super::{
     resolve_prunable_skill_file_name, resolve_secret_from_cli_or_store_id,
     resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
     resolve_store_backed_provider_credential, resolve_system_prompt, rpc_capabilities_payload,
-    run_doctor_checks, run_plan_first_prompt, run_prompt_with_cancellation, save_branch_aliases,
-    save_credential_store, save_macro_file, save_profile_store, save_session_bookmarks,
-    search_session_entries, session_bookmark_path_for_session, session_message_preview,
-    shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file, tool_audit_event_json,
-    tool_policy_to_json, trust_record_status, unknown_command_message, validate_branch_alias_name,
+    run_doctor_checks, run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
+    run_prompt_with_cancellation, save_branch_aliases, save_credential_store, save_macro_file,
+    save_profile_store, save_session_bookmarks, search_session_entries,
+    session_bookmark_path_for_session, session_message_preview, shared_lineage_prefix_depth,
+    stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
+    trust_record_status, unknown_command_message, validate_branch_alias_name,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
     validate_profile_name, validate_rpc_frame_file, validate_session_file,
@@ -9438,6 +9439,54 @@ async fn functional_run_plan_first_prompt_delegate_steps_executes_and_consolidat
     assert!(messages
         .iter()
         .any(|message| message.text_content() == "change applied"));
+}
+
+#[tokio::test]
+async fn regression_run_plan_first_prompt_with_policy_context_fails_when_context_missing() {
+    let planner_response = ChatResponse {
+        message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let delegated_unused_response = ChatResponse {
+        message: Message::assistant_text("should not execute"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(planner_response),
+                Ok(delegated_unused_response),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    let error = run_plan_first_prompt_with_policy_context(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        4,
+        512,
+        512,
+        1_024,
+        true,
+        None,
+    )
+    .await
+    .expect_err("missing delegated policy context should fail closed");
+    assert!(error
+        .to_string()
+        .contains("delegated policy inheritance context is unavailable"));
+    assert!(!agent
+        .messages()
+        .iter()
+        .any(|message| message.text_content() == "should not execute"));
 }
 
 #[tokio::test]

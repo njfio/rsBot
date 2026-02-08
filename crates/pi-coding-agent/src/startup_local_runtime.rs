@@ -116,6 +116,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 cli.orchestrator_max_delegated_step_response_chars,
                 cli.orchestrator_max_delegated_total_response_chars,
                 cli.orchestrator_delegate_steps,
+                tool_policy_json,
                 &extension_runtime_hooks,
             )
             .await?;
