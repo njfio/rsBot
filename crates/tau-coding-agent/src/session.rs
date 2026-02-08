@@ -93,6 +93,13 @@ pub struct SessionStore {
 impl SessionStore {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("failed to create session directory {}", parent.display())
+                })?;
+            }
+        }
         let entries = read_session_entries(&path)?;
         let next_id = entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
 
@@ -1895,5 +1902,17 @@ mod tests {
         assert_eq!(head, Some(1));
         assert!(parent.exists());
         assert!(path.exists());
+    }
+
+    #[test]
+    fn regression_session_load_precreates_default_tau_parent_directory() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/sessions/default.jsonl");
+        let parent = path.parent().expect("session parent");
+        assert!(!parent.exists());
+
+        let store = SessionStore::load(&path).expect("load");
+        assert!(store.entries().is_empty());
+        assert!(parent.exists());
     }
 }

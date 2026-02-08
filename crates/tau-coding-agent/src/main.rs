@@ -19,6 +19,7 @@ mod github_issues;
 mod macro_profile_commands;
 mod model_catalog;
 mod observability_loggers;
+mod onboarding;
 mod orchestrator;
 mod package_manifest;
 mod provider_auth;
@@ -156,6 +157,7 @@ pub(crate) use crate::model_catalog::{
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
+pub(crate) use crate::onboarding::execute_onboarding_command;
 #[cfg(test)]
 pub(crate) use crate::orchestrator::parse_numbered_plan_steps;
 pub(crate) use crate::orchestrator::run_plan_first_prompt;

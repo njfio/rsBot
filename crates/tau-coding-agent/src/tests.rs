@@ -44,18 +44,18 @@ use super::{
     execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
     execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
-    execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
-    format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
-    is_retryable_provider_error, load_branch_aliases, load_credential_store, load_macro_file,
-    load_profile_store, load_session_bookmarks, load_trust_root_records, parse_auth_command,
-    parse_branch_alias_command, parse_command, parse_command_file, parse_doctor_command_args,
-    parse_integration_auth_command, parse_macro_command, parse_numbered_plan_steps,
-    parse_profile_command, parse_sandbox_command_tokens, parse_session_bookmark_command,
-    parse_session_diff_args, parse_session_search_args, parse_session_stats_args,
-    parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
-    parse_skills_trust_list_args, parse_skills_trust_mutation_args, parse_skills_verify_args,
-    parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-    provider_auth_capability, refresh_provider_access_token,
+    execute_skills_trust_rotate_command, execute_skills_verify_command, execute_startup_preflight,
+    format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
+    initialize_session, is_retryable_provider_error, load_branch_aliases, load_credential_store,
+    load_macro_file, load_profile_store, load_session_bookmarks, load_trust_root_records,
+    parse_auth_command, parse_branch_alias_command, parse_command, parse_command_file,
+    parse_doctor_command_args, parse_integration_auth_command, parse_macro_command,
+    parse_numbered_plan_steps, parse_profile_command, parse_sandbox_command_tokens,
+    parse_session_bookmark_command, parse_session_diff_args, parse_session_search_args,
+    parse_session_stats_args, parse_skills_lock_diff_args, parse_skills_prune_args,
+    parse_skills_search_args, parse_skills_trust_list_args, parse_skills_trust_mutation_args,
+    parse_skills_verify_args, parse_trust_rotation_spec, parse_trusted_root_spec,
+    percentile_duration_ms, provider_auth_capability, refresh_provider_access_token,
     register_runtime_extension_tool_hook_subscriber, render_audit_summary, render_command_help,
     render_doctor_report, render_doctor_report_json, render_help_overview, render_macro_list,
     render_macro_show, render_profile_diffs, render_profile_list, render_profile_show,
@@ -355,6 +355,9 @@ fn test_cli() -> Cli {
         prompt_template_var: vec![],
         command_file: None,
         command_file_error_mode: CliCommandFileErrorMode::FailFast,
+        onboard: false,
+        onboard_non_interactive: false,
+        onboard_profile: "default".to_string(),
         channel_store_root: PathBuf::from(".tau/channel-store"),
         channel_store_inspect: None,
         channel_store_repair: None,
@@ -464,6 +467,29 @@ fn test_cli() -> Cli {
         os_sandbox_command: vec![],
         enforce_regular_files: true,
     }
+}
+
+fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
+    let tau_root = workspace.join(".tau");
+    cli.session = tau_root.join("sessions/default.jsonl");
+    cli.credential_store = tau_root.join("credentials.json");
+    cli.skills_dir = tau_root.join("skills");
+    cli.model_catalog_cache = tau_root.join("models/catalog.json");
+    cli.channel_store_root = tau_root.join("channel-store");
+    cli.events_dir = tau_root.join("events");
+    cli.events_state_path = tau_root.join("events/state.json");
+    cli.github_state_dir = tau_root.join("github-issues");
+    cli.slack_state_dir = tau_root.join("slack");
+    cli.package_install_root = tau_root.join("packages");
+    cli.package_update_root = tau_root.join("packages");
+    cli.package_list_root = tau_root.join("packages");
+    cli.package_remove_root = tau_root.join("packages");
+    cli.package_rollback_root = tau_root.join("packages");
+    cli.package_conflicts_root = tau_root.join("packages");
+    cli.package_activate_root = tau_root.join("packages");
+    cli.package_activate_destination = tau_root.join("packages-active");
+    cli.extension_list_root = tau_root.join("extensions");
+    cli.extension_runtime_root = tau_root.join("extensions");
 }
 
 fn write_test_provider_credential(
@@ -5381,6 +5407,42 @@ fn functional_cli_command_file_flags_accept_overrides() {
         cli.command_file_error_mode,
         CliCommandFileErrorMode::ContinueOnError
     );
+}
+
+#[test]
+fn unit_cli_onboarding_flags_default_to_disabled() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert!(!cli.onboard);
+    assert!(!cli.onboard_non_interactive);
+    assert_eq!(cli.onboard_profile, "default");
+}
+
+#[test]
+fn functional_cli_onboarding_flags_accept_explicit_overrides() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--onboard",
+        "--onboard-non-interactive",
+        "--onboard-profile",
+        "team_default",
+    ]);
+    assert!(cli.onboard);
+    assert!(cli.onboard_non_interactive);
+    assert_eq!(cli.onboard_profile, "team_default");
+}
+
+#[test]
+fn regression_cli_onboarding_non_interactive_requires_onboard() {
+    let parse = Cli::try_parse_from(["tau-rs", "--onboard-non-interactive"]);
+    let error = parse.expect_err("non-interactive onboarding should require --onboard");
+    assert!(error.to_string().contains("--onboard"));
+}
+
+#[test]
+fn regression_cli_onboarding_profile_requires_onboard() {
+    let parse = Cli::try_parse_from(["tau-rs", "--onboard-profile", "team"]);
+    let error = parse.expect_err("onboarding profile should require --onboard");
+    assert!(error.to_string().contains("--onboard"));
 }
 
 #[test]
@@ -14041,6 +14103,39 @@ fn regression_validate_session_file_rejects_no_session_flag() {
     assert!(error
         .to_string()
         .contains("--session-validate cannot be used together with --no-session"));
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_onboarding_and_generates_report() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.onboard = true;
+    cli.onboard_non_interactive = true;
+    cli.onboard_profile = "team_default".to_string();
+
+    let handled = execute_startup_preflight(&cli).expect("onboarding preflight");
+    assert!(handled);
+
+    let profile_store = temp.path().join(".tau/profiles.json");
+    assert!(profile_store.exists(), "profile store should be created");
+
+    let reports_dir = temp.path().join(".tau/reports");
+    let reports = std::fs::read_dir(&reports_dir)
+        .expect("reports dir")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("onboarding-") && name.ends_with(".json"))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !reports.is_empty(),
+        "expected at least one onboarding report in {}",
+        reports_dir.display()
+    );
 }
 
 #[test]
