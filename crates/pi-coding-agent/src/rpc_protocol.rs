@@ -1409,6 +1409,26 @@ mod tests {
         assert_eq!(error_codes[0]["code"].as_str(), Some("invalid_json"));
         assert_eq!(error_codes[0]["category"].as_str(), Some("validation"));
         assert_eq!(error_codes[6]["code"].as_str(), Some("internal_error"));
+        let request_kinds = capabilities_response.payload["contracts"]["protocol"]["request_kinds"]
+            .as_array()
+            .expect("request kinds array");
+        assert_eq!(request_kinds.len(), 7);
+        assert_eq!(request_kinds[0].as_str(), Some("capabilities.request"));
+        let response_kinds = capabilities_response.payload["contracts"]["protocol"]
+            ["response_kinds"]
+            .as_array()
+            .expect("response kinds array");
+        assert_eq!(response_kinds.len(), 10);
+        assert_eq!(response_kinds[0].as_str(), Some("capabilities.response"));
+        let stream_event_kinds = capabilities_response.payload["contracts"]["protocol"]
+            ["stream_event_kinds"]
+            .as_array()
+            .expect("stream event kinds array");
+        assert_eq!(stream_event_kinds.len(), 2);
+        assert_eq!(
+            stream_event_kinds[0].as_str(),
+            Some("run.stream.tool_events")
+        );
 
         let start = parse_rpc_frame(
             r#"{

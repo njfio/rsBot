@@ -5030,6 +5030,9 @@ fn rpc_dispatch_frame_file_flag_outputs_capabilities_response() {
         .stdout(predicate::str::contains(
             "\"terminal_state_field_present_for_terminal_status\": true",
         ))
+        .stdout(predicate::str::contains("\"request_kinds\": ["))
+        .stdout(predicate::str::contains("\"response_kinds\": ["))
+        .stdout(predicate::str::contains("\"stream_event_kinds\": ["))
         .stdout(predicate::str::contains("\"code\": \"invalid_payload\""))
         .stdout(predicate::str::contains("\"code\": \"unsupported_schema\""));
 }

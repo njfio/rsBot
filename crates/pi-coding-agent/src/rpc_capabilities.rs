@@ -27,6 +27,29 @@ const RPC_RUN_STATUS_VALUES: &[&str] = &[
     "timed_out",
 ];
 const RPC_RUN_TERMINAL_STATES: &[&str] = &["cancelled", "completed", "failed", "timed_out"];
+const RPC_PROTOCOL_REQUEST_KINDS: &[&str] = &[
+    "capabilities.request",
+    "run.start",
+    "run.cancel",
+    "run.complete",
+    "run.fail",
+    "run.timeout",
+    "run.status",
+];
+const RPC_PROTOCOL_RESPONSE_KINDS: &[&str] = &[
+    "capabilities.response",
+    "run.accepted",
+    "run.cancelled",
+    "run.completed",
+    "run.failed",
+    "run.timed_out",
+    "run.status",
+    "run.stream.tool_events",
+    "run.stream.assistant_text",
+    "error",
+];
+const RPC_PROTOCOL_STREAM_EVENT_KINDS: &[&str] =
+    &["run.stream.tool_events", "run.stream.assistant_text"];
 
 pub(crate) fn rpc_capabilities_payload() -> Value {
     let error_codes = rpc_error_contracts()
@@ -54,6 +77,11 @@ pub(crate) fn rpc_capabilities_payload() -> Value {
             },
             "errors": {
                 "codes": error_codes,
+            },
+            "protocol": {
+                "request_kinds": RPC_PROTOCOL_REQUEST_KINDS,
+                "response_kinds": RPC_PROTOCOL_RESPONSE_KINDS,
+                "stream_event_kinds": RPC_PROTOCOL_STREAM_EVENT_KINDS,
             },
         }
     })
@@ -107,6 +135,18 @@ mod tests {
                 .as_array()
                 .map(|codes| codes.len()),
             Some(7)
+        );
+        assert_eq!(
+            payload["contracts"]["protocol"]["request_kinds"]
+                .as_array()
+                .map(|kinds| kinds.len()),
+            Some(7)
+        );
+        assert_eq!(
+            payload["contracts"]["protocol"]["response_kinds"]
+                .as_array()
+                .map(|kinds| kinds.len()),
+            Some(10)
         );
     }
 
@@ -255,6 +295,63 @@ mod tests {
                 .collect::<Vec<_>>();
             let unique = entries.iter().cloned().collect::<BTreeSet<_>>();
             assert_eq!(unique.len(), entries.len(), "duplicates found in {field}");
+        }
+    }
+
+    #[test]
+    fn functional_rpc_capabilities_payload_protocol_kinds_are_deterministic() {
+        let payload = rpc_capabilities_payload();
+        let request_kinds = payload["contracts"]["protocol"]["request_kinds"]
+            .as_array()
+            .expect("request kinds should be an array")
+            .iter()
+            .map(|kind| kind.as_str().expect("request kind should be string"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_kinds,
+            vec![
+                "capabilities.request",
+                "run.start",
+                "run.cancel",
+                "run.complete",
+                "run.fail",
+                "run.timeout",
+                "run.status",
+            ]
+        );
+
+        let stream_event_kinds = payload["contracts"]["protocol"]["stream_event_kinds"]
+            .as_array()
+            .expect("stream event kinds should be an array")
+            .iter()
+            .map(|kind| kind.as_str().expect("stream event kind should be string"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stream_event_kinds,
+            vec!["run.stream.tool_events", "run.stream.assistant_text"]
+        );
+    }
+
+    #[test]
+    fn regression_rpc_capabilities_payload_protocol_kind_lists_have_unique_entries() {
+        let payload = rpc_capabilities_payload();
+        for field in ["request_kinds", "response_kinds", "stream_event_kinds"] {
+            let entries = payload["contracts"]["protocol"][field]
+                .as_array()
+                .expect("protocol kind list should be an array")
+                .iter()
+                .map(|kind| {
+                    kind.as_str()
+                        .expect("protocol kind should be string")
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            let unique = entries.iter().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(
+                unique.len(),
+                entries.len(),
+                "duplicates found in protocol contract field {field}"
+            );
         }
     }
 }
