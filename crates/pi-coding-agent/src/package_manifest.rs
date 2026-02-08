@@ -318,15 +318,30 @@ pub(crate) fn execute_package_activate_command(cli: &Cli) -> Result<()> {
     if !cli.package_activate {
         return Ok(());
     }
+    let report = activate_packages_from_cli(cli)?;
+    println!("{}", render_package_activation_report(&report));
+    Ok(())
+}
+
+pub(crate) fn execute_package_activate_on_startup(
+    cli: &Cli,
+) -> Result<Option<PackageActivationReport>> {
+    if !cli.package_activate_on_startup {
+        return Ok(None);
+    }
+    let report = activate_packages_from_cli(cli)?;
+    println!("{}", render_package_activation_report(&report));
+    Ok(Some(report))
+}
+
+fn activate_packages_from_cli(cli: &Cli) -> Result<PackageActivationReport> {
     let policy =
         PackageActivationConflictPolicy::parse(cli.package_activate_conflict_policy.as_str())?;
-    let report = activate_installed_packages(
+    activate_installed_packages(
         &cli.package_activate_root,
         &cli.package_activate_destination,
         policy,
-    )?;
-    println!("{}", render_package_activation_report(&report));
-    Ok(())
+    )
 }
 
 pub(crate) fn validate_package_manifest(path: &Path) -> Result<PackageManifestSummary> {
@@ -1130,6 +1145,11 @@ fn activate_installed_packages(
         let destination =
             resolve_activation_destination_path(destination_root, &selection.kind, &selection.path);
         upsert_file_from_source(&selection.source, &destination)?;
+        if let Some(skill_alias_destination) =
+            resolve_activation_skill_alias_path(destination_root, &selection.kind, &selection.path)
+        {
+            upsert_file_from_source(&selection.source, &skill_alias_destination)?;
+        }
     }
 
     Ok(PackageActivationReport {
@@ -1245,6 +1265,58 @@ fn resolve_activation_destination_path(
         .filter(|value| !value.as_os_str().is_empty())
         .unwrap_or(path);
     destination_root.join(kind).join(relative)
+}
+
+fn resolve_activation_skill_alias_path(
+    destination_root: &Path,
+    kind: &str,
+    raw_path: &str,
+) -> Option<PathBuf> {
+    if kind != "skills" {
+        return None;
+    }
+    let path = Path::new(raw_path);
+    let file_name = path.file_name().and_then(|value| value.to_str())?;
+    if file_name != "SKILL.md" {
+        return None;
+    }
+    let relative = path.strip_prefix(kind).ok()?;
+    let parent = relative
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())?;
+    let alias_name = activation_skill_alias_name(parent);
+    if alias_name.is_empty() {
+        return None;
+    }
+    Some(
+        destination_root
+            .join("skills")
+            .join(format!("{alias_name}.md")),
+    )
+}
+
+fn activation_skill_alias_name(path: &Path) -> String {
+    let mut alias = String::new();
+    for component in path.components() {
+        let Component::Normal(segment) = component else {
+            continue;
+        };
+        let segment = segment.to_string_lossy();
+        if segment.is_empty() {
+            continue;
+        }
+        if !alias.is_empty() {
+            alias.push_str("__");
+        }
+        for ch in segment.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                alias.push(ch);
+            } else {
+                alias.push('_');
+            }
+        }
+    }
+    alias
 }
 
 fn read_sorted_directory_paths(path: &Path) -> Result<Vec<PathBuf>> {

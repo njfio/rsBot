@@ -22,13 +22,14 @@ use tokio::time::sleep;
 use super::{
     apply_trust_root_mutations, branch_alias_path_for_session, build_auth_command_config,
     build_doctor_command_config, build_profile_defaults, build_provider_client, build_tool_policy,
-    command_file_error_mode_label, compute_session_entry_depths, compute_session_stats,
-    current_unix_timestamp, decrypt_credential_store_secret, default_macro_config_path,
-    default_profile_store_path, default_skills_lock_path, derive_skills_prune_candidates,
-    encrypt_credential_store_secret, ensure_non_empty_text, escape_graph_label,
-    execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
-    execute_command_file, execute_doctor_command, execute_integration_auth_command,
-    execute_macro_command, execute_package_activate_command, execute_package_conflicts_command,
+    command_file_error_mode_label, compose_startup_system_prompt, compute_session_entry_depths,
+    compute_session_stats, current_unix_timestamp, decrypt_credential_store_secret,
+    default_macro_config_path, default_profile_store_path, default_skills_lock_path,
+    derive_skills_prune_candidates, encrypt_credential_store_secret, ensure_non_empty_text,
+    escape_graph_label, execute_auth_command, execute_branch_alias_command,
+    execute_channel_store_admin_command, execute_command_file, execute_doctor_command,
+    execute_integration_auth_command, execute_macro_command, execute_package_activate_command,
+    execute_package_activate_on_startup, execute_package_conflicts_command,
     execute_package_install_command, execute_package_list_command, execute_package_remove_command,
     execute_package_rollback_command, execute_package_show_command, execute_package_update_command,
     execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
@@ -267,6 +268,7 @@ fn test_cli() -> Cli {
         package_conflicts: false,
         package_conflicts_root: PathBuf::from(".pi/packages"),
         package_activate: false,
+        package_activate_on_startup: false,
         package_activate_root: PathBuf::from(".pi/packages"),
         package_activate_destination: PathBuf::from(".pi/packages-active"),
         package_activate_conflict_policy: "error".to_string(),
@@ -7268,6 +7270,122 @@ fn regression_execute_package_activate_command_rejects_unsupported_conflict_poli
     cli.package_activate = true;
     cli.package_activate_conflict_policy = "unsupported".to_string();
     let error = execute_package_activate_command(&cli)
+        .expect_err("unsupported conflict policy should fail");
+    assert!(error
+        .to_string()
+        .contains("unsupported package activation conflict policy"));
+}
+
+#[test]
+fn regression_execute_package_activate_on_startup_is_noop_when_disabled() {
+    let temp = tempdir().expect("tempdir");
+    let destination_root = temp.path().join("activated");
+    let mut cli = test_cli();
+    cli.package_activate_root = temp.path().join("installed");
+    cli.package_activate_destination = destination_root.clone();
+    let report = execute_package_activate_on_startup(&cli)
+        .expect("startup activation should allow disabled mode");
+    assert!(report.is_none());
+    assert!(!destination_root.exists());
+}
+
+#[test]
+fn functional_execute_package_activate_on_startup_creates_runtime_skill_alias() {
+    let temp = tempdir().expect("tempdir");
+    let install_root = temp.path().join("installed");
+    let source_root = temp.path().join("bundle");
+    std::fs::create_dir_all(source_root.join("skills/checks")).expect("create skills dir");
+    std::fs::write(source_root.join("skills/checks/SKILL.md"), "# checks")
+        .expect("write skill source");
+    let manifest_path = source_root.join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "skills": [{"id":"checks","path":"skills/checks/SKILL.md"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut install_cli = test_cli();
+    install_cli.package_install = Some(manifest_path);
+    install_cli.package_install_root = install_root.clone();
+    execute_package_install_command(&install_cli).expect("package install should succeed");
+
+    let destination_root = temp.path().join("activated");
+    let mut cli = test_cli();
+    cli.package_activate_on_startup = true;
+    cli.package_activate_root = install_root;
+    cli.package_activate_destination = destination_root.clone();
+    let report = execute_package_activate_on_startup(&cli)
+        .expect("startup activation should succeed")
+        .expect("startup activation should return report");
+    assert_eq!(report.activated_components, 1);
+    assert_eq!(
+        std::fs::read_to_string(destination_root.join("skills/checks/SKILL.md"))
+            .expect("read activated nested skill"),
+        "# checks"
+    );
+    assert_eq!(
+        std::fs::read_to_string(destination_root.join("skills/checks.md"))
+            .expect("read activated skill alias"),
+        "# checks"
+    );
+}
+
+#[test]
+fn integration_compose_startup_system_prompt_uses_activated_skill_aliases() {
+    let temp = tempdir().expect("tempdir");
+    let install_root = temp.path().join("installed");
+    let source_root = temp.path().join("bundle");
+    std::fs::create_dir_all(source_root.join("skills/checks")).expect("create skills dir");
+    std::fs::write(
+        source_root.join("skills/checks/SKILL.md"),
+        "Always run tests",
+    )
+    .expect("write skill source");
+    let manifest_path = source_root.join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "skills": [{"id":"checks","path":"skills/checks/SKILL.md"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut install_cli = test_cli();
+    install_cli.package_install = Some(manifest_path);
+    install_cli.package_install_root = install_root.clone();
+    execute_package_install_command(&install_cli).expect("package install should succeed");
+
+    let destination_root = temp.path().join("activated");
+    let mut activation_cli = test_cli();
+    activation_cli.package_activate_on_startup = true;
+    activation_cli.package_activate_root = install_root;
+    activation_cli.package_activate_destination = destination_root.clone();
+    execute_package_activate_on_startup(&activation_cli)
+        .expect("startup activation should succeed");
+
+    let mut cli = test_cli();
+    cli.system_prompt = "base prompt".to_string();
+    cli.skills = vec!["checks".to_string()];
+    let composed = compose_startup_system_prompt(&cli, &destination_root.join("skills"))
+        .expect("compose startup prompt");
+    assert!(composed.contains("base prompt"));
+    assert!(composed.contains("Always run tests"));
+}
+
+#[test]
+fn regression_execute_package_activate_on_startup_rejects_unsupported_conflict_policy() {
+    let mut cli = test_cli();
+    cli.package_activate_on_startup = true;
+    cli.package_activate_conflict_policy = "unsupported".to_string();
+    let error = execute_package_activate_on_startup(&cli)
         .expect_err("unsupported conflict policy should fail");
     assert!(error
         .to_string()

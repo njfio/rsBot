@@ -372,6 +372,17 @@ cargo run -p pi-coding-agent -- \
   --package-activate-conflict-policy keep-first
 ```
 
+Activate installed package components during normal startup (without exiting), then run with activated package skills:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --package-activate-on-startup \
+  --package-activate-root .pi/packages \
+  --package-activate-destination .pi/packages-active \
+  --package-activate-conflict-policy keep-first \
+  --skill checks
+```
+
 List installed package bundles from a package root:
 
 ```bash
