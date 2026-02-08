@@ -126,7 +126,8 @@ use crate::events::{
     EventWebhookIngestConfig,
 };
 pub(crate) use crate::extension_manifest::{
-    execute_extension_exec_command, execute_extension_list_command, execute_extension_show_command,
+    dispatch_extension_runtime_hook, execute_extension_exec_command,
+    execute_extension_list_command, execute_extension_show_command,
     execute_extension_validate_command,
 };
 pub(crate) use crate::macro_profile_commands::{
@@ -191,8 +192,9 @@ pub(crate) use crate::runtime_cli_validation::{
     validate_github_issues_bridge_cli, validate_slack_bridge_cli,
 };
 pub(crate) use crate::runtime_loop::{
-    resolve_prompt_input, run_interactive, run_prompt, run_prompt_with_cancellation,
-    InteractiveRuntimeConfig, PromptRunStatus,
+    resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
+    run_prompt_with_cancellation, InteractiveRuntimeConfig, PromptRunStatus,
+    RuntimeExtensionHooksConfig,
 };
 #[cfg(test)]
 pub(crate) use crate::runtime_output::stream_text_chunks;

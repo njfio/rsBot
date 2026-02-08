@@ -335,6 +335,17 @@ cargo run -p pi-coding-agent -- \
   --extension-exec-payload-file .pi/extensions/issue-assistant/payload.json
 ```
 
+Enable runtime lifecycle hook dispatch (`run-start` / `run-end`) for prompt turns:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --openai-api-key "$OPENAI_API_KEY" \
+  --prompt "Summarize open issues" \
+  --extension-runtime-hooks \
+  --extension-runtime-root .pi/extensions
+```
+
 Validate a reusable package manifest JSON and exit:
 
 ```bash

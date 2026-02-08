@@ -601,6 +601,24 @@ pub(crate) struct Cli {
     pub(crate) extension_show: Option<PathBuf>,
 
     #[arg(
+        long = "extension-runtime-hooks",
+        env = "PI_EXTENSION_RUNTIME_HOOKS",
+        default_value_t = false,
+        help = "Enable runtime run-start/run-end extension hook dispatch for prompt turns"
+    )]
+    pub(crate) extension_runtime_hooks: bool,
+
+    #[arg(
+        long = "extension-runtime-root",
+        env = "PI_EXTENSION_RUNTIME_ROOT",
+        default_value = ".pi/extensions",
+        requires = "extension_runtime_hooks",
+        value_name = "path",
+        help = "Root directory scanned for runtime extension hooks when --extension-runtime-hooks is enabled"
+    )]
+    pub(crate) extension_runtime_root: PathBuf,
+
+    #[arg(
         long = "package-validate",
         env = "PI_PACKAGE_VALIDATE",
         conflicts_with = "package_show",
