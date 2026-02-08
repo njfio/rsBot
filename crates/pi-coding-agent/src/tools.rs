@@ -825,6 +825,10 @@ impl AgentTool for BashTool {
                     json!(root.display().to_string()),
                 );
                 payload.insert(
+                    "permission_denied".to_string(),
+                    json!(override_result.permission_denied),
+                );
+                payload.insert(
                     "diagnostics".to_string(),
                     json!(override_result.diagnostics),
                 );
@@ -1821,7 +1825,7 @@ mod tests {
         let script_path = extension_dir.join("policy.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"deny\",\"reason\":\"command denied\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":\"deny\",\"reason\":\"command denied\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1835,6 +1839,7 @@ mod tests {
   "runtime": "process",
   "entrypoint": "policy.sh",
   "hooks": ["policy-override"],
+  "permissions": ["run-commands"],
   "timeout_ms": 5000
 }"#,
         )
@@ -1877,6 +1882,71 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn functional_bash_tool_policy_override_missing_permission_denies_before_spawn() {
+        let temp = tempdir().expect("tempdir");
+        let extensions_root = temp.path().join("extensions");
+        let extension_dir = extensions_root.join("missing-permission");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":\"allow\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "missing-permission",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let marker = temp.path().join("marker.txt");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.extension_policy_override_root = Some(extensions_root);
+        let tool = BashTool::new(Arc::new(policy));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": format!("printf 'x' > {}", marker.display()),
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("policy_rule")
+                .and_then(serde_json::Value::as_str),
+            Some("extension_policy_override")
+        );
+        assert!(result
+            .content
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .contains("requires 'run-commands' permission"));
+        assert_eq!(
+            result
+                .content
+                .get("permission_denied")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn integration_bash_tool_policy_override_allow_permits_execution() {
         let temp = tempdir().expect("tempdir");
         let extensions_root = temp.path().join("extensions");
@@ -1886,7 +1956,7 @@ mod tests {
         let script_path = extension_dir.join("policy.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"allow\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":\"allow\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1900,6 +1970,7 @@ mod tests {
   "runtime": "process",
   "entrypoint": "policy.sh",
   "hooks": ["policy-override"],
+  "permissions": ["run-commands"],
   "timeout_ms": 5000
 }"#,
         )
@@ -1936,7 +2007,7 @@ mod tests {
         let script_path = extension_dir.join("policy.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":123}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"decision\":123}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1950,6 +2021,7 @@ mod tests {
   "runtime": "process",
   "entrypoint": "policy.sh",
   "hooks": ["policy-override"],
+  "permissions": ["run-commands"],
   "timeout_ms": 5000
 }"#,
         )
