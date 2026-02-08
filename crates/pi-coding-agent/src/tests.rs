@@ -28,14 +28,15 @@ use super::{
     execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
     execute_command_file, execute_doctor_command, execute_integration_auth_command,
     execute_macro_command, execute_package_install_command, execute_package_list_command,
-    execute_package_remove_command, execute_package_show_command, execute_package_validate_command,
-    execute_profile_command, execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
-    execute_rpc_dispatch_ndjson_command, execute_rpc_validate_frame_command,
-    execute_session_bookmark_command, execute_session_diff_command,
-    execute_session_graph_export_command, execute_session_search_command,
-    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
-    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
-    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_package_remove_command, execute_package_rollback_command, execute_package_show_command,
+    execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
+    execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
+    execute_rpc_validate_frame_command, execute_session_bookmark_command,
+    execute_session_diff_command, execute_session_graph_export_command,
+    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+    execute_skills_lock_diff_command, execute_skills_lock_write_command,
+    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+    execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
@@ -256,6 +257,8 @@ fn test_cli() -> Cli {
         package_list_root: PathBuf::from(".pi/packages"),
         package_remove: None,
         package_remove_root: PathBuf::from(".pi/packages"),
+        package_rollback: None,
+        package_rollback_root: PathBuf::from(".pi/packages"),
         rpc_capabilities: false,
         rpc_validate_frame_file: None,
         rpc_dispatch_frame_file: None,
@@ -6906,6 +6909,68 @@ fn regression_execute_package_remove_command_rejects_invalid_coordinate() {
     let error =
         execute_package_remove_command(&cli).expect_err("invalid coordinate format should fail");
     assert!(error.to_string().contains("must follow <name>@<version>"));
+}
+
+#[test]
+fn functional_execute_package_rollback_command_removes_non_target_versions() {
+    let temp = tempdir().expect("tempdir");
+    let install_root = temp.path().join("installed");
+    let install_version = |version: &str, body: &str| {
+        let source_root = temp.path().join(format!("bundle-{version}"));
+        std::fs::create_dir_all(source_root.join("templates")).expect("create templates dir");
+        std::fs::write(source_root.join("templates/review.txt"), body)
+            .expect("write template source");
+        let manifest_path = source_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "{version}",
+  "templates": [{{"id":"review","path":"templates/review.txt"}}]
+}}"#
+            ),
+        )
+        .expect("write manifest");
+
+        let mut install_cli = test_cli();
+        install_cli.package_install = Some(manifest_path);
+        install_cli.package_install_root = install_root.clone();
+        execute_package_install_command(&install_cli).expect("package install should succeed");
+    };
+
+    install_version("1.0.0", "v1");
+    install_version("2.0.0", "v2");
+
+    let mut rollback_cli = test_cli();
+    rollback_cli.package_rollback = Some("starter-bundle@1.0.0".to_string());
+    rollback_cli.package_rollback_root = install_root.clone();
+    execute_package_rollback_command(&rollback_cli).expect("package rollback should succeed");
+    assert!(install_root.join("starter-bundle/1.0.0").exists());
+    assert!(!install_root.join("starter-bundle/2.0.0").exists());
+}
+
+#[test]
+fn regression_execute_package_rollback_command_rejects_missing_target() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.package_rollback = Some("starter-bundle@1.0.0".to_string());
+    cli.package_rollback_root = temp.path().join("installed");
+    let error =
+        execute_package_rollback_command(&cli).expect_err("missing target version should fail");
+    assert!(error.to_string().contains("is not installed"));
+}
+
+#[test]
+fn regression_execute_package_rollback_command_rejects_invalid_coordinate() {
+    let mut cli = test_cli();
+    cli.package_rollback = Some("../starter@1.0.0".to_string());
+    cli.package_rollback_root = PathBuf::from(".pi/packages");
+    let error = execute_package_rollback_command(&cli).expect_err("invalid coordinate should fail");
+    assert!(error
+        .to_string()
+        .contains("must not contain path separators"));
 }
 
 #[test]
