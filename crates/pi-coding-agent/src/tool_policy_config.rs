@@ -46,6 +46,9 @@ pub(crate) fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     if cli.tool_policy_trace {
         policy.tool_policy_trace = true;
     }
+    if cli.extension_runtime_hooks {
+        policy.extension_policy_override_root = Some(cli.extension_runtime_root.clone());
+    }
     if !cli.allow_command.is_empty() {
         for command in &cli.allow_command {
             let command = command.trim();
@@ -104,5 +107,9 @@ pub(crate) fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
         "enforce_regular_files": policy.enforce_regular_files,
         "bash_dry_run": policy.bash_dry_run,
         "tool_policy_trace": policy.tool_policy_trace,
+        "extension_policy_override_root": policy
+            .extension_policy_override_root
+            .as_ref()
+            .map(|path| path.display().to_string()),
     })
 }

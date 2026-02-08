@@ -9601,6 +9601,7 @@ fn build_tool_policy_includes_cwd_and_custom_root() {
     assert_eq!(policy.policy_preset, ToolPolicyPreset::Balanced);
     assert!(!policy.bash_dry_run);
     assert!(!policy.tool_policy_trace);
+    assert!(policy.extension_policy_override_root.is_none());
 }
 
 #[test]
@@ -9609,6 +9610,8 @@ fn unit_tool_policy_to_json_includes_key_limits_and_modes() {
     cli.bash_profile = CliBashProfile::Strict;
     cli.os_sandbox_mode = CliOsSandboxMode::Auto;
     cli.max_file_write_bytes = 4096;
+    cli.extension_runtime_hooks = true;
+    cli.extension_runtime_root = PathBuf::from("/tmp/policy-overrides");
 
     let policy = build_tool_policy(&cli).expect("policy should build");
     let payload = tool_policy_to_json(&policy);
@@ -9620,6 +9623,10 @@ fn unit_tool_policy_to_json_includes_key_limits_and_modes() {
     assert_eq!(payload["enforce_regular_files"], true);
     assert_eq!(payload["bash_dry_run"], false);
     assert_eq!(payload["tool_policy_trace"], false);
+    assert_eq!(
+        payload["extension_policy_override_root"],
+        "/tmp/policy-overrides"
+    );
 }
 
 #[test]
@@ -9673,6 +9680,18 @@ fn functional_build_tool_policy_enables_trace_when_flag_set() {
 }
 
 #[test]
+fn functional_build_tool_policy_enables_extension_policy_override_with_runtime_hooks() {
+    let mut cli = test_cli();
+    cli.extension_runtime_hooks = true;
+    cli.extension_runtime_root = PathBuf::from("/tmp/extensions-runtime");
+    let policy = build_tool_policy(&cli).expect("policy should build");
+    assert_eq!(
+        policy.extension_policy_override_root.as_deref(),
+        Some(Path::new("/tmp/extensions-runtime"))
+    );
+}
+
+#[test]
 fn functional_build_tool_policy_applies_strict_profile_and_custom_allowlist() {
     let mut cli = test_cli();
     cli.bash_profile = CliBashProfile::Strict;
@@ -9693,6 +9712,14 @@ fn regression_build_tool_policy_permissive_profile_disables_allowlist() {
     cli.bash_profile = CliBashProfile::Permissive;
     let policy = build_tool_policy(&cli).expect("policy should build");
     assert!(policy.allowed_commands.is_empty());
+}
+
+#[test]
+fn regression_build_tool_policy_keeps_policy_override_disabled_without_runtime_hooks() {
+    let mut cli = test_cli();
+    cli.extension_runtime_root = PathBuf::from("/tmp/extensions-runtime");
+    let policy = build_tool_policy(&cli).expect("policy should build");
+    assert!(policy.extension_policy_override_root.is_none());
 }
 
 #[test]

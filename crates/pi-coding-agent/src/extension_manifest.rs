@@ -94,6 +94,32 @@ pub(crate) struct ExtensionMessageTransformResult {
     pub diagnostics: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtensionPolicyOverrideResult {
+    pub root: PathBuf,
+    pub allowed: bool,
+    pub denied_by: Option<String>,
+    pub reason: Option<String>,
+    pub evaluated: usize,
+    pub denied: usize,
+    pub skipped_invalid: usize,
+    pub skipped_unsupported_runtime: usize,
+    pub skipped_undeclared_hook: usize,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PolicyOverrideDecision {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicyOverrideResponse {
+    decision: PolicyOverrideDecision,
+    reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ExtensionManifest {
     schema_version: u32,
@@ -610,6 +636,112 @@ pub(crate) fn apply_extension_message_transforms(
     result
 }
 
+pub(crate) fn evaluate_extension_policy_override(
+    root: &Path,
+    payload: &Value,
+) -> ExtensionPolicyOverrideResult {
+    let mut result = ExtensionPolicyOverrideResult {
+        root: root.to_path_buf(),
+        allowed: true,
+        denied_by: None,
+        reason: None,
+        evaluated: 0,
+        denied: 0,
+        skipped_invalid: 0,
+        skipped_unsupported_runtime: 0,
+        skipped_undeclared_hook: 0,
+        diagnostics: Vec::new(),
+    };
+    let hook = ExtensionHook::PolicyOverride;
+
+    let (loaded, invalid_diagnostics) = match discover_loaded_extension_manifests(root) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            result.allowed = false;
+            result.reason = Some(format!("failed to discover extension manifests: {error}"));
+            result
+                .diagnostics
+                .push(format!("extension runtime: {error}"));
+            return result;
+        }
+    };
+
+    result.skipped_invalid = invalid_diagnostics.len();
+    result.diagnostics.extend(invalid_diagnostics);
+
+    for loaded_manifest in loaded {
+        if loaded_manifest.manifest.runtime != ExtensionRuntime::Process {
+            result.skipped_unsupported_runtime += 1;
+            continue;
+        }
+        if !loaded_manifest.manifest.hooks.contains(&hook) {
+            result.skipped_undeclared_hook += 1;
+            continue;
+        }
+
+        result.evaluated += 1;
+        let exec_summary = match execute_extension_process_hook_with_loaded(
+            &loaded_manifest.manifest,
+            &loaded_manifest.summary,
+            &hook,
+            payload,
+        ) {
+            Ok(summary) => summary,
+            Err(error) => {
+                result.allowed = false;
+                result.denied += 1;
+                result.denied_by = Some(format!(
+                    "{}@{}",
+                    loaded_manifest.summary.id, loaded_manifest.summary.version
+                ));
+                result.reason = Some(format!("policy override hook execution failed: {}", error));
+                result.diagnostics.push(format!(
+                    "extension runtime: hook={} id={} manifest={} failed: {}",
+                    hook.as_str(),
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display(),
+                    error
+                ));
+                break;
+            }
+        };
+        let parsed = match parse_policy_override_response(&exec_summary.response) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                result.allowed = false;
+                result.denied += 1;
+                result.denied_by = Some(format!("{}@{}", exec_summary.id, exec_summary.version));
+                result.reason = Some(format!(
+                    "policy override hook returned invalid response: {}",
+                    error
+                ));
+                result.diagnostics.push(format!(
+                    "extension runtime: hook={} id={} manifest={} invalid response: {}",
+                    hook.as_str(),
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display(),
+                    error
+                ));
+                break;
+            }
+        };
+
+        if parsed.decision == PolicyOverrideDecision::Deny {
+            result.allowed = false;
+            result.denied += 1;
+            result.denied_by = Some(format!("{}@{}", exec_summary.id, exec_summary.version));
+            result.reason = Some(
+                parsed
+                    .reason
+                    .unwrap_or_else(|| "extension policy override denied command".to_string()),
+            );
+            break;
+        }
+    }
+
+    result
+}
+
 fn discover_loaded_extension_manifests(
     root: &Path,
 ) -> Result<(Vec<LoadedExtensionManifest>, Vec<String>)> {
@@ -662,6 +794,39 @@ fn parse_message_transform_response_prompt(response_json: &str) -> Result<Option
         bail!("message-transform response field 'prompt' must not be empty");
     }
     Ok(Some(prompt.to_string()))
+}
+
+fn parse_policy_override_response(response_json: &str) -> Result<PolicyOverrideResponse> {
+    let value = serde_json::from_str::<Value>(response_json)
+        .context("policy-override response must be valid JSON object")?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow!("policy-override response must be a JSON object"))?;
+    let decision_raw = object
+        .get("decision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("policy-override response must include string field 'decision'"))?;
+    let decision = match decision_raw {
+        "allow" => PolicyOverrideDecision::Allow,
+        "deny" => PolicyOverrideDecision::Deny,
+        other => bail!(
+            "policy-override response field 'decision' must be 'allow' or 'deny', got '{}'",
+            other
+        ),
+    };
+    let reason = object.get("reason").map(|value| {
+        value
+            .as_str()
+            .map(|reason| reason.trim().to_string())
+            .ok_or_else(|| anyhow!("policy-override response field 'reason' must be a string"))
+    });
+    let reason = match reason {
+        Some(Ok(reason)) if reason.is_empty() => None,
+        Some(Ok(reason)) => Some(reason),
+        Some(Err(error)) => return Err(error),
+        None => None,
+    };
+    Ok(PolicyOverrideResponse { decision, reason })
 }
 
 fn load_extension_exec_payload(path: &Path) -> Result<Value> {
@@ -932,11 +1097,12 @@ fn validate_timeout_ms(timeout_ms: u64) -> Result<()> {
 mod tests {
     use super::{
         apply_extension_message_transforms, dispatch_extension_runtime_hook,
-        execute_extension_process_hook, list_extension_manifests,
-        parse_message_transform_response_prompt, render_extension_list_report,
+        evaluate_extension_policy_override, execute_extension_process_hook,
+        list_extension_manifests, parse_message_transform_response_prompt,
+        parse_policy_override_response, render_extension_list_report,
         render_extension_manifest_report, validate_extension_manifest, ExtensionHook,
         ExtensionListReport, ExtensionManifest, ExtensionManifestSummary, ExtensionPermission,
-        ExtensionRuntime,
+        ExtensionRuntime, PolicyOverrideDecision,
     };
     use std::{fs, path::PathBuf};
     use tempfile::tempdir;
@@ -1133,7 +1299,7 @@ mod tests {
         let script_path = temp.path().join("hook.sh");
         fs::write(
             &script_path,
-            "#!/usr/bin/env bash\nread -r _input\nprintf '{\"ok\":true,\"result\":\"hook-processed\"}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"ok\":true,\"result\":\"hook-processed\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1167,7 +1333,7 @@ mod tests {
         let script_path = temp.path().join("hook.sh");
         fs::write(
             &script_path,
-            "#!/usr/bin/env bash\nread -r _input\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\nread -r _input\nprintf '{\"ok\":true}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1197,11 +1363,8 @@ mod tests {
     fn regression_execute_extension_process_hook_enforces_timeout() {
         let temp = tempdir().expect("tempdir");
         let script_path = temp.path().join("slow.sh");
-        fs::write(
-            &script_path,
-            "#!/usr/bin/env bash\nsleep 1\nprintf '{\"ok\":true}'\n",
-        )
-        .expect("write script");
+        fs::write(&script_path, "#!/bin/sh\nsleep 1\nprintf '{\"ok\":true}'\n")
+            .expect("write script");
         make_executable(&script_path);
 
         let manifest_path = temp.path().join("extension.json");
@@ -1231,7 +1394,7 @@ mod tests {
         let script_path = temp.path().join("bad-output.sh");
         fs::write(
             &script_path,
-            "#!/usr/bin/env bash\nread -r _input\nprintf 'not-json'\n",
+            "#!/bin/sh\nread -r _input\nprintf 'not-json'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1269,7 +1432,7 @@ mod tests {
         let alpha_script = alpha_dir.join("hook.sh");
         fs::write(
             &alpha_script,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
         )
         .expect("write alpha script");
         make_executable(&alpha_script);
@@ -1277,7 +1440,7 @@ mod tests {
         let beta_script = beta_dir.join("hook.sh");
         fs::write(
             &beta_script,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
         )
         .expect("write beta script");
         make_executable(&beta_script);
@@ -1331,7 +1494,7 @@ mod tests {
         let script_path = extension_dir.join("hook.sh");
         fs::write(
             &script_path,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1372,17 +1535,14 @@ mod tests {
         let good_script = good_dir.join("hook.sh");
         fs::write(
             &good_script,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
         )
         .expect("write good script");
         make_executable(&good_script);
 
         let bad_script = bad_dir.join("slow.sh");
-        fs::write(
-            &bad_script,
-            "#!/usr/bin/env bash\nsleep 1\nprintf '{\"ok\":true}'\n",
-        )
-        .expect("write bad script");
+        fs::write(&bad_script, "#!/bin/sh\nsleep 1\nprintf '{\"ok\":true}'\n")
+            .expect("write bad script");
         make_executable(&bad_script);
 
         fs::write(
@@ -1434,7 +1594,7 @@ mod tests {
         let script_path = valid_dir.join("hook.sh");
         fs::write(
             &script_path,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1496,7 +1656,7 @@ mod tests {
         let script_path = extension_dir.join("transform.sh");
         fs::write(
             &script_path,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"prompt\":\"rewritten prompt\"}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":\"rewritten prompt\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1534,14 +1694,14 @@ mod tests {
         let a_script = a_dir.join("transform.sh");
         fs::write(
             &a_script,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"prompt\":\"alpha\"}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":\"alpha\"}'\n",
         )
         .expect("write a script");
         make_executable(&a_script);
         let b_script = b_dir.join("transform.sh");
         fs::write(
             &b_script,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"prompt\":\"beta\"}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":\"beta\"}'\n",
         )
         .expect("write b script");
         make_executable(&b_script);
@@ -1595,7 +1755,7 @@ mod tests {
         let script_path = extension_dir.join("transform.sh");
         fs::write(
             &script_path,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"prompt\":123}'\n",
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"prompt\":123}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -1622,5 +1782,154 @@ mod tests {
             .diagnostics
             .iter()
             .any(|line| line.contains("must be a string")));
+    }
+
+    #[test]
+    fn unit_parse_policy_override_response_accepts_allow_decision() {
+        let response =
+            parse_policy_override_response(r#"{"decision":"allow"}"#).expect("response parses");
+        assert_eq!(response.decision, PolicyOverrideDecision::Allow);
+        assert_eq!(response.reason, None);
+    }
+
+    #[test]
+    fn unit_parse_policy_override_response_accepts_deny_decision_with_reason() {
+        let response = parse_policy_override_response(r#"{"decision":"deny","reason":"blocked"}"#)
+            .expect("response parses");
+        assert_eq!(response.decision, PolicyOverrideDecision::Deny);
+        assert_eq!(response.reason.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn regression_parse_policy_override_response_rejects_invalid_decision() {
+        let error = parse_policy_override_response(r#"{"decision":"defer"}"#)
+            .expect_err("invalid decision should fail");
+        assert!(error.to_string().contains("must be 'allow' or 'deny'"));
+    }
+
+    #[test]
+    fn functional_evaluate_extension_policy_override_denies_command() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("policy-enforcer");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"deny\",\"reason\":\"blocked by extension\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "policy-enforcer",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let result = evaluate_extension_policy_override(
+            &root,
+            &serde_json::json!({"command":"printf 'ok'","tool":"bash"}),
+        );
+        assert!(!result.allowed);
+        assert_eq!(result.denied, 1);
+        assert_eq!(result.evaluated, 1);
+        assert_eq!(result.denied_by.as_deref(), Some("policy-enforcer@1.0.0"));
+        assert_eq!(result.reason.as_deref(), Some("blocked by extension"));
+    }
+
+    #[test]
+    fn integration_evaluate_extension_policy_override_allows_command() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("policy-enforcer");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"allow\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "policy-enforcer",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let result = evaluate_extension_policy_override(
+            &root,
+            &serde_json::json!({"command":"printf 'ok'","tool":"bash"}),
+        );
+        assert!(result.allowed);
+        assert_eq!(result.denied, 0);
+        assert_eq!(result.evaluated, 1);
+        assert_eq!(result.reason, None);
+    }
+
+    #[test]
+    fn regression_evaluate_extension_policy_override_fails_closed_on_invalid_response() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("broken-policy");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":123}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "broken-policy",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let result = evaluate_extension_policy_override(
+            &root,
+            &serde_json::json!({"command":"printf 'ok'","tool":"bash"}),
+        );
+        assert!(!result.allowed);
+        assert_eq!(result.denied, 1);
+        assert_eq!(result.denied_by.as_deref(), Some("broken-policy@1.0.0"));
+        assert!(result
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("invalid response"));
+        assert!(result
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("invalid response")));
     }
 }

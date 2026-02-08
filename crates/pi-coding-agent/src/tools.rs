@@ -12,6 +12,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::{process::Command, time::timeout};
 
+use crate::extension_manifest::evaluate_extension_policy_override;
+
 const SAFE_BASH_ENV_VARS: &[&str] = &[
     "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TMP", "TEMP",
     "TZ",
@@ -74,6 +76,7 @@ pub struct ToolPolicy {
     pub enforce_regular_files: bool,
     pub bash_dry_run: bool,
     pub tool_policy_trace: bool,
+    pub extension_policy_override_root: Option<PathBuf>,
 }
 
 impl ToolPolicy {
@@ -97,6 +100,7 @@ impl ToolPolicy {
             enforce_regular_files: true,
             bash_dry_run: false,
             tool_policy_trace: false,
+            extension_policy_override_root: None,
         };
         policy.apply_preset(ToolPolicyPreset::Balanced);
         policy
@@ -778,6 +782,76 @@ impl AgentTool for BashTool {
             }
         };
 
+        let override_payload = serde_json::json!({
+            "tool": "bash",
+            "command": command.clone(),
+            "cwd": cwd.as_ref().map(|value| value.display().to_string()),
+            "bash_profile": bash_profile_name(self.policy.bash_profile),
+            "sandbox_mode": os_sandbox_mode_name(self.policy.os_sandbox_mode),
+        });
+        if let Some(root) = &self.policy.extension_policy_override_root {
+            let override_result = evaluate_extension_policy_override(root, &override_payload);
+            if !override_result.allowed {
+                let denied_by = override_result
+                    .denied_by
+                    .clone()
+                    .unwrap_or_else(|| "unknown-extension".to_string());
+                let reason = override_result
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "extension policy override denied command".to_string());
+                push_policy_trace(
+                    &mut trace,
+                    trace_enabled,
+                    "extension_policy_override",
+                    "deny",
+                    format!("denied by {}: {}", denied_by, reason),
+                );
+
+                let mut payload = serde_json::Map::new();
+                payload.insert("command".to_string(), json!(command));
+                payload.insert(
+                    "cwd".to_string(),
+                    json!(cwd.as_ref().map(|value| value.display().to_string())),
+                );
+                payload.insert(
+                    "policy_rule".to_string(),
+                    json!("extension_policy_override"),
+                );
+                payload.insert("error".to_string(), json!(reason));
+                payload.insert("denied_by".to_string(), json!(denied_by));
+                payload.insert(
+                    "extension_root".to_string(),
+                    json!(root.display().to_string()),
+                );
+                payload.insert(
+                    "diagnostics".to_string(),
+                    json!(override_result.diagnostics),
+                );
+                attach_policy_trace(&mut payload, trace_enabled, &trace, "deny");
+                return ToolExecutionResult::error(Value::Object(payload));
+            }
+
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "extension_policy_override",
+                "allow",
+                format!(
+                    "evaluated {} policy-override extension hooks with allow decision",
+                    override_result.evaluated
+                ),
+            );
+        } else {
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "extension_policy_override",
+                "allow",
+                "extension policy override hooks are disabled",
+            );
+        }
+
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
         let current_dir = cwd
             .clone()
@@ -1343,7 +1417,7 @@ fn redact_secrets(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{fs, sync::Arc};
 
     use proptest::prelude::*;
     use tempfile::tempdir;
@@ -1358,6 +1432,16 @@ mod tests {
 
     fn test_policy(path: &Path) -> Arc<ToolPolicy> {
         Arc::new(ToolPolicy::new(vec![path.to_path_buf()]))
+    }
+
+    fn make_executable(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("set executable permissions");
+        }
     }
 
     #[cfg(unix)]
@@ -1724,6 +1808,183 @@ mod tests {
             step.get("check").and_then(serde_json::Value::as_str) == Some("allowed_commands")
                 && step.get("outcome").and_then(serde_json::Value::as_str) == Some("deny")
         }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn functional_bash_tool_policy_override_deny_blocks_execution() {
+        let temp = tempdir().expect("tempdir");
+        let extensions_root = temp.path().join("extensions");
+        let extension_dir = extensions_root.join("policy-enforcer");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"deny\",\"reason\":\"command denied\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "policy-enforcer",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let marker = temp.path().join("marker.txt");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.extension_policy_override_root = Some(extensions_root);
+        let tool = BashTool::new(Arc::new(policy));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": format!("printf 'x' > {}", marker.display()),
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("policy_rule")
+                .and_then(serde_json::Value::as_str),
+            Some("extension_policy_override")
+        );
+        assert_eq!(
+            result
+                .content
+                .get("denied_by")
+                .and_then(serde_json::Value::as_str),
+            Some("policy-enforcer@1.0.0")
+        );
+        assert!(result
+            .content
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .contains("command denied"));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn integration_bash_tool_policy_override_allow_permits_execution() {
+        let temp = tempdir().expect("tempdir");
+        let extensions_root = temp.path().join("extensions");
+        let extension_dir = extensions_root.join("policy-enforcer");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":\"allow\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "policy-enforcer",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.extension_policy_override_root = Some(extensions_root);
+        let tool = BashTool::new(Arc::new(policy));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "printf 'ok'",
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(!result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("stdout")
+                .and_then(serde_json::Value::as_str),
+            Some("ok")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn regression_bash_tool_policy_override_invalid_response_fails_closed() {
+        let temp = tempdir().expect("tempdir");
+        let extensions_root = temp.path().join("extensions");
+        let extension_dir = extensions_root.join("broken-policy");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("policy.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\ncat >/dev/null\nprintf '{\"decision\":123}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "broken-policy",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "policy.sh",
+  "hooks": ["policy-override"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let marker = temp.path().join("marker.txt");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.extension_policy_override_root = Some(extensions_root);
+        let tool = BashTool::new(Arc::new(policy));
+        let result = tool
+            .execute(serde_json::json!({
+                "command": format!("printf 'x' > {}", marker.display()),
+                "cwd": temp.path().display().to_string(),
+            }))
+            .await;
+
+        assert!(result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("policy_rule")
+                .and_then(serde_json::Value::as_str),
+            Some("extension_policy_override")
+        );
+        assert!(result
+            .content
+            .get("diagnostics")
+            .and_then(serde_json::Value::as_array)
+            .expect("diagnostics array")
+            .iter()
+            .any(|value| value
+                .as_str()
+                .unwrap_or_default()
+                .contains("invalid response")));
+        assert!(!marker.exists());
     }
 
     #[tokio::test]
