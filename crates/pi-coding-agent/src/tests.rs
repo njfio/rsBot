@@ -99,6 +99,7 @@ use crate::auth_commands::{
     format_auth_state_counts, AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter,
     AuthRevokedFilter, AuthSourceKindFilter,
 };
+use crate::provider_credentials::provider_auth_snapshot_for_status;
 use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
@@ -1700,6 +1701,95 @@ fn unit_auth_state_count_helpers_are_deterministic() {
 }
 
 #[test]
+fn unit_provider_auth_snapshot_reports_refreshable_and_expiration() {
+    let temp = tempdir().expect("tempdir");
+    let now = current_unix_timestamp();
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-snapshot-ready.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = None;
+    config.openai_api_key = None;
+    set_provider_auth_mode(
+        &mut config,
+        Provider::OpenAi,
+        ProviderAuthMethod::OauthToken,
+    );
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("oauth-access-snapshot".to_string()),
+            refresh_token: Some("oauth-refresh-snapshot".to_string()),
+            expires_unix: Some(now.saturating_add(120)),
+            revoked: false,
+        },
+    );
+    let store = load_credential_store(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+    )
+    .expect("load snapshot store");
+
+    let snapshot = provider_auth_snapshot_for_status(&config, Provider::OpenAi, Some(&store), None);
+    assert_eq!(snapshot.method, ProviderAuthMethod::OauthToken);
+    assert!(snapshot.available);
+    assert_eq!(snapshot.state, "ready");
+    assert_eq!(snapshot.source, "credential_store");
+    assert_eq!(snapshot.expires_unix, Some(now.saturating_add(120)));
+    assert!(snapshot.refreshable);
+    assert!(!snapshot.revoked);
+    assert_eq!(snapshot.secret.as_deref(), Some("oauth-access-snapshot"));
+}
+
+#[test]
+fn unit_provider_auth_snapshot_marks_revoked_not_refreshable() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-snapshot-revoked.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = None;
+    config.openai_api_key = None;
+    set_provider_auth_mode(
+        &mut config,
+        Provider::OpenAi,
+        ProviderAuthMethod::SessionToken,
+    );
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::SessionToken,
+            access_token: Some("revoked-access".to_string()),
+            refresh_token: Some("revoked-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(300)),
+            revoked: true,
+        },
+    );
+    let store = load_credential_store(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+    )
+    .expect("load revoked snapshot store");
+
+    let snapshot = provider_auth_snapshot_for_status(&config, Provider::OpenAi, Some(&store), None);
+    assert!(!snapshot.available);
+    assert_eq!(snapshot.state, "revoked");
+    assert_eq!(snapshot.source, "credential_store");
+    assert!(snapshot.revoked);
+    assert!(!snapshot.refreshable);
+    assert!(snapshot.secret.is_none());
+}
+
+#[test]
 fn functional_auth_conformance_status_matrix_reports_expected_rows() {
     #[derive(Debug)]
     struct AuthConformanceCase {
@@ -2933,6 +3023,7 @@ fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_s
         mode: ProviderAuthMethod,
         record: ProviderCredentialStoreRecord,
         expected_state: &'static str,
+        expected_refreshable: bool,
         access_secret: &'static str,
         refresh_secret: Option<&'static str>,
     }
@@ -2950,6 +3041,7 @@ fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_s
                 revoked: false,
             },
             expected_state: "expired_refresh_pending",
+            expected_refreshable: true,
             access_secret: "oauth-access-secret",
             refresh_secret: Some("oauth-refresh-secret"),
         },
@@ -2963,6 +3055,7 @@ fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_s
                 revoked: false,
             },
             expected_state: "expired",
+            expected_refreshable: false,
             access_secret: "session-access-secret",
             refresh_secret: None,
         },
@@ -2976,6 +3069,7 @@ fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_s
                 revoked: true,
             },
             expected_state: "revoked",
+            expected_refreshable: false,
             access_secret: "revoked-access-secret",
             refresh_secret: Some("revoked-refresh-secret"),
         },
@@ -2989,6 +3083,7 @@ fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_s
                 revoked: false,
             },
             expected_state: "missing_access_token",
+            expected_refreshable: true,
             access_secret: "not-present-access-secret",
             refresh_secret: Some("missing-access-refresh-secret"),
         },
@@ -3017,6 +3112,7 @@ fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_s
         assert_eq!(row["mode"], case.mode.as_str());
         assert_eq!(row["state"], case.expected_state);
         assert_eq!(row["available"], false);
+        assert_eq!(row["refreshable"], case.expected_refreshable);
         assert!(!json_output.contains(case.access_secret));
         if let Some(refresh_secret) = case.refresh_secret {
             assert!(!json_output.contains(refresh_secret));
@@ -5326,6 +5422,34 @@ fn integration_build_provider_client_supports_openai_oauth_from_credential_store
     cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
 
     let client = build_provider_client(&cli, Provider::OpenAi).expect("build oauth client");
+    let ptr = Arc::as_ptr(&client);
+    assert!(!ptr.is_null());
+}
+
+#[test]
+fn integration_build_provider_client_supports_openai_session_token_from_credential_store() {
+    let temp = tempdir().expect("tempdir");
+    let store_path = temp.path().join("credentials.json");
+    write_test_provider_credential(
+        &store_path,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::SessionToken,
+            access_token: Some("openai-session-access".to_string()),
+            refresh_token: None,
+            expires_unix: Some(current_unix_timestamp().saturating_add(900)),
+            revoked: false,
+        },
+    );
+
+    let mut cli = test_cli();
+    cli.openai_auth_mode = CliProviderAuthMode::SessionToken;
+    cli.credential_store = store_path;
+    cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+
+    let client = build_provider_client(&cli, Provider::OpenAi).expect("build session client");
     let ptr = Arc::as_ptr(&client);
     assert!(!ptr.is_null());
 }

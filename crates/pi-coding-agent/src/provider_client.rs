@@ -1,8 +1,8 @@
 use super::*;
-use crate::provider_credentials::ResolvedProviderCredential;
+use crate::provider_credentials::ProviderAuthCredential;
 
 fn resolved_secret_for_provider(
-    resolved: &ResolvedProviderCredential,
+    resolved: &ProviderAuthCredential,
     provider: Provider,
 ) -> Result<String> {
     resolved.secret.clone().ok_or_else(|| {
@@ -16,7 +16,7 @@ fn resolved_secret_for_provider(
 
 fn log_provider_auth_resolution(
     provider: Provider,
-    resolved: &ResolvedProviderCredential,
+    resolved: &ProviderAuthCredential,
     auth_source: &str,
 ) {
     tracing::debug!(
