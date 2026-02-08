@@ -8,6 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use clap::Parser;
+use httpmock::prelude::*;
 use pi_agent_core::{Agent, AgentConfig, AgentEvent, ToolExecutionResult};
 use pi_ai::{
     ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole, ModelRef,
@@ -6802,6 +6803,52 @@ fn functional_execute_package_install_command_succeeds_for_valid_manifest() {
 }
 
 #[test]
+fn functional_execute_package_install_command_supports_remote_sources_with_checksum() {
+    let server = MockServer::start();
+    let remote_body = "remote template body";
+    let remote_mock = server.mock(|when, then| {
+        when.method(GET).path("/templates/review.txt");
+        then.status(200).body(remote_body);
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    std::fs::create_dir_all(&package_root).expect("create package root");
+    let checksum = format!("{:x}", Sha256::digest(remote_body.as_bytes()));
+    let manifest_path = package_root.join("package.json");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{checksum}"
+  }}]
+}}"#,
+            server.base_url()
+        ),
+    )
+    .expect("write manifest");
+
+    let install_root = temp.path().join("installed");
+    let mut cli = test_cli();
+    cli.package_install = Some(manifest_path);
+    cli.package_install_root = install_root.clone();
+    execute_package_install_command(&cli).expect("package install should succeed");
+    assert_eq!(
+        std::fs::read_to_string(install_root.join("starter-bundle/1.0.0/templates/review.txt"))
+            .expect("read installed template"),
+        remote_body
+    );
+    remote_mock.assert();
+}
+
+#[test]
 fn regression_execute_package_install_command_rejects_missing_component_source() {
     let temp = tempdir().expect("tempdir");
     let package_root = temp.path().join("bundle");
@@ -6824,6 +6871,47 @@ fn regression_execute_package_install_command_rejects_missing_component_source()
     cli.package_install_root = temp.path().join("installed");
     let error = execute_package_install_command(&cli).expect_err("missing source should fail");
     assert!(error.to_string().contains("does not exist"));
+}
+
+#[test]
+fn regression_execute_package_install_command_rejects_remote_checksum_mismatch() {
+    let server = MockServer::start();
+    let remote_mock = server.mock(|when, then| {
+        when.method(GET).path("/templates/review.txt");
+        then.status(200).body("remote template");
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    std::fs::create_dir_all(&package_root).expect("create package root");
+    let manifest_path = package_root.join("package.json");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{}"
+  }}]
+}}"#,
+            server.base_url(),
+            "0".repeat(64)
+        ),
+    )
+    .expect("write manifest");
+
+    let mut cli = test_cli();
+    cli.package_install = Some(manifest_path);
+    cli.package_install_root = temp.path().join("installed");
+    let error =
+        execute_package_install_command(&cli).expect_err("checksum mismatch should fail install");
+    assert!(error.to_string().contains("checksum mismatch"));
+    remote_mock.assert();
 }
 
 #[test]

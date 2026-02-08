@@ -2889,6 +2889,61 @@ fn package_install_flag_installs_bundle_files_and_exits() {
 }
 
 #[test]
+fn package_install_flag_installs_remote_bundle_files_and_exits() {
+    let server = MockServer::start();
+    let remote_body = "remote template body";
+    let remote_mock = server.mock(|when, then| {
+        when.method(GET).path("/templates/review.txt");
+        then.status(200).body(remote_body);
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    fs::create_dir_all(&package_root).expect("create package root");
+    let checksum = format!("{:x}", Sha256::digest(remote_body.as_bytes()));
+    let manifest_path = package_root.join("package.json");
+    fs::write(
+        &manifest_path,
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{checksum}"
+  }}]
+}}"#,
+            server.base_url()
+        ),
+    )
+    .expect("write manifest");
+    let install_root = temp.path().join("installed");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--package-install",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-install-root",
+        install_root.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("package install:"))
+        .stdout(predicate::str::contains("name=starter-bundle"))
+        .stdout(predicate::str::contains("total_components=1"));
+    assert_eq!(
+        fs::read_to_string(install_root.join("starter-bundle/1.0.0/templates/review.txt"))
+            .expect("read installed template"),
+        remote_body
+    );
+    remote_mock.assert();
+}
+
+#[test]
 fn package_install_flag_accepts_valid_signed_manifest_when_required() {
     let temp = tempdir().expect("tempdir");
     let package_root = temp.path().join("bundle");
@@ -2941,6 +2996,72 @@ fn package_install_flag_accepts_valid_signed_manifest_when_required() {
 }
 
 #[test]
+fn package_install_flag_accepts_remote_signed_manifest_when_required() {
+    let server = MockServer::start();
+    let remote_body = "remote signed template";
+    let remote_mock = server.mock(|when, then| {
+        when.method(GET).path("/templates/review.txt");
+        then.status(200).body(remote_body);
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    fs::create_dir_all(&package_root).expect("create package root");
+    let checksum = format!("{:x}", Sha256::digest(remote_body.as_bytes()));
+    let manifest_path = package_root.join("package.json");
+    fs::write(
+        &manifest_path,
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "signing_key": "publisher",
+  "signature_file": "package.sig",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{checksum}"
+  }}]
+}}"#,
+            server.base_url()
+        ),
+    )
+    .expect("write manifest");
+
+    let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+    let signature = signing_key.sign(&fs::read(&manifest_path).expect("read manifest bytes"));
+    fs::write(
+        package_root.join("package.sig"),
+        BASE64.encode(signature.to_bytes()),
+    )
+    .expect("write signature");
+    let trust_root = format!(
+        "publisher={}",
+        BASE64.encode(signing_key.verifying_key().as_bytes())
+    );
+
+    let install_root = temp.path().join("installed");
+    let mut cmd = binary_command();
+    cmd.args([
+        "--package-install",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-install-root",
+        install_root.to_str().expect("utf8 path"),
+        "--require-signed-packages",
+        "--skill-trust-root",
+        trust_root.as_str(),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("package install:"))
+        .stdout(predicate::str::contains("name=starter-bundle"));
+    remote_mock.assert();
+}
+
+#[test]
 fn regression_package_install_flag_rejects_missing_component_source() {
     let temp = tempdir().expect("tempdir");
     let package_root = temp.path().join("bundle");
@@ -2970,6 +3091,53 @@ fn regression_package_install_flag_rejects_missing_component_source() {
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("does not exist"));
+}
+
+#[test]
+fn regression_package_install_flag_rejects_remote_checksum_mismatch() {
+    let server = MockServer::start();
+    let remote_mock = server.mock(|when, then| {
+        when.method(GET).path("/templates/review.txt");
+        then.status(200).body("remote template");
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    fs::create_dir_all(&package_root).expect("create package root");
+    let manifest_path = package_root.join("package.json");
+    fs::write(
+        &manifest_path,
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{}"
+  }}]
+}}"#,
+            server.base_url(),
+            "0".repeat(64)
+        ),
+    )
+    .expect("write manifest");
+    let install_root = temp.path().join("installed");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--package-install",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-install-root",
+        install_root.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("checksum mismatch"));
+    remote_mock.assert();
 }
 
 #[test]
