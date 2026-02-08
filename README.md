@@ -317,6 +317,13 @@ cargo run -p pi-coding-agent -- \
   --rpc-validate-frame-file /tmp/rpc-frame.json
 ```
 
+Dispatch one RPC request frame JSON into a response frame JSON and exit:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --rpc-dispatch-frame-file /tmp/rpc-frame.json
+```
+
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 
 ```bash

@@ -28,12 +28,13 @@ use super::{
     execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
     execute_command_file, execute_doctor_command, execute_integration_auth_command,
     execute_macro_command, execute_package_validate_command, execute_profile_command,
-    execute_rpc_capabilities_command, execute_rpc_validate_frame_command,
-    execute_session_bookmark_command, execute_session_diff_command,
-    execute_session_graph_export_command, execute_session_search_command,
-    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
-    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
-    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
+    execute_rpc_validate_frame_command, execute_session_bookmark_command,
+    execute_session_diff_command, execute_session_graph_export_command,
+    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+    execute_skills_lock_diff_command, execute_skills_lock_write_command,
+    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+    execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
@@ -249,6 +250,7 @@ fn test_cli() -> Cli {
         package_validate: None,
         rpc_capabilities: false,
         rpc_validate_frame_file: None,
+        rpc_dispatch_frame_file: None,
         events_runner: false,
         events_dir: PathBuf::from(".pi/events"),
         events_state_path: PathBuf::from(".pi/events/state.json"),
@@ -6794,6 +6796,47 @@ fn regression_execute_rpc_validate_frame_command_rejects_invalid_frame() {
     cli.rpc_validate_frame_file = Some(frame_path);
     let error = execute_rpc_validate_frame_command(&cli).expect_err("invalid kind should fail");
     assert!(error.to_string().contains("unsupported rpc frame kind"));
+}
+
+#[test]
+fn functional_execute_rpc_dispatch_frame_command_succeeds_for_valid_frame() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    std::fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-dispatch",
+  "kind": "run.cancel",
+  "payload": {"run_id":"run-1"}
+}"#,
+    )
+    .expect("write frame");
+    let mut cli = test_cli();
+    cli.rpc_dispatch_frame_file = Some(frame_path);
+    execute_rpc_dispatch_frame_command(&cli).expect("rpc frame dispatch should succeed");
+}
+
+#[test]
+fn regression_execute_rpc_dispatch_frame_command_rejects_missing_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    std::fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-start",
+  "kind": "run.start",
+  "payload": {}
+}"#,
+    )
+    .expect("write frame");
+    let mut cli = test_cli();
+    cli.rpc_dispatch_frame_file = Some(frame_path);
+    let error = execute_rpc_dispatch_frame_command(&cli).expect_err("missing prompt should fail");
+    assert!(error
+        .to_string()
+        .contains("requires non-empty payload field 'prompt'"));
 }
 
 #[test]

@@ -170,9 +170,11 @@ pub(crate) use crate::provider_fallback::{
 pub(crate) use crate::rpc_capabilities::execute_rpc_capabilities_command;
 #[cfg(test)]
 pub(crate) use crate::rpc_capabilities::rpc_capabilities_payload;
-pub(crate) use crate::rpc_protocol::execute_rpc_validate_frame_command;
 #[cfg(test)]
 pub(crate) use crate::rpc_protocol::validate_rpc_frame_file;
+pub(crate) use crate::rpc_protocol::{
+    execute_rpc_dispatch_frame_command, execute_rpc_validate_frame_command,
+};
 pub(crate) use crate::runtime_cli_validation::{
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_github_issues_bridge_cli, validate_slack_bridge_cli,

@@ -525,6 +525,14 @@ pub(crate) struct Cli {
     pub(crate) rpc_validate_frame_file: Option<PathBuf>,
 
     #[arg(
+        long = "rpc-dispatch-frame-file",
+        env = "PI_RPC_DISPATCH_FRAME_FILE",
+        value_name = "path",
+        help = "Dispatch one RPC request frame JSON file and print a response frame JSON"
+    )]
+    pub(crate) rpc_dispatch_frame_file: Option<PathBuf>,
+
+    #[arg(
         long = "events-runner",
         env = "PI_EVENTS_RUNNER",
         default_value_t = false,
