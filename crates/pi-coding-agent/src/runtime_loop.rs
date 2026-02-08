@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     io::{Read, Write},
     sync::{
@@ -8,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use pi_agent_core::Agent;
 use pi_ai::StreamDeltaHandler;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -203,6 +204,19 @@ pub(crate) fn resolve_prompt_input(cli: &Cli) -> Result<Option<String>> {
         return Ok(Some(prompt.clone()));
     }
 
+    if let Some(path) = cli.prompt_template_file.as_ref() {
+        let template = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read prompt template file {}", path.display()))?;
+        let template =
+            ensure_non_empty_text(template, format!("prompt template file {}", path.display()))?;
+        let vars = parse_prompt_template_vars(&cli.prompt_template_var)?;
+        let rendered = render_prompt_template(&template, &vars)?;
+        return Ok(Some(ensure_non_empty_text(
+            rendered,
+            format!("rendered prompt template {}", path.display()),
+        )?));
+    }
+
     let Some(path) = cli.prompt_file.as_ref() else {
         return Ok(None);
     };
@@ -225,6 +239,72 @@ pub(crate) fn resolve_prompt_input(cli: &Cli) -> Result<Option<String>> {
         prompt,
         format!("prompt file {}", path.display()),
     )?))
+}
+
+fn parse_prompt_template_vars(raw_specs: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut vars = BTreeMap::new();
+    for raw_spec in raw_specs {
+        let spec = raw_spec.trim();
+        let (raw_key, value) = spec.split_once('=').ok_or_else(|| {
+            anyhow!(
+                "invalid --prompt-template-var '{}', expected key=value",
+                raw_spec
+            )
+        })?;
+        let key = raw_key.trim();
+        if key.is_empty() {
+            bail!(
+                "invalid --prompt-template-var '{}', key must be non-empty",
+                raw_spec
+            );
+        }
+        if vars.contains_key(key) {
+            bail!("duplicate --prompt-template-var key '{}'", key);
+        }
+        vars.insert(key.to_string(), value.to_string());
+    }
+    Ok(vars)
+}
+
+fn render_prompt_template(template: &str, vars: &BTreeMap<String, String>) -> Result<String> {
+    let mut rendered = String::new();
+    let mut used_keys = BTreeSet::new();
+    let mut cursor = 0_usize;
+
+    while let Some(start_rel) = template[cursor..].find("{{") {
+        let start = cursor + start_rel;
+        rendered.push_str(&template[cursor..start]);
+        let placeholder_start = start + 2;
+        let end_rel = template[placeholder_start..]
+            .find("}}")
+            .ok_or_else(|| anyhow!("prompt template contains unterminated placeholder"))?;
+        let end = placeholder_start + end_rel;
+        let key = template[placeholder_start..end].trim();
+        if key.is_empty() {
+            bail!("prompt template contains empty placeholder");
+        }
+        let value = vars.get(key).ok_or_else(|| {
+            anyhow!(
+                "prompt template placeholder '{}' is missing a --prompt-template-var value",
+                key
+            )
+        })?;
+        rendered.push_str(value);
+        used_keys.insert(key.to_string());
+        cursor = end + 2;
+    }
+    rendered.push_str(&template[cursor..]);
+
+    let unused = vars
+        .keys()
+        .filter(|key| !used_keys.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unused.is_empty() {
+        bail!("unused --prompt-template-var keys: {}", unused.join(", "));
+    }
+
+    Ok(rendered)
 }
 
 fn report_prompt_status(status: PromptRunStatus) {

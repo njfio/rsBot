@@ -2786,6 +2786,55 @@ fn prompt_file_flag_runs_one_shot_prompt() {
 }
 
 #[test]
+fn prompt_template_file_flag_renders_and_runs_one_shot_prompt() {
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .body_includes("Summarize src/main.rs with focus on retries.");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "template prompt ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let template_path = temp.path().join("prompt-template.txt");
+    fs::write(
+        &template_path,
+        "Summarize {{module}} with focus on {{focus}}.",
+    )
+    .expect("write template");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt-template-file",
+        template_path.to_str().expect("utf8 path"),
+        "--prompt-template-var",
+        "module=src/main.rs",
+        "--prompt-template-var",
+        "focus=retries",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("template prompt ok"));
+
+    openai.assert_calls(1);
+}
+
+#[test]
 fn prompt_file_dash_reads_prompt_from_stdin() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {
@@ -2864,6 +2913,54 @@ fn regression_empty_prompt_file_fails_fast() {
         .failure()
         .stderr(predicate::str::contains("prompt file"))
         .stderr(predicate::str::contains("is empty"));
+}
+
+#[test]
+fn regression_prompt_template_file_missing_variable_fails_fast() {
+    let temp = tempdir().expect("tempdir");
+    let template_path = temp.path().join("prompt-template.txt");
+    fs::write(&template_path, "Summarize {{path}} and {{goal}}").expect("write template");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt-template-file",
+        template_path.to_str().expect("utf8 path"),
+        "--prompt-template-var",
+        "path=src/lib.rs",
+        "--no-session",
+    ]);
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "missing a --prompt-template-var value",
+    ));
+}
+
+#[test]
+fn regression_prompt_template_var_requires_key_value_shape() {
+    let temp = tempdir().expect("tempdir");
+    let template_path = temp.path().join("prompt-template.txt");
+    fs::write(&template_path, "Summarize {{path}}").expect("write template");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--prompt-template-file",
+        template_path.to_str().expect("utf8 path"),
+        "--prompt-template-var",
+        "path",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid --prompt-template-var"));
 }
 
 #[test]

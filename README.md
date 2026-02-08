@@ -206,6 +206,15 @@ Run one prompt from a file:
 cargo run -p pi-coding-agent -- --prompt-file .pi/prompts/review.txt
 ```
 
+Run one prompt from a template file with variables:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --prompt-template-file .pi/prompts/review.template.txt \
+  --prompt-template-var module=src/main.rs \
+  --prompt-template-var focus=\"error handling\"
+```
+
 Pipe a one-shot prompt from stdin:
 
 ```bash

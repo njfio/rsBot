@@ -1,7 +1,10 @@
 use super::*;
 
 fn has_prompt_or_command_input(cli: &Cli) -> bool {
-    cli.prompt.is_some() || cli.prompt_file.is_some() || cli.command_file.is_some()
+    cli.prompt.is_some()
+        || cli.prompt_file.is_some()
+        || cli.prompt_template_file.is_some()
+        || cli.command_file.is_some()
 }
 
 pub(crate) fn validate_github_issues_bridge_cli(cli: &Cli) -> Result<()> {
@@ -11,7 +14,7 @@ pub(crate) fn validate_github_issues_bridge_cli(cli: &Cli) -> Result<()> {
 
     if has_prompt_or_command_input(cli) {
         bail!(
-            "--github-issues-bridge cannot be combined with --prompt, --prompt-file, or --command-file"
+            "--github-issues-bridge cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
         );
     }
     if cli.no_session {
@@ -54,7 +57,7 @@ pub(crate) fn validate_slack_bridge_cli(cli: &Cli) -> Result<()> {
     }
 
     if has_prompt_or_command_input(cli) {
-        bail!("--slack-bridge cannot be combined with --prompt, --prompt-file, or --command-file");
+        bail!("--slack-bridge cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
     }
     if cli.no_session {
         bail!("--slack-bridge cannot be used together with --no-session");
@@ -99,7 +102,7 @@ pub(crate) fn validate_events_runner_cli(cli: &Cli) -> Result<()> {
     }
 
     if has_prompt_or_command_input(cli) {
-        bail!("--events-runner cannot be combined with --prompt, --prompt-file, or --command-file");
+        bail!("--events-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
     }
     if cli.no_session {
         bail!("--events-runner cannot be used together with --no-session");

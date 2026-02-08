@@ -238,6 +238,8 @@ fn test_cli() -> Cli {
         orchestrator_mode: CliOrchestratorMode::Off,
         orchestrator_max_plan_steps: 8,
         prompt_file: None,
+        prompt_template_file: None,
+        prompt_template_var: vec![],
         command_file: None,
         command_file_error_mode: CliCommandFileErrorMode::FailFast,
         channel_store_root: PathBuf::from(".pi/channel-store"),
@@ -6219,6 +6221,30 @@ fn functional_resolve_prompt_input_reads_prompt_file() {
 }
 
 #[test]
+fn functional_resolve_prompt_input_renders_prompt_template_file() {
+    let temp = tempdir().expect("tempdir");
+    let template_path = temp.path().join("prompt-template.txt");
+    std::fs::write(
+        &template_path,
+        "Summarize {{module}} with focus on {{focus}}.",
+    )
+    .expect("write template");
+
+    let mut cli = test_cli();
+    cli.prompt_template_file = Some(template_path);
+    cli.prompt_template_var = vec![
+        "module=src/main.rs".to_string(),
+        "focus=error handling".to_string(),
+    ];
+
+    let prompt = resolve_prompt_input(&cli).expect("resolve rendered template");
+    assert_eq!(
+        prompt.as_deref(),
+        Some("Summarize src/main.rs with focus on error handling.")
+    );
+}
+
+#[test]
 fn regression_resolve_prompt_input_rejects_empty_prompt_file() {
     let temp = tempdir().expect("tempdir");
     let prompt_path = temp.path().join("prompt.txt");
@@ -6231,6 +6257,52 @@ fn regression_resolve_prompt_input_rejects_empty_prompt_file() {
     assert!(error
         .to_string()
         .contains(&format!("prompt file {} is empty", prompt_path.display())));
+}
+
+#[test]
+fn regression_resolve_prompt_input_rejects_template_with_missing_variable() {
+    let temp = tempdir().expect("tempdir");
+    let template_path = temp.path().join("prompt-template.txt");
+    std::fs::write(&template_path, "Review {{path}} and {{goal}}").expect("write template");
+
+    let mut cli = test_cli();
+    cli.prompt_template_file = Some(template_path);
+    cli.prompt_template_var = vec!["path=src/lib.rs".to_string()];
+
+    let error = resolve_prompt_input(&cli).expect_err("missing template var should fail");
+    assert!(error
+        .to_string()
+        .contains("missing a --prompt-template-var value"));
+}
+
+#[test]
+fn regression_resolve_prompt_input_rejects_invalid_template_var_spec() {
+    let temp = tempdir().expect("tempdir");
+    let template_path = temp.path().join("prompt-template.txt");
+    std::fs::write(&template_path, "Review {{path}}").expect("write template");
+
+    let mut cli = test_cli();
+    cli.prompt_template_file = Some(template_path);
+    cli.prompt_template_var = vec!["path".to_string()];
+
+    let error = resolve_prompt_input(&cli).expect_err("invalid template var spec should fail");
+    assert!(error.to_string().contains("invalid --prompt-template-var"));
+}
+
+#[test]
+fn regression_resolve_prompt_input_rejects_unused_template_vars() {
+    let temp = tempdir().expect("tempdir");
+    let template_path = temp.path().join("prompt-template.txt");
+    std::fs::write(&template_path, "Review {{path}}").expect("write template");
+
+    let mut cli = test_cli();
+    cli.prompt_template_file = Some(template_path);
+    cli.prompt_template_var = vec!["path=src/lib.rs".to_string(), "extra=unused".to_string()];
+
+    let error = resolve_prompt_input(&cli).expect_err("unused template vars should fail");
+    assert!(error
+        .to_string()
+        .contains("unused --prompt-template-var keys"));
 }
 
 #[test]
@@ -6335,6 +6407,19 @@ fn functional_validate_github_issues_bridge_cli_rejects_prompt_conflicts() {
 }
 
 #[test]
+fn regression_validate_github_issues_bridge_cli_rejects_prompt_template_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.github_issues_bridge = true;
+    cli.github_repo = Some("owner/repo".to_string());
+    cli.github_token = Some("token".to_string());
+    cli.prompt_template_file = Some(temp.path().join("template.txt"));
+
+    let error = validate_github_issues_bridge_cli(&cli).expect_err("template conflict");
+    assert!(error.to_string().contains("--prompt-template-file"));
+}
+
+#[test]
 fn regression_validate_github_issues_bridge_cli_requires_credentials() {
     let mut cli = test_cli();
     cli.github_issues_bridge = true;
@@ -6383,6 +6468,19 @@ fn functional_validate_slack_bridge_cli_rejects_prompt_conflicts() {
 }
 
 #[test]
+fn regression_validate_slack_bridge_cli_rejects_prompt_template_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.slack_bridge = true;
+    cli.slack_app_token = Some("xapp-test".to_string());
+    cli.slack_bot_token = Some("xoxb-test".to_string());
+    cli.prompt_template_file = Some(temp.path().join("template.txt"));
+
+    let error = validate_slack_bridge_cli(&cli).expect_err("template conflict");
+    assert!(error.to_string().contains("--prompt-template-file"));
+}
+
+#[test]
 fn regression_validate_slack_bridge_cli_rejects_missing_tokens() {
     let mut cli = test_cli();
     cli.slack_bridge = true;
@@ -6413,6 +6511,17 @@ fn functional_validate_events_runner_cli_rejects_prompt_conflicts() {
     assert!(error
         .to_string()
         .contains("--events-runner cannot be combined"));
+}
+
+#[test]
+fn regression_validate_events_runner_cli_rejects_prompt_template_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.events_runner = true;
+    cli.prompt_template_file = Some(temp.path().join("template.txt"));
+
+    let error = validate_events_runner_cli(&cli).expect_err("template conflict");
+    assert!(error.to_string().contains("--prompt-template-file"));
 }
 
 #[test]

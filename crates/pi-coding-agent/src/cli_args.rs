@@ -432,15 +432,34 @@ pub(crate) struct Cli {
         long,
         env = "PI_PROMPT_FILE",
         conflicts_with = "prompt",
+        conflicts_with = "prompt_template_file",
         help = "Read one prompt from a UTF-8 text file and exit"
     )]
     pub(crate) prompt_file: Option<PathBuf>,
 
     #[arg(
         long,
+        env = "PI_PROMPT_TEMPLATE_FILE",
+        conflicts_with = "prompt",
+        conflicts_with = "prompt_file",
+        help = "Read one prompt template from a UTF-8 text file and render placeholders like {{name}} before executing"
+    )]
+    pub(crate) prompt_template_file: Option<PathBuf>,
+
+    #[arg(
+        long = "prompt-template-var",
+        value_name = "key=value",
+        requires = "prompt_template_file",
+        help = "Template variable assignment for --prompt-template-file (repeatable)"
+    )]
+    pub(crate) prompt_template_var: Vec<String>,
+
+    #[arg(
+        long,
         env = "PI_COMMAND_FILE",
         conflicts_with = "prompt",
         conflicts_with = "prompt_file",
+        conflicts_with = "prompt_template_file",
         help = "Execute slash commands from a UTF-8 file and exit"
     )]
     pub(crate) command_file: Option<PathBuf>,
