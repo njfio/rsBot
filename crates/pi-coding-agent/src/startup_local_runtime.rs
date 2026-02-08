@@ -69,10 +69,14 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             println!("{value}");
         });
     }
+    let extension_runtime_hooks = RuntimeExtensionHooksConfig {
+        enabled: cli.extension_runtime_hooks,
+        root: cli.extension_runtime_root.clone(),
+    };
 
     if let Some(prompt) = resolve_prompt_input(cli)? {
         if cli.orchestrator_mode == CliOrchestratorMode::PlanFirst {
-            run_plan_first_prompt(
+            run_plan_first_prompt_with_runtime_hooks(
                 &mut agent,
                 &mut session_runtime,
                 &prompt,
@@ -80,6 +84,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 render_options,
                 cli.orchestrator_max_plan_steps,
                 cli.orchestrator_max_executor_response_chars,
+                &extension_runtime_hooks,
             )
             .await?;
         } else {
@@ -89,6 +94,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 &prompt,
                 cli.turn_timeout_ms,
                 render_options,
+                &extension_runtime_hooks,
             )
             .await?;
         }
@@ -120,6 +126,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     let interactive_config = InteractiveRuntimeConfig {
         turn_timeout_ms: cli.turn_timeout_ms,
         render_options,
+        extension_runtime_hooks: &extension_runtime_hooks,
         orchestrator_mode: cli.orchestrator_mode,
         orchestrator_max_plan_steps: cli.orchestrator_max_plan_steps,
         orchestrator_max_executor_response_chars: cli.orchestrator_max_executor_response_chars,

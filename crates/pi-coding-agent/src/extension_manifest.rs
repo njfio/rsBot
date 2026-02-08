@@ -65,6 +65,21 @@ pub(crate) struct ExtensionExecSummary {
     pub response: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtensionRuntimeHookDispatchSummary {
+    pub root: PathBuf,
+    pub hook: String,
+    pub discovered: usize,
+    pub eligible: usize,
+    pub executed: usize,
+    pub failed: usize,
+    pub skipped_invalid: usize,
+    pub skipped_unsupported_runtime: usize,
+    pub skipped_undeclared_hook: usize,
+    pub executed_ids: Vec<String>,
+    pub diagnostics: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ExtensionManifest {
     schema_version: u32,
@@ -78,6 +93,11 @@ struct ExtensionManifest {
     permissions: Vec<ExtensionPermission>,
     #[serde(default = "default_extension_timeout_ms")]
     timeout_ms: u64,
+}
+
+struct LoadedExtensionManifest {
+    manifest: ExtensionManifest,
+    summary: ExtensionManifestSummary,
 }
 
 fn default_extension_timeout_ms() -> u64 {
@@ -401,6 +421,129 @@ fn render_extension_list_report(report: &ExtensionListReport) -> String {
     lines.join("\n")
 }
 
+pub(crate) fn dispatch_extension_runtime_hook(
+    root: &Path,
+    hook_raw: &str,
+    payload: &Value,
+) -> ExtensionRuntimeHookDispatchSummary {
+    let mut summary = ExtensionRuntimeHookDispatchSummary {
+        root: root.to_path_buf(),
+        hook: hook_raw.trim().to_string(),
+        discovered: 0,
+        eligible: 0,
+        executed: 0,
+        failed: 0,
+        skipped_invalid: 0,
+        skipped_unsupported_runtime: 0,
+        skipped_undeclared_hook: 0,
+        executed_ids: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+
+    let hook = match ExtensionHook::parse(hook_raw) {
+        Ok(hook) => hook,
+        Err(error) => {
+            summary
+                .diagnostics
+                .push(format!("extension runtime: unsupported hook: {error}"));
+            return summary;
+        }
+    };
+
+    let (loaded, invalid_diagnostics) = match discover_loaded_extension_manifests(root) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            summary
+                .diagnostics
+                .push(format!("extension runtime: {error}"));
+            return summary;
+        }
+    };
+
+    summary.skipped_invalid = invalid_diagnostics.len();
+    summary.diagnostics.extend(invalid_diagnostics);
+    summary.discovered = loaded.len();
+    for loaded_manifest in loaded {
+        if loaded_manifest.manifest.runtime != ExtensionRuntime::Process {
+            summary.skipped_unsupported_runtime += 1;
+            summary.diagnostics.push(format!(
+                "extension runtime: skipped id={} manifest={} reason=unsupported runtime={}",
+                loaded_manifest.summary.id,
+                loaded_manifest.summary.manifest_path.display(),
+                loaded_manifest.manifest.runtime.as_str()
+            ));
+            continue;
+        }
+        if !loaded_manifest.manifest.hooks.contains(&hook) {
+            summary.skipped_undeclared_hook += 1;
+            continue;
+        }
+
+        summary.eligible += 1;
+        match execute_extension_process_hook_with_loaded(
+            &loaded_manifest.manifest,
+            &loaded_manifest.summary,
+            &hook,
+            payload,
+        ) {
+            Ok(exec_summary) => {
+                summary.executed += 1;
+                summary
+                    .executed_ids
+                    .push(format!("{}@{}", exec_summary.id, exec_summary.version));
+            }
+            Err(error) => {
+                summary.failed += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: hook={} id={} manifest={} failed: {}",
+                    hook.as_str(),
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display(),
+                    error
+                ));
+            }
+        }
+    }
+
+    summary
+}
+
+fn discover_loaded_extension_manifests(
+    root: &Path,
+) -> Result<(Vec<LoadedExtensionManifest>, Vec<String>)> {
+    if !root.exists() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if !root.is_dir() {
+        bail!(
+            "extension runtime root '{}' is not a directory",
+            root.display()
+        );
+    }
+
+    let mut loaded = Vec::new();
+    let mut invalid_diagnostics = Vec::new();
+    for manifest_path in discover_manifest_paths(root)? {
+        match load_and_validate_extension_manifest(&manifest_path) {
+            Ok((manifest, summary)) => loaded.push(LoadedExtensionManifest { manifest, summary }),
+            Err(error) => invalid_diagnostics.push(format!(
+                "extension runtime: skipped invalid manifest={} error={error}",
+                manifest_path.display()
+            )),
+        }
+    }
+
+    loaded.sort_by(|left, right| {
+        left.summary
+            .id
+            .cmp(&right.summary.id)
+            .then_with(|| left.summary.version.cmp(&right.summary.version))
+            .then_with(|| left.summary.manifest_path.cmp(&right.summary.manifest_path))
+    });
+
+    Ok((loaded, invalid_diagnostics))
+}
+
 fn load_extension_exec_payload(path: &Path) -> Result<Value> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read extension payload {}", path.display()))?;
@@ -418,14 +561,23 @@ fn execute_extension_process_hook(
     payload: &Value,
 ) -> Result<ExtensionExecSummary> {
     let (manifest, summary) = load_and_validate_extension_manifest(manifest_path)?;
+    let hook = ExtensionHook::parse(hook_raw)?;
+    execute_extension_process_hook_with_loaded(&manifest, &summary, &hook, payload)
+}
+
+fn execute_extension_process_hook_with_loaded(
+    manifest: &ExtensionManifest,
+    summary: &ExtensionManifestSummary,
+    hook: &ExtensionHook,
+    payload: &Value,
+) -> Result<ExtensionExecSummary> {
     if manifest.runtime != ExtensionRuntime::Process {
         bail!(
             "extension manifest runtime '{}' is not supported for extension exec",
             manifest.runtime.as_str()
         );
     }
-    let hook = ExtensionHook::parse(hook_raw)?;
-    if !manifest.hooks.contains(&hook) {
+    if !manifest.hooks.contains(hook) {
         bail!(
             "extension manifest '{}' does not declare hook '{}'",
             summary.id,
@@ -444,7 +596,7 @@ fn execute_extension_process_hook(
     let request_json = serde_json::to_string(&request)
         .context("failed to serialize extension execution request payload")?;
 
-    let entrypoint = resolve_extension_entrypoint(manifest_path, &manifest.entrypoint)?;
+    let entrypoint = resolve_extension_entrypoint(&summary.manifest_path, &manifest.entrypoint)?;
     let started_at = Instant::now();
     let output =
         run_extension_process_with_timeout(&entrypoint, &request_json, manifest.timeout_ms)?;
@@ -478,10 +630,10 @@ fn execute_extension_process_hook(
         .context("failed to serialize extension process response JSON")?;
 
     Ok(ExtensionExecSummary {
-        manifest_path: summary.manifest_path,
-        id: summary.id,
-        version: summary.version,
-        runtime: summary.runtime,
+        manifest_path: summary.manifest_path.clone(),
+        id: summary.id.clone(),
+        version: summary.version.clone(),
+        runtime: summary.runtime.clone(),
         hook: hook.as_str().to_string(),
         timeout_ms: manifest.timeout_ms,
         duration_ms,
@@ -659,10 +811,10 @@ fn validate_timeout_ms(timeout_ms: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_extension_process_hook, list_extension_manifests, render_extension_list_report,
-        render_extension_manifest_report, validate_extension_manifest, ExtensionHook,
-        ExtensionListReport, ExtensionManifest, ExtensionManifestSummary, ExtensionPermission,
-        ExtensionRuntime,
+        dispatch_extension_runtime_hook, execute_extension_process_hook, list_extension_manifests,
+        render_extension_list_report, render_extension_manifest_report,
+        validate_extension_manifest, ExtensionHook, ExtensionListReport, ExtensionManifest,
+        ExtensionManifestSummary, ExtensionPermission, ExtensionRuntime,
     };
     use std::{fs, path::PathBuf};
     use tempfile::tempdir;
@@ -981,5 +1133,220 @@ mod tests {
         let error = execute_extension_process_hook(&manifest_path, "run-start", &payload)
             .expect_err("invalid output should fail");
         assert!(error.to_string().contains("response must be valid JSON"));
+    }
+
+    #[test]
+    fn unit_dispatch_extension_runtime_hook_orders_execution_deterministically() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let alpha_dir = root.join("alpha");
+        let beta_dir = root.join("beta");
+        fs::create_dir_all(&alpha_dir).expect("create alpha dir");
+        fs::create_dir_all(&beta_dir).expect("create beta dir");
+
+        let alpha_script = alpha_dir.join("hook.sh");
+        fs::write(
+            &alpha_script,
+            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+        )
+        .expect("write alpha script");
+        make_executable(&alpha_script);
+
+        let beta_script = beta_dir.join("hook.sh");
+        fs::write(
+            &beta_script,
+            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+        )
+        .expect("write beta script");
+        make_executable(&beta_script);
+
+        fs::write(
+            alpha_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "aaa-extension",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["run-start"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write alpha manifest");
+        fs::write(
+            beta_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "zzz-extension",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["run-start"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write beta manifest");
+
+        let report = dispatch_extension_runtime_hook(&root, "run-start", &serde_json::json!({}));
+        assert_eq!(report.discovered, 2);
+        assert_eq!(report.executed, 2);
+        assert_eq!(
+            report.executed_ids,
+            vec![
+                "aaa-extension@1.0.0".to_string(),
+                "zzz-extension@1.0.0".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn functional_dispatch_extension_runtime_hook_runs_process_extensions() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("issue-assistant");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("hook.sh");
+        fs::write(
+            &script_path,
+            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["run-start", "run-end"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let report = dispatch_extension_runtime_hook(
+            &root,
+            "run-start",
+            &serde_json::json!({"event":"started"}),
+        );
+        assert_eq!(report.executed, 1);
+        assert_eq!(report.failed, 0);
+        assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn regression_dispatch_extension_runtime_hook_isolates_failures() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let good_dir = root.join("good");
+        let bad_dir = root.join("bad");
+        fs::create_dir_all(&good_dir).expect("create good dir");
+        fs::create_dir_all(&bad_dir).expect("create bad dir");
+
+        let good_script = good_dir.join("hook.sh");
+        fs::write(
+            &good_script,
+            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+        )
+        .expect("write good script");
+        make_executable(&good_script);
+
+        let bad_script = bad_dir.join("slow.sh");
+        fs::write(
+            &bad_script,
+            "#!/usr/bin/env bash\nsleep 1\nprintf '{\"ok\":true}'\n",
+        )
+        .expect("write bad script");
+        make_executable(&bad_script);
+
+        fs::write(
+            good_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "good-extension",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["run-start"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write good manifest");
+        fs::write(
+            bad_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "bad-extension",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "slow.sh",
+  "hooks": ["run-start"],
+  "timeout_ms": 20
+}"#,
+        )
+        .expect("write bad manifest");
+
+        let report = dispatch_extension_runtime_hook(&root, "run-start", &serde_json::json!({}));
+        assert_eq!(report.discovered, 2);
+        assert_eq!(report.executed, 1);
+        assert_eq!(report.failed, 1);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("timed out")));
+    }
+
+    #[test]
+    fn regression_dispatch_extension_runtime_hook_skips_invalid_manifests() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let valid_dir = root.join("valid");
+        let invalid_dir = root.join("invalid");
+        fs::create_dir_all(&valid_dir).expect("create valid dir");
+        fs::create_dir_all(&invalid_dir).expect("create invalid dir");
+
+        let script_path = valid_dir.join("hook.sh");
+        fs::write(
+            &script_path,
+            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '{\"ok\":true}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            valid_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "valid-extension",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["run-start"]
+}"#,
+        )
+        .expect("write valid manifest");
+        fs::write(
+            invalid_dir.join("extension.json"),
+            r#"{
+  "schema_version": 9,
+  "id": "invalid-extension",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh"
+}"#,
+        )
+        .expect("write invalid manifest");
+
+        let report = dispatch_extension_runtime_hook(&root, "run-start", &serde_json::json!({}));
+        assert_eq!(report.executed, 1);
+        assert_eq!(report.skipped_invalid, 1);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("skipped invalid manifest")));
     }
 }

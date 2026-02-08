@@ -3121,6 +3121,162 @@ fn regression_extension_exec_flag_rejects_invalid_response() {
 }
 
 #[test]
+fn extension_runtime_hooks_wrap_prompt_with_run_start_and_run_end() {
+    let temp = tempdir().expect("tempdir");
+    let extension_root = temp.path().join("extensions");
+    let extension_dir = extension_root.join("issue-assistant");
+    fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+    let requests_path = extension_dir.join("requests.ndjson");
+    let script_path = extension_dir.join("hook.sh");
+    fs::write(
+        &script_path,
+        format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\ninput=\"$(cat)\"\nprintf '%s\\n' \"$input\" >> \"{}\"\nprintf '{{\"ok\":true}}'\n",
+            requests_path.display()
+        ),
+    )
+    .expect("write hook script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("set executable permissions");
+    }
+
+    fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["run-start", "run-end"],
+  "timeout_ms": 5000
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "runtime hooks ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "hello runtime hooks",
+        "--no-session",
+        "--extension-runtime-hooks",
+        "--extension-runtime-root",
+        extension_root.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("runtime hooks ok"));
+
+    let raw = fs::read_to_string(&requests_path).expect("read requests log");
+    let rows = raw
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid json row"))
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["hook"], "run-start");
+    assert_eq!(rows[1]["hook"], "run-end");
+    assert_eq!(rows[0]["payload"]["prompt"], "hello runtime hooks");
+    assert_eq!(rows[1]["payload"]["status"], "completed");
+
+    openai.assert_calls(1);
+}
+
+#[test]
+fn regression_extension_runtime_hook_timeout_does_not_fail_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let extension_root = temp.path().join("extensions");
+    let extension_dir = extension_root.join("slow-extension");
+    fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+    let script_path = extension_dir.join("hook.sh");
+    fs::write(
+        &script_path,
+        "#!/usr/bin/env bash\nsleep 1\nprintf '{\"ok\":true}'\n",
+    )
+    .expect("write hook script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("set executable permissions");
+    }
+
+    fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "slow-extension",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["run-start", "run-end"],
+  "timeout_ms": 20
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let server = MockServer::start();
+    let openai = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "prompt still completed"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "hello runtime hooks",
+        "--no-session",
+        "--extension-runtime-hooks",
+        "--extension-runtime-root",
+        extension_root.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("prompt still completed"))
+        .stderr(predicate::str::contains("timed out"));
+
+    openai.assert_calls(1);
+}
+
+#[test]
 fn regression_package_validate_flag_rejects_invalid_manifest() {
     let temp = tempdir().expect("tempdir");
     let manifest_path = temp.path().join("package.json");

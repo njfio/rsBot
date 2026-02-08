@@ -265,6 +265,8 @@ fn test_cli() -> Cli {
         extension_list: false,
         extension_list_root: PathBuf::from(".pi/extensions"),
         extension_show: None,
+        extension_runtime_hooks: false,
+        extension_runtime_root: PathBuf::from(".pi/extensions"),
         package_validate: None,
         package_show: None,
         package_install: None,
@@ -559,6 +561,8 @@ fn unit_cli_extension_validate_flag_defaults_to_none() {
     assert!(!cli.extension_list);
     assert_eq!(cli.extension_list_root, PathBuf::from(".pi/extensions"));
     assert!(cli.extension_show.is_none());
+    assert!(!cli.extension_runtime_hooks);
+    assert_eq!(cli.extension_runtime_root, PathBuf::from(".pi/extensions"));
 }
 
 #[test]
@@ -614,6 +618,18 @@ fn functional_cli_extension_list_flag_accepts_root_override() {
 }
 
 #[test]
+fn functional_cli_extension_runtime_hook_flags_accept_root_override() {
+    let cli = Cli::parse_from([
+        "pi-rs",
+        "--extension-runtime-hooks",
+        "--extension-runtime-root",
+        "extensions",
+    ]);
+    assert!(cli.extension_runtime_hooks);
+    assert_eq!(cli.extension_runtime_root, PathBuf::from("extensions"));
+}
+
+#[test]
 fn regression_cli_extension_show_and_validate_conflict() {
     let parse = Cli::try_parse_from([
         "pi-rs",
@@ -646,6 +662,15 @@ fn regression_cli_extension_exec_requires_hook_and_payload() {
         "extensions/issue.json",
     ]);
     let error = parse.expect_err("exec manifest should require hook and payload");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_extension_runtime_root_requires_runtime_hooks_flag() {
+    let parse = Cli::try_parse_from(["pi-rs", "--extension-runtime-root", "extensions"]);
+    let error = parse.expect_err("runtime root should require runtime hooks flag");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));

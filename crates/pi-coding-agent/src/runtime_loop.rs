@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
     io::{Read, Write},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -15,9 +16,10 @@ use pi_ai::StreamDeltaHandler;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
-    ensure_non_empty_text, handle_command_with_session_import_mode, persist_messages,
-    print_assistant_messages, run_plan_first_prompt, Cli, CliOrchestratorMode, CommandAction,
-    CommandExecutionContext, RenderOptions, SessionRuntime,
+    dispatch_extension_runtime_hook, ensure_non_empty_text,
+    handle_command_with_session_import_mode, persist_messages, print_assistant_messages,
+    run_plan_first_prompt, Cli, CliOrchestratorMode, CommandAction, CommandExecutionContext,
+    RenderOptions, SessionRuntime,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,10 +29,36 @@ pub(crate) enum PromptRunStatus {
     TimedOut,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RuntimeExtensionHooksConfig {
+    pub(crate) enabled: bool,
+    pub(crate) root: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeHookRunStatus {
+    Completed,
+    Cancelled,
+    TimedOut,
+    Failed,
+}
+
+impl RuntimeHookRunStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed-out",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct InteractiveRuntimeConfig<'a> {
     pub(crate) turn_timeout_ms: u64,
     pub(crate) render_options: RenderOptions,
+    pub(crate) extension_runtime_hooks: &'a RuntimeExtensionHooksConfig,
     pub(crate) orchestrator_mode: CliOrchestratorMode,
     pub(crate) orchestrator_max_plan_steps: usize,
     pub(crate) orchestrator_max_executor_response_chars: usize,
@@ -43,14 +71,16 @@ pub(crate) async fn run_prompt(
     prompt: &str,
     turn_timeout_ms: u64,
     render_options: RenderOptions,
+    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
 ) -> Result<()> {
-    let status = run_prompt_with_cancellation(
+    let status = run_prompt_with_runtime_hooks(
         agent,
         session_runtime,
         prompt,
         turn_timeout_ms,
         tokio::signal::ctrl_c(),
         render_options,
+        extension_runtime_hooks,
     )
     .await?;
     report_prompt_status(status);
@@ -99,7 +129,7 @@ pub(crate) async fn run_interactive(
         }
 
         if config.orchestrator_mode == CliOrchestratorMode::PlanFirst {
-            run_plan_first_prompt(
+            run_plan_first_prompt_with_runtime_hooks(
                 &mut agent,
                 &mut session_runtime,
                 trimmed,
@@ -107,16 +137,18 @@ pub(crate) async fn run_interactive(
                 config.render_options,
                 config.orchestrator_max_plan_steps,
                 config.orchestrator_max_executor_response_chars,
+                config.extension_runtime_hooks,
             )
             .await?;
         } else {
-            let status = run_prompt_with_cancellation(
+            let status = run_prompt_with_runtime_hooks(
                 &mut agent,
                 &mut session_runtime,
                 trimmed,
                 config.turn_timeout_ms,
                 tokio::signal::ctrl_c(),
                 config.render_options,
+                config.extension_runtime_hooks,
             )
             .await?;
             report_prompt_status(status);
@@ -124,6 +156,163 @@ pub(crate) async fn run_interactive(
     }
 
     Ok(())
+}
+
+async fn run_prompt_with_runtime_hooks<F>(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    prompt: &str,
+    turn_timeout_ms: u64,
+    cancellation_signal: F,
+    render_options: RenderOptions,
+    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+) -> Result<PromptRunStatus>
+where
+    F: Future,
+{
+    dispatch_runtime_hook(
+        extension_runtime_hooks,
+        "run-start",
+        build_runtime_hook_payload(prompt, turn_timeout_ms, None, None),
+    );
+
+    let result = run_prompt_with_cancellation(
+        agent,
+        session_runtime,
+        prompt,
+        turn_timeout_ms,
+        cancellation_signal,
+        render_options,
+    )
+    .await;
+
+    match result {
+        Ok(status) => {
+            let run_status = match status {
+                PromptRunStatus::Completed => RuntimeHookRunStatus::Completed,
+                PromptRunStatus::Cancelled => RuntimeHookRunStatus::Cancelled,
+                PromptRunStatus::TimedOut => RuntimeHookRunStatus::TimedOut,
+            };
+            dispatch_runtime_hook(
+                extension_runtime_hooks,
+                "run-end",
+                build_runtime_hook_payload(prompt, turn_timeout_ms, Some(run_status), None),
+            );
+            Ok(status)
+        }
+        Err(error) => {
+            dispatch_runtime_hook(
+                extension_runtime_hooks,
+                "run-end",
+                build_runtime_hook_payload(
+                    prompt,
+                    turn_timeout_ms,
+                    Some(RuntimeHookRunStatus::Failed),
+                    Some(error.to_string()),
+                ),
+            );
+            Err(error)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    prompt: &str,
+    turn_timeout_ms: u64,
+    render_options: RenderOptions,
+    orchestrator_max_plan_steps: usize,
+    orchestrator_max_executor_response_chars: usize,
+    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+) -> Result<()> {
+    dispatch_runtime_hook(
+        extension_runtime_hooks,
+        "run-start",
+        build_runtime_hook_payload(prompt, turn_timeout_ms, None, None),
+    );
+
+    let result = run_plan_first_prompt(
+        agent,
+        session_runtime,
+        prompt,
+        turn_timeout_ms,
+        render_options,
+        orchestrator_max_plan_steps,
+        orchestrator_max_executor_response_chars,
+    )
+    .await;
+
+    match result {
+        Ok(()) => {
+            dispatch_runtime_hook(
+                extension_runtime_hooks,
+                "run-end",
+                build_runtime_hook_payload(
+                    prompt,
+                    turn_timeout_ms,
+                    Some(RuntimeHookRunStatus::Completed),
+                    None,
+                ),
+            );
+            Ok(())
+        }
+        Err(error) => {
+            dispatch_runtime_hook(
+                extension_runtime_hooks,
+                "run-end",
+                build_runtime_hook_payload(
+                    prompt,
+                    turn_timeout_ms,
+                    Some(RuntimeHookRunStatus::Failed),
+                    Some(error.to_string()),
+                ),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn dispatch_runtime_hook(
+    config: &RuntimeExtensionHooksConfig,
+    hook: &str,
+    payload: serde_json::Value,
+) {
+    if !config.enabled {
+        return;
+    }
+    let summary = dispatch_extension_runtime_hook(&config.root, hook, &payload);
+    for diagnostic in summary.diagnostics {
+        eprintln!("{diagnostic}");
+    }
+}
+
+fn build_runtime_hook_payload(
+    prompt: &str,
+    turn_timeout_ms: u64,
+    status: Option<RuntimeHookRunStatus>,
+    error: Option<String>,
+) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "prompt".to_string(),
+        serde_json::Value::String(prompt.to_string()),
+    );
+    payload.insert(
+        "turn_timeout_ms".to_string(),
+        serde_json::Value::Number(turn_timeout_ms.into()),
+    );
+    if let Some(status) = status {
+        payload.insert(
+            "status".to_string(),
+            serde_json::Value::String(status.as_str().to_string()),
+        );
+    }
+    if let Some(error) = error {
+        payload.insert("error".to_string(), serde_json::Value::String(error));
+    }
+    serde_json::Value::Object(payload)
 }
 
 pub(crate) async fn run_prompt_with_cancellation<F>(
@@ -314,5 +503,33 @@ fn report_prompt_status(status: PromptRunStatus) {
         println!("\nrequest cancelled\n");
     } else if status == PromptRunStatus::TimedOut {
         println!("\nrequest timed out\n");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_runtime_hook_payload, RuntimeHookRunStatus};
+
+    #[test]
+    fn unit_build_runtime_hook_payload_includes_status_and_error() {
+        let payload = build_runtime_hook_payload(
+            "hello",
+            5000,
+            Some(RuntimeHookRunStatus::Failed),
+            Some("network timeout".to_string()),
+        );
+        assert_eq!(payload["prompt"], "hello");
+        assert_eq!(payload["turn_timeout_ms"], 5000);
+        assert_eq!(payload["status"], "failed");
+        assert_eq!(payload["error"], "network timeout");
+    }
+
+    #[test]
+    fn regression_build_runtime_hook_payload_omits_optional_fields_when_unset() {
+        let payload = build_runtime_hook_payload("hello", 0, None, None);
+        assert_eq!(payload["prompt"], "hello");
+        assert_eq!(payload["turn_timeout_ms"], 0);
+        assert!(payload.get("status").is_none());
+        assert!(payload.get("error").is_none());
     }
 }
