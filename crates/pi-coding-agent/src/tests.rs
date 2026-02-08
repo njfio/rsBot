@@ -952,6 +952,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         status,
         AuthCommand::Status {
             provider: Some(Provider::Anthropic),
+            mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
             json_output: true,
@@ -965,8 +966,22 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         filtered_status,
         AuthCommand::Status {
             provider: Some(Provider::OpenAi),
+            mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::Unavailable,
             state: Some("ready".to_string()),
+            json_output: true,
+        }
+    );
+
+    let supported_status = parse_auth_command("status --mode-support supported --json")
+        .expect("parse mode-support filtered auth status");
+    assert_eq!(
+        supported_status,
+        AuthCommand::Status {
+            provider: None,
+            mode_support: AuthMatrixModeSupportFilter::Supported,
+            availability: AuthMatrixAvailabilityFilter::All,
+            state: None,
             json_output: true,
         }
     );
@@ -1158,10 +1173,23 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
         .to_string()
         .contains("usage: /auth status"));
 
+    let missing_status_mode_support =
+        parse_auth_command("status --mode-support").expect_err("missing status mode-support");
+    assert!(missing_status_mode_support
+        .to_string()
+        .contains("usage: /auth status"));
+
     let duplicate_status_availability =
         parse_auth_command("status --availability all --availability unavailable")
             .expect_err("duplicate status availability");
     assert!(duplicate_status_availability
+        .to_string()
+        .contains("usage: /auth status"));
+
+    let duplicate_status_mode_support =
+        parse_auth_command("status --mode-support all --mode-support supported")
+            .expect_err("duplicate status mode-support");
+    assert!(duplicate_status_mode_support
         .to_string()
         .contains("usage: /auth status"));
 
@@ -1176,6 +1204,12 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(unknown_status_availability
         .to_string()
         .contains("unknown availability filter"));
+
+    let unknown_status_mode_support =
+        parse_auth_command("status --mode-support maybe").expect_err("unknown status mode-support");
+    assert!(unknown_status_mode_support
+        .to_string()
+        .contains("unknown mode-support filter"));
 
     let missing_matrix_state =
         parse_auth_command("matrix --state").expect_err("missing matrix state filter");
@@ -2574,6 +2608,65 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
 }
 
 #[test]
+fn functional_execute_auth_command_status_supports_mode_support_filter() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-status-mode-support-filter.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = None;
+    config.openai_api_key = Some("openai-mode-support-key".to_string());
+    config.google_api_key = None;
+    config.anthropic_auth_mode = ProviderAuthMethod::OauthToken;
+
+    let supported_output = execute_auth_command(&config, "status --mode-support supported --json");
+    let supported_payload: serde_json::Value =
+        serde_json::from_str(&supported_output).expect("parse supported-only status payload");
+    assert_eq!(supported_payload["mode_support_filter"], "supported");
+    assert_eq!(supported_payload["providers"], 3);
+    assert_eq!(supported_payload["rows_total"], 3);
+    assert_eq!(supported_payload["rows"], 2);
+    assert_eq!(supported_payload["state_counts"]["missing_api_key"], 1);
+    assert_eq!(supported_payload["state_counts"]["ready"], 1);
+    assert_eq!(
+        supported_payload["state_counts_total"]["missing_api_key"],
+        1
+    );
+    assert_eq!(supported_payload["state_counts_total"]["ready"], 1);
+    assert_eq!(
+        supported_payload["state_counts_total"]["unsupported_mode"],
+        1
+    );
+    let supported_entries = supported_payload["entries"]
+        .as_array()
+        .expect("supported status entries");
+    assert_eq!(supported_entries.len(), 2);
+    assert!(supported_entries
+        .iter()
+        .all(|entry| entry["mode_supported"] == true));
+
+    let unsupported_output =
+        execute_auth_command(&config, "status --mode-support unsupported --json");
+    let unsupported_payload: serde_json::Value =
+        serde_json::from_str(&unsupported_output).expect("parse unsupported-only status payload");
+    assert_eq!(unsupported_payload["mode_support_filter"], "unsupported");
+    assert_eq!(unsupported_payload["rows_total"], 3);
+    assert_eq!(unsupported_payload["rows"], 1);
+    assert_eq!(unsupported_payload["state_counts"]["unsupported_mode"], 1);
+    assert_eq!(unsupported_payload["entries"][0]["provider"], "anthropic");
+    assert_eq!(unsupported_payload["entries"][0]["mode_supported"], false);
+    assert_eq!(
+        unsupported_payload["entries"][0]["state"],
+        "unsupported_mode"
+    );
+
+    let text_output = execute_auth_command(&config, "status --mode-support unsupported");
+    assert!(text_output.contains("mode_support_filter=unsupported"));
+    assert!(text_output.contains("state_counts=unsupported_mode:1"));
+    assert!(text_output.contains("auth provider: name=anthropic"));
+    assert!(!text_output.contains("auth provider: name=openai"));
+}
+
+#[test]
 fn integration_execute_auth_command_status_filters_compose_with_provider_and_zero_rows() {
     let temp = tempdir().expect("tempdir");
     let store_path = temp.path().join("auth-status-composition.json");
@@ -2655,13 +2748,90 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
 }
 
 #[test]
+fn integration_execute_auth_command_status_mode_support_filter_composes_with_other_filters() {
+    let temp = tempdir().expect("tempdir");
+    let store_path = temp
+        .path()
+        .join("auth-status-mode-support-composition.json");
+    write_test_provider_credential(
+        &store_path,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::SessionToken,
+            access_token: Some("status-mode-support-access".to_string()),
+            refresh_token: Some("status-mode-support-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(1200)),
+            revoked: false,
+        },
+    );
+
+    let mut config = test_auth_command_config();
+    config.credential_store = store_path;
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.openai_auth_mode = ProviderAuthMethod::SessionToken;
+
+    let filtered_output = execute_auth_command(
+        &config,
+        "status openai --mode-support supported --availability available --state ready --json",
+    );
+    let filtered_payload: serde_json::Value =
+        serde_json::from_str(&filtered_output).expect("parse composed mode-support payload");
+    assert_eq!(filtered_payload["mode_support_filter"], "supported");
+    assert_eq!(filtered_payload["availability_filter"], "available");
+    assert_eq!(filtered_payload["state_filter"], "ready");
+    assert_eq!(filtered_payload["providers"], 1);
+    assert_eq!(filtered_payload["rows_total"], 1);
+    assert_eq!(filtered_payload["rows"], 1);
+    assert_eq!(filtered_payload["entries"][0]["provider"], "openai");
+    assert_eq!(filtered_payload["entries"][0]["mode_supported"], true);
+    assert_eq!(filtered_payload["state_counts"]["ready"], 1);
+    assert_eq!(filtered_payload["state_counts_total"]["ready"], 1);
+
+    let zero_row_output =
+        execute_auth_command(&config, "status openai --mode-support unsupported --json");
+    let zero_row_payload: serde_json::Value =
+        serde_json::from_str(&zero_row_output).expect("parse zero-row mode-support payload");
+    assert_eq!(zero_row_payload["mode_support_filter"], "unsupported");
+    assert_eq!(zero_row_payload["rows_total"], 1);
+    assert_eq!(zero_row_payload["rows"], 0);
+    assert_eq!(
+        zero_row_payload["state_counts"]
+            .as_object()
+            .expect("zero-row state counts")
+            .len(),
+        0
+    );
+    assert_eq!(zero_row_payload["state_counts_total"]["ready"], 1);
+
+    let zero_row_text = execute_auth_command(&config, "status openai --mode-support unsupported");
+    assert!(zero_row_text.contains("rows=0"));
+    assert!(zero_row_text.contains("mode_support_filter=unsupported"));
+    assert!(zero_row_text.contains("state_counts=none"));
+    assert!(zero_row_text.contains("state_counts_total=ready:1"));
+}
+
+#[test]
 fn regression_execute_auth_command_status_rejects_missing_and_duplicate_filter_flags() {
     let config = test_auth_command_config();
+
+    let missing_mode_support = execute_auth_command(&config, "status --mode-support");
+    assert!(missing_mode_support
+        .contains("auth error: missing mode-support filter after --mode-support"));
+    assert!(missing_mode_support.contains("usage: /auth status"));
 
     let missing_availability = execute_auth_command(&config, "status --availability");
     assert!(missing_availability
         .contains("auth error: missing availability filter after --availability"));
     assert!(missing_availability.contains("usage: /auth status"));
+
+    let duplicate_mode_support = execute_auth_command(
+        &config,
+        "status --mode-support all --mode-support supported",
+    );
+    assert!(duplicate_mode_support.contains("auth error: duplicate --mode-support flag"));
+    assert!(duplicate_mode_support.contains("usage: /auth status"));
 
     let duplicate_state = execute_auth_command(&config, "status --state ready --state revoked");
     assert!(duplicate_state.contains("auth error: duplicate --state flag"));
