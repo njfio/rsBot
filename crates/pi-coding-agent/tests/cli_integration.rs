@@ -2878,6 +2878,120 @@ fn regression_rpc_validate_frame_file_flag_rejects_invalid_kind() {
 }
 
 #[test]
+fn rpc_dispatch_frame_file_flag_outputs_capabilities_response() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-cap",
+  "kind": "capabilities.request",
+  "payload": {}
+}"#,
+    )
+    .expect("write frame");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-dispatch-frame-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"request_id\": \"req-cap\""))
+        .stdout(predicate::str::contains(
+            "\"kind\": \"capabilities.response\"",
+        ))
+        .stdout(predicate::str::contains("\"protocol_version\": \"0.1.0\""));
+}
+
+#[test]
+fn rpc_dispatch_frame_file_flag_outputs_run_accepted_response() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-start",
+  "kind": "run.start",
+  "payload": {"prompt":"hello"}
+}"#,
+    )
+    .expect("write frame");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-dispatch-frame-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"kind\": \"run.accepted\""))
+        .stdout(predicate::str::contains("\"prompt_chars\": 5"));
+}
+
+#[test]
+fn regression_rpc_dispatch_frame_file_flag_rejects_missing_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-start",
+  "kind": "run.start",
+  "payload": {}
+}"#,
+    )
+    .expect("write frame");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-dispatch-frame-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "requires non-empty payload field 'prompt'",
+    ));
+}
+
+#[test]
+fn regression_rpc_dispatch_frame_file_takes_preflight_precedence_over_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-cap",
+  "kind": "capabilities.request",
+  "payload": {}
+}"#,
+    )
+    .expect("write frame");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-dispatch-frame-file",
+        frame_path.to_str().expect("utf8 path"),
+        "--prompt",
+        "ignored",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"kind\": \"capabilities.response\"",
+        ))
+        .stderr(predicate::str::contains("OPENAI_API_KEY").not());
+}
+
+#[test]
 fn prompt_file_flag_runs_one_shot_prompt() {
     let server = MockServer::start();
     let openai = server.mock(|when, then| {
