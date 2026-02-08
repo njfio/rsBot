@@ -1,6 +1,6 @@
 # Provider Authentication Capability Matrix
 
-Updated: 2026-02-07
+Updated: 2026-02-08
 
 ## Purpose
 This document defines which authentication paths are valid for this project, including whether consumer subscription logins can be used instead of API keys.
@@ -13,21 +13,20 @@ This document defines which authentication paths are valid for this project, inc
 ## Capability Matrix
 | Provider/Channel | Auth Method | Subscription Login Usable for API Calls | Status | Notes |
 |---|---|---|---|---|
-| OpenAI API Platform | API key / service account key | No | Supported now | OpenAI API docs define API-key style bearer auth for API requests and mention service account keys in API auth reference. |
+| OpenAI API Platform | API key / service account key | No | Supported now | OpenAI API docs require API keys via `Authorization: Bearer` headers for API requests. |
 | OpenAI consumer subscription products | Web/app account session | No (official API path not documented) | Not supported | No official API docs path for using consumer subscription web sessions as API credentials. This project must not use cookie/session scraping. |
-| Anthropic direct API | `x-api-key` header | No | Supported now | Anthropic API examples require key-based auth and version headers on direct API calls. |
+| Anthropic direct API | `x-api-key` header | No | Supported now | Anthropic API docs require `x-api-key` headers on API requests, along with version headers. |
 | Anthropic on AWS Bedrock | AWS IAM credentials | N/A (cloud IAM path) | Supported with prerequisites | Auth is handled by AWS IAM in Bedrock channel, not Anthropic consumer subscription login. |
 | Anthropic on Google Vertex AI | Google IAM/ADC | N/A (cloud IAM path) | Supported with prerequisites | Auth is handled by Google Cloud identity/ADC for Vertex channel. |
-| Gemini API (Google AI Studio) | API key | No | Supported now | Gemini docs provide API key setup and API-key based usage guidance. |
-| Gemini API (OAuth mode) | User OAuth flow | Partially (OAuth identity, not Gemini Advanced subscription token) | Supported with prerequisites | Official Gemini OAuth docs provide OAuth flow and access token usage patterns. Requires proper client config and token lifecycle handling. |
+| Gemini API (Google AI Studio) | API key | No | Supported now | Gemini API docs require `x-goog-api-key` for API calls. |
+| Gemini API (OAuth mode) | User OAuth flow (via ADC) | Partially (OAuth identity, not Gemini Advanced subscription token) | Supported with prerequisites | Gemini OAuth docs describe using `gcloud auth application-default login` with a client ID file to produce ADC tokens. Requires proper client config and token lifecycle handling. |
 | Gemini on Vertex AI | ADC / service account | N/A (cloud IAM path) | Supported with prerequisites | Google ADC docs define credential provisioning and login flow for application-default credentials. |
 
 ## Source References
-- OpenAI API authentication reference: <https://platform.openai.com/docs/api-reference/authentication>
-- OpenAI quickstart: <https://platform.openai.com/docs/quickstart>
+- OpenAI API authentication reference: <https://platform.openai.com/docs/api-reference/authentication?api-mode=responses>
 - Anthropic API getting started: <https://docs.anthropic.com/en/api/getting-started>
-- Gemini API key docs: <https://ai.google.dev/gemini-api/docs/api-key>
-- Gemini OAuth docs: <https://ai.google.dev/gemini-api/docs/oauth>
+- Gemini API reference (API key auth): <https://ai.google.dev/api>
+- Gemini OAuth quickstart: <https://ai.google.dev/gemini-api/docs/oauth>
 - Google ADC docs: <https://cloud.google.com/docs/authentication/provide-credentials-adc>
 
 ## Decision Gates for Roadmap Stories
