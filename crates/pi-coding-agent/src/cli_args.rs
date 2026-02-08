@@ -8,6 +8,16 @@ use crate::{
     CliWebhookSignatureAlgorithm,
 };
 
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|error| format!("failed to parse integer: {error}"))?;
+    if parsed == 0 {
+        return Err("value must be greater than 0".to_string());
+    }
+    Ok(parsed)
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "pi-rs",
@@ -435,6 +445,15 @@ pub(crate) struct Cli {
         help = "Maximum planner step count allowed in plan-first orchestrator mode"
     )]
     pub(crate) orchestrator_max_plan_steps: usize,
+
+    #[arg(
+        long = "orchestrator-max-executor-response-chars",
+        env = "PI_ORCHESTRATOR_MAX_EXECUTOR_RESPONSE_CHARS",
+        default_value_t = 20000,
+        value_parser = parse_positive_usize,
+        help = "Maximum executor response length (characters) allowed in plan-first orchestrator mode"
+    )]
+    pub(crate) orchestrator_max_executor_response_chars: usize,
 
     #[arg(
         long,

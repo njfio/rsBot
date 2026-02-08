@@ -562,6 +562,55 @@ fn regression_prompt_plan_first_mode_fails_closed_on_overlong_plan() {
 }
 
 #[test]
+fn regression_prompt_plan_first_mode_fails_when_executor_response_exceeds_budget() {
+    let server = MockServer::start();
+    let planner_and_executor = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "1. Inspect requirements\n2. Apply implementation"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16}
+        }));
+    });
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--model",
+        "openai/gpt-4o-mini",
+        "--openai-api-key",
+        "test-openai-key",
+        "--api-base",
+        &format!("{}/v1", server.base_url()),
+        "--prompt",
+        "prepare release plan",
+        "--orchestrator-mode",
+        "plan-first",
+        "--orchestrator-max-plan-steps",
+        "4",
+        "--orchestrator-max-executor-response-chars",
+        "12",
+        "--no-session",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "orchestrator trace: mode=plan-first phase=consolidation decision=reject reason=executor_response_budget_exceeded",
+        ))
+        .stdout(
+            predicate::str::contains(
+                "orchestrator trace: mode=plan-first phase=consolidation decision=accept",
+            )
+            .not(),
+        )
+        .stderr(predicate::str::contains("executor response exceeded budget"));
+
+    planner_and_executor.assert_calls(2);
+}
+
+#[test]
 fn integration_interactive_plan_first_mode_runs_planner_and_executor_per_turn() {
     let server = MockServer::start();
     let planner = server.mock(|when, then| {
