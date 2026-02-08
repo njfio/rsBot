@@ -93,7 +93,7 @@ use super::{
     SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
     SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
-use crate::auth_commands::AuthMatrixAvailabilityFilter;
+use crate::auth_commands::{AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter};
 use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
@@ -1035,6 +1035,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Matrix {
             provider: None,
             mode: None,
+            mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
             json_output: true,
@@ -1048,6 +1049,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Matrix {
             provider: Some(Provider::OpenAi),
             mode: Some(ProviderAuthMethod::OauthToken),
+            mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
             json_output: true,
@@ -1061,6 +1063,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Matrix {
             provider: None,
             mode: None,
+            mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::Available,
             state: None,
             json_output: true,
@@ -1074,8 +1077,23 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Matrix {
             provider: None,
             mode: None,
+            mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: Some("ready".to_string()),
+            json_output: true,
+        }
+    );
+
+    let supported_only_matrix = parse_auth_command("matrix --mode-support supported --json")
+        .expect("parse supported-only auth matrix");
+    assert_eq!(
+        supported_only_matrix,
+        AuthCommand::Matrix {
+            provider: None,
+            mode: None,
+            mode_support: AuthMatrixModeSupportFilter::Supported,
+            availability: AuthMatrixAvailabilityFilter::All,
+            state: None,
             json_output: true,
         }
     );
@@ -1105,6 +1123,25 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(missing_matrix_mode
         .to_string()
         .contains("usage: /auth matrix"));
+
+    let missing_matrix_mode_support =
+        parse_auth_command("matrix --mode-support").expect_err("missing matrix mode-support");
+    assert!(missing_matrix_mode_support
+        .to_string()
+        .contains("usage: /auth matrix"));
+
+    let duplicate_matrix_mode_support =
+        parse_auth_command("matrix --mode-support all --mode-support supported")
+            .expect_err("duplicate matrix mode-support");
+    assert!(duplicate_matrix_mode_support
+        .to_string()
+        .contains("usage: /auth matrix"));
+
+    let unknown_matrix_mode_support =
+        parse_auth_command("matrix --mode-support maybe").expect_err("unknown matrix mode-support");
+    assert!(unknown_matrix_mode_support
+        .to_string()
+        .contains("unknown mode-support filter"));
 
     let missing_matrix_availability =
         parse_auth_command("matrix --availability").expect_err("missing matrix availability");
@@ -1667,6 +1704,66 @@ fn functional_execute_auth_command_matrix_supports_state_filter() {
 }
 
 #[test]
+fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-matrix-mode-support-filter.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = Some("shared-api-key".to_string());
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("mode-support-access".to_string()),
+            refresh_token: Some("mode-support-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(600)),
+            revoked: false,
+        },
+    );
+
+    let supported_output = execute_auth_command(&config, "matrix --mode-support supported --json");
+    let supported_payload: serde_json::Value =
+        serde_json::from_str(&supported_output).expect("parse supported-only matrix payload");
+    assert_eq!(supported_payload["mode_support_filter"], "supported");
+    assert_eq!(supported_payload["rows_total"], 12);
+    assert_eq!(supported_payload["rows"], 5);
+    assert_eq!(supported_payload["mode_supported"], 5);
+    assert_eq!(supported_payload["mode_unsupported"], 0);
+    let supported_entries = supported_payload["entries"]
+        .as_array()
+        .expect("supported entries");
+    assert_eq!(supported_entries.len(), 5);
+    assert!(supported_entries
+        .iter()
+        .all(|entry| entry["mode_supported"].as_bool() == Some(true)));
+
+    let unsupported_output =
+        execute_auth_command(&config, "matrix --mode-support unsupported --json");
+    let unsupported_payload: serde_json::Value =
+        serde_json::from_str(&unsupported_output).expect("parse unsupported-only matrix payload");
+    assert_eq!(unsupported_payload["mode_support_filter"], "unsupported");
+    assert_eq!(unsupported_payload["rows_total"], 12);
+    assert_eq!(unsupported_payload["rows"], 7);
+    assert_eq!(unsupported_payload["mode_supported"], 0);
+    assert_eq!(unsupported_payload["mode_unsupported"], 7);
+    let unsupported_entries = unsupported_payload["entries"]
+        .as_array()
+        .expect("unsupported entries");
+    assert_eq!(unsupported_entries.len(), 7);
+    assert!(unsupported_entries
+        .iter()
+        .all(|entry| entry["mode_supported"].as_bool() == Some(false)));
+
+    let text_output = execute_auth_command(&config, "matrix --mode-support supported");
+    assert!(text_output.contains("mode_support_filter=supported"));
+    assert!(!text_output.contains("mode_supported=false"));
+}
+
+#[test]
 fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filters() {
     let temp = tempdir().expect("tempdir");
     let mut config = test_auth_command_config();
@@ -1715,6 +1812,85 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
     assert_eq!(mismatch_payload["rows_total"], 1);
     assert_eq!(mismatch_payload["rows"], 1);
     assert_eq!(mismatch_payload["entries"][0]["state"], "mode_mismatch");
+}
+
+#[test]
+fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_other_filters() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp
+        .path()
+        .join("auth-matrix-mode-support-composition.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = Some("shared-api-key".to_string());
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("mode-support-composition-access".to_string()),
+            refresh_token: Some("mode-support-composition-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(600)),
+            revoked: false,
+        },
+    );
+
+    let filtered_output = execute_auth_command(
+        &config,
+        "matrix openai --mode oauth-token --mode-support supported --availability available --state ready --json",
+    );
+    let filtered_payload: serde_json::Value =
+        serde_json::from_str(&filtered_output).expect("parse mode-support composed filter payload");
+    assert_eq!(filtered_payload["mode_support_filter"], "supported");
+    assert_eq!(filtered_payload["availability_filter"], "available");
+    assert_eq!(filtered_payload["state_filter"], "ready");
+    assert_eq!(filtered_payload["providers"], 1);
+    assert_eq!(filtered_payload["modes"], 1);
+    assert_eq!(filtered_payload["rows_total"], 1);
+    assert_eq!(filtered_payload["rows"], 1);
+    assert_eq!(filtered_payload["entries"][0]["provider"], "openai");
+    assert_eq!(filtered_payload["entries"][0]["mode"], "oauth_token");
+    assert_eq!(filtered_payload["entries"][0]["mode_supported"], true);
+    assert_eq!(filtered_payload["entries"][0]["state"], "ready");
+
+    let zero_row_output = execute_auth_command(
+        &config,
+        "matrix openai --mode oauth-token --mode-support unsupported --json",
+    );
+    let zero_row_payload: serde_json::Value =
+        serde_json::from_str(&zero_row_output).expect("parse zero-row mode-support payload");
+    assert_eq!(zero_row_payload["mode_support_filter"], "unsupported");
+    assert_eq!(zero_row_payload["rows_total"], 1);
+    assert_eq!(zero_row_payload["rows"], 0);
+    assert_eq!(zero_row_payload["mode_supported"], 0);
+    assert_eq!(zero_row_payload["mode_unsupported"], 0);
+    assert_eq!(
+        zero_row_payload["entries"]
+            .as_array()
+            .expect("zero-row entries")
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn regression_execute_auth_command_matrix_rejects_missing_and_duplicate_mode_support_flags() {
+    let config = test_auth_command_config();
+
+    let missing_mode_support = execute_auth_command(&config, "matrix --mode-support");
+    assert!(missing_mode_support
+        .contains("auth error: missing mode-support filter after --mode-support"));
+    assert!(missing_mode_support.contains("usage: /auth matrix"));
+
+    let duplicate_mode_support = execute_auth_command(
+        &config,
+        "matrix --mode-support all --mode-support supported",
+    );
+    assert!(duplicate_mode_support.contains("auth error: duplicate --mode-support flag"));
+    assert!(duplicate_mode_support.contains("usage: /auth matrix"));
 }
 
 #[test]

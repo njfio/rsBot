@@ -6,7 +6,7 @@ pub(crate) const AUTH_STATUS_USAGE: &str =
     "usage: /auth status [provider] [--availability <all|available|unavailable>] [--state <state>] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
 pub(crate) const AUTH_MATRIX_USAGE: &str =
-    "usage: /auth matrix [provider] [--mode <mode>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
+    "usage: /auth matrix [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AuthMatrixAvailabilityFilter {
@@ -21,6 +21,23 @@ impl AuthMatrixAvailabilityFilter {
             Self::All => "all",
             Self::Available => "available",
             Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthMatrixModeSupportFilter {
+    All,
+    Supported,
+    Unsupported,
+}
+
+impl AuthMatrixModeSupportFilter {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Supported => "supported",
+            Self::Unsupported => "unsupported",
         }
     }
 }
@@ -45,6 +62,7 @@ pub(crate) enum AuthCommand {
     Matrix {
         provider: Option<Provider>,
         mode: Option<ProviderAuthMethod>,
+        mode_support: AuthMatrixModeSupportFilter,
         availability: AuthMatrixAvailabilityFilter,
         state: Option<String>,
         json_output: bool,
@@ -219,6 +237,8 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
         "matrix" => {
             let mut provider: Option<Provider> = None;
             let mut mode: Option<ProviderAuthMethod> = None;
+            let mut mode_support = AuthMatrixModeSupportFilter::All;
+            let mut mode_support_explicit = false;
             let mut availability = AuthMatrixAvailabilityFilter::All;
             let mut availability_explicit = false;
             let mut state: Option<String> = None;
@@ -238,6 +258,17 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                             bail!("missing auth mode after --mode; {AUTH_MATRIX_USAGE}");
                         };
                         mode = Some(parse_provider_auth_method_token(raw_mode)?);
+                        index += 2;
+                    }
+                    "--mode-support" => {
+                        if mode_support_explicit {
+                            bail!("duplicate --mode-support flag; {AUTH_MATRIX_USAGE}");
+                        }
+                        let Some(raw_mode_support) = tokens.get(index + 1) else {
+                            bail!("missing mode-support filter after --mode-support; {AUTH_MATRIX_USAGE}");
+                        };
+                        mode_support = parse_auth_matrix_mode_support_filter(raw_mode_support)?;
+                        mode_support_explicit = true;
                         index += 2;
                     }
                     "--availability" => {
@@ -276,6 +307,7 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             Ok(AuthCommand::Matrix {
                 provider,
                 mode,
+                mode_support,
                 availability,
                 state,
                 json_output,
@@ -294,6 +326,20 @@ pub(crate) fn parse_auth_matrix_availability_filter(
         "unavailable" => Ok(AuthMatrixAvailabilityFilter::Unavailable),
         other => bail!(
             "unknown availability filter '{}'; supported values: all, available, unavailable",
+            other
+        ),
+    }
+}
+
+pub(crate) fn parse_auth_matrix_mode_support_filter(
+    token: &str,
+) -> Result<AuthMatrixModeSupportFilter> {
+    match token.trim().to_ascii_lowercase().as_str() {
+        "all" => Ok(AuthMatrixModeSupportFilter::All),
+        "supported" => Ok(AuthMatrixModeSupportFilter::Supported),
+        "unsupported" => Ok(AuthMatrixModeSupportFilter::Unsupported),
+        other => bail!(
+            "unknown mode-support filter '{}'; supported values: all, supported, unsupported",
             other
         ),
     }
@@ -1025,6 +1071,7 @@ pub(crate) fn execute_auth_matrix_command(
     config: &AuthCommandConfig,
     provider: Option<Provider>,
     mode: Option<ProviderAuthMethod>,
+    mode_support: AuthMatrixModeSupportFilter,
     availability: AuthMatrixAvailabilityFilter,
     state: Option<String>,
     json_output: bool,
@@ -1066,6 +1113,15 @@ pub(crate) fn execute_auth_matrix_command(
     }
 
     let total_rows = rows.len();
+    rows = match mode_support {
+        AuthMatrixModeSupportFilter::All => rows,
+        AuthMatrixModeSupportFilter::Supported => {
+            rows.into_iter().filter(|row| row.mode_supported).collect()
+        }
+        AuthMatrixModeSupportFilter::Unsupported => {
+            rows.into_iter().filter(|row| !row.mode_supported).collect()
+        }
+    };
     rows = match availability {
         AuthMatrixAvailabilityFilter::All => rows,
         AuthMatrixAvailabilityFilter::Available => {
@@ -1090,6 +1146,7 @@ pub(crate) fn execute_auth_matrix_command(
     if json_output {
         return serde_json::json!({
             "command": "auth.matrix",
+            "mode_support_filter": mode_support.as_str(),
             "availability_filter": availability.as_str(),
             "state_filter": state_filter.as_deref().unwrap_or("all"),
             "providers": selected_providers.len(),
@@ -1106,7 +1163,7 @@ pub(crate) fn execute_auth_matrix_command(
     }
 
     let mut lines = vec![format!(
-        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} availability_filter={} state_filter={} rows_total={}",
+        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} mode_support_filter={} availability_filter={} state_filter={} rows_total={}",
         selected_providers.len(),
         selected_modes.len(),
         rows.len(),
@@ -1114,6 +1171,7 @@ pub(crate) fn execute_auth_matrix_command(
         mode_unsupported,
         available,
         unavailable,
+        mode_support.as_str(),
         availability.as_str(),
         state_filter.as_deref().unwrap_or("all"),
         total_rows
@@ -1240,9 +1298,18 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
         AuthCommand::Matrix {
             provider,
             mode,
+            mode_support,
             availability,
             state,
             json_output,
-        } => execute_auth_matrix_command(config, provider, mode, availability, state, json_output),
+        } => execute_auth_matrix_command(
+            config,
+            provider,
+            mode,
+            mode_support,
+            availability,
+            state,
+            json_output,
+        ),
     }
 }
