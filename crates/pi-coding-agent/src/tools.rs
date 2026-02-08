@@ -12,7 +12,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::{process::Command, time::timeout};
 
-use crate::extension_manifest::evaluate_extension_policy_override;
+use crate::extension_manifest::{
+    evaluate_extension_policy_override, execute_extension_registered_tool, ExtensionRegisteredTool,
+};
 
 const SAFE_BASH_ENV_VARS: &[&str] = &[
     "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TMP", "TEMP",
@@ -191,6 +193,49 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(WriteTool::new(policy.clone()));
     agent.register_tool(EditTool::new(policy.clone()));
     agent.register_tool(BashTool::new(policy));
+}
+
+pub fn register_extension_tools(agent: &mut Agent, tools: &[ExtensionRegisteredTool]) {
+    for tool in tools {
+        agent.register_tool(ExtensionProcessTool::new(tool.clone()));
+    }
+}
+
+struct ExtensionProcessTool {
+    registration: ExtensionRegisteredTool,
+}
+
+impl ExtensionProcessTool {
+    fn new(registration: ExtensionRegisteredTool) -> Self {
+        Self { registration }
+    }
+}
+
+#[async_trait]
+impl AgentTool for ExtensionProcessTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.registration.name.clone(),
+            description: self.registration.description.clone(),
+            parameters: self.registration.parameters.clone(),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        match execute_extension_registered_tool(&self.registration, &arguments) {
+            Ok(result) => ToolExecutionResult {
+                content: result.content,
+                is_error: result.is_error,
+            },
+            Err(error) => ToolExecutionResult::error(json!({
+                "tool": self.registration.name,
+                "extension_id": self.registration.extension_id,
+                "extension_version": self.registration.extension_version,
+                "manifest": self.registration.manifest_path.display().to_string(),
+                "error": error.to_string(),
+            })),
+        }
+    }
 }
 
 pub struct ReadTool {

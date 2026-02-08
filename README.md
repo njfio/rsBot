@@ -348,6 +348,46 @@ cargo run -p pi-coding-agent -- \
 
 For `message-transform` hooks, extension responses can return a replacement prompt via `{"prompt":"..."}`.
 
+When `--extension-runtime-hooks` is enabled, process extensions can also declare runtime tools and slash commands:
+
+```json
+{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "runtime.sh",
+  "permissions": ["run-commands"],
+  "tools": [
+    {
+      "name": "issue_triage",
+      "description": "Classify and label issues",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" }
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "/triage-now",
+      "description": "Run triage pipeline",
+      "usage": "/triage-now <issue-number>"
+    }
+  ]
+}
+```
+
+Runtime tool response contract:
+- return JSON object with `content` (any JSON) and optional `is_error` boolean.
+
+Runtime slash-command response contract:
+- return JSON object with optional `output` (or `message`) string and optional `action` of `continue` or `exit`.
+
 Validate a reusable package manifest JSON and exit:
 
 ```bash

@@ -1,4 +1,7 @@
 use super::*;
+use crate::extension_manifest::{
+    dispatch_extension_registered_command, ExtensionRegisteredCommandAction,
+};
 use crate::session_commands::{
     execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
     parse_session_diff_args, parse_session_stats_args,
@@ -427,6 +430,7 @@ pub(crate) fn execute_command_file(
             command_context.skills_command_config,
             command_context.auth_command_config,
             command_context.model_catalog,
+            command_context.extension_commands,
         ) {
             Ok(CommandAction::Continue) => {
                 report.succeeded += 1;
@@ -557,6 +561,7 @@ pub(crate) fn handle_command(
         &skills_command_config,
         &auth_command_config,
         &model_catalog,
+        &[],
     )
 }
 
@@ -571,6 +576,7 @@ pub(crate) fn handle_command_with_session_import_mode(
     skills_command_config: &SkillsSyncCommandConfig,
     auth_command_config: &AuthCommandConfig,
     model_catalog: &ModelCatalog,
+    extension_commands: &[crate::extension_manifest::ExtensionRegisteredCommand],
 ) -> Result<CommandAction> {
     let skills_dir = skills_command_config.skills_dir.as_path();
     let default_skills_lock_path = skills_command_config.default_lock_path.as_path();
@@ -973,6 +979,7 @@ pub(crate) fn handle_command_with_session_import_mode(
                     skills_command_config,
                     auth_command_config,
                     model_catalog,
+                    extension_commands,
                 }
             )
         );
@@ -1116,6 +1123,23 @@ pub(crate) fn handle_command_with_session_import_mode(
         reload_agent_from_active_head(agent, runtime)?;
         println!("switched to branch id {target}");
         return Ok(CommandAction::Continue);
+    }
+
+    match dispatch_extension_registered_command(extension_commands, command_name, command_args) {
+        Ok(Some(dispatch_result)) => {
+            if let Some(output) = dispatch_result.output {
+                println!("{output}");
+            }
+            return Ok(match dispatch_result.action {
+                ExtensionRegisteredCommandAction::Continue => CommandAction::Continue,
+                ExtensionRegisteredCommandAction::Exit => CommandAction::Exit,
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            println!("extension command error: command={command_name} error={error}");
+            return Ok(CommandAction::Continue);
+        }
     }
 
     println!("{}", unknown_command_message(parsed.name));

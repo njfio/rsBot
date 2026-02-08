@@ -1,4 +1,7 @@
 use super::*;
+use crate::extension_manifest::{
+    discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
+};
 
 const EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
@@ -75,6 +78,28 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         enabled: cli.extension_runtime_hooks,
         root: cli.extension_runtime_root.clone(),
     };
+    let extension_runtime_registrations = if extension_runtime_hooks.enabled {
+        discover_extension_runtime_registrations(&extension_runtime_hooks.root)
+    } else {
+        ExtensionRuntimeRegistrationSummary {
+            root: extension_runtime_hooks.root.clone(),
+            discovered: 0,
+            registered_tools: Vec::new(),
+            registered_commands: Vec::new(),
+            skipped_invalid: 0,
+            skipped_unsupported_runtime: 0,
+            skipped_permission_denied: 0,
+            skipped_name_conflict: 0,
+            diagnostics: Vec::new(),
+        }
+    };
+    tools::register_extension_tools(
+        &mut agent,
+        &extension_runtime_registrations.registered_tools,
+    );
+    for diagnostic in &extension_runtime_registrations.diagnostics {
+        eprintln!("{diagnostic}");
+    }
     register_runtime_extension_tool_hook_subscriber(&mut agent, &extension_runtime_hooks);
 
     if let Some(prompt) = resolve_prompt_input(cli)? {
@@ -125,6 +150,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         skills_command_config: &skills_sync_command_config,
         auth_command_config: &auth_command_config,
         model_catalog,
+        extension_commands: &extension_runtime_registrations.registered_commands,
     };
     let interactive_config = InteractiveRuntimeConfig {
         turn_timeout_ms: cli.turn_timeout_ms,

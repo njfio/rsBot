@@ -338,6 +338,7 @@ pub(crate) fn execute_macro_command(
                     command_context.skills_command_config,
                     command_context.auth_command_config,
                     command_context.model_catalog,
+                    command_context.extension_commands,
                 ) {
                     Ok(CommandAction::Continue) => {}
                     Ok(CommandAction::Exit) => {

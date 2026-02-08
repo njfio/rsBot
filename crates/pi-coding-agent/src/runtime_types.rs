@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use pi_ai::Provider;
 use serde::{Deserialize, Serialize};
 
+use crate::extension_manifest::ExtensionRegisteredCommand;
 use crate::session::{SessionImportMode, SessionStore};
 use crate::{
     default_provider_auth_method, Cli, CredentialStoreEncryptionMode, ModelCatalog,
@@ -119,6 +120,7 @@ pub(crate) struct CommandExecutionContext<'a> {
     pub(crate) skills_command_config: &'a SkillsSyncCommandConfig,
     pub(crate) auth_command_config: &'a AuthCommandConfig,
     pub(crate) model_catalog: &'a ModelCatalog,
+    pub(crate) extension_commands: &'a [ExtensionRegisteredCommand],
 }
 
 #[derive(Debug, Clone)]

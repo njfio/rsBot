@@ -92,10 +92,11 @@ use super::{
     SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
     SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
+use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
 use crate::session::{SessionImportMode, SessionStore};
-use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
+use crate::tools::{register_extension_tools, BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
 use crate::{default_model_catalog_cache_path, ModelCatalog, MODELS_LIST_USAGE, MODEL_SHOW_USAGE};
 use crate::{
     execute_extension_exec_command, execute_extension_list_command, execute_extension_show_command,
@@ -452,6 +453,7 @@ fn test_command_context<'a>(
         skills_command_config,
         auth_command_config,
         model_catalog,
+        extension_commands: &[],
     }
 }
 
@@ -3182,6 +3184,7 @@ fn integration_doctor_command_preserves_session_runtime() {
         &skills_command_config,
         &auth_command_config,
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("doctor command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -3581,6 +3584,7 @@ fn integration_execute_macro_command_save_show_run_delete_lifecycle() {
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
         model_catalog: &model_catalog,
+        extension_commands: &[],
     };
 
     let save_output = execute_macro_command(
@@ -3692,6 +3696,7 @@ fn regression_execute_macro_command_reports_missing_commands_file() {
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
         model_catalog: &model_catalog,
+        extension_commands: &[],
     };
     let mut session_runtime = None;
     let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -3733,6 +3738,7 @@ fn regression_execute_macro_command_reports_corrupt_macro_file() {
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
         model_catalog: &model_catalog,
+        extension_commands: &[],
     };
     let mut session_runtime = None;
     let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -3769,6 +3775,7 @@ fn regression_execute_macro_command_rejects_unknown_macro_and_invalid_entries() 
         skills_command_config: &skills_command_config,
         auth_command_config: &auth_command_config,
         model_catalog: &model_catalog,
+        extension_commands: &[],
     };
     let mut session_runtime = None;
     let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
@@ -5903,6 +5910,7 @@ fn integration_skills_sync_command_preserves_session_runtime_on_drift() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills sync command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -5955,6 +5963,7 @@ fn integration_skills_lock_write_command_preserves_session_runtime_on_error() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills lock write command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6006,6 +6015,7 @@ fn integration_skills_list_command_preserves_session_runtime() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills list command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6056,6 +6066,7 @@ fn integration_skills_show_command_preserves_session_runtime_on_unknown_skill() 
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills show command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6106,6 +6117,7 @@ fn integration_skills_search_command_preserves_session_runtime_on_invalid_args()
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills search command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6156,6 +6168,7 @@ fn integration_skills_lock_diff_command_preserves_session_runtime_on_error() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills lock diff command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6206,6 +6219,7 @@ fn integration_skills_verify_command_preserves_session_runtime_on_error() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills verify command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6256,6 +6270,7 @@ fn integration_skills_prune_command_preserves_session_runtime_on_error() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills prune command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6309,6 +6324,7 @@ fn integration_skills_trust_list_command_preserves_session_runtime_on_error() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills trust list command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6362,6 +6378,7 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills trust add command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6376,6 +6393,7 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills trust revoke command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -6390,6 +6408,7 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("skills trust rotate command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -8686,6 +8705,246 @@ async fn regression_tool_hook_subscriber_timeout_does_not_fail_prompt() {
     );
 }
 
+#[tokio::test]
+async fn integration_extension_registered_tool_executes_in_prompt_loop() {
+    let temp = tempdir().expect("tempdir");
+    let extension_root = temp.path().join("extensions");
+    let extension_dir = extension_root.join("tool-registry");
+    std::fs::create_dir_all(&extension_dir).expect("create extension dir");
+    let request_log = extension_dir.join("tool-request.ndjson");
+    let tool_script = extension_dir.join("tool.sh");
+    std::fs::write(
+        &tool_script,
+        format!(
+            "#!/bin/sh\nread -r input\nprintf '%s\\n' \"$input\" >> \"{}\"\nprintf '{{\"content\":{{\"status\":\"ok\",\"source\":\"extension\"}},\"is_error\":false}}'\n",
+            request_log.display()
+        ),
+    )
+    .expect("write tool script");
+    make_script_executable(&tool_script);
+    std::fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "tool-registry",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "tool.sh",
+  "permissions": ["run-commands"],
+  "tools": [
+    {
+      "name": "issue_triage",
+      "description": "triage issue labels",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {"type":"string"}
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let registrations = discover_extension_runtime_registrations(&extension_root);
+    assert_eq!(registrations.registered_tools.len(), 1);
+
+    let responses = VecDeque::from(vec![
+        ChatResponse {
+            message: pi_ai::Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                id: "call-1".to_string(),
+                name: "issue_triage".to_string(),
+                arguments: serde_json::json!({
+                    "title": "bug report",
+                }),
+            }]),
+            finish_reason: Some("tool_calls".to_string()),
+            usage: ChatUsage::default(),
+        },
+        ChatResponse {
+            message: Message::assistant_text("extension tool complete"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        },
+    ]);
+
+    let mut agent = Agent::new(
+        Arc::new(QueueClient {
+            responses: AsyncMutex::new(responses),
+        }),
+        AgentConfig::default(),
+    );
+    let policy = crate::tools::ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    crate::tools::register_builtin_tools(&mut agent, policy);
+    register_extension_tools(&mut agent, &registrations.registered_tools);
+
+    let mut runtime = None;
+    let status = run_prompt_with_cancellation(
+        &mut agent,
+        &mut runtime,
+        "run extension tool",
+        0,
+        pending::<()>(),
+        test_render_options(),
+    )
+    .await
+    .expect("prompt should succeed");
+    assert_eq!(status, PromptRunStatus::Completed);
+
+    let raw = std::fs::read_to_string(&request_log).expect("read request log");
+    let payload: serde_json::Value =
+        serde_json::from_str(raw.lines().next().expect("one row")).expect("request row json");
+    assert_eq!(payload["hook"], "tool-call");
+    assert_eq!(payload["payload"]["kind"], "tool-call");
+    assert_eq!(payload["payload"]["tool"]["name"], "issue_triage");
+    assert_eq!(
+        payload["payload"]["tool"]["arguments"]["title"],
+        "bug report"
+    );
+    assert!(agent.messages().iter().any(|message| {
+        message.role == MessageRole::Tool
+            && message.text_content().contains("\"status\": \"ok\"")
+            && message.text_content().contains("\"source\": \"extension\"")
+    }));
+}
+
+#[test]
+fn integration_handle_command_dispatches_extension_registered_command() {
+    let temp = tempdir().expect("tempdir");
+    let extension_root = temp.path().join("extensions");
+    let extension_dir = extension_root.join("command-registry");
+    std::fs::create_dir_all(&extension_dir).expect("create extension dir");
+    let request_log = extension_dir.join("command-request.ndjson");
+    let command_script = extension_dir.join("command.sh");
+    std::fs::write(
+        &command_script,
+        format!(
+            "#!/bin/sh\nread -r input\nprintf '%s\\n' \"$input\" >> \"{}\"\nprintf '{{\"output\":\"triage complete\",\"action\":\"continue\"}}'\n",
+            request_log.display()
+        ),
+    )
+    .expect("write command script");
+    make_script_executable(&command_script);
+    std::fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "command-registry",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "command.sh",
+  "permissions": ["run-commands"],
+  "commands": [
+    {
+      "name": "/triage-now",
+      "description": "run triage command"
+    }
+  ]
+}"#,
+    )
+    .expect("write extension manifest");
+    let registrations = discover_extension_runtime_registrations(&extension_root);
+    assert_eq!(registrations.registered_commands.len(), 1);
+
+    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+    let mut runtime = None;
+    let tool_policy_json = test_tool_policy_json();
+    let profile_defaults = test_profile_defaults();
+    let auth_command_config = test_auth_command_config();
+    let skills_dir = temp.path().join("skills");
+    std::fs::create_dir_all(&skills_dir).expect("create skills dir");
+    let lock_path = default_skills_lock_path(&skills_dir);
+    std::fs::write(&lock_path, "{}\n").expect("write lock path");
+    let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+
+    let action = handle_command_with_session_import_mode(
+        "/triage-now 42",
+        &mut agent,
+        &mut runtime,
+        &tool_policy_json,
+        SessionImportMode::Merge,
+        &profile_defaults,
+        &skills_command_config,
+        &auth_command_config,
+        &ModelCatalog::built_in(),
+        &registrations.registered_commands,
+    )
+    .expect("command should execute");
+    assert_eq!(action, CommandAction::Continue);
+
+    let raw = std::fs::read_to_string(&request_log).expect("read request log");
+    let payload: serde_json::Value =
+        serde_json::from_str(raw.lines().next().expect("one row")).expect("request row json");
+    assert_eq!(payload["hook"], "command-call");
+    assert_eq!(payload["payload"]["kind"], "command-call");
+    assert_eq!(payload["payload"]["command"]["name"], "/triage-now");
+    assert_eq!(payload["payload"]["command"]["args"], "42");
+}
+
+#[test]
+fn regression_handle_command_extension_failure_is_fail_isolated() {
+    let temp = tempdir().expect("tempdir");
+    let extension_root = temp.path().join("extensions");
+    let extension_dir = extension_root.join("command-registry");
+    std::fs::create_dir_all(&extension_dir).expect("create extension dir");
+    let command_script = extension_dir.join("command.sh");
+    std::fs::write(
+        &command_script,
+        "#!/bin/sh\nread -r _input\nprintf '{\"action\":123}'\n",
+    )
+    .expect("write command script");
+    make_script_executable(&command_script);
+    std::fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "command-registry",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "command.sh",
+  "permissions": ["run-commands"],
+  "commands": [
+    {
+      "name": "/triage-now",
+      "description": "run triage command"
+    }
+  ]
+}"#,
+    )
+    .expect("write extension manifest");
+    let registrations = discover_extension_runtime_registrations(&extension_root);
+    assert_eq!(registrations.registered_commands.len(), 1);
+
+    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+    let mut runtime = None;
+    let tool_policy_json = test_tool_policy_json();
+    let profile_defaults = test_profile_defaults();
+    let auth_command_config = test_auth_command_config();
+    let skills_dir = temp.path().join("skills");
+    std::fs::create_dir_all(&skills_dir).expect("create skills dir");
+    let lock_path = default_skills_lock_path(&skills_dir);
+    std::fs::write(&lock_path, "{}\n").expect("write lock path");
+    let skills_command_config = skills_command_config(&skills_dir, &lock_path, None);
+
+    let action = handle_command_with_session_import_mode(
+        "/triage-now 42",
+        &mut agent,
+        &mut runtime,
+        &tool_policy_json,
+        SessionImportMode::Merge,
+        &profile_defaults,
+        &skills_command_config,
+        &auth_command_config,
+        &ModelCatalog::built_in(),
+        &registrations.registered_commands,
+    )
+    .expect("errors should be fail-isolated");
+    assert_eq!(action, CommandAction::Continue);
+}
+
 #[test]
 fn unit_parse_numbered_plan_steps_accepts_deterministic_step_format() {
     let steps = parse_numbered_plan_steps("1. Gather context\n2) Implement fix\n3. Verify");
@@ -9305,6 +9564,7 @@ fn integration_session_import_command_replace_mode_overwrites_runtime_state() {
         &skills_command_config,
         &test_auth_command_config(),
         &ModelCatalog::built_in(),
+        &[],
     )
     .expect("session replace import should succeed");
     assert_eq!(action, CommandAction::Continue);

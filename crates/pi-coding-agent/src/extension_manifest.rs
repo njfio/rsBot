@@ -19,6 +19,9 @@ const EXTENSION_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const EXTENSION_TIMEOUT_MS_DEFAULT: u64 = 5_000;
 const EXTENSION_TIMEOUT_MS_MAX: u64 = 300_000;
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+const EXTENSION_COMMAND_RESPONSE_ACTION_CONTINUE: &str = "continue";
+const EXTENSION_COMMAND_RESPONSE_ACTION_EXIT: &str = "exit";
+const BUILTIN_TOOL_NAMES: &[&str] = &["read", "write", "edit", "bash"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct ExtensionManifestSummary {
@@ -113,6 +116,61 @@ pub(crate) struct ExtensionPolicyOverrideResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExtensionRegisteredCommandAction {
+    Continue,
+    Exit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtensionRegisteredCommandResult {
+    pub output: Option<String>,
+    pub action: ExtensionRegisteredCommandAction,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ExtensionRegisteredToolResult {
+    pub content: Value,
+    pub is_error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ExtensionRegisteredTool {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+    pub extension_id: String,
+    pub extension_version: String,
+    pub manifest_path: PathBuf,
+    pub entrypoint: PathBuf,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtensionRegisteredCommand {
+    pub name: String,
+    pub description: String,
+    pub usage: Option<String>,
+    pub extension_id: String,
+    pub extension_version: String,
+    pub manifest_path: PathBuf,
+    pub entrypoint: PathBuf,
+    pub timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ExtensionRuntimeRegistrationSummary {
+    pub root: PathBuf,
+    pub discovered: usize,
+    pub registered_tools: Vec<ExtensionRegisteredTool>,
+    pub registered_commands: Vec<ExtensionRegisteredCommand>,
+    pub skipped_invalid: usize,
+    pub skipped_unsupported_runtime: usize,
+    pub skipped_permission_denied: usize,
+    pub skipped_name_conflict: usize,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PolicyOverrideDecision {
     Allow,
     Deny,
@@ -135,8 +193,27 @@ struct ExtensionManifest {
     hooks: Vec<ExtensionHook>,
     #[serde(default)]
     permissions: Vec<ExtensionPermission>,
+    #[serde(default)]
+    tools: Vec<ExtensionToolRegistration>,
+    #[serde(default)]
+    commands: Vec<ExtensionCommandRegistration>,
     #[serde(default = "default_extension_timeout_ms")]
     timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExtensionToolRegistration {
+    name: String,
+    description: String,
+    parameters: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExtensionCommandRegistration {
+    name: String,
+    description: String,
+    #[serde(default)]
+    usage: Option<String>,
 }
 
 struct LoadedExtensionManifest {
@@ -314,6 +391,8 @@ fn load_and_validate_extension_manifest(
     validate_entrypoint_path(&manifest.entrypoint)?;
     validate_unique(&manifest.hooks, "hooks")?;
     validate_unique(&manifest.permissions, "permissions")?;
+    validate_tool_registrations(&manifest.tools)?;
+    validate_command_registrations(&manifest.commands)?;
     validate_timeout_ms(manifest.timeout_ms)?;
     let summary = ExtensionManifestSummary {
         manifest_path: path.to_path_buf(),
@@ -364,8 +443,38 @@ fn render_extension_manifest_report(
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let mut tools = manifest
+        .tools
+        .iter()
+        .map(|tool| tool.name.trim().to_string())
+        .collect::<Vec<_>>();
+    tools.sort();
+    let tool_lines = if tools.is_empty() {
+        "- none".to_string()
+    } else {
+        tools
+            .iter()
+            .map(|tool| format!("- {tool}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut commands = manifest
+        .commands
+        .iter()
+        .filter_map(|command| normalize_extension_command_name(&command.name).ok())
+        .collect::<Vec<_>>();
+    commands.sort();
+    let command_lines = if commands.is_empty() {
+        "- none".to_string()
+    } else {
+        commands
+            .iter()
+            .map(|command| format!("- {command}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     format!(
-        "extension show:\n- path: {}\n- id: {}\n- version: {}\n- runtime: {}\n- entrypoint: {}\n- timeout_ms: {}\n- hooks ({}):\n{}\n- permissions ({}):\n{}",
+        "extension show:\n- path: {}\n- id: {}\n- version: {}\n- runtime: {}\n- entrypoint: {}\n- timeout_ms: {}\n- hooks ({}):\n{}\n- permissions ({}):\n{}\n- tools ({}):\n{}\n- commands ({}):\n{}",
         summary.manifest_path.display(),
         summary.id,
         summary.version,
@@ -375,7 +484,11 @@ fn render_extension_manifest_report(
         summary.hook_count,
         hook_lines,
         summary.permission_count,
-        permission_lines
+        permission_lines,
+        tools.len(),
+        tool_lines,
+        commands.len(),
+        command_lines
     )
 }
 
@@ -827,6 +940,407 @@ pub(crate) fn evaluate_extension_policy_override(
     result
 }
 
+pub(crate) fn discover_extension_runtime_registrations(
+    root: &Path,
+) -> ExtensionRuntimeRegistrationSummary {
+    let mut summary = ExtensionRuntimeRegistrationSummary {
+        root: root.to_path_buf(),
+        discovered: 0,
+        registered_tools: Vec::new(),
+        registered_commands: Vec::new(),
+        skipped_invalid: 0,
+        skipped_unsupported_runtime: 0,
+        skipped_permission_denied: 0,
+        skipped_name_conflict: 0,
+        diagnostics: Vec::new(),
+    };
+
+    let (loaded, invalid_diagnostics) = match discover_loaded_extension_manifests(root) {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            summary
+                .diagnostics
+                .push(format!("extension runtime: {error}"));
+            return summary;
+        }
+    };
+    summary.skipped_invalid = invalid_diagnostics.len();
+    summary.diagnostics.extend(invalid_diagnostics);
+    summary.discovered = loaded.len();
+
+    let mut seen_tools = HashSet::new();
+    let mut seen_commands = HashSet::new();
+
+    for loaded_manifest in loaded {
+        if loaded_manifest.manifest.runtime != ExtensionRuntime::Process {
+            summary.skipped_unsupported_runtime += 1;
+            summary.diagnostics.push(format!(
+                "extension runtime: skipped id={} manifest={} reason=unsupported runtime={}",
+                loaded_manifest.summary.id,
+                loaded_manifest.summary.manifest_path.display(),
+                loaded_manifest.manifest.runtime.as_str()
+            ));
+            continue;
+        }
+
+        let entrypoint = match resolve_extension_entrypoint(
+            &loaded_manifest.summary.manifest_path,
+            &loaded_manifest.manifest.entrypoint,
+        ) {
+            Ok(entrypoint) => entrypoint,
+            Err(error) => {
+                summary.skipped_invalid += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: skipped id={} manifest={} reason=invalid entrypoint: {}",
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display(),
+                    error
+                ));
+                continue;
+            }
+        };
+
+        let has_run_commands = loaded_manifest
+            .manifest
+            .permissions
+            .contains(&ExtensionPermission::RunCommands);
+
+        for tool in &loaded_manifest.manifest.tools {
+            let tool_name = tool.name.trim().to_string();
+            if !has_run_commands {
+                summary.skipped_permission_denied += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: tool={} id={} manifest={} denied: missing required permission={}",
+                    tool_name,
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display(),
+                    ExtensionPermission::RunCommands.as_str()
+                ));
+                continue;
+            }
+            if BUILTIN_TOOL_NAMES.contains(&tool_name.as_str()) {
+                summary.skipped_name_conflict += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: tool={} id={} manifest={} denied: name conflicts with built-in tool",
+                    tool_name,
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display()
+                ));
+                continue;
+            }
+            if !seen_tools.insert(tool_name.clone()) {
+                summary.skipped_name_conflict += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: tool={} id={} manifest={} denied: duplicate extension tool name",
+                    tool_name,
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display()
+                ));
+                continue;
+            }
+            summary.registered_tools.push(ExtensionRegisteredTool {
+                name: tool_name,
+                description: tool.description.trim().to_string(),
+                parameters: tool.parameters.clone(),
+                extension_id: loaded_manifest.summary.id.clone(),
+                extension_version: loaded_manifest.summary.version.clone(),
+                manifest_path: loaded_manifest.summary.manifest_path.clone(),
+                entrypoint: entrypoint.clone(),
+                timeout_ms: loaded_manifest.manifest.timeout_ms,
+            });
+        }
+
+        for command in &loaded_manifest.manifest.commands {
+            let command_name = match normalize_extension_command_name(&command.name) {
+                Ok(name) => name,
+                Err(error) => {
+                    summary.skipped_invalid += 1;
+                    summary.diagnostics.push(format!(
+                        "extension runtime: command={} id={} manifest={} denied: invalid name: {}",
+                        command.name.trim(),
+                        loaded_manifest.summary.id,
+                        loaded_manifest.summary.manifest_path.display(),
+                        error
+                    ));
+                    continue;
+                }
+            };
+            if !has_run_commands {
+                summary.skipped_permission_denied += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: command={} id={} manifest={} denied: missing required permission={}",
+                    command_name,
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display(),
+                    ExtensionPermission::RunCommands.as_str()
+                ));
+                continue;
+            }
+            if crate::commands::COMMAND_NAMES.contains(&command_name.as_str()) {
+                summary.skipped_name_conflict += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: command={} id={} manifest={} denied: name conflicts with built-in command",
+                    command_name,
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display()
+                ));
+                continue;
+            }
+            if !seen_commands.insert(command_name.clone()) {
+                summary.skipped_name_conflict += 1;
+                summary.diagnostics.push(format!(
+                    "extension runtime: command={} id={} manifest={} denied: duplicate extension command name",
+                    command_name,
+                    loaded_manifest.summary.id,
+                    loaded_manifest.summary.manifest_path.display()
+                ));
+                continue;
+            }
+            summary
+                .registered_commands
+                .push(ExtensionRegisteredCommand {
+                    name: command_name,
+                    description: command.description.trim().to_string(),
+                    usage: command
+                        .usage
+                        .as_ref()
+                        .map(|usage| usage.trim().to_string())
+                        .filter(|usage| !usage.is_empty()),
+                    extension_id: loaded_manifest.summary.id.clone(),
+                    extension_version: loaded_manifest.summary.version.clone(),
+                    manifest_path: loaded_manifest.summary.manifest_path.clone(),
+                    entrypoint: entrypoint.clone(),
+                    timeout_ms: loaded_manifest.manifest.timeout_ms,
+                });
+        }
+    }
+
+    summary.registered_tools.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.extension_id.cmp(&right.extension_id))
+            .then_with(|| left.extension_version.cmp(&right.extension_version))
+            .then_with(|| left.manifest_path.cmp(&right.manifest_path))
+    });
+    summary.registered_commands.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.extension_id.cmp(&right.extension_id))
+            .then_with(|| left.extension_version.cmp(&right.extension_version))
+            .then_with(|| left.manifest_path.cmp(&right.manifest_path))
+    });
+
+    summary
+}
+
+pub(crate) fn dispatch_extension_registered_command(
+    registered_commands: &[ExtensionRegisteredCommand],
+    command_name: &str,
+    command_args: &str,
+) -> Result<Option<ExtensionRegisteredCommandResult>> {
+    let Some(command) = registered_commands
+        .iter()
+        .find(|candidate| candidate.name == command_name)
+    else {
+        return Ok(None);
+    };
+
+    let payload = serde_json::json!({
+        "schema_version": EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION,
+        "kind": "command-call",
+        "command": {
+            "name": command.name,
+            "args": command_args,
+        },
+    });
+    let request = serde_json::json!({
+        "hook": "command-call",
+        "payload": payload,
+        "manifest_id": command.extension_id,
+        "manifest_version": command.extension_version,
+    });
+    let request_json = serde_json::to_string(&request)
+        .context("failed to serialize extension command request payload")?;
+    let output =
+        run_extension_process_with_timeout(&command.entrypoint, &request_json, command.timeout_ms)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            bail!(
+                "extension command '{}' exited with non-zero status {}",
+                command.name,
+                output.status
+            );
+        }
+        bail!(
+            "extension command '{}' exited with non-zero status {}: {}",
+            command.name,
+            output.status,
+            stderr
+        );
+    }
+    let response_raw = String::from_utf8(output.stdout)
+        .context("extension command response is not valid UTF-8")?;
+    if response_raw.trim().is_empty() {
+        bail!(
+            "extension command '{}' returned empty response",
+            command.name
+        );
+    }
+    parse_extension_registered_command_response(&command.name, &response_raw).map(Some)
+}
+
+pub(crate) fn execute_extension_registered_tool(
+    tool: &ExtensionRegisteredTool,
+    arguments: &Value,
+) -> Result<ExtensionRegisteredToolResult> {
+    let payload = serde_json::json!({
+        "schema_version": EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION,
+        "kind": "tool-call",
+        "tool": {
+            "name": tool.name,
+            "arguments": arguments,
+        },
+    });
+    let request = serde_json::json!({
+        "hook": "tool-call",
+        "payload": payload,
+        "manifest_id": tool.extension_id,
+        "manifest_version": tool.extension_version,
+    });
+    let request_json = serde_json::to_string(&request)
+        .context("failed to serialize extension tool request payload")?;
+    let output =
+        run_extension_process_with_timeout(&tool.entrypoint, &request_json, tool.timeout_ms)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            bail!(
+                "extension tool '{}' exited with non-zero status {}",
+                tool.name,
+                output.status
+            );
+        }
+        bail!(
+            "extension tool '{}' exited with non-zero status {}: {}",
+            tool.name,
+            output.status,
+            stderr
+        );
+    }
+    let response_raw =
+        String::from_utf8(output.stdout).context("extension tool response is not valid UTF-8")?;
+    if response_raw.trim().is_empty() {
+        bail!("extension tool '{}' returned empty response", tool.name);
+    }
+    parse_extension_registered_tool_response(&tool.name, &response_raw)
+}
+
+fn parse_extension_registered_command_response(
+    command_name: &str,
+    response_json: &str,
+) -> Result<ExtensionRegisteredCommandResult> {
+    let value = serde_json::from_str::<Value>(response_json).with_context(|| {
+        format!(
+            "extension command '{}' response must be valid JSON object",
+            command_name
+        )
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        anyhow!(
+            "extension command '{}' response must be a JSON object",
+            command_name
+        )
+    })?;
+    let output = object
+        .get("output")
+        .or_else(|| object.get("message"))
+        .map(|value| {
+            value
+                .as_str()
+                .map(|output| output.trim().to_string())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "extension command '{}' response field 'output' must be a string",
+                        command_name
+                    )
+                })
+        })
+        .transpose()?
+        .filter(|output| !output.is_empty());
+    let action = object
+        .get("action")
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "extension command '{}' response field 'action' must be a string",
+                        command_name
+                    )
+                })
+                .and_then(|action| match action {
+                    EXTENSION_COMMAND_RESPONSE_ACTION_CONTINUE => {
+                        Ok(ExtensionRegisteredCommandAction::Continue)
+                    }
+                    EXTENSION_COMMAND_RESPONSE_ACTION_EXIT => {
+                        Ok(ExtensionRegisteredCommandAction::Exit)
+                    }
+                    other => bail!(
+                        "extension command '{}' response field 'action' must be '{}' or '{}', got '{}'",
+                        command_name,
+                        EXTENSION_COMMAND_RESPONSE_ACTION_CONTINUE,
+                        EXTENSION_COMMAND_RESPONSE_ACTION_EXIT,
+                        other
+                    ),
+                })
+        })
+        .transpose()?
+        .unwrap_or(ExtensionRegisteredCommandAction::Continue);
+
+    Ok(ExtensionRegisteredCommandResult { output, action })
+}
+
+fn parse_extension_registered_tool_response(
+    tool_name: &str,
+    response_json: &str,
+) -> Result<ExtensionRegisteredToolResult> {
+    let value = serde_json::from_str::<Value>(response_json).with_context(|| {
+        format!(
+            "extension tool '{}' response must be valid JSON object",
+            tool_name
+        )
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        anyhow!(
+            "extension tool '{}' response must be a JSON object",
+            tool_name
+        )
+    })?;
+    let content = object.get("content").cloned().ok_or_else(|| {
+        anyhow!(
+            "extension tool '{}' response must include field 'content'",
+            tool_name
+        )
+    })?;
+    let is_error = object
+        .get("is_error")
+        .map(|value| {
+            value.as_bool().ok_or_else(|| {
+                anyhow!(
+                    "extension tool '{}' field 'is_error' must be a boolean",
+                    tool_name
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or(false);
+
+    Ok(ExtensionRegisteredToolResult { content, is_error })
+}
+
 fn discover_loaded_extension_manifests(
     root: &Path,
 ) -> Result<(Vec<LoadedExtensionManifest>, Vec<String>)> {
@@ -1175,6 +1689,145 @@ where
     Ok(())
 }
 
+fn validate_tool_registrations(tools: &[ExtensionToolRegistration]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for tool in tools {
+        let name = tool.name.trim();
+        if name.is_empty() {
+            bail!("extension manifest tool name must not be empty");
+        }
+        if !is_valid_extension_identifier(name) {
+            bail!(
+                "extension manifest tool '{}' must contain only lowercase alphanumeric, dash, underscore, or dot characters",
+                name
+            );
+        }
+        if !seen.insert(name.to_string()) {
+            bail!("extension manifest tools contain duplicate name '{}'", name);
+        }
+        if tool.description.trim().is_empty() {
+            bail!(
+                "extension manifest tool '{}' description must not be empty",
+                name
+            );
+        }
+        validate_tool_parameters_schema(name, &tool.parameters)?;
+    }
+    Ok(())
+}
+
+fn validate_command_registrations(commands: &[ExtensionCommandRegistration]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for command in commands {
+        let normalized = normalize_extension_command_name(&command.name)?;
+        if !seen.insert(normalized.clone()) {
+            bail!(
+                "extension manifest commands contain duplicate name '{}'",
+                normalized
+            );
+        }
+        if command.description.trim().is_empty() {
+            bail!(
+                "extension manifest command '{}' description must not be empty",
+                normalized
+            );
+        }
+        if let Some(usage) = command.usage.as_ref() {
+            if usage.trim().is_empty() {
+                bail!(
+                    "extension manifest command '{}' usage must not be empty when set",
+                    normalized
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_tool_parameters_schema(name: &str, schema: &Value) -> Result<()> {
+    let schema_object = schema.as_object().ok_or_else(|| {
+        anyhow!(
+            "extension manifest tool '{}' parameters must be a JSON object",
+            name
+        )
+    })?;
+    let schema_type = schema_object
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "extension manifest tool '{}' parameters must include string field 'type'",
+                name
+            )
+        })?;
+    if schema_type != "object" {
+        bail!(
+            "extension manifest tool '{}' parameters field 'type' must be 'object'",
+            name
+        );
+    }
+    if let Some(properties) = schema_object.get("properties") {
+        if !properties.is_object() {
+            bail!(
+                "extension manifest tool '{}' parameters field 'properties' must be a JSON object",
+                name
+            );
+        }
+    }
+    if let Some(required) = schema_object.get("required") {
+        let required = required.as_array().ok_or_else(|| {
+            anyhow!(
+                "extension manifest tool '{}' parameters field 'required' must be an array",
+                name
+            )
+        })?;
+        if required.iter().any(|entry| match entry.as_str() {
+            Some(value) => value.trim().is_empty(),
+            None => true,
+        }) {
+            bail!(
+                "extension manifest tool '{}' parameters field 'required' must contain non-empty strings",
+                name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_extension_identifier(name: &str) -> bool {
+    name.chars().all(|character| {
+        character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || character == '-'
+            || character == '_'
+            || character == '.'
+    })
+}
+
+fn normalize_extension_command_name(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("extension manifest command name must not be empty");
+    }
+    let trimmed = trimmed.strip_prefix('/').unwrap_or(trimmed);
+    if trimmed.is_empty() {
+        bail!("extension manifest command name must not be '/'");
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        bail!(
+            "extension manifest command '{}' must not contain whitespace",
+            raw.trim()
+        );
+    }
+    if !is_valid_extension_identifier(trimmed) {
+        bail!(
+            "extension manifest command '{}' must contain only lowercase alphanumeric, dash, underscore, or dot characters",
+            raw.trim()
+        );
+    }
+    Ok(format!("/{}", trimmed))
+}
+
 fn validate_timeout_ms(timeout_ms: u64) -> Result<()> {
     if timeout_ms == 0 {
         bail!("extension manifest 'timeout_ms' must be greater than 0");
@@ -1191,13 +1844,15 @@ fn validate_timeout_ms(timeout_ms: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_extension_message_transforms, dispatch_extension_runtime_hook,
+        apply_extension_message_transforms, discover_extension_runtime_registrations,
+        dispatch_extension_registered_command, dispatch_extension_runtime_hook,
         evaluate_extension_policy_override, execute_extension_process_hook,
-        list_extension_manifests, parse_message_transform_response_prompt,
-        parse_policy_override_response, render_extension_list_report,
-        render_extension_manifest_report, required_permission_for_hook,
-        validate_extension_manifest, ExtensionHook, ExtensionListReport, ExtensionManifest,
-        ExtensionManifestSummary, ExtensionPermission, ExtensionRuntime, PolicyOverrideDecision,
+        execute_extension_registered_tool, list_extension_manifests,
+        parse_message_transform_response_prompt, parse_policy_override_response,
+        render_extension_list_report, render_extension_manifest_report,
+        required_permission_for_hook, validate_extension_manifest, ExtensionHook,
+        ExtensionListReport, ExtensionManifest, ExtensionManifestSummary, ExtensionPermission,
+        ExtensionRegisteredCommandAction, ExtensionRuntime, PolicyOverrideDecision,
     };
     use std::{fs, path::PathBuf};
     use tempfile::tempdir;
@@ -1293,6 +1948,8 @@ mod tests {
             entrypoint: "bin/assistant".to_string(),
             hooks: vec![ExtensionHook::RunStart, ExtensionHook::RunEnd],
             permissions: vec![ExtensionPermission::Network, ExtensionPermission::ReadFiles],
+            tools: vec![],
+            commands: vec![],
             timeout_ms: 60_000,
         };
 
@@ -1642,7 +2299,8 @@ mod tests {
         make_executable(&good_script);
 
         let bad_script = bad_dir.join("slow.sh");
-        fs::write(&bad_script, "#!/bin/sh\nwhile :; do :; done\n").expect("write bad script");
+        fs::write(&bad_script, "#!/bin/sh\nsleep 1\nprintf '{\"ok\":true}'\n")
+            .expect("write bad script");
         make_executable(&bad_script);
 
         fs::write(
@@ -2182,5 +2840,318 @@ mod tests {
             .diagnostics
             .iter()
             .any(|line| line.contains("missing required permission=run-commands")));
+    }
+
+    #[test]
+    fn unit_validate_extension_manifest_rejects_duplicate_registered_tool_names() {
+        let temp = tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("extension.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "schema_version": 1,
+  "id": "tool-registry",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "tool.sh",
+  "permissions": ["run-commands"],
+  "tools": [
+    {
+      "name": "triage",
+      "description": "first",
+      "parameters": {"type":"object","properties":{}}
+    },
+    {
+      "name": "triage",
+      "description": "second",
+      "parameters": {"type":"object","properties":{}}
+    }
+  ]
+}"#,
+        )
+        .expect("write manifest");
+
+        let error =
+            validate_extension_manifest(&manifest_path).expect_err("duplicate tools should fail");
+        assert!(error.to_string().contains("duplicate name 'triage'"));
+    }
+
+    #[test]
+    fn unit_validate_extension_manifest_rejects_invalid_registered_command_name() {
+        let temp = tempdir().expect("tempdir");
+        let manifest_path = temp.path().join("extension.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "schema_version": 1,
+  "id": "command-registry",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "command.sh",
+  "permissions": ["run-commands"],
+  "commands": [
+    {
+      "name": "/Bad Name",
+      "description": "invalid"
+    }
+  ]
+}"#,
+        )
+        .expect("write manifest");
+
+        let error = validate_extension_manifest(&manifest_path)
+            .expect_err("invalid command names should fail");
+        assert!(error.to_string().contains("must not contain whitespace"));
+    }
+
+    #[test]
+    fn functional_discover_extension_runtime_registrations_collects_tools_and_commands() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("registry");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("runtime.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nread -r _input\nprintf '{\"output\":\"ok\",\"content\":{\"status\":\"ok\"}}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "registry",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "runtime.sh",
+  "permissions": ["run-commands"],
+  "tools": [
+    {
+      "name": "issue_triage",
+      "description": "Triage issue labels",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" }
+        },
+        "required": ["title"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "commands": [
+    {
+      "name": "triage-now",
+      "description": "Run triage command",
+      "usage": "/triage-now <id>"
+    }
+  ]
+}"#,
+        )
+        .expect("write manifest");
+
+        let summary = discover_extension_runtime_registrations(&root);
+        assert_eq!(summary.discovered, 1);
+        assert_eq!(summary.registered_tools.len(), 1);
+        assert_eq!(summary.registered_tools[0].name, "issue_triage");
+        assert_eq!(summary.registered_commands.len(), 1);
+        assert_eq!(summary.registered_commands[0].name, "/triage-now");
+        assert!(summary.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn regression_discover_extension_runtime_registrations_blocks_builtin_name_conflicts() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("conflict");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("runtime.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nread -r _input\nprintf '{\"output\":\"ok\",\"content\":{\"status\":\"ok\"}}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "conflict",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "runtime.sh",
+  "permissions": ["run-commands"],
+  "tools": [
+    {
+      "name": "read",
+      "description": "conflict",
+      "parameters": {"type":"object","properties":{}}
+    }
+  ],
+  "commands": [
+    {
+      "name": "/help",
+      "description": "conflict"
+    }
+  ]
+}"#,
+        )
+        .expect("write manifest");
+
+        let summary = discover_extension_runtime_registrations(&root);
+        assert!(summary.registered_tools.is_empty());
+        assert!(summary.registered_commands.is_empty());
+        assert_eq!(summary.skipped_name_conflict, 2);
+        assert!(summary
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("name conflicts with built-in tool")));
+        assert!(summary
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("name conflicts with built-in command")));
+    }
+
+    #[test]
+    fn functional_dispatch_extension_registered_command_returns_output() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("commands");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("runtime.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nread -r _input\nprintf '{\"output\":\"command complete\",\"action\":\"continue\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "commands",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "runtime.sh",
+  "permissions": ["run-commands"],
+  "commands": [
+    {
+      "name": "/triage-now",
+      "description": "Run triage command"
+    }
+  ]
+}"#,
+        )
+        .expect("write manifest");
+
+        let summary = discover_extension_runtime_registrations(&root);
+        let result = dispatch_extension_registered_command(
+            &summary.registered_commands,
+            "/triage-now",
+            "123",
+        )
+        .expect("dispatch should succeed")
+        .expect("command should match");
+        assert_eq!(result.output.as_deref(), Some("command complete"));
+        assert_eq!(result.action, ExtensionRegisteredCommandAction::Continue);
+    }
+
+    #[test]
+    fn integration_execute_extension_registered_tool_returns_content() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("tools");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("runtime.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nread -r _input\nprintf '{\"content\":{\"status\":\"ok\",\"message\":\"done\"},\"is_error\":false}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "tools",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "runtime.sh",
+  "permissions": ["run-commands"],
+  "tools": [
+    {
+      "name": "issue_triage",
+      "description": "Triage issue labels",
+      "parameters": {"type":"object","properties":{}}
+    }
+  ]
+}"#,
+        )
+        .expect("write manifest");
+
+        let summary = discover_extension_runtime_registrations(&root);
+        let tool = summary
+            .registered_tools
+            .first()
+            .expect("registered tool should exist");
+        let result = execute_extension_registered_tool(tool, &serde_json::json!({"title":"bug"}))
+            .expect("tool execution should succeed");
+        assert_eq!(result.content["status"], "ok");
+        assert_eq!(result.content["message"], "done");
+        assert!(!result.is_error);
+    }
+
+    #[test]
+    fn regression_execute_extension_registered_tool_rejects_missing_content_field() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("bad-tool");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("runtime.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nread -r _input\nprintf '{\"is_error\":false}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "bad-tool",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "runtime.sh",
+  "permissions": ["run-commands"],
+  "tools": [
+    {
+      "name": "issue_triage",
+      "description": "Triage issue labels",
+      "parameters": {"type":"object","properties":{}}
+    }
+  ]
+}"#,
+        )
+        .expect("write manifest");
+
+        let summary = discover_extension_runtime_registrations(&root);
+        let tool = summary
+            .registered_tools
+            .first()
+            .expect("registered tool should exist");
+        let error = execute_extension_registered_tool(tool, &serde_json::json!({}))
+            .expect_err("missing content should fail");
+        assert!(error.to_string().contains("must include field 'content'"));
     }
 }
