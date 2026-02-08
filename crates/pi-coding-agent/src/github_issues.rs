@@ -619,6 +619,7 @@ enum PiIssueCommand {
     ChatStart,
     ChatResume,
     ChatReset,
+    ChatExport,
     Artifacts { purge: bool, run_id: Option<String> },
     ArtifactShow { artifact_id: String },
     Summarize { focus: Option<String> },
@@ -1433,6 +1434,79 @@ impl GithubIssuesBridgeRuntime {
                     }))?;
                 }
             }
+            PiIssueCommand::ChatExport => {
+                let session_path =
+                    session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                let mut store = SessionStore::load(&session_path)?;
+                store.set_lock_policy(
+                    self.config.session_lock_wait_ms,
+                    self.config.session_lock_stale_ms,
+                );
+                let head_id = store.head_id();
+                let lineage_entries = store.lineage_entries(head_id)?;
+                let export_jsonl = store.export_lineage_jsonl(head_id)?;
+                let channel_store = ChannelStore::open(
+                    &self.repository_state_dir.join("channel-store"),
+                    "github",
+                    &format!("issue-{}", event.issue_number),
+                )?;
+                let run_id = format!("chat-export-{}", event.issue_number);
+                let artifact = channel_store.write_text_artifact(
+                    &run_id,
+                    "github-issue-chat-export",
+                    "private",
+                    normalize_artifact_retention_days(self.config.artifact_retention_days),
+                    "jsonl",
+                    &export_jsonl,
+                )?;
+                let head_display = head_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                let message = if lineage_entries.is_empty() {
+                    format!(
+                        "Chat session export ready for issue #{} (no entries).\n\nentries=0 head={} artifact_id={} artifact_path={}",
+                        event.issue_number,
+                        head_display,
+                        artifact.id,
+                        artifact.relative_path
+                    )
+                } else {
+                    format!(
+                        "Chat session export ready for issue #{}.\n\nentries={} head={} artifact_id={} artifact_path={}",
+                        event.issue_number,
+                        lineage_entries.len(),
+                        head_display,
+                        artifact.id,
+                        artifact.relative_path
+                    )
+                };
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "chat-export",
+                    "status": "completed",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                    "session": {
+                        "entries": lineage_entries.len(),
+                        "head_id": head_id,
+                    },
+                    "artifact": {
+                        "id": artifact.id,
+                        "run_id": artifact.run_id,
+                        "type": artifact.artifact_type,
+                        "relative_path": artifact.relative_path,
+                        "bytes": artifact.bytes,
+                        "expires_unix_ms": artifact.expires_unix_ms,
+                    }
+                }))?;
+            }
             PiIssueCommand::Invalid { message } => {
                 let posted = self
                     .github_client
@@ -2231,11 +2305,12 @@ fn parse_pi_issue_command(body: &str) -> Option<PiIssueCommand> {
                 (Some("start"), None) => PiIssueCommand::ChatStart,
                 (Some("resume"), None) => PiIssueCommand::ChatResume,
                 (Some("reset"), None) => PiIssueCommand::ChatReset,
+                (Some("export"), None) => PiIssueCommand::ChatExport,
                 (None, _) => PiIssueCommand::Invalid {
-                    message: "Usage: /pi chat <start|resume|reset>".to_string(),
+                    message: "Usage: /pi chat <start|resume|reset|export>".to_string(),
                 },
                 _ => PiIssueCommand::Invalid {
-                    message: "Usage: /pi chat <start|resume|reset>".to_string(),
+                    message: "Usage: /pi chat <start|resume|reset|export>".to_string(),
                 },
             }
         }
@@ -2290,7 +2365,7 @@ fn pi_command_usage() -> String {
         "- `/pi status`",
         "- `/pi compact`",
         "- `/pi help`",
-        "- `/pi chat <start|resume|reset>`",
+        "- `/pi chat <start|resume|reset|export>`",
         "- `/pi artifacts [purge|run <run_id>|show <artifact_id>]`",
         "- `/pi summarize [focus]`",
     ]
@@ -2552,7 +2627,7 @@ mod tests {
         session_path_for_issue, EventAction, GithubApiClient, GithubBridgeEvent,
         GithubBridgeEventKind, GithubIssue, GithubIssueComment, GithubIssuesBridgeRuntime,
         GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore, GithubUser, PiIssueCommand,
-        PromptRunReport, PromptUsageSummary, RepoRef, EVENT_KEY_MARKER_PREFIX,
+        PromptRunReport, PromptUsageSummary, RepoRef, SessionStore, EVENT_KEY_MARKER_PREFIX,
     };
     use crate::{
         channel_store::{ChannelArtifactRecord, ChannelStore},
@@ -3043,6 +3118,10 @@ mod tests {
             Some(PiIssueCommand::ChatReset)
         );
         assert_eq!(
+            parse_pi_issue_command("/pi chat export"),
+            Some(PiIssueCommand::ChatExport)
+        );
+        assert_eq!(
             parse_pi_issue_command("/pi artifacts"),
             Some(PiIssueCommand::Artifacts {
                 purge: false,
@@ -3094,6 +3173,8 @@ mod tests {
         let parsed = parse_pi_issue_command("/pi chat").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi chat start now").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi chat export now").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi chat unknown").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
@@ -3447,6 +3528,87 @@ mod tests {
         assert!(runtime.state_store.issue_session(9).is_none());
         let session_path = session_path_for_issue(&runtime.repository_state_dir, 9);
         assert!(!session_path.exists());
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_chat_export_posts_artifact() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 18,
+                "number": 11,
+                "title": "Export Chat",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/11/comments");
+            then.status(200).json_body(json!([{
+                "id": 411,
+                "body": "/pi chat export",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let export_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/11/comments")
+                .body_includes("Chat session export ready for issue #11.")
+                .body_includes("artifact_path=artifacts/chat-export-11/");
+            then.status(201).json_body(json!({
+                "id": 960,
+                "html_url": "https://example.test/comment/960"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let session_path = session_path_for_issue(&runtime.repository_state_dir, 11);
+        if let Some(parent) = session_path.parent() {
+            std::fs::create_dir_all(parent).expect("create session dir");
+        }
+        let mut store = SessionStore::load(&session_path).expect("store");
+        store
+            .append_messages(
+                None,
+                &[
+                    Message::user("Export this"),
+                    Message::assistant_text("Ready"),
+                ],
+            )
+            .expect("append messages");
+
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        export_post.assert_calls(1);
+
+        let channel_store = ChannelStore::open(
+            &runtime.repository_state_dir.join("channel-store"),
+            "github",
+            "issue-11",
+        )
+        .expect("channel store");
+        let loaded = channel_store
+            .load_artifact_records_tolerant()
+            .expect("load artifacts");
+        assert_eq!(loaded.records.len(), 1);
+        let record = &loaded.records[0];
+        assert_eq!(record.artifact_type, "github-issue-chat-export");
+        assert!(record.relative_path.contains("artifacts/chat-export-11/"));
+        let artifact_path = channel_store.channel_dir().join(&record.relative_path);
+        let payload = std::fs::read_to_string(&artifact_path).expect("read artifact");
+        assert!(payload.contains("\"schema_version\""));
+        assert!(payload.contains("\"message\""));
     }
 
     #[tokio::test]

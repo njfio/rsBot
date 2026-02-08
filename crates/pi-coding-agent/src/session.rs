@@ -229,6 +229,19 @@ impl SessionStore {
         Ok(lineage.len())
     }
 
+    pub fn export_lineage_jsonl(&self, head_id: Option<u64>) -> Result<String> {
+        let lineage = self.lineage_entries(head_id)?;
+        let mut lines = Vec::with_capacity(lineage.len() + 1);
+        let meta = SessionRecord::Meta(SessionMetaRecord {
+            schema_version: SESSION_SCHEMA_VERSION,
+        });
+        lines.push(serde_json::to_string(&meta)?);
+        for entry in lineage {
+            lines.push(serde_json::to_string(&SessionRecord::Entry(entry))?);
+        }
+        Ok(lines.join("\n"))
+    }
+
     pub fn import_snapshot(
         &mut self,
         source: impl AsRef<Path>,
@@ -780,7 +793,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CompactReport, RepairReport, SessionEntry, SessionImportMode, SessionStore,
+        CompactReport, RepairReport, SessionEntry, SessionImportMode, SessionRecord, SessionStore,
         SessionValidationReport,
     };
 
@@ -882,6 +895,29 @@ mod tests {
         assert_eq!(snapshot.entries()[0].message.text_content(), "sys");
         assert_eq!(snapshot.entries()[1].message.text_content(), "q1");
         assert_eq!(snapshot.entries()[2].message.text_content(), "a1");
+    }
+
+    #[test]
+    fn unit_export_lineage_jsonl_includes_meta_and_entries() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("session.jsonl");
+        let mut store = SessionStore::load(&path).expect("load");
+        let head = store
+            .append_messages(None, &[pi_ai::Message::system("sys")])
+            .expect("append");
+        store
+            .append_messages(head, &[pi_ai::Message::user("q1")])
+            .expect("append");
+
+        let snapshot = store
+            .export_lineage_jsonl(store.head_id())
+            .expect("export jsonl");
+        let lines = snapshot.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        let meta: SessionRecord = serde_json::from_str(lines[0]).expect("meta");
+        assert!(matches!(meta, SessionRecord::Meta(_)));
+        let entry: SessionRecord = serde_json::from_str(lines[1]).expect("entry");
+        assert!(matches!(entry, SessionRecord::Entry(_)));
     }
 
     #[test]
