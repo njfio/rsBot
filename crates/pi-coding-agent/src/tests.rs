@@ -27,12 +27,12 @@ use super::{
     encrypt_credential_store_secret, ensure_non_empty_text, escape_graph_label,
     execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
     execute_command_file, execute_doctor_command, execute_integration_auth_command,
-    execute_macro_command, execute_profile_command, execute_session_bookmark_command,
-    execute_session_diff_command, execute_session_graph_export_command,
-    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
-    execute_skills_lock_diff_command, execute_skills_lock_write_command,
-    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-    execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_macro_command, execute_package_validate_command, execute_profile_command,
+    execute_session_bookmark_command, execute_session_diff_command,
+    execute_session_graph_export_command, execute_session_search_command,
+    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
+    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
+    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
@@ -245,6 +245,7 @@ fn test_cli() -> Cli {
         channel_store_root: PathBuf::from(".pi/channel-store"),
         channel_store_inspect: None,
         channel_store_repair: None,
+        package_validate: None,
         events_runner: false,
         events_dir: PathBuf::from(".pi/events"),
         events_state_path: PathBuf::from(".pi/events/state.json"),
@@ -6664,6 +6665,49 @@ fn regression_execute_channel_store_admin_repair_removes_invalid_lines() {
     assert_eq!(report.expired_artifacts, 0);
     assert_eq!(report.active_artifacts, 0);
     assert!(!store.channel_dir().join(expired.relative_path).exists());
+}
+
+#[test]
+fn functional_execute_package_validate_command_succeeds_for_valid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cli = test_cli();
+    cli.package_validate = Some(manifest_path);
+    execute_package_validate_command(&cli).expect("package validate should succeed");
+}
+
+#[test]
+fn regression_execute_package_validate_command_rejects_invalid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 9,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cli = test_cli();
+    cli.package_validate = Some(manifest_path);
+    let error = execute_package_validate_command(&cli).expect_err("invalid schema should fail");
+    assert!(error
+        .to_string()
+        .contains("unsupported package manifest schema"));
 }
 
 #[test]
