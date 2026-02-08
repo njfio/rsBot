@@ -528,7 +528,7 @@ cargo run -p pi-coding-agent -- \
   --rpc-dispatch-frame-file /tmp/rpc-frame.json
 ```
 
-RPC request frame schema versions `0` and `1` are accepted; response frames are emitted with schema version `1`. `capabilities.request` accepts optional `request_schema_version` for explicit negotiation, and `capabilities.response` includes `response_schema_version`, `supported_request_schema_versions`, `negotiated_request_schema_version`, `contracts.run_status` metadata (terminal flag contract + serve closed-status retention capacity), and `contracts.errors.codes` taxonomy metadata (machine-readable RPC error contract list).
+RPC request frame schema versions `0` and `1` are accepted; response frames are emitted with schema version `1`. `capabilities.request` accepts optional `request_schema_version` for explicit negotiation, and `capabilities.response` includes `response_schema_version`, `supported_request_schema_versions`, `negotiated_request_schema_version`, `contracts.run_status` metadata (terminal flag contract + serve closed-status retention capacity + declared `status_values`/`terminal_states`), and `contracts.errors.codes` taxonomy metadata (machine-readable RPC error contract list).
 Schema compatibility fixture replay coverage for dispatch/serve mode lives under `crates/pi-coding-agent/testdata/rpc-schema-compat/`.
 
 For invalid request frames, dispatch still prints a structured JSON error envelope (`kind: "error"` with `payload.code` and `payload.message`) and exits non-zero.

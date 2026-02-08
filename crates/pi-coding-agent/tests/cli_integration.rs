@@ -5025,6 +5025,11 @@ fn rpc_dispatch_frame_file_flag_outputs_capabilities_response() {
             "\"negotiated_request_schema_version\": 1",
         ))
         .stdout(predicate::str::contains("\"contracts\": {"))
+        .stdout(predicate::str::contains("\"status_values\": ["))
+        .stdout(predicate::str::contains("\"terminal_states\": ["))
+        .stdout(predicate::str::contains(
+            "\"terminal_state_field_present_for_terminal_status\": true",
+        ))
         .stdout(predicate::str::contains("\"code\": \"invalid_payload\""))
         .stdout(predicate::str::contains("\"code\": \"unsupported_schema\""));
 }

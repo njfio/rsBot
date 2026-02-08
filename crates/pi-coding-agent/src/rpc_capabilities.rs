@@ -18,6 +18,15 @@ const RPC_CAPABILITIES: &[&str] = &[
     "run.stream.assistant_text",
     "run.stream.tool_events",
 ];
+const RPC_RUN_STATUS_VALUES: &[&str] = &[
+    "active",
+    "inactive",
+    "cancelled",
+    "completed",
+    "failed",
+    "timed_out",
+];
+const RPC_RUN_TERMINAL_STATES: &[&str] = &["cancelled", "completed", "failed", "timed_out"];
 
 pub(crate) fn rpc_capabilities_payload() -> Value {
     let error_codes = rpc_error_contracts()
@@ -39,6 +48,9 @@ pub(crate) fn rpc_capabilities_payload() -> Value {
             "run_status": {
                 "terminal_flag_always_present": true,
                 "serve_closed_status_retention_capacity": RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY,
+                "status_values": RPC_RUN_STATUS_VALUES,
+                "terminal_states": RPC_RUN_TERMINAL_STATES,
+                "terminal_state_field_present_for_terminal_status": true,
             },
             "errors": {
                 "codes": error_codes,
@@ -84,6 +96,11 @@ mod tests {
         assert_eq!(
             payload["contracts"]["run_status"]["serve_closed_status_retention_capacity"].as_u64(),
             Some(RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY as u64)
+        );
+        assert_eq!(
+            payload["contracts"]["run_status"]["terminal_state_field_present_for_terminal_status"]
+                .as_bool(),
+            Some(true)
         );
         assert_eq!(
             payload["contracts"]["errors"]["codes"]
@@ -137,6 +154,39 @@ mod tests {
     }
 
     #[test]
+    fn functional_rpc_capabilities_payload_run_status_contract_is_deterministic() {
+        let payload = rpc_capabilities_payload();
+        let status_values = payload["contracts"]["run_status"]["status_values"]
+            .as_array()
+            .expect("status values should be an array")
+            .iter()
+            .map(|value| value.as_str().expect("status value should be string"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            status_values,
+            vec![
+                "active",
+                "inactive",
+                "cancelled",
+                "completed",
+                "failed",
+                "timed_out",
+            ]
+        );
+
+        let terminal_states = payload["contracts"]["run_status"]["terminal_states"]
+            .as_array()
+            .expect("terminal states should be an array")
+            .iter()
+            .map(|value| value.as_str().expect("terminal state should be string"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            terminal_states,
+            vec!["cancelled", "completed", "failed", "timed_out"]
+        );
+    }
+
+    #[test]
     fn functional_rpc_capabilities_payload_error_taxonomy_is_deterministic() {
         let payload = rpc_capabilities_payload();
         let codes = payload["contracts"]["errors"]["codes"]
@@ -186,5 +236,25 @@ mod tests {
             .collect::<Vec<_>>();
         let unique = codes.iter().cloned().collect::<BTreeSet<_>>();
         assert_eq!(unique.len(), codes.len());
+    }
+
+    #[test]
+    fn regression_rpc_capabilities_payload_run_status_contract_has_unique_entries() {
+        let payload = rpc_capabilities_payload();
+        for field in ["status_values", "terminal_states"] {
+            let entries = payload["contracts"]["run_status"][field]
+                .as_array()
+                .expect("run status contract field should be an array")
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .expect("run status contract entry should be string")
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            let unique = entries.iter().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(unique.len(), entries.len(), "duplicates found in {field}");
+        }
     }
 }
