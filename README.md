@@ -545,7 +545,7 @@ Run long-lived RPC NDJSON server mode over stdin/stdout:
 cat /tmp/rpc-frames.ndjson | cargo run -p pi-coding-agent -- --rpc-serve-ndjson
 ```
 
-In `--rpc-serve-ndjson` mode, run lifecycle is stateful: `run.start` returns a `run_id` and emits deterministic `run.stream.tool_events` plus `run.stream.assistant_text` frames, `run.status` reports active/inactive state for that `run_id`, `run.complete` closes active runs with `run.completed`, `run.fail` closes active runs with `run.failed`, and `run.cancel` must reference an active `run_id` or it returns a structured `error` envelope.
+In `--rpc-serve-ndjson` mode, run lifecycle is stateful: `run.start` returns a `run_id` and emits deterministic `run.stream.tool_events` plus `run.stream.assistant_text` frames, `run.status` reports active/inactive state for that `run_id`, `run.complete` closes active runs with `run.completed`, `run.fail` closes active runs with `run.failed`, `run.timeout` closes active runs with `run.timed_out`, and `run.cancel` must reference an active `run_id` or it returns a structured `error` envelope.
 
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 

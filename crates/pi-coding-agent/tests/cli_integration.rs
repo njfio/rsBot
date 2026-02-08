@@ -4873,7 +4873,8 @@ fn rpc_capabilities_flag_outputs_versioned_json_and_exits() {
         .stdout(predicate::str::contains("\"run.cancel\""))
         .stdout(predicate::str::contains("\"run.complete\""))
         .stdout(predicate::str::contains("\"run.fail\""))
-        .stdout(predicate::str::contains("\"run.status\""));
+        .stdout(predicate::str::contains("\"run.status\""))
+        .stdout(predicate::str::contains("\"run.timeout\""));
 }
 
 #[test]
@@ -5084,6 +5085,34 @@ fn rpc_dispatch_frame_file_flag_outputs_run_failed_response() {
 }
 
 #[test]
+fn rpc_dispatch_frame_file_flag_outputs_run_timed_out_response() {
+    let temp = tempdir().expect("tempdir");
+    let frame_path = temp.path().join("frame.json");
+    fs::write(
+        &frame_path,
+        r#"{
+  "schema_version": 1,
+  "request_id": "req-timeout",
+  "kind": "run.timeout",
+  "payload": {"run_id":"run-123","reason":"timeout reached"}
+}"#,
+    )
+    .expect("write frame");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--rpc-dispatch-frame-file",
+        frame_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"kind\": \"run.timed_out\""))
+        .stdout(predicate::str::contains("\"run_id\": \"run-123\""))
+        .stdout(predicate::str::contains("\"reason\": \"timeout reached\""));
+}
+
+#[test]
 fn regression_rpc_dispatch_frame_file_flag_rejects_missing_prompt() {
     let temp = tempdir().expect("tempdir");
     let frame_path = temp.path().join("frame.json");
@@ -5182,6 +5211,7 @@ fn rpc_dispatch_ndjson_file_flag_outputs_ordered_response_lines() {
 {"schema_version":1,"request_id":"req-cancel","kind":"run.cancel","payload":{"run_id":"run-1"}}
 {"schema_version":1,"request_id":"req-status","kind":"run.status","payload":{"run_id":"run-1"}}
 {"schema_version":1,"request_id":"req-fail","kind":"run.fail","payload":{"run_id":"run-1","reason":"failed in dispatch"}}
+{"schema_version":1,"request_id":"req-timeout","kind":"run.timeout","payload":{"run_id":"run-1","reason":"timed out in dispatch"}}
 "#,
     )
     .expect("write frames");
@@ -5207,6 +5237,11 @@ fn rpc_dispatch_ndjson_file_flag_outputs_ordered_response_lines() {
         .stdout(predicate::str::contains("\"kind\":\"run.failed\""))
         .stdout(predicate::str::contains(
             "\"reason\":\"failed in dispatch\"",
+        ))
+        .stdout(predicate::str::contains("\"request_id\":\"req-timeout\""))
+        .stdout(predicate::str::contains("\"kind\":\"run.timed_out\""))
+        .stdout(predicate::str::contains(
+            "\"reason\":\"timed out in dispatch\"",
         ));
 }
 
@@ -5316,6 +5351,26 @@ fn rpc_serve_ndjson_flag_supports_run_fail_lifecycle() {
         .stdout(predicate::str::contains("\"kind\":\"run.failed\""))
         .stdout(predicate::str::contains("\"event\":\"run.failed\""))
         .stdout(predicate::str::contains("\"reason\":\"provider timeout\""))
+        .stdout(predicate::str::contains("\"request_id\":\"req-status\""))
+        .stdout(predicate::str::contains("\"active\":false"));
+}
+
+#[test]
+fn rpc_serve_ndjson_flag_supports_run_timeout_lifecycle() {
+    let mut cmd = binary_command();
+    cmd.arg("--rpc-serve-ndjson").write_stdin(
+        r#"{"schema_version":1,"request_id":"req-start","kind":"run.start","payload":{"prompt":"hello"}}
+{"schema_version":1,"request_id":"req-timeout","kind":"run.timeout","payload":{"run_id":"run-req-start","reason":"deadline exceeded"}}
+{"schema_version":1,"request_id":"req-status","kind":"run.status","payload":{"run_id":"run-req-start"}}
+"#,
+    );
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("\"request_id\":\"req-timeout\""))
+        .stdout(predicate::str::contains("\"kind\":\"run.timed_out\""))
+        .stdout(predicate::str::contains("\"event\":\"run.timed_out\""))
+        .stdout(predicate::str::contains("\"reason\":\"deadline exceeded\""))
         .stdout(predicate::str::contains("\"request_id\":\"req-status\""))
         .stdout(predicate::str::contains("\"active\":false"));
 }

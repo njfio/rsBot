@@ -13,6 +13,7 @@ const RPC_CAPABILITIES: &[&str] = &[
     "run.fail",
     "run.start",
     "run.status",
+    "run.timeout",
     "run.stream.assistant_text",
     "run.stream.tool_events",
 ];
@@ -73,6 +74,7 @@ mod tests {
                 "run.fail",
                 "run.start",
                 "run.status",
+                "run.timeout",
                 "run.stream.assistant_text",
                 "run.stream.tool_events",
             ]
