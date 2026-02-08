@@ -99,9 +99,9 @@ use crate::auth_commands::{
     format_auth_state_counts, AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter,
     AuthRevokedFilter, AuthSourceKindFilter,
 };
-use crate::provider_credentials::provider_auth_snapshot_for_status;
 use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
+use crate::provider_credentials::provider_auth_snapshot_for_status;
 use crate::resolve_api_key;
 use crate::session::{SessionImportMode, SessionStore};
 use crate::tools::{register_extension_tools, BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
