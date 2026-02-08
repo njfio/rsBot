@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -86,6 +86,17 @@ struct GithubIssuesBridgeState {
     last_issue_scan_at: Option<String>,
     #[serde(default)]
     processed_event_keys: Vec<String>,
+    #[serde(default)]
+    issue_sessions: BTreeMap<String, GithubIssueChatSessionState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GithubIssueChatSessionState {
+    session_id: String,
+    #[serde(default)]
+    last_comment_id: Option<u64>,
+    #[serde(default)]
+    last_run_id: Option<String>,
 }
 
 impl Default for GithubIssuesBridgeState {
@@ -94,6 +105,7 @@ impl Default for GithubIssuesBridgeState {
             schema_version: GITHUB_STATE_SCHEMA_VERSION,
             last_issue_scan_at: None,
             processed_event_keys: Vec::new(),
+            issue_sessions: BTreeMap::new(),
         }
     }
 }
@@ -110,22 +122,28 @@ impl GithubIssuesBridgeStateStore {
         let mut state = if path.exists() {
             let raw = std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read state file {}", path.display()))?;
-            serde_json::from_str::<GithubIssuesBridgeState>(&raw).with_context(|| {
-                format!(
-                    "failed to parse github issues bridge state file {}",
-                    path.display()
-                )
-            })?
+            match serde_json::from_str::<GithubIssuesBridgeState>(&raw) {
+                Ok(state) => state,
+                Err(error) => {
+                    eprintln!(
+                        "failed to parse github issues bridge state file {}: {} (starting fresh)",
+                        path.display(),
+                        error
+                    );
+                    GithubIssuesBridgeState::default()
+                }
+            }
         } else {
             GithubIssuesBridgeState::default()
         };
 
         if state.schema_version != GITHUB_STATE_SCHEMA_VERSION {
-            bail!(
-                "unsupported github issues bridge state schema: expected {}, found {}",
+            eprintln!(
+                "unsupported github issues bridge state schema: expected {}, found {} (starting fresh)",
                 GITHUB_STATE_SCHEMA_VERSION,
                 state.schema_version
             );
+            state = GithubIssuesBridgeState::default();
         }
 
         let cap = cap.max(1);
@@ -161,6 +179,54 @@ impl GithubIssuesBridgeStateStore {
             self.processed_index.remove(&removed);
         }
         true
+    }
+
+    fn issue_session(&self, issue_number: u64) -> Option<&GithubIssueChatSessionState> {
+        self.state.issue_sessions.get(&issue_number.to_string())
+    }
+
+    fn update_issue_session(
+        &mut self,
+        issue_number: u64,
+        session_id: String,
+        last_comment_id: Option<u64>,
+        last_run_id: Option<String>,
+    ) -> bool {
+        let key = issue_number.to_string();
+        let entry =
+            self.state
+                .issue_sessions
+                .entry(key)
+                .or_insert_with(|| GithubIssueChatSessionState {
+                    session_id: session_id.clone(),
+                    last_comment_id: None,
+                    last_run_id: None,
+                });
+        let mut changed = false;
+        if entry.session_id != session_id {
+            entry.session_id = session_id;
+            changed = true;
+        }
+        if let Some(comment_id) = last_comment_id {
+            if entry.last_comment_id != Some(comment_id) {
+                entry.last_comment_id = Some(comment_id);
+                changed = true;
+            }
+        }
+        if let Some(run_id) = last_run_id {
+            if entry.last_run_id.as_deref() != Some(run_id.as_str()) {
+                entry.last_run_id = Some(run_id);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn clear_issue_session(&mut self, issue_number: u64) -> bool {
+        self.state
+            .issue_sessions
+            .remove(&issue_number.to_string())
+            .is_some()
     }
 
     fn last_issue_scan_at(&self) -> Option<&str> {
@@ -699,14 +765,15 @@ impl GithubIssuesBridgeRuntime {
 
     async fn poll_once(&mut self) -> Result<PollCycleReport> {
         let mut report = PollCycleReport::default();
+        let mut state_dirty = false;
         tokio::task::yield_now().await;
-        self.drain_finished_runs(&mut report).await?;
+        self.drain_finished_runs(&mut report, &mut state_dirty)
+            .await?;
 
         let issues = self
             .github_client
             .list_updated_issues(self.state_store.last_issue_scan_at())
             .await?;
-        let mut state_dirty = false;
         let mut latest_issue_scan = self.state_store.last_issue_scan_at().map(str::to_string);
 
         for issue in issues {
@@ -776,7 +843,8 @@ impl GithubIssuesBridgeRuntime {
             }
         }
 
-        self.drain_finished_runs(&mut report).await?;
+        self.drain_finished_runs(&mut report, &mut state_dirty)
+            .await?;
 
         if self
             .state_store
@@ -790,7 +858,11 @@ impl GithubIssuesBridgeRuntime {
         Ok(report)
     }
 
-    async fn drain_finished_runs(&mut self, report: &mut PollCycleReport) -> Result<()> {
+    async fn drain_finished_runs(
+        &mut self,
+        report: &mut PollCycleReport,
+        state_dirty: &mut bool,
+    ) -> Result<()> {
         let finished_issues = self
             .active_runs
             .iter()
@@ -814,6 +886,14 @@ impl GithubIssuesBridgeRuntime {
                             duration_ms: result.duration_ms,
                         },
                     );
+                    if self.state_store.update_issue_session(
+                        result.issue_number,
+                        issue_session_id(result.issue_number),
+                        result.posted_comment_id,
+                        Some(result.run_id.clone()),
+                    ) {
+                        *state_dirty = true;
+                    }
                     self.outbound_log.append(&json!({
                         "timestamp_unix_ms": current_unix_timestamp_ms(),
                         "repo": self.repo.as_slug(),
@@ -970,6 +1050,14 @@ impl GithubIssuesBridgeRuntime {
                 handle,
             },
         );
+        if self.state_store.update_issue_session(
+            event.issue_number,
+            issue_session_id(event.issue_number),
+            Some(working_comment_id),
+            Some(run_id.clone()),
+        ) {
+            *state_dirty = true;
+        }
         if self.state_store.mark_processed(&event.key) {
             *state_dirty = true;
         }
@@ -1110,6 +1198,9 @@ impl GithubIssuesBridgeRuntime {
                     self.config.session_lock_wait_ms,
                     self.config.session_lock_stale_ms,
                 )?;
+                if self.state_store.clear_issue_session(event.issue_number) {
+                    *state_dirty = true;
+                }
                 let posted = self
                     .github_client
                     .create_issue_comment(
@@ -1210,6 +1301,22 @@ impl GithubIssuesBridgeRuntime {
             lines.push(format!("latest_duration_ms: {}", latest.duration_ms));
         } else {
             lines.push("latest_run_id: none".to_string());
+        }
+        if let Some(session) = self.state_store.issue_session(issue_number) {
+            lines.push(format!("chat_session_id: {}", session.session_id));
+            lines.push(format!(
+                "chat_last_comment_id: {}",
+                session
+                    .last_comment_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            ));
+            lines.push(format!(
+                "chat_last_run_id: {}",
+                session.last_run_id.as_deref().unwrap_or("none")
+            ));
+        } else {
+            lines.push("chat_session_id: none".to_string());
         }
         lines.join("\n")
     }
@@ -1968,6 +2075,10 @@ fn session_path_for_issue(repo_state_dir: &Path, issue_number: u64) -> PathBuf {
         .join(format!("issue-{}.jsonl", issue_number))
 }
 
+fn issue_session_id(issue_number: u64) -> String {
+    format!("issue-{}", issue_number)
+}
+
 fn sanitize_for_path(raw: &str) -> String {
     raw.chars()
         .map(|ch| {
@@ -2267,6 +2378,72 @@ mod tests {
         assert!(!state.contains("a"));
         assert!(state.contains("b"));
         assert!(state.contains("c"));
+    }
+
+    #[test]
+    fn unit_state_store_upserts_issue_session_state() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+        let mut state = GithubIssuesBridgeStateStore::load(state_path, 8).expect("load store");
+
+        assert!(state.update_issue_session(
+            42,
+            "issue-42".to_string(),
+            Some(101),
+            Some("run-1".to_string())
+        ));
+        let session = state.issue_session(42).expect("session state");
+        assert_eq!(session.session_id, "issue-42");
+        assert_eq!(session.last_comment_id, Some(101));
+        assert_eq!(session.last_run_id.as_deref(), Some("run-1"));
+
+        assert!(!state.update_issue_session(
+            42,
+            "issue-42".to_string(),
+            Some(101),
+            Some("run-1".to_string())
+        ));
+        assert!(state.update_issue_session(42, "issue-42".to_string(), Some(202), None));
+        let session = state.issue_session(42).expect("updated session state");
+        assert_eq!(session.last_comment_id, Some(202));
+        assert_eq!(session.last_run_id.as_deref(), Some("run-1"));
+
+        assert!(state.clear_issue_session(42));
+        assert!(state.issue_session(42).is_none());
+        assert!(!state.clear_issue_session(42));
+    }
+
+    #[test]
+    fn regression_state_store_loads_legacy_state_without_issue_sessions() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+        std::fs::write(
+            &state_path,
+            r#"{
+  "schema_version": 1,
+  "last_issue_scan_at": "2026-01-01T00:00:00Z",
+  "processed_event_keys": ["a", "b"]
+}"#,
+        )
+        .expect("write legacy state");
+
+        let state = GithubIssuesBridgeStateStore::load(state_path, 8).expect("load store");
+        assert_eq!(state.last_issue_scan_at(), Some("2026-01-01T00:00:00Z"));
+        assert!(state.contains("a"));
+        assert!(state.contains("b"));
+        assert!(state.issue_session(9).is_none());
+    }
+
+    #[test]
+    fn regression_state_store_loads_with_corrupt_state_file() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+        std::fs::write(&state_path, "{not-json").expect("write corrupt state");
+
+        let state = GithubIssuesBridgeStateStore::load(state_path, 8).expect("load store");
+        assert!(state.last_issue_scan_at().is_none());
+        assert!(!state.contains("a"));
+        assert!(state.issue_session(1).is_none());
     }
 
     #[test]
