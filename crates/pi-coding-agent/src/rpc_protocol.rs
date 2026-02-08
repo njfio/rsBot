@@ -1383,6 +1383,25 @@ mod tests {
                 .as_u64(),
             Some(RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY as u64)
         );
+        let status_values = capabilities_response.payload["contracts"]["run_status"]
+            ["status_values"]
+            .as_array()
+            .expect("run status values array");
+        assert_eq!(status_values.len(), 6);
+        assert_eq!(status_values[0].as_str(), Some("active"));
+        assert_eq!(status_values[1].as_str(), Some("inactive"));
+        let terminal_states = capabilities_response.payload["contracts"]["run_status"]
+            ["terminal_states"]
+            .as_array()
+            .expect("run terminal states array");
+        assert_eq!(terminal_states.len(), 4);
+        assert_eq!(terminal_states[0].as_str(), Some("cancelled"));
+        assert_eq!(
+            capabilities_response.payload["contracts"]["run_status"]
+                ["terminal_state_field_present_for_terminal_status"]
+                .as_bool(),
+            Some(true)
+        );
         let error_codes = capabilities_response.payload["contracts"]["errors"]["codes"]
             .as_array()
             .expect("error code contracts array");
