@@ -121,7 +121,7 @@ cargo run -p pi-coding-agent -- \
   --orchestrator-max-delegated-total-response-chars 160000
 ```
 
-Plan-first mode emits deterministic orchestration traces for `planner`, `executor`, `delegated-step` (when enabled), `review`, and `consolidation` phases, including response budget metadata and accept/reject consolidation decisions.
+Plan-first mode emits deterministic orchestration traces for `planner`, `executor`, `delegated-step` (when enabled), `review`, and `consolidation` phases, including response budget metadata and accept/reject consolidation decisions. Delegated mode also enforces fail-closed inherited policy context: runtime now verifies and injects tool-policy context into delegated steps and rejects delegated execution if policy inheritance context cannot be constructed.
 
 Use Anthropic:
 

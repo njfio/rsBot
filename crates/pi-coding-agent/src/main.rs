@@ -155,6 +155,7 @@ pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLo
 #[cfg(test)]
 pub(crate) use crate::orchestrator::parse_numbered_plan_steps;
 pub(crate) use crate::orchestrator::run_plan_first_prompt;
+pub(crate) use crate::orchestrator::run_plan_first_prompt_with_policy_context;
 pub(crate) use crate::package_manifest::{
     execute_package_activate_command, execute_package_activate_on_startup,
     execute_package_conflicts_command, execute_package_install_command,

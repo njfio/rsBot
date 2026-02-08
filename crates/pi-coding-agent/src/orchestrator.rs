@@ -14,6 +14,39 @@ pub(crate) async fn run_plan_first_prompt(
     max_delegated_total_response_chars: usize,
     delegate_steps: bool,
 ) -> Result<()> {
+    let fallback_policy_context = delegate_steps.then_some("legacy_policy_context=implicit");
+    run_plan_first_prompt_with_policy_context(
+        agent,
+        session_runtime,
+        user_prompt,
+        turn_timeout_ms,
+        render_options,
+        max_plan_steps,
+        max_delegated_steps,
+        max_executor_response_chars,
+        max_delegated_step_response_chars,
+        max_delegated_total_response_chars,
+        delegate_steps,
+        fallback_policy_context,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_plan_first_prompt_with_policy_context(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    user_prompt: &str,
+    turn_timeout_ms: u64,
+    render_options: RenderOptions,
+    max_plan_steps: usize,
+    max_delegated_steps: usize,
+    max_executor_response_chars: usize,
+    max_delegated_step_response_chars: usize,
+    max_delegated_total_response_chars: usize,
+    delegate_steps: bool,
+    delegated_policy_context: Option<&str>,
+) -> Result<()> {
     let planner_prompt = build_plan_first_planner_prompt(user_prompt, max_plan_steps);
     let planner_render_options = RenderOptions {
         stream_output: false,
@@ -61,9 +94,21 @@ pub(crate) async fn run_plan_first_prompt(
         );
     }
     let execution_prompt = if delegate_steps {
+        let Some(policy_context) = delegated_policy_context
+            .map(str::trim)
+            .filter(|context| !context.is_empty())
+        else {
+            println!(
+                "orchestrator trace: mode=plan-first phase=executor strategy=delegated-steps decision=reject reason=policy_inheritance_context_missing"
+            );
+            bail!(
+                "plan-first orchestrator failed: delegated policy inheritance context is unavailable"
+            );
+        };
         println!(
-            "orchestrator trace: mode=plan-first phase=executor strategy=delegated-steps total_steps={}",
-            plan_steps.len()
+            "orchestrator trace: mode=plan-first phase=executor strategy=delegated-steps total_steps={} policy_inheritance=verified policy_context_chars={}",
+            plan_steps.len(),
+            policy_context.chars().count()
         );
         if plan_steps.len() > max_delegated_steps {
             println!(
@@ -85,8 +130,13 @@ pub(crate) async fn run_plan_first_prompt(
                 index + 1,
                 flatten_whitespace(step)
             );
-            let delegated_prompt =
-                build_plan_first_delegated_step_prompt(user_prompt, &plan_steps, index, step);
+            let delegated_prompt = build_plan_first_delegated_step_prompt(
+                user_prompt,
+                &plan_steps,
+                index,
+                step,
+                policy_context,
+            );
             let delegated_status = run_prompt_with_cancellation(
                 agent,
                 session_runtime,
@@ -285,16 +335,18 @@ fn build_plan_first_delegated_step_prompt(
     plan_steps: &[String],
     step_index: usize,
     step: &str,
+    policy_context: &str,
 ) -> String {
     let numbered_steps = render_numbered_plan_steps(plan_steps);
     format!(
-        "ORCHESTRATOR_DELEGATED_STEP_PHASE\nYou are executing one delegated plan step in plan-first mode.\nFocus only on the assigned step and produce useful progress for that step.\n\nApproved plan:\n{}\n\nAssigned step ({} of {}):\n{}. {}\n\nUser request:\n{}\n\nReturn concise output for this delegated step.",
+        "ORCHESTRATOR_DELEGATED_STEP_PHASE\nYou are executing one delegated plan step in plan-first mode.\nFocus only on the assigned step and produce useful progress for that step.\n\nApproved plan:\n{}\n\nAssigned step ({} of {}):\n{}. {}\n\nUser request:\n{}\n\nInherited execution policy (must be preserved):\n{}\n\nReturn concise output for this delegated step.",
         numbered_steps,
         step_index + 1,
         plan_steps.len(),
         step_index + 1,
         step,
-        user_prompt
+        user_prompt,
+        policy_context
     )
 }
 
@@ -399,10 +451,13 @@ mod tests {
             &["Inspect constraints".to_string(), "Apply fix".to_string()],
             1,
             "Apply fix",
+            "preset=balanced;max_command_length=4096",
         );
         assert!(prompt.contains("ORCHESTRATOR_DELEGATED_STEP_PHASE"));
         assert!(prompt.contains("Assigned step (2 of 2)"));
         assert!(prompt.contains("2. Apply fix"));
+        assert!(prompt.contains("Inherited execution policy"));
+        assert!(prompt.contains("preset=balanced;max_command_length=4096"));
     }
 
     #[test]
