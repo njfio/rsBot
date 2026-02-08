@@ -93,7 +93,10 @@ use super::{
     SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
     SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
-use crate::auth_commands::{AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter};
+use crate::auth_commands::{
+    auth_state_counts, auth_status_row_for_provider, format_auth_state_counts,
+    AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter,
+};
 use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
@@ -1348,6 +1351,64 @@ fn unit_auth_conformance_provider_capability_matrix_matches_expected_support() {
 }
 
 #[test]
+fn unit_auth_state_count_helpers_are_deterministic() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let snapshot = snapshot_env_vars(&[
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "PI_API_KEY",
+    ]);
+    for key in [
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "PI_API_KEY",
+    ] {
+        std::env::remove_var(key);
+    }
+
+    let mut config = test_auth_command_config();
+    config.openai_api_key = Some("openai-ready-key".to_string());
+    config.anthropic_api_key = None;
+    config.google_api_key = None;
+
+    let rows = vec![
+        auth_status_row_for_provider(&config, Provider::OpenAi, None, None),
+        auth_status_row_for_provider(&config, Provider::Anthropic, None, None),
+        auth_status_row_for_provider(&config, Provider::Google, None, None),
+    ];
+    let counts = auth_state_counts(&rows);
+    assert_eq!(counts.get("ready"), Some(&1));
+    assert_eq!(counts.get("missing_api_key"), Some(&2));
+
+    assert_eq!(
+        format_auth_state_counts(&counts),
+        "missing_api_key:2,ready:1"
+    );
+    assert_eq!(
+        format_auth_state_counts(&std::collections::BTreeMap::new()),
+        "none"
+    );
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
 fn functional_auth_conformance_status_matrix_reports_expected_rows() {
     #[derive(Debug)]
     struct AuthConformanceCase {
@@ -1532,6 +1593,9 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert_eq!(payload["mode_unsupported"], 7);
     assert_eq!(payload["available"], 4);
     assert_eq!(payload["unavailable"], 8);
+    assert_eq!(payload["state_counts"]["ready"], 4);
+    assert_eq!(payload["state_counts"]["mode_mismatch"], 1);
+    assert_eq!(payload["state_counts"]["unsupported_mode"], 7);
 
     let entries = payload["entries"].as_array().expect("matrix entries");
     assert_eq!(entries.len(), 12);
@@ -1560,6 +1624,7 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
 
     let text_output = execute_auth_command(&config, "matrix");
     assert!(text_output.contains("auth matrix: providers=3 modes=4 rows=12"));
+    assert!(text_output.contains("state_counts=mode_mismatch:1,ready:4,unsupported_mode:7"));
     assert!(text_output.contains("auth matrix row: provider=openai mode=oauth_token"));
     assert!(!text_output.contains("oauth-access-secret"));
 }
@@ -1639,6 +1704,7 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
     assert_eq!(available_payload["rows"], 4);
     assert_eq!(available_payload["available"], 4);
     assert_eq!(available_payload["unavailable"], 0);
+    assert_eq!(available_payload["state_counts"]["ready"], 4);
     let available_entries = available_payload["entries"]
         .as_array()
         .expect("available entries");
@@ -1656,6 +1722,8 @@ fn functional_execute_auth_command_matrix_supports_availability_filter() {
     assert_eq!(unavailable_payload["rows"], 8);
     assert_eq!(unavailable_payload["available"], 0);
     assert_eq!(unavailable_payload["unavailable"], 8);
+    assert_eq!(unavailable_payload["state_counts"]["mode_mismatch"], 1);
+    assert_eq!(unavailable_payload["state_counts"]["unsupported_mode"], 7);
     let unavailable_entries = unavailable_payload["entries"]
         .as_array()
         .expect("unavailable entries");
@@ -1694,12 +1762,14 @@ fn functional_execute_auth_command_matrix_supports_state_filter() {
     assert_eq!(ready_payload["state_filter"], "ready");
     assert_eq!(ready_payload["rows_total"], 12);
     assert_eq!(ready_payload["rows"], 4);
+    assert_eq!(ready_payload["state_counts"]["ready"], 4);
     let ready_entries = ready_payload["entries"].as_array().expect("ready entries");
     assert_eq!(ready_entries.len(), 4);
     assert!(ready_entries.iter().all(|entry| entry["state"] == "ready"));
 
     let text_output = execute_auth_command(&config, "matrix --state ready");
     assert!(text_output.contains("state_filter=ready"));
+    assert!(text_output.contains("state_counts=ready:4"));
     assert!(!text_output.contains("state=unsupported_mode"));
 }
 
@@ -1733,6 +1803,8 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
     assert_eq!(supported_payload["rows"], 5);
     assert_eq!(supported_payload["mode_supported"], 5);
     assert_eq!(supported_payload["mode_unsupported"], 0);
+    assert_eq!(supported_payload["state_counts"]["ready"], 4);
+    assert_eq!(supported_payload["state_counts"]["mode_mismatch"], 1);
     let supported_entries = supported_payload["entries"]
         .as_array()
         .expect("supported entries");
@@ -1750,6 +1822,7 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
     assert_eq!(unsupported_payload["rows"], 7);
     assert_eq!(unsupported_payload["mode_supported"], 0);
     assert_eq!(unsupported_payload["mode_unsupported"], 7);
+    assert_eq!(unsupported_payload["state_counts"]["unsupported_mode"], 7);
     let unsupported_entries = unsupported_payload["entries"]
         .as_array()
         .expect("unsupported entries");
@@ -1760,6 +1833,7 @@ fn functional_execute_auth_command_matrix_supports_mode_support_filter() {
 
     let text_output = execute_auth_command(&config, "matrix --mode-support supported");
     assert!(text_output.contains("mode_support_filter=supported"));
+    assert!(text_output.contains("state_counts=mode_mismatch:1,ready:4"));
     assert!(!text_output.contains("mode_supported=false"));
 }
 
@@ -1797,6 +1871,7 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
     assert_eq!(filtered_payload["modes"], 1);
     assert_eq!(filtered_payload["rows_total"], 1);
     assert_eq!(filtered_payload["rows"], 1);
+    assert_eq!(filtered_payload["state_counts"]["ready"], 1);
     assert_eq!(filtered_payload["entries"][0]["provider"], "openai");
     assert_eq!(filtered_payload["entries"][0]["mode"], "oauth_token");
     assert_eq!(filtered_payload["entries"][0]["state"], "ready");
@@ -1811,6 +1886,7 @@ fn integration_execute_auth_command_matrix_state_filter_composes_with_other_filt
     assert_eq!(mismatch_payload["state_filter"], "mode_mismatch");
     assert_eq!(mismatch_payload["rows_total"], 1);
     assert_eq!(mismatch_payload["rows"], 1);
+    assert_eq!(mismatch_payload["state_counts"]["mode_mismatch"], 1);
     assert_eq!(mismatch_payload["entries"][0]["state"], "mode_mismatch");
 }
 
@@ -1851,6 +1927,7 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
     assert_eq!(filtered_payload["modes"], 1);
     assert_eq!(filtered_payload["rows_total"], 1);
     assert_eq!(filtered_payload["rows"], 1);
+    assert_eq!(filtered_payload["state_counts"]["ready"], 1);
     assert_eq!(filtered_payload["entries"][0]["provider"], "openai");
     assert_eq!(filtered_payload["entries"][0]["mode"], "oauth_token");
     assert_eq!(filtered_payload["entries"][0]["mode_supported"], true);
@@ -1867,6 +1944,13 @@ fn integration_execute_auth_command_matrix_mode_support_filter_composes_with_oth
     assert_eq!(zero_row_payload["rows"], 0);
     assert_eq!(zero_row_payload["mode_supported"], 0);
     assert_eq!(zero_row_payload["mode_unsupported"], 0);
+    assert_eq!(
+        zero_row_payload["state_counts"]
+            .as_object()
+            .expect("zero-row state counts")
+            .len(),
+        0
+    );
     assert_eq!(
         zero_row_payload["entries"]
             .as_array()
@@ -2344,6 +2428,7 @@ fn integration_execute_auth_command_status_reports_store_backed_state() {
     assert_eq!(payload["entries"][0]["mode"], "session_token");
     assert_eq!(payload["entries"][0]["state"], "ready");
     assert_eq!(payload["entries"][0]["available"], true);
+    assert_eq!(payload["state_counts"]["ready"], 1);
 }
 
 #[test]
@@ -2368,6 +2453,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(available_payload["rows"], 2);
     assert_eq!(available_payload["available"], 2);
     assert_eq!(available_payload["unavailable"], 0);
+    assert_eq!(available_payload["state_counts"]["ready"], 2);
     let available_entries = available_payload["entries"]
         .as_array()
         .expect("available status entries");
@@ -2390,6 +2476,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(unavailable_payload["rows"], 1);
     assert_eq!(unavailable_payload["available"], 0);
     assert_eq!(unavailable_payload["unavailable"], 1);
+    assert_eq!(unavailable_payload["state_counts"]["missing_api_key"], 1);
     assert_eq!(unavailable_payload["entries"][0]["provider"], "google");
     assert_eq!(
         unavailable_payload["entries"][0]["state"],
@@ -2405,6 +2492,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert_eq!(state_payload["providers"], 3);
     assert_eq!(state_payload["rows_total"], 3);
     assert_eq!(state_payload["rows"], 1);
+    assert_eq!(state_payload["state_counts"]["missing_api_key"], 1);
     assert_eq!(state_payload["entries"][0]["provider"], "google");
     assert_eq!(state_payload["entries"][0]["state"], "missing_api_key");
 
@@ -2415,6 +2503,7 @@ fn functional_execute_auth_command_status_supports_availability_and_state_filter
     assert!(text_output.contains("availability_filter=unavailable"));
     assert!(text_output.contains("state_filter=missing_api_key"));
     assert!(text_output.contains("rows_total=3"));
+    assert!(text_output.contains("state_counts=missing_api_key:1"));
     assert!(text_output.contains("auth provider: name=google"));
     assert!(!text_output.contains("auth provider: name=openai"));
 }
@@ -2455,6 +2544,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     assert_eq!(filtered_payload["rows"], 1);
     assert_eq!(filtered_payload["available"], 1);
     assert_eq!(filtered_payload["unavailable"], 0);
+    assert_eq!(filtered_payload["state_counts"]["ready"], 1);
     assert_eq!(filtered_payload["entries"][0]["provider"], "openai");
     assert_eq!(filtered_payload["entries"][0]["state"], "ready");
     assert_eq!(filtered_payload["entries"][0]["available"], true);
@@ -2473,6 +2563,13 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     assert_eq!(zero_row_payload["available"], 0);
     assert_eq!(zero_row_payload["unavailable"], 0);
     assert_eq!(
+        zero_row_payload["state_counts"]
+            .as_object()
+            .expect("zero-row state counts")
+            .len(),
+        0
+    );
+    assert_eq!(
         zero_row_payload["entries"]
             .as_array()
             .expect("zero-row entries")
@@ -2486,6 +2583,7 @@ fn integration_execute_auth_command_status_filters_compose_with_provider_and_zer
     );
     assert!(zero_row_text.contains("providers=1 rows=0"));
     assert!(zero_row_text.contains("rows_total=1"));
+    assert!(zero_row_text.contains("state_counts=none"));
 }
 
 #[test]
