@@ -4398,7 +4398,16 @@ fn functional_execute_integration_auth_command_set_status_rotate_revoke_lifecycl
     let status_output = execute_integration_auth_command(&config, "status github-token --json");
     let status_json: serde_json::Value =
         serde_json::from_str(&status_output).expect("parse status");
+    assert_eq!(status_json["integrations_total"], 1);
+    assert_eq!(status_json["integrations"], 1);
+    assert_eq!(status_json["available_total"], 1);
+    assert_eq!(status_json["unavailable_total"], 0);
     assert_eq!(status_json["available"], 1);
+    assert_eq!(status_json["unavailable"], 0);
+    assert_eq!(status_json["state_counts_total"]["ready"], 1);
+    assert_eq!(status_json["state_counts"]["ready"], 1);
+    assert_eq!(status_json["revoked_counts_total"]["not_revoked"], 1);
+    assert_eq!(status_json["revoked_counts"]["not_revoked"], 1);
     assert_eq!(status_json["entries"][0]["integration_id"], "github-token");
     assert_eq!(status_json["entries"][0]["state"], "ready");
     assert_eq!(status_json["entries"][0]["revoked"], false);
@@ -4422,6 +4431,14 @@ fn functional_execute_integration_auth_command_set_status_rotate_revoke_lifecycl
         execute_integration_auth_command(&config, "status github-token --json");
     let post_revoke_json: serde_json::Value =
         serde_json::from_str(&post_revoke_status).expect("parse status");
+    assert_eq!(post_revoke_json["available_total"], 0);
+    assert_eq!(post_revoke_json["unavailable_total"], 1);
+    assert_eq!(post_revoke_json["available"], 0);
+    assert_eq!(post_revoke_json["unavailable"], 1);
+    assert_eq!(post_revoke_json["state_counts_total"]["revoked"], 1);
+    assert_eq!(post_revoke_json["state_counts"]["revoked"], 1);
+    assert_eq!(post_revoke_json["revoked_counts_total"]["revoked"], 1);
+    assert_eq!(post_revoke_json["revoked_counts"]["revoked"], 1);
     assert_eq!(post_revoke_json["entries"][0]["state"], "revoked");
     assert_eq!(post_revoke_json["entries"][0]["available"], false);
 
@@ -4437,6 +4454,112 @@ fn functional_execute_integration_auth_command_set_status_rotate_revoke_lifecycl
         .expect("github integration entry");
     assert!(entry.secret.is_none());
     assert!(entry.revoked);
+}
+
+#[test]
+fn functional_execute_integration_auth_command_status_reports_totals_with_filter() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("integration-status-totals.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+
+    execute_integration_auth_command(&config, "set github-token ghp_ready --json");
+    execute_integration_auth_command(&config, "set slack-token slack_ready --json");
+    execute_integration_auth_command(&config, "revoke slack-token --json");
+
+    let status_output = execute_integration_auth_command(&config, "status github-token --json");
+    let status_json: serde_json::Value =
+        serde_json::from_str(&status_output).expect("parse status totals");
+    assert_eq!(status_json["integrations_total"], 2);
+    assert_eq!(status_json["integrations"], 1);
+    assert_eq!(status_json["available_total"], 1);
+    assert_eq!(status_json["unavailable_total"], 1);
+    assert_eq!(status_json["available"], 1);
+    assert_eq!(status_json["unavailable"], 0);
+    assert_eq!(status_json["state_counts_total"]["ready"], 1);
+    assert_eq!(status_json["state_counts_total"]["revoked"], 1);
+    assert_eq!(status_json["state_counts"]["ready"], 1);
+    assert_eq!(status_json["revoked_counts_total"]["not_revoked"], 1);
+    assert_eq!(status_json["revoked_counts_total"]["revoked"], 1);
+    assert_eq!(status_json["revoked_counts"]["not_revoked"], 1);
+
+    let text_output = execute_integration_auth_command(&config, "status github-token");
+    assert!(text_output.contains("integrations=1"));
+    assert!(text_output.contains("integrations_total=2"));
+    assert!(text_output.contains("available=1"));
+    assert!(text_output.contains("unavailable=0"));
+    assert!(text_output.contains("available_total=1"));
+    assert!(text_output.contains("unavailable_total=1"));
+    assert!(text_output.contains("state_counts=ready:1"));
+    assert!(text_output.contains("state_counts_total=ready:1,revoked:1"));
+    assert!(text_output.contains("revoked_counts=not_revoked:1"));
+    assert!(text_output.contains("revoked_counts_total=not_revoked:1,revoked:1"));
+}
+
+#[test]
+fn regression_execute_integration_auth_command_status_handles_empty_store() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("integration-status-empty.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+
+    let store = CredentialStoreData {
+        encryption: CredentialStoreEncryptionMode::None,
+        providers: BTreeMap::new(),
+        integrations: BTreeMap::new(),
+    };
+    save_credential_store(&config.credential_store, &store, None)
+        .expect("save empty credential store");
+
+    let output = execute_integration_auth_command(&config, "status --json");
+    let payload: serde_json::Value =
+        serde_json::from_str(&output).expect("parse empty integration status");
+    assert_eq!(payload["integrations_total"], 0);
+    assert_eq!(payload["integrations"], 0);
+    assert_eq!(payload["available_total"], 0);
+    assert_eq!(payload["unavailable_total"], 0);
+    assert_eq!(payload["available"], 0);
+    assert_eq!(payload["unavailable"], 0);
+    assert_eq!(
+        payload["state_counts_total"]
+            .as_object()
+            .expect("empty state counts total")
+            .len(),
+        0
+    );
+    assert_eq!(
+        payload["state_counts"]
+            .as_object()
+            .expect("empty state counts")
+            .len(),
+        0
+    );
+    assert_eq!(
+        payload["revoked_counts_total"]
+            .as_object()
+            .expect("empty revoked counts total")
+            .len(),
+        0
+    );
+    assert_eq!(
+        payload["revoked_counts"]
+            .as_object()
+            .expect("empty revoked counts")
+            .len(),
+        0
+    );
+
+    let text_output = execute_integration_auth_command(&config, "status");
+    assert!(text_output.contains("integrations=0"));
+    assert!(text_output.contains("integrations_total=0"));
+    assert!(text_output.contains("available=0"));
+    assert!(text_output.contains("unavailable=0"));
+    assert!(text_output.contains("available_total=0"));
+    assert!(text_output.contains("unavailable_total=0"));
+    assert!(text_output.contains("state_counts=none"));
+    assert!(text_output.contains("state_counts_total=none"));
+    assert!(text_output.contains("revoked_counts=none"));
+    assert!(text_output.contains("revoked_counts_total=none"));
 }
 
 #[test]

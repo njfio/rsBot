@@ -10,6 +10,8 @@ use pi_ai::Provider;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::auth_commands::format_auth_state_counts;
+
 use super::{
     current_unix_timestamp, write_text_atomic, AuthCommandConfig, Cli,
     CliCredentialStoreEncryptionMode, CredentialStoreEncryptionMode, ProviderAuthMethod,
@@ -449,6 +451,27 @@ fn integration_status_row_for_entry(
     }
 }
 
+fn integration_state_counts(rows: &[IntegrationAuthStatusRow]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        *counts.entry(row.state.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn integration_revoked_counts(rows: &[IntegrationAuthStatusRow]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let key = if row.revoked {
+            "revoked"
+        } else {
+            "not_revoked"
+        };
+        *counts.entry(key.to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+
 fn execute_integration_auth_status_command(
     config: &AuthCommandConfig,
     integration_id: Option<String>,
@@ -473,40 +496,60 @@ fn execute_integration_auth_status_command(
         }
     };
 
+    let all_rows = store
+        .integrations
+        .iter()
+        .map(|(integration_id, entry)| {
+            integration_status_row_for_entry(integration_id, Some(entry))
+        })
+        .collect::<Vec<_>>();
     let rows = match integration_id {
-        Some(integration_id) => {
-            vec![integration_status_row_for_entry(
-                &integration_id,
-                store.integrations.get(&integration_id),
-            )]
-        }
-        None => store
-            .integrations
-            .iter()
-            .map(|(integration_id, entry)| {
-                integration_status_row_for_entry(integration_id, Some(entry))
-            })
-            .collect::<Vec<_>>(),
+        Some(integration_id) => vec![integration_status_row_for_entry(
+            &integration_id,
+            store.integrations.get(&integration_id),
+        )],
+        None => all_rows.clone(),
     };
+    let integrations_total = all_rows.len();
+    let available_total = all_rows.iter().filter(|row| row.available).count();
+    let unavailable_total = integrations_total.saturating_sub(available_total);
+    let state_counts_total = integration_state_counts(&all_rows);
+    let revoked_counts_total = integration_revoked_counts(&all_rows);
     let available = rows.iter().filter(|row| row.available).count();
     let unavailable = rows.len().saturating_sub(available);
+    let state_counts = integration_state_counts(&rows);
+    let revoked_counts = integration_revoked_counts(&rows);
 
     if json_output {
         return serde_json::json!({
             "command": "integration_auth.status",
+            "integrations_total": integrations_total,
             "integrations": rows.len(),
+            "available_total": available_total,
+            "unavailable_total": unavailable_total,
             "available": available,
             "unavailable": unavailable,
+            "state_counts_total": state_counts_total,
+            "state_counts": state_counts,
+            "revoked_counts_total": revoked_counts_total,
+            "revoked_counts": revoked_counts,
             "entries": rows,
         })
         .to_string();
     }
 
     let mut lines = vec![format!(
-        "integration auth status: integrations={} available={} unavailable={}",
+        "integration auth status: integrations={} integrations_total={} available={} unavailable={} available_total={} unavailable_total={} state_counts={} state_counts_total={} revoked_counts={} revoked_counts_total={}",
         rows.len(),
+        integrations_total,
         available,
-        unavailable
+        unavailable,
+        available_total,
+        unavailable_total,
+        format_auth_state_counts(&state_counts),
+        format_auth_state_counts(&state_counts_total),
+        format_auth_state_counts(&revoked_counts),
+        format_auth_state_counts(&revoked_counts_total)
     )];
     for row in rows {
         lines.push(format!(
@@ -1074,4 +1117,59 @@ pub(crate) fn reauth_required_error(provider: Provider, reason: &str) -> anyhow:
         "provider '{}' requires re-authentication: {reason}",
         provider.as_str()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_integration_auth_histogram_helpers_are_deterministic() {
+        let rows = vec![
+            IntegrationAuthStatusRow {
+                integration_id: "alpha".to_string(),
+                available: true,
+                state: "ready".to_string(),
+                source: "credential_store".to_string(),
+                reason: "ok".to_string(),
+                updated_unix: Some(123),
+                revoked: false,
+            },
+            IntegrationAuthStatusRow {
+                integration_id: "beta".to_string(),
+                available: false,
+                state: "revoked".to_string(),
+                source: "credential_store".to_string(),
+                reason: "revoked".to_string(),
+                updated_unix: Some(456),
+                revoked: true,
+            },
+            IntegrationAuthStatusRow {
+                integration_id: "gamma".to_string(),
+                available: false,
+                state: "missing_secret".to_string(),
+                source: "credential_store".to_string(),
+                reason: "missing".to_string(),
+                updated_unix: None,
+                revoked: false,
+            },
+        ];
+
+        let state_counts = integration_state_counts(&rows);
+        assert_eq!(state_counts.get("ready"), Some(&1));
+        assert_eq!(state_counts.get("revoked"), Some(&1));
+        assert_eq!(state_counts.get("missing_secret"), Some(&1));
+        assert_eq!(
+            format_auth_state_counts(&state_counts),
+            "missing_secret:1,ready:1,revoked:1"
+        );
+
+        let revoked_counts = integration_revoked_counts(&rows);
+        assert_eq!(revoked_counts.get("revoked"), Some(&1));
+        assert_eq!(revoked_counts.get("not_revoked"), Some(&2));
+        assert_eq!(
+            format_auth_state_counts(&revoked_counts),
+            "not_revoked:2,revoked:1"
+        );
+    }
 }
