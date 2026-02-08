@@ -993,6 +993,9 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             json_output: false,
         }
     );
+
+    let matrix = parse_auth_command("matrix --json").expect("parse auth matrix");
+    assert_eq!(matrix, AuthCommand::Matrix { json_output: true });
 }
 
 #[test]
@@ -1008,6 +1011,11 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(missing_login_provider
         .to_string()
         .contains("usage: /auth login"));
+
+    let invalid_matrix_args = parse_auth_command("matrix openai").expect_err("matrix args fail");
+    assert!(invalid_matrix_args
+        .to_string()
+        .contains("usage: /auth matrix"));
 
     let unknown_subcommand = parse_auth_command("noop").expect_err("subcommand fail");
     assert!(unknown_subcommand.to_string().contains("usage: /auth"));
@@ -1309,6 +1317,73 @@ fn functional_auth_conformance_status_matrix_reports_expected_rows() {
 }
 
 #[test]
+fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-matrix.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = Some("shared-api-key".to_string());
+    config.openai_api_key = None;
+    config.anthropic_api_key = None;
+    config.google_api_key = None;
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("oauth-access-secret".to_string()),
+            refresh_token: Some("oauth-refresh-secret".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(600)),
+            revoked: false,
+        },
+    );
+
+    let output = execute_auth_command(&config, "matrix --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse matrix payload");
+    assert_eq!(payload["command"], "auth.matrix");
+    assert_eq!(payload["providers"], 3);
+    assert_eq!(payload["modes"], 4);
+    assert_eq!(payload["rows"], 12);
+    assert_eq!(payload["mode_supported"], 5);
+    assert_eq!(payload["mode_unsupported"], 7);
+    assert_eq!(payload["available"], 4);
+    assert_eq!(payload["unavailable"], 8);
+
+    let entries = payload["entries"].as_array().expect("matrix entries");
+    assert_eq!(entries.len(), 12);
+    let row_for = |provider: &str, mode: &str| -> &serde_json::Value {
+        entries
+            .iter()
+            .find(|row| row["provider"] == provider && row["mode"] == mode)
+            .unwrap_or_else(|| panic!("missing matrix row provider={provider} mode={mode}"))
+    };
+
+    let openai_api = row_for("openai", "api_key");
+    assert_eq!(openai_api["mode_supported"], true);
+    assert_eq!(openai_api["available"], true);
+    assert_eq!(openai_api["state"], "ready");
+
+    let openai_oauth = row_for("openai", "oauth_token");
+    assert_eq!(openai_oauth["mode_supported"], true);
+    assert_eq!(openai_oauth["available"], true);
+    assert_eq!(openai_oauth["state"], "ready");
+    assert_eq!(openai_oauth["source"], "credential_store");
+
+    let anthropic_oauth = row_for("anthropic", "oauth_token");
+    assert_eq!(anthropic_oauth["mode_supported"], false);
+    assert_eq!(anthropic_oauth["available"], false);
+    assert_eq!(anthropic_oauth["state"], "unsupported_mode");
+
+    let text_output = execute_auth_command(&config, "matrix");
+    assert!(text_output.contains("auth matrix: providers=3 modes=4 rows=12"));
+    assert!(text_output.contains("auth matrix row: provider=openai mode=oauth_token"));
+    assert!(!text_output.contains("oauth-access-secret"));
+}
+
+#[test]
 fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_scenarios() {
     #[derive(Debug)]
     struct StaleCase {
@@ -1410,6 +1485,37 @@ fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_s
             assert!(!text_output.contains(refresh_secret));
         }
     }
+}
+
+#[test]
+fn integration_execute_auth_command_matrix_reports_store_error_for_supported_non_api_modes() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("broken-auth-store.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    std::fs::write(&config.credential_store, "{not-json").expect("write broken store");
+
+    let output = execute_auth_command(&config, "matrix --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse matrix payload");
+    let entries = payload["entries"].as_array().expect("matrix entries");
+    let openai_oauth = entries
+        .iter()
+        .find(|row| row["provider"] == "openai" && row["mode"] == "oauth_token")
+        .expect("openai oauth row");
+    assert_eq!(openai_oauth["mode_supported"], true);
+    assert_eq!(openai_oauth["available"], false);
+    assert_eq!(openai_oauth["state"], "store_error");
+    assert!(openai_oauth["reason"]
+        .as_str()
+        .unwrap_or("missing reason")
+        .contains("failed to parse"));
+
+    let anthropic_oauth = entries
+        .iter()
+        .find(|row| row["provider"] == "anthropic" && row["mode"] == "oauth_token")
+        .expect("anthropic oauth row");
+    assert_eq!(anthropic_oauth["mode_supported"], false);
+    assert_eq!(anthropic_oauth["state"], "unsupported_mode");
 }
 
 #[test]
@@ -4738,7 +4844,7 @@ fn functional_render_help_overview_lists_known_commands() {
     assert!(help.contains("/skills-lock-write [lockfile_path]"));
     assert!(help.contains("/skills-sync [lockfile_path]"));
     assert!(help.contains("/macro <save|run|list|show|delete> ..."));
-    assert!(help.contains("/auth <login|status|logout> ..."));
+    assert!(help.contains("/auth <login|status|logout|matrix> ..."));
     assert!(help.contains("/integration-auth <set|status|rotate|revoke> ..."));
     assert!(help.contains("/profile <save|load|list|show|delete> ..."));
     assert!(help.contains("/branch <id>"));

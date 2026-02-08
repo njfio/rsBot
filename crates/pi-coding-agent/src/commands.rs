@@ -238,11 +238,11 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/auth",
-        usage: "/auth <login|status|logout> ...",
+        usage: "/auth <login|status|logout|matrix> ...",
         description: "Manage provider authentication state and credential-store sessions",
         details:
-            "Supports login/status/logout flows with provider capability checks and optional --json output.",
-        example: "/auth status openai --json",
+            "Supports login/status/logout flows plus provider-mode matrix diagnostics with optional --json output.",
+        example: "/auth matrix --json",
     },
     CommandSpec {
         name: "/integration-auth",

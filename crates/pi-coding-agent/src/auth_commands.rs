@@ -1,9 +1,10 @@
 use super::*;
 
-pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout> ...";
+pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> ...";
 pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
 pub(crate) const AUTH_STATUS_USAGE: &str = "usage: /auth status [provider] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
+pub(crate) const AUTH_MATRIX_USAGE: &str = "usage: /auth matrix [--json]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthCommand {
@@ -20,6 +21,9 @@ pub(crate) enum AuthCommand {
         provider: Provider,
         json_output: bool,
     },
+    Matrix {
+        json_output: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -34,6 +38,15 @@ pub(crate) struct AuthStatusRow {
     expires_unix: Option<u64>,
     revoked: bool,
 }
+
+const AUTH_MATRIX_PROVIDERS: [Provider; 3] =
+    [Provider::OpenAi, Provider::Anthropic, Provider::Google];
+const AUTH_MATRIX_MODES: [ProviderAuthMethod; 4] = [
+    ProviderAuthMethod::ApiKey,
+    ProviderAuthMethod::OauthToken,
+    ProviderAuthMethod::Adc,
+    ProviderAuthMethod::SessionToken,
+];
 
 pub(crate) fn parse_auth_provider(token: &str) -> Result<Provider> {
     match token.trim().to_ascii_lowercase().as_str() {
@@ -142,6 +155,17 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
                 provider,
                 json_output,
             })
+        }
+        "matrix" => {
+            let mut json_output = false;
+            for token in tokens.into_iter().skip(1) {
+                if token == "--json" {
+                    json_output = true;
+                } else {
+                    bail!("unexpected argument '{}'; {AUTH_MATRIX_USAGE}", token);
+                }
+            }
+            Ok(AuthCommand::Matrix { json_output })
         }
         other => bail!("unknown subcommand '{}'; {AUTH_USAGE}", other),
     }
@@ -772,6 +796,99 @@ pub(crate) fn execute_auth_status_command(
     lines.join("\n")
 }
 
+fn auth_config_with_provider_mode(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    mode: ProviderAuthMethod,
+) -> AuthCommandConfig {
+    let mut overridden = config.clone();
+    match provider {
+        Provider::OpenAi => overridden.openai_auth_mode = mode,
+        Provider::Anthropic => overridden.anthropic_auth_mode = mode,
+        Provider::Google => overridden.google_auth_mode = mode,
+    }
+    overridden
+}
+
+pub(crate) fn execute_auth_matrix_command(config: &AuthCommandConfig, json_output: bool) -> String {
+    let requires_store = AUTH_MATRIX_MODES
+        .iter()
+        .any(|mode| *mode != ProviderAuthMethod::ApiKey);
+    let (store, store_error) = if requires_store {
+        match load_credential_store(
+            &config.credential_store,
+            config.credential_store_encryption,
+            config.credential_store_key.as_deref(),
+        ) {
+            Ok(store) => (Some(store), None),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+
+    let mut rows = Vec::new();
+    for provider in AUTH_MATRIX_PROVIDERS {
+        for mode in AUTH_MATRIX_MODES {
+            let mode_config = auth_config_with_provider_mode(config, provider, mode);
+            rows.push(auth_status_row_for_provider(
+                &mode_config,
+                provider,
+                store.as_ref(),
+                store_error.as_deref(),
+            ));
+        }
+    }
+
+    let available = rows.iter().filter(|row| row.available).count();
+    let unavailable = rows.len().saturating_sub(available);
+    let mode_supported = rows.iter().filter(|row| row.mode_supported).count();
+    let mode_unsupported = rows.len().saturating_sub(mode_supported);
+
+    if json_output {
+        return serde_json::json!({
+            "command": "auth.matrix",
+            "providers": AUTH_MATRIX_PROVIDERS.len(),
+            "modes": AUTH_MATRIX_MODES.len(),
+            "rows": rows.len(),
+            "mode_supported": mode_supported,
+            "mode_unsupported": mode_unsupported,
+            "available": available,
+            "unavailable": unavailable,
+            "entries": rows,
+        })
+        .to_string();
+    }
+
+    let mut lines = vec![format!(
+        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={}",
+        AUTH_MATRIX_PROVIDERS.len(),
+        AUTH_MATRIX_MODES.len(),
+        rows.len(),
+        mode_supported,
+        mode_unsupported,
+        available,
+        unavailable
+    )];
+    for row in rows {
+        lines.push(format!(
+            "auth matrix row: provider={} mode={} mode_supported={} available={} state={} source={} reason={} expires_unix={} revoked={}",
+            row.provider,
+            row.mode,
+            row.mode_supported,
+            row.available,
+            row.state,
+            row.source,
+            row.reason,
+            row.expires_unix
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.revoked
+        ));
+    }
+    lines.join("\n")
+}
+
 pub(crate) fn execute_auth_logout_command(
     config: &AuthCommandConfig,
     provider: Provider,
@@ -870,5 +987,6 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
             provider,
             json_output,
         } => execute_auth_logout_command(config, provider, json_output),
+        AuthCommand::Matrix { json_output } => execute_auth_matrix_command(config, json_output),
     }
 }
