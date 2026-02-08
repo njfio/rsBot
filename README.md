@@ -254,7 +254,7 @@ In bridge mode:
 - duplicate deliveries are deduplicated using persisted event keys and response footers
 - bot replies include run/model/token metadata in the issue comment footer
 - each completed run emits a markdown artifact plus metadata index entry under `channel-store/.../artifacts/`
-- `/pi artifacts` posts the current issue artifact inventory; `/pi artifacts purge` removes expired entries and reports lifecycle counts
+- `/pi artifacts` posts the current issue artifact inventory; `/pi artifacts run <run_id>` filters inventory for one run; `/pi artifacts purge` removes expired entries and reports lifecycle counts
 
 Run as a Slack Socket Mode conversational transport:
 
