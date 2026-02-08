@@ -10,7 +10,7 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
         )?;
         let report = store.inspect()?;
         println!(
-            "channel store inspect: transport={} channel_id={} dir={} log_records={} context_records={} invalid_log_lines={} invalid_context_lines={} memory_exists={} memory_bytes={}",
+            "channel store inspect: transport={} channel_id={} dir={} log_records={} context_records={} invalid_log_lines={} invalid_context_lines={} artifact_records={} invalid_artifact_lines={} active_artifacts={} expired_artifacts={} memory_exists={} memory_bytes={}",
             report.transport,
             report.channel_id,
             report.channel_dir.display(),
@@ -18,6 +18,10 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
             report.context_records,
             report.invalid_log_lines,
             report.invalid_context_lines,
+            report.artifact_records,
+            report.invalid_artifact_lines,
+            report.active_artifacts,
+            report.expired_artifacts,
             report.memory_exists,
             report.memory_bytes,
         );
@@ -33,11 +37,13 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
         )?;
         let report = store.repair()?;
         println!(
-            "channel store repair: transport={} channel_id={} log_removed_lines={} context_removed_lines={} log_backup_path={} context_backup_path={}",
+            "channel store repair: transport={} channel_id={} log_removed_lines={} context_removed_lines={} artifact_expired_removed={} artifact_invalid_removed={} log_backup_path={} context_backup_path={}",
             channel_ref.transport,
             channel_ref.channel_id,
             report.log_removed_lines,
             report.context_removed_lines,
+            report.artifact_expired_removed,
+            report.artifact_invalid_removed,
             report
                 .log_backup_path
                 .as_ref()

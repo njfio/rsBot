@@ -51,6 +51,10 @@ pub(crate) struct ChannelInspectReport {
     pub context_records: usize,
     pub invalid_log_lines: usize,
     pub invalid_context_lines: usize,
+    pub artifact_records: usize,
+    pub invalid_artifact_lines: usize,
+    pub active_artifacts: usize,
+    pub expired_artifacts: usize,
     pub memory_exists: bool,
     pub memory_bytes: u64,
 }
@@ -59,6 +63,8 @@ pub(crate) struct ChannelInspectReport {
 pub(crate) struct ChannelRepairReport {
     pub log_removed_lines: usize,
     pub context_removed_lines: usize,
+    pub artifact_expired_removed: usize,
+    pub artifact_invalid_removed: usize,
     pub log_backup_path: Option<PathBuf>,
     pub context_backup_path: Option<PathBuf>,
 }
@@ -234,6 +240,15 @@ impl ChannelStore {
     pub(crate) fn inspect(&self) -> Result<ChannelInspectReport> {
         let (log_records, invalid_log_lines) = inspect_jsonl_file(&self.log_path())?;
         let (context_records, invalid_context_lines) = inspect_jsonl_file(&self.context_path())?;
+        let now_unix_ms = current_unix_timestamp_ms();
+        let artifact_loaded = self.load_artifact_records_tolerant()?;
+        let artifact_records = artifact_loaded.records.len();
+        let expired_artifacts = artifact_loaded
+            .records
+            .iter()
+            .filter(|record| is_artifact_expired(record, now_unix_ms))
+            .count();
+        let active_artifacts = artifact_records.saturating_sub(expired_artifacts);
         let memory_path = self.memory_path();
         let memory_exists = memory_path.exists();
         let memory_bytes = if memory_exists {
@@ -252,6 +267,10 @@ impl ChannelStore {
             context_records,
             invalid_log_lines,
             invalid_context_lines,
+            artifact_records,
+            invalid_artifact_lines: artifact_loaded.invalid_lines,
+            active_artifacts,
+            expired_artifacts,
             memory_exists,
             memory_bytes,
         })
@@ -260,9 +279,12 @@ impl ChannelStore {
     pub(crate) fn repair(&self) -> Result<ChannelRepairReport> {
         let (log_removed, log_backup_path) = repair_jsonl_file(&self.log_path())?;
         let (context_removed, context_backup_path) = repair_jsonl_file(&self.context_path())?;
+        let artifact_purge = self.purge_expired_artifacts(current_unix_timestamp_ms())?;
         Ok(ChannelRepairReport {
             log_removed_lines: log_removed,
             context_removed_lines: context_removed,
+            artifact_expired_removed: artifact_purge.expired_removed,
+            artifact_invalid_removed: artifact_purge.invalid_removed,
             log_backup_path,
             context_backup_path,
         })
@@ -780,9 +802,13 @@ mod tests {
         let report = store.inspect().expect("inspect");
         assert_eq!(report.log_records, 1);
         assert_eq!(report.invalid_log_lines, 1);
+        assert_eq!(report.artifact_records, 0);
+        assert_eq!(report.invalid_artifact_lines, 0);
 
         let repaired = store.repair().expect("repair");
         assert_eq!(repaired.log_removed_lines, 1);
+        assert_eq!(repaired.artifact_expired_removed, 0);
+        assert_eq!(repaired.artifact_invalid_removed, 0);
         assert!(repaired.log_backup_path.is_some());
 
         let repaired_report = store.inspect().expect("inspect after repair");
@@ -898,6 +924,52 @@ mod tests {
             .expect("active records");
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, retained.id);
+    }
+
+    #[test]
+    fn integration_inspect_and_repair_report_artifact_health_counters() {
+        let temp = tempdir().expect("tempdir");
+        let store = ChannelStore::open(temp.path(), "github", "issue-72").expect("open store");
+        let expired = store
+            .write_text_artifact(
+                "run-expired",
+                "github-reply",
+                "private",
+                Some(0),
+                "md",
+                "expired",
+            )
+            .expect("write expired artifact");
+        store
+            .write_text_artifact(
+                "run-active",
+                "github-reply",
+                "private",
+                Some(30),
+                "md",
+                "active",
+            )
+            .expect("write active artifact");
+        let mut seeded = std::fs::read_to_string(store.artifact_index_path()).expect("read index");
+        seeded.push_str("invalid-json-line\n");
+        std::fs::write(store.artifact_index_path(), seeded).expect("seed invalid artifact line");
+
+        let inspect_before = store.inspect().expect("inspect before repair");
+        assert_eq!(inspect_before.artifact_records, 2);
+        assert_eq!(inspect_before.invalid_artifact_lines, 1);
+        assert_eq!(inspect_before.expired_artifacts, 1);
+        assert_eq!(inspect_before.active_artifacts, 1);
+
+        let repaired = store.repair().expect("repair");
+        assert_eq!(repaired.artifact_expired_removed, 1);
+        assert_eq!(repaired.artifact_invalid_removed, 1);
+        assert!(!store.channel_dir().join(expired.relative_path).exists());
+
+        let inspect_after = store.inspect().expect("inspect after repair");
+        assert_eq!(inspect_after.artifact_records, 1);
+        assert_eq!(inspect_after.invalid_artifact_lines, 0);
+        assert_eq!(inspect_after.expired_artifacts, 0);
+        assert_eq!(inspect_after.active_artifacts, 1);
     }
 
     #[test]

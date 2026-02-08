@@ -285,6 +285,8 @@ cargo run -p pi-coding-agent -- \
   --channel-store-repair slack/C123
 ```
 
+Inspect now reports artifact health counters (records, invalid index lines, active/expired), and repair also purges expired artifacts plus invalid artifact index rows.
+
 Run the autonomous events scheduler (immediate, one-shot, periodic):
 
 ```bash
