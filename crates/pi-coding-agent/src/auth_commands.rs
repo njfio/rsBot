@@ -693,6 +693,54 @@ pub(crate) fn auth_status_row_for_provider(
     };
 
     let Some(entry) = store.providers.get(provider.as_str()) else {
+        if let Some((_access_token, source)) =
+            resolve_non_empty_secret_with_source(provider_login_access_token_candidates(provider))
+        {
+            let expires_unix = match resolve_auth_login_expires_unix(provider) {
+                Ok(value) => value,
+                Err(error) => {
+                    return AuthStatusRow {
+                        provider: provider.as_str().to_string(),
+                        mode: mode.as_str().to_string(),
+                        mode_supported: true,
+                        available: false,
+                        state: "invalid_env_expires".to_string(),
+                        source,
+                        reason: error.to_string(),
+                        expires_unix: None,
+                        revoked: false,
+                    };
+                }
+            };
+            if expires_unix
+                .map(|value| value <= current_unix_timestamp())
+                .unwrap_or(false)
+            {
+                return AuthStatusRow {
+                    provider: provider.as_str().to_string(),
+                    mode: mode.as_str().to_string(),
+                    mode_supported: true,
+                    available: false,
+                    state: "expired_env_access_token".to_string(),
+                    source,
+                    reason: "environment access token is expired".to_string(),
+                    expires_unix,
+                    revoked: false,
+                };
+            }
+            return AuthStatusRow {
+                provider: provider.as_str().to_string(),
+                mode: mode.as_str().to_string(),
+                mode_supported: true,
+                available: true,
+                state: "ready".to_string(),
+                source,
+                reason: "env_access_token_available".to_string(),
+                expires_unix,
+                revoked: false,
+            };
+        }
+
         return AuthStatusRow {
             provider: provider.as_str().to_string(),
             mode: mode.as_str().to_string(),

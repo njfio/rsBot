@@ -1,4 +1,7 @@
 use super::*;
+use crate::auth_commands::{
+    provider_login_access_token_candidates, resolve_auth_login_expires_unix,
+};
 
 pub(crate) fn resolve_store_backed_provider_credential(
     cli: &Cli,
@@ -117,6 +120,34 @@ pub(crate) fn resolve_non_empty_secret_with_source(
     })
 }
 
+fn resolve_env_backed_provider_credential(
+    provider: Provider,
+    method: ProviderAuthMethod,
+) -> Result<Option<ResolvedProviderCredential>> {
+    let Some((secret, source)) =
+        resolve_non_empty_secret_with_source(provider_login_access_token_candidates(provider))
+    else {
+        return Ok(None);
+    };
+
+    let expires_unix = resolve_auth_login_expires_unix(provider)?;
+    if expires_unix
+        .map(|value| value <= current_unix_timestamp())
+        .unwrap_or(false)
+    {
+        return Err(reauth_required_error(
+            provider,
+            "environment access token is expired",
+        ));
+    }
+
+    Ok(Some(ResolvedProviderCredential {
+        method,
+        secret: Some(secret),
+        source: Some(source),
+    }))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedProviderCredential {
     pub(crate) method: ProviderAuthMethod,
@@ -155,6 +186,19 @@ impl ProviderCredentialResolver for CliProviderCredentialResolver<'_> {
                 })
             }
             ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken => {
+                let key = self.cli.credential_store_key.as_deref();
+                let default_mode = resolve_credential_store_encryption_mode(self.cli);
+                let store_missing_provider_entry =
+                    load_credential_store(&self.cli.credential_store, default_mode, key)
+                        .map(|store| !store.providers.contains_key(provider.as_str()))
+                        .unwrap_or(false);
+                if store_missing_provider_entry {
+                    if let Some(resolved) =
+                        resolve_env_backed_provider_credential(provider, method)?
+                    {
+                        return Ok(resolved);
+                    }
+                }
                 resolve_store_backed_provider_credential(self.cli, provider, method)
             }
             ProviderAuthMethod::Adc => Ok(ResolvedProviderCredential {

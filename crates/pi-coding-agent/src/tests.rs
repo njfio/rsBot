@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     future::{pending, ready},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -104,6 +104,24 @@ use crate::{
     execute_extension_exec_command, execute_extension_list_command, execute_extension_show_command,
     execute_extension_validate_command,
 };
+
+static AUTH_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn snapshot_env_vars(keys: &[&str]) -> Vec<(String, Option<String>)> {
+    keys.iter()
+        .map(|key| ((*key).to_string(), std::env::var(key).ok()))
+        .collect()
+}
+
+fn restore_env_vars(snapshot: Vec<(String, Option<String>)>) {
+    for (key, value) in snapshot {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+}
 
 struct NoopClient;
 
@@ -1728,6 +1746,9 @@ fn regression_auth_security_matrix_blocks_unsupported_mode_bypass_attempts() {
 
 #[test]
 fn functional_execute_auth_command_login_status_logout_lifecycle() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
     let temp = tempdir().expect("tempdir");
     let mut config = test_auth_command_config();
     config.credential_store = temp.path().join("credentials.json");
@@ -1735,6 +1756,11 @@ fn functional_execute_auth_command_login_status_logout_lifecycle() {
     config.openai_auth_mode = ProviderAuthMethod::OauthToken;
 
     let expires_unix = current_unix_timestamp().saturating_add(3600);
+    let snapshot = snapshot_env_vars(&[
+        "OPENAI_ACCESS_TOKEN",
+        "OPENAI_REFRESH_TOKEN",
+        "OPENAI_AUTH_EXPIRES_UNIX",
+    ]);
     std::env::set_var("OPENAI_ACCESS_TOKEN", "openai-access-token");
     std::env::set_var("OPENAI_REFRESH_TOKEN", "openai-refresh-token");
     std::env::set_var("OPENAI_AUTH_EXPIRES_UNIX", expires_unix.to_string());
@@ -1766,9 +1792,180 @@ fn functional_execute_auth_command_login_status_logout_lifecycle() {
     assert_eq!(post_logout_json["entries"][0]["state"], "revoked");
     assert_eq!(post_logout_json["entries"][0]["available"], false);
 
-    std::env::remove_var("OPENAI_ACCESS_TOKEN");
-    std::env::remove_var("OPENAI_REFRESH_TOKEN");
-    std::env::remove_var("OPENAI_AUTH_EXPIRES_UNIX");
+    restore_env_vars(snapshot);
+}
+
+#[test]
+fn unit_execute_auth_command_status_marks_expired_env_access_token_unavailable() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("env-expired-credentials.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.openai_auth_mode = ProviderAuthMethod::OauthToken;
+
+    let snapshot = snapshot_env_vars(&[
+        "PI_AUTH_ACCESS_TOKEN",
+        "PI_AUTH_EXPIRES_UNIX",
+        "OPENAI_ACCESS_TOKEN",
+        "OPENAI_AUTH_EXPIRES_UNIX",
+    ]);
+    std::env::remove_var("PI_AUTH_ACCESS_TOKEN");
+    std::env::remove_var("PI_AUTH_EXPIRES_UNIX");
+    std::env::set_var("OPENAI_ACCESS_TOKEN", "openai-expired-env-access");
+    std::env::set_var(
+        "OPENAI_AUTH_EXPIRES_UNIX",
+        current_unix_timestamp().saturating_sub(5).to_string(),
+    );
+
+    let output = execute_auth_command(&config, "status openai --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse status payload");
+    assert_eq!(payload["command"], "auth.status");
+    assert_eq!(payload["available"], 0);
+    assert_eq!(payload["unavailable"], 1);
+    assert_eq!(payload["entries"][0]["provider"], "openai");
+    assert_eq!(payload["entries"][0]["mode"], "oauth_token");
+    assert_eq!(payload["entries"][0]["state"], "expired_env_access_token");
+    assert_eq!(payload["entries"][0]["available"], false);
+    assert_eq!(payload["entries"][0]["source"], "OPENAI_ACCESS_TOKEN");
+    assert!(!output.contains("openai-expired-env-access"));
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
+fn functional_execute_auth_command_status_uses_env_access_token_when_store_entry_missing() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("env-fallback-credentials.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.openai_auth_mode = ProviderAuthMethod::OauthToken;
+
+    let snapshot = snapshot_env_vars(&[
+        "PI_AUTH_ACCESS_TOKEN",
+        "PI_AUTH_EXPIRES_UNIX",
+        "OPENAI_ACCESS_TOKEN",
+        "OPENAI_AUTH_EXPIRES_UNIX",
+    ]);
+    std::env::remove_var("PI_AUTH_ACCESS_TOKEN");
+    std::env::remove_var("PI_AUTH_EXPIRES_UNIX");
+    std::env::set_var("OPENAI_ACCESS_TOKEN", "openai-env-fallback-access");
+    std::env::set_var(
+        "OPENAI_AUTH_EXPIRES_UNIX",
+        current_unix_timestamp().saturating_add(300).to_string(),
+    );
+
+    let output = execute_auth_command(&config, "status openai --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse status payload");
+    assert_eq!(payload["command"], "auth.status");
+    assert_eq!(payload["available"], 1);
+    assert_eq!(payload["unavailable"], 0);
+    assert_eq!(payload["entries"][0]["provider"], "openai");
+    assert_eq!(payload["entries"][0]["mode"], "oauth_token");
+    assert_eq!(payload["entries"][0]["state"], "ready");
+    assert_eq!(payload["entries"][0]["available"], true);
+    assert_eq!(payload["entries"][0]["source"], "OPENAI_ACCESS_TOKEN");
+    assert_eq!(
+        payload["entries"][0]["reason"],
+        "env_access_token_available"
+    );
+    assert!(!output.contains("openai-env-fallback-access"));
+
+    let text_output = execute_auth_command(&config, "status openai");
+    assert!(text_output.contains("source=OPENAI_ACCESS_TOKEN"));
+    assert!(!text_output.contains("openai-env-fallback-access"));
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
+fn integration_build_provider_client_supports_openai_oauth_from_env_when_store_entry_missing() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+    cli.credential_store = temp.path().join("missing-store-entry.json");
+    cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+
+    let snapshot = snapshot_env_vars(&[
+        "PI_AUTH_ACCESS_TOKEN",
+        "PI_AUTH_EXPIRES_UNIX",
+        "OPENAI_ACCESS_TOKEN",
+        "OPENAI_AUTH_EXPIRES_UNIX",
+    ]);
+    std::env::remove_var("PI_AUTH_ACCESS_TOKEN");
+    std::env::remove_var("PI_AUTH_EXPIRES_UNIX");
+    std::env::set_var("OPENAI_ACCESS_TOKEN", "openai-env-client-access");
+    std::env::set_var(
+        "OPENAI_AUTH_EXPIRES_UNIX",
+        current_unix_timestamp().saturating_add(300).to_string(),
+    );
+
+    let client = build_provider_client(&cli, Provider::OpenAi).expect("build env oauth client");
+    let ptr = Arc::as_ptr(&client);
+    assert!(!ptr.is_null());
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
+fn regression_build_provider_client_does_not_bypass_revoked_store_with_env_token() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let store_path = temp.path().join("revoked-store.json");
+    write_test_provider_credential(
+        &store_path,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("revoked-store-access".to_string()),
+            refresh_token: Some("revoked-store-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(300)),
+            revoked: true,
+        },
+    );
+
+    let mut cli = test_cli();
+    cli.openai_auth_mode = CliProviderAuthMode::OauthToken;
+    cli.credential_store = store_path;
+    cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+
+    let snapshot = snapshot_env_vars(&[
+        "PI_AUTH_ACCESS_TOKEN",
+        "PI_AUTH_EXPIRES_UNIX",
+        "OPENAI_ACCESS_TOKEN",
+        "OPENAI_AUTH_EXPIRES_UNIX",
+    ]);
+    std::env::remove_var("PI_AUTH_ACCESS_TOKEN");
+    std::env::remove_var("PI_AUTH_EXPIRES_UNIX");
+    std::env::set_var("OPENAI_ACCESS_TOKEN", "openai-env-should-not-bypass");
+    std::env::set_var(
+        "OPENAI_AUTH_EXPIRES_UNIX",
+        current_unix_timestamp().saturating_add(300).to_string(),
+    );
+
+    let error = match build_provider_client(&cli, Provider::OpenAi) {
+        Ok(_) => panic!("revoked store should remain fail-closed"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+    assert!(message.contains("requires re-authentication"));
+    assert!(message.contains("revoked"));
+    assert!(!message.contains("openai-env-should-not-bypass"));
+    assert!(!message.contains("revoked-store-access"));
+
+    restore_env_vars(snapshot);
 }
 
 #[test]
