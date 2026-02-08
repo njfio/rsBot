@@ -2,7 +2,8 @@ use super::*;
 
 pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> ...";
 pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
-pub(crate) const AUTH_STATUS_USAGE: &str = "usage: /auth status [provider] [--json]";
+pub(crate) const AUTH_STATUS_USAGE: &str =
+    "usage: /auth status [provider] [--availability <all|available|unavailable>] [--state <state>] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
 pub(crate) const AUTH_MATRIX_USAGE: &str =
     "usage: /auth matrix [provider] [--mode <mode>] [--availability <all|available|unavailable>] [--state <state>] [--json]";
@@ -33,6 +34,8 @@ pub(crate) enum AuthCommand {
     },
     Status {
         provider: Option<Provider>,
+        availability: AuthMatrixAvailabilityFilter,
+        state: Option<String>,
         json_output: bool,
     },
     Logout {
@@ -144,19 +147,54 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
         }
         "status" => {
             let mut provider: Option<Provider> = None;
+            let mut availability = AuthMatrixAvailabilityFilter::All;
+            let mut availability_explicit = false;
+            let mut state: Option<String> = None;
             let mut json_output = false;
-            for token in tokens.into_iter().skip(1) {
-                if token == "--json" {
-                    json_output = true;
-                    continue;
+            let mut index = 1usize;
+            while index < tokens.len() {
+                match tokens[index] {
+                    "--json" => {
+                        json_output = true;
+                        index += 1;
+                    }
+                    "--availability" => {
+                        if availability_explicit {
+                            bail!("duplicate --availability flag; {AUTH_STATUS_USAGE}");
+                        }
+                        let Some(raw_availability) = tokens.get(index + 1) else {
+                            bail!("missing availability filter after --availability; {AUTH_STATUS_USAGE}");
+                        };
+                        availability = parse_auth_matrix_availability_filter(raw_availability)?;
+                        availability_explicit = true;
+                        index += 2;
+                    }
+                    "--state" => {
+                        if state.is_some() {
+                            bail!("duplicate --state flag; {AUTH_STATUS_USAGE}");
+                        }
+                        let Some(raw_state) = tokens.get(index + 1) else {
+                            bail!("missing state filter after --state; {AUTH_STATUS_USAGE}");
+                        };
+                        state = Some(parse_auth_matrix_state_filter(raw_state)?);
+                        index += 2;
+                    }
+                    token if token.starts_with("--") => {
+                        bail!("unexpected argument '{}'; {AUTH_STATUS_USAGE}", token);
+                    }
+                    token => {
+                        if provider.is_some() {
+                            bail!("unexpected argument '{}'; {AUTH_STATUS_USAGE}", token);
+                        }
+                        provider = Some(parse_auth_provider(token)?);
+                        index += 1;
+                    }
                 }
-                if provider.is_some() {
-                    bail!("unexpected argument '{}'; {AUTH_STATUS_USAGE}", token);
-                }
-                provider = Some(parse_auth_provider(token)?);
             }
             Ok(AuthCommand::Status {
                 provider,
+                availability,
+                state,
                 json_output,
             })
         }
@@ -873,15 +911,17 @@ pub(crate) fn auth_status_row_for_provider(
 pub(crate) fn execute_auth_status_command(
     config: &AuthCommandConfig,
     provider: Option<Provider>,
+    availability: AuthMatrixAvailabilityFilter,
+    state: Option<String>,
     json_output: bool,
 ) -> String {
-    let providers = if let Some(provider) = provider {
+    let selected_providers = if let Some(provider) = provider {
         vec![provider]
     } else {
         vec![Provider::OpenAi, Provider::Anthropic, Provider::Google]
     };
 
-    let requires_store = providers.iter().any(|provider| {
+    let requires_store = selected_providers.iter().any(|provider| {
         configured_provider_auth_method_from_config(config, *provider) != ProviderAuthMethod::ApiKey
     });
     let (store, store_error) = if requires_store {
@@ -897,19 +937,40 @@ pub(crate) fn execute_auth_status_command(
         (None, None)
     };
 
-    let rows = providers
+    let mut rows = selected_providers
         .iter()
         .map(|provider| {
             auth_status_row_for_provider(config, *provider, store.as_ref(), store_error.as_deref())
         })
         .collect::<Vec<_>>();
+    let total_rows = rows.len();
+    rows = match availability {
+        AuthMatrixAvailabilityFilter::All => rows,
+        AuthMatrixAvailabilityFilter::Available => {
+            rows.into_iter().filter(|row| row.available).collect()
+        }
+        AuthMatrixAvailabilityFilter::Unavailable => {
+            rows.into_iter().filter(|row| !row.available).collect()
+        }
+    };
+    let state_filter = state
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    if let Some(state_filter) = state_filter.as_deref() {
+        rows.retain(|row| row.state == state_filter);
+    }
+
     let available = rows.iter().filter(|row| row.available).count();
     let unavailable = rows.len().saturating_sub(available);
 
     if json_output {
         return serde_json::json!({
             "command": "auth.status",
-            "providers": rows.len(),
+            "availability_filter": availability.as_str(),
+            "state_filter": state_filter.as_deref().unwrap_or("all"),
+            "providers": selected_providers.len(),
+            "rows_total": total_rows,
+            "rows": rows.len(),
             "available": available,
             "unavailable": unavailable,
             "entries": rows,
@@ -918,10 +979,14 @@ pub(crate) fn execute_auth_status_command(
     }
 
     let mut lines = vec![format!(
-        "auth status: providers={} available={} unavailable={}",
+        "auth status: providers={} rows={} available={} unavailable={} availability_filter={} state_filter={} rows_total={}",
+        selected_providers.len(),
         rows.len(),
         available,
-        unavailable
+        unavailable,
+        availability.as_str(),
+        state_filter.as_deref().unwrap_or("all"),
+        total_rows
     )];
     for row in rows {
         lines.push(format!(
@@ -1164,8 +1229,10 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
         } => execute_auth_login_command(config, provider, mode, json_output),
         AuthCommand::Status {
             provider,
+            availability,
+            state,
             json_output,
-        } => execute_auth_status_command(config, provider, json_output),
+        } => execute_auth_status_command(config, provider, availability, state, json_output),
         AuthCommand::Logout {
             provider,
             json_output,
