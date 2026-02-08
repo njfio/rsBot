@@ -6,7 +6,9 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signature, VerifyingKey};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{Cli, TrustedKey};
 
@@ -149,6 +151,10 @@ struct PackageManifest {
 struct PackageComponent {
     id: String,
     path: String,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 pub(crate) fn execute_package_validate_command(cli: &Cli) -> Result<()> {
@@ -514,10 +520,15 @@ fn install_component_set(
         let id = component.id.trim();
         let relative_path = PathBuf::from_str(component.path.trim())
             .map_err(|_| anyhow!("failed to parse {} path '{}'", kind, component.path.trim()))?;
-        let source_path =
-            resolve_component_source_path(kind, id, &relative_path, canonical_manifest_dir)?;
+        let source_content = resolve_component_source_bytes(
+            kind,
+            id,
+            component,
+            &relative_path,
+            canonical_manifest_dir,
+        )?;
         let destination = package_dir.join(&relative_path);
-        match upsert_file_from_source(&source_path, &destination)? {
+        match upsert_file_from_bytes(&source_content, &destination)? {
             FileUpsertOutcome::Installed => report.installed = report.installed.saturating_add(1),
             FileUpsertOutcome::Updated => report.updated = report.updated.saturating_add(1),
             FileUpsertOutcome::Skipped => report.skipped = report.skipped.saturating_add(1),
@@ -568,9 +579,168 @@ fn resolve_component_source_path(
     Ok(canonical_source)
 }
 
+fn resolve_component_source_bytes(
+    kind: &str,
+    id: &str,
+    component: &PackageComponent,
+    relative_path: &Path,
+    canonical_manifest_dir: &Path,
+) -> Result<Vec<u8>> {
+    let bytes = if let Some(raw_url) = component.url.as_deref() {
+        fetch_remote_component_source(kind, id, raw_url)?
+    } else {
+        load_local_component_source(kind, id, relative_path, canonical_manifest_dir)?
+    };
+    if let Some(raw_checksum) = component.sha256.as_deref() {
+        verify_component_checksum(kind, id, raw_checksum, &bytes)?;
+    }
+    Ok(bytes)
+}
+
+fn load_local_component_source(
+    kind: &str,
+    id: &str,
+    relative_path: &Path,
+    canonical_manifest_dir: &Path,
+) -> Result<Vec<u8>> {
+    let source_path =
+        resolve_component_source_path(kind, id, relative_path, canonical_manifest_dir)?;
+    std::fs::read(&source_path).with_context(|| {
+        format!(
+            "failed to read source file {} for package manifest {} entry '{}'",
+            source_path.display(),
+            kind,
+            id
+        )
+    })
+}
+
+fn fetch_remote_component_source(kind: &str, id: &str, raw_url: &str) -> Result<Vec<u8>> {
+    let source_url = parse_component_source_url(kind, id, raw_url)?;
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| {
+            handle.block_on(fetch_remote_component_source_async(kind, id, &source_url))
+        })
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("failed to create runtime for package remote source download")?;
+        runtime.block_on(fetch_remote_component_source_async(kind, id, &source_url))
+    }
+}
+
+async fn fetch_remote_component_source_async(
+    kind: &str,
+    id: &str,
+    source_url: &Url,
+) -> Result<Vec<u8>> {
+    let response = reqwest::Client::new()
+        .get(source_url.clone())
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "failed to fetch package manifest {} entry '{}' url '{}'",
+                kind, id, source_url
+            )
+        })?;
+    if !response.status().is_success() {
+        bail!(
+            "failed to fetch package manifest {} entry '{}' url '{}' with status {}",
+            kind,
+            id,
+            source_url,
+            response.status()
+        );
+    }
+    response
+        .bytes()
+        .await
+        .with_context(|| {
+            format!(
+                "failed to read response body for package manifest {} entry '{}' url '{}'",
+                kind, id, source_url
+            )
+        })
+        .map(|bytes| bytes.to_vec())
+}
+
+fn parse_component_source_url(kind: &str, id: &str, raw_url: &str) -> Result<Url> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        bail!(
+            "package manifest {} entry '{}' url must be non-empty",
+            kind,
+            id
+        );
+    }
+    let source_url = Url::parse(trimmed).with_context(|| {
+        format!(
+            "package manifest {} entry '{}' url '{}' is invalid",
+            kind, id, trimmed
+        )
+    })?;
+    if !matches!(source_url.scheme(), "http" | "https") {
+        bail!(
+            "package manifest {} entry '{}' url '{}' must use http or https",
+            kind,
+            id,
+            trimmed
+        );
+    }
+    Ok(source_url)
+}
+
+fn verify_component_checksum(kind: &str, id: &str, raw_checksum: &str, bytes: &[u8]) -> Result<()> {
+    let expected_sha256 = parse_sha256_checksum(raw_checksum).with_context(|| {
+        format!(
+            "package manifest {} entry '{}' has invalid checksum '{}'",
+            kind,
+            id,
+            raw_checksum.trim()
+        )
+    })?;
+    let actual_sha256 = sha256_hex(bytes);
+    if expected_sha256 != actual_sha256 {
+        bail!(
+            "package manifest {} entry '{}' checksum mismatch: expected {}, got {}",
+            kind,
+            id,
+            expected_sha256,
+            actual_sha256
+        );
+    }
+    Ok(())
+}
+
+fn parse_sha256_checksum(raw_checksum: &str) -> Result<String> {
+    let trimmed = raw_checksum.trim();
+    if trimmed.is_empty() {
+        bail!("sha256 checksum must be non-empty");
+    }
+    let hex = trimmed.strip_prefix("sha256:").unwrap_or(trimmed);
+    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("sha256 checksum must use format sha256:<64 hex characters>");
+    }
+    Ok(hex.to_ascii_lowercase())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 fn upsert_file_from_source(source: &Path, destination: &Path) -> Result<FileUpsertOutcome> {
     let source_content = std::fs::read(source)
         .with_context(|| format!("failed to read source file {}", source.display()))?;
+    upsert_file_contents(destination, &source_content)
+}
+
+fn upsert_file_from_bytes(source_content: &[u8], destination: &Path) -> Result<FileUpsertOutcome> {
+    upsert_file_contents(destination, source_content)
+}
+
+fn upsert_file_contents(destination: &Path, source_content: &[u8]) -> Result<FileUpsertOutcome> {
     let destination_exists = destination.exists();
     if destination_exists {
         if destination.is_dir() {
@@ -928,6 +1098,19 @@ fn validate_component_set(kind: &str, components: &[PackageComponent]) -> Result
             bail!("duplicate {} id '{}'", kind, id);
         }
         validate_relative_component_path(kind, id, component.path.trim())?;
+        if let Some(raw_url) = component.url.as_deref() {
+            parse_component_source_url(kind, id, raw_url)?;
+        }
+        if let Some(raw_checksum) = component.sha256.as_deref() {
+            parse_sha256_checksum(raw_checksum).with_context(|| {
+                format!(
+                    "package manifest {} entry '{}' has invalid checksum '{}'",
+                    kind,
+                    id,
+                    raw_checksum.trim()
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -986,6 +1169,8 @@ mod tests {
 
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use ed25519_dalek::{Signer, SigningKey};
+    use httpmock::prelude::*;
+    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
     use crate::TrustedKey;
@@ -1063,6 +1248,34 @@ mod tests {
     }
 
     #[test]
+    fn unit_validate_package_manifest_accepts_remote_url_components_with_checksum() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("manifest.json");
+        let checksum = format!("{:x}", Sha256::digest(b"remote template"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "name": "bundle",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"https://example.com/templates/review.txt",
+    "sha256":"sha256:{checksum}"
+  }}]
+}}"#
+            ),
+        )
+        .expect("write manifest");
+
+        let summary = validate_package_manifest(&path).expect("validate manifest");
+        assert_eq!(summary.total_components, 1);
+        assert_eq!(summary.template_count, 1);
+    }
+
+    #[test]
     fn regression_validate_package_manifest_rejects_duplicate_ids_and_unsafe_paths() {
         let temp = tempdir().expect("tempdir");
         let duplicate_path = temp.path().join("duplicate.json");
@@ -1101,6 +1314,45 @@ mod tests {
         assert!(traversal_error
             .to_string()
             .contains("must not contain parent traversals"));
+    }
+
+    #[test]
+    fn regression_validate_package_manifest_rejects_invalid_remote_url_or_checksum() {
+        let temp = tempdir().expect("tempdir");
+        let invalid_url_path = temp.path().join("invalid-url.json");
+        std::fs::write(
+            &invalid_url_path,
+            r#"{
+  "schema_version": 1,
+  "name": "bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt","url":"ftp://example.com/review.txt"}]
+}"#,
+        )
+        .expect("write manifest");
+        let url_error = validate_package_manifest(&invalid_url_path)
+            .expect_err("unsupported URL scheme should fail");
+        assert!(url_error.to_string().contains("must use http or https"));
+
+        let invalid_checksum_path = temp.path().join("invalid-checksum.json");
+        std::fs::write(
+            &invalid_checksum_path,
+            r#"{
+  "schema_version": 1,
+  "name": "bundle",
+  "version": "1.0.0",
+  "templates": [{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"https://example.com/review.txt",
+    "sha256":"sha512:abcd"
+  }]
+}"#,
+        )
+        .expect("write manifest");
+        let checksum_error = validate_package_manifest(&invalid_checksum_path)
+            .expect_err("invalid checksum should fail");
+        assert!(checksum_error.to_string().contains("has invalid checksum"));
     }
 
     #[test]
@@ -1238,6 +1490,53 @@ mod tests {
     }
 
     #[test]
+    fn functional_install_package_manifest_downloads_remote_component_with_checksum() {
+        let server = MockServer::start();
+        let remote_body = "remote template body";
+        let remote_mock = server.mock(|when, then| {
+            when.method(GET).path("/templates/review.txt");
+            then.status(200).body(remote_body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(&package_root).expect("create bundle dir");
+        let checksum = format!("{:x}", Sha256::digest(remote_body.as_bytes()));
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{checksum}"
+  }}]
+}}"#,
+                server.base_url()
+            ),
+        )
+        .expect("write manifest");
+
+        let install_root = temp.path().join("installed");
+        let report =
+            install_package_manifest(&manifest_path, &install_root).expect("install package");
+        assert_eq!(report.installed, 1);
+        assert_eq!(report.updated, 0);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            std::fs::read_to_string(install_root.join("starter/1.0.0/templates/review.txt"))
+                .expect("read installed file"),
+            remote_body
+        );
+        remote_mock.assert();
+    }
+
+    #[test]
     fn functional_install_package_manifest_with_policy_verifies_signature() {
         let temp = tempdir().expect("tempdir");
         let package_root = temp.path().join("bundle");
@@ -1349,6 +1648,70 @@ mod tests {
     }
 
     #[test]
+    fn integration_install_package_manifest_with_policy_verifies_signed_remote_components() {
+        let server = MockServer::start();
+        let remote_body = "remote signed template";
+        let remote_mock = server.mock(|when, then| {
+            when.method(GET).path("/templates/review.txt");
+            then.status(200).body(remote_body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(&package_root).expect("create bundle dir");
+        let checksum = format!("{:x}", Sha256::digest(remote_body.as_bytes()));
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "signing_key": "publisher",
+  "signature_file": "package.sig",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{checksum}"
+  }}]
+}}"#,
+                server.base_url()
+            ),
+        )
+        .expect("write manifest");
+
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let signature = signing_key.sign(&std::fs::read(&manifest_path).expect("read manifest"));
+        std::fs::write(
+            package_root.join("package.sig"),
+            BASE64.encode(signature.to_bytes()),
+        )
+        .expect("write signature");
+        let trusted_roots = vec![TrustedKey {
+            id: "publisher".to_string(),
+            public_key: BASE64.encode(signing_key.verifying_key().as_bytes()),
+        }];
+
+        let install_root = temp.path().join("installed");
+        let report = install_package_manifest_with_policy(
+            &manifest_path,
+            &install_root,
+            true,
+            &trusted_roots,
+        )
+        .expect("signed remote install should succeed");
+        assert_eq!(report.installed, 1);
+        assert_eq!(
+            std::fs::read_to_string(install_root.join("starter/1.0.0/templates/review.txt"))
+                .expect("read installed template"),
+            remote_body
+        );
+        remote_mock.assert();
+    }
+
+    #[test]
     fn regression_install_package_manifest_with_policy_rejects_untrusted_signing_key() {
         let temp = tempdir().expect("tempdir");
         let package_root = temp.path().join("bundle");
@@ -1392,6 +1755,49 @@ mod tests {
     }
 
     #[test]
+    fn regression_install_package_manifest_with_policy_rejects_unsigned_remote_manifest_when_required(
+    ) {
+        let server = MockServer::start();
+        let remote_body = "unsigned remote template";
+        let remote_mock = server.mock(|when, then| {
+            when.method(GET).path("/templates/review.txt");
+            then.status(200).body(remote_body);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(&package_root).expect("create bundle dir");
+        let checksum = format!("{:x}", Sha256::digest(remote_body.as_bytes()));
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{checksum}"
+  }}]
+}}"#,
+                server.base_url()
+            ),
+        )
+        .expect("write manifest");
+
+        let install_root = temp.path().join("installed");
+        let error = install_package_manifest_with_policy(&manifest_path, &install_root, true, &[])
+            .expect_err("unsigned remote package should fail when signatures are required");
+        assert!(error
+            .to_string()
+            .contains("must include signing_key and signature_file"));
+        remote_mock.assert_calls(0);
+    }
+
+    #[test]
     fn regression_install_package_manifest_rejects_missing_component_source() {
         let temp = tempdir().expect("tempdir");
         let package_root = temp.path().join("bundle");
@@ -1412,6 +1818,45 @@ mod tests {
         let error = install_package_manifest(&manifest_path, &install_root)
             .expect_err("missing source should fail");
         assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn regression_install_package_manifest_rejects_remote_checksum_mismatch() {
+        let server = MockServer::start();
+        let remote_mock = server.mock(|when, then| {
+            when.method(GET).path("/templates/review.txt");
+            then.status(200).body("remote template");
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(&package_root).expect("create bundle dir");
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "templates": [{{
+    "id":"review",
+    "path":"templates/review.txt",
+    "url":"{}/templates/review.txt",
+    "sha256":"sha256:{}"
+  }}]
+}}"#,
+                server.base_url(),
+                "0".repeat(64)
+            ),
+        )
+        .expect("write manifest");
+
+        let install_root = temp.path().join("installed");
+        let error = install_package_manifest(&manifest_path, &install_root)
+            .expect_err("checksum mismatch should fail");
+        assert!(error.to_string().contains("checksum mismatch"));
+        remote_mock.assert();
     }
 
     #[test]

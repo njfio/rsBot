@@ -318,6 +318,24 @@ cargo run -p pi-coding-agent -- \
   --package-install-root .pi/packages
 ```
 
+Package components can also source content from remote HTTP(S) URLs with optional checksum pinning:
+
+```json
+{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [
+    {
+      "id": "review",
+      "path": "templates/review.txt",
+      "url": "https://example.com/templates/review.txt",
+      "sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
 Require package signatures during install (trusted keys come from skill trust roots):
 
 ```bash
