@@ -540,7 +540,7 @@ enum PiIssueCommand {
     Stop,
     Status,
     Compact,
-    Artifacts { purge: bool },
+    Artifacts { purge: bool, run_id: Option<String> },
     Summarize { focus: Option<String> },
     Invalid { message: String },
 }
@@ -1053,23 +1053,31 @@ impl GithubIssuesBridgeRuntime {
                     "posted_comment_url": posted.html_url,
                 }))?;
             }
-            PiIssueCommand::Artifacts { purge } => {
+            PiIssueCommand::Artifacts { purge, run_id } => {
                 let artifact_report = if purge {
                     self.render_issue_artifact_purge(event.issue_number)?
                 } else {
-                    self.render_issue_artifacts(event.issue_number)?
+                    self.render_issue_artifacts(event.issue_number, run_id.as_deref())?
                 };
                 let posted = self
                     .github_client
                     .create_issue_comment(event.issue_number, &artifact_report)
                     .await?;
+                let command_name = if purge {
+                    "artifacts-purge"
+                } else if run_id.is_some() {
+                    "artifacts-run"
+                } else {
+                    "artifacts"
+                };
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
                     "repo": self.repo.as_slug(),
                     "event_key": event.key,
                     "issue_number": event.issue_number,
-                    "command": if purge { "artifacts-purge" } else { "artifacts" },
+                    "command": command_name,
                     "status": "reported",
+                    "artifact_run_id": run_id,
                     "posted_comment_id": posted.id,
                     "posted_comment_url": posted.html_url,
                 }))?;
@@ -1186,7 +1194,11 @@ impl GithubIssuesBridgeRuntime {
         lines.join("\n")
     }
 
-    fn render_issue_artifacts(&self, issue_number: u64) -> Result<String> {
+    fn render_issue_artifacts(
+        &self,
+        issue_number: u64,
+        run_id_filter: Option<&str>,
+    ) -> Result<String> {
         let store = ChannelStore::open(
             &self.repository_state_dir.join("channel-store"),
             "github",
@@ -1194,6 +1206,9 @@ impl GithubIssuesBridgeRuntime {
         )?;
         let loaded = store.load_artifact_records_tolerant()?;
         let mut active = store.list_active_artifacts(current_unix_timestamp_ms())?;
+        if let Some(run_id_filter) = run_id_filter {
+            active.retain(|artifact| artifact.run_id == run_id_filter);
+        }
         active.sort_by(|left, right| {
             right
                 .created_unix_ms
@@ -1201,13 +1216,26 @@ impl GithubIssuesBridgeRuntime {
                 .then_with(|| left.id.cmp(&right.id))
         });
 
-        let mut lines = vec![format!(
-            "rsBot artifacts for issue #{}: active={}",
-            issue_number,
-            active.len()
-        )];
+        let mut lines = vec![if let Some(run_id_filter) = run_id_filter {
+            format!(
+                "rsBot artifacts for issue #{} run_id `{}`: active={}",
+                issue_number,
+                run_id_filter,
+                active.len()
+            )
+        } else {
+            format!(
+                "rsBot artifacts for issue #{}: active={}",
+                issue_number,
+                active.len()
+            )
+        }];
         if active.is_empty() {
-            lines.push("none".to_string());
+            if let Some(run_id_filter) = run_id_filter {
+                lines.push(format!("none for run_id `{}`", run_id_filter));
+            } else {
+                lines.push("none".to_string());
+            }
         } else {
             let max_rows = 10_usize;
             for artifact in active.iter().take(max_rows) {
@@ -1675,12 +1703,29 @@ fn parse_pi_issue_command(body: &str) -> Option<PiIssueCommand> {
         }
         "artifacts" => {
             if remainder.is_empty() {
-                PiIssueCommand::Artifacts { purge: false }
+                PiIssueCommand::Artifacts {
+                    purge: false,
+                    run_id: None,
+                }
             } else if remainder == "purge" {
-                PiIssueCommand::Artifacts { purge: true }
+                PiIssueCommand::Artifacts {
+                    purge: true,
+                    run_id: None,
+                }
             } else {
-                PiIssueCommand::Invalid {
-                    message: "Usage: /pi artifacts [purge]".to_string(),
+                let mut artifact_args = remainder.split_whitespace();
+                match (
+                    artifact_args.next(),
+                    artifact_args.next(),
+                    artifact_args.next(),
+                ) {
+                    (Some("run"), Some(run_id), None) => PiIssueCommand::Artifacts {
+                        purge: false,
+                        run_id: Some(run_id.to_string()),
+                    },
+                    _ => PiIssueCommand::Invalid {
+                        message: "Usage: /pi artifacts [purge|run <run_id>]".to_string(),
+                    },
                 }
             }
         }
@@ -1702,7 +1747,7 @@ fn pi_command_usage() -> String {
         "- `/pi stop`",
         "- `/pi status`",
         "- `/pi compact`",
-        "- `/pi artifacts [purge]`",
+        "- `/pi artifacts [purge|run <run_id>]`",
         "- `/pi summarize [focus]`",
     ]
     .join("\n")
@@ -2104,11 +2149,24 @@ mod tests {
         );
         assert_eq!(
             parse_pi_issue_command("/pi artifacts"),
-            Some(PiIssueCommand::Artifacts { purge: false })
+            Some(PiIssueCommand::Artifacts {
+                purge: false,
+                run_id: None
+            })
         );
         assert_eq!(
             parse_pi_issue_command("/pi artifacts purge"),
-            Some(PiIssueCommand::Artifacts { purge: true })
+            Some(PiIssueCommand::Artifacts {
+                purge: true,
+                run_id: None
+            })
+        );
+        assert_eq!(
+            parse_pi_issue_command("/pi artifacts run run-seeded"),
+            Some(PiIssueCommand::Artifacts {
+                purge: false,
+                run_id: Some("run-seeded".to_string())
+            })
         );
         assert_eq!(parse_pi_issue_command("plain message"), None);
     }
@@ -2119,6 +2177,11 @@ mod tests {
         let parsed = parse_pi_issue_command("/pi run").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi artifacts extra").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi artifacts run").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed =
+            parse_pi_issue_command("/pi artifacts run run-a run-b").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let action = event_action_from_body("/pi unknown");
         assert!(matches!(
@@ -2388,6 +2451,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn functional_render_issue_artifacts_filters_by_run_id() {
+        let server = MockServer::start();
+        let temp = tempdir().expect("tempdir");
+        let seeded_store = ChannelStore::open(
+            &temp.path().join("owner__repo").join("channel-store"),
+            "github",
+            "issue-15",
+        )
+        .expect("seeded store");
+        seeded_store
+            .write_text_artifact(
+                "run-target",
+                "github-issue-reply",
+                "private",
+                Some(30),
+                "md",
+                "target artifact",
+            )
+            .expect("write target artifact");
+        seeded_store
+            .write_text_artifact(
+                "run-other",
+                "github-issue-reply",
+                "private",
+                Some(30),
+                "md",
+                "other artifact",
+            )
+            .expect("write other artifact");
+
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime
+            .render_issue_artifacts(15, Some("run-target"))
+            .expect("render artifacts");
+        assert!(report.contains("rsBot artifacts for issue #15 run_id `run-target`: active=1"));
+        assert!(report.contains("artifacts/run-target/"));
+        assert!(!report.contains("artifacts/run-other/"));
+    }
+
+    #[tokio::test]
     async fn integration_bridge_artifacts_command_reports_recent_artifacts() {
         let server = MockServer::start();
         let _issues = server.mock(|when, then| {
@@ -2444,6 +2550,83 @@ mod tests {
                 "seeded artifact",
             )
             .expect("write seeded artifact");
+
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        artifacts_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_artifacts_run_filter_command_reports_matching_entries() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 18,
+                "number": 15,
+                "title": "Artifacts run filter",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/15/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 851,
+                    "body": "/pi artifacts run run-target",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let artifacts_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/15/comments")
+                .body_includes("rsBot artifacts for issue #15 run_id `run-target`: active=1")
+                .body_includes("artifacts/run-target/");
+            then.status(201).json_body(json!({
+                "id": 955,
+                "html_url": "https://example.test/comment/955"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let seeded_store = ChannelStore::open(
+            &temp.path().join("owner__repo").join("channel-store"),
+            "github",
+            "issue-15",
+        )
+        .expect("seeded store");
+        seeded_store
+            .write_text_artifact(
+                "run-target",
+                "github-issue-reply",
+                "private",
+                Some(30),
+                "md",
+                "target artifact",
+            )
+            .expect("write target artifact");
+        seeded_store
+            .write_text_artifact(
+                "run-other",
+                "github-issue-reply",
+                "private",
+                Some(30),
+                "md",
+                "other artifact",
+            )
+            .expect("write other artifact");
 
         let config = test_bridge_config(&server.base_url(), temp.path());
         let mut runtime = GithubIssuesBridgeRuntime::new(config)
@@ -2636,6 +2819,73 @@ mod tests {
         )
         .expect("seeded store");
         std::fs::write(seeded_store.artifact_index_path(), "not-json\n").expect("seed invalid");
+
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        artifacts_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn regression_bridge_artifacts_run_filter_reports_none_for_unknown_run() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 19,
+                "number": 16,
+                "title": "Artifact run regression",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/16/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 861,
+                    "body": "/pi artifacts run run-missing",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let artifacts_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/16/comments")
+                .body_includes("rsBot artifacts for issue #16 run_id `run-missing`: active=0")
+                .body_includes("none for run_id `run-missing`");
+            then.status(201).json_body(json!({
+                "id": 956,
+                "html_url": "https://example.test/comment/956"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let seeded_store = ChannelStore::open(
+            &temp.path().join("owner__repo").join("channel-store"),
+            "github",
+            "issue-16",
+        )
+        .expect("seeded store");
+        seeded_store
+            .write_text_artifact(
+                "run-other",
+                "github-issue-reply",
+                "private",
+                Some(30),
+                "md",
+                "other artifact",
+            )
+            .expect("write other artifact");
 
         let config = test_bridge_config(&server.base_url(), temp.path());
         let mut runtime = GithubIssuesBridgeRuntime::new(config)
