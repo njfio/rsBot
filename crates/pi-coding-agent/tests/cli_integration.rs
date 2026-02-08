@@ -3202,8 +3202,14 @@ fn extension_runtime_hooks_wrap_prompt_with_run_start_and_run_end() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["hook"], "run-start");
     assert_eq!(rows[1]["hook"], "run-end");
-    assert_eq!(rows[0]["payload"]["prompt"], "hello runtime hooks");
-    assert_eq!(rows[1]["payload"]["status"], "completed");
+    assert_eq!(rows[0]["payload"]["schema_version"], 1);
+    assert_eq!(rows[1]["payload"]["schema_version"], 1);
+    assert_eq!(rows[0]["payload"]["hook"], "run-start");
+    assert_eq!(rows[1]["payload"]["hook"], "run-end");
+    assert!(rows[0]["payload"]["emitted_at_ms"].as_u64().is_some());
+    assert!(rows[1]["payload"]["emitted_at_ms"].as_u64().is_some());
+    assert_eq!(rows[0]["payload"]["data"]["prompt"], "hello runtime hooks");
+    assert_eq!(rows[1]["payload"]["data"]["status"], "completed");
 
     openai.assert_calls(1);
 }

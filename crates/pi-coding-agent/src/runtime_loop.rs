@@ -16,11 +16,13 @@ use pi_ai::StreamDeltaHandler;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
-    apply_extension_message_transforms, dispatch_extension_runtime_hook, ensure_non_empty_text,
-    handle_command_with_session_import_mode, persist_messages, print_assistant_messages,
-    run_plan_first_prompt, Cli, CliOrchestratorMode, CommandAction, CommandExecutionContext,
-    RenderOptions, SessionRuntime,
+    apply_extension_message_transforms, current_unix_timestamp_ms, dispatch_extension_runtime_hook,
+    ensure_non_empty_text, handle_command_with_session_import_mode, persist_messages,
+    print_assistant_messages, run_plan_first_prompt, Cli, CliOrchestratorMode, CommandAction,
+    CommandExecutionContext, RenderOptions, SessionRuntime,
 };
+
+const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptRunStatus {
@@ -174,7 +176,7 @@ where
     dispatch_runtime_hook(
         extension_runtime_hooks,
         "run-start",
-        build_runtime_hook_payload(&effective_prompt, turn_timeout_ms, None, None),
+        build_runtime_hook_payload("run-start", &effective_prompt, turn_timeout_ms, None, None),
     );
 
     let result = run_prompt_with_cancellation(
@@ -198,6 +200,7 @@ where
                 extension_runtime_hooks,
                 "run-end",
                 build_runtime_hook_payload(
+                    "run-end",
                     &effective_prompt,
                     turn_timeout_ms,
                     Some(run_status),
@@ -211,6 +214,7 @@ where
                 extension_runtime_hooks,
                 "run-end",
                 build_runtime_hook_payload(
+                    "run-end",
                     &effective_prompt,
                     turn_timeout_ms,
                     Some(RuntimeHookRunStatus::Failed),
@@ -237,7 +241,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
     dispatch_runtime_hook(
         extension_runtime_hooks,
         "run-start",
-        build_runtime_hook_payload(&effective_prompt, turn_timeout_ms, None, None),
+        build_runtime_hook_payload("run-start", &effective_prompt, turn_timeout_ms, None, None),
     );
 
     let result = run_plan_first_prompt(
@@ -257,6 +261,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
                 extension_runtime_hooks,
                 "run-end",
                 build_runtime_hook_payload(
+                    "run-end",
                     &effective_prompt,
                     turn_timeout_ms,
                     Some(RuntimeHookRunStatus::Completed),
@@ -270,6 +275,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
                 extension_runtime_hooks,
                 "run-end",
                 build_runtime_hook_payload(
+                    "run-end",
                     &effective_prompt,
                     turn_timeout_ms,
                     Some(RuntimeHookRunStatus::Failed),
@@ -307,28 +313,47 @@ fn dispatch_runtime_hook(
 }
 
 fn build_runtime_hook_payload(
+    hook: &str,
     prompt: &str,
     turn_timeout_ms: u64,
     status: Option<RuntimeHookRunStatus>,
     error: Option<String>,
 ) -> serde_json::Value {
-    let mut payload = serde_json::Map::new();
-    payload.insert(
+    let mut data = serde_json::Map::new();
+    data.insert(
         "prompt".to_string(),
         serde_json::Value::String(prompt.to_string()),
     );
-    payload.insert(
+    data.insert(
         "turn_timeout_ms".to_string(),
         serde_json::Value::Number(turn_timeout_ms.into()),
     );
     if let Some(status) = status {
-        payload.insert(
+        data.insert(
             "status".to_string(),
             serde_json::Value::String(status.as_str().to_string()),
         );
     }
     if let Some(error) = error {
-        payload.insert("error".to_string(), serde_json::Value::String(error));
+        data.insert("error".to_string(), serde_json::Value::String(error));
+    }
+
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "schema_version".to_string(),
+        serde_json::Value::Number(EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION.into()),
+    );
+    payload.insert(
+        "hook".to_string(),
+        serde_json::Value::String(hook.to_string()),
+    );
+    payload.insert(
+        "emitted_at_ms".to_string(),
+        serde_json::Value::Number(current_unix_timestamp_ms().into()),
+    );
+    payload.insert("data".to_string(), serde_json::Value::Object(data.clone()));
+    for (key, value) in data {
+        payload.insert(key, value);
     }
     serde_json::Value::Object(payload)
 }
@@ -535,24 +560,30 @@ mod tests {
     #[test]
     fn unit_build_runtime_hook_payload_includes_status_and_error() {
         let payload = build_runtime_hook_payload(
+            "run-end",
             "hello",
             5000,
             Some(RuntimeHookRunStatus::Failed),
             Some("network timeout".to_string()),
         );
-        assert_eq!(payload["prompt"], "hello");
-        assert_eq!(payload["turn_timeout_ms"], 5000);
-        assert_eq!(payload["status"], "failed");
-        assert_eq!(payload["error"], "network timeout");
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["hook"], "run-end");
+        assert!(payload["emitted_at_ms"].as_u64().is_some());
+        assert_eq!(payload["data"]["prompt"], "hello");
+        assert_eq!(payload["data"]["turn_timeout_ms"], 5000);
+        assert_eq!(payload["data"]["status"], "failed");
+        assert_eq!(payload["data"]["error"], "network timeout");
     }
 
     #[test]
     fn regression_build_runtime_hook_payload_omits_optional_fields_when_unset() {
-        let payload = build_runtime_hook_payload("hello", 0, None, None);
-        assert_eq!(payload["prompt"], "hello");
-        assert_eq!(payload["turn_timeout_ms"], 0);
-        assert!(payload.get("status").is_none());
-        assert!(payload.get("error").is_none());
+        let payload = build_runtime_hook_payload("run-start", "hello", 0, None, None);
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["hook"], "run-start");
+        assert_eq!(payload["data"]["prompt"], "hello");
+        assert_eq!(payload["data"]["turn_timeout_ms"], 0);
+        assert!(payload["data"].get("status").is_none());
+        assert!(payload["data"].get("error").is_none());
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::*;
 
+const EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+
 pub(crate) struct LocalRuntimeConfig<'a> {
     pub(crate) cli: &'a Cli,
     pub(crate) client: Arc<dyn LlmClient>,
@@ -175,11 +177,14 @@ fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str, Val
             arguments,
         } => Some((
             "pre-tool-call",
-            serde_json::json!({
+            extension_tool_hook_payload(
+                "pre-tool-call",
+                serde_json::json!({
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
                 "arguments": arguments,
-            }),
+                }),
+            ),
         )),
         AgentEvent::ToolExecutionEnd {
             tool_call_id,
@@ -187,17 +192,43 @@ fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str, Val
             result,
         } => Some((
             "post-tool-call",
-            serde_json::json!({
+            extension_tool_hook_payload(
+                "post-tool-call",
+                serde_json::json!({
                 "tool_call_id": tool_call_id,
                 "tool_name": tool_name,
                 "result": {
                     "is_error": result.is_error,
                     "content": result.content,
                 },
-            }),
+                }),
+            ),
         )),
         _ => None,
     }
+}
+
+fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "schema_version".to_string(),
+        serde_json::Value::Number(EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION.into()),
+    );
+    payload.insert(
+        "hook".to_string(),
+        serde_json::Value::String(hook.to_string()),
+    );
+    payload.insert(
+        "emitted_at_ms".to_string(),
+        serde_json::Value::Number(current_unix_timestamp_ms().into()),
+    );
+    payload.insert("data".to_string(), data.clone());
+    if let Some(object) = data.as_object() {
+        for (key, value) in object {
+            payload.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(payload)
 }
 
 #[cfg(test)]
@@ -214,9 +245,12 @@ mod tests {
         };
         let (hook, payload) = extension_tool_hook_dispatch(&event).expect("dispatch payload");
         assert_eq!(hook, "pre-tool-call");
-        assert_eq!(payload["tool_call_id"], "call-1");
-        assert_eq!(payload["tool_name"], "read");
-        assert_eq!(payload["arguments"]["path"], "README.md");
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["hook"], "pre-tool-call");
+        assert!(payload["emitted_at_ms"].as_u64().is_some());
+        assert_eq!(payload["data"]["tool_call_id"], "call-1");
+        assert_eq!(payload["data"]["tool_name"], "read");
+        assert_eq!(payload["data"]["arguments"]["path"], "README.md");
     }
 
     #[test]
@@ -228,9 +262,12 @@ mod tests {
         };
         let (hook, payload) = extension_tool_hook_dispatch(&event).expect("dispatch payload");
         assert_eq!(hook, "post-tool-call");
-        assert_eq!(payload["tool_call_id"], "call-1");
-        assert_eq!(payload["tool_name"], "read");
-        assert_eq!(payload["result"]["is_error"], false);
-        assert_eq!(payload["result"]["content"]["content"], "hello");
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["hook"], "post-tool-call");
+        assert!(payload["emitted_at_ms"].as_u64().is_some());
+        assert_eq!(payload["data"]["tool_call_id"], "call-1");
+        assert_eq!(payload["data"]["tool_name"], "read");
+        assert_eq!(payload["data"]["result"]["is_error"], false);
+        assert_eq!(payload["data"]["result"]["content"]["content"], "hello");
     }
 }
