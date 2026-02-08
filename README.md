@@ -116,6 +116,8 @@ cargo run -p pi-coding-agent -- \
   --orchestrator-max-plan-steps 8
 ```
 
+Plan-first mode emits deterministic orchestration traces for `planner`, `executor`, `review`, and `consolidation` phases.
+
 Use Anthropic:
 
 ```bash

@@ -67,6 +67,24 @@ pub(crate) async fn run_plan_first_prompt(
     )
     .await?;
     report_prompt_status_internal(execution_status);
+    if execution_status != PromptRunStatus::Completed {
+        return Ok(());
+    }
+
+    let execution_text = latest_assistant_text(agent).ok_or_else(|| {
+        anyhow!("plan-first orchestrator failed: executor produced no text output")
+    })?;
+    if execution_text.trim().is_empty() {
+        bail!("plan-first orchestrator failed: executor produced no text output");
+    }
+    let covered_steps = count_reviewed_plan_steps(&plan_steps, &execution_text);
+    println!(
+        "orchestrator trace: mode=plan-first phase=review covered_steps={} total_steps={} response_chars={}",
+        covered_steps,
+        plan_steps.len(),
+        execution_text.chars().count()
+    );
+    println!("orchestrator trace: mode=plan-first phase=consolidation decision=accept");
     Ok(())
 }
 
@@ -129,6 +147,29 @@ fn build_plan_first_execution_prompt(user_prompt: &str, plan_steps: &[String]) -
     )
 }
 
+fn count_reviewed_plan_steps(plan_steps: &[String], execution_text: &str) -> usize {
+    let normalized_execution = execution_text.to_ascii_lowercase();
+    plan_steps
+        .iter()
+        .filter(|step| {
+            let tokens = step_review_tokens(step);
+            if tokens.is_empty() {
+                return normalized_execution.contains(step.trim().to_ascii_lowercase().as_str());
+            }
+            tokens
+                .iter()
+                .any(|token| normalized_execution.contains(token.as_str()))
+        })
+        .count()
+}
+
+fn step_review_tokens(step: &str) -> Vec<String> {
+    step.split(|character: char| !character.is_ascii_alphanumeric())
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| token.len() >= 4)
+        .collect()
+}
+
 fn flatten_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -143,7 +184,7 @@ fn report_prompt_status_internal(status: PromptRunStatus) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_numbered_plan_steps;
+    use super::{count_reviewed_plan_steps, parse_numbered_plan_steps};
 
     #[test]
     fn unit_parse_numbered_plan_steps_extracts_dot_and_paren_prefixes() {
@@ -164,5 +205,21 @@ mod tests {
     fn regression_parse_numbered_plan_steps_ignores_unstructured_lines() {
         let steps = parse_numbered_plan_steps("- inspect\n* patch\nstep three");
         assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn unit_count_reviewed_plan_steps_matches_token_overlap_deterministically() {
+        let plan_steps = vec![
+            "Inspect constraints".to_string(),
+            "Apply change".to_string(),
+            "Run verification tests".to_string(),
+        ];
+        let execution_text =
+            "Applied change after inspecting constraints, then verification tests passed.";
+        assert_eq!(count_reviewed_plan_steps(&plan_steps, execution_text), 3);
+        assert_eq!(
+            count_reviewed_plan_steps(&plan_steps, "no related content"),
+            0
+        );
     }
 }

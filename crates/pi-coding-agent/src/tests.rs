@@ -8137,6 +8137,44 @@ async fn regression_run_plan_first_prompt_rejects_overlong_plans_before_executor
 }
 
 #[tokio::test]
+async fn regression_run_plan_first_prompt_fails_when_executor_output_is_empty() {
+    let planner_response = ChatResponse {
+        message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let executor_response = ChatResponse {
+        message: Message::assistant_text(""),
+        finish_reason: Some("stop".to_string()),
+        usage: ChatUsage::default(),
+    };
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(planner_response),
+                Ok(executor_response),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    let error = run_plan_first_prompt(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+    )
+    .await
+    .expect_err("empty executor output should fail");
+    assert!(error
+        .to_string()
+        .contains("executor produced no text output"));
+}
+
+#[tokio::test]
 async fn regression_run_prompt_with_cancellation_restores_agent_state() {
     let mut agent = Agent::new(Arc::new(SlowClient), AgentConfig::default());
     let initial_messages = agent.messages().to_vec();
