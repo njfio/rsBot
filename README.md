@@ -346,6 +346,14 @@ cargo run -p pi-coding-agent -- \
   --skill-trust-root publisher=BASE64_PUBLIC_KEY
 ```
 
+Update an already installed package bundle from a manifest (fails if target version is not installed):
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --package-update ./examples/starter/package.json \
+  --package-update-root .pi/packages
+```
+
 List installed package bundles from a package root:
 
 ```bash

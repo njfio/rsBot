@@ -3175,6 +3175,160 @@ fn regression_package_install_flag_rejects_unsigned_when_signatures_required() {
 }
 
 #[test]
+fn package_update_flag_updates_existing_bundle_and_exits() {
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+    let template_path = package_root.join("templates/review.txt");
+    fs::write(&template_path, "template body v1").expect("write template source");
+
+    let manifest_path = package_root.join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+    let install_root = temp.path().join("installed");
+
+    let mut install_cmd = binary_command();
+    install_cmd.args([
+        "--package-install",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-install-root",
+        install_root.to_str().expect("utf8 path"),
+    ]);
+    install_cmd.assert().success();
+
+    fs::write(&template_path, "template body v2").expect("update template source");
+    let mut update_cmd = binary_command();
+    update_cmd.args([
+        "--package-update",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-update-root",
+        install_root.to_str().expect("utf8 path"),
+    ]);
+
+    update_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("package update:"))
+        .stdout(predicate::str::contains("updated=1"))
+        .stdout(predicate::str::contains("name=starter-bundle"));
+    assert_eq!(
+        fs::read_to_string(install_root.join("starter-bundle/1.0.0/templates/review.txt"))
+            .expect("read updated template"),
+        "template body v2"
+    );
+}
+
+#[test]
+fn package_update_flag_accepts_signed_manifest_when_required() {
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+    let template_path = package_root.join("templates/review.txt");
+    fs::write(&template_path, "template body v1").expect("write template source");
+
+    let manifest_path = package_root.join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "signing_key": "publisher",
+  "signature_file": "package.sig",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+    let write_signature = || {
+        let signature = signing_key.sign(&fs::read(&manifest_path).expect("read manifest bytes"));
+        fs::write(
+            package_root.join("package.sig"),
+            BASE64.encode(signature.to_bytes()),
+        )
+        .expect("write signature");
+    };
+    write_signature();
+    let trust_root = format!(
+        "publisher={}",
+        BASE64.encode(signing_key.verifying_key().as_bytes())
+    );
+
+    let install_root = temp.path().join("installed");
+    let mut install_cmd = binary_command();
+    install_cmd.args([
+        "--package-install",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-install-root",
+        install_root.to_str().expect("utf8 path"),
+        "--require-signed-packages",
+        "--skill-trust-root",
+        trust_root.as_str(),
+    ]);
+    install_cmd.assert().success();
+
+    fs::write(&template_path, "template body v2").expect("update template source");
+    write_signature();
+    let mut update_cmd = binary_command();
+    update_cmd.args([
+        "--package-update",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-update-root",
+        install_root.to_str().expect("utf8 path"),
+        "--require-signed-packages",
+        "--skill-trust-root",
+        trust_root.as_str(),
+    ]);
+
+    update_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("package update:"))
+        .stdout(predicate::str::contains("name=starter-bundle"));
+}
+
+#[test]
+fn regression_package_update_flag_rejects_missing_target() {
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+    fs::write(package_root.join("templates/review.txt"), "template body")
+        .expect("write template source");
+    let manifest_path = package_root.join("package.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--package-update",
+        manifest_path.to_str().expect("utf8 path"),
+        "--package-update-root",
+        temp.path().join("installed").to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("is not installed"));
+}
+
+#[test]
 fn package_list_flag_reports_installed_packages_and_exits() {
     let temp = tempdir().expect("tempdir");
     let package_root = temp.path().join("bundle");

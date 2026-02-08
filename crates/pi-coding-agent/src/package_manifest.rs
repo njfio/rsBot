@@ -200,6 +200,21 @@ pub(crate) fn execute_package_install_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn execute_package_update_command(cli: &Cli) -> Result<()> {
+    let Some(path) = cli.package_update.as_ref() else {
+        return Ok(());
+    };
+    let trusted_roots = crate::resolve_skill_trust_roots(cli)?;
+    let report = update_package_manifest_with_policy(
+        path,
+        &cli.package_update_root,
+        cli.require_signed_packages,
+        &trusted_roots,
+    )?;
+    println!("{}", render_package_update_report(&report));
+    Ok(())
+}
+
 pub(crate) fn execute_package_list_command(cli: &Cli) -> Result<()> {
     if !cli.package_list {
         return Ok(());
@@ -384,6 +399,32 @@ fn install_package_manifest_with_policy(
     Ok(report)
 }
 
+fn update_package_manifest_with_policy(
+    manifest_path: &Path,
+    update_root: &Path,
+    require_signed_packages: bool,
+    trusted_roots: &[TrustedKey],
+) -> Result<PackageInstallReport> {
+    let (_, summary) = load_and_validate_manifest(manifest_path)?;
+    let package_dir = update_root
+        .join(summary.name.as_str())
+        .join(summary.version.as_str());
+    if !package_dir.is_dir() {
+        bail!(
+            "package update target '{}@{}' is not installed under {}",
+            summary.name,
+            summary.version,
+            update_root.display()
+        );
+    }
+    install_package_manifest_with_policy(
+        manifest_path,
+        update_root,
+        require_signed_packages,
+        trusted_roots,
+    )
+}
+
 fn verify_package_signature_policy(
     manifest_path: &Path,
     manifest: &PackageManifest,
@@ -494,8 +535,16 @@ fn decode_base64_fixed<const N: usize>(label: &str, raw: &str) -> Result<[u8; N]
 }
 
 fn render_package_install_report(report: &PackageInstallReport) -> String {
+    render_package_sync_report("package install", report)
+}
+
+fn render_package_update_report(report: &PackageInstallReport) -> String {
+    render_package_sync_report("package update", report)
+}
+
+fn render_package_sync_report(label: &str, report: &PackageInstallReport) -> String {
     format!(
-        "package install: manifest={} root={} package_dir={} name={} version={} manifest_status={} installed={} updated={} skipped={} total_components={}",
+        "{label}: manifest={} root={} package_dir={} name={} version={} manifest_status={} installed={} updated={} skipped={} total_components={}",
         report.manifest_path.display(),
         report.install_root.display(),
         report.package_dir.display(),
@@ -1179,9 +1228,9 @@ mod tests {
         install_package_manifest, install_package_manifest_with_policy, list_installed_packages,
         load_and_validate_manifest, parse_package_coordinate, remove_installed_package,
         render_package_install_report, render_package_list_report, render_package_manifest_report,
-        render_package_remove_report, render_package_rollback_report, rollback_installed_package,
-        validate_package_manifest, FileUpsertOutcome, PackageListReport, PackageRemoveStatus,
-        PackageRollbackStatus,
+        render_package_remove_report, render_package_rollback_report, render_package_update_report,
+        rollback_installed_package, update_package_manifest_with_policy, validate_package_manifest,
+        FileUpsertOutcome, PackageListReport, PackageRemoveStatus, PackageRollbackStatus,
     };
 
     #[cfg(unix)]
@@ -1537,6 +1586,41 @@ mod tests {
     }
 
     #[test]
+    fn functional_update_package_manifest_with_policy_updates_existing_bundle() {
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+        let template_path = package_root.join("templates/review.txt");
+        std::fs::write(&template_path, "v1 template").expect("write template source");
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+        )
+        .expect("write manifest");
+
+        let install_root = temp.path().join("installed");
+        install_package_manifest(&manifest_path, &install_root).expect("install package");
+        std::fs::write(&template_path, "v2 template").expect("update template source");
+
+        let report = update_package_manifest_with_policy(&manifest_path, &install_root, false, &[])
+            .expect("package update should succeed");
+        assert_eq!(report.installed, 0);
+        assert_eq!(report.updated, 1);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            std::fs::read_to_string(install_root.join("starter/1.0.0/templates/review.txt"))
+                .expect("read updated template"),
+            "v2 template"
+        );
+    }
+
+    #[test]
     fn functional_install_package_manifest_with_policy_verifies_signature() {
         let temp = tempdir().expect("tempdir");
         let package_root = temp.path().join("bundle");
@@ -1645,6 +1729,64 @@ mod tests {
         )
         .expect_err("invalid signature should fail");
         assert!(error.to_string().contains("signature verification failed"));
+    }
+
+    #[test]
+    fn integration_update_package_manifest_with_policy_verifies_signature() {
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+        let template_path = package_root.join("templates/review.txt");
+        std::fs::write(&template_path, "v1 template").expect("write template");
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "signing_key": "publisher",
+  "signature_file": "package.sig",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+        )
+        .expect("write manifest");
+
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let write_signature = || {
+            let signature =
+                signing_key.sign(&std::fs::read(&manifest_path).expect("read manifest bytes"));
+            std::fs::write(
+                package_root.join("package.sig"),
+                BASE64.encode(signature.to_bytes()),
+            )
+            .expect("write signature");
+        };
+        write_signature();
+        let trusted_roots = vec![TrustedKey {
+            id: "publisher".to_string(),
+            public_key: BASE64.encode(signing_key.verifying_key().as_bytes()),
+        }];
+
+        let install_root = temp.path().join("installed");
+        install_package_manifest_with_policy(&manifest_path, &install_root, true, &trusted_roots)
+            .expect("install signed package");
+
+        std::fs::write(&template_path, "v2 template").expect("update template source");
+        write_signature();
+        let report = update_package_manifest_with_policy(
+            &manifest_path,
+            &install_root,
+            true,
+            &trusted_roots,
+        )
+        .expect("signed update should succeed");
+        assert_eq!(report.updated, 1);
+        assert_eq!(
+            std::fs::read_to_string(install_root.join("starter/1.0.0/templates/review.txt"))
+                .expect("read updated template"),
+            "v2 template"
+        );
     }
 
     #[test]
@@ -1798,6 +1940,61 @@ mod tests {
     }
 
     #[test]
+    fn regression_update_package_manifest_with_policy_rejects_missing_target() {
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+        std::fs::write(package_root.join("templates/review.txt"), "template")
+            .expect("write template source");
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+        )
+        .expect("write manifest");
+
+        let install_root = temp.path().join("installed");
+        let error = update_package_manifest_with_policy(&manifest_path, &install_root, false, &[])
+            .expect_err("missing update target should fail");
+        assert!(error.to_string().contains("is not installed"));
+    }
+
+    #[test]
+    fn regression_update_package_manifest_with_policy_rejects_unsigned_when_required() {
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("bundle");
+        std::fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+        let template_path = package_root.join("templates/review.txt");
+        std::fs::write(&template_path, "template").expect("write template source");
+        let manifest_path = package_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+        )
+        .expect("write manifest");
+
+        let install_root = temp.path().join("installed");
+        install_package_manifest(&manifest_path, &install_root).expect("install package");
+        std::fs::write(&template_path, "template v2").expect("update template");
+
+        let error = update_package_manifest_with_policy(&manifest_path, &install_root, true, &[])
+            .expect_err("unsigned update should fail policy");
+        assert!(error
+            .to_string()
+            .contains("must include signing_key and signature_file"));
+    }
+
+    #[test]
     fn regression_install_package_manifest_rejects_missing_component_source() {
         let temp = tempdir().expect("tempdir");
         let package_root = temp.path().join("bundle");
@@ -1913,6 +2110,27 @@ mod tests {
         assert!(rendered.contains("updated=2"));
         assert!(rendered.contains("skipped=3"));
         assert!(rendered.contains("total_components=6"));
+    }
+
+    #[test]
+    fn unit_render_package_update_report_includes_status_and_counts() {
+        let report = super::PackageInstallReport {
+            manifest_path: Path::new("/tmp/source/package.json").to_path_buf(),
+            install_root: Path::new("/tmp/install").to_path_buf(),
+            package_dir: Path::new("/tmp/install/starter/1.0.0").to_path_buf(),
+            name: "starter".to_string(),
+            version: "1.0.0".to_string(),
+            manifest_status: FileUpsertOutcome::Skipped,
+            installed: 0,
+            updated: 2,
+            skipped: 4,
+            total_components: 6,
+        };
+        let rendered = render_package_update_report(&report);
+        assert!(rendered.contains("package update:"));
+        assert!(rendered.contains("manifest_status=skipped"));
+        assert!(rendered.contains("updated=2"));
+        assert!(rendered.contains("skipped=4"));
     }
 
     #[test]

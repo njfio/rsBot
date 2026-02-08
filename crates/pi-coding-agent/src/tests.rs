@@ -30,14 +30,14 @@ use super::{
     execute_command_file, execute_doctor_command, execute_integration_auth_command,
     execute_macro_command, execute_package_install_command, execute_package_list_command,
     execute_package_remove_command, execute_package_rollback_command, execute_package_show_command,
-    execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
-    execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
-    execute_rpc_validate_frame_command, execute_session_bookmark_command,
-    execute_session_diff_command, execute_session_graph_export_command,
-    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
-    execute_skills_lock_diff_command, execute_skills_lock_write_command,
-    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-    execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_package_update_command, execute_package_validate_command, execute_profile_command,
+    execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
+    execute_rpc_dispatch_ndjson_command, execute_rpc_validate_frame_command,
+    execute_session_bookmark_command, execute_session_diff_command,
+    execute_session_graph_export_command, execute_session_search_command,
+    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
+    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
+    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, initialize_session,
@@ -255,6 +255,8 @@ fn test_cli() -> Cli {
         package_show: None,
         package_install: None,
         package_install_root: PathBuf::from(".pi/packages"),
+        package_update: None,
+        package_update_root: PathBuf::from(".pi/packages"),
         package_list: false,
         package_list_root: PathBuf::from(".pi/packages"),
         package_remove: None,
@@ -6942,6 +6944,69 @@ fn regression_execute_package_install_command_rejects_unsigned_when_required() {
     assert!(error
         .to_string()
         .contains("must include signing_key and signature_file"));
+}
+
+#[test]
+fn functional_execute_package_update_command_updates_existing_package() {
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    std::fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+    let template_path = package_root.join("templates/review.txt");
+    std::fs::write(&template_path, "template-v1").expect("write template source");
+    let manifest_path = package_root.join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let install_root = temp.path().join("installed");
+    let mut install_cli = test_cli();
+    install_cli.package_install = Some(manifest_path.clone());
+    install_cli.package_install_root = install_root.clone();
+    execute_package_install_command(&install_cli).expect("package install should succeed");
+
+    std::fs::write(&template_path, "template-v2").expect("update template source");
+    let mut update_cli = test_cli();
+    update_cli.package_update = Some(manifest_path);
+    update_cli.package_update_root = install_root.clone();
+    execute_package_update_command(&update_cli).expect("package update should succeed");
+    assert_eq!(
+        std::fs::read_to_string(install_root.join("starter-bundle/1.0.0/templates/review.txt"))
+            .expect("read updated template"),
+        "template-v2"
+    );
+}
+
+#[test]
+fn regression_execute_package_update_command_rejects_missing_target() {
+    let temp = tempdir().expect("tempdir");
+    let package_root = temp.path().join("bundle");
+    std::fs::create_dir_all(package_root.join("templates")).expect("create templates dir");
+    std::fs::write(package_root.join("templates/review.txt"), "template")
+        .expect("write template source");
+    let manifest_path = package_root.join("package.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+    )
+    .expect("write manifest");
+
+    let mut cli = test_cli();
+    cli.package_update = Some(manifest_path);
+    cli.package_update_root = temp.path().join("installed");
+    let error = execute_package_update_command(&cli).expect_err("missing target should fail");
+    assert!(error.to_string().contains("is not installed"));
 }
 
 #[test]

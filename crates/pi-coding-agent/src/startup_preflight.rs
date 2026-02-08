@@ -26,6 +26,11 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.package_update.is_some() {
+        execute_package_update_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.package_list {
         execute_package_list_command(cli)?;
         return Ok(true);

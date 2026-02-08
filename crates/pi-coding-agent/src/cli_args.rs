@@ -513,6 +513,7 @@ pub(crate) struct Cli {
         env = "PI_PACKAGE_VALIDATE",
         conflicts_with = "package_show",
         conflicts_with = "package_install",
+        conflicts_with = "package_update",
         conflicts_with = "package_list",
         conflicts_with = "package_remove",
         conflicts_with = "package_rollback",
@@ -526,6 +527,7 @@ pub(crate) struct Cli {
         env = "PI_PACKAGE_SHOW",
         conflicts_with = "package_validate",
         conflicts_with = "package_install",
+        conflicts_with = "package_update",
         conflicts_with = "package_list",
         conflicts_with = "package_remove",
         conflicts_with = "package_rollback",
@@ -539,6 +541,7 @@ pub(crate) struct Cli {
         env = "PI_PACKAGE_INSTALL",
         conflicts_with = "package_validate",
         conflicts_with = "package_show",
+        conflicts_with = "package_update",
         conflicts_with = "package_list",
         conflicts_with = "package_remove",
         conflicts_with = "package_rollback",
@@ -558,8 +561,33 @@ pub(crate) struct Cli {
     pub(crate) package_install_root: PathBuf,
 
     #[arg(
+        long = "package-update",
+        env = "PI_PACKAGE_UPDATE",
+        conflicts_with = "package_validate",
+        conflicts_with = "package_show",
+        conflicts_with = "package_install",
+        conflicts_with = "package_list",
+        conflicts_with = "package_remove",
+        conflicts_with = "package_rollback",
+        value_name = "path",
+        help = "Update an already installed package bundle from a manifest and exit"
+    )]
+    pub(crate) package_update: Option<PathBuf>,
+
+    #[arg(
+        long = "package-update-root",
+        env = "PI_PACKAGE_UPDATE_ROOT",
+        default_value = ".pi/packages",
+        requires = "package_update",
+        value_name = "path",
+        help = "Destination root containing installed package bundles for update"
+    )]
+    pub(crate) package_update_root: PathBuf,
+
+    #[arg(
         long = "package-list",
         env = "PI_PACKAGE_LIST",
+        conflicts_with = "package_update",
         conflicts_with = "package_remove",
         conflicts_with = "package_rollback",
         default_value_t = false,
@@ -583,6 +611,7 @@ pub(crate) struct Cli {
         conflicts_with = "package_validate",
         conflicts_with = "package_show",
         conflicts_with = "package_install",
+        conflicts_with = "package_update",
         conflicts_with = "package_list",
         conflicts_with = "package_rollback",
         value_name = "name@version",
@@ -606,6 +635,7 @@ pub(crate) struct Cli {
         conflicts_with = "package_validate",
         conflicts_with = "package_show",
         conflicts_with = "package_install",
+        conflicts_with = "package_update",
         conflicts_with = "package_list",
         conflicts_with = "package_remove",
         value_name = "name@version",
