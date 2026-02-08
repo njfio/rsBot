@@ -138,6 +138,8 @@ pub(crate) struct AuthCommandConfig {
     pub(crate) openai_auth_mode: ProviderAuthMethod,
     pub(crate) anthropic_auth_mode: ProviderAuthMethod,
     pub(crate) google_auth_mode: ProviderAuthMethod,
+    pub(crate) openai_codex_backend: bool,
+    pub(crate) openai_codex_cli: String,
     pub(crate) anthropic_claude_backend: bool,
     pub(crate) anthropic_claude_cli: String,
     pub(crate) google_gemini_backend: bool,

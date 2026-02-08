@@ -131,13 +131,16 @@ pub(crate) struct AuthStatusRow {
     provider: String,
     mode: String,
     mode_supported: bool,
+    supported: bool,
     available: bool,
     state: String,
     source: String,
     reason: String,
     expires_unix: Option<u64>,
+    expires: Option<u64>,
     revoked: bool,
     refreshable: bool,
+    next_action: String,
 }
 
 const AUTH_MATRIX_PROVIDERS: [Provider; 3] =
@@ -744,6 +747,20 @@ pub(crate) fn execute_auth_login_command(
         return execute_google_login_backend_ready(config, mode, json_output);
     }
 
+    if provider == Provider::OpenAi
+        && matches!(
+            mode,
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
+        )
+    {
+        let has_env_access_token =
+            resolve_non_empty_secret_with_source(provider_login_access_token_candidates(provider))
+                .is_some();
+        if !has_env_access_token {
+            return execute_openai_login_backend_ready(config, mode, json_output);
+        }
+    }
+
     if provider == Provider::Anthropic
         && matches!(
             mode,
@@ -1042,6 +1059,76 @@ fn execute_google_login_backend_ready(
     )
 }
 
+fn execute_openai_login_backend_ready(
+    config: &AuthCommandConfig,
+    mode: ProviderAuthMethod,
+    json_output: bool,
+) -> String {
+    if !config.openai_codex_backend {
+        let reason =
+            "openai codex backend is disabled; set --openai-codex-backend=true".to_string();
+        if json_output {
+            return serde_json::json!({
+                "command": "auth.login",
+                "provider": Provider::OpenAi.as_str(),
+                "mode": mode.as_str(),
+                "status": "error",
+                "reason": reason,
+            })
+            .to_string();
+        }
+        return format!(
+            "auth login error: provider={} mode={} error={reason}",
+            Provider::OpenAi.as_str(),
+            mode.as_str()
+        );
+    }
+
+    if !is_executable_available(&config.openai_codex_cli) {
+        let reason = format!(
+            "codex cli executable '{}' is not available",
+            config.openai_codex_cli
+        );
+        if json_output {
+            return serde_json::json!({
+                "command": "auth.login",
+                "provider": Provider::OpenAi.as_str(),
+                "mode": mode.as_str(),
+                "status": "error",
+                "reason": reason,
+            })
+            .to_string();
+        }
+        return format!(
+            "auth login error: provider={} mode={} error={reason}",
+            Provider::OpenAi.as_str(),
+            mode.as_str()
+        );
+    }
+
+    let action = "run codex login";
+    if json_output {
+        return serde_json::json!({
+            "command": "auth.login",
+            "provider": Provider::OpenAi.as_str(),
+            "mode": mode.as_str(),
+            "status": "ready",
+            "source": "codex_cli",
+            "backend_cli": config.openai_codex_cli,
+            "persisted": false,
+            "action": action,
+        })
+        .to_string();
+    }
+    format!(
+        "auth login: provider={} mode={} status=ready source=codex_cli backend_cli={} persisted=false action={}",
+        Provider::OpenAi.as_str(),
+        mode.as_str(),
+        config.openai_codex_cli,
+        action
+    )
+}
+
 fn execute_anthropic_login_backend_ready(
     config: &AuthCommandConfig,
     mode: ProviderAuthMethod,
@@ -1127,13 +1214,60 @@ fn auth_status_row_from_snapshot(snapshot: &ProviderAuthSnapshot) -> AuthStatusR
         provider: snapshot.provider.as_str().to_string(),
         mode: snapshot.method.as_str().to_string(),
         mode_supported: snapshot.mode_supported,
+        supported: snapshot.mode_supported,
         available: snapshot.available,
         state: snapshot.state.clone(),
         source: snapshot.source.clone(),
         reason: snapshot.reason.clone(),
         expires_unix: snapshot.expires_unix,
+        expires: snapshot.expires_unix,
         revoked: snapshot.revoked,
         refreshable: snapshot.refreshable,
+        next_action: auth_next_action(snapshot),
+    }
+}
+
+fn auth_next_action(snapshot: &ProviderAuthSnapshot) -> String {
+    if snapshot.available {
+        return "none".to_string();
+    }
+
+    match snapshot.state.as_str() {
+        "missing_api_key" => missing_provider_api_key_message(snapshot.provider).to_string(),
+        "backend_disabled" => match snapshot.provider {
+            Provider::OpenAi => "set --openai-codex-backend=true".to_string(),
+            Provider::Anthropic => "set --anthropic-claude-backend=true".to_string(),
+            Provider::Google => "set --google-gemini-backend=true".to_string(),
+        },
+        "backend_unavailable" => match snapshot.provider {
+            Provider::OpenAi => {
+                "install codex or set --openai-codex-cli to an available executable".to_string()
+            }
+            Provider::Anthropic => {
+                "install claude or set --anthropic-claude-cli to an available executable"
+                    .to_string()
+            }
+            Provider::Google => {
+                "install gemini or set --google-gemini-cli to an available executable".to_string()
+            }
+        },
+        "unsupported_mode" => format!("set {} api-key", provider_auth_mode_flag(snapshot.provider)),
+        "missing_credential"
+        | "missing_access_token"
+        | "invalid_env_expires"
+        | "expired_env_access_token"
+        | "expired"
+        | "expired_refresh_pending"
+        | "revoked"
+        | "mode_mismatch" => format!(
+            "run /auth login {} --mode {}",
+            snapshot.provider.as_str(),
+            snapshot.method.as_str()
+        ),
+        "store_error" => {
+            "fix credential store accessibility and retry /auth status or /auth login".to_string()
+        }
+        _ => "inspect /auth status reason field".to_string(),
     }
 }
 
@@ -1419,10 +1553,11 @@ pub(crate) fn execute_auth_status_command(
     )];
     for row in rows {
         lines.push(format!(
-            "auth provider: name={} mode={} mode_supported={} available={} state={} source={} reason={} expires_unix={} revoked={}",
+            "auth provider: name={} mode={} mode_supported={} supported={} available={} state={} source={} reason={} expires_unix={} expires={} revoked={} refreshable={} next_action={}",
             row.provider,
             row.mode,
             row.mode_supported,
+            row.supported,
             row.available,
             row.state,
             row.source,
@@ -1430,7 +1565,12 @@ pub(crate) fn execute_auth_status_command(
             row.expires_unix
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string()),
-            row.revoked
+            row.expires
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.revoked,
+            row.refreshable,
+            row.next_action
         ));
     }
     lines.join("\n")

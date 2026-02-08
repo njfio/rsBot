@@ -76,6 +76,16 @@ Dependency update automation is configured in `.github/dependabot.yml`.
 
 ## Usage
 
+Auth mode guidance (local subscription login vs CI):
+
+| Provider | Local/dev recommended | CI/automation recommended |
+| --- | --- | --- |
+| OpenAI | `--openai-auth-mode oauth-token` or `session-token` with Codex backend (`--openai-codex-backend=true`) | `--openai-auth-mode api-key` with `OPENAI_API_KEY` |
+| Anthropic | `--anthropic-auth-mode oauth-token` or `session-token` with Claude backend (`--anthropic-claude-backend=true`) | `--anthropic-auth-mode api-key` with `ANTHROPIC_API_KEY` |
+| Google | `--google-auth-mode oauth-token` (Gemini login) or `--google-auth-mode adc` (Vertex/ADC) with Gemini backend (`--google-gemini-backend=true`) | `--google-auth-mode api-key` with `GEMINI_API_KEY` |
+
+`/auth status` and `/auth matrix` include `supported`, `available`, `source`, `expires`, `refreshable`, and `next_action` fields for deterministic diagnostics and machine parsing.
+
 Set an API key for your provider:
 
 ```bash

@@ -526,6 +526,7 @@ fn test_profile_defaults() -> ProfileDefaults {
 fn test_auth_command_config() -> AuthCommandConfig {
     let mut config = build_auth_command_config(&test_cli());
     if let Ok(current_exe) = std::env::current_exe() {
+        config.openai_codex_cli = current_exe.display().to_string();
         config.anthropic_claude_cli = current_exe.display().to_string();
         config.google_gemini_cli = current_exe.display().to_string();
     }

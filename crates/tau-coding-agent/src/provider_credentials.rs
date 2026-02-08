@@ -249,6 +249,66 @@ fn google_gemini_backend_snapshot(
     }
 }
 
+fn openai_codex_backend_snapshot(
+    config: &AuthCommandConfig,
+    mode: ProviderAuthMethod,
+) -> ProviderAuthSnapshot {
+    if !config.openai_codex_backend {
+        return ProviderAuthSnapshot {
+            provider: Provider::OpenAi,
+            method: mode,
+            mode_supported: true,
+            available: false,
+            state: "backend_disabled".to_string(),
+            source: "none".to_string(),
+            reason: "openai codex backend is disabled".to_string(),
+            expires_unix: None,
+            revoked: false,
+            refreshable: false,
+            secret: None,
+        };
+    }
+
+    if !is_executable_available(&config.openai_codex_cli) {
+        return ProviderAuthSnapshot {
+            provider: Provider::OpenAi,
+            method: mode,
+            mode_supported: true,
+            available: false,
+            state: "backend_unavailable".to_string(),
+            source: "codex_cli".to_string(),
+            reason: format!(
+                "codex cli executable '{}' is not available",
+                config.openai_codex_cli
+            ),
+            expires_unix: None,
+            revoked: false,
+            refreshable: false,
+            secret: None,
+        };
+    }
+
+    let reason = if mode == ProviderAuthMethod::SessionToken {
+        "openai_session_backend_available"
+    } else {
+        "openai_oauth_backend_available"
+    };
+
+    ProviderAuthSnapshot {
+        provider: Provider::OpenAi,
+        method: mode,
+        mode_supported: true,
+        available: true,
+        state: "ready".to_string(),
+        source: "codex_cli".to_string(),
+        reason: reason.to_string(),
+        expires_unix: None,
+        revoked: false,
+        refreshable: false,
+        secret: None,
+    }
+}
+
 fn anthropic_claude_backend_snapshot(
     config: &AuthCommandConfig,
     mode: ProviderAuthMethod,
@@ -469,6 +529,15 @@ pub(crate) fn provider_auth_snapshot_for_status(
                 refreshable: false,
                 secret: Some(secret),
             };
+        }
+
+        if provider == Provider::OpenAi
+            && matches!(
+                mode,
+                ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
+            )
+        {
+            return openai_codex_backend_snapshot(config, mode);
         }
 
         return ProviderAuthSnapshot {

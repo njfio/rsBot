@@ -303,7 +303,18 @@ pub(crate) fn build_doctor_command_config(
             let auth_mode = configured_provider_auth_method(cli, provider);
             let capability = provider_auth_capability(provider, auth_mode);
             let (login_backend_enabled, login_backend_executable, login_backend_available) =
-                if provider == Provider::Anthropic
+                if provider == Provider::OpenAi
+                    && matches!(
+                        auth_mode,
+                        ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
+                    )
+                {
+                    (
+                        cli.openai_codex_backend,
+                        Some(cli.openai_codex_cli.clone()),
+                        cli.openai_codex_backend && is_executable_available(&cli.openai_codex_cli),
+                    )
+                } else if provider == Provider::Anthropic
                     && matches!(
                         auth_mode,
                         ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
@@ -415,11 +426,16 @@ pub(crate) fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheck
             action,
         });
 
-        if (provider_check.provider_kind == Provider::Anthropic
+        if (provider_check.provider_kind == Provider::OpenAi
             && matches!(
                 provider_check.auth_mode,
                 ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
             ))
+            || (provider_check.provider_kind == Provider::Anthropic
+                && matches!(
+                    provider_check.auth_mode,
+                    ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
+                ))
             || (provider_check.provider_kind == Provider::Google
                 && matches!(
                     provider_check.auth_mode,
@@ -427,7 +443,9 @@ pub(crate) fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheck
                 ))
         {
             let (backend_flag, executable_flag, default_executable) =
-                if provider_check.provider_kind == Provider::Anthropic {
+                if provider_check.provider_kind == Provider::OpenAi {
+                    ("--openai-codex-backend=true", "--openai-codex-cli", "codex")
+                } else if provider_check.provider_kind == Provider::Anthropic {
                     (
                         "--anthropic-claude-backend=true",
                         "--anthropic-claude-cli",
