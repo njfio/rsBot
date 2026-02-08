@@ -242,7 +242,7 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         description: "Manage provider authentication state and credential-store sessions",
         details:
             "Supports login/status/logout flows plus provider-mode matrix diagnostics with optional --json output.",
-        example: "/auth matrix --json",
+        example: "/auth matrix openai --mode oauth-token --json",
     },
     CommandSpec {
         name: "/integration-auth",

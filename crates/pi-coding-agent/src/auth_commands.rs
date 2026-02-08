@@ -4,7 +4,8 @@ pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> .
 pub(crate) const AUTH_LOGIN_USAGE: &str = "usage: /auth login <provider> [--mode <mode>] [--json]";
 pub(crate) const AUTH_STATUS_USAGE: &str = "usage: /auth status [provider] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
-pub(crate) const AUTH_MATRIX_USAGE: &str = "usage: /auth matrix [--json]";
+pub(crate) const AUTH_MATRIX_USAGE: &str =
+    "usage: /auth matrix [provider] [--mode <mode>] [--json]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthCommand {
@@ -22,6 +23,8 @@ pub(crate) enum AuthCommand {
         json_output: bool,
     },
     Matrix {
+        provider: Option<Provider>,
+        mode: Option<ProviderAuthMethod>,
         json_output: bool,
     },
 }
@@ -157,15 +160,43 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             })
         }
         "matrix" => {
+            let mut provider: Option<Provider> = None;
+            let mut mode: Option<ProviderAuthMethod> = None;
             let mut json_output = false;
-            for token in tokens.into_iter().skip(1) {
-                if token == "--json" {
-                    json_output = true;
-                } else {
-                    bail!("unexpected argument '{}'; {AUTH_MATRIX_USAGE}", token);
+            let mut index = 1usize;
+            while index < tokens.len() {
+                match tokens[index] {
+                    "--json" => {
+                        json_output = true;
+                        index += 1;
+                    }
+                    "--mode" => {
+                        if mode.is_some() {
+                            bail!("duplicate --mode flag; {AUTH_MATRIX_USAGE}");
+                        }
+                        let Some(raw_mode) = tokens.get(index + 1) else {
+                            bail!("missing auth mode after --mode; {AUTH_MATRIX_USAGE}");
+                        };
+                        mode = Some(parse_provider_auth_method_token(raw_mode)?);
+                        index += 2;
+                    }
+                    token if token.starts_with("--") => {
+                        bail!("unexpected argument '{}'; {AUTH_MATRIX_USAGE}", token);
+                    }
+                    token => {
+                        if provider.is_some() {
+                            bail!("unexpected argument '{}'; {AUTH_MATRIX_USAGE}", token);
+                        }
+                        provider = Some(parse_auth_provider(token)?);
+                        index += 1;
+                    }
                 }
             }
-            Ok(AuthCommand::Matrix { json_output })
+            Ok(AuthCommand::Matrix {
+                provider,
+                mode,
+                json_output,
+            })
         }
         other => bail!("unknown subcommand '{}'; {AUTH_USAGE}", other),
     }
@@ -810,8 +841,20 @@ fn auth_config_with_provider_mode(
     overridden
 }
 
-pub(crate) fn execute_auth_matrix_command(config: &AuthCommandConfig, json_output: bool) -> String {
-    let requires_store = AUTH_MATRIX_MODES
+pub(crate) fn execute_auth_matrix_command(
+    config: &AuthCommandConfig,
+    provider: Option<Provider>,
+    mode: Option<ProviderAuthMethod>,
+    json_output: bool,
+) -> String {
+    let selected_providers = provider
+        .map(|value| vec![value])
+        .unwrap_or_else(|| AUTH_MATRIX_PROVIDERS.to_vec());
+    let selected_modes = mode
+        .map(|value| vec![value])
+        .unwrap_or_else(|| AUTH_MATRIX_MODES.to_vec());
+
+    let requires_store = selected_modes
         .iter()
         .any(|mode| *mode != ProviderAuthMethod::ApiKey);
     let (store, store_error) = if requires_store {
@@ -828,12 +871,12 @@ pub(crate) fn execute_auth_matrix_command(config: &AuthCommandConfig, json_outpu
     };
 
     let mut rows = Vec::new();
-    for provider in AUTH_MATRIX_PROVIDERS {
-        for mode in AUTH_MATRIX_MODES {
-            let mode_config = auth_config_with_provider_mode(config, provider, mode);
+    for provider in &selected_providers {
+        for mode in &selected_modes {
+            let mode_config = auth_config_with_provider_mode(config, *provider, *mode);
             rows.push(auth_status_row_for_provider(
                 &mode_config,
-                provider,
+                *provider,
                 store.as_ref(),
                 store_error.as_deref(),
             ));
@@ -848,8 +891,8 @@ pub(crate) fn execute_auth_matrix_command(config: &AuthCommandConfig, json_outpu
     if json_output {
         return serde_json::json!({
             "command": "auth.matrix",
-            "providers": AUTH_MATRIX_PROVIDERS.len(),
-            "modes": AUTH_MATRIX_MODES.len(),
+            "providers": selected_providers.len(),
+            "modes": selected_modes.len(),
             "rows": rows.len(),
             "mode_supported": mode_supported,
             "mode_unsupported": mode_unsupported,
@@ -862,8 +905,8 @@ pub(crate) fn execute_auth_matrix_command(config: &AuthCommandConfig, json_outpu
 
     let mut lines = vec![format!(
         "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={}",
-        AUTH_MATRIX_PROVIDERS.len(),
-        AUTH_MATRIX_MODES.len(),
+        selected_providers.len(),
+        selected_modes.len(),
         rows.len(),
         mode_supported,
         mode_unsupported,
@@ -987,6 +1030,10 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
             provider,
             json_output,
         } => execute_auth_logout_command(config, provider, json_output),
-        AuthCommand::Matrix { json_output } => execute_auth_matrix_command(config, json_output),
+        AuthCommand::Matrix {
+            provider,
+            mode,
+            json_output,
+        } => execute_auth_matrix_command(config, provider, mode, json_output),
     }
 }

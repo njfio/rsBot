@@ -995,7 +995,25 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
     );
 
     let matrix = parse_auth_command("matrix --json").expect("parse auth matrix");
-    assert_eq!(matrix, AuthCommand::Matrix { json_output: true });
+    assert_eq!(
+        matrix,
+        AuthCommand::Matrix {
+            provider: None,
+            mode: None,
+            json_output: true,
+        }
+    );
+
+    let filtered_matrix = parse_auth_command("matrix openai --mode oauth-token --json")
+        .expect("parse filtered auth matrix");
+    assert_eq!(
+        filtered_matrix,
+        AuthCommand::Matrix {
+            provider: Some(Provider::OpenAi),
+            mode: Some(ProviderAuthMethod::OauthToken),
+            json_output: true,
+        }
+    );
 }
 
 #[test]
@@ -1012,8 +1030,14 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
         .to_string()
         .contains("usage: /auth login"));
 
-    let invalid_matrix_args = parse_auth_command("matrix openai").expect_err("matrix args fail");
+    let invalid_matrix_args =
+        parse_auth_command("matrix openai anthropic").expect_err("matrix args fail");
     assert!(invalid_matrix_args
+        .to_string()
+        .contains("usage: /auth matrix"));
+
+    let missing_matrix_mode = parse_auth_command("matrix --mode").expect_err("missing matrix mode");
+    assert!(missing_matrix_mode
         .to_string()
         .contains("usage: /auth matrix"));
 
@@ -1384,6 +1408,51 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
 }
 
 #[test]
+fn functional_execute_auth_command_matrix_supports_provider_and_mode_filters() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("auth-matrix-filtered.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.api_key = Some("shared-api-key".to_string());
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("filtered-oauth-access".to_string()),
+            refresh_token: Some("filtered-oauth-refresh".to_string()),
+            expires_unix: Some(current_unix_timestamp().saturating_add(600)),
+            revoked: false,
+        },
+    );
+
+    let json_output = execute_auth_command(&config, "matrix openai --mode oauth-token --json");
+    let payload: serde_json::Value =
+        serde_json::from_str(&json_output).expect("parse filtered matrix payload");
+    assert_eq!(payload["command"], "auth.matrix");
+    assert_eq!(payload["providers"], 1);
+    assert_eq!(payload["modes"], 1);
+    assert_eq!(payload["rows"], 1);
+    assert_eq!(payload["mode_supported"], 1);
+    assert_eq!(payload["available"], 1);
+    let entries = payload["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["provider"], "openai");
+    assert_eq!(entries[0]["mode"], "oauth_token");
+    assert_eq!(entries[0]["state"], "ready");
+    assert_eq!(entries[0]["available"], true);
+
+    let text_output = execute_auth_command(&config, "matrix openai --mode oauth-token");
+    assert!(text_output.contains("auth matrix: providers=1 modes=1 rows=1"));
+    assert!(text_output.contains(
+        "auth matrix row: provider=openai mode=oauth_token mode_supported=true available=true state=ready"
+    ));
+}
+
+#[test]
 fn integration_auth_conformance_store_backed_status_matrix_handles_stale_token_scenarios() {
     #[derive(Debug)]
     struct StaleCase {
@@ -1516,6 +1585,19 @@ fn integration_execute_auth_command_matrix_reports_store_error_for_supported_non
         .expect("anthropic oauth row");
     assert_eq!(anthropic_oauth["mode_supported"], false);
     assert_eq!(anthropic_oauth["state"], "unsupported_mode");
+}
+
+#[test]
+fn regression_execute_auth_command_matrix_rejects_invalid_filter_combinations() {
+    let config = test_auth_command_config();
+
+    let missing_mode = execute_auth_command(&config, "matrix --mode");
+    assert!(missing_mode.contains("auth error:"));
+    assert!(missing_mode.contains("usage: /auth matrix"));
+
+    let duplicate_provider = execute_auth_command(&config, "matrix openai anthropic");
+    assert!(duplicate_provider.contains("auth error:"));
+    assert!(duplicate_provider.contains("usage: /auth matrix"));
 }
 
 #[test]
