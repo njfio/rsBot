@@ -507,6 +507,7 @@ pub(crate) struct Cli {
         conflicts_with = "package_install",
         conflicts_with = "package_list",
         conflicts_with = "package_remove",
+        conflicts_with = "package_rollback",
         value_name = "path",
         help = "Validate a package manifest JSON file and exit"
     )]
@@ -519,6 +520,7 @@ pub(crate) struct Cli {
         conflicts_with = "package_install",
         conflicts_with = "package_list",
         conflicts_with = "package_remove",
+        conflicts_with = "package_rollback",
         value_name = "path",
         help = "Print package manifest metadata and component inventory"
     )]
@@ -531,6 +533,7 @@ pub(crate) struct Cli {
         conflicts_with = "package_show",
         conflicts_with = "package_list",
         conflicts_with = "package_remove",
+        conflicts_with = "package_rollback",
         value_name = "path",
         help = "Install a local package manifest bundle and exit"
     )]
@@ -550,6 +553,7 @@ pub(crate) struct Cli {
         long = "package-list",
         env = "PI_PACKAGE_LIST",
         conflicts_with = "package_remove",
+        conflicts_with = "package_rollback",
         default_value_t = false,
         help = "List installed package bundles from a package root and exit"
     )]
@@ -572,6 +576,7 @@ pub(crate) struct Cli {
         conflicts_with = "package_show",
         conflicts_with = "package_install",
         conflicts_with = "package_list",
+        conflicts_with = "package_rollback",
         value_name = "name@version",
         help = "Remove one installed package bundle by coordinate and exit"
     )]
@@ -586,6 +591,29 @@ pub(crate) struct Cli {
         help = "Source root containing installed package bundles for removal"
     )]
     pub(crate) package_remove_root: PathBuf,
+
+    #[arg(
+        long = "package-rollback",
+        env = "PI_PACKAGE_ROLLBACK",
+        conflicts_with = "package_validate",
+        conflicts_with = "package_show",
+        conflicts_with = "package_install",
+        conflicts_with = "package_list",
+        conflicts_with = "package_remove",
+        value_name = "name@version",
+        help = "Rollback one package to a target installed version and remove sibling versions"
+    )]
+    pub(crate) package_rollback: Option<String>,
+
+    #[arg(
+        long = "package-rollback-root",
+        env = "PI_PACKAGE_ROLLBACK_ROOT",
+        default_value = ".pi/packages",
+        requires = "package_rollback",
+        value_name = "path",
+        help = "Source root containing installed package versions for rollback"
+    )]
+    pub(crate) package_rollback_root: PathBuf,
 
     #[arg(
         long = "rpc-capabilities",

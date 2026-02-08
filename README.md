@@ -334,6 +334,14 @@ cargo run -p pi-coding-agent -- \
   --package-remove-root .pi/packages
 ```
 
+Rollback one package to a target installed version (removes sibling versions):
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --package-rollback starter-bundle@1.0.0 \
+  --package-rollback-root .pi/packages
+```
+
 Print versioned RPC protocol capabilities JSON and exit:
 
 ```bash

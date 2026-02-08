@@ -83,6 +83,30 @@ impl PackageRemoveStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PackageRollbackReport {
+    pub rollback_root: PathBuf,
+    pub package_name: String,
+    pub target_version: String,
+    pub removed_versions: Vec<String>,
+    pub status: PackageRollbackStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageRollbackStatus {
+    RolledBack,
+    AlreadyAtTarget,
+}
+
+impl PackageRollbackStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RolledBack => "rolled_back",
+            Self::AlreadyAtTarget => "already_at_target",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileUpsertOutcome {
     Installed,
@@ -173,6 +197,15 @@ pub(crate) fn execute_package_remove_command(cli: &Cli) -> Result<()> {
     };
     let report = remove_installed_package(coordinate, &cli.package_remove_root)?;
     println!("{}", render_package_remove_report(&report));
+    Ok(())
+}
+
+pub(crate) fn execute_package_rollback_command(cli: &Cli) -> Result<()> {
+    let Some(coordinate) = cli.package_rollback.as_deref() else {
+        return Ok(());
+    };
+    let report = rollback_installed_package(coordinate, &cli.package_rollback_root)?;
+    println!("{}", render_package_rollback_report(&report));
     Ok(())
 }
 
@@ -620,6 +653,83 @@ fn render_package_remove_report(report: &PackageRemoveReport) -> String {
     )
 }
 
+fn rollback_installed_package(
+    coordinate: &str,
+    rollback_root: &Path,
+) -> Result<PackageRollbackReport> {
+    let (package_name, target_version) = parse_package_coordinate(coordinate)?;
+    let package_name_dir = rollback_root.join(package_name.as_str());
+    let target_dir = package_name_dir.join(target_version.as_str());
+    if !target_dir.is_dir() {
+        bail!(
+            "target package '{}' is not installed under {}",
+            coordinate,
+            rollback_root.display()
+        );
+    }
+
+    let mut removed_versions = Vec::new();
+    for entry in std::fs::read_dir(&package_name_dir)
+        .with_context(|| format!("failed to read {}", package_name_dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("failed to read entry in {}", package_name_dir.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(version) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if version == target_version {
+            continue;
+        }
+        if !is_semver_like(version) {
+            continue;
+        }
+        std::fs::remove_dir_all(&path).with_context(|| {
+            format!(
+                "failed to remove package version '{}' at {}",
+                version,
+                path.display()
+            )
+        })?;
+        removed_versions.push(version.to_string());
+    }
+    removed_versions.sort();
+    let status = if removed_versions.is_empty() {
+        PackageRollbackStatus::AlreadyAtTarget
+    } else {
+        PackageRollbackStatus::RolledBack
+    };
+    Ok(PackageRollbackReport {
+        rollback_root: rollback_root.to_path_buf(),
+        package_name,
+        target_version,
+        removed_versions,
+        status,
+    })
+}
+
+fn render_package_rollback_report(report: &PackageRollbackReport) -> String {
+    let mut lines = vec![format!(
+        "package rollback: root={} name={} target_version={} removed_versions={} status={}",
+        report.rollback_root.display(),
+        report.package_name,
+        report.target_version,
+        report.removed_versions.len(),
+        report.status.as_str()
+    )];
+    if report.removed_versions.is_empty() {
+        lines.push("rollback removed: none".to_string());
+    } else {
+        for version in &report.removed_versions {
+            lines.push(format!("rollback removed: version={version}"));
+        }
+    }
+    lines.join("\n")
+}
+
 fn render_package_manifest_report(
     summary: &PackageManifestSummary,
     manifest: &PackageManifest,
@@ -727,7 +837,8 @@ mod tests {
         install_package_manifest, list_installed_packages, load_and_validate_manifest,
         parse_package_coordinate, remove_installed_package, render_package_install_report,
         render_package_list_report, render_package_manifest_report, render_package_remove_report,
-        validate_package_manifest, FileUpsertOutcome, PackageListReport, PackageRemoveStatus,
+        render_package_rollback_report, rollback_installed_package, validate_package_manifest,
+        FileUpsertOutcome, PackageListReport, PackageRemoveStatus, PackageRollbackStatus,
     };
 
     #[cfg(unix)]
@@ -1219,5 +1330,95 @@ mod tests {
         assert!(rendered.contains("name=starter"));
         assert!(rendered.contains("version=2.3.4"));
         assert!(rendered.contains("status=removed"));
+    }
+
+    #[test]
+    fn functional_rollback_installed_package_removes_non_target_versions() {
+        let temp = tempdir().expect("tempdir");
+        let install_root = temp.path().join("installed");
+        let install_version = |version: &str, body: &str| {
+            let source_root = temp.path().join(format!("source-{version}"));
+            std::fs::create_dir_all(source_root.join("templates")).expect("create templates dir");
+            std::fs::write(source_root.join("templates/review.txt"), body)
+                .expect("write template source");
+            let manifest_path = source_root.join("package.json");
+            std::fs::write(
+                &manifest_path,
+                format!(
+                    r#"{{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "{version}",
+  "templates": [{{"id":"review","path":"templates/review.txt"}}]
+}}"#
+                ),
+            )
+            .expect("write manifest");
+            install_package_manifest(&manifest_path, &install_root).expect("install package");
+        };
+
+        install_version("1.0.0", "v1 template");
+        install_version("2.0.0", "v2 template");
+
+        let report = rollback_installed_package("starter@1.0.0", &install_root)
+            .expect("rollback should succeed");
+        assert_eq!(report.status, PackageRollbackStatus::RolledBack);
+        assert_eq!(report.removed_versions, vec!["2.0.0".to_string()]);
+        assert!(install_root.join("starter/1.0.0").exists());
+        assert!(!install_root.join("starter/2.0.0").exists());
+    }
+
+    #[test]
+    fn functional_rollback_installed_package_reports_already_at_target() {
+        let temp = tempdir().expect("tempdir");
+        let install_root = temp.path().join("installed");
+        let source_root = temp.path().join("source");
+        std::fs::create_dir_all(source_root.join("templates")).expect("create templates dir");
+        std::fs::write(source_root.join("templates/review.txt"), "v1 template")
+            .expect("write template source");
+        let manifest_path = source_root.join("package.json");
+        std::fs::write(
+            &manifest_path,
+            r#"{
+  "schema_version": 1,
+  "name": "starter",
+  "version": "1.0.0",
+  "templates": [{"id":"review","path":"templates/review.txt"}]
+}"#,
+        )
+        .expect("write manifest");
+        install_package_manifest(&manifest_path, &install_root).expect("install package");
+
+        let report = rollback_installed_package("starter@1.0.0", &install_root)
+            .expect("rollback should succeed");
+        assert_eq!(report.status, PackageRollbackStatus::AlreadyAtTarget);
+        assert_eq!(report.removed_versions.len(), 0);
+    }
+
+    #[test]
+    fn regression_rollback_installed_package_rejects_missing_target() {
+        let temp = tempdir().expect("tempdir");
+        let install_root = temp.path().join("installed");
+        let error = rollback_installed_package("starter@1.0.0", &install_root)
+            .expect_err("missing target should fail");
+        assert!(error.to_string().contains("is not installed"));
+    }
+
+    #[test]
+    fn unit_render_package_rollback_report_includes_removed_versions() {
+        let report = super::PackageRollbackReport {
+            rollback_root: Path::new("/tmp/packages").to_path_buf(),
+            package_name: "starter".to_string(),
+            target_version: "1.0.0".to_string(),
+            removed_versions: vec!["2.0.0".to_string(), "3.0.0".to_string()],
+            status: PackageRollbackStatus::RolledBack,
+        };
+        let rendered = render_package_rollback_report(&report);
+        assert!(rendered.contains("package rollback:"));
+        assert!(rendered.contains("target_version=1.0.0"));
+        assert!(rendered.contains("removed_versions=2"));
+        assert!(rendered.contains("status=rolled_back"));
+        assert!(rendered.contains("rollback removed: version=2.0.0"));
+        assert!(rendered.contains("rollback removed: version=3.0.0"));
     }
 }

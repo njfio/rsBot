@@ -3060,6 +3060,75 @@ fn regression_package_remove_flag_rejects_invalid_coordinate() {
 }
 
 #[test]
+fn package_rollback_flag_keeps_target_and_removes_other_versions() {
+    let temp = tempdir().expect("tempdir");
+    let install_root = temp.path().join("installed");
+    let install_version = |version: &str, body: &str| {
+        let source_root = temp.path().join(format!("bundle-{version}"));
+        fs::create_dir_all(source_root.join("templates")).expect("create templates dir");
+        fs::write(source_root.join("templates/review.txt"), body).expect("write template source");
+        let manifest_path = source_root.join("package.json");
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "name": "starter-bundle",
+  "version": "{version}",
+  "templates": [{{"id":"review","path":"templates/review.txt"}}]
+}}"#
+            ),
+        )
+        .expect("write manifest");
+
+        let mut install_cmd = binary_command();
+        install_cmd.args([
+            "--package-install",
+            manifest_path.to_str().expect("utf8 path"),
+            "--package-install-root",
+            install_root.to_str().expect("utf8 path"),
+        ]);
+        install_cmd.assert().success();
+    };
+
+    install_version("1.0.0", "v1");
+    install_version("2.0.0", "v2");
+
+    let mut rollback_cmd = binary_command();
+    rollback_cmd.args([
+        "--package-rollback",
+        "starter-bundle@1.0.0",
+        "--package-rollback-root",
+        install_root.to_str().expect("utf8 path"),
+    ]);
+    rollback_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("package rollback:"))
+        .stdout(predicate::str::contains("status=rolled_back"))
+        .stdout(predicate::str::contains("removed_versions=1"));
+    assert!(install_root.join("starter-bundle/1.0.0").exists());
+    assert!(!install_root.join("starter-bundle/2.0.0").exists());
+}
+
+#[test]
+fn regression_package_rollback_flag_rejects_missing_target() {
+    let temp = tempdir().expect("tempdir");
+    let install_root = temp.path().join("installed");
+    let mut cmd = binary_command();
+    cmd.args([
+        "--package-rollback",
+        "starter-bundle@1.0.0",
+        "--package-rollback-root",
+        install_root.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("is not installed"));
+}
+
+#[test]
 fn rpc_capabilities_flag_outputs_versioned_json_and_exits() {
     let mut cmd = binary_command();
     cmd.arg("--rpc-capabilities");
