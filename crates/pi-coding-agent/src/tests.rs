@@ -52,12 +52,13 @@ use super::{
     parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
     parse_skills_trust_list_args, parse_skills_trust_mutation_args, parse_skills_verify_args,
     parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
-    provider_auth_capability, refresh_provider_access_token, render_audit_summary,
-    render_command_help, render_doctor_report, render_doctor_report_json, render_help_overview,
-    render_macro_list, render_macro_show, render_profile_diffs, render_profile_list,
-    render_profile_show, render_session_diff, render_session_graph_dot,
-    render_session_graph_mermaid, render_session_stats, render_session_stats_json,
-    render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+    provider_auth_capability, refresh_provider_access_token,
+    register_runtime_extension_tool_hook_subscriber, render_audit_summary, render_command_help,
+    render_doctor_report, render_doctor_report_json, render_help_overview, render_macro_list,
+    render_macro_show, render_profile_diffs, render_profile_list, render_profile_show,
+    render_session_diff, render_session_graph_dot, render_session_graph_mermaid,
+    render_session_stats, render_session_stats_json, render_skills_list,
+    render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
     render_skills_lock_write_success, render_skills_search, render_skills_show,
     render_skills_sync_drift_details, render_skills_trust_list, render_skills_verify_report,
     resolve_credential_store_encryption_mode, resolve_fallback_models, resolve_prompt_input,
@@ -81,15 +82,15 @@ use super::{
     DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
     IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
     ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
-    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, SessionBookmarkCommand,
-    SessionBookmarkFile, SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime,
-    SessionSearchArgs, SessionStats, SessionStatsOutputFormat, SkillsPruneMode,
-    SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus,
-    SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord,
-    BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE,
-    PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE,
-    SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
-    SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
+    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
+    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
+    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
+    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
+    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
+    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
+    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
@@ -8491,6 +8492,186 @@ async fn integration_run_prompt_with_cancellation_completes_when_not_cancelled()
     assert_eq!(agent.messages().len(), 3);
     assert_eq!(agent.messages()[1].role, MessageRole::User);
     assert_eq!(agent.messages()[2].role, MessageRole::Assistant);
+}
+
+#[tokio::test]
+async fn integration_tool_hook_subscriber_dispatches_pre_and_post_tool_call_hooks() {
+    let temp = tempdir().expect("tempdir");
+    let read_target = temp.path().join("README.md");
+    std::fs::write(&read_target, "hello from test").expect("write read target");
+
+    let extension_root = temp.path().join("extensions");
+    let extension_dir = extension_root.join("tool-observer");
+    std::fs::create_dir_all(&extension_dir).expect("create extension dir");
+    let request_log = extension_dir.join("requests.ndjson");
+    let hook_script = extension_dir.join("hook.sh");
+    std::fs::write(
+        &hook_script,
+        format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\ninput=\"$(cat)\"\nprintf '%s\\n' \"$input\" >> \"{}\"\nprintf '{{\"ok\":true}}'\n",
+            request_log.display()
+        ),
+    )
+    .expect("write hook script");
+    make_script_executable(&hook_script);
+    std::fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "tool-observer",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["pre-tool-call", "post-tool-call"],
+  "timeout_ms": 5000
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let responses = VecDeque::from(vec![
+        ChatResponse {
+            message: pi_ai::Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                id: "call-1".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({
+                    "path": read_target.display().to_string(),
+                }),
+            }]),
+            finish_reason: Some("tool_calls".to_string()),
+            usage: ChatUsage::default(),
+        },
+        ChatResponse {
+            message: Message::assistant_text("tool flow complete"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        },
+    ]);
+
+    let mut agent = Agent::new(
+        Arc::new(QueueClient {
+            responses: AsyncMutex::new(responses),
+        }),
+        AgentConfig::default(),
+    );
+    let policy = crate::tools::ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    crate::tools::register_builtin_tools(&mut agent, policy);
+
+    let hook_config = RuntimeExtensionHooksConfig {
+        enabled: true,
+        root: extension_root.clone(),
+    };
+    register_runtime_extension_tool_hook_subscriber(&mut agent, &hook_config);
+
+    let mut runtime = None;
+    let status = run_prompt_with_cancellation(
+        &mut agent,
+        &mut runtime,
+        "read the file",
+        0,
+        pending::<()>(),
+        test_render_options(),
+    )
+    .await
+    .expect("prompt should succeed");
+    assert_eq!(status, PromptRunStatus::Completed);
+
+    let raw = std::fs::read_to_string(&request_log).expect("read request log");
+    let rows = raw
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json row"))
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["hook"], "pre-tool-call");
+    assert_eq!(rows[1]["hook"], "post-tool-call");
+    assert_eq!(rows[0]["payload"]["tool_name"], "read");
+    assert_eq!(rows[1]["payload"]["tool_name"], "read");
+    assert_eq!(rows[1]["payload"]["result"]["is_error"], false);
+}
+
+#[tokio::test]
+async fn regression_tool_hook_subscriber_timeout_does_not_fail_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let read_target = temp.path().join("README.md");
+    std::fs::write(&read_target, "hello from timeout test").expect("write read target");
+
+    let extension_root = temp.path().join("extensions");
+    let extension_dir = extension_root.join("slow-tool-observer");
+    std::fs::create_dir_all(&extension_dir).expect("create extension dir");
+    let hook_script = extension_dir.join("hook.sh");
+    std::fs::write(
+        &hook_script,
+        "#!/usr/bin/env bash\nsleep 1\nprintf '{\"ok\":true}'\n",
+    )
+    .expect("write hook script");
+    make_script_executable(&hook_script);
+    std::fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "slow-tool-observer",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "hook.sh",
+  "hooks": ["pre-tool-call", "post-tool-call"],
+  "timeout_ms": 20
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let responses = VecDeque::from(vec![
+        ChatResponse {
+            message: pi_ai::Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                id: "call-1".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({
+                    "path": read_target.display().to_string(),
+                }),
+            }]),
+            finish_reason: Some("tool_calls".to_string()),
+            usage: ChatUsage::default(),
+        },
+        ChatResponse {
+            message: Message::assistant_text("tool flow survived timeout"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        },
+    ]);
+
+    let mut agent = Agent::new(
+        Arc::new(QueueClient {
+            responses: AsyncMutex::new(responses),
+        }),
+        AgentConfig::default(),
+    );
+    let policy = crate::tools::ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    crate::tools::register_builtin_tools(&mut agent, policy);
+
+    let hook_config = RuntimeExtensionHooksConfig {
+        enabled: true,
+        root: extension_root,
+    };
+    register_runtime_extension_tool_hook_subscriber(&mut agent, &hook_config);
+
+    let mut runtime = None;
+    let status = run_prompt_with_cancellation(
+        &mut agent,
+        &mut runtime,
+        "read the file",
+        0,
+        pending::<()>(),
+        test_render_options(),
+    )
+    .await
+    .expect("prompt should still succeed when hook times out");
+    assert_eq!(status, PromptRunStatus::Completed);
+    assert_eq!(
+        agent
+            .messages()
+            .last()
+            .expect("assistant response")
+            .text_content(),
+        "tool flow survived timeout"
+    );
 }
 
 #[test]

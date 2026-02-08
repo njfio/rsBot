@@ -335,7 +335,7 @@ cargo run -p pi-coding-agent -- \
   --extension-exec-payload-file .pi/extensions/issue-assistant/payload.json
 ```
 
-Enable runtime lifecycle hook dispatch (`run-start` / `run-end`) for prompt turns:
+Enable runtime lifecycle hook dispatch (`run-start`, `run-end`, `pre-tool-call`, `post-tool-call`) for prompt turns:
 
 ```bash
 cargo run -p pi-coding-agent -- \

@@ -271,6 +271,8 @@ pub(crate) use crate::startup_config::{
     build_auth_command_config, build_profile_defaults, default_provider_auth_method,
 };
 use crate::startup_dispatch::run_cli;
+#[cfg(test)]
+pub(crate) use crate::startup_local_runtime::register_runtime_extension_tool_hook_subscriber;
 pub(crate) use crate::startup_local_runtime::{run_local_runtime, LocalRuntimeConfig};
 pub(crate) use crate::startup_model_catalog::{
     resolve_startup_model_catalog, validate_startup_model_catalog,

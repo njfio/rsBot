@@ -73,6 +73,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         enabled: cli.extension_runtime_hooks,
         root: cli.extension_runtime_root.clone(),
     };
+    register_runtime_extension_tool_hook_subscriber(&mut agent, &extension_runtime_hooks);
 
     if let Some(prompt) = resolve_prompt_input(cli)? {
         if cli.orchestrator_mode == CliOrchestratorMode::PlanFirst {
@@ -143,4 +144,93 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         return Ok(());
     }
     run_interactive(agent, session_runtime, interactive_config).await
+}
+
+pub(crate) fn register_runtime_extension_tool_hook_subscriber(
+    agent: &mut Agent,
+    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+) {
+    if !extension_runtime_hooks.enabled {
+        return;
+    }
+
+    let root = extension_runtime_hooks.root.clone();
+    agent.subscribe(move |event| {
+        let dispatch = extension_tool_hook_dispatch(event);
+        let Some((hook, payload)) = dispatch else {
+            return;
+        };
+        let summary = dispatch_extension_runtime_hook(&root, hook, &payload);
+        for diagnostic in summary.diagnostics {
+            eprintln!("{diagnostic}");
+        }
+    });
+}
+
+fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str, Value)> {
+    match event {
+        AgentEvent::ToolExecutionStart {
+            tool_call_id,
+            tool_name,
+            arguments,
+        } => Some((
+            "pre-tool-call",
+            serde_json::json!({
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+            }),
+        )),
+        AgentEvent::ToolExecutionEnd {
+            tool_call_id,
+            tool_name,
+            result,
+        } => Some((
+            "post-tool-call",
+            serde_json::json!({
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "result": {
+                    "is_error": result.is_error,
+                    "content": result.content,
+                },
+            }),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extension_tool_hook_dispatch;
+    use pi_agent_core::{AgentEvent, ToolExecutionResult};
+
+    #[test]
+    fn unit_extension_tool_hook_dispatch_maps_start_event_payload() {
+        let event = AgentEvent::ToolExecutionStart {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "read".to_string(),
+            arguments: serde_json::json!({"path":"README.md"}),
+        };
+        let (hook, payload) = extension_tool_hook_dispatch(&event).expect("dispatch payload");
+        assert_eq!(hook, "pre-tool-call");
+        assert_eq!(payload["tool_call_id"], "call-1");
+        assert_eq!(payload["tool_name"], "read");
+        assert_eq!(payload["arguments"]["path"], "README.md");
+    }
+
+    #[test]
+    fn unit_extension_tool_hook_dispatch_maps_end_event_payload() {
+        let event = AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "read".to_string(),
+            result: ToolExecutionResult::ok(serde_json::json!({"content":"hello"})),
+        };
+        let (hook, payload) = extension_tool_hook_dispatch(&event).expect("dispatch payload");
+        assert_eq!(hook, "post-tool-call");
+        assert_eq!(payload["tool_call_id"], "call-1");
+        assert_eq!(payload["tool_name"], "read");
+        assert_eq!(payload["result"]["is_error"], false);
+        assert_eq!(payload["result"]["content"]["content"], "hello");
+    }
 }
