@@ -16,6 +16,7 @@ Implemented now:
 - Rust-first core architecture (no Node/TypeScript runtime)
 - Tool-call loop (`assistant -> tool -> assistant`) in `tau-agent-core`
 - Multi-provider model routing: `openai/*`, `anthropic/*`, `google/*`
+- OpenAI oauth/session fallback to Codex CLI backend when provider credential-store entry is missing
 - Interactive CLI and one-shot prompt mode
 - Token-by-token CLI output rendering controls
 - Persistent JSONL sessions with branch/resume support
@@ -100,6 +101,21 @@ export ANTHROPIC_API_KEY=...your-key...
 # Google Gemini
 export GEMINI_API_KEY=...your-key...
 ```
+
+Use OpenAI with Codex subscription login (without setting `OPENAI_API_KEY`):
+
+```bash
+codex login
+
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --openai-auth-mode oauth-token \
+  --openai-codex-backend=true \
+  --openai-codex-cli codex \
+  --openai-codex-timeout-ms 120000
+```
+
+`tau-coding-agent` prefers provider credential-store oauth/session entries when present; if the OpenAI entry is missing and Codex backend is enabled, it falls back to `codex exec` for local subscription-backed runs.
 
 Run interactive mode:
 

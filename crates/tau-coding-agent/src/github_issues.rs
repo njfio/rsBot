@@ -1608,7 +1608,7 @@ impl GithubIssuesBridgeRuntime {
                     )
                 } else {
                     let total = lineage.len();
-                    let capped_limit = limit.min(CHAT_SHOW_MAX_LIMIT).max(1);
+                    let capped_limit = limit.clamp(1, CHAT_SHOW_MAX_LIMIT);
                     let show_count = total.min(capped_limit);
                     let start_index = total.saturating_sub(show_count);
                     let mut lines = vec![format!(

@@ -6,6 +6,7 @@ mod channel_store;
 mod channel_store_admin;
 mod cli_args;
 mod cli_types;
+mod codex_cli_client;
 mod commands;
 mod credentials;
 mod diagnostics_commands;

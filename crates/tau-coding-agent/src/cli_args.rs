@@ -150,6 +150,42 @@ pub(crate) struct Cli {
     pub(crate) openai_auth_mode: CliProviderAuthMode,
 
     #[arg(
+        long = "openai-codex-backend",
+        env = "TAU_OPENAI_CODEX_BACKEND",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Enable Codex CLI backend for OpenAI oauth/session auth modes"
+    )]
+    pub(crate) openai_codex_backend: bool,
+
+    #[arg(
+        long = "openai-codex-cli",
+        env = "TAU_OPENAI_CODEX_CLI",
+        default_value = "codex",
+        help = "Codex CLI executable path used by OpenAI oauth/session backend"
+    )]
+    pub(crate) openai_codex_cli: String,
+
+    #[arg(
+        long = "openai-codex-args",
+        env = "TAU_OPENAI_CODEX_ARGS",
+        value_delimiter = ',',
+        help = "Additional argument(s) forwarded to codex exec when OpenAI Codex backend is enabled"
+    )]
+    pub(crate) openai_codex_args: Vec<String>,
+
+    #[arg(
+        long = "openai-codex-timeout-ms",
+        env = "TAU_OPENAI_CODEX_TIMEOUT_MS",
+        default_value_t = 120_000,
+        help = "Timeout in milliseconds for each Codex CLI request"
+    )]
+    pub(crate) openai_codex_timeout_ms: u64,
+
+    #[arg(
         long = "anthropic-auth-mode",
         env = "TAU_ANTHROPIC_AUTH_MODE",
         value_enum,
