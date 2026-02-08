@@ -587,6 +587,14 @@ impl SlackBridgeEvent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SlackCommand {
+    Help,
+    Status,
+    Stop,
+    Invalid { message: String },
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct PromptUsageSummary {
     input_tokens: u64,
@@ -618,8 +626,22 @@ struct DownloadedSlackFile {
 
 #[derive(Debug)]
 struct ActiveChannelRun {
+    run_id: String,
+    event_key: String,
+    started_unix_ms: u64,
+    started: Instant,
+    cancel_tx: watch::Sender<bool>,
     handle: tokio::task::JoinHandle<RunTaskResult>,
-    _cancel_tx: watch::Sender<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct SlackLatestRun {
+    run_id: String,
+    event_key: String,
+    status: String,
+    started_unix_ms: u64,
+    completed_unix_ms: u64,
+    duration_ms: u64,
 }
 
 #[derive(Debug)]
@@ -660,6 +682,7 @@ struct SlackBridgeRuntime {
     bot_user_id: String,
     state_dir: PathBuf,
     active_runs: HashMap<String, ActiveChannelRun>,
+    latest_runs: HashMap<String, SlackLatestRun>,
     channel_queues: HashMap<String, VecDeque<SlackBridgeEvent>>,
 }
 
@@ -697,6 +720,7 @@ impl SlackBridgeRuntime {
             bot_user_id,
             state_dir,
             active_runs: HashMap::new(),
+            latest_runs: HashMap::new(),
             channel_queues: HashMap::new(),
         })
     }
@@ -851,6 +875,11 @@ impl SlackBridgeRuntime {
             self.state_store.save()?;
         }
 
+        if let Some(command) = parse_slack_command(&event, &self.bot_user_id) {
+            self.handle_slack_command(&event, command, report).await?;
+            return Ok(());
+        }
+
         self.channel_queues
             .entry(event.channel_id.clone())
             .or_default()
@@ -902,14 +931,138 @@ impl SlackBridgeRuntime {
             self.active_runs.insert(
                 channel,
                 ActiveChannelRun {
+                    run_id: run_id.clone(),
+                    event_key: event.key.clone(),
+                    started_unix_ms,
+                    started: Instant::now(),
+                    cancel_tx,
                     handle,
-                    _cancel_tx: cancel_tx,
                 },
             );
             report.queued_events = report.queued_events.saturating_add(1);
         }
 
         Ok(())
+    }
+
+    async fn handle_slack_command(
+        &mut self,
+        event: &SlackBridgeEvent,
+        command: SlackCommand,
+        report: &mut PollCycleReport,
+    ) -> Result<()> {
+        let now_unix_ms = current_unix_timestamp_ms();
+        let reply_thread_ts = event.reply_thread_ts();
+        let (message, command_name, status, extra) = match command {
+            SlackCommand::Help => (slack_command_usage(), "help", "reported", None),
+            SlackCommand::Status => (
+                self.render_channel_status(&event.channel_id),
+                "status",
+                "reported",
+                None,
+            ),
+            SlackCommand::Stop => {
+                if let Some(active) = self.active_runs.get(&event.channel_id) {
+                    if *active.cancel_tx.borrow() {
+                        (
+                            format!(
+                                "Stop has already been requested for run `{}`.",
+                                active.run_id
+                            ),
+                            "stop",
+                            "acknowledged",
+                            Some(json!({"run_id": active.run_id})),
+                        )
+                    } else {
+                        let _ = active.cancel_tx.send(true);
+                        (
+                            format!(
+                                "Cancellation requested for run `{}` (event `{}`).",
+                                active.run_id, active.event_key
+                            ),
+                            "stop",
+                            "acknowledged",
+                            Some(json!({"run_id": active.run_id, "event_key": active.event_key})),
+                        )
+                    }
+                } else {
+                    (
+                        "No active run for this channel. Current state is idle.".to_string(),
+                        "stop",
+                        "acknowledged",
+                        None,
+                    )
+                }
+            }
+            SlackCommand::Invalid { message } => (message, "invalid", "usage_reported", None),
+        };
+
+        let posted = self
+            .slack_client
+            .post_message(&event.channel_id, &message, reply_thread_ts)
+            .await?;
+        let mut payload = json!({
+            "timestamp_unix_ms": now_unix_ms,
+            "event_key": event.key,
+            "channel_id": event.channel_id,
+            "command": command_name,
+            "status": status,
+            "posted_ts": posted.ts,
+        });
+        if let Some(extra) = extra {
+            payload["details"] = extra;
+        }
+        self.outbound_log.append(&payload)?;
+        report.completed_runs = report.completed_runs.saturating_add(1);
+        Ok(())
+    }
+
+    fn render_channel_status(&self, channel_id: &str) -> String {
+        let active = self.active_runs.get(channel_id);
+        let latest = self.latest_runs.get(channel_id);
+        let state = if active.is_some() { "running" } else { "idle" };
+        let mut lines = vec![format!("rsBot status for channel {channel_id}: {state}")];
+        if let Some(active) = active {
+            lines.push(format!("active_run_id: {}", active.run_id));
+            lines.push(format!("active_event_key: {}", active.event_key));
+            lines.push(format!(
+                "active_elapsed_ms: {}",
+                active.started.elapsed().as_millis()
+            ));
+            lines.push(format!(
+                "active_started_unix_ms: {}",
+                active.started_unix_ms
+            ));
+            lines.push(format!(
+                "cancellation_requested: {}",
+                if *active.cancel_tx.borrow() {
+                    "true"
+                } else {
+                    "false"
+                }
+            ));
+        } else {
+            lines.push("active_run_id: none".to_string());
+        }
+
+        if let Some(latest) = latest {
+            lines.push(format!("latest_run_id: {}", latest.run_id));
+            lines.push(format!("latest_event_key: {}", latest.event_key));
+            lines.push(format!("latest_status: {}", latest.status));
+            lines.push(format!(
+                "latest_started_unix_ms: {}",
+                latest.started_unix_ms
+            ));
+            lines.push(format!(
+                "latest_completed_unix_ms: {}",
+                latest.completed_unix_ms
+            ));
+            lines.push(format!("latest_duration_ms: {}", latest.duration_ms));
+        } else {
+            lines.push("latest_run_id: none".to_string());
+        }
+
+        lines.join("\n")
     }
 
     async fn drain_finished_runs(&mut self, report: &mut PollCycleReport) -> Result<()> {
@@ -925,6 +1078,17 @@ impl SlackBridgeRuntime {
             };
             match active.handle.await {
                 Ok(result) => {
+                    self.latest_runs.insert(
+                        channel.clone(),
+                        SlackLatestRun {
+                            run_id: result.run_id.clone(),
+                            event_key: result.event_key.clone(),
+                            status: result.status.clone(),
+                            started_unix_ms: result.started_unix_ms,
+                            completed_unix_ms: result.completed_unix_ms,
+                            duration_ms: result.duration_ms,
+                        },
+                    );
                     self.outbound_log.append(&json!({
                         "timestamp_unix_ms": current_unix_timestamp_ms(),
                         "event_key": result.event_key,
@@ -1395,17 +1559,22 @@ fn event_is_stale(event: &SlackBridgeEvent, max_event_age_seconds: u64, now_unix
     now_unix_ms.saturating_sub(event.occurred_unix_ms) > max_age_ms
 }
 
-fn render_event_prompt(
-    event: &SlackBridgeEvent,
-    bot_user_id: &str,
-    downloaded_files: &[DownloadedSlackFile],
-) -> String {
+fn normalize_slack_message_text(event: &SlackBridgeEvent, bot_user_id: &str) -> String {
     let mut message_text = event.text.trim().to_string();
     if event.kind == SlackBridgeEventKind::AppMention {
         let mention = format!("<@{bot_user_id}>");
         message_text = message_text.replace(&mention, "");
         message_text = message_text.trim().to_string();
     }
+    message_text
+}
+
+fn render_event_prompt(
+    event: &SlackBridgeEvent,
+    bot_user_id: &str,
+    downloaded_files: &[DownloadedSlackFile],
+) -> String {
+    let message_text = normalize_slack_message_text(event, bot_user_id);
 
     let mut prompt = format!(
         "You are responding as rsBot inside Slack.\nChannel: {}\nUser: <@{}>\nEvent kind: {}\nMessage ts: {}\n\nUser message:\n{}",
@@ -1438,6 +1607,73 @@ fn render_event_prompt(
 
     prompt.push_str("\nProvide a direct, concise Slack-ready response.");
     prompt
+}
+
+fn slack_command_usage() -> String {
+    [
+        "Supported `/pi` commands:",
+        "- `/pi help`",
+        "- `/pi status`",
+        "- `/pi stop`",
+    ]
+    .join("\n")
+}
+
+fn parse_slack_command(event: &SlackBridgeEvent, bot_user_id: &str) -> Option<SlackCommand> {
+    let normalized = normalize_slack_message_text(event, bot_user_id);
+    let trimmed = normalized.trim();
+    let mut pieces = trimmed.split_whitespace();
+    let command_prefix = pieces.next()?;
+    if command_prefix != "/pi" {
+        return None;
+    }
+
+    let args = trimmed[command_prefix.len()..].trim();
+    if args.is_empty() {
+        return Some(SlackCommand::Invalid {
+            message: slack_command_usage(),
+        });
+    }
+    let mut parts = args.splitn(2, char::is_whitespace);
+    let command = parts.next().unwrap_or_default();
+    let remainder = parts.next().unwrap_or_default().trim();
+    let parsed = match command {
+        "help" => {
+            if remainder.is_empty() {
+                SlackCommand::Help
+            } else {
+                SlackCommand::Invalid {
+                    message: "Usage: /pi help".to_string(),
+                }
+            }
+        }
+        "status" => {
+            if remainder.is_empty() {
+                SlackCommand::Status
+            } else {
+                SlackCommand::Invalid {
+                    message: "Usage: /pi status".to_string(),
+                }
+            }
+        }
+        "stop" => {
+            if remainder.is_empty() {
+                SlackCommand::Stop
+            } else {
+                SlackCommand::Invalid {
+                    message: "Usage: /pi stop".to_string(),
+                }
+            }
+        }
+        _ => SlackCommand::Invalid {
+            message: format!(
+                "Unknown command `{}`.\n\n{}",
+                command,
+                slack_command_usage()
+            ),
+        },
+    };
+    Some(parsed)
 }
 
 fn render_slack_response(
@@ -1652,10 +1888,11 @@ mod tests {
 
     use super::{
         event_is_stale, normalize_artifact_retention_days, normalize_socket_envelope,
-        parse_socket_envelope, render_event_prompt, render_slack_artifact_markdown,
-        render_slack_response, run_prompt_for_event, DownloadedSlackFile, PollCycleReport,
-        SlackApiClient, SlackBridgeEvent, SlackBridgeEventKind, SlackBridgeRuntime,
-        SlackBridgeRuntimeConfig, SlackBridgeStateStore, SlackSocketEnvelope,
+        parse_slack_command, parse_socket_envelope, render_event_prompt,
+        render_slack_artifact_markdown, render_slack_response, run_prompt_for_event,
+        DownloadedSlackFile, PollCycleReport, SlackApiClient, SlackBridgeEvent,
+        SlackBridgeEventKind, SlackBridgeRuntime, SlackBridgeRuntimeConfig, SlackBridgeStateStore,
+        SlackCommand, SlackSocketEnvelope,
     };
     use crate::{
         channel_store::{ChannelArtifactRecord, ChannelStore},
@@ -1735,6 +1972,22 @@ mod tests {
             retry_max_attempts: 3,
             retry_base_delay_ms: 5,
             artifact_retention_days: 30,
+        }
+    }
+
+    fn test_event_with_text(kind: SlackBridgeEventKind, text: &str) -> SlackBridgeEvent {
+        SlackBridgeEvent {
+            key: "k1".to_string(),
+            kind,
+            event_id: "Ev1".to_string(),
+            occurred_unix_ms: 1,
+            channel_id: "C1".to_string(),
+            user_id: "U1".to_string(),
+            text: text.to_string(),
+            ts: "1.1".to_string(),
+            thread_ts: None,
+            files: vec![],
+            raw_payload: json!({}),
         }
     }
 
@@ -1953,6 +2206,40 @@ mod tests {
         assert!(prompt.contains("Downloaded attachments"));
         assert!(prompt.contains("report.txt"));
         assert!(!prompt.contains("<@UBOT>"));
+    }
+
+    #[test]
+    fn unit_parse_slack_command_supports_known_commands() {
+        let mention = test_event_with_text(SlackBridgeEventKind::AppMention, "<@UBOT> /pi help");
+        assert_eq!(
+            parse_slack_command(&mention, "UBOT"),
+            Some(SlackCommand::Help)
+        );
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/pi status");
+        assert_eq!(parse_slack_command(&dm, "UBOT"), Some(SlackCommand::Status));
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/pi stop");
+        assert_eq!(parse_slack_command(&dm, "UBOT"), Some(SlackCommand::Stop));
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "hello");
+        assert_eq!(parse_slack_command(&dm, "UBOT"), None);
+    }
+
+    #[test]
+    fn regression_parse_slack_command_rejects_invalid_forms() {
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/pi");
+        assert!(matches!(
+            parse_slack_command(&dm, "UBOT"),
+            Some(SlackCommand::Invalid { .. })
+        ));
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/pi help extra");
+        assert!(matches!(
+            parse_slack_command(&dm, "UBOT"),
+            Some(SlackCommand::Invalid { .. })
+        ));
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/pi unknown");
+        assert!(matches!(
+            parse_slack_command(&dm, "UBOT"),
+            Some(SlackCommand::Invalid { .. })
+        ));
     }
 
     #[test]
@@ -2224,6 +2511,108 @@ mod tests {
         let artifact_index = std::fs::read_to_string(channel_dir.join("artifacts/index.jsonl"))
             .expect("artifact index exists");
         assert!(artifact_index.contains("\"artifact_type\":\"slack-reply\""));
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_commands_post_control_messages() {
+        let server = MockServer::start();
+        let help_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/chat.postMessage")
+                .body_includes("\"channel\":\"C1\"")
+                .body_includes("Supported `/pi` commands:");
+            then.status(200)
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "4.0"}));
+        });
+        let status_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/chat.postMessage")
+                .body_includes("\"channel\":\"C1\"")
+                .body_includes("rsBot status for channel C1: idle");
+            then.status(200)
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "4.1"}));
+        });
+        let stop_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/chat.postMessage")
+                .body_includes("\"channel\":\"C1\"")
+                .body_includes("No active run for this channel. Current state is idle.");
+            then.status(200)
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "4.2"}));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_config(&server.base_url(), temp.path());
+        let mut runtime = SlackBridgeRuntime::new(config).await.expect("runtime");
+
+        let now_seconds = current_unix_timestamp_ms() / 1000;
+        let help = SlackSocketEnvelope {
+            envelope_id: "env-help".to_string(),
+            envelope_type: "events_api".to_string(),
+            payload: json!({
+                "type": "event_callback",
+                "event_id": "EvHelp",
+                "event_time": now_seconds,
+                "event": {
+                    "type": "app_mention",
+                    "user": "U1",
+                    "channel": "C1",
+                    "text": "<@UBOT> /pi help",
+                    "ts": "12.1"
+                }
+            }),
+        };
+        let status = SlackSocketEnvelope {
+            envelope_id: "env-status".to_string(),
+            envelope_type: "events_api".to_string(),
+            payload: json!({
+                "type": "event_callback",
+                "event_id": "EvStatus",
+                "event_time": now_seconds,
+                "event": {
+                    "type": "app_mention",
+                    "user": "U1",
+                    "channel": "C1",
+                    "text": "<@UBOT> /pi status",
+                    "ts": "12.2"
+                }
+            }),
+        };
+        let stop = SlackSocketEnvelope {
+            envelope_id: "env-stop".to_string(),
+            envelope_type: "events_api".to_string(),
+            payload: json!({
+                "type": "event_callback",
+                "event_id": "EvStop",
+                "event_time": now_seconds,
+                "event": {
+                    "type": "app_mention",
+                    "user": "U1",
+                    "channel": "C1",
+                    "text": "<@UBOT> /pi stop",
+                    "ts": "12.3"
+                }
+            }),
+        };
+
+        let mut report = PollCycleReport::default();
+        runtime
+            .handle_envelope(help, &mut report)
+            .await
+            .expect("help");
+        runtime
+            .handle_envelope(status, &mut report)
+            .await
+            .expect("status");
+        runtime
+            .handle_envelope(stop, &mut report)
+            .await
+            .expect("stop");
+
+        help_post.assert_calls(1);
+        status_post.assert_calls(1);
+        stop_post.assert_calls(1);
+        assert_eq!(report.queued_events, 0);
     }
 
     #[tokio::test]

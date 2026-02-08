@@ -294,6 +294,7 @@ In Slack bridge mode:
 - inbound/outbound event payloads are persisted as JSONL logs for replay/debugging
 - duplicate deliveries are deduplicated via persisted event keys
 - stale events are skipped based on `--slack-max-event-age-seconds`
+- `/pi help`, `/pi status`, and `/pi stop` are handled as Slack control commands (no run started)
 - attached files are downloaded into channel-local attachment folders and surfaced in prompt context
 - each completed run emits a markdown artifact + metadata under `channel-store/channels/slack/<channel>/artifacts/`
 - set `--slack-artifact-retention-days 0` to disable artifact expiration
