@@ -2823,6 +2823,66 @@ fn package_validate_flag_reports_manifest_summary_and_exits() {
 }
 
 #[test]
+fn extension_validate_flag_reports_manifest_summary_and_exits() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "bin/assistant",
+  "hooks": ["run-start", "run-end"],
+  "permissions": ["read-files", "network"],
+  "timeout_ms": 60000
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--extension-validate",
+        manifest_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("extension validate:"))
+        .stdout(predicate::str::contains("id=issue-assistant"))
+        .stdout(predicate::str::contains("permissions=2"))
+        .stdout(predicate::str::contains("timeout_ms=60000"));
+}
+
+#[test]
+fn regression_extension_validate_flag_rejects_invalid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 9,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "bin/assistant"
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let mut cmd = binary_command();
+    cmd.args([
+        "--extension-validate",
+        manifest_path.to_str().expect("utf8 path"),
+    ]);
+
+    cmd.assert().failure().stderr(predicate::str::contains(
+        "unsupported extension manifest schema",
+    ));
+}
+
+#[test]
 fn regression_package_validate_flag_rejects_invalid_manifest() {
     let temp = tempdir().expect("tempdir");
     let manifest_path = temp.path().join("package.json");

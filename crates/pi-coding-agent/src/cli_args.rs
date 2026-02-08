@@ -528,6 +528,14 @@ pub(crate) struct Cli {
     pub(crate) channel_store_repair: Option<String>,
 
     #[arg(
+        long = "extension-validate",
+        env = "PI_EXTENSION_VALIDATE",
+        value_name = "path",
+        help = "Validate an extension manifest JSON file and exit"
+    )]
+    pub(crate) extension_validate: Option<PathBuf>,
+
+    #[arg(
         long = "package-validate",
         env = "PI_PACKAGE_VALIDATE",
         conflicts_with = "package_show",

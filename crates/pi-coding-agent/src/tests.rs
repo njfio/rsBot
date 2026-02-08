@@ -91,6 +91,7 @@ use super::{
     SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE,
     SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
+use crate::execute_extension_validate_command;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::resolve_api_key;
 use crate::session::{SessionImportMode, SessionStore};
@@ -254,6 +255,7 @@ fn test_cli() -> Cli {
         channel_store_root: PathBuf::from(".pi/channel-store"),
         channel_store_inspect: None,
         channel_store_repair: None,
+        extension_validate: None,
         package_validate: None,
         package_show: None,
         package_install: None,
@@ -536,6 +538,21 @@ fn functional_cli_model_catalog_flags_accept_overrides() {
     assert_eq!(cli.model_catalog_cache, PathBuf::from("/tmp/catalog.json"));
     assert!(cli.model_catalog_offline);
     assert_eq!(cli.model_catalog_stale_after_hours, 48);
+}
+
+#[test]
+fn unit_cli_extension_validate_flag_defaults_to_none() {
+    let cli = Cli::parse_from(["pi-rs"]);
+    assert!(cli.extension_validate.is_none());
+}
+
+#[test]
+fn functional_cli_extension_validate_flag_accepts_path() {
+    let cli = Cli::parse_from(["pi-rs", "--extension-validate", "extensions/issue.json"]);
+    assert_eq!(
+        cli.extension_validate,
+        Some(PathBuf::from("extensions/issue.json"))
+    );
 }
 
 #[test]
@@ -6731,6 +6748,55 @@ fn regression_execute_channel_store_admin_repair_removes_invalid_lines() {
     assert_eq!(report.expired_artifacts, 0);
     assert_eq!(report.active_artifacts, 0);
     assert!(!store.channel_dir().join(expired.relative_path).exists());
+}
+
+#[test]
+fn functional_execute_extension_validate_command_succeeds_for_valid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "bin/assistant",
+  "hooks": ["run-start", "run-end"],
+  "permissions": ["read-files", "network"],
+  "timeout_ms": 60000
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let mut cli = test_cli();
+    cli.extension_validate = Some(manifest_path);
+    execute_extension_validate_command(&cli).expect("extension validate should succeed");
+}
+
+#[test]
+fn regression_execute_extension_validate_command_rejects_invalid_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "../escape.sh"
+}"#,
+    )
+    .expect("write extension manifest");
+
+    let mut cli = test_cli();
+    cli.extension_validate = Some(manifest_path);
+    let error =
+        execute_extension_validate_command(&cli).expect_err("unsafe entrypoint should fail");
+    assert!(error
+        .to_string()
+        .contains("must not contain parent traversals"));
 }
 
 #[test]

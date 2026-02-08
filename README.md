@@ -304,6 +304,13 @@ cargo run -p pi-coding-agent -- \
 
 Inspect now reports artifact health counters (records, invalid index lines, active/expired), and repair also purges expired artifacts plus invalid artifact index rows.
 
+Validate an extension manifest JSON and exit:
+
+```bash
+cargo run -p pi-coding-agent -- \
+  --extension-validate .pi/extensions/issue-assistant/extension.json
+```
+
 Validate a reusable package manifest JSON and exit:
 
 ```bash
