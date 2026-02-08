@@ -436,6 +436,10 @@ fn dispatch_rpc_frame_for_serve(
             remember_closed_run_state(state, &run_id, RpcTerminalRunState::cancelled());
             let mut responses = vec![dispatch_rpc_frame(frame)?];
             responses.push(build_run_cancel_stream_frame(&frame.request_id, &run_id));
+            responses.push(build_run_cancel_assistant_stream_frame(
+                &frame.request_id,
+                &run_id,
+            ));
             Ok(responses)
         }
         RpcFrameKind::RunComplete => {
@@ -450,6 +454,10 @@ fn dispatch_rpc_frame_for_serve(
             remember_closed_run_state(state, &run_id, RpcTerminalRunState::completed());
             let mut responses = vec![dispatch_rpc_frame(frame)?];
             responses.push(build_run_complete_stream_frame(&frame.request_id, &run_id));
+            responses.push(build_run_complete_assistant_stream_frame(
+                &frame.request_id,
+                &run_id,
+            ));
             Ok(responses)
         }
         RpcFrameKind::RunFail => {
@@ -469,6 +477,11 @@ fn dispatch_rpc_frame_for_serve(
                 &run_id,
                 &reason,
             ));
+            responses.push(build_run_failed_assistant_stream_frame(
+                &frame.request_id,
+                &run_id,
+                &reason,
+            ));
             Ok(responses)
         }
         RpcFrameKind::RunTimeout => {
@@ -484,6 +497,11 @@ fn dispatch_rpc_frame_for_serve(
             remember_closed_run_state(state, &run_id, RpcTerminalRunState::timed_out(&reason));
             let mut responses = vec![dispatch_rpc_frame(frame)?];
             responses.push(build_run_timeout_stream_frame(
+                &frame.request_id,
+                &run_id,
+                &reason,
+            ));
+            responses.push(build_run_timeout_assistant_stream_frame(
                 &frame.request_id,
                 &run_id,
                 &reason,
@@ -844,6 +862,16 @@ fn build_run_complete_stream_frame(request_id: &str, run_id: &str) -> RpcRespons
     )
 }
 
+fn build_run_complete_assistant_stream_frame(request_id: &str, run_id: &str) -> RpcResponseFrame {
+    build_run_terminal_assistant_stream_frame(
+        request_id,
+        run_id,
+        "completed",
+        None,
+        "run completed",
+    )
+}
+
 fn build_run_cancel_stream_frame(request_id: &str, run_id: &str) -> RpcResponseFrame {
     build_response_frame(
         request_id,
@@ -856,6 +884,16 @@ fn build_run_cancel_stream_frame(request_id: &str, run_id: &str) -> RpcResponseF
             "mode": RPC_STUB_MODE,
             "sequence": 2,
         }),
+    )
+}
+
+fn build_run_cancel_assistant_stream_frame(request_id: &str, run_id: &str) -> RpcResponseFrame {
+    build_run_terminal_assistant_stream_frame(
+        request_id,
+        run_id,
+        "cancelled",
+        None,
+        "run cancelled",
     )
 }
 
@@ -872,6 +910,20 @@ fn build_run_failed_stream_frame(request_id: &str, run_id: &str, reason: &str) -
             "mode": RPC_STUB_MODE,
             "sequence": 2,
         }),
+    )
+}
+
+fn build_run_failed_assistant_stream_frame(
+    request_id: &str,
+    run_id: &str,
+    reason: &str,
+) -> RpcResponseFrame {
+    build_run_terminal_assistant_stream_frame(
+        request_id,
+        run_id,
+        "failed",
+        Some(reason),
+        &format!("run failed: {reason}"),
     )
 }
 
@@ -892,6 +944,45 @@ fn build_run_timeout_stream_frame(
             "mode": RPC_STUB_MODE,
             "sequence": 2,
         }),
+    )
+}
+
+fn build_run_timeout_assistant_stream_frame(
+    request_id: &str,
+    run_id: &str,
+    reason: &str,
+) -> RpcResponseFrame {
+    build_run_terminal_assistant_stream_frame(
+        request_id,
+        run_id,
+        "timed_out",
+        Some(reason),
+        &format!("run timed out: {reason}"),
+    )
+}
+
+fn build_run_terminal_assistant_stream_frame(
+    request_id: &str,
+    run_id: &str,
+    terminal_state: &str,
+    reason: Option<&str>,
+    delta: &str,
+) -> RpcResponseFrame {
+    let mut payload = serde_json::Map::new();
+    payload.insert("run_id".to_string(), json!(run_id));
+    payload.insert("delta".to_string(), json!(delta));
+    payload.insert("mode".to_string(), json!(RPC_STUB_MODE));
+    payload.insert("sequence".to_string(), json!(3));
+    payload.insert("final".to_string(), json!(true));
+    payload.insert("terminal".to_string(), json!(true));
+    payload.insert("terminal_state".to_string(), json!(terminal_state));
+    if let Some(reason) = reason {
+        payload.insert("reason".to_string(), json!(reason));
+    }
+    build_response_frame(
+        request_id,
+        RPC_RUN_STREAM_ASSISTANT_TEXT_KIND,
+        Value::Object(payload),
     )
 }
 
@@ -1321,6 +1412,43 @@ mod tests {
     }
 
     #[test]
+    fn unit_dispatch_rpc_frame_for_serve_terminal_assistant_frame_shape_is_stable() {
+        let mut state = RpcServeSessionState::default();
+        let start = parse_rpc_frame(
+            r#"{
+  "schema_version": 1,
+  "request_id": "req-start",
+  "kind": "run.start",
+  "payload": {"prompt":"hello","run_id":"run-terminal"}
+}"#,
+        )
+        .expect("parse start");
+        let start_responses =
+            dispatch_rpc_frame_for_serve(&start, &mut state).expect("dispatch start");
+        assert_eq!(start_responses.len(), 3);
+
+        let complete = parse_rpc_frame(
+            r#"{
+  "schema_version": 1,
+  "request_id": "req-complete",
+  "kind": "run.complete",
+  "payload": {"run_id":"run-terminal"}
+}"#,
+        )
+        .expect("parse complete");
+        let complete_responses =
+            dispatch_rpc_frame_for_serve(&complete, &mut state).expect("dispatch complete");
+        assert_eq!(complete_responses.len(), 3);
+        assert_eq!(complete_responses[2].kind, "run.stream.assistant_text");
+        assert_eq!(complete_responses[2].payload["run_id"], "run-terminal");
+        assert_eq!(complete_responses[2].payload["delta"], "run completed");
+        assert_eq!(complete_responses[2].payload["final"], true);
+        assert_eq!(complete_responses[2].payload["terminal"], true);
+        assert_eq!(complete_responses[2].payload["terminal_state"], "completed");
+        assert_eq!(complete_responses[2].payload["sequence"], 3);
+    }
+
+    #[test]
     fn functional_validate_rpc_frame_file_reports_roundtrip() {
         let temp = tempdir().expect("tempdir");
         let frame_path = temp.path().join("frame.json");
@@ -1741,7 +1869,7 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 8);
+        assert_eq!(rows.len(), 9);
         assert_eq!(rows[0]["request_id"], "req-cap");
         assert_eq!(rows[0]["kind"], "capabilities.response");
         assert_eq!(rows[1]["request_id"], "req-start");
@@ -1770,13 +1898,21 @@ not-json
         assert_eq!(rows[6]["payload"]["event"], "run.cancelled");
         assert_eq!(rows[6]["payload"]["terminal"], true);
         assert_eq!(rows[6]["payload"]["terminal_state"], "cancelled");
-        assert_eq!(rows[7]["request_id"], "req-status-inactive");
-        assert_eq!(rows[7]["kind"], "run.status");
-        assert_eq!(rows[7]["payload"]["active"], false);
-        assert_eq!(rows[7]["payload"]["known"], true);
-        assert_eq!(rows[7]["payload"]["status"], "cancelled");
+        assert_eq!(rows[7]["request_id"], "req-cancel");
+        assert_eq!(rows[7]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[7]["payload"]["run_id"], "run-req-start");
+        assert_eq!(rows[7]["payload"]["delta"], "run cancelled");
+        assert_eq!(rows[7]["payload"]["final"], true);
         assert_eq!(rows[7]["payload"]["terminal"], true);
         assert_eq!(rows[7]["payload"]["terminal_state"], "cancelled");
+        assert_eq!(rows[7]["payload"]["sequence"], 3);
+        assert_eq!(rows[8]["request_id"], "req-status-inactive");
+        assert_eq!(rows[8]["kind"], "run.status");
+        assert_eq!(rows[8]["payload"]["active"], false);
+        assert_eq!(rows[8]["payload"]["known"], true);
+        assert_eq!(rows[8]["payload"]["status"], "cancelled");
+        assert_eq!(rows[8]["payload"]["terminal"], true);
+        assert_eq!(rows[8]["payload"]["terminal_state"], "cancelled");
     }
 
     #[test]
@@ -1798,7 +1934,7 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 8);
         assert_eq!(rows[0]["request_id"], "req-start");
         assert_eq!(rows[0]["kind"], "run.accepted");
         assert_eq!(rows[1]["request_id"], "req-start");
@@ -1817,13 +1953,21 @@ not-json
         assert_eq!(rows[5]["payload"]["event"], "run.completed");
         assert_eq!(rows[5]["payload"]["terminal"], true);
         assert_eq!(rows[5]["payload"]["terminal_state"], "completed");
-        assert_eq!(rows[6]["request_id"], "req-status-inactive");
-        assert_eq!(rows[6]["kind"], "run.status");
-        assert_eq!(rows[6]["payload"]["active"], false);
-        assert_eq!(rows[6]["payload"]["known"], true);
-        assert_eq!(rows[6]["payload"]["status"], "completed");
+        assert_eq!(rows[6]["request_id"], "req-complete");
+        assert_eq!(rows[6]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[6]["payload"]["run_id"], "run-req-start");
+        assert_eq!(rows[6]["payload"]["delta"], "run completed");
+        assert_eq!(rows[6]["payload"]["final"], true);
         assert_eq!(rows[6]["payload"]["terminal"], true);
         assert_eq!(rows[6]["payload"]["terminal_state"], "completed");
+        assert_eq!(rows[6]["payload"]["sequence"], 3);
+        assert_eq!(rows[7]["request_id"], "req-status-inactive");
+        assert_eq!(rows[7]["kind"], "run.status");
+        assert_eq!(rows[7]["payload"]["active"], false);
+        assert_eq!(rows[7]["payload"]["known"], true);
+        assert_eq!(rows[7]["payload"]["status"], "completed");
+        assert_eq!(rows[7]["payload"]["terminal"], true);
+        assert_eq!(rows[7]["payload"]["terminal_state"], "completed");
     }
 
     #[test]
@@ -1845,7 +1989,7 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 8);
         assert_eq!(rows[0]["request_id"], "req-start");
         assert_eq!(rows[0]["kind"], "run.accepted");
         assert_eq!(rows[1]["request_id"], "req-start");
@@ -1866,14 +2010,23 @@ not-json
         assert_eq!(rows[5]["payload"]["reason"], "provider timeout");
         assert_eq!(rows[5]["payload"]["terminal"], true);
         assert_eq!(rows[5]["payload"]["terminal_state"], "failed");
-        assert_eq!(rows[6]["request_id"], "req-status-inactive");
-        assert_eq!(rows[6]["kind"], "run.status");
-        assert_eq!(rows[6]["payload"]["active"], false);
-        assert_eq!(rows[6]["payload"]["known"], true);
-        assert_eq!(rows[6]["payload"]["status"], "failed");
+        assert_eq!(rows[6]["request_id"], "req-fail");
+        assert_eq!(rows[6]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[6]["payload"]["run_id"], "run-req-start");
+        assert_eq!(rows[6]["payload"]["delta"], "run failed: provider timeout");
+        assert_eq!(rows[6]["payload"]["final"], true);
         assert_eq!(rows[6]["payload"]["terminal"], true);
         assert_eq!(rows[6]["payload"]["terminal_state"], "failed");
         assert_eq!(rows[6]["payload"]["reason"], "provider timeout");
+        assert_eq!(rows[6]["payload"]["sequence"], 3);
+        assert_eq!(rows[7]["request_id"], "req-status-inactive");
+        assert_eq!(rows[7]["kind"], "run.status");
+        assert_eq!(rows[7]["payload"]["active"], false);
+        assert_eq!(rows[7]["payload"]["known"], true);
+        assert_eq!(rows[7]["payload"]["status"], "failed");
+        assert_eq!(rows[7]["payload"]["terminal"], true);
+        assert_eq!(rows[7]["payload"]["terminal_state"], "failed");
+        assert_eq!(rows[7]["payload"]["reason"], "provider timeout");
     }
 
     #[test]
@@ -1895,7 +2048,7 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 8);
         assert_eq!(rows[0]["request_id"], "req-start");
         assert_eq!(rows[0]["kind"], "run.accepted");
         assert_eq!(rows[1]["request_id"], "req-start");
@@ -1916,14 +2069,23 @@ not-json
         assert_eq!(rows[5]["payload"]["reason"], "client timeout");
         assert_eq!(rows[5]["payload"]["terminal"], true);
         assert_eq!(rows[5]["payload"]["terminal_state"], "timed_out");
-        assert_eq!(rows[6]["request_id"], "req-status-inactive");
-        assert_eq!(rows[6]["kind"], "run.status");
-        assert_eq!(rows[6]["payload"]["active"], false);
-        assert_eq!(rows[6]["payload"]["known"], true);
-        assert_eq!(rows[6]["payload"]["status"], "timed_out");
+        assert_eq!(rows[6]["request_id"], "req-timeout");
+        assert_eq!(rows[6]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[6]["payload"]["run_id"], "run-req-start");
+        assert_eq!(rows[6]["payload"]["delta"], "run timed out: client timeout");
+        assert_eq!(rows[6]["payload"]["final"], true);
         assert_eq!(rows[6]["payload"]["terminal"], true);
         assert_eq!(rows[6]["payload"]["terminal_state"], "timed_out");
         assert_eq!(rows[6]["payload"]["reason"], "client timeout");
+        assert_eq!(rows[6]["payload"]["sequence"], 3);
+        assert_eq!(rows[7]["request_id"], "req-status-inactive");
+        assert_eq!(rows[7]["kind"], "run.status");
+        assert_eq!(rows[7]["payload"]["active"], false);
+        assert_eq!(rows[7]["payload"]["known"], true);
+        assert_eq!(rows[7]["payload"]["status"], "timed_out");
+        assert_eq!(rows[7]["payload"]["terminal"], true);
+        assert_eq!(rows[7]["payload"]["terminal_state"], "timed_out");
+        assert_eq!(rows[7]["payload"]["reason"], "client timeout");
     }
 
     #[test]
@@ -1946,7 +2108,7 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 10);
+        assert_eq!(rows.len(), 11);
         assert_eq!(rows[0]["request_id"], "req-start-1");
         assert_eq!(rows[0]["kind"], "run.accepted");
         assert_eq!(rows[0]["payload"]["run_id"], "run-fixed");
@@ -1954,21 +2116,26 @@ not-json
         assert_eq!(rows[3]["kind"], "run.completed");
         assert_eq!(rows[4]["request_id"], "req-complete");
         assert_eq!(rows[4]["kind"], "run.stream.tool_events");
-        assert_eq!(rows[5]["request_id"], "req-status-closed");
-        assert_eq!(rows[5]["kind"], "run.status");
-        assert_eq!(rows[5]["payload"]["active"], false);
-        assert_eq!(rows[5]["payload"]["known"], true);
-        assert_eq!(rows[5]["payload"]["status"], "completed");
-        assert_eq!(rows[6]["request_id"], "req-start-2");
-        assert_eq!(rows[6]["kind"], "run.accepted");
-        assert_eq!(rows[6]["payload"]["run_id"], "run-fixed");
-        assert_eq!(rows[9]["request_id"], "req-status-active");
-        assert_eq!(rows[9]["kind"], "run.status");
-        assert_eq!(rows[9]["payload"]["active"], true);
-        assert_eq!(rows[9]["payload"]["known"], true);
-        assert_eq!(rows[9]["payload"]["status"], "active");
-        assert_eq!(rows[9]["payload"].get("terminal_state"), None);
-        assert_eq!(rows[9]["payload"].get("terminal"), None);
+        assert_eq!(rows[5]["request_id"], "req-complete");
+        assert_eq!(rows[5]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[5]["payload"]["run_id"], "run-fixed");
+        assert_eq!(rows[5]["payload"]["final"], true);
+        assert_eq!(rows[5]["payload"]["terminal_state"], "completed");
+        assert_eq!(rows[6]["request_id"], "req-status-closed");
+        assert_eq!(rows[6]["kind"], "run.status");
+        assert_eq!(rows[6]["payload"]["active"], false);
+        assert_eq!(rows[6]["payload"]["known"], true);
+        assert_eq!(rows[6]["payload"]["status"], "completed");
+        assert_eq!(rows[7]["request_id"], "req-start-2");
+        assert_eq!(rows[7]["kind"], "run.accepted");
+        assert_eq!(rows[7]["payload"]["run_id"], "run-fixed");
+        assert_eq!(rows[10]["request_id"], "req-status-active");
+        assert_eq!(rows[10]["kind"], "run.status");
+        assert_eq!(rows[10]["payload"]["active"], true);
+        assert_eq!(rows[10]["payload"]["known"], true);
+        assert_eq!(rows[10]["payload"]["status"], "active");
+        assert_eq!(rows[10]["payload"].get("terminal_state"), None);
+        assert_eq!(rows[10]["payload"].get("terminal"), None);
     }
 
     #[test]
@@ -2051,7 +2218,7 @@ not-json
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("json frame"))
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
         assert_eq!(rows[0]["request_id"], "req-ok");
         assert_eq!(rows[0]["kind"], "run.accepted");
         assert_eq!(rows[0]["payload"]["run_id"], "run-req-ok");
@@ -2066,6 +2233,12 @@ not-json
         assert_eq!(rows[5]["request_id"], "req-ok-2");
         assert_eq!(rows[5]["kind"], "run.stream.tool_events");
         assert_eq!(rows[5]["payload"]["event"], "run.cancelled");
+        assert_eq!(rows[6]["request_id"], "req-ok-2");
+        assert_eq!(rows[6]["kind"], "run.stream.assistant_text");
+        assert_eq!(rows[6]["payload"]["run_id"], "run-req-ok");
+        assert_eq!(rows[6]["payload"]["delta"], "run cancelled");
+        assert_eq!(rows[6]["payload"]["final"], true);
+        assert_eq!(rows[6]["payload"]["terminal_state"], "cancelled");
     }
 
     #[test]

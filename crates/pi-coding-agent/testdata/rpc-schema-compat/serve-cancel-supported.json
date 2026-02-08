@@ -84,6 +84,20 @@
     },
     {
       "schema_version": 1,
+      "request_id": "req-cancel",
+      "kind": "run.stream.assistant_text",
+      "payload": {
+        "run_id": "run-req-start",
+        "delta": "run cancelled",
+        "final": true,
+        "terminal": true,
+        "terminal_state": "cancelled",
+        "mode": "preflight",
+        "sequence": 3
+      }
+    },
+    {
+      "schema_version": 1,
       "request_id": "req-status-inactive",
       "kind": "run.status",
       "payload": {
