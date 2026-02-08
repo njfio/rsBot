@@ -615,6 +615,9 @@ enum PiIssueCommand {
     Stop,
     Status,
     Compact,
+    ChatStart,
+    ChatResume,
+    ChatReset,
     Artifacts { purge: bool, run_id: Option<String> },
     ArtifactShow { artifact_id: String },
     Summarize { focus: Option<String> },
@@ -1249,6 +1252,168 @@ impl GithubIssuesBridgeRuntime {
                         "head_id": compact_report.head_id,
                     }
                 }))?;
+            }
+            PiIssueCommand::ChatStart => {
+                let session_path =
+                    session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                let (before_entries, after_entries, head_id) = ensure_issue_session_initialized(
+                    &session_path,
+                    &self.config.system_prompt,
+                    self.config.session_lock_wait_ms,
+                    self.config.session_lock_stale_ms,
+                )?;
+                let message = if before_entries == 0 {
+                    format!(
+                        "Chat session started for issue #{}.\n\nentries={} head={}",
+                        event.issue_number,
+                        after_entries,
+                        head_id
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string())
+                    )
+                } else {
+                    format!(
+                        "Chat session already initialized for issue #{}.\n\nentries={} head={}",
+                        event.issue_number,
+                        after_entries,
+                        head_id
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string())
+                    )
+                };
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                if self.state_store.update_issue_session(
+                    event.issue_number,
+                    issue_session_id(event.issue_number),
+                    Some(posted.id),
+                    None,
+                ) {
+                    *state_dirty = true;
+                }
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "chat-start",
+                    "status": "completed",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                    "session": {
+                        "entries_before": before_entries,
+                        "entries_after": after_entries,
+                        "head_id": head_id,
+                    }
+                }))?;
+            }
+            PiIssueCommand::ChatResume => {
+                let session_path =
+                    session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                let (before_entries, after_entries, head_id) = ensure_issue_session_initialized(
+                    &session_path,
+                    &self.config.system_prompt,
+                    self.config.session_lock_wait_ms,
+                    self.config.session_lock_stale_ms,
+                )?;
+                let message = if before_entries == 0 {
+                    format!(
+                        "No existing chat session found for issue #{}.\nStarted a new session with entries={} head={}.",
+                        event.issue_number,
+                        after_entries,
+                        head_id
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string())
+                    )
+                } else {
+                    format!(
+                        "Chat session resumed for issue #{}.\n\nentries={} head={}",
+                        event.issue_number,
+                        after_entries,
+                        head_id
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string())
+                    )
+                };
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                if self.state_store.update_issue_session(
+                    event.issue_number,
+                    issue_session_id(event.issue_number),
+                    Some(posted.id),
+                    None,
+                ) {
+                    *state_dirty = true;
+                }
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "chat-resume",
+                    "status": "completed",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                    "session": {
+                        "entries_before": before_entries,
+                        "entries_after": after_entries,
+                        "head_id": head_id,
+                    }
+                }))?;
+            }
+            PiIssueCommand::ChatReset => {
+                if let Some(active) = self.active_runs.get(&event.issue_number) {
+                    let message = format!(
+                        "Cannot reset chat while run `{}` is active. Use `/pi stop` first.",
+                        active.run_id
+                    );
+                    let posted = self
+                        .github_client
+                        .create_issue_comment(event.issue_number, &message)
+                        .await?;
+                    self.outbound_log.append(&json!({
+                        "timestamp_unix_ms": current_unix_timestamp_ms(),
+                        "repo": self.repo.as_slug(),
+                        "event_key": event.key,
+                        "issue_number": event.issue_number,
+                        "command": "chat-reset",
+                        "status": "blocked",
+                        "posted_comment_id": posted.id,
+                        "posted_comment_url": posted.html_url,
+                        "active_run_id": active.run_id,
+                    }))?;
+                } else {
+                    let session_path =
+                        session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                    let (removed_session, removed_lock) = reset_issue_session_files(&session_path)?;
+                    if self.state_store.clear_issue_session(event.issue_number) {
+                        *state_dirty = true;
+                    }
+                    let message = format!(
+                        "Chat session reset for issue #{}.\n\nremoved_session_file={} removed_lock_file={}",
+                        event.issue_number, removed_session, removed_lock
+                    );
+                    let posted = self
+                        .github_client
+                        .create_issue_comment(event.issue_number, &message)
+                        .await?;
+                    self.outbound_log.append(&json!({
+                        "timestamp_unix_ms": current_unix_timestamp_ms(),
+                        "repo": self.repo.as_slug(),
+                        "event_key": event.key,
+                        "issue_number": event.issue_number,
+                        "command": "chat-reset",
+                        "status": "completed",
+                        "posted_comment_id": posted.id,
+                        "posted_comment_url": posted.html_url,
+                        "removed_session_file": removed_session,
+                        "removed_lock_file": removed_lock,
+                    }))?;
+                }
             }
             PiIssueCommand::Invalid { message } => {
                 let posted = self
@@ -2033,6 +2198,20 @@ fn parse_pi_issue_command(body: &str) -> Option<PiIssueCommand> {
                 }
             }
         }
+        "chat" => {
+            let mut chat_parts = remainder.split_whitespace();
+            match (chat_parts.next(), chat_parts.next()) {
+                (Some("start"), None) => PiIssueCommand::ChatStart,
+                (Some("resume"), None) => PiIssueCommand::ChatResume,
+                (Some("reset"), None) => PiIssueCommand::ChatReset,
+                (None, _) => PiIssueCommand::Invalid {
+                    message: "Usage: /pi chat <start|resume|reset>".to_string(),
+                },
+                _ => PiIssueCommand::Invalid {
+                    message: "Usage: /pi chat <start|resume|reset>".to_string(),
+                },
+            }
+        }
         "artifacts" => {
             if remainder.is_empty() {
                 PiIssueCommand::Artifacts {
@@ -2083,6 +2262,7 @@ fn pi_command_usage() -> String {
         "- `/pi stop`",
         "- `/pi status`",
         "- `/pi compact`",
+        "- `/pi chat <start|resume|reset>`",
         "- `/pi artifacts [purge|run <run_id>|show <artifact_id>]`",
         "- `/pi summarize [focus]`",
     ]
@@ -2123,6 +2303,43 @@ fn compact_issue_session(
     let mut store = SessionStore::load(session_path)?;
     store.set_lock_policy(lock_wait_ms.max(1), lock_stale_ms);
     store.compact_to_lineage(store.head_id())
+}
+
+fn ensure_issue_session_initialized(
+    session_path: &Path,
+    system_prompt: &str,
+    lock_wait_ms: u64,
+    lock_stale_ms: u64,
+) -> Result<(usize, usize, Option<u64>)> {
+    if let Some(parent) = session_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let mut store = SessionStore::load(session_path)?;
+    store.set_lock_policy(lock_wait_ms.max(1), lock_stale_ms);
+    let before_entries = store.entries().len();
+    let head = store.ensure_initialized(system_prompt)?;
+    let after_entries = store.entries().len();
+    Ok((before_entries, after_entries, head))
+}
+
+fn reset_issue_session_files(session_path: &Path) -> Result<(bool, bool)> {
+    let mut removed_session = false;
+    if session_path.exists() {
+        std::fs::remove_file(session_path)
+            .with_context(|| format!("failed to remove {}", session_path.display()))?;
+        removed_session = true;
+    }
+    let lock_path = session_path.with_extension("lock");
+    let mut removed_lock = false;
+    if lock_path.exists() {
+        std::fs::remove_file(&lock_path)
+            .with_context(|| format!("failed to remove {}", lock_path.display()))?;
+        removed_lock = true;
+    }
+    Ok((removed_session, removed_lock))
 }
 
 fn prompt_status_label(status: PromptRunStatus) -> &'static str {
@@ -2782,6 +2999,18 @@ mod tests {
             })
         );
         assert_eq!(
+            parse_pi_issue_command("/pi chat start"),
+            Some(PiIssueCommand::ChatStart)
+        );
+        assert_eq!(
+            parse_pi_issue_command("/pi chat resume"),
+            Some(PiIssueCommand::ChatResume)
+        );
+        assert_eq!(
+            parse_pi_issue_command("/pi chat reset"),
+            Some(PiIssueCommand::ChatReset)
+        );
+        assert_eq!(
             parse_pi_issue_command("/pi artifacts"),
             Some(PiIssueCommand::Artifacts {
                 purge: false,
@@ -2827,6 +3056,12 @@ mod tests {
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed =
             parse_pi_issue_command("/pi artifacts show artifact-a extra").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi chat").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi chat start now").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi chat unknown").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let action = event_action_from_body("/pi unknown");
         assert!(matches!(
@@ -3093,6 +3328,91 @@ mod tests {
         assert_eq!(report.failed_events, 0);
         status_post.assert_calls(1);
         stop_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_chat_commands_manage_sessions() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 12,
+                "number": 9,
+                "title": "Chat Control",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues/9/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 311,
+                    "body": "/pi chat start",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                },
+                {
+                    "id": 312,
+                    "body": "/pi chat resume",
+                    "created_at": "2026-01-01T00:00:02Z",
+                    "updated_at": "2026-01-01T00:00:02Z",
+                    "user": {"login":"alice"}
+                },
+                {
+                    "id": 313,
+                    "body": "/pi chat reset",
+                    "created_at": "2026-01-01T00:00:03Z",
+                    "updated_at": "2026-01-01T00:00:03Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let chat_start_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/9/comments")
+                .body_includes("Chat session started for issue #9.");
+            then.status(201).json_body(json!({
+                "id": 940,
+                "html_url": "https://example.test/comment/940"
+            }));
+        });
+        let chat_resume_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/9/comments")
+                .body_includes("Chat session resumed for issue #9.");
+            then.status(201).json_body(json!({
+                "id": 941,
+                "html_url": "https://example.test/comment/941"
+            }));
+        });
+        let chat_reset_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/9/comments")
+                .body_includes("Chat session reset for issue #9.");
+            then.status(201).json_body(json!({
+                "id": 942,
+                "html_url": "https://example.test/comment/942"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 3);
+        assert_eq!(report.failed_events, 0);
+        chat_start_post.assert_calls(1);
+        chat_resume_post.assert_calls(1);
+        chat_reset_post.assert_calls(1);
+        assert!(runtime.state_store.issue_session(9).is_none());
+        let session_path = session_path_for_issue(&runtime.repository_state_dir, 9);
+        assert!(!session_path.exists());
     }
 
     #[tokio::test]
