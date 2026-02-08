@@ -76,6 +76,18 @@ Dependency update automation is configured in `.github/dependabot.yml`.
 
 ## Usage
 
+Run first-time onboarding (creates required `.tau` directories, initializes profile store, and writes a machine-readable report):
+
+```bash
+cargo run -p tau-coding-agent -- --onboard --onboard-non-interactive
+```
+
+Interactive onboarding mode:
+
+```bash
+cargo run -p tau-coding-agent -- --onboard --onboard-profile default
+```
+
 Auth mode guidance (local subscription login vs CI):
 
 | Provider | Local/dev recommended | CI/automation recommended |

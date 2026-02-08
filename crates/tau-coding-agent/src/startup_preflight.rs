@@ -1,6 +1,11 @@
 use super::*;
 
 pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
+    if cli.onboard {
+        execute_onboarding_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.session_validate {
         validate_session_file(cli)?;
         return Ok(true);

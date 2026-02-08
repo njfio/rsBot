@@ -653,6 +653,32 @@ pub(crate) struct Cli {
     pub(crate) command_file_error_mode: CliCommandFileErrorMode,
 
     #[arg(
+        long,
+        env = "TAU_ONBOARD",
+        default_value_t = false,
+        help = "Run onboarding wizard and bootstrap Tau workspace assets, then exit"
+    )]
+    pub(crate) onboard: bool,
+
+    #[arg(
+        long = "onboard-non-interactive",
+        env = "TAU_ONBOARD_NON_INTERACTIVE",
+        default_value_t = false,
+        requires = "onboard",
+        help = "Disable interactive onboarding prompts and apply deterministic defaults"
+    )]
+    pub(crate) onboard_non_interactive: bool,
+
+    #[arg(
+        long = "onboard-profile",
+        env = "TAU_ONBOARD_PROFILE",
+        default_value = "default",
+        requires = "onboard",
+        help = "Profile name created/updated by onboarding"
+    )]
+    pub(crate) onboard_profile: String,
+
+    #[arg(
         long = "channel-store-root",
         env = "TAU_CHANNEL_STORE_ROOT",
         default_value = ".tau/channel-store",
