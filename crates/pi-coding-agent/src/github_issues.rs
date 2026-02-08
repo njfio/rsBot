@@ -620,6 +620,7 @@ enum PiIssueCommand {
     ChatResume,
     ChatReset,
     ChatExport,
+    ChatStatus,
     Artifacts { purge: bool, run_id: Option<String> },
     ArtifactShow { artifact_id: String },
     Summarize { focus: Option<String> },
@@ -1507,6 +1508,65 @@ impl GithubIssuesBridgeRuntime {
                     }
                 }))?;
             }
+            PiIssueCommand::ChatStatus => {
+                let session_path =
+                    session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                let store = SessionStore::load(&session_path)?;
+                let entries = store.entries().len();
+                let head_id = store.head_id();
+                let session_state = self.state_store.issue_session(event.issue_number);
+                let (session_id, last_comment_id, last_run_id, has_session) = match session_state {
+                    Some(state) => (
+                        state.session_id.as_str(),
+                        state.last_comment_id,
+                        state.last_run_id.as_deref(),
+                        true,
+                    ),
+                    None => ("none", None, None, false),
+                };
+                let head_display = head_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                let message = if entries == 0 && !has_session {
+                    format!(
+                        "No chat session found for issue #{}.\n\nentries=0 head=none session_id=none last_comment_id=none last_run_id=none",
+                        event.issue_number
+                    )
+                } else {
+                    format!(
+                        "Chat session status for issue #{}.\n\nentries={} head={} session_id={} last_comment_id={} last_run_id={}",
+                        event.issue_number,
+                        entries,
+                        head_display,
+                        session_id,
+                        last_comment_id
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        last_run_id.unwrap_or("none")
+                    )
+                };
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &message)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "chat-status",
+                    "status": "reported",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                    "session": {
+                        "entries": entries,
+                        "head_id": head_id,
+                        "session_id": session_id,
+                        "last_comment_id": last_comment_id,
+                        "last_run_id": last_run_id,
+                    }
+                }))?;
+            }
             PiIssueCommand::Invalid { message } => {
                 let posted = self
                     .github_client
@@ -2306,11 +2366,12 @@ fn parse_pi_issue_command(body: &str) -> Option<PiIssueCommand> {
                 (Some("resume"), None) => PiIssueCommand::ChatResume,
                 (Some("reset"), None) => PiIssueCommand::ChatReset,
                 (Some("export"), None) => PiIssueCommand::ChatExport,
+                (Some("status"), None) => PiIssueCommand::ChatStatus,
                 (None, _) => PiIssueCommand::Invalid {
-                    message: "Usage: /pi chat <start|resume|reset|export>".to_string(),
+                    message: "Usage: /pi chat <start|resume|reset|export|status>".to_string(),
                 },
                 _ => PiIssueCommand::Invalid {
-                    message: "Usage: /pi chat <start|resume|reset|export>".to_string(),
+                    message: "Usage: /pi chat <start|resume|reset|export|status>".to_string(),
                 },
             }
         }
@@ -2365,7 +2426,7 @@ fn pi_command_usage() -> String {
         "- `/pi status`",
         "- `/pi compact`",
         "- `/pi help`",
-        "- `/pi chat <start|resume|reset|export>`",
+        "- `/pi chat <start|resume|reset|export|status>`",
         "- `/pi artifacts [purge|run <run_id>|show <artifact_id>]`",
         "- `/pi summarize [focus]`",
     ]
@@ -2621,8 +2682,8 @@ mod tests {
 
     use super::{
         collect_issue_events, event_action_from_body, extract_footer_event_keys,
-        is_retryable_github_status, normalize_artifact_retention_days, parse_pi_issue_command,
-        post_issue_comment_chunks, render_issue_comment_chunks_with_limit,
+        is_retryable_github_status, issue_session_id, normalize_artifact_retention_days,
+        parse_pi_issue_command, post_issue_comment_chunks, render_issue_comment_chunks_with_limit,
         render_issue_comment_response_parts, retry_delay, run_prompt_for_event, sanitize_for_path,
         session_path_for_issue, EventAction, GithubApiClient, GithubBridgeEvent,
         GithubBridgeEventKind, GithubIssue, GithubIssueComment, GithubIssuesBridgeRuntime,
@@ -3122,6 +3183,10 @@ mod tests {
             Some(PiIssueCommand::ChatExport)
         );
         assert_eq!(
+            parse_pi_issue_command("/pi chat status"),
+            Some(PiIssueCommand::ChatStatus)
+        );
+        assert_eq!(
             parse_pi_issue_command("/pi artifacts"),
             Some(PiIssueCommand::Artifacts {
                 purge: false,
@@ -3175,6 +3240,8 @@ mod tests {
         let parsed = parse_pi_issue_command("/pi chat start now").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi chat export now").expect("command parse");
+        assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
+        let parsed = parse_pi_issue_command("/pi chat status now").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
         let parsed = parse_pi_issue_command("/pi chat unknown").expect("command parse");
         assert!(matches!(parsed, PiIssueCommand::Invalid { .. }));
@@ -3609,6 +3676,127 @@ mod tests {
         let payload = std::fs::read_to_string(&artifact_path).expect("read artifact");
         assert!(payload.contains("\"schema_version\""));
         assert!(payload.contains("\"message\""));
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_chat_status_reports_session_state() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 20,
+                "number": 12,
+                "title": "Chat Status",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/12/comments");
+            then.status(200).json_body(json!([{
+                "id": 511,
+                "body": "/pi chat status",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let status_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/12/comments")
+                .body_includes("Chat session status for issue #12.")
+                .body_includes("entries=2")
+                .body_includes("session_id=issue-12")
+                .body_includes("last_comment_id=900")
+                .body_includes("last_run_id=run-12");
+            then.status(201).json_body(json!({
+                "id": 970,
+                "html_url": "https://example.test/comment/970"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let session_path = session_path_for_issue(&runtime.repository_state_dir, 12);
+        if let Some(parent) = session_path.parent() {
+            std::fs::create_dir_all(parent).expect("create session dir");
+        }
+        let mut store = SessionStore::load(&session_path).expect("store");
+        store
+            .append_messages(
+                None,
+                &[
+                    Message::user("Status this"),
+                    Message::assistant_text("Status ready"),
+                ],
+            )
+            .expect("append messages");
+        runtime.state_store.update_issue_session(
+            12,
+            issue_session_id(12),
+            Some(900),
+            Some("run-12".to_string()),
+        );
+
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        status_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_chat_status_reports_missing_session() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 21,
+                "number": 13,
+                "title": "Chat Status None",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/13/comments");
+            then.status(200).json_body(json!([{
+                "id": 611,
+                "body": "/pi chat status",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let status_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/13/comments")
+                .body_includes("No chat session found for issue #13.")
+                .body_includes("entries=0")
+                .body_includes("session_id=none");
+            then.status(201).json_body(json!({
+                "id": 971,
+                "html_url": "https://example.test/comment/971"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        status_post.assert_calls(1);
     }
 
     #[tokio::test]
