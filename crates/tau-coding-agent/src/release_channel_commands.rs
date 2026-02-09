@@ -1,5 +1,16 @@
 use super::*;
 
+mod cache;
+
+use cache::{
+    compute_release_cache_age_counters, compute_release_cache_expires_at_unix_ms,
+    decide_release_cache_prune, is_release_cache_expired, load_release_lookup_cache,
+    load_release_lookup_cache_file, load_release_lookup_cache_for_prune, save_release_lookup_cache,
+    ReleaseCachePruneDecision, ReleaseCachePruneLoadOutcome,
+};
+#[cfg(test)]
+use cache::{ReleaseCacheAgeCounters, ReleaseCachePruneRecoveryReason};
+
 pub(crate) const RELEASE_CHANNEL_USAGE: &str =
     "usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear|refresh|prune>]";
 pub(crate) const RELEASE_CHANNEL_SCHEMA_VERSION: u32 = 1;
@@ -73,14 +84,6 @@ pub(crate) struct GitHubReleaseRecord {
     pub(crate) prerelease: bool,
     #[serde(default)]
     pub(crate) draft: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct ReleaseLookupCacheFile {
-    schema_version: u32,
-    source_url: String,
-    fetched_at_unix_ms: u64,
-    releases: Vec<GitHubReleaseRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,73 +257,6 @@ fn resolve_channel_latest_or_unknown(
     select_latest_channel_release(channel, releases).unwrap_or_else(|| "unknown".to_string())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ReleaseCacheAgeCounters {
-    freshness: &'static str,
-    next_refresh_in_ms: u64,
-    stale_by_ms: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReleaseCachePruneDecision {
-    KeepFresh,
-    RemoveStale,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReleaseCachePruneRecoveryReason {
-    InvalidPayload,
-    UnsupportedSchema,
-}
-
-impl ReleaseCachePruneRecoveryReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            ReleaseCachePruneRecoveryReason::InvalidPayload => "invalid_payload",
-            ReleaseCachePruneRecoveryReason::UnsupportedSchema => "unsupported_schema",
-        }
-    }
-}
-
-enum ReleaseCachePruneLoadOutcome {
-    Missing,
-    Present(ReleaseLookupCacheFile),
-    RecoverableError {
-        reason: ReleaseCachePruneRecoveryReason,
-    },
-    FatalError(anyhow::Error),
-}
-
-fn compute_release_cache_age_counters(age_ms: u64, ttl_ms: u64) -> ReleaseCacheAgeCounters {
-    if age_ms <= ttl_ms {
-        return ReleaseCacheAgeCounters {
-            freshness: "fresh",
-            next_refresh_in_ms: ttl_ms.saturating_sub(age_ms),
-            stale_by_ms: 0,
-        };
-    }
-    ReleaseCacheAgeCounters {
-        freshness: "stale",
-        next_refresh_in_ms: 0,
-        stale_by_ms: age_ms.saturating_sub(ttl_ms),
-    }
-}
-
-fn decide_release_cache_prune(age_ms: u64, ttl_ms: u64) -> ReleaseCachePruneDecision {
-    if age_ms <= ttl_ms {
-        return ReleaseCachePruneDecision::KeepFresh;
-    }
-    ReleaseCachePruneDecision::RemoveStale
-}
-
-fn compute_release_cache_expires_at_unix_ms(fetched_at_unix_ms: u64, ttl_ms: u64) -> u64 {
-    fetched_at_unix_ms.saturating_add(ttl_ms)
-}
-
-fn is_release_cache_expired(age_ms: u64, ttl_ms: u64) -> bool {
-    age_ms > ttl_ms
-}
-
 fn fetch_release_records(url: &str) -> Result<Vec<GitHubReleaseRecord>> {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         tokio::task::block_in_place(|| handle.block_on(fetch_release_records_async(url)))
@@ -338,97 +274,6 @@ fn current_unix_timestamp_ms() -> u64 {
         Ok(duration) => duration.as_millis().min(u64::MAX as u128) as u64,
         Err(_) => 0,
     }
-}
-
-fn load_release_lookup_cache_file(path: &Path) -> Result<Option<ReleaseLookupCacheFile>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read release lookup cache {}", path.display()))?;
-    let parsed = serde_json::from_str::<ReleaseLookupCacheFile>(&raw)
-        .with_context(|| format!("failed to parse release lookup cache {}", path.display()))?;
-    if parsed.schema_version != RELEASE_LOOKUP_CACHE_SCHEMA_VERSION {
-        bail!(
-            "unsupported release lookup cache schema_version {} in {} (expected {})",
-            parsed.schema_version,
-            path.display(),
-            RELEASE_LOOKUP_CACHE_SCHEMA_VERSION
-        );
-    }
-    Ok(Some(parsed))
-}
-
-fn load_release_lookup_cache_for_prune(path: &Path) -> ReleaseCachePruneLoadOutcome {
-    if !path.exists() {
-        return ReleaseCachePruneLoadOutcome::Missing;
-    }
-
-    let raw = match std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read release lookup cache {}", path.display()))
-    {
-        Ok(raw) => raw,
-        Err(error) => return ReleaseCachePruneLoadOutcome::FatalError(error),
-    };
-
-    let parsed = match serde_json::from_str::<ReleaseLookupCacheFile>(&raw)
-        .with_context(|| format!("failed to parse release lookup cache {}", path.display()))
-    {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            return ReleaseCachePruneLoadOutcome::RecoverableError {
-                reason: ReleaseCachePruneRecoveryReason::InvalidPayload,
-            }
-        }
-    };
-
-    if parsed.schema_version != RELEASE_LOOKUP_CACHE_SCHEMA_VERSION {
-        return ReleaseCachePruneLoadOutcome::RecoverableError {
-            reason: ReleaseCachePruneRecoveryReason::UnsupportedSchema,
-        };
-    }
-
-    ReleaseCachePruneLoadOutcome::Present(parsed)
-}
-
-fn load_release_lookup_cache(path: &Path, url: &str) -> Result<Option<ReleaseLookupCacheFile>> {
-    let Some(parsed) = load_release_lookup_cache_file(path)? else {
-        return Ok(None);
-    };
-    if parsed.source_url != url {
-        return Ok(None);
-    }
-    Ok(Some(parsed))
-}
-
-fn save_release_lookup_cache(
-    path: &Path,
-    url: &str,
-    fetched_at_unix_ms: u64,
-    releases: &[GitHubReleaseRecord],
-) -> Result<()> {
-    let payload = ReleaseLookupCacheFile {
-        schema_version: RELEASE_LOOKUP_CACHE_SCHEMA_VERSION,
-        source_url: url.to_string(),
-        fetched_at_unix_ms,
-        releases: releases.to_vec(),
-    };
-    let mut encoded = serde_json::to_string_pretty(&payload)
-        .context("failed to encode release lookup cache payload")?;
-    encoded.push('\n');
-    let parent = path.parent().ok_or_else(|| {
-        anyhow!(
-            "release lookup cache path {} does not have a parent directory",
-            path.display()
-        )
-    })?;
-    std::fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create release lookup cache directory {}",
-            parent.display()
-        )
-    })?;
-    write_text_atomic(path, &encoded)
 }
 
 async fn fetch_release_records_async(url: &str) -> Result<Vec<GitHubReleaseRecord>> {

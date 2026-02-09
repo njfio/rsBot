@@ -39,6 +39,8 @@ Use this area when adding or changing flags, defaults, and typed CLI input behav
 - `session_navigation_commands.rs`: bookmarks and branch aliases.
 - `skills_commands.rs`: skills lifecycle commands.
 - `auth_commands.rs`: provider auth command handling.
+- `release_channel_commands.rs`: `/release-channel` command parsing/rendering and dispatch.
+- `release_channel_commands/cache.rs`: release lookup cache load/save/prune helpers.
 - `diagnostics_commands.rs`: doctor/audit/policy diagnostics commands.
 - `macro_profile_commands.rs`: macro/profile command workflows.
 
