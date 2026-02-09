@@ -131,16 +131,19 @@ pub(crate) use crate::credentials::{
     resolve_non_empty_cli_value, resolve_secret_from_cli_or_store_id, save_credential_store,
     CredentialStoreData, ProviderCredentialStoreRecord,
 };
-#[cfg(test)]
-pub(crate) use crate::diagnostics_commands::execute_doctor_command;
 pub(crate) use crate::diagnostics_commands::{
     build_doctor_command_config, execute_audit_summary_command, execute_doctor_cli_command,
     execute_policy_command,
 };
 #[cfg(test)]
 pub(crate) use crate::diagnostics_commands::{
+    execute_doctor_command, execute_doctor_command_with_options,
+};
+#[cfg(test)]
+pub(crate) use crate::diagnostics_commands::{
     parse_doctor_command_args, percentile_duration_ms, render_audit_summary, render_doctor_report,
-    render_doctor_report_json, run_doctor_checks, summarize_audit_file, DoctorCheckResult,
+    render_doctor_report_json, run_doctor_checks, run_doctor_checks_with_lookup,
+    summarize_audit_file, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
     DoctorCommandOutputFormat, DoctorStatus,
 };
 use crate::events::{

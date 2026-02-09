@@ -1,7 +1,10 @@
 use super::*;
 use crate::cli_executable::is_executable_available;
+use crate::release_channel_commands::{
+    compare_versions, release_lookup_url, resolve_latest_channel_release, ReleaseChannel,
+};
 
-pub(crate) const DOCTOR_USAGE: &str = "usage: /doctor [--json]";
+pub(crate) const DOCTOR_USAGE: &str = "usage: /doctor [--json] [--online]";
 pub(crate) const POLICY_USAGE: &str = "usage: /policy";
 pub(crate) const AUDIT_SUMMARY_USAGE: &str = "usage: /audit-summary <path>";
 
@@ -247,18 +250,50 @@ pub(crate) enum DoctorCommandOutputFormat {
     Json,
 }
 
-pub(crate) fn parse_doctor_command_args(command_args: &str) -> Result<DoctorCommandOutputFormat> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DoctorCommandArgs {
+    pub(crate) output_format: DoctorCommandOutputFormat,
+    pub(crate) online: bool,
+}
+
+impl Default for DoctorCommandArgs {
+    fn default() -> Self {
+        Self {
+            output_format: DoctorCommandOutputFormat::Text,
+            online: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DoctorCheckOptions {
+    pub(crate) online: bool,
+}
+
+pub(crate) fn parse_doctor_command_args(command_args: &str) -> Result<DoctorCommandArgs> {
     let tokens = command_args
         .split_whitespace()
         .filter(|token| !token.is_empty())
         .collect::<Vec<_>>();
-    if tokens.is_empty() {
-        return Ok(DoctorCommandOutputFormat::Text);
+    let mut args = DoctorCommandArgs::default();
+    for token in tokens {
+        match token {
+            "--json" => {
+                if args.output_format == DoctorCommandOutputFormat::Json {
+                    bail!("{DOCTOR_USAGE}");
+                }
+                args.output_format = DoctorCommandOutputFormat::Json;
+            }
+            "--online" => {
+                if args.online {
+                    bail!("{DOCTOR_USAGE}");
+                }
+                args.online = true;
+            }
+            _ => bail!("{DOCTOR_USAGE}"),
+        }
     }
-    if tokens.len() == 1 && tokens[0] == "--json" {
-        return Ok(DoctorCommandOutputFormat::Json);
-    }
-    bail!("{DOCTOR_USAGE}");
+    Ok(args)
 }
 
 pub(crate) fn provider_key_env_var(provider: Provider) -> &'static str {
@@ -372,7 +407,28 @@ pub(crate) fn build_doctor_command_config(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheckResult> {
+    run_doctor_checks_with_options(config, DoctorCheckOptions::default())
+}
+
+pub(crate) fn run_doctor_checks_with_options(
+    config: &DoctorCommandConfig,
+    options: DoctorCheckOptions,
+) -> Vec<DoctorCheckResult> {
+    run_doctor_checks_with_release_lookup(config, options, |channel| {
+        resolve_latest_channel_release(channel, release_lookup_url())
+    })
+}
+
+fn run_doctor_checks_with_release_lookup<F>(
+    config: &DoctorCommandConfig,
+    options: DoctorCheckOptions,
+    release_lookup: F,
+) -> Vec<DoctorCheckResult>
+where
+    F: Fn(ReleaseChannel) -> Result<Option<String>>,
+{
     let mut checks = Vec::new();
     checks.push(DoctorCheckResult {
         key: "model".to_string(),
@@ -382,29 +438,110 @@ pub(crate) fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheck
         action: None,
     });
 
+    let mut configured_release_channel = None;
     match load_release_channel_store(&config.release_channel_path) {
-        Ok(Some(channel)) => checks.push(DoctorCheckResult {
-            key: "release_channel".to_string(),
-            status: DoctorStatus::Pass,
-            code: channel.as_str().to_string(),
-            path: Some(config.release_channel_path.display().to_string()),
-            action: None,
-        }),
-        Ok(None) => checks.push(DoctorCheckResult {
-            key: "release_channel".to_string(),
-            status: DoctorStatus::Pass,
-            code: "default_stable".to_string(),
-            path: Some(config.release_channel_path.display().to_string()),
-            action: Some("run /release-channel set stable|beta|dev to persist".to_string()),
-        }),
-        Err(error) => checks.push(DoctorCheckResult {
-            key: "release_channel".to_string(),
-            status: DoctorStatus::Fail,
-            code: format!("invalid_store:{error}"),
-            path: Some(config.release_channel_path.display().to_string()),
-            action: Some("run /release-channel set stable|beta|dev to repair".to_string()),
-        }),
+        Ok(Some(channel)) => {
+            configured_release_channel = Some(channel);
+            checks.push(DoctorCheckResult {
+                key: "release_channel".to_string(),
+                status: DoctorStatus::Pass,
+                code: channel.as_str().to_string(),
+                path: Some(config.release_channel_path.display().to_string()),
+                action: None,
+            });
+        }
+        Ok(None) => {
+            configured_release_channel = Some(ReleaseChannel::Stable);
+            checks.push(DoctorCheckResult {
+                key: "release_channel".to_string(),
+                status: DoctorStatus::Pass,
+                code: "default_stable".to_string(),
+                path: Some(config.release_channel_path.display().to_string()),
+                action: Some("run /release-channel set stable|beta|dev to persist".to_string()),
+            });
+        }
+        Err(error) => {
+            checks.push(DoctorCheckResult {
+                key: "release_channel".to_string(),
+                status: DoctorStatus::Fail,
+                code: format!("invalid_store:{error}"),
+                path: Some(config.release_channel_path.display().to_string()),
+                action: Some("run /release-channel set stable|beta|dev to repair".to_string()),
+            });
+        }
     }
+
+    let release_update_check = if !options.online {
+        DoctorCheckResult {
+            key: "release_update".to_string(),
+            status: DoctorStatus::Warn,
+            code: "skipped_offline".to_string(),
+            path: Some(config.release_channel_path.display().to_string()),
+            action: Some("run /doctor --online to include remote release checks".to_string()),
+        }
+    } else if let Some(channel) = configured_release_channel {
+        match release_lookup(channel) {
+            Ok(Some(latest)) => match compare_versions(env!("CARGO_PKG_VERSION"), &latest) {
+                Some(std::cmp::Ordering::Less) => DoctorCheckResult {
+                    key: "release_update".to_string(),
+                    status: DoctorStatus::Warn,
+                    code: "update_available".to_string(),
+                    path: Some(config.release_channel_path.display().to_string()),
+                    action: Some(format!(
+                        "new release detected for channel={} current={} latest={}",
+                        channel,
+                        env!("CARGO_PKG_VERSION"),
+                        latest
+                    )),
+                },
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {
+                    DoctorCheckResult {
+                        key: "release_update".to_string(),
+                        status: DoctorStatus::Pass,
+                        code: "up_to_date".to_string(),
+                        path: Some(config.release_channel_path.display().to_string()),
+                        action: None,
+                    }
+                }
+                None => DoctorCheckResult {
+                    key: "release_update".to_string(),
+                    status: DoctorStatus::Warn,
+                    code: "version_parse_unknown".to_string(),
+                    path: Some(config.release_channel_path.display().to_string()),
+                    action: Some(format!(
+                        "unable to compare versions current={} latest={}",
+                        env!("CARGO_PKG_VERSION"),
+                        latest
+                    )),
+                },
+            },
+            Ok(None) => DoctorCheckResult {
+                key: "release_update".to_string(),
+                status: DoctorStatus::Warn,
+                code: "no_release_records".to_string(),
+                path: Some(config.release_channel_path.display().to_string()),
+                action: Some("no releases returned by upstream; retry later".to_string()),
+            },
+            Err(error) => DoctorCheckResult {
+                key: "release_update".to_string(),
+                status: DoctorStatus::Warn,
+                code: format!("lookup_error:{error}"),
+                path: Some(config.release_channel_path.display().to_string()),
+                action: Some("check network access and rerun /doctor --online".to_string()),
+            },
+        }
+    } else {
+        DoctorCheckResult {
+            key: "release_update".to_string(),
+            status: DoctorStatus::Warn,
+            code: "lookup_skipped_invalid_store".to_string(),
+            path: Some(config.release_channel_path.display().to_string()),
+            action: Some(
+                "run /release-channel set stable|beta|dev before online checks".to_string(),
+            ),
+        }
+    };
+    checks.push(release_update_check);
 
     for provider_check in &config.provider_keys {
         let mode_status = if provider_check.mode_supported {
@@ -672,6 +809,18 @@ pub(crate) fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheck
     checks
 }
 
+#[cfg(test)]
+pub(crate) fn run_doctor_checks_with_lookup<F>(
+    config: &DoctorCommandConfig,
+    options: DoctorCheckOptions,
+    release_lookup: F,
+) -> Vec<DoctorCheckResult>
+where
+    F: Fn(ReleaseChannel) -> Result<Option<String>>,
+{
+    run_doctor_checks_with_release_lookup(config, options, release_lookup)
+}
+
 pub(crate) fn render_doctor_report(checks: &[DoctorCheckResult]) -> String {
     let pass = checks
         .iter()
@@ -749,7 +898,15 @@ pub(crate) fn execute_doctor_command(
     config: &DoctorCommandConfig,
     format: DoctorCommandOutputFormat,
 ) -> String {
-    let checks = run_doctor_checks(config);
+    execute_doctor_command_with_options(config, format, DoctorCheckOptions::default())
+}
+
+pub(crate) fn execute_doctor_command_with_options(
+    config: &DoctorCommandConfig,
+    format: DoctorCommandOutputFormat,
+    options: DoctorCheckOptions,
+) -> String {
+    let checks = run_doctor_checks_with_options(config, options);
     match format {
         DoctorCommandOutputFormat::Text => render_doctor_report(&checks),
         DoctorCommandOutputFormat::Json => render_doctor_report_json(&checks),
@@ -760,11 +917,19 @@ pub(crate) fn execute_doctor_cli_command(
     config: &DoctorCommandConfig,
     command_args: &str,
 ) -> String {
-    let format = match parse_doctor_command_args(command_args) {
-        Ok(format) => format,
+    let args = match parse_doctor_command_args(command_args) {
+        Ok(args) => args,
         Err(_) => return DOCTOR_USAGE.to_string(),
     };
-    execute_doctor_command(config, format)
+    if args.online {
+        execute_doctor_command_with_options(
+            config,
+            args.output_format,
+            DoctorCheckOptions { online: true },
+        )
+    } else {
+        execute_doctor_command(config, args.output_format)
+    }
 }
 
 pub(crate) fn execute_policy_command(

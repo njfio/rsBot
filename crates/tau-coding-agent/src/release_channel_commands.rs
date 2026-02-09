@@ -184,7 +184,7 @@ fn parse_version_segments(raw: &str) -> Option<Vec<u64>> {
     Some(segments)
 }
 
-fn compare_versions(current: &str, latest: &str) -> Option<std::cmp::Ordering> {
+pub(crate) fn compare_versions(current: &str, latest: &str) -> Option<std::cmp::Ordering> {
     let current_segments = parse_version_segments(current)?;
     let latest_segments = parse_version_segments(latest)?;
     let max_len = current_segments.len().max(latest_segments.len());
@@ -236,9 +236,16 @@ async fn fetch_release_records_async(url: &str) -> Result<Vec<GitHubReleaseRecor
         .with_context(|| format!("failed to parse release lookup response from '{}'", url))
 }
 
-fn resolve_latest_channel_release(channel: ReleaseChannel, url: &str) -> Result<Option<String>> {
+pub(crate) fn resolve_latest_channel_release(
+    channel: ReleaseChannel,
+    url: &str,
+) -> Result<Option<String>> {
     let releases = fetch_release_records(url)?;
     Ok(select_latest_channel_release(channel, &releases))
+}
+
+pub(crate) fn release_lookup_url() -> &'static str {
+    RELEASE_LOOKUP_URL
 }
 
 fn render_release_channel_check_with_lookup<F>(

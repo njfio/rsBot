@@ -1462,10 +1462,13 @@ fn integration_interactive_doctor_command_reports_runtime_diagnostics() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains(
-            "doctor summary: checks=8 pass=8 warn=0 fail=0",
+            "doctor summary: checks=9 pass=8 warn=1 fail=0",
         ))
         .stdout(predicate::str::contains(
             "doctor check: key=release_channel status=pass code=default_stable",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=release_update status=warn code=skipped_offline",
         ))
         .stdout(predicate::str::contains(
             "doctor check: key=provider_auth_mode.openai status=pass code=api_key",
@@ -1502,7 +1505,9 @@ fn regression_interactive_doctor_command_with_args_prints_usage_and_continues() 
 
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("usage: /doctor [--json]"))
+        .stdout(predicate::str::contains(
+            "usage: /doctor [--json] [--online]",
+        ))
         .stdout(predicate::str::contains("command: /doctor"))
         .stdout(predicate::str::contains("example: /doctor"));
 }

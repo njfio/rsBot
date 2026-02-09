@@ -30,19 +30,20 @@ use super::{
     default_macro_config_path, default_profile_store_path, default_skills_lock_path,
     derive_skills_prune_candidates, encrypt_credential_store_secret, ensure_non_empty_text,
     escape_graph_label, execute_auth_command, execute_branch_alias_command,
-    execute_channel_store_admin_command, execute_command_file, execute_doctor_command,
-    execute_integration_auth_command, execute_macro_command, execute_package_activate_command,
-    execute_package_activate_on_startup, execute_package_conflicts_command,
-    execute_package_install_command, execute_package_list_command, execute_package_remove_command,
-    execute_package_rollback_command, execute_package_show_command, execute_package_update_command,
-    execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
-    execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
-    execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
-    execute_session_bookmark_command, execute_session_diff_command,
-    execute_session_graph_export_command, execute_session_search_command,
-    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
-    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
-    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_channel_store_admin_command, execute_command_file, execute_doctor_cli_command,
+    execute_doctor_command, execute_doctor_command_with_options, execute_integration_auth_command,
+    execute_macro_command, execute_package_activate_command, execute_package_activate_on_startup,
+    execute_package_conflicts_command, execute_package_install_command,
+    execute_package_list_command, execute_package_remove_command, execute_package_rollback_command,
+    execute_package_show_command, execute_package_update_command, execute_package_validate_command,
+    execute_profile_command, execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
+    execute_rpc_dispatch_ndjson_command, execute_rpc_serve_ndjson_command,
+    execute_rpc_validate_frame_command, execute_session_bookmark_command,
+    execute_session_diff_command, execute_session_graph_export_command,
+    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+    execute_skills_lock_diff_command, execute_skills_lock_write_command,
+    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+    execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, execute_startup_preflight,
     format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
@@ -68,7 +69,8 @@ use super::{
     resolve_prunable_skill_file_name, resolve_secret_from_cli_or_store_id,
     resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
     resolve_store_backed_provider_credential, resolve_system_prompt, rpc_capabilities_payload,
-    run_doctor_checks, run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
+    run_doctor_checks, run_doctor_checks_with_lookup, run_plan_first_prompt,
+    run_plan_first_prompt_with_policy_context,
     run_plan_first_prompt_with_policy_context_and_routing, run_prompt_with_cancellation,
     save_branch_aliases, save_credential_store, save_macro_file, save_profile_store,
     save_session_bookmarks, search_session_entries, session_bookmark_path_for_session,
@@ -83,19 +85,20 @@ use super::{
     CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
     CliWebhookSignatureAlgorithm, ClientRoute, CommandAction, CommandExecutionContext,
     CommandFileEntry, CommandFileReport, CredentialStoreData, CredentialStoreEncryptionMode,
-    DoctorCheckResult, DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus,
-    DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord,
-    MacroCommand, MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults,
-    ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod,
-    ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
-    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
-    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
-    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
-    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
-    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs, DoctorCommandConfig,
+    DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
+    IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
+    MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus,
+    PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions,
+    RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
+    SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats,
+    SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
+    SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
+    ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
+    MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
+    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
+    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -7644,15 +7647,42 @@ fn unit_render_doctor_report_summarizes_counts_and_rows() {
 fn unit_parse_doctor_command_args_supports_default_and_json_modes() {
     assert_eq!(
         parse_doctor_command_args("").expect("parse empty"),
-        DoctorCommandOutputFormat::Text
+        DoctorCommandArgs {
+            output_format: DoctorCommandOutputFormat::Text,
+            online: false,
+        }
     );
     assert_eq!(
         parse_doctor_command_args("--json").expect("parse json"),
-        DoctorCommandOutputFormat::Json
+        DoctorCommandArgs {
+            output_format: DoctorCommandOutputFormat::Json,
+            online: false,
+        }
+    );
+    assert_eq!(
+        parse_doctor_command_args("--online").expect("parse online"),
+        DoctorCommandArgs {
+            output_format: DoctorCommandOutputFormat::Text,
+            online: true,
+        }
+    );
+    assert_eq!(
+        parse_doctor_command_args("--online --json").expect("parse online + json"),
+        DoctorCommandArgs {
+            output_format: DoctorCommandOutputFormat::Json,
+            online: true,
+        }
     );
 
     let error = parse_doctor_command_args("--json --extra").expect_err("extra args should fail");
-    assert!(error.to_string().contains("usage: /doctor [--json]"));
+    assert!(error
+        .to_string()
+        .contains("usage: /doctor [--json] [--online]"));
+    let duplicate = parse_doctor_command_args("--online --online")
+        .expect_err("duplicate online flag should fail");
+    assert!(duplicate
+        .to_string()
+        .contains("usage: /doctor [--json] [--online]"));
 }
 
 #[test]
@@ -7731,7 +7761,7 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
     };
 
     let report = execute_doctor_command(&config, DoctorCommandOutputFormat::Text);
-    assert!(report.contains("doctor summary: checks=10 pass=9 warn=0 fail=1"));
+    assert!(report.contains("doctor summary: checks=11 pass=9 warn=1 fail=1"));
 
     let keys = report
         .lines()
@@ -7751,6 +7781,7 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
         vec![
             "model".to_string(),
             "release_channel".to_string(),
+            "release_update".to_string(),
             "provider_auth_mode.anthropic".to_string(),
             "provider_key.anthropic".to_string(),
             "provider_auth_mode.openai".to_string(),
@@ -7764,12 +7795,37 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
 
     let json_report = execute_doctor_command(&config, DoctorCommandOutputFormat::Json);
     let value = serde_json::from_str::<serde_json::Value>(&json_report).expect("parse json report");
-    assert_eq!(value["summary"]["checks"], 10);
+    assert_eq!(value["summary"]["checks"], 11);
     assert_eq!(value["summary"]["pass"], 9);
-    assert_eq!(value["summary"]["warn"], 0);
+    assert_eq!(value["summary"]["warn"], 1);
     assert_eq!(value["summary"]["fail"], 1);
     assert_eq!(value["checks"][0]["key"], "model");
     assert_eq!(value["checks"][1]["key"], "release_channel");
+    assert_eq!(value["checks"][2]["key"], "release_update");
+}
+
+#[test]
+fn functional_execute_doctor_cli_command_accepts_online_without_network_when_store_is_invalid() {
+    let temp = tempdir().expect("tempdir");
+    let release_channel_path = temp.path().join("release-channel.json");
+    std::fs::write(&release_channel_path, "{invalid-json").expect("write malformed release file");
+    let config = DoctorCommandConfig {
+        model: "openai/gpt-4o-mini".to_string(),
+        provider_keys: vec![],
+        release_channel_path,
+        session_enabled: false,
+        session_path: temp.path().join("session.jsonl"),
+        skills_dir: temp.path().join("skills"),
+        skills_lock_path: temp.path().join("skills.lock.json"),
+        trust_root_path: None,
+    };
+
+    let report = execute_doctor_cli_command(&config, "--online");
+    assert!(report.contains("doctor summary:"));
+    assert!(report.contains("key=release_channel"));
+    assert!(report.contains("code=invalid_store:"));
+    assert!(report.contains("key=release_update"));
+    assert!(report.contains("code=lookup_skipped_invalid_store"));
 }
 
 #[test]
@@ -7817,6 +7873,12 @@ fn integration_run_doctor_checks_identifies_missing_runtime_prerequisites() {
             .get("provider_key.openai")
             .map(|item| (item.status, item.code.clone())),
         Some((DoctorStatus::Fail, "missing".to_string()))
+    );
+    assert_eq!(
+        by_key
+            .get("release_update")
+            .map(|item| (item.status, item.code.clone())),
+        Some((DoctorStatus::Warn, "skipped_offline".to_string()))
     );
     assert_eq!(
         by_key
@@ -7930,6 +7992,44 @@ fn integration_run_doctor_checks_reports_anthropic_backend_status_for_oauth_mode
             .map(|item| (item.status, item.code.clone())),
         Some((DoctorStatus::Fail, "backend_disabled".to_string()))
     );
+}
+
+#[test]
+fn integration_execute_doctor_command_with_online_lookup_reports_update_available() {
+    let temp = tempdir().expect("tempdir");
+    let config = DoctorCommandConfig {
+        model: "openai/gpt-4o-mini".to_string(),
+        provider_keys: vec![],
+        release_channel_path: temp.path().join("release-channel.json"),
+        session_enabled: false,
+        session_path: temp.path().join("session.jsonl"),
+        skills_dir: temp.path().join("skills"),
+        skills_lock_path: temp.path().join("skills.lock.json"),
+        trust_root_path: None,
+    };
+    let checks =
+        run_doctor_checks_with_lookup(&config, DoctorCheckOptions { online: true }, |_| {
+            Ok(Some("v999.0.0".to_string()))
+        });
+    let by_key = checks
+        .into_iter()
+        .map(|check| (check.key.clone(), check))
+        .collect::<HashMap<_, _>>();
+    let release_update = by_key.get("release_update").expect("release update check");
+    assert_eq!(release_update.status, DoctorStatus::Warn);
+    assert_eq!(release_update.code, "update_available");
+    assert!(release_update
+        .action
+        .as_ref()
+        .expect("release update action")
+        .contains("latest=v999.0.0"));
+
+    let report = execute_doctor_command_with_options(
+        &config,
+        DoctorCommandOutputFormat::Text,
+        DoctorCheckOptions { online: true },
+    );
+    assert!(report.contains("doctor summary:"));
 }
 
 #[test]
@@ -8092,6 +8192,39 @@ fn regression_run_doctor_checks_reports_invalid_release_channel_store() {
         .expect("release channel check should exist");
     assert_eq!(release_channel.status, DoctorStatus::Fail);
     assert!(release_channel.code.starts_with("invalid_store:"));
+    let release_update = by_key
+        .get("release_update")
+        .expect("release update check should exist");
+    assert_eq!(release_update.status, DoctorStatus::Warn);
+    assert_eq!(release_update.code, "skipped_offline");
+}
+
+#[test]
+fn regression_run_doctor_checks_with_online_lookup_surfaces_lookup_errors() {
+    let temp = tempdir().expect("tempdir");
+    let config = DoctorCommandConfig {
+        model: "openai/gpt-4o-mini".to_string(),
+        provider_keys: vec![],
+        release_channel_path: temp.path().join("release-channel.json"),
+        session_enabled: false,
+        session_path: temp.path().join("session.jsonl"),
+        skills_dir: temp.path().join("skills"),
+        skills_lock_path: temp.path().join("skills.lock.json"),
+        trust_root_path: None,
+    };
+    let checks =
+        run_doctor_checks_with_lookup(&config, DoctorCheckOptions { online: true }, |_| {
+            Err(anyhow::anyhow!("lookup backend unavailable"))
+        });
+    let by_key = checks
+        .into_iter()
+        .map(|check| (check.key.clone(), check))
+        .collect::<HashMap<_, _>>();
+    let release_update = by_key
+        .get("release_update")
+        .expect("release update check should exist");
+    assert_eq!(release_update.status, DoctorStatus::Warn);
+    assert!(release_update.code.starts_with("lookup_error:"));
 }
 
 #[test]
@@ -9601,7 +9734,7 @@ fn functional_render_command_help_supports_session_diff_topic_without_slash() {
 fn functional_render_command_help_supports_doctor_topic_without_slash() {
     let help = render_command_help("doctor").expect("render help");
     assert!(help.contains("command: /doctor"));
-    assert!(help.contains("usage: /doctor [--json]"));
+    assert!(help.contains("usage: /doctor [--json] [--online]"));
     assert!(help.contains("example: /doctor"));
 }
 

@@ -77,10 +77,10 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/doctor",
-        usage: "/doctor [--json]",
+        usage: "/doctor [--json] [--online]",
         description: "Run deterministic runtime diagnostics",
         details:
-            "Checks provider key presence plus session/skills/lock/trust-root path readability. Add --json for machine-readable output.",
+            "Checks provider auth/session/skills/release posture. Add --json for machine-readable output and --online to include remote release checks.",
         example: "/doctor",
     },
     CommandSpec {
