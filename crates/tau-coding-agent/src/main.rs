@@ -22,6 +22,7 @@ mod observability_loggers;
 mod onboarding;
 mod orchestrator;
 mod package_manifest;
+mod pairing;
 mod provider_auth;
 mod provider_client;
 mod provider_credentials;
@@ -167,6 +168,10 @@ pub(crate) use crate::package_manifest::{
     execute_package_conflicts_command, execute_package_install_command,
     execute_package_list_command, execute_package_remove_command, execute_package_rollback_command,
     execute_package_show_command, execute_package_update_command, execute_package_validate_command,
+};
+pub(crate) use crate::pairing::{
+    evaluate_pairing_access, execute_pair_command, execute_unpair_command,
+    pairing_policy_for_state_dir, PairingDecision,
 };
 pub(crate) use crate::provider_auth::{
     configured_provider_auth_method, configured_provider_auth_method_from_config,

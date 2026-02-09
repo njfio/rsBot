@@ -402,6 +402,7 @@ fn test_cli() -> Cli {
         events_stale_immediate_max_age_seconds: 86_400,
         event_webhook_ingest_file: None,
         event_webhook_channel: None,
+        event_webhook_actor_id: None,
         event_webhook_prompt_prefix: "Handle webhook-triggered event.".to_string(),
         event_webhook_debounce_key: None,
         event_webhook_debounce_window_seconds: 60,

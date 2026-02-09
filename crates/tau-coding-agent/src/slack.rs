@@ -18,7 +18,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
 use crate::{
-    current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, PromptRunStatus,
+    current_unix_timestamp_ms, evaluate_pairing_access, pairing_policy_for_state_dir,
+    run_prompt_with_cancellation, write_text_atomic, PairingDecision, PromptRunStatus,
     RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
@@ -847,12 +848,33 @@ impl SlackBridgeRuntime {
             return Ok(());
         }
 
+        let policy_channel = format!("slack:{}", event.channel_id);
+        let pairing_policy = pairing_policy_for_state_dir(&self.config.state_dir);
+        let pairing_decision = evaluate_pairing_access(
+            &pairing_policy,
+            &policy_channel,
+            &event.user_id,
+            now_unix_ms,
+        )?;
+        let pairing_status = if matches!(pairing_decision, PairingDecision::Allow { .. }) {
+            "allow"
+        } else {
+            "deny"
+        };
+        let pairing_reason_code = pairing_decision.reason_code().to_string();
+
         self.inbound_log.append(&json!({
             "timestamp_unix_ms": now_unix_ms,
             "event_key": event.key,
             "kind": event.kind.as_str(),
             "channel": event.channel_id,
             "event_id": event.event_id,
+            "pairing": {
+                "decision": pairing_status,
+                "reason_code": pairing_reason_code,
+                "channel": policy_channel,
+                "actor_id": event.user_id,
+            },
             "payload": event.raw_payload,
         }))?;
         ChannelStore::open(
@@ -870,8 +892,35 @@ impl SlackBridgeRuntime {
                 "event_id": event.event_id,
                 "user_id": event.user_id,
                 "text": event.text,
+                "pairing": {
+                    "decision": pairing_status,
+                    "reason_code": pairing_reason_code,
+                    "channel": policy_channel,
+                },
             }),
         })?;
+
+        if let PairingDecision::Deny { reason_code } = pairing_decision {
+            self.outbound_log.append(&json!({
+                "timestamp_unix_ms": now_unix_ms,
+                "event_key": event.key,
+                "channel": event.channel_id,
+                "event_id": event.event_id,
+                "command": "authorization",
+                "status": "denied",
+                "reason_code": reason_code,
+                "policy_channel": policy_channel,
+                "actor_id": event.user_id,
+            }))?;
+            if self.state_store.mark_processed(&event.key) {
+                self.state_store.save()?;
+            }
+            eprintln!(
+                "slack bridge event denied: channel={} event_id={} key={} actor={} reason_code={}",
+                event.channel_id, event.event_id, event.key, event.user_id, reason_code
+            );
+            return Ok(());
+        }
 
         if self.state_store.mark_processed(&event.key) {
             self.state_store.save()?;
@@ -2952,6 +3001,67 @@ mod tests {
         list_post.assert_calls(1);
         show_post.assert_calls(1);
         assert_eq!(report.queued_events, 0);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_denies_unpaired_actor_in_strict_mode() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/chat.postMessage");
+            then.status(200)
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "1.1"}));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let security_dir = temp.path().join("security");
+        std::fs::create_dir_all(&security_dir).expect("security dir");
+        std::fs::write(
+            security_dir.join("allowlist.json"),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {}
+}
+"#,
+        )
+        .expect("write strict allowlist");
+
+        let config = test_config(&server.base_url(), temp.path());
+        let mut runtime = SlackBridgeRuntime::new(config).await.expect("runtime");
+
+        let now_seconds = current_unix_timestamp_ms() / 1000;
+        let envelope = SlackSocketEnvelope {
+            envelope_id: "env-deny".to_string(),
+            envelope_type: "events_api".to_string(),
+            payload: json!({
+                "type": "event_callback",
+                "event_id": "EvDeny",
+                "event_time": now_seconds,
+                "event": {
+                    "type": "app_mention",
+                    "user": "U-unknown",
+                    "channel": "C1",
+                    "text": "<@UBOT> hello",
+                    "ts": "55.1"
+                }
+            }),
+        };
+
+        let mut report = PollCycleReport::default();
+        runtime
+            .handle_envelope(envelope, &mut report)
+            .await
+            .expect("handle envelope");
+
+        assert_eq!(report.discovered_events, 1);
+        assert_eq!(report.queued_events, 0);
+        assert_eq!(report.failed_events, 0);
+        post.assert_calls(0);
+
+        let outbound = std::fs::read_to_string(temp.path().join("outbound-events.jsonl"))
+            .expect("read outbound log");
+        assert!(outbound.contains("\"status\":\"denied\""));
+        assert!(outbound.contains("\"reason_code\":\"deny_actor_not_paired_or_allowlisted\""));
     }
 
     #[tokio::test]
