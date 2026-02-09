@@ -141,6 +141,14 @@ pub(crate) fn slack_principal(user_id: &str) -> String {
     format!("slack:{}", sanitize_principal_component(user_id))
 }
 
+pub(crate) fn discord_principal(user_id: &str) -> String {
+    format!("discord:{}", sanitize_principal_component(user_id))
+}
+
+pub(crate) fn telegram_principal(user_id: &str) -> String {
+    format!("telegram:{}", sanitize_principal_component(user_id))
+}
+
 pub(crate) fn authorize_command_for_principal(
     principal: &str,
     command_name: &str,
@@ -425,8 +433,20 @@ fn resolve_principal_input(
                 .ok_or_else(|| anyhow!("rbac --channel slack requires --actor"))?;
             Ok(slack_principal(actor))
         }
+        "discord" => {
+            let actor = actor
+                .as_deref()
+                .ok_or_else(|| anyhow!("rbac --channel discord requires --actor"))?;
+            Ok(discord_principal(actor))
+        }
+        "telegram" => {
+            let actor = actor
+                .as_deref()
+                .ok_or_else(|| anyhow!("rbac --channel telegram requires --actor"))?;
+            Ok(telegram_principal(actor))
+        }
         _ => bail!(
-            "unsupported rbac channel '{}': expected local|github|slack",
+            "unsupported rbac channel '{}': expected local|github|slack|discord|telegram",
             channel
         ),
     }
@@ -447,6 +467,8 @@ pub(crate) fn rbac_policy_path_for_state_dir(state_dir: &Path) -> PathBuf {
         Some("github")
         | Some("github-issues")
         | Some("slack")
+        | Some("discord")
+        | Some("telegram")
         | Some("events")
         | Some("channel-store") => state_dir
             .parent()
@@ -702,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn integration_authorize_action_supports_github_and_slack_principals() {
+    fn integration_authorize_action_supports_channel_specific_principals() {
         let temp = tempdir().expect("tempdir");
         let policy_path = temp.path().join("rbac.json");
         write_policy(
@@ -718,6 +740,14 @@ mod tests {
                     {
                         "principal": "slack:ux-team-*",
                         "roles": ["remote-writer"]
+                    },
+                    {
+                        "principal": "discord:dev-*",
+                        "roles": ["remote-health"]
+                    },
+                    {
+                        "principal": "telegram:chat-*",
+                        "roles": ["remote-health"]
                     }
                 ],
                 "roles": {
@@ -726,6 +756,9 @@ mod tests {
                     },
                     "remote-writer": {
                         "allow": ["tool:write"]
+                    },
+                    "remote-health": {
+                        "allow": ["command:/tau-health"]
                     }
                 }
             }),
@@ -746,6 +779,62 @@ mod tests {
         )
         .expect("slack auth");
         assert!(slack_result.is_allowed());
+
+        let discord_result = authorize_action_for_principal_with_policy_path(
+            discord_principal("Dev-7").as_str(),
+            "command:/tau-health",
+            policy_path.as_path(),
+        )
+        .expect("discord auth");
+        assert!(discord_result.is_allowed());
+
+        let telegram_result = authorize_action_for_principal_with_policy_path(
+            telegram_principal("chat-99").as_str(),
+            "command:/tau-health",
+            policy_path.as_path(),
+        )
+        .expect("telegram auth");
+        assert!(telegram_result.is_allowed());
+    }
+
+    #[test]
+    fn functional_execute_rbac_command_resolves_discord_and_telegram_channels() {
+        let temp = tempdir().expect("tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_policy(
+            &policy_path,
+            &serde_json::json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    {
+                        "principal": "discord:dev-42",
+                        "roles": ["remote-reader"]
+                    },
+                    {
+                        "principal": "telegram:chat-5",
+                        "roles": ["remote-reader"]
+                    }
+                ],
+                "roles": {
+                    "remote-reader": {
+                        "allow": ["command:/tau-status"]
+                    }
+                }
+            }),
+        );
+
+        let discord = execute_rbac_command_with_path(
+            "whoami --channel discord --actor Dev#42",
+            policy_path.as_path(),
+        );
+        assert!(discord.contains("principal=discord:dev-42"));
+
+        let telegram = execute_rbac_command_with_path(
+            "whoami --channel telegram --actor Chat@5",
+            policy_path.as_path(),
+        );
+        assert!(telegram.contains("principal=telegram:chat-5"));
     }
 
     #[test]
@@ -786,10 +875,41 @@ mod tests {
         assert!(error.to_string().contains(RBAC_USAGE));
         let error = parse_rbac_command("whoami --channel github").expect_err("missing actor");
         assert!(error.to_string().contains("requires --actor"));
+        let error = parse_rbac_command("whoami --channel discord").expect_err("missing actor");
+        assert!(error.to_string().contains("requires --actor"));
+        let error = parse_rbac_command("whoami --channel matrix --actor user")
+            .expect_err("unsupported channel");
+        assert!(error
+            .to_string()
+            .contains("expected local|github|slack|discord|telegram"));
     }
 
     #[test]
     fn unit_resolve_local_principal_uses_override_when_provided() {
         assert_eq!(local_principal(Some("Alice Smith")), "local:alice-smith");
+    }
+
+    #[test]
+    fn unit_channel_principal_helpers_normalize_components() {
+        assert_eq!(github_principal("Alice Smith"), "github:alice-smith");
+        assert_eq!(slack_principal("UX TEAM#42"), "slack:ux-team-42");
+        assert_eq!(discord_principal("Dev#42"), "discord:dev-42");
+        assert_eq!(telegram_principal("Chat@5"), "telegram:chat-5");
+    }
+
+    #[test]
+    fn regression_rbac_policy_path_for_state_dir_supports_future_channel_dirs() {
+        let temp = tempdir().expect("tempdir");
+        let tau_root = temp.path().join(".tau");
+        let discord_state = tau_root.join("discord");
+        let telegram_state = tau_root.join("telegram");
+        assert_eq!(
+            rbac_policy_path_for_state_dir(&discord_state),
+            tau_root.join("security/rbac.json")
+        );
+        assert_eq!(
+            rbac_policy_path_for_state_dir(&telegram_state),
+            tau_root.join("security/rbac.json")
+        );
     }
 }
