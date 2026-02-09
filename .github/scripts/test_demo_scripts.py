@@ -62,6 +62,16 @@ class DemoScriptsTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertIn("unknown argument: --definitely-unknown", completed.stderr)
 
+    def test_unit_all_script_argument_parser_rejects_unknown_argument(self) -> None:
+        completed = subprocess.run(
+            [str(SCRIPTS_DIR / "all.sh"), "--definitely-unknown"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("unknown argument: --definitely-unknown", completed.stderr)
+
     def test_functional_demo_scripts_run_expected_command_chains(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -78,6 +88,24 @@ class DemoScriptsTests(unittest.TestCase):
                 )
                 self.assertIn("summary: total=", completed.stdout)
                 self.assertIn("failed=0", completed.stdout)
+
+            rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+            self.assertGreaterEqual(len(rows), 12)
+
+    def test_functional_all_script_runs_all_demo_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            write_mock_binary(binary_path)
+
+            completed = run_demo_script("all.sh", binary_path, trace_path)
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"all.sh failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+            )
+            self.assertIn("[demo:all] summary: total=4 passed=4 failed=0", completed.stdout)
 
             rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
             self.assertGreaterEqual(len(rows), 12)
@@ -99,10 +127,41 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertIn("./examples/events-state.json", recorded)
             self.assertIn("./examples/starter/package.json", recorded)
 
+    def test_integration_all_script_runs_demos_in_expected_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            write_mock_binary(binary_path)
+
+            completed = run_demo_script("all.sh", binary_path, trace_path)
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+            self.assertIn("[demo:all] [1] local.sh", completed.stdout)
+            self.assertIn("[demo:all] [2] rpc.sh", completed.stdout)
+            self.assertIn("[demo:all] [3] events.sh", completed.stdout)
+            self.assertIn("[demo:all] [4] package.sh", completed.stdout)
+
     def test_regression_scripts_fail_closed_when_binary_missing_in_skip_build_mode(self) -> None:
         completed = subprocess.run(
             [
                 str(SCRIPTS_DIR / "rpc.sh"),
+                "--skip-build",
+                "--repo-root",
+                str(REPO_ROOT),
+                "--binary",
+                "/tmp/tau-missing-binary",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("missing tau-coding-agent binary", completed.stderr)
+
+    def test_regression_all_script_fail_closed_when_binary_missing_in_skip_build_mode(self) -> None:
+        completed = subprocess.run(
+            [
+                str(SCRIPTS_DIR / "all.sh"),
                 "--skip-build",
                 "--repo-root",
                 str(REPO_ROOT),

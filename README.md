@@ -64,6 +64,7 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 Run deterministic local demos:
 
 ```bash
+./scripts/demo/all.sh
 ./scripts/demo/local.sh
 ./scripts/demo/rpc.sh
 ./scripts/demo/events.sh
