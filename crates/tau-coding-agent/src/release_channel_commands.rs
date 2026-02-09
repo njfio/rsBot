@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) const RELEASE_CHANNEL_USAGE: &str =
-    "usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear|refresh>]";
+    "usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear|refresh|prune>]";
 pub(crate) const RELEASE_CHANNEL_SCHEMA_VERSION: u32 = 1;
 pub(crate) const RELEASE_LOOKUP_CACHE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const RELEASE_LOOKUP_CACHE_TTL_MS: u64 = 15 * 60 * 1_000;
@@ -57,6 +57,7 @@ pub(crate) enum ReleaseChannelCommand {
     CacheShow,
     CacheClear,
     CacheRefresh,
+    CachePrune,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,6 +130,7 @@ pub(crate) fn parse_release_channel_command(command_args: &str) -> Result<Releas
             "show" => Ok(ReleaseChannelCommand::CacheShow),
             "clear" => Ok(ReleaseChannelCommand::CacheClear),
             "refresh" => Ok(ReleaseChannelCommand::CacheRefresh),
+            "prune" => Ok(ReleaseChannelCommand::CachePrune),
             _ => bail!("{RELEASE_CHANNEL_USAGE}"),
         };
     }
@@ -259,6 +261,12 @@ struct ReleaseCacheAgeCounters {
     stale_by_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseCachePruneDecision {
+    KeepFresh,
+    RemoveStale,
+}
+
 fn compute_release_cache_age_counters(age_ms: u64, ttl_ms: u64) -> ReleaseCacheAgeCounters {
     if age_ms <= ttl_ms {
         return ReleaseCacheAgeCounters {
@@ -272,6 +280,13 @@ fn compute_release_cache_age_counters(age_ms: u64, ttl_ms: u64) -> ReleaseCacheA
         next_refresh_in_ms: 0,
         stale_by_ms: age_ms.saturating_sub(ttl_ms),
     }
+}
+
+fn decide_release_cache_prune(age_ms: u64, ttl_ms: u64) -> ReleaseCachePruneDecision {
+    if age_ms <= ttl_ms {
+        return ReleaseCachePruneDecision::KeepFresh;
+    }
+    ReleaseCachePruneDecision::RemoveStale
 }
 
 fn compute_release_cache_expires_at_unix_ms(fetched_at_unix_ms: u64, ttl_ms: u64) -> u64 {
@@ -546,6 +561,67 @@ fn execute_release_channel_cache_refresh_with_lookup_options(
     }
 }
 
+fn execute_release_channel_cache_prune_with_options(
+    cache_path: &Path,
+    cache_ttl_ms: u64,
+) -> String {
+    match load_release_lookup_cache_file(cache_path) {
+        Ok(None) => format!(
+            "release cache prune: path={} status=missing",
+            cache_path.display()
+        ),
+        Ok(Some(cache)) => {
+            let age_ms = current_unix_timestamp_ms().saturating_sub(cache.fetched_at_unix_ms);
+            let age_counters = compute_release_cache_age_counters(age_ms, cache_ttl_ms);
+            let expires_at_unix_ms =
+                compute_release_cache_expires_at_unix_ms(cache.fetched_at_unix_ms, cache_ttl_ms);
+            let is_expired = is_release_cache_expired(age_ms, cache_ttl_ms);
+            match decide_release_cache_prune(age_ms, cache_ttl_ms) {
+                ReleaseCachePruneDecision::KeepFresh => format!(
+                    "release cache prune: path={} status=kept reason=fresh entries={} fetched_at_unix_ms={} age_ms={} ttl_ms={} freshness={} next_refresh_in_ms={} stale_by_ms={} expires_at_unix_ms={} is_expired={}",
+                    cache_path.display(),
+                    cache.releases.len(),
+                    cache.fetched_at_unix_ms,
+                    age_ms,
+                    cache_ttl_ms,
+                    age_counters.freshness,
+                    age_counters.next_refresh_in_ms,
+                    age_counters.stale_by_ms,
+                    expires_at_unix_ms,
+                    is_expired
+                ),
+                ReleaseCachePruneDecision::RemoveStale => match std::fs::remove_file(cache_path) {
+                    Ok(()) => format!(
+                        "release cache prune: path={} status=removed reason=stale entries={} fetched_at_unix_ms={} age_ms={} ttl_ms={} freshness={} next_refresh_in_ms={} stale_by_ms={} expires_at_unix_ms={} is_expired={}",
+                        cache_path.display(),
+                        cache.releases.len(),
+                        cache.fetched_at_unix_ms,
+                        age_ms,
+                        cache_ttl_ms,
+                        age_counters.freshness,
+                        age_counters.next_refresh_in_ms,
+                        age_counters.stale_by_ms,
+                        expires_at_unix_ms,
+                        is_expired
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => format!(
+                        "release cache prune: path={} status=missing",
+                        cache_path.display()
+                    ),
+                    Err(error) => format!(
+                        "release channel error: path={} error={error}",
+                        cache_path.display()
+                    ),
+                },
+            }
+        }
+        Err(error) => format!(
+            "release channel error: path={} error={error}",
+            cache_path.display()
+        ),
+    }
+}
+
 pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -> String {
     execute_release_channel_command_with_lookup_options(
         command_args,
@@ -628,6 +704,18 @@ fn execute_release_channel_command_with_lookup_options(
                 }
             };
             execute_release_channel_cache_refresh_with_lookup_options(&cache_path, lookup_url)
+        }
+        ReleaseChannelCommand::CachePrune => {
+            let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
+                Ok(path) => path,
+                Err(error) => {
+                    return format!(
+                        "release channel error: path={} error={error}",
+                        path.display()
+                    );
+                }
+            };
+            execute_release_channel_cache_prune_with_options(&cache_path, cache_ttl_ms)
         }
         ReleaseChannelCommand::CacheShow => {
             let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
@@ -746,6 +834,10 @@ mod tests {
         assert_eq!(
             parse_release_channel_command("cache refresh").expect("cache refresh command"),
             ReleaseChannelCommand::CacheRefresh
+        );
+        assert_eq!(
+            parse_release_channel_command("cache prune").expect("cache prune command"),
+            ReleaseChannelCommand::CachePrune
         );
 
         let invalid = parse_release_channel_command("set nightly").expect_err("invalid channel");
@@ -897,6 +989,22 @@ mod tests {
         );
         assert!(!is_release_cache_expired(100, 100));
         assert!(is_release_cache_expired(101, 100));
+    }
+
+    #[test]
+    fn unit_decide_release_cache_prune_handles_fresh_boundary_and_stale() {
+        assert_eq!(
+            decide_release_cache_prune(10, 100),
+            ReleaseCachePruneDecision::KeepFresh
+        );
+        assert_eq!(
+            decide_release_cache_prune(100, 100),
+            ReleaseCachePruneDecision::KeepFresh
+        );
+        assert_eq!(
+            decide_release_cache_prune(101, 100),
+            ReleaseCachePruneDecision::RemoveStale
+        );
     }
 
     fn parse_u64_field(output: &str, key: &str) -> u64 {
@@ -1052,6 +1160,34 @@ mod tests {
     }
 
     #[test]
+    fn functional_execute_release_channel_command_cache_prune_keeps_fresh_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let releases = vec![GitHubReleaseRecord {
+            tag_name: "v11.0.0".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(
+            &cache_path,
+            "https://example.invalid/releases",
+            current_unix_timestamp_ms(),
+            &releases,
+        )
+        .expect("save cache");
+
+        let output = execute_release_channel_command("cache prune", &path);
+        assert!(output.contains("status=kept"));
+        assert!(output.contains("reason=fresh"));
+        assert!(output.contains("freshness=fresh"));
+        assert!(output.contains("next_refresh_in_ms="));
+        assert!(output.contains("stale_by_ms=0"));
+        assert!(output.contains("is_expired=false"));
+        assert!(cache_path.exists());
+    }
+
+    #[test]
     fn functional_render_release_channel_check_reports_update_available() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("release-channel.json");
@@ -1172,6 +1308,45 @@ mod tests {
         assert!(show.contains("dev_latest=v10.2.0-beta.1"));
         assert!(parse_u64_field(&show, "next_refresh_in_ms") <= RELEASE_LOOKUP_CACHE_TTL_MS);
         assert!(!parse_bool_field(&show, "is_expired"));
+    }
+
+    #[test]
+    fn integration_execute_release_channel_command_cache_refresh_then_prune_keeps_fresh_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"[{"tag_name":"v12.0.0","prerelease":false,"draft":false},{"tag_name":"v12.1.0-beta.1","prerelease":true,"draft":false}]"#,
+                );
+        });
+        let url = format!("{}/releases", server.base_url());
+
+        let refreshed = execute_release_channel_command_with_lookup_options(
+            "cache refresh",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(refreshed.contains("status=refreshed"));
+        assert!(cache_path.exists());
+
+        let pruned = execute_release_channel_command_with_lookup_options(
+            "cache prune",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(pruned.contains("status=kept"));
+        assert!(pruned.contains("reason=fresh"));
+        assert!(pruned.contains("freshness=fresh"));
+        assert!(pruned.contains("is_expired=false"));
+        assert!(cache_path.exists());
+        mock.assert_calls(1);
     }
 
     #[test]
@@ -1493,6 +1668,38 @@ mod tests {
         assert!(output.contains("dev_latest=v8.8.8"));
         assert!(parse_u64_field(&output, "stale_by_ms") > 0);
         assert!(parse_bool_field(&output, "is_expired"));
+    }
+
+    #[test]
+    fn regression_execute_release_channel_command_cache_prune_removes_stale_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let stale_time =
+            current_unix_timestamp_ms().saturating_sub(RELEASE_LOOKUP_CACHE_TTL_MS + 5_000);
+        let releases = vec![GitHubReleaseRecord {
+            tag_name: "v13.1.1".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(
+            &cache_path,
+            "https://example.invalid/releases",
+            stale_time,
+            &releases,
+        )
+        .expect("save stale cache");
+
+        let output = execute_release_channel_command("cache prune", &path);
+        assert!(output.contains("status=removed"));
+        assert!(output.contains("reason=stale"));
+        assert!(output.contains("freshness=stale"));
+        assert!(output.contains("next_refresh_in_ms=0"));
+        assert!(output.contains("stale_by_ms="));
+        assert!(output.contains("is_expired=true"));
+        assert!(parse_u64_field(&output, "stale_by_ms") > 0);
+        assert!(parse_bool_field(&output, "is_expired"));
+        assert!(!cache_path.exists());
     }
 
     #[test]
