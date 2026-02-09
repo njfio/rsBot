@@ -21,6 +21,10 @@ use crate::github_issues_helpers::{
     attachment_filename_from_url, chunk_text_by_chars, evaluate_attachment_content_type_policy,
     evaluate_attachment_url_policy, extract_attachment_urls, split_at_char_index,
 };
+use crate::github_transport_helpers::{
+    is_retryable_github_status, is_retryable_transport_error, parse_retry_after, retry_delay,
+    truncate_for_error,
+};
 use crate::session_commands::{parse_session_search_args, search_session_entries};
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
@@ -3826,38 +3830,6 @@ fn extract_footer_event_keys(text: &str) -> Vec<String> {
         cursor = &after_start[end + EVENT_KEY_MARKER_SUFFIX.len()..];
     }
     keys
-}
-
-fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
-    let raw = headers.get("retry-after")?.to_str().ok()?;
-    let seconds = raw.trim().parse::<u64>().ok()?;
-    Some(Duration::from_secs(seconds))
-}
-
-fn retry_delay(base_delay_ms: u64, attempt: usize, retry_after: Option<Duration>) -> Duration {
-    if let Some(delay) = retry_after {
-        return delay.max(Duration::from_millis(base_delay_ms));
-    }
-    let exponent = attempt.saturating_sub(1).min(10) as u32;
-    let scaled = base_delay_ms.saturating_mul(2_u64.saturating_pow(exponent));
-    Duration::from_millis(scaled.min(30_000))
-}
-
-fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
-    error.is_timeout() || error.is_connect() || error.is_request()
-}
-
-fn is_retryable_github_status(status: u16) -> bool {
-    status == 429 || status >= 500
-}
-
-fn truncate_for_error(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let mut truncated = text.chars().take(max_chars).collect::<String>();
-    truncated.push_str("...");
-    truncated
 }
 
 fn is_artifact_record_expired(record: &ChannelArtifactRecord, now_unix_ms: u64) -> bool {
