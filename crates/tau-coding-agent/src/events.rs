@@ -18,8 +18,8 @@ use tau_ai::{LlmClient, Message, MessageRole};
 
 use crate::{
     channel_store::{ChannelLogEntry, ChannelStore},
-    current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, PromptRunStatus,
-    RenderOptions, SessionRuntime,
+    current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, Cli,
+    PromptRunStatus, RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -133,6 +133,60 @@ enum DueDecision {
     Run,
     NotDue,
     SkipStaleRemove,
+}
+
+#[derive(Debug, Clone)]
+struct EventsInspectConfig {
+    events_dir: PathBuf,
+    state_path: PathBuf,
+    queue_limit: usize,
+    stale_immediate_max_age_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct EventsInspectReport {
+    pub events_dir: String,
+    pub state_path: String,
+    pub now_unix_ms: u64,
+    pub queue_limit: usize,
+    pub stale_immediate_max_age_seconds: u64,
+    pub discovered_events: usize,
+    pub malformed_events: usize,
+    pub enabled_events: usize,
+    pub disabled_events: usize,
+    pub schedule_immediate_events: usize,
+    pub schedule_at_events: usize,
+    pub schedule_periodic_events: usize,
+    pub due_now_events: usize,
+    pub queued_now_events: usize,
+    pub not_due_events: usize,
+    pub stale_immediate_events: usize,
+    pub due_eval_failed_events: usize,
+    pub periodic_with_last_run_state: usize,
+    pub periodic_missing_last_run_state: usize,
+}
+
+pub(crate) fn execute_events_inspect_command(cli: &Cli) -> Result<()> {
+    let report = inspect_events(
+        &EventsInspectConfig {
+            events_dir: cli.events_dir.clone(),
+            state_path: cli.events_state_path.clone(),
+            queue_limit: cli.events_queue_limit.max(1),
+            stale_immediate_max_age_seconds: cli.events_stale_immediate_max_age_seconds,
+        },
+        current_unix_timestamp_ms(),
+    )?;
+
+    if cli.events_inspect_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("failed to render events inspect json")?
+        );
+    } else {
+        println!("{}", render_events_inspect_report(&report));
+    }
+    Ok(())
 }
 
 pub(crate) async fn run_event_scheduler(config: EventSchedulerConfig) -> Result<()> {
@@ -594,6 +648,111 @@ async fn execute_event(
     Ok(())
 }
 
+fn inspect_events(config: &EventsInspectConfig, now_unix_ms: u64) -> Result<EventsInspectReport> {
+    let queue_limit = config.queue_limit.max(1);
+    let (records, malformed_events) = load_event_records(&config.events_dir)?;
+    let state = load_runner_state(&config.state_path)?;
+
+    let mut report = EventsInspectReport {
+        events_dir: config.events_dir.display().to_string(),
+        state_path: config.state_path.display().to_string(),
+        now_unix_ms,
+        queue_limit,
+        stale_immediate_max_age_seconds: config.stale_immediate_max_age_seconds,
+        discovered_events: records.len(),
+        malformed_events,
+        enabled_events: 0,
+        disabled_events: 0,
+        schedule_immediate_events: 0,
+        schedule_at_events: 0,
+        schedule_periodic_events: 0,
+        due_now_events: 0,
+        queued_now_events: 0,
+        not_due_events: 0,
+        stale_immediate_events: 0,
+        due_eval_failed_events: 0,
+        periodic_with_last_run_state: 0,
+        periodic_missing_last_run_state: 0,
+    };
+
+    for record in records {
+        let event = &record.definition;
+        if event.enabled {
+            report.enabled_events = report.enabled_events.saturating_add(1);
+        } else {
+            report.disabled_events = report.disabled_events.saturating_add(1);
+        }
+
+        match &event.schedule {
+            EventSchedule::Immediate => {
+                report.schedule_immediate_events =
+                    report.schedule_immediate_events.saturating_add(1);
+            }
+            EventSchedule::At { .. } => {
+                report.schedule_at_events = report.schedule_at_events.saturating_add(1);
+            }
+            EventSchedule::Periodic { .. } => {
+                report.schedule_periodic_events = report.schedule_periodic_events.saturating_add(1);
+                if state.periodic_last_run_unix_ms.contains_key(&event.id) {
+                    report.periodic_with_last_run_state =
+                        report.periodic_with_last_run_state.saturating_add(1);
+                } else {
+                    report.periodic_missing_last_run_state =
+                        report.periodic_missing_last_run_state.saturating_add(1);
+                }
+            }
+        }
+
+        match due_decision(
+            event,
+            &state,
+            now_unix_ms,
+            config.stale_immediate_max_age_seconds,
+        ) {
+            Ok(DueDecision::Run) => {
+                report.due_now_events = report.due_now_events.saturating_add(1);
+            }
+            Ok(DueDecision::NotDue) => {
+                report.not_due_events = report.not_due_events.saturating_add(1);
+            }
+            Ok(DueDecision::SkipStaleRemove) => {
+                report.stale_immediate_events = report.stale_immediate_events.saturating_add(1);
+            }
+            Err(_) => {
+                report.due_eval_failed_events = report.due_eval_failed_events.saturating_add(1);
+            }
+        }
+    }
+
+    report.queued_now_events = report.due_now_events.min(queue_limit);
+    Ok(report)
+}
+
+fn render_events_inspect_report(report: &EventsInspectReport) -> String {
+    format!(
+        "events inspect: events_dir={} state_path={} now_unix_ms={} discovered_events={} malformed_events={} enabled_events={} disabled_events={} due_now_events={} queued_now_events={} not_due_events={} stale_immediate_events={} due_eval_failed_events={} schedule_immediate_events={} schedule_at_events={} schedule_periodic_events={} periodic_with_last_run_state={} periodic_missing_last_run_state={} queue_limit={} stale_immediate_max_age_seconds={}",
+        report.events_dir,
+        report.state_path,
+        report.now_unix_ms,
+        report.discovered_events,
+        report.malformed_events,
+        report.enabled_events,
+        report.disabled_events,
+        report.due_now_events,
+        report.queued_now_events,
+        report.not_due_events,
+        report.stale_immediate_events,
+        report.due_eval_failed_events,
+        report.schedule_immediate_events,
+        report.schedule_at_events,
+        report.schedule_periodic_events,
+        report.periodic_with_last_run_state,
+        report.periodic_missing_last_run_state,
+        report.queue_limit,
+        report.stale_immediate_max_age_seconds,
+    )
+}
+
 fn due_decision(
     event: &EventDefinition,
     state: &EventRunnerState,
@@ -812,10 +971,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        due_decision, ingest_webhook_immediate_event, load_event_records,
-        next_periodic_due_unix_ms, DueDecision, EventDefinition, EventRunnerState, EventSchedule,
-        EventSchedulerConfig, EventSchedulerRuntime, EventWebhookIngestConfig,
-        WebhookSignatureAlgorithm,
+        due_decision, ingest_webhook_immediate_event, inspect_events, load_event_records,
+        next_periodic_due_unix_ms, render_events_inspect_report, DueDecision, EventDefinition,
+        EventRunnerState, EventSchedule, EventSchedulerConfig, EventSchedulerRuntime,
+        EventWebhookIngestConfig, EventsInspectConfig, WebhookSignatureAlgorithm,
     };
     use crate::{tools::ToolPolicy, RenderOptions};
 
@@ -939,6 +1098,242 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(malformed, 1);
         assert_eq!(records[0].definition.id, "event-1");
+    }
+
+    #[test]
+    fn unit_events_inspect_report_counts_due_and_schedule_buckets() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        let state_path = temp.path().join("state.json");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+
+        let now = 1_700_000_000_000_u64;
+        write_event(
+            &events_dir.join("immediate.json"),
+            &EventDefinition {
+                id: "immediate".to_string(),
+                channel: "slack/C1".to_string(),
+                prompt: "run now".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(200)),
+            },
+        );
+        write_event(
+            &events_dir.join("at.json"),
+            &EventDefinition {
+                id: "at-later".to_string(),
+                channel: "github/owner/repo#1".to_string(),
+                prompt: "wait".to_string(),
+                schedule: EventSchedule::At {
+                    at_unix_ms: now.saturating_add(5_000),
+                },
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(200)),
+            },
+        );
+        write_event(
+            &events_dir.join("periodic-disabled.json"),
+            &EventDefinition {
+                id: "periodic-disabled".to_string(),
+                channel: "github/owner/repo#2".to_string(),
+                prompt: "periodic".to_string(),
+                schedule: EventSchedule::Periodic {
+                    cron: "0/1 * * * * * *".to_string(),
+                    timezone: "UTC".to_string(),
+                },
+                enabled: false,
+                created_unix_ms: Some(now.saturating_sub(200)),
+            },
+        );
+
+        let report = inspect_events(
+            &EventsInspectConfig {
+                events_dir,
+                state_path,
+                queue_limit: 1,
+                stale_immediate_max_age_seconds: 3_600,
+            },
+            now,
+        )
+        .expect("inspect report");
+
+        assert_eq!(report.discovered_events, 3);
+        assert_eq!(report.malformed_events, 0);
+        assert_eq!(report.enabled_events, 2);
+        assert_eq!(report.disabled_events, 1);
+        assert_eq!(report.schedule_immediate_events, 1);
+        assert_eq!(report.schedule_at_events, 1);
+        assert_eq!(report.schedule_periodic_events, 1);
+        assert_eq!(report.due_now_events, 1);
+        assert_eq!(report.queued_now_events, 1);
+        assert_eq!(report.not_due_events, 2);
+        assert_eq!(report.stale_immediate_events, 0);
+        assert_eq!(report.due_eval_failed_events, 0);
+        assert_eq!(report.periodic_with_last_run_state, 0);
+        assert_eq!(report.periodic_missing_last_run_state, 1);
+    }
+
+    #[test]
+    fn functional_events_inspect_render_includes_operator_fields() {
+        let rendered = render_events_inspect_report(&super::EventsInspectReport {
+            events_dir: "/tmp/events".to_string(),
+            state_path: "/tmp/events/state.json".to_string(),
+            now_unix_ms: 1_234,
+            queue_limit: 8,
+            stale_immediate_max_age_seconds: 600,
+            discovered_events: 4,
+            malformed_events: 1,
+            enabled_events: 3,
+            disabled_events: 1,
+            schedule_immediate_events: 2,
+            schedule_at_events: 1,
+            schedule_periodic_events: 1,
+            due_now_events: 2,
+            queued_now_events: 2,
+            not_due_events: 1,
+            stale_immediate_events: 1,
+            due_eval_failed_events: 0,
+            periodic_with_last_run_state: 1,
+            periodic_missing_last_run_state: 0,
+        });
+
+        assert!(rendered.contains("events inspect:"));
+        assert!(rendered.contains("events_dir=/tmp/events"));
+        assert!(rendered.contains("due_now_events=2"));
+        assert!(rendered.contains("queued_now_events=2"));
+        assert!(rendered.contains("schedule_periodic_events=1"));
+        assert!(rendered.contains("queue_limit=8"));
+    }
+
+    #[test]
+    fn integration_events_inspect_reads_state_and_applies_queue_limit() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        let state_path = temp.path().join("state.json");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+
+        let now = 1_700_000_100_000_u64;
+        write_event(
+            &events_dir.join("due-a.json"),
+            &EventDefinition {
+                id: "due-a".to_string(),
+                channel: "slack/C1".to_string(),
+                prompt: "a".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(200)),
+            },
+        );
+        write_event(
+            &events_dir.join("due-b.json"),
+            &EventDefinition {
+                id: "due-b".to_string(),
+                channel: "slack/C1".to_string(),
+                prompt: "b".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(200)),
+            },
+        );
+        write_event(
+            &events_dir.join("periodic.json"),
+            &EventDefinition {
+                id: "periodic".to_string(),
+                channel: "github/owner/repo#9".to_string(),
+                prompt: "periodic".to_string(),
+                schedule: EventSchedule::Periodic {
+                    cron: "0/1 * * * * * *".to_string(),
+                    timezone: "UTC".to_string(),
+                },
+                enabled: false,
+                created_unix_ms: Some(now.saturating_sub(200)),
+            },
+        );
+        std::fs::write(events_dir.join("broken.json"), "{bad-json").expect("write malformed");
+
+        std::fs::write(
+            &state_path,
+            r#"{
+  "schema_version": 1,
+  "periodic_last_run_unix_ms": {
+    "periodic": 1700000000000
+  },
+  "debounce_last_seen_unix_ms": {},
+  "signature_replay_last_seen_unix_ms": {}
+}
+"#,
+        )
+        .expect("write state");
+
+        let report = inspect_events(
+            &EventsInspectConfig {
+                events_dir,
+                state_path,
+                queue_limit: 1,
+                stale_immediate_max_age_seconds: 3_600,
+            },
+            now,
+        )
+        .expect("inspect report");
+
+        assert_eq!(report.discovered_events, 3);
+        assert_eq!(report.malformed_events, 1);
+        assert_eq!(report.due_now_events, 2);
+        assert_eq!(report.queued_now_events, 1);
+        assert_eq!(report.periodic_with_last_run_state, 1);
+        assert_eq!(report.periodic_missing_last_run_state, 0);
+    }
+
+    #[test]
+    fn regression_events_inspect_handles_invalid_periodic_and_missing_state_file() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        let state_path = temp.path().join("missing/state.json");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+
+        let now = 1_700_000_200_000_u64;
+        write_event(
+            &events_dir.join("invalid-periodic.json"),
+            &EventDefinition {
+                id: "invalid-periodic".to_string(),
+                channel: "github/owner/repo#3".to_string(),
+                prompt: "periodic".to_string(),
+                schedule: EventSchedule::Periodic {
+                    cron: "invalid-cron".to_string(),
+                    timezone: "UTC".to_string(),
+                },
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(200)),
+            },
+        );
+        write_event(
+            &events_dir.join("stale-immediate.json"),
+            &EventDefinition {
+                id: "stale-immediate".to_string(),
+                channel: "slack/C1".to_string(),
+                prompt: "stale".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(120_000)),
+            },
+        );
+
+        let report = inspect_events(
+            &EventsInspectConfig {
+                events_dir,
+                state_path,
+                queue_limit: 8,
+                stale_immediate_max_age_seconds: 60,
+            },
+            now,
+        )
+        .expect("inspect report");
+
+        assert_eq!(report.discovered_events, 2);
+        assert_eq!(report.due_eval_failed_events, 1);
+        assert_eq!(report.stale_immediate_events, 1);
+        assert_eq!(report.queued_now_events, 0);
     }
 
     #[tokio::test]

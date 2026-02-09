@@ -408,6 +408,8 @@ fn test_cli() -> Cli {
         rpc_dispatch_frame_file: None,
         rpc_dispatch_ndjson_file: None,
         rpc_serve_ndjson: false,
+        events_inspect: false,
+        events_inspect_json: false,
         events_runner: false,
         events_dir: PathBuf::from(".tau/events"),
         events_state_path: PathBuf::from(".tau/events/state.json"),
@@ -14804,6 +14806,33 @@ fn integration_execute_startup_preflight_runs_onboarding_and_generates_report() 
         "expected at least one onboarding report in {}",
         reports_dir.display()
     );
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_events_inspect_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.events_inspect = true;
+    cli.events_inspect_json = true;
+
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(
+        cli.events_dir.join("inspect.json"),
+        r#"{
+  "id": "inspect-now",
+  "channel": "slack/C123",
+  "prompt": "inspect me",
+  "schedule": {"type":"immediate"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write inspect event");
+
+    let handled = execute_startup_preflight(&cli).expect("events inspect preflight");
+    assert!(handled);
+    assert!(cli.events_dir.join("inspect.json").exists());
 }
 
 #[test]

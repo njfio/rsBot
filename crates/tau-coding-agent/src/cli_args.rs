@@ -1225,6 +1225,29 @@ pub(crate) struct Cli {
     pub(crate) rpc_serve_ndjson: bool,
 
     #[arg(
+        long = "events-inspect",
+        env = "TAU_EVENTS_INSPECT",
+        default_value_t = false,
+        conflicts_with = "events_runner",
+        conflicts_with = "event_webhook_ingest_file",
+        help = "Inspect scheduled events state and due/queue diagnostics, then exit"
+    )]
+    pub(crate) events_inspect: bool,
+
+    #[arg(
+        long = "events-inspect-json",
+        env = "TAU_EVENTS_INSPECT_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "events_inspect",
+        help = "Emit --events-inspect output as pretty JSON"
+    )]
+    pub(crate) events_inspect_json: bool,
+
+    #[arg(
         long = "events-runner",
         env = "TAU_EVENTS_RUNNER",
         default_value_t = false,

@@ -674,6 +674,16 @@ cargo run -p tau-coding-agent -- \
   --events-queue-limit 64
 ```
 
+Inspect scheduled event due/queue health without executing events:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --events-dir .tau/events \
+  --events-state-path .tau/events/state.json \
+  --events-inspect \
+  --events-inspect-json
+```
+
 Queue a webhook-triggered immediate event from a payload file (debounced):
 
 ```bash
