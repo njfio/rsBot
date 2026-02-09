@@ -1,6 +1,6 @@
 # rust-tau
 
-Pure Rust implementation of core `upstream pi mono` concepts.
+Pure Rust implementation of core upstream mono concepts.
 
 This workspace mirrors the high-level package boundaries from the upstream mono baseline and provides a functional baseline:
 
