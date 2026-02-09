@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "invalid-attachment-url",
+  "description": "Invalid fixture with disallowed attachment URL scheme.",
+  "events": [
+    {
+      "schema_version": 1,
+      "transport": "whatsapp",
+      "event_kind": "message",
+      "event_id": "wa-invalid-1",
+      "conversation_id": "whatsapp-chat-1",
+      "actor_id": "whatsapp-user-1",
+      "timestamp_ms": 1760000200000,
+      "text": "payload with invalid attachment url",
+      "attachments": [
+        {
+          "attachment_id": "wa-invalid-att-1",
+          "url": "ftp://example.com/file.bin",
+          "content_type": "application/octet-stream",
+          "file_name": "file.bin",
+          "size_bytes": 64
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "duplicate-event-key",
+  "description": "Invalid fixture with repeated transport/event_id pair.",
+  "events": [
+    {
+      "schema_version": 1,
+      "transport": "telegram",
+      "event_kind": "message",
+      "event_id": "dup-1",
+      "conversation_id": "telegram-chat-1",
+      "actor_id": "telegram-user-1",
+      "timestamp_ms": 1760000100000,
+      "text": "first payload"
+    },
+    {
+      "schema_version": 1,
+      "transport": "telegram",
+      "event_kind": "edit",
+      "event_id": "dup-1",
+      "conversation_id": "telegram-chat-2",
+      "actor_id": "telegram-user-2",
+      "timestamp_ms": 1760000101000,
+      "text": "second payload"
+    }
+  ]
+}

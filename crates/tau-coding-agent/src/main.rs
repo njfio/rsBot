@@ -24,6 +24,8 @@ mod macro_profile_commands;
 mod mcp_server;
 mod model_catalog;
 mod multi_agent_router;
+#[cfg(test)]
+mod multi_channel_contract;
 mod observability_loggers;
 mod onboarding;
 mod orchestrator;

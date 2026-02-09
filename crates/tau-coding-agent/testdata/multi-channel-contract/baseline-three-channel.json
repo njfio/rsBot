@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "name": "baseline-three-channel",
+  "description": "One valid event for Telegram, Discord, and WhatsApp.",
+  "events": [
+    {
+      "schema_version": 1,
+      "transport": "telegram",
+      "event_kind": "message",
+      "event_id": "tg-1001",
+      "conversation_id": "telegram-chat-42",
+      "thread_id": "",
+      "actor_id": "telegram-user-7",
+      "actor_display": "ops-bot-telegram",
+      "timestamp_ms": 1760000001000,
+      "text": "Deploy status for prod-eu?",
+      "attachments": [],
+      "metadata": {
+        "chat_type": "group",
+        "message_source": "polling"
+      }
+    },
+    {
+      "schema_version": 1,
+      "transport": "discord",
+      "event_kind": "command",
+      "event_id": "dc-2001",
+      "conversation_id": "discord-channel-ops",
+      "thread_id": "discord-thread-77",
+      "actor_id": "discord-user-3",
+      "actor_display": "infra-lead",
+      "timestamp_ms": 1760000002000,
+      "text": "/health transport",
+      "attachments": [],
+      "metadata": {
+        "guild_id": "guild-1",
+        "command_origin": "slash"
+      }
+    },
+    {
+      "schema_version": 1,
+      "transport": "whatsapp",
+      "event_kind": "message",
+      "event_id": "wa-3001",
+      "conversation_id": "whatsapp-room-incident",
+      "thread_id": "",
+      "actor_id": "whatsapp-user-19",
+      "actor_display": "oncall-manager",
+      "timestamp_ms": 1760000003000,
+      "text": "See attached screenshot for alert spike.",
+      "attachments": [
+        {
+          "attachment_id": "wa-att-1",
+          "url": "https://example.com/incident/alert-spike.png",
+          "content_type": "image/png",
+          "file_name": "alert-spike.png",
+          "size_bytes": 2048
+        }
+      ],
+      "metadata": {
+        "device": "mobile",
+        "message_source": "webhook"
+      }
+    }
+  ]
+}

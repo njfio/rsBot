@@ -116,6 +116,7 @@ Use this area for narrow utility behavior reused across startup/runtime modules.
 
 - `tests.rs`: large integration/regression suite for `tau-coding-agent`.
 - `transport_conformance.rs`: replay conformance fixtures for bridge/scheduler flows.
+- `multi_channel_contract.rs`: multi-channel (Telegram/Discord/WhatsApp) schema and fixture validation contract.
 - `#[cfg(test)]` exports in `main.rs`: test-only visibility for parser/helpers.
 
 Prefer adding tests next to the module behavior being changed, plus regression coverage in `tests.rs` when behavior spans modules.
