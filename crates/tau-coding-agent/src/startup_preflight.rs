@@ -116,6 +116,27 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
             .event_webhook_channel
             .clone()
             .ok_or_else(|| anyhow!("--event-webhook-channel is required"))?;
+        let pairing_policy = pairing_policy_for_state_dir(&cli.channel_store_root);
+        let actor_id = cli.event_webhook_actor_id.clone().unwrap_or_default();
+        let pairing_decision = evaluate_pairing_access(
+            &pairing_policy,
+            &channel_ref,
+            &actor_id,
+            current_unix_timestamp_ms(),
+        )?;
+        if let PairingDecision::Deny { reason_code } = pairing_decision {
+            println!(
+                "webhook ingest denied: channel={} actor_id={} reason_code={}",
+                channel_ref,
+                if actor_id.is_empty() {
+                    "(missing)"
+                } else {
+                    actor_id.as_str()
+                },
+                reason_code
+            );
+            return Ok(true);
+        }
         let event_webhook_secret = resolve_secret_from_cli_or_store_id(
             cli,
             cli.event_webhook_secret.as_deref(),

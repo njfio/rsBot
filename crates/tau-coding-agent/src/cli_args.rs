@@ -1155,6 +1155,15 @@ pub(crate) struct Cli {
     pub(crate) event_webhook_channel: Option<String>,
 
     #[arg(
+        long = "event-webhook-actor-id",
+        env = "TAU_EVENT_WEBHOOK_ACTOR_ID",
+        requires = "event_webhook_ingest_file",
+        value_name = "id",
+        help = "Optional actor id/login used by pairing policy checks before webhook ingest"
+    )]
+    pub(crate) event_webhook_actor_id: Option<String>,
+
+    #[arg(
         long = "event-webhook-prompt-prefix",
         env = "TAU_EVENT_WEBHOOK_PROMPT_PREFIX",
         default_value = "Handle webhook-triggered event.",

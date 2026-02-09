@@ -17,8 +17,9 @@ use tokio::sync::watch;
 use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
 use crate::session_commands::{parse_session_search_args, search_session_entries};
 use crate::{
-    current_unix_timestamp_ms, run_prompt_with_cancellation, session_message_preview,
-    session_message_role, write_text_atomic, PromptRunStatus, RenderOptions, SessionRuntime,
+    current_unix_timestamp_ms, evaluate_pairing_access, pairing_policy_for_state_dir,
+    run_prompt_with_cancellation, session_message_preview, session_message_role, write_text_atomic,
+    PairingDecision, PromptRunStatus, RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -859,6 +860,20 @@ impl GithubIssuesBridgeRuntime {
                 }
 
                 let action = event_action_from_body(&event.body);
+                let policy_channel = format!("github:{}", self.repo.as_slug());
+                let pairing_policy = pairing_policy_for_state_dir(&self.config.state_dir);
+                let pairing_decision = evaluate_pairing_access(
+                    &pairing_policy,
+                    &policy_channel,
+                    &event.author_login,
+                    current_unix_timestamp_ms(),
+                )?;
+                let pairing_status = if matches!(pairing_decision, PairingDecision::Allow { .. }) {
+                    "allow"
+                } else {
+                    "deny"
+                };
+                let pairing_reason_code = pairing_decision.reason_code().to_string();
                 self.inbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
                     "repo": self.repo.as_slug(),
@@ -866,8 +881,57 @@ impl GithubIssuesBridgeRuntime {
                     "kind": event.kind.as_str(),
                     "issue_number": event.issue_number,
                     "action": format!("{action:?}"),
+                    "pairing": {
+                        "decision": pairing_status,
+                        "reason_code": pairing_reason_code,
+                        "channel": policy_channel,
+                        "actor_id": event.author_login,
+                    },
                     "payload": event.raw_payload,
                 }))?;
+
+                if let PairingDecision::Deny { reason_code } = pairing_decision {
+                    self.append_channel_log(
+                        &event,
+                        "inbound",
+                        json!({
+                            "kind": event.kind.as_str(),
+                            "author_login": event.author_login,
+                            "body": event.body,
+                            "action": format!("{action:?}"),
+                            "pairing": {
+                                "decision": "deny",
+                                "reason_code": reason_code,
+                                "channel": policy_channel,
+                            },
+                        }),
+                    )?;
+                    self.outbound_log.append(&json!({
+                        "timestamp_unix_ms": current_unix_timestamp_ms(),
+                        "repo": self.repo.as_slug(),
+                        "event_key": event.key.clone(),
+                        "issue_number": event.issue_number,
+                        "command": "authorization",
+                        "status": "denied",
+                        "reason_code": reason_code,
+                        "channel": policy_channel,
+                        "actor_id": event.author_login,
+                    }))?;
+                    if self.state_store.mark_processed(&event.key) {
+                        state_dirty = true;
+                    }
+                    report.processed_events = report.processed_events.saturating_add(1);
+                    eprintln!(
+                        "github bridge event denied: repo={} issue=#{} key={} actor={} channel={} reason_code={}",
+                        self.repo.as_slug(),
+                        event.issue_number,
+                        event.key,
+                        event.author_login,
+                        policy_channel,
+                        reason_code
+                    );
+                    continue;
+                }
 
                 if let Err(error) = self
                     .handle_event_action(&event, action, &mut report, &mut state_dirty)
@@ -3617,6 +3681,77 @@ mod tests {
         let artifact_index = std::fs::read_to_string(channel_dir.join("artifacts/index.jsonl"))
             .expect("artifact index exists");
         assert!(artifact_index.contains("\"artifact_type\":\"github-issue-reply\""));
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_poll_denies_unpaired_actor_in_strict_mode() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 25,
+                "number": 77,
+                "title": "Strict policy",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/77/comments");
+            then.status(200).json_body(json!([{
+                "id": 7701,
+                "body": "run anyway",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let working_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/77/comments")
+                .body_includes("rsBot is working on run");
+            then.status(201).json_body(json!({
+                "id": 7777,
+                "html_url": "https://example.test/comment/7777"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let security_dir = temp.path().join("security");
+        std::fs::create_dir_all(&security_dir).expect("security dir");
+        std::fs::write(
+            security_dir.join("allowlist.json"),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {}
+}
+"#,
+        )
+        .expect("write strict allowlist");
+
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.discovered_events, 1);
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        working_post.assert_calls(0);
+
+        let outbound = std::fs::read_to_string(
+            temp.path()
+                .join("owner__repo")
+                .join("outbound-events.jsonl"),
+        )
+        .expect("read outbound log");
+        assert!(outbound.contains("\"status\":\"denied\""));
+        assert!(outbound.contains("\"reason_code\":\"deny_actor_not_paired_or_allowlisted\""));
     }
 
     #[tokio::test]

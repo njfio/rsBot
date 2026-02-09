@@ -253,6 +253,22 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/integration-auth status github-token --json",
     },
     CommandSpec {
+        name: "/pair",
+        usage: "/pair <add|remove|status> ...",
+        description: "Manage remote channel actor pairings and allowlist visibility",
+        details:
+            "Writes `.tau/security/pairings.json` atomically. Use `/pair status` to inspect effective pairings and allowlist rows.",
+        example: "/pair add github:owner/repo alice --ttl-seconds 3600",
+    },
+    CommandSpec {
+        name: "/unpair",
+        usage: "/unpair <channel> <actor_id>",
+        description: "Remove one actor pairing from a channel",
+        details:
+            "Alias for `/pair remove` with deterministic removal count and atomic persistence.",
+        example: "/unpair github:owner/repo alice",
+    },
+    CommandSpec {
         name: "/profile",
         usage: "/profile <save|load|list|show|delete> ...",
         description: "Manage model, policy, and session default profiles",
@@ -343,6 +359,8 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "/macro",
     "/auth",
     "/integration-auth",
+    "/pair",
+    "/unpair",
     "/profile",
     "/branch-alias",
     "/session-bookmark",
@@ -1024,6 +1042,16 @@ pub(crate) fn handle_command_with_session_import_mode(
             "{}",
             execute_integration_auth_command(auth_command_config, command_args)
         );
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/pair" {
+        println!("{}", execute_pair_command(command_args, "local"));
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/unpair" {
+        println!("{}", execute_unpair_command(command_args));
         return Ok(CommandAction::Continue);
     }
 
