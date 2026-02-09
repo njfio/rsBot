@@ -68,6 +68,14 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/session-diff 12 24",
     },
     CommandSpec {
+        name: "/qa-loop",
+        usage: QA_LOOP_USAGE,
+        description: "Run staged quality checks with deterministic text/json reports",
+        details:
+            "Runs configured stages with timeout/retry controls, bounded stdout/stderr capture, and git changed-file summary.",
+        example: "/qa-loop --json",
+    },
+    CommandSpec {
         name: "/doctor",
         usage: "/doctor [--json]",
         description: "Run deterministic runtime diagnostics",
@@ -335,6 +343,7 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "/session-search",
     "/session-stats",
     "/session-diff",
+    "/qa-loop",
     "/doctor",
     "/session-graph-export",
     "/session-export",
@@ -702,6 +711,11 @@ pub(crate) fn handle_command_with_session_import_mode(
         };
 
         println!("{}", execute_session_diff_command(runtime, heads));
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/qa-loop" {
+        println!("{}", execute_qa_loop_cli_command(command_args));
         return Ok(CommandAction::Continue);
     }
 

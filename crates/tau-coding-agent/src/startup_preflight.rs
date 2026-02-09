@@ -81,6 +81,11 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.qa_loop {
+        execute_qa_loop_preflight_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.mcp_server {
         execute_mcp_server_command(cli)?;
         return Ok(true);

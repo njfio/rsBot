@@ -391,6 +391,13 @@ fn test_cli() -> Cli {
         package_activate_root: PathBuf::from(".tau/packages"),
         package_activate_destination: PathBuf::from(".tau/packages-active"),
         package_activate_conflict_policy: "error".to_string(),
+        qa_loop: false,
+        qa_loop_config: None,
+        qa_loop_json: false,
+        qa_loop_stage_timeout_ms: None,
+        qa_loop_retry_failures: None,
+        qa_loop_max_output_bytes: None,
+        qa_loop_changed_file_limit: None,
         mcp_server: false,
         mcp_external_server_config: None,
         mcp_context_provider: vec![],
@@ -1117,6 +1124,53 @@ fn functional_cli_artifact_retention_flags_accept_explicit_values() {
     ]);
     assert_eq!(cli.github_artifact_retention_days, 14);
     assert_eq!(cli.slack_artifact_retention_days, 0);
+}
+
+#[test]
+fn unit_cli_qa_loop_flags_default_to_disabled() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert!(!cli.qa_loop);
+    assert!(cli.qa_loop_config.is_none());
+    assert!(!cli.qa_loop_json);
+    assert!(cli.qa_loop_stage_timeout_ms.is_none());
+    assert!(cli.qa_loop_retry_failures.is_none());
+    assert!(cli.qa_loop_max_output_bytes.is_none());
+    assert!(cli.qa_loop_changed_file_limit.is_none());
+}
+
+#[test]
+fn functional_cli_qa_loop_flags_accept_overrides() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--qa-loop",
+        "--qa-loop-config",
+        ".tau/qa-loop.json",
+        "--qa-loop-json",
+        "--qa-loop-stage-timeout-ms",
+        "45000",
+        "--qa-loop-retry-failures",
+        "3",
+        "--qa-loop-max-output-bytes",
+        "2048",
+        "--qa-loop-changed-file-limit",
+        "40",
+    ]);
+    assert!(cli.qa_loop);
+    assert_eq!(cli.qa_loop_config, Some(PathBuf::from(".tau/qa-loop.json")));
+    assert!(cli.qa_loop_json);
+    assert_eq!(cli.qa_loop_stage_timeout_ms, Some(45_000));
+    assert_eq!(cli.qa_loop_retry_failures, Some(3));
+    assert_eq!(cli.qa_loop_max_output_bytes, Some(2048));
+    assert_eq!(cli.qa_loop_changed_file_limit, Some(40));
+}
+
+#[test]
+fn regression_cli_qa_loop_config_requires_qa_loop() {
+    let parse = Cli::try_parse_from(["tau-rs", "--qa-loop-config", "qa-loop.json"]);
+    let error = parse.expect_err("qa-loop-config should require qa-loop flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
 }
 
 #[test]

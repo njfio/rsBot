@@ -29,6 +29,7 @@ mod provider_auth;
 mod provider_client;
 mod provider_credentials;
 mod provider_fallback;
+mod qa_loop_commands;
 mod rpc_capabilities;
 mod rpc_protocol;
 mod runtime_cli_validation;
@@ -197,6 +198,9 @@ pub(crate) use crate::provider_fallback::{build_client_with_fallbacks, resolve_f
 #[cfg(test)]
 pub(crate) use crate::provider_fallback::{
     is_retryable_provider_error, ClientRoute, FallbackRoutingClient,
+};
+pub(crate) use crate::qa_loop_commands::{
+    execute_qa_loop_cli_command, execute_qa_loop_preflight_command, QA_LOOP_USAGE,
 };
 pub(crate) use crate::rpc_capabilities::execute_rpc_capabilities_command;
 #[cfg(test)]

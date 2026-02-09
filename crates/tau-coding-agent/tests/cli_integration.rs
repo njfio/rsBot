@@ -256,6 +256,79 @@ fn regression_session_validate_flag_fails_for_invalid_session_file() {
 }
 
 #[test]
+fn regression_qa_loop_flag_takes_preflight_precedence_over_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let config_path = temp.path().join("qa-loop.json");
+    fs::write(
+        &config_path,
+        format!(
+            "{}\n",
+            json!({
+                "schema_version": 1,
+                "stages": [
+                    {"name": "smoke", "command": "echo qa-loop-preflight"}
+                ]
+            })
+        ),
+    )
+    .expect("write qa-loop config");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path()).args([
+        "--qa-loop",
+        "--qa-loop-config",
+        config_path.to_str().expect("utf8 path"),
+        "--prompt",
+        "ignored prompt",
+    ]);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("qa-loop summary: outcome=pass"))
+        .stdout(predicate::str::contains(
+            "qa-loop stage: name=smoke status=pass",
+        ))
+        .stdout(predicate::str::contains(
+            "qa-loop attempt stdout: stage=smoke",
+        ));
+}
+
+#[test]
+fn regression_qa_loop_flag_returns_failure_with_json_root_cause() {
+    let temp = tempdir().expect("tempdir");
+    let config_path = temp.path().join("qa-loop.json");
+    fs::write(
+        &config_path,
+        format!(
+            "{}\n",
+            json!({
+                "schema_version": 1,
+                "stages": [
+                    {"name": "failing", "command": "echo qa-loop-failed 1>&2; exit 3"}
+                ]
+            })
+        ),
+    )
+    .expect("write qa-loop config");
+
+    let mut cmd = binary_command();
+    cmd.current_dir(temp.path()).args([
+        "--qa-loop",
+        "--qa-loop-config",
+        config_path.to_str().expect("utf8 path"),
+        "--qa-loop-json",
+    ]);
+
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::contains("\"outcome\":\"fail\""))
+        .stdout(predicate::str::contains("\"root_cause_stage\":\"failing\""))
+        .stderr(predicate::str::contains(
+            "qa-loop failed: root_cause_stage=failing",
+        ));
+}
+
+#[test]
 fn interactive_help_and_unknown_command_suggestions_work() {
     let mut cmd = binary_command();
     cmd.args([

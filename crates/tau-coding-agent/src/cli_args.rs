@@ -18,6 +18,16 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+fn parse_positive_u64(value: &str) -> Result<u64, String> {
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|error| format!("failed to parse integer: {error}"))?;
+    if parsed == 0 {
+        return Err("value must be greater than 0".to_string());
+    }
+    Ok(parsed)
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "tau-rs",
@@ -1048,6 +1058,67 @@ pub(crate) struct Cli {
         help = "Conflict strategy when multiple packages contain the same kind/path component"
     )]
     pub(crate) package_activate_conflict_policy: String,
+
+    #[arg(
+        long = "qa-loop",
+        env = "TAU_QA_LOOP",
+        default_value_t = false,
+        help = "Run staged quality pipeline (fmt/lint/test by default) and exit"
+    )]
+    pub(crate) qa_loop: bool,
+
+    #[arg(
+        long = "qa-loop-config",
+        env = "TAU_QA_LOOP_CONFIG",
+        requires = "qa_loop",
+        value_name = "path",
+        help = "Optional JSON pipeline config file for --qa-loop"
+    )]
+    pub(crate) qa_loop_config: Option<PathBuf>,
+
+    #[arg(
+        long = "qa-loop-json",
+        env = "TAU_QA_LOOP_JSON",
+        requires = "qa_loop",
+        default_value_t = false,
+        help = "Emit qa-loop report as JSON"
+    )]
+    pub(crate) qa_loop_json: bool,
+
+    #[arg(
+        long = "qa-loop-stage-timeout-ms",
+        env = "TAU_QA_LOOP_STAGE_TIMEOUT_MS",
+        requires = "qa_loop",
+        value_parser = parse_positive_u64,
+        help = "Override per-stage timeout for --qa-loop in milliseconds"
+    )]
+    pub(crate) qa_loop_stage_timeout_ms: Option<u64>,
+
+    #[arg(
+        long = "qa-loop-retry-failures",
+        env = "TAU_QA_LOOP_RETRY_FAILURES",
+        requires = "qa_loop",
+        help = "Override retry count for failed stages in --qa-loop"
+    )]
+    pub(crate) qa_loop_retry_failures: Option<usize>,
+
+    #[arg(
+        long = "qa-loop-max-output-bytes",
+        env = "TAU_QA_LOOP_MAX_OUTPUT_BYTES",
+        requires = "qa_loop",
+        value_parser = parse_positive_usize,
+        help = "Override bounded stdout/stderr bytes captured per stage in --qa-loop reports"
+    )]
+    pub(crate) qa_loop_max_output_bytes: Option<usize>,
+
+    #[arg(
+        long = "qa-loop-changed-file-limit",
+        env = "TAU_QA_LOOP_CHANGED_FILE_LIMIT",
+        requires = "qa_loop",
+        value_parser = parse_positive_usize,
+        help = "Override maximum changed files included in --qa-loop git summary"
+    )]
+    pub(crate) qa_loop_changed_file_limit: Option<usize>,
 
     #[arg(
         long = "mcp-server",
