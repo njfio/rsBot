@@ -3,6 +3,8 @@ use super::*;
 pub(crate) const RELEASE_CHANNEL_USAGE: &str =
     "usage: /release-channel [show|set <stable|beta|dev>|check]";
 pub(crate) const RELEASE_CHANNEL_SCHEMA_VERSION: u32 = 1;
+pub(crate) const RELEASE_LOOKUP_CACHE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const RELEASE_LOOKUP_CACHE_TTL_MS: u64 = 15 * 60 * 1_000;
 const RELEASE_LOOKUP_URL: &str = "https://api.github.com/repos/njfio/Tau/releases?per_page=30";
 const RELEASE_LOOKUP_USER_AGENT: &str = "tau-coding-agent/release-channel-check";
 const RELEASE_LOOKUP_TIMEOUT_MS: u64 = 8_000;
@@ -60,7 +62,7 @@ pub(crate) struct ReleaseChannelStoreFile {
     pub(crate) release_channel: ReleaseChannel,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct GitHubReleaseRecord {
     pub(crate) tag_name: String,
     #[serde(default)]
@@ -69,11 +71,39 @@ pub(crate) struct GitHubReleaseRecord {
     pub(crate) draft: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ReleaseLookupCacheFile {
+    schema_version: u32,
+    source_url: String,
+    fetched_at_unix_ms: u64,
+    releases: Vec<GitHubReleaseRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReleaseLookupSource {
+    Live,
+    CacheFresh,
+    CacheStaleFallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LatestChannelReleaseResolution {
+    pub(crate) latest: Option<String>,
+    pub(crate) source: ReleaseLookupSource,
+}
+
 pub(crate) fn default_release_channel_path() -> Result<PathBuf> {
     Ok(std::env::current_dir()
         .context("failed to resolve current working directory")?
         .join(".tau")
         .join("release-channel.json"))
+}
+
+pub(crate) fn default_release_lookup_cache_path() -> Result<PathBuf> {
+    Ok(std::env::current_dir()
+        .context("failed to resolve current working directory")?
+        .join(".tau")
+        .join("release-lookup-cache.json"))
 }
 
 pub(crate) fn parse_release_channel_command(command_args: &str) -> Result<ReleaseChannelCommand> {
@@ -212,6 +242,65 @@ fn fetch_release_records(url: &str) -> Result<Vec<GitHubReleaseRecord>> {
     }
 }
 
+fn current_unix_timestamp_ms() -> u64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis().min(u64::MAX as u128) as u64,
+        Err(_) => 0,
+    }
+}
+
+fn load_release_lookup_cache(path: &Path, url: &str) -> Result<Option<ReleaseLookupCacheFile>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read release lookup cache {}", path.display()))?;
+    let parsed = serde_json::from_str::<ReleaseLookupCacheFile>(&raw)
+        .with_context(|| format!("failed to parse release lookup cache {}", path.display()))?;
+    if parsed.schema_version != RELEASE_LOOKUP_CACHE_SCHEMA_VERSION {
+        bail!(
+            "unsupported release lookup cache schema_version {} in {} (expected {})",
+            parsed.schema_version,
+            path.display(),
+            RELEASE_LOOKUP_CACHE_SCHEMA_VERSION
+        );
+    }
+    if parsed.source_url != url {
+        return Ok(None);
+    }
+    Ok(Some(parsed))
+}
+
+fn save_release_lookup_cache(
+    path: &Path,
+    url: &str,
+    fetched_at_unix_ms: u64,
+    releases: &[GitHubReleaseRecord],
+) -> Result<()> {
+    let payload = ReleaseLookupCacheFile {
+        schema_version: RELEASE_LOOKUP_CACHE_SCHEMA_VERSION,
+        source_url: url.to_string(),
+        fetched_at_unix_ms,
+        releases: releases.to_vec(),
+    };
+    let mut encoded = serde_json::to_string_pretty(&payload)
+        .context("failed to encode release lookup cache payload")?;
+    encoded.push('\n');
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "release lookup cache path {} does not have a parent directory",
+            path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create release lookup cache directory {}",
+            parent.display()
+        )
+    })?;
+    write_text_atomic(path, &encoded)
+}
+
 async fn fetch_release_records_async(url: &str) -> Result<Vec<GitHubReleaseRecord>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(RELEASE_LOOKUP_TIMEOUT_MS))
@@ -242,6 +331,46 @@ pub(crate) fn resolve_latest_channel_release(
 ) -> Result<Option<String>> {
     let releases = fetch_release_records(url)?;
     Ok(select_latest_channel_release(channel, &releases))
+}
+
+pub(crate) fn resolve_latest_channel_release_cached(
+    channel: ReleaseChannel,
+    url: &str,
+    cache_path: &Path,
+    cache_ttl_ms: u64,
+) -> Result<LatestChannelReleaseResolution> {
+    let now_ms = current_unix_timestamp_ms();
+    let mut stale_cache_releases: Option<Vec<GitHubReleaseRecord>> = None;
+
+    if let Ok(Some(cache)) = load_release_lookup_cache(cache_path, url) {
+        let age_ms = now_ms.saturating_sub(cache.fetched_at_unix_ms);
+        if age_ms <= cache_ttl_ms {
+            return Ok(LatestChannelReleaseResolution {
+                latest: select_latest_channel_release(channel, &cache.releases),
+                source: ReleaseLookupSource::CacheFresh,
+            });
+        }
+        stale_cache_releases = Some(cache.releases);
+    }
+
+    match fetch_release_records(url) {
+        Ok(releases) => {
+            let _ = save_release_lookup_cache(cache_path, url, now_ms, &releases);
+            Ok(LatestChannelReleaseResolution {
+                latest: select_latest_channel_release(channel, &releases),
+                source: ReleaseLookupSource::Live,
+            })
+        }
+        Err(error) => {
+            if let Some(releases) = stale_cache_releases {
+                return Ok(LatestChannelReleaseResolution {
+                    latest: select_latest_channel_release(channel, &releases),
+                    source: ReleaseLookupSource::CacheStaleFallback,
+                });
+            }
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn release_lookup_url() -> &'static str {
@@ -543,6 +672,72 @@ mod tests {
     }
 
     #[test]
+    fn functional_resolve_latest_channel_release_cached_uses_fresh_cache_without_network() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache_path = temp.path().join("release-lookup-cache.json");
+        let url = "http://127.0.0.1:9/releases";
+        let releases = vec![GitHubReleaseRecord {
+            tag_name: "v9.9.9".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(&cache_path, url, current_unix_timestamp_ms(), &releases)
+            .expect("save cache");
+
+        let resolution = resolve_latest_channel_release_cached(
+            ReleaseChannel::Stable,
+            url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        )
+        .expect("resolve from cache");
+        assert_eq!(resolution.source, ReleaseLookupSource::CacheFresh);
+        assert_eq!(resolution.latest.as_deref(), Some("v9.9.9"));
+    }
+
+    #[test]
+    fn integration_resolve_latest_channel_release_cached_fetches_live_and_persists_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache_path = temp.path().join("release-lookup-cache.json");
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200).header("content-type", "application/json").body(
+                r#"[{"tag_name":"v3.1.0-beta.1","prerelease":true,"draft":false},{"tag_name":"v3.0.2","prerelease":false,"draft":false}]"#,
+            );
+        });
+        let url = format!("{}/releases", server.base_url());
+
+        let first = resolve_latest_channel_release_cached(
+            ReleaseChannel::Stable,
+            &url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        )
+        .expect("first live resolve");
+        assert_eq!(first.source, ReleaseLookupSource::Live);
+        assert_eq!(first.latest.as_deref(), Some("v3.0.2"));
+
+        let second = resolve_latest_channel_release_cached(
+            ReleaseChannel::Beta,
+            &url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        )
+        .expect("second cached resolve");
+        assert_eq!(second.source, ReleaseLookupSource::CacheFresh);
+        assert_eq!(second.latest.as_deref(), Some("v3.1.0-beta.1"));
+        mock.assert_calls(1);
+
+        let cached = load_release_lookup_cache(&cache_path, &url)
+            .expect("load cached payload")
+            .expect("cached payload should exist");
+        assert_eq!(cached.schema_version, RELEASE_LOOKUP_CACHE_SCHEMA_VERSION);
+        assert_eq!(cached.source_url, url);
+        assert_eq!(cached.releases.len(), 2);
+    }
+
+    #[test]
     fn regression_load_release_channel_store_rejects_invalid_schema_and_payload() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("release-channel.json");
@@ -586,6 +781,63 @@ mod tests {
         assert!(parse_error
             .to_string()
             .contains("failed to parse release lookup response"));
+    }
+
+    #[test]
+    fn regression_resolve_latest_channel_release_cached_falls_back_to_stale_cache_on_lookup_error()
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache_path = temp.path().join("release-lookup-cache.json");
+        let url = "http://127.0.0.1:9/releases";
+        let stale_time =
+            current_unix_timestamp_ms().saturating_sub(RELEASE_LOOKUP_CACHE_TTL_MS + 5_000);
+        let releases = vec![GitHubReleaseRecord {
+            tag_name: "v4.2.0".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(&cache_path, url, stale_time, &releases)
+            .expect("save stale cache");
+
+        let resolution = resolve_latest_channel_release_cached(
+            ReleaseChannel::Stable,
+            url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        )
+        .expect("stale fallback should succeed");
+        assert_eq!(resolution.source, ReleaseLookupSource::CacheStaleFallback);
+        assert_eq!(resolution.latest.as_deref(), Some("v4.2.0"));
+    }
+
+    #[test]
+    fn regression_resolve_latest_channel_release_cached_ignores_invalid_cache_and_refetches_live() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache_path = temp.path().join("release-lookup-cache.json");
+        std::fs::write(
+            &cache_path,
+            r#"{"schema_version":99,"source_url":"https://invalid","fetched_at_unix_ms":1,"releases":[]}"#,
+        )
+        .expect("write invalid cache");
+
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"tag_name":"v5.0.0","prerelease":false,"draft":false}]"#);
+        });
+        let url = format!("{}/releases", server.base_url());
+        let resolution = resolve_latest_channel_release_cached(
+            ReleaseChannel::Stable,
+            &url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        )
+        .expect("live lookup should recover from invalid cache");
+        assert_eq!(resolution.source, ReleaseLookupSource::Live);
+        assert_eq!(resolution.latest.as_deref(), Some("v5.0.0"));
+        mock.assert_calls(1);
     }
 
     #[test]

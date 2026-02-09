@@ -591,6 +591,8 @@ fn skills_command_config(
                 login_backend_available: false,
             }],
             release_channel_path: PathBuf::from(".tau/release-channel.json"),
+            release_lookup_cache_path: PathBuf::from(".tau/release-lookup-cache.json"),
+            release_lookup_cache_ttl_ms: 900_000,
             session_enabled: true,
             session_path: PathBuf::from(".tau/sessions/default.jsonl"),
             skills_dir: skills_dir.to_path_buf(),
@@ -7565,6 +7567,10 @@ fn unit_build_doctor_command_config_collects_sorted_unique_provider_states() {
     assert!(config
         .release_channel_path
         .ends_with(Path::new(".tau").join("release-channel.json")));
+    assert!(config
+        .release_lookup_cache_path
+        .ends_with(Path::new(".tau").join("release-lookup-cache.json")));
+    assert_eq!(config.release_lookup_cache_ttl_ms, 900_000);
 
     let provider_rows = config
         .provider_keys
@@ -7753,6 +7759,8 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
             },
         ],
         release_channel_path: temp.path().join("release-channel.json"),
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: true,
         session_path,
         skills_dir,
@@ -7813,6 +7821,8 @@ fn functional_execute_doctor_cli_command_accepts_online_without_network_when_sto
         model: "openai/gpt-4o-mini".to_string(),
         provider_keys: vec![],
         release_channel_path,
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -7845,6 +7855,8 @@ fn integration_run_doctor_checks_identifies_missing_runtime_prerequisites() {
             login_backend_available: false,
         }],
         release_channel_path: temp.path().join("release-channel.json"),
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: true,
         session_path: temp.path().join("missing-parent").join("session.jsonl"),
         skills_dir: temp.path().join("missing-skills"),
@@ -7923,6 +7935,8 @@ fn integration_run_doctor_checks_reports_google_backend_status_for_oauth_mode() 
             login_backend_available: false,
         }],
         release_channel_path: temp.path().join("release-channel.json"),
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -7967,6 +7981,8 @@ fn integration_run_doctor_checks_reports_anthropic_backend_status_for_oauth_mode
             login_backend_available: false,
         }],
         release_channel_path: temp.path().join("release-channel.json"),
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -8001,6 +8017,8 @@ fn integration_execute_doctor_command_with_online_lookup_reports_update_availabl
         model: "openai/gpt-4o-mini".to_string(),
         provider_keys: vec![],
         release_channel_path: temp.path().join("release-channel.json"),
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -8115,6 +8133,8 @@ fn regression_run_doctor_checks_reports_type_and_readability_errors() {
             login_backend_available: false,
         }],
         release_channel_path: temp.path().join("release-channel.json"),
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: true,
         session_path,
         skills_dir,
@@ -8175,6 +8195,8 @@ fn regression_run_doctor_checks_reports_invalid_release_channel_store() {
             login_backend_available: false,
         }],
         release_channel_path,
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -8206,6 +8228,8 @@ fn regression_run_doctor_checks_with_online_lookup_surfaces_lookup_errors() {
         model: "openai/gpt-4o-mini".to_string(),
         provider_keys: vec![],
         release_channel_path: temp.path().join("release-channel.json"),
+        release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
+        release_lookup_cache_ttl_ms: 900_000,
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
