@@ -79,23 +79,23 @@ use super::{
     validate_profile_name, validate_rpc_frame_file, validate_session_file,
     validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand, AuthCommandConfig,
     BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
-    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
-    CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
-    DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
-    IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
-    MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus,
-    PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions,
-    RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
-    SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats,
-    SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
-    SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
-    ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
-    MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
-    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
-    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
-    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliOrchestratorMode,
+    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
+    CliWebhookSignatureAlgorithm, ClientRoute, CommandAction, CommandExecutionContext,
+    CommandFileEntry, CommandFileReport, CredentialStoreData, CredentialStoreEncryptionMode,
+    DoctorCheckResult, DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus,
+    DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord,
+    MacroCommand, MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults,
+    ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod,
+    ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
+    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
+    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
+    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
+    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
+    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
+    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
+    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -412,6 +412,15 @@ fn test_cli() -> Cli {
         events_inspect_json: false,
         events_validate: false,
         events_validate_json: false,
+        events_template_write: None,
+        events_template_schedule: CliEventTemplateSchedule::Immediate,
+        events_template_overwrite: false,
+        events_template_id: None,
+        events_template_channel: None,
+        events_template_prompt: None,
+        events_template_at_unix_ms: None,
+        events_template_cron: None,
+        events_template_timezone: "UTC".to_string(),
         events_runner: false,
         events_dir: PathBuf::from(".tau/events"),
         events_state_path: PathBuf::from(".tau/events/state.json"),
@@ -14886,6 +14895,35 @@ fn regression_execute_startup_preflight_events_validate_fails_on_invalid_entry()
 
     let error = execute_startup_preflight(&cli).expect_err("invalid event should fail");
     assert!(error.to_string().contains("events validate failed"));
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_events_template_write_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    let target = cli.events_dir.join("template-periodic.json");
+    cli.events_template_write = Some(target.clone());
+    cli.events_template_schedule = CliEventTemplateSchedule::Periodic;
+    cli.events_template_channel = Some("github/owner/repo#77".to_string());
+
+    let handled = execute_startup_preflight(&cli).expect("events template preflight");
+    assert!(handled);
+    assert!(target.exists());
+}
+
+#[test]
+fn regression_execute_startup_preflight_events_template_write_requires_overwrite() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    let target = cli.events_dir.join("template-existing.json");
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(&target, "{\"existing\":true}\n").expect("seed existing template");
+
+    cli.events_template_write = Some(target);
+    let error = execute_startup_preflight(&cli).expect_err("overwrite should be required");
+    assert!(error.to_string().contains("template path already exists"));
 }
 
 #[test]

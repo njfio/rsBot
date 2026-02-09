@@ -19,7 +19,7 @@ use tau_ai::{LlmClient, Message, MessageRole};
 use crate::{
     channel_store::{ChannelLogEntry, ChannelStore},
     current_unix_timestamp_ms, run_prompt_with_cancellation, write_text_atomic, Cli,
-    PromptRunStatus, RenderOptions, SessionRuntime,
+    CliEventTemplateSchedule, PromptRunStatus, RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -244,6 +244,97 @@ pub(crate) fn execute_events_validate_command(cli: &Cli) -> Result<()> {
             report.malformed_files
         );
     }
+    Ok(())
+}
+
+pub(crate) fn execute_events_template_write_command(cli: &Cli) -> Result<()> {
+    let target_path = cli
+        .events_template_write
+        .as_ref()
+        .ok_or_else(|| anyhow!("--events-template-write is required"))?;
+    if target_path.exists() && !cli.events_template_overwrite {
+        bail!(
+            "template path already exists (use --events-template-overwrite=true): {}",
+            target_path.display()
+        );
+    }
+
+    let now_unix_ms = current_unix_timestamp_ms();
+    let channel = cli
+        .events_template_channel
+        .clone()
+        .unwrap_or_else(|| "slack/C123".to_string());
+    ChannelStore::parse_channel_ref(&channel)?;
+
+    let schedule = match cli.events_template_schedule {
+        CliEventTemplateSchedule::Immediate => EventSchedule::Immediate,
+        CliEventTemplateSchedule::At => EventSchedule::At {
+            at_unix_ms: cli
+                .events_template_at_unix_ms
+                .unwrap_or_else(|| now_unix_ms.saturating_add(300_000)),
+        },
+        CliEventTemplateSchedule::Periodic => {
+            let cron = cli
+                .events_template_cron
+                .clone()
+                .unwrap_or_else(|| "0 0/15 * * * * *".to_string());
+            let timezone = cli.events_template_timezone.trim().to_string();
+            if timezone.is_empty() {
+                bail!("--events-template-timezone must be non-empty");
+            }
+            let _ =
+                next_periodic_due_unix_ms(&cron, &timezone, now_unix_ms.saturating_sub(60_000))?;
+            EventSchedule::Periodic { cron, timezone }
+        }
+    };
+
+    let event_id = cli
+        .events_template_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| match &schedule {
+            EventSchedule::Immediate => "template-immediate".to_string(),
+            EventSchedule::At { .. } => "template-at".to_string(),
+            EventSchedule::Periodic { .. } => "template-periodic".to_string(),
+        });
+
+    let prompt = cli
+        .events_template_prompt
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            "Summarize current context and propose the next best action.".to_string()
+        });
+
+    let template = EventDefinition {
+        id: event_id.clone(),
+        channel: channel.clone(),
+        prompt,
+        schedule,
+        enabled: true,
+        created_unix_ms: Some(now_unix_ms),
+    };
+
+    if let Some(parent) = target_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let mut payload =
+        serde_json::to_string_pretty(&template).context("failed to serialize event template")?;
+    payload.push('\n');
+    write_text_atomic(target_path, &payload)
+        .with_context(|| format!("failed to write {}", target_path.display()))?;
+
+    println!(
+        "events template write: path={} schedule={} event_id={} channel={} overwrite={}",
+        target_path.display(),
+        schedule_name(&template.schedule),
+        template.id,
+        template.channel,
+        cli.events_template_overwrite,
+    );
     Ok(())
 }
 
@@ -975,6 +1066,14 @@ fn sanitize_error_message(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn schedule_name(schedule: &EventSchedule) -> &'static str {
+    match schedule {
+        EventSchedule::Immediate => "immediate",
+        EventSchedule::At { .. } => "at",
+        EventSchedule::Periodic { .. } => "periodic",
+    }
+}
+
 fn due_decision(
     event: &EventDefinition,
     state: &EventRunnerState,
@@ -1187,19 +1286,21 @@ mod tests {
     use std::{path::Path, sync::Arc, time::Duration};
 
     use async_trait::async_trait;
+    use clap::Parser;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
     use tempfile::tempdir;
 
     use super::{
-        due_decision, ingest_webhook_immediate_event, inspect_events, load_event_records,
-        next_periodic_due_unix_ms, render_events_inspect_report, render_events_validate_report,
-        validate_events_definitions, DueDecision, EventDefinition, EventRunnerState, EventSchedule,
-        EventSchedulerConfig, EventSchedulerRuntime, EventWebhookIngestConfig, EventsInspectConfig,
-        EventsValidateConfig, EventsValidateReport, WebhookSignatureAlgorithm,
+        due_decision, execute_events_template_write_command, ingest_webhook_immediate_event,
+        inspect_events, load_event_records, next_periodic_due_unix_ms,
+        render_events_inspect_report, render_events_validate_report, validate_events_definitions,
+        DueDecision, EventDefinition, EventRunnerState, EventSchedule, EventSchedulerConfig,
+        EventSchedulerRuntime, EventWebhookIngestConfig, EventsInspectConfig, EventsValidateConfig,
+        EventsValidateReport, WebhookSignatureAlgorithm,
     };
-    use crate::{tools::ToolPolicy, RenderOptions};
+    use crate::{tools::ToolPolicy, Cli, CliEventTemplateSchedule, RenderOptions};
 
     struct StaticReplyClient;
 
@@ -1245,6 +1346,20 @@ mod tests {
         let mut payload = serde_json::to_string_pretty(event).expect("serialize event");
         payload.push('\n');
         std::fs::write(path, payload).expect("write event file");
+    }
+
+    fn template_cli(path: &Path) -> Cli {
+        let mut cli = Cli::parse_from(["tau-rs"]);
+        cli.events_template_write = Some(path.to_path_buf());
+        cli.events_template_schedule = CliEventTemplateSchedule::Immediate;
+        cli.events_template_overwrite = false;
+        cli.events_template_id = None;
+        cli.events_template_channel = None;
+        cli.events_template_prompt = None;
+        cli.events_template_at_unix_ms = None;
+        cli.events_template_cron = None;
+        cli.events_template_timezone = "UTC".to_string();
+        cli
     }
 
     fn github_signature(secret: &str, payload: &str) -> String {
@@ -1721,6 +1836,85 @@ mod tests {
         assert_eq!(report.malformed_files, 0);
         assert_eq!(report.failed_files, 0);
         assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn unit_events_template_writer_rejects_invalid_periodic_timezone() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("periodic.json");
+        let mut cli = template_cli(&path);
+        cli.events_template_schedule = CliEventTemplateSchedule::Periodic;
+        cli.events_template_timezone = "".to_string();
+
+        let error = execute_events_template_write_command(&cli)
+            .expect_err("empty periodic timezone should fail");
+        assert!(error
+            .to_string()
+            .contains("--events-template-timezone must be non-empty"));
+    }
+
+    #[test]
+    fn functional_events_template_writer_writes_immediate_defaults() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("immediate.json");
+        let cli = template_cli(&path);
+
+        execute_events_template_write_command(&cli).expect("write template");
+        let raw = std::fs::read_to_string(&path).expect("read template");
+        let parsed: EventDefinition = serde_json::from_str(&raw).expect("parse template");
+
+        assert_eq!(parsed.id, "template-immediate");
+        assert_eq!(parsed.channel, "slack/C123");
+        assert!(matches!(parsed.schedule, EventSchedule::Immediate));
+        assert!(parsed.enabled);
+        assert!(parsed.created_unix_ms.is_some());
+    }
+
+    #[test]
+    fn integration_events_template_periodic_output_passes_validation_pipeline() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+        let path = events_dir.join("periodic.json");
+
+        let mut cli = template_cli(&path);
+        cli.events_template_schedule = CliEventTemplateSchedule::Periodic;
+        cli.events_template_cron = Some("0 0/10 * * * * *".to_string());
+        cli.events_template_timezone = "UTC".to_string();
+        cli.events_template_channel = Some("github/owner/repo#44".to_string());
+        cli.events_template_id = Some("deploy-check".to_string());
+
+        execute_events_template_write_command(&cli).expect("write periodic template");
+        let report = validate_events_definitions(
+            &EventsValidateConfig {
+                events_dir,
+                state_path: temp.path().join("state.json"),
+            },
+            super::current_unix_timestamp_ms(),
+        )
+        .expect("validate");
+        assert_eq!(report.total_files, 1);
+        assert_eq!(report.valid_files, 1);
+        assert_eq!(report.failed_files, 0);
+    }
+
+    #[test]
+    fn regression_events_template_writer_respects_overwrite_guard() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("template.json");
+        std::fs::write(&path, "{\"existing\":true}\n").expect("seed file");
+
+        let cli = template_cli(&path);
+        let error = execute_events_template_write_command(&cli)
+            .expect_err("existing file should fail without overwrite");
+        assert!(error.to_string().contains("template path already exists"));
+
+        let mut overwrite_cli = template_cli(&path);
+        overwrite_cli.events_template_overwrite = true;
+        execute_events_template_write_command(&overwrite_cli)
+            .expect("overwrite should succeed when enabled");
+        let raw = std::fs::read_to_string(path).expect("read overwritten");
+        assert!(raw.contains("\"id\": \"template-immediate\""));
     }
 
     #[tokio::test]

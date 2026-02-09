@@ -66,6 +66,13 @@ pub(crate) enum CliWebhookSignatureAlgorithm {
     SlackV0,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliEventTemplateSchedule {
+    Immediate,
+    At,
+    Periodic,
+}
+
 impl From<CliWebhookSignatureAlgorithm> for WebhookSignatureAlgorithm {
     fn from(value: CliWebhookSignatureAlgorithm) -> Self {
         match value {

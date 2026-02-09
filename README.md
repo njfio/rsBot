@@ -694,6 +694,18 @@ cargo run -p tau-coding-agent -- \
   --events-validate-json
 ```
 
+Generate a schedule-specific event template file for bootstrap authoring:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --events-template-write .tau/events/daily-status.json \
+  --events-template-schedule periodic \
+  --events-template-channel github/owner/repo#42 \
+  --events-template-id daily-status \
+  --events-template-cron "0 0/15 * * * * *" \
+  --events-template-timezone UTC
+```
+
 Queue a webhook-triggered immediate event from a payload file (debounced):
 
 ```bash

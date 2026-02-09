@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser};
 
 use crate::{
-    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliOrchestratorMode,
-    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
-    CliWebhookSignatureAlgorithm,
+    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode,
+    CliEventTemplateSchedule, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -1229,6 +1229,7 @@ pub(crate) struct Cli {
         env = "TAU_EVENTS_INSPECT",
         default_value_t = false,
         conflicts_with = "events_validate",
+        conflicts_with = "events_template_write",
         conflicts_with = "events_runner",
         conflicts_with = "event_webhook_ingest_file",
         help = "Inspect scheduled events state and due/queue diagnostics, then exit"
@@ -1253,6 +1254,7 @@ pub(crate) struct Cli {
         env = "TAU_EVENTS_VALIDATE",
         default_value_t = false,
         conflicts_with = "events_inspect",
+        conflicts_with = "events_template_write",
         conflicts_with = "events_runner",
         conflicts_with = "event_webhook_ingest_file",
         help = "Validate scheduled event definition files and exit non-zero on invalid entries"
@@ -1271,6 +1273,91 @@ pub(crate) struct Cli {
         help = "Emit --events-validate output as pretty JSON"
     )]
     pub(crate) events_validate_json: bool,
+
+    #[arg(
+        long = "events-template-write",
+        env = "TAU_EVENTS_TEMPLATE_WRITE",
+        value_name = "PATH",
+        conflicts_with = "events_inspect",
+        conflicts_with = "events_validate",
+        conflicts_with = "events_runner",
+        conflicts_with = "event_webhook_ingest_file",
+        help = "Write a schedule-specific event template JSON file and exit"
+    )]
+    pub(crate) events_template_write: Option<PathBuf>,
+
+    #[arg(
+        long = "events-template-schedule",
+        env = "TAU_EVENTS_TEMPLATE_SCHEDULE",
+        value_enum,
+        default_value_t = CliEventTemplateSchedule::Immediate,
+        requires = "events_template_write",
+        help = "Schedule variant for --events-template-write: immediate, at, periodic"
+    )]
+    pub(crate) events_template_schedule: CliEventTemplateSchedule,
+
+    #[arg(
+        long = "events-template-overwrite",
+        env = "TAU_EVENTS_TEMPLATE_OVERWRITE",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "events_template_write",
+        help = "Allow overwriting an existing template file path"
+    )]
+    pub(crate) events_template_overwrite: bool,
+
+    #[arg(
+        long = "events-template-id",
+        env = "TAU_EVENTS_TEMPLATE_ID",
+        requires = "events_template_write",
+        help = "Optional event id override for generated template"
+    )]
+    pub(crate) events_template_id: Option<String>,
+
+    #[arg(
+        long = "events-template-channel",
+        env = "TAU_EVENTS_TEMPLATE_CHANNEL",
+        requires = "events_template_write",
+        value_name = "transport/channel_id",
+        help = "Optional channel ref override for generated template"
+    )]
+    pub(crate) events_template_channel: Option<String>,
+
+    #[arg(
+        long = "events-template-prompt",
+        env = "TAU_EVENTS_TEMPLATE_PROMPT",
+        requires = "events_template_write",
+        help = "Optional prompt override for generated template"
+    )]
+    pub(crate) events_template_prompt: Option<String>,
+
+    #[arg(
+        long = "events-template-at-unix-ms",
+        env = "TAU_EVENTS_TEMPLATE_AT_UNIX_MS",
+        requires = "events_template_write",
+        help = "Optional unix timestamp (ms) used for --events-template-schedule at"
+    )]
+    pub(crate) events_template_at_unix_ms: Option<u64>,
+
+    #[arg(
+        long = "events-template-cron",
+        env = "TAU_EVENTS_TEMPLATE_CRON",
+        requires = "events_template_write",
+        help = "Optional cron override used for --events-template-schedule periodic"
+    )]
+    pub(crate) events_template_cron: Option<String>,
+
+    #[arg(
+        long = "events-template-timezone",
+        env = "TAU_EVENTS_TEMPLATE_TIMEZONE",
+        default_value = "UTC",
+        requires = "events_template_write",
+        help = "Timezone used for --events-template-schedule periodic"
+    )]
+    pub(crate) events_template_timezone: String,
 
     #[arg(
         long = "events-runner",
