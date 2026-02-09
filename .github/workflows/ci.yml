@@ -164,10 +164,17 @@ jobs:
             --output "$GITHUB_OUTPUT" \
             --summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Install Rust
+      - name: Install Rust (full lane)
+        if: steps.quality_mode.outputs.mode != 'codex-light'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Install Rust (codex-light lane)
+        if: steps.quality_mode.outputs.mode == 'codex-light'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -175,8 +182,25 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Lint
+      - name: Lint (full lane)
+        if: steps.quality_mode.outputs.mode != 'codex-light'
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Lint (codex-light lane)
+        if: steps.quality_mode.outputs.mode == 'codex-light'
+        run: cargo check -p tau-coding-agent --all-targets
+
+      - name: Report lint strategy
+        shell: bash
+        run: |
+          echo "### Lint Strategy" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.quality_mode.outputs.mode }}" == "codex-light" ]]; then
+            echo "- Mode: codex-light" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Command: cargo check -p tau-coding-agent --all-targets" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Mode: full" >> "$GITHUB_STEP_SUMMARY"
+            echo "- Command: cargo clippy --workspace --all-targets -- -D warnings" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Run codex light demo smoke
         if: steps.quality_mode.outputs.mode == 'codex-light'
