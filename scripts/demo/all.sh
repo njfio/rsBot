@@ -5,17 +5,134 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 binary="${repo_root}/target/debug/tau-coding-agent"
 skip_build="false"
+list_only="false"
+json_output="false"
+has_only_filter="false"
+
+demo_scripts=(
+  "local.sh"
+  "rpc.sh"
+  "events.sh"
+  "package.sh"
+)
+
+declare -A selected_demo_lookup=()
+declare -a unknown_demo_names=()
+
+log_info() {
+  local message="$1"
+  if [[ "${json_output}" == "true" ]]; then
+    echo "${message}" >&2
+  else
+    echo "${message}"
+  fi
+}
+
+log_error() {
+  local message="$1"
+  echo "${message}" >&2
+}
+
+trim_spaces() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  echo "${value}"
+}
+
+normalize_demo_name() {
+  local candidate="$1"
+  case "${candidate}" in
+    local|local.sh)
+      echo "local.sh"
+      return 0
+      ;;
+    rpc|rpc.sh)
+      echo "rpc.sh"
+      return 0
+      ;;
+    events|events.sh)
+      echo "events.sh"
+      return 0
+      ;;
+    package|package.sh)
+      echo "package.sh"
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+print_demo_list_text() {
+  local selected=("$@")
+  local demo_script
+  for demo_script in "${selected[@]}"; do
+    echo "${demo_script}"
+  done
+}
+
+print_demo_list_json() {
+  local selected=("$@")
+  local idx
+  echo "{"
+  printf '  "demos": ['
+  for idx in "${!selected[@]}"; do
+    if [[ "${idx}" -gt 0 ]]; then
+      printf ', '
+    fi
+    printf '"%s"' "${selected[$idx]}"
+  done
+  echo "]"
+  echo "}"
+}
+
+run_demo_names=()
+run_demo_statuses=()
+run_demo_exit_codes=()
+
+print_summary_json() {
+  local total_count="$1"
+  local passed_count="$2"
+  local failed_count="$3"
+  local idx
+  local last_index
+
+  echo "{"
+  echo "  \"demos\": ["
+  if [[ ${#run_demo_names[@]} -gt 0 ]]; then
+    last_index=$(( ${#run_demo_names[@]} - 1 ))
+    for idx in "${!run_demo_names[@]}"; do
+      comma=","
+      if [[ "${idx}" -eq "${last_index}" ]]; then
+        comma=""
+      fi
+      printf '    {"name":"%s","status":"%s","exit_code":%s}%s\n' \
+        "${run_demo_names[$idx]}" \
+        "${run_demo_statuses[$idx]}" \
+        "${run_demo_exit_codes[$idx]}" \
+        "${comma}"
+    done
+  fi
+  echo "  ],"
+  printf '  "summary":{"total":%s,"passed":%s,"failed":%s}\n' "${total_count}" "${passed_count}" "${failed_count}"
+  echo "}"
+}
 
 print_usage() {
   cat <<EOF
-Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--help]
+Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--help]
 
-Run all checked-in Tau demo wrappers (local/rpc/events/package) with aggregate summary output.
+Run checked-in Tau demo wrappers (local/rpc/events/package) with deterministic summary output.
 
 Options:
   --repo-root PATH  Repository root (defaults to caller-derived root)
   --binary PATH     tau-coding-agent binary path (default: <repo-root>/target/debug/tau-coding-agent)
   --skip-build      Skip cargo build and require --binary to exist
+  --list            Print selected demos and exit without execution
+  --only DEMOS      Comma-separated subset (names: local,rpc,events,package)
+  --json            Emit deterministic JSON output for list/summary modes
   --help            Show this usage message
 EOF
 }
@@ -24,7 +141,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo-root)
       if [[ $# -lt 2 ]]; then
-        echo "missing value for --repo-root" >&2
+        log_error "missing value for --repo-root"
         print_usage >&2
         exit 2
       fi
@@ -33,7 +150,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --binary)
       if [[ $# -lt 2 ]]; then
-        echo "missing value for --binary" >&2
+        log_error "missing value for --binary"
         print_usage >&2
         exit 2
       fi
@@ -44,12 +161,41 @@ while [[ $# -gt 0 ]]; do
       skip_build="true"
       shift
       ;;
+    --list)
+      list_only="true"
+      shift
+      ;;
+    --only)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        log_error "missing value for --only"
+        print_usage >&2
+        exit 2
+      fi
+      has_only_filter="true"
+      IFS=',' read -r -a requested_demo_names <<< "$2"
+      for requested_demo_name in "${requested_demo_names[@]}"; do
+        trimmed_requested_demo_name="$(trim_spaces "${requested_demo_name}")"
+        if [[ -z "${trimmed_requested_demo_name}" ]]; then
+          continue
+        fi
+        if normalized_demo_name="$(normalize_demo_name "${trimmed_requested_demo_name}")"; then
+          selected_demo_lookup["${normalized_demo_name}"]=1
+        else
+          unknown_demo_names+=("${trimmed_requested_demo_name}")
+        fi
+      done
+      shift 2
+      ;;
+    --json)
+      json_output="true"
+      shift
+      ;;
     --help)
       print_usage
       exit 0
       ;;
     *)
-      echo "unknown argument: $1" >&2
+      log_error "unknown argument: $1"
       print_usage >&2
       exit 2
       ;;
@@ -57,7 +203,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ! -d "${repo_root}" ]]; then
-  echo "invalid --repo-root path (directory not found): ${repo_root}" >&2
+  log_error "invalid --repo-root path (directory not found): ${repo_root}"
   exit 2
 fi
 repo_root="$(cd "${repo_root}" && pwd)"
@@ -66,40 +212,86 @@ if [[ "${binary}" != /* ]]; then
   binary="${repo_root}/${binary}"
 fi
 
-if [[ "${skip_build}" == "true" && ! -f "${binary}" ]]; then
-  echo "missing tau-coding-agent binary (use --binary or remove --skip-build): ${binary}" >&2
-  exit 1
+if [[ ${#unknown_demo_names[@]} -gt 0 ]]; then
+  log_error "unknown demo names in --only: ${unknown_demo_names[*]}"
+  exit 2
 fi
 
-demo_scripts=(
-  "local.sh"
-  "rpc.sh"
-  "events.sh"
-  "package.sh"
-)
+selected_demo_scripts=("${demo_scripts[@]}")
+if [[ "${has_only_filter}" == "true" ]]; then
+  selected_demo_scripts=()
+  for demo_script in "${demo_scripts[@]}"; do
+    if [[ -n "${selected_demo_lookup[${demo_script}]:-}" ]]; then
+      selected_demo_scripts+=("${demo_script}")
+    fi
+  done
+  if [[ ${#selected_demo_scripts[@]} -eq 0 ]]; then
+    log_error "no demos selected by --only filter"
+    exit 2
+  fi
+fi
+
+if [[ "${list_only}" == "true" ]]; then
+  if [[ "${json_output}" == "true" ]]; then
+    print_demo_list_json "${selected_demo_scripts[@]}"
+  else
+    print_demo_list_text "${selected_demo_scripts[@]}"
+  fi
+  exit 0
+fi
+
+if [[ "${skip_build}" == "true" && ! -f "${binary}" ]]; then
+  log_error "missing tau-coding-agent binary (use --binary or remove --skip-build): ${binary}"
+  exit 1
+fi
 
 total=0
 passed=0
 failed=0
 
-for demo_script in "${demo_scripts[@]}"; do
+for demo_script in "${selected_demo_scripts[@]}"; do
   total=$((total + 1))
-  echo "[demo:all] [${total}] ${demo_script}"
+  log_info "[demo:all] [${total}] ${demo_script}"
   args=("${script_dir}/${demo_script}" "--repo-root" "${repo_root}" "--binary" "${binary}")
   if [[ "${skip_build}" == "true" ]]; then
     args+=("--skip-build")
   fi
 
-  if "${args[@]}"; then
+  if [[ "${json_output}" == "true" ]]; then
+    if "${args[@]}" >&2; then
+      demo_exit_code=0
+      demo_status="passed"
+    else
+      demo_exit_code=$?
+      demo_status="failed"
+    fi
+  elif "${args[@]}"; then
+    demo_exit_code=0
+    demo_status="passed"
+  else
+    demo_exit_code=$?
+    demo_status="failed"
+  fi
+
+  run_demo_names+=("${demo_script}")
+  run_demo_statuses+=("${demo_status}")
+  run_demo_exit_codes+=("${demo_exit_code}")
+
+  if [[ "${demo_status}" == "passed" ]]; then
     passed=$((passed + 1))
-    echo "[demo:all] PASS ${demo_script}"
+    log_info "[demo:all] PASS ${demo_script}"
   else
     failed=$((failed + 1))
-    echo "[demo:all] FAIL ${demo_script}" >&2
+    log_error "[demo:all] FAIL ${demo_script}"
   fi
 done
 
-echo "[demo:all] summary: total=${total} passed=${passed} failed=${failed}"
+if [[ "${json_output}" == "true" ]]; then
+  print_summary_json "${total}" "${passed}" "${failed}"
+else
+  echo "[demo:all] summary: total=${total} passed=${passed} failed=${failed}"
+fi
+
 if [[ ${failed} -gt 0 ]]; then
   exit 1
 fi
