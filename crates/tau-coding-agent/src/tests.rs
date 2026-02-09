@@ -463,6 +463,7 @@ fn test_cli() -> Cli {
         github_poll_interval_seconds: 30,
         github_poll_once: false,
         github_required_label: vec![],
+        github_issue_number: vec![],
         github_artifact_retention_days: 30,
         github_include_issue_body: false,
         github_include_edited_comments: true,
@@ -1197,6 +1198,37 @@ fn functional_cli_github_required_label_accepts_repeat_and_csv_values() {
             "triage".to_string()
         ]
     );
+}
+
+#[test]
+fn unit_cli_github_issue_number_defaults_empty() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert!(cli.github_issue_number.is_empty());
+}
+
+#[test]
+fn functional_cli_github_issue_number_accepts_repeat_and_csv_values() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--github-issues-bridge",
+        "--github-issue-number",
+        "7",
+        "--github-issue-number",
+        "9,11",
+    ]);
+    assert_eq!(cli.github_issue_number, vec![7, 9, 11]);
+}
+
+#[test]
+fn regression_cli_github_issue_number_rejects_zero() {
+    let parse = Cli::try_parse_from([
+        "tau-rs",
+        "--github-issues-bridge",
+        "--github-issue-number",
+        "0",
+    ]);
+    let error = parse.expect_err("zero issue number should be rejected");
+    assert!(error.to_string().contains("value must be greater than 0"));
 }
 
 #[test]
@@ -11783,6 +11815,20 @@ fn regression_validate_github_issues_bridge_cli_rejects_empty_required_labels() 
     assert!(error
         .to_string()
         .contains("--github-required-label cannot be empty"));
+}
+
+#[test]
+fn regression_validate_github_issues_bridge_cli_rejects_zero_issue_number() {
+    let mut cli = test_cli();
+    cli.github_issues_bridge = true;
+    cli.github_repo = Some("owner/repo".to_string());
+    cli.github_token = Some("token".to_string());
+    cli.github_issue_number = vec![0];
+
+    let error = validate_github_issues_bridge_cli(&cli).expect_err("zero issue number");
+    assert!(error
+        .to_string()
+        .contains("--github-issue-number must be greater than 0"));
 }
 
 #[test]

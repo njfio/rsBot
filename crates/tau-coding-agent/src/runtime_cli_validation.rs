@@ -39,6 +39,9 @@ pub(crate) fn validate_github_issues_bridge_cli(cli: &Cli) -> Result<()> {
     {
         bail!("--github-required-label cannot be empty");
     }
+    if cli.github_issue_number.contains(&0) {
+        bail!("--github-issue-number must be greater than 0");
+    }
     if cli
         .github_repo
         .as_deref()

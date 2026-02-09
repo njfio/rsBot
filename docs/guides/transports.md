@@ -13,12 +13,14 @@ cargo run -p tau-coding-agent -- \
   --github-repo owner/repo \
   --github-bot-login your-bot-login \
   --github-required-label tau-ready \
+  --github-issue-number 7 \
   --github-state-dir .tau/github-issues \
   --github-poll-interval-seconds 30 \
   --github-artifact-retention-days 30
 ```
 
 `--github-required-label` can be repeated; only issues with at least one matching label are processed.
+`--github-issue-number` can be repeated; only matching issue numbers are processed.
 
 Run exactly one poll cycle (useful for CI smoke jobs and cron workflows):
 

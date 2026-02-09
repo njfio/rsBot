@@ -1732,6 +1732,16 @@ pub(crate) struct Cli {
     pub(crate) github_required_label: Vec<String>,
 
     #[arg(
+        long = "github-issue-number",
+        env = "TAU_GITHUB_ISSUE_NUMBER",
+        value_delimiter = ',',
+        value_parser = parse_positive_u64,
+        requires = "github_issues_bridge",
+        help = "Only process these GitHub issue numbers (repeatable)"
+    )]
+    pub(crate) github_issue_number: Vec<u64>,
+
+    #[arg(
         long = "github-artifact-retention-days",
         env = "TAU_GITHUB_ARTIFACT_RETENTION_DAYS",
         default_value_t = 30,

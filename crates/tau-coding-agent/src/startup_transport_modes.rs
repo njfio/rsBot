@@ -50,6 +50,7 @@ pub(crate) async fn run_transport_mode_if_requested(
                 .iter()
                 .map(|label| label.trim().to_string())
                 .collect(),
+            required_issue_numbers: cli.github_issue_number.clone(),
             include_issue_body: cli.github_include_issue_body,
             include_edited_comments: cli.github_include_edited_comments,
             processed_event_cap: cli.github_processed_event_cap.max(1),
