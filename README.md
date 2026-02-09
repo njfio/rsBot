@@ -377,6 +377,7 @@ In bridge mode:
 - each completed run emits a markdown artifact plus metadata index entry under `channel-store/.../artifacts/`
 - set `--github-artifact-retention-days 0` to disable artifact expiration
 - `/tau help` prints the supported GitHub issue commands
+- `/tau status` reports issue runtime/chat/artifact status; `/tau health` reports transport health classification and operator guidance
 - `/tau chat start` initializes an issue chat session; `/tau chat resume` acknowledges an existing session; `/tau chat reset` clears the stored session for the issue; `/tau chat export` writes a JSONL session export artifact; `/tau chat status` reports the current session metadata; `/tau chat show [limit]` posts recent message previews; `/tau chat search <query>` searches the session
 - `/tau artifacts` posts the current issue artifact inventory; `/tau artifacts run <run_id>` filters inventory for one run; `/tau artifacts show <artifact_id>` shows one artifact record; `/tau artifacts purge` removes expired entries and reports lifecycle counts
 
@@ -402,7 +403,7 @@ In Slack bridge mode:
 - inbound/outbound event payloads are persisted as JSONL logs for replay/debugging
 - duplicate deliveries are deduplicated via persisted event keys
 - stale events are skipped based on `--slack-max-event-age-seconds`
-- `/tau help`, `/tau status`, `/tau stop`, and `/tau artifacts` are handled as Slack control commands (no run started)
+- `/tau help`, `/tau status`, `/tau health`, `/tau stop`, and `/tau artifacts` are handled as Slack control commands (no run started)
 - attached files are downloaded into channel-local attachment folders and surfaced in prompt context
 - each completed run emits a markdown artifact + metadata under `channel-store/channels/slack/<channel>/artifacts/`
 - set `--slack-artifact-retention-days 0` to disable artifact expiration

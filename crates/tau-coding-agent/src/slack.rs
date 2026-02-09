@@ -604,6 +604,7 @@ impl SlackBridgeEvent {
 enum SlackCommand {
     Help,
     Status,
+    Health,
     Stop,
     Artifacts { purge: bool, run_id: Option<String> },
     ArtifactShow { artifact_id: String },
@@ -1140,6 +1141,12 @@ impl SlackBridgeRuntime {
                 "reported",
                 None,
             ),
+            SlackCommand::Health => (
+                self.render_channel_health(&event.channel_id),
+                "health",
+                "reported",
+                None,
+            ),
             SlackCommand::Stop => {
                 if let Some(active) = self.active_runs.get(&event.channel_id) {
                     if *active.cancel_tx.borrow() {
@@ -1325,6 +1332,31 @@ impl SlackBridgeRuntime {
 
         lines.extend(self.state_store.transport_health().status_lines());
 
+        lines.join("\n")
+    }
+
+    fn render_channel_health(&self, channel_id: &str) -> String {
+        let active = self.active_runs.get(channel_id);
+        let runtime_state = if active.is_some() { "running" } else { "idle" };
+        let health = self.state_store.transport_health();
+        let classification = health.classify();
+        let mut lines = vec![format!(
+            "Tau health for channel {}: {}",
+            channel_id,
+            classification.state.as_str()
+        )];
+        lines.push(format!("runtime_state: {runtime_state}"));
+        if let Some(active) = active {
+            lines.push(format!("active_run_id: {}", active.run_id));
+            lines.push(format!("active_event_key: {}", active.event_key));
+            lines.push(format!(
+                "active_elapsed_ms: {}",
+                active.started.elapsed().as_millis()
+            ));
+        } else {
+            lines.push("active_run_id: none".to_string());
+        }
+        lines.extend(health.health_detail_lines());
         lines.join("\n")
     }
 
@@ -2022,6 +2054,7 @@ fn slack_command_usage() -> String {
         "Supported `/tau` commands:",
         "- `/tau help`",
         "- `/tau status`",
+        "- `/tau health`",
         "- `/tau stop`",
         "- `/tau artifacts [purge|run <run_id>|show <artifact_id>]`",
         "- `/tau canvas <create|update|show|export|import> ...`",
@@ -2033,6 +2066,7 @@ fn rbac_action_for_slack_command(command: Option<&SlackCommand>) -> String {
     match command {
         Some(SlackCommand::Help) => "command:/tau-help".to_string(),
         Some(SlackCommand::Status) => "command:/tau-status".to_string(),
+        Some(SlackCommand::Health) => "command:/tau-health".to_string(),
         Some(SlackCommand::Stop) => "command:/tau-stop".to_string(),
         Some(SlackCommand::Artifacts { .. }) => "command:/tau-artifacts".to_string(),
         Some(SlackCommand::ArtifactShow { .. }) => "command:/tau-artifacts-show".to_string(),
@@ -2076,6 +2110,15 @@ fn parse_slack_command(event: &SlackBridgeEvent, bot_user_id: &str) -> Option<Sl
             } else {
                 SlackCommand::Invalid {
                     message: "Usage: /tau status".to_string(),
+                }
+            }
+        }
+        "health" => {
+            if remainder.is_empty() {
+                SlackCommand::Health
+            } else {
+                SlackCommand::Invalid {
+                    message: "Usage: /tau health".to_string(),
                 }
             }
         }
@@ -2719,6 +2762,8 @@ mod tests {
         );
         let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau status");
         assert_eq!(parse_slack_command(&dm, "UBOT"), Some(SlackCommand::Status));
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau health");
+        assert_eq!(parse_slack_command(&dm, "UBOT"), Some(SlackCommand::Health));
         let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau stop");
         assert_eq!(parse_slack_command(&dm, "UBOT"), Some(SlackCommand::Stop));
         let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau artifacts");
@@ -2780,6 +2825,11 @@ mod tests {
             Some(SlackCommand::Invalid { .. })
         ));
         let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau help extra");
+        assert!(matches!(
+            parse_slack_command(&dm, "UBOT"),
+            Some(SlackCommand::Invalid { .. })
+        ));
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau health extra");
         assert!(matches!(
             parse_slack_command(&dm, "UBOT"),
             Some(SlackCommand::Invalid { .. })
@@ -2908,6 +2958,37 @@ mod tests {
         assert!(status.contains("Tau status for channel C1: idle"));
         assert!(status.contains("transport_failure_streak: 0"));
         assert!(status.contains("transport_last_cycle_processed: 0"));
+    }
+
+    #[tokio::test]
+    async fn functional_render_channel_health_includes_classification_and_transport_fields() {
+        let server = MockServer::start();
+        let temp = tempdir().expect("tempdir");
+        let config = test_config(&server.base_url(), temp.path());
+        let runtime = SlackBridgeRuntime::new(config).await.expect("runtime");
+
+        let health = runtime.render_channel_health("C1");
+        assert!(health.contains("Tau health for channel C1: healthy"));
+        assert!(health.contains("runtime_state: idle"));
+        assert!(health.contains("active_run_id: none"));
+        assert!(health.contains("transport_health_reason: "));
+        assert!(health.contains("transport_health_recommendation: "));
+        assert!(health.contains("transport_failure_streak: 0"));
+    }
+
+    #[tokio::test]
+    async fn regression_render_channel_health_reports_failing_failure_streak() {
+        let server = MockServer::start();
+        let temp = tempdir().expect("tempdir");
+        let config = test_config(&server.base_url(), temp.path());
+        let mut runtime = SlackBridgeRuntime::new(config).await.expect("runtime");
+        let mut health = runtime.state_store.transport_health().clone();
+        health.failure_streak = 3;
+        runtime.state_store.update_transport_health(health);
+
+        let rendered = runtime.render_channel_health("C1");
+        assert!(rendered.contains("Tau health for channel C1: failing"));
+        assert!(rendered.contains("failure_streak=3"));
     }
 
     #[test]
@@ -3200,14 +3281,25 @@ mod tests {
             then.status(200)
                 .json_body(json!({"ok": true, "channel": "C1", "ts": "4.1"}));
         });
+        let health_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/chat.postMessage")
+                .body_includes("\"channel\":\"C1\"")
+                .body_includes("Tau health for channel C1: healthy")
+                .body_includes("tau-slack-event:EvHealth:C1:12.3")
+                .body_includes("transport_health_reason:")
+                .body_includes("transport_health_recommendation:");
+            then.status(200)
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "4.2"}));
+        });
         let stop_post = server.mock(|when, then| {
             when.method(POST)
                 .path("/chat.postMessage")
                 .body_includes("\"channel\":\"C1\"")
                 .body_includes("No active run for this channel. Current state is idle.")
-                .body_includes("tau-slack-event:EvStop:C1:12.3");
+                .body_includes("tau-slack-event:EvStop:C1:12.4");
             then.status(200)
-                .json_body(json!({"ok": true, "channel": "C1", "ts": "4.2"}));
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "4.3"}));
         });
 
         let temp = tempdir().expect("tempdir");
@@ -3259,6 +3351,22 @@ mod tests {
                     "user": "U1",
                     "channel": "C1",
                     "text": "<@UBOT> /tau stop",
+                    "ts": "12.4"
+                }
+            }),
+        };
+        let health = SlackSocketEnvelope {
+            envelope_id: "env-health".to_string(),
+            envelope_type: "events_api".to_string(),
+            payload: json!({
+                "type": "event_callback",
+                "event_id": "EvHealth",
+                "event_time": now_seconds,
+                "event": {
+                    "type": "app_mention",
+                    "user": "U1",
+                    "channel": "C1",
+                    "text": "<@UBOT> /tau health",
                     "ts": "12.3"
                 }
             }),
@@ -3274,12 +3382,17 @@ mod tests {
             .await
             .expect("status");
         runtime
+            .handle_envelope(health, &mut report)
+            .await
+            .expect("health");
+        runtime
             .handle_envelope(stop, &mut report)
             .await
             .expect("stop");
 
         help_post.assert_calls(1);
         status_post.assert_calls(1);
+        health_post.assert_calls(1);
         stop_post.assert_calls(1);
         assert_eq!(report.queued_events, 0);
 
@@ -3287,6 +3400,7 @@ mod tests {
             .expect("read outbound events");
         assert!(outbound.contains("\"command\":\"help\""));
         assert!(outbound.contains("\"command\":\"status\""));
+        assert!(outbound.contains("\"command\":\"health\""));
         assert!(outbound.contains("\"command\":\"stop\""));
         assert!(
             outbound.contains("\"response_marker\":\"<!-- tau-slack-event:EvHelp:C1:12.1 -->\"")
@@ -3295,7 +3409,10 @@ mod tests {
             outbound.contains("\"response_marker\":\"<!-- tau-slack-event:EvStatus:C1:12.2 -->\"")
         );
         assert!(
-            outbound.contains("\"response_marker\":\"<!-- tau-slack-event:EvStop:C1:12.3 -->\"")
+            outbound.contains("\"response_marker\":\"<!-- tau-slack-event:EvHealth:C1:12.3 -->\"")
+        );
+        assert!(
+            outbound.contains("\"response_marker\":\"<!-- tau-slack-event:EvStop:C1:12.4 -->\"")
         );
 
         let channel_log = std::fs::read_to_string(

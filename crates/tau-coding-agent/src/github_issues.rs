@@ -769,6 +769,7 @@ enum TauIssueCommand {
     },
     Stop,
     Status,
+    Health,
     Compact,
     Help,
     ChatStart,
@@ -1542,6 +1543,28 @@ impl GithubIssuesBridgeRuntime {
                     "event_key": event.key,
                     "issue_number": event.issue_number,
                     "command": "status",
+                    "status": "reported",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                }))?;
+            }
+            TauIssueCommand::Health => {
+                let health = self.render_issue_health(event.issue_number);
+                let posted = self
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "health",
+                        "reported",
+                        &health,
+                    )
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "health",
                     "status": "reported",
                     "posted_comment_id": posted.id,
                     "posted_comment_url": posted.html_url,
@@ -2458,6 +2481,31 @@ impl GithubIssuesBridgeRuntime {
         lines.join("\n")
     }
 
+    fn render_issue_health(&self, issue_number: u64) -> String {
+        let active = self.active_runs.get(&issue_number);
+        let runtime_state = if active.is_some() { "running" } else { "idle" };
+        let health = self.state_store.transport_health();
+        let classification = health.classify();
+        let mut lines = vec![format!(
+            "Tau health for issue #{}: {}",
+            issue_number,
+            classification.state.as_str()
+        )];
+        lines.push(format!("runtime_state: {runtime_state}"));
+        if let Some(active) = active {
+            lines.push(format!("active_run_id: {}", active.run_id));
+            lines.push(format!("active_event_key: {}", active.event_key));
+            lines.push(format!(
+                "active_elapsed_ms: {}",
+                active.started.elapsed().as_millis()
+            ));
+        } else {
+            lines.push("active_run_id: none".to_string());
+        }
+        lines.extend(health.health_detail_lines());
+        lines.join("\n")
+    }
+
     fn render_issue_artifacts(
         &self,
         issue_number: u64,
@@ -2656,6 +2704,7 @@ fn rbac_action_for_event(action: &EventAction) -> String {
             TauIssueCommand::Run { .. } => "command:/tau-run".to_string(),
             TauIssueCommand::Stop => "command:/tau-stop".to_string(),
             TauIssueCommand::Status => "command:/tau-status".to_string(),
+            TauIssueCommand::Health => "command:/tau-health".to_string(),
             TauIssueCommand::Compact => "command:/tau-compact".to_string(),
             TauIssueCommand::Help => "command:/tau-help".to_string(),
             TauIssueCommand::ChatStart => "command:/tau-chat-start".to_string(),
@@ -3596,6 +3645,15 @@ fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
                 }
             }
         }
+        "health" => {
+            if remainder.is_empty() {
+                TauIssueCommand::Health
+            } else {
+                TauIssueCommand::Invalid {
+                    message: "Usage: /tau health".to_string(),
+                }
+            }
+        }
         "compact" => {
             if remainder.is_empty() {
                 TauIssueCommand::Compact
@@ -3741,6 +3799,7 @@ fn tau_command_usage() -> String {
         "- `/tau run <prompt>`",
         "- `/tau stop`",
         "- `/tau status`",
+        "- `/tau health`",
         "- `/tau compact`",
         "- `/tau help`",
         "- `/tau chat <start|resume|reset|export|status|show [limit]|search <query>>`",
@@ -4689,6 +4748,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn functional_render_issue_health_includes_classification_and_transport_fields() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config("http://127.0.0.1", temp.path());
+        let runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let health = runtime.render_issue_health(78);
+        assert!(health.contains("Tau health for issue #78: healthy"));
+        assert!(health.contains("runtime_state: idle"));
+        assert!(health.contains("active_run_id: none"));
+        assert!(health.contains("transport_health_reason: "));
+        assert!(health.contains("transport_health_recommendation: "));
+        assert!(health.contains("transport_failure_streak: 0"));
+    }
+
+    #[tokio::test]
+    async fn regression_render_issue_health_reports_failing_failure_streak() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config("http://127.0.0.1", temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let mut health = runtime.state_store.transport_health().clone();
+        health.failure_streak = 3;
+        runtime.state_store.update_transport_health(health);
+        let rendered = runtime.render_issue_health(7);
+        assert!(rendered.contains("Tau health for issue #7: failing"));
+        assert!(rendered.contains("failure_streak=3"));
+    }
+
+    #[tokio::test]
     async fn regression_render_issue_status_defaults_health_lines_for_legacy_state() {
         let temp = tempdir().expect("tempdir");
         let repo_state_dir = temp.path().join("owner__repo");
@@ -4849,6 +4939,10 @@ mod tests {
             Some(TauIssueCommand::Status)
         );
         assert_eq!(
+            parse_tau_issue_command("/tau health"),
+            Some(TauIssueCommand::Health)
+        );
+        assert_eq!(
             parse_tau_issue_command("/tau stop"),
             Some(TauIssueCommand::Stop)
         );
@@ -4964,6 +5058,8 @@ mod tests {
         let parsed = parse_tau_issue_command("/tau canvas").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed = parse_tau_issue_command("/tau help extra").expect("command parse");
+        assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
+        let parsed = parse_tau_issue_command("/tau health extra").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed = parse_tau_issue_command("/tau chat").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
@@ -5612,7 +5708,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn integration_bridge_commands_status_and_stop_produce_control_comments() {
+    async fn integration_bridge_commands_status_stop_and_health_produce_control_comments() {
         let server = MockServer::start();
         let _issues = server.mock(|when, then| {
             when.method(GET).path("/repos/owner/repo/issues");
@@ -5642,6 +5738,13 @@ mod tests {
                     "created_at": "2026-01-01T00:00:02Z",
                     "updated_at": "2026-01-01T00:00:02Z",
                     "user": {"login":"alice"}
+                },
+                {
+                    "id": 303,
+                    "body": "/tau health",
+                    "created_at": "2026-01-01T00:00:03Z",
+                    "updated_at": "2026-01-01T00:00:03Z",
+                    "user": {"login":"alice"}
                 }
             ]));
         });
@@ -5664,6 +5767,17 @@ mod tests {
                 "html_url": "https://example.test/comment/931"
             }));
         });
+        let health_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/9/comments")
+                .body_includes("Tau health for issue #9: healthy")
+                .body_includes("transport_health_reason:")
+                .body_includes("transport_health_recommendation:");
+            then.status(201).json_body(json!({
+                "id": 932,
+                "html_url": "https://example.test/comment/932"
+            }));
+        });
 
         let temp = tempdir().expect("tempdir");
         let config = test_bridge_config(&server.base_url(), temp.path());
@@ -5671,10 +5785,11 @@ mod tests {
             .await
             .expect("runtime");
         let report = runtime.poll_once().await.expect("poll");
-        assert_eq!(report.processed_events, 2);
+        assert_eq!(report.processed_events, 3);
         assert_eq!(report.failed_events, 0);
         status_post.assert_calls(1);
         stop_post.assert_calls(1);
+        health_post.assert_calls(1);
     }
 
     #[tokio::test]
