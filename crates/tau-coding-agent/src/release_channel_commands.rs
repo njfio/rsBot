@@ -345,6 +345,7 @@ async fn fetch_release_records_async(url: &str) -> Result<Vec<GitHubReleaseRecor
         .with_context(|| format!("failed to parse release lookup response from '{}'", url))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resolve_latest_channel_release(
     channel: ReleaseChannel,
     url: &str,
@@ -397,13 +398,21 @@ pub(crate) fn release_lookup_url() -> &'static str {
     RELEASE_LOOKUP_URL
 }
 
+fn release_lookup_source_label(source: ReleaseLookupSource) -> &'static str {
+    match source {
+        ReleaseLookupSource::Live => "live",
+        ReleaseLookupSource::CacheFresh => "cache_fresh",
+        ReleaseLookupSource::CacheStaleFallback => "cache_stale_fallback",
+    }
+}
+
 fn render_release_channel_check_with_lookup<F>(
     path: &Path,
     current_version: &str,
     lookup: F,
 ) -> String
 where
-    F: Fn(ReleaseChannel) -> Result<Option<String>>,
+    F: Fn(ReleaseChannel) -> Result<LatestChannelReleaseResolution>,
 {
     let (channel, channel_source) = match load_release_channel_store(path) {
         Ok(Some(channel)) => (channel, "store"),
@@ -417,37 +426,54 @@ where
     };
 
     match lookup(channel) {
-        Ok(Some(latest)) => {
+        Ok(resolution) => {
+            let lookup_source = release_lookup_source_label(resolution.source);
+            let Some(latest) = resolution.latest else {
+                return format!(
+                    "release channel check: path={} channel={} channel_source={} current={} latest=unknown status=unknown source=github lookup_source={} error=no_release_records",
+                    path.display(),
+                    channel,
+                    channel_source,
+                    current_version,
+                    lookup_source
+                );
+            };
             let status = match compare_versions(current_version, &latest) {
                 Some(std::cmp::Ordering::Less) => "update_available",
                 Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => "up_to_date",
                 None => "unknown",
             };
             format!(
-                "release channel check: path={} channel={} channel_source={} current={} latest={} status={} source=github",
+                "release channel check: path={} channel={} channel_source={} current={} latest={} status={} source=github lookup_source={}",
                 path.display(),
                 channel,
                 channel_source,
                 current_version,
                 latest,
-                status
+                status,
+                lookup_source
             )
         }
-        Ok(None) => format!(
-            "release channel check: path={} channel={} channel_source={} current={} latest=unknown status=unknown source=github error=no_release_records",
-            path.display(),
-            channel,
-            channel_source,
-            current_version
-        ),
         Err(error) => format!(
-            "release channel check: path={} channel={} channel_source={} current={} latest=unknown status=unknown source=github error={error}",
+            "release channel check: path={} channel={} channel_source={} current={} latest=unknown status=unknown source=github lookup_source=unknown error={error}",
             path.display(),
             channel,
             channel_source,
             current_version
         ),
     }
+}
+
+fn execute_release_channel_check_with_lookup_options(
+    path: &Path,
+    current_version: &str,
+    lookup_url: &str,
+    cache_path: &Path,
+    cache_ttl_ms: u64,
+) -> String {
+    render_release_channel_check_with_lookup(path, current_version, |channel| {
+        resolve_latest_channel_release_cached(channel, lookup_url, cache_path, cache_ttl_ms)
+    })
 }
 
 pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -> String {
@@ -490,9 +516,22 @@ pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -
             ),
         },
         ReleaseChannelCommand::Check => {
-            render_release_channel_check_with_lookup(path, env!("CARGO_PKG_VERSION"), |channel| {
-                resolve_latest_channel_release(channel, RELEASE_LOOKUP_URL)
-            })
+            let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
+                Ok(path) => path,
+                Err(error) => {
+                    return format!(
+                        "release channel error: path={} error={error}",
+                        path.display()
+                    );
+                }
+            };
+            execute_release_channel_check_with_lookup_options(
+                path,
+                env!("CARGO_PKG_VERSION"),
+                RELEASE_LOOKUP_URL,
+                &cache_path,
+                RELEASE_LOOKUP_CACHE_TTL_MS,
+            )
         }
         ReleaseChannelCommand::CacheShow => {
             let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
@@ -721,13 +760,18 @@ mod tests {
     fn functional_render_release_channel_check_reports_update_available() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("release-channel.json");
-        let output =
-            render_release_channel_check_with_lookup(&path, "0.1.0", |_| Ok(Some("v0.2.0".into())));
+        let output = render_release_channel_check_with_lookup(&path, "0.1.0", |_| {
+            Ok(LatestChannelReleaseResolution {
+                latest: Some("v0.2.0".into()),
+                source: ReleaseLookupSource::Live,
+            })
+        });
         assert!(output.contains("channel=stable"));
         assert!(output.contains("channel_source=default"));
         assert!(output.contains("current=0.1.0"));
         assert!(output.contains("latest=v0.2.0"));
         assert!(output.contains("status=update_available"));
+        assert!(output.contains("lookup_source=live"));
     }
 
     #[test]
@@ -736,11 +780,52 @@ mod tests {
         let path = temp.path().join(".tau/release-channel.json");
         save_release_channel_store(&path, ReleaseChannel::Beta).expect("save release channel");
 
-        let output =
-            render_release_channel_check_with_lookup(&path, "0.3.0", |_| Ok(Some("v0.2.5".into())));
+        let output = render_release_channel_check_with_lookup(&path, "0.3.0", |_| {
+            Ok(LatestChannelReleaseResolution {
+                latest: Some("v0.2.5".into()),
+                source: ReleaseLookupSource::CacheFresh,
+            })
+        });
         assert!(output.contains("channel=beta"));
         assert!(output.contains("channel_source=store"));
         assert!(output.contains("status=up_to_date"));
+        assert!(output.contains("lookup_source=cache_fresh"));
+    }
+
+    #[test]
+    fn integration_execute_release_channel_check_uses_cache_after_live_lookup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"tag_name":"v2.0.0-beta.1","prerelease":true,"draft":false},{"tag_name":"v1.9.0","prerelease":false,"draft":false}]"#);
+        });
+        let url = format!("{}/releases", server.base_url());
+
+        let first = execute_release_channel_check_with_lookup_options(
+            &path,
+            "0.1.0",
+            &url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(first.contains("status=update_available"));
+        assert!(first.contains("lookup_source=live"));
+
+        let second = execute_release_channel_check_with_lookup_options(
+            &path,
+            "0.1.0",
+            &url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(second.contains("status=update_available"));
+        assert!(second.contains("lookup_source=cache_fresh"));
+        mock.assert_calls(1);
     }
 
     #[test]
@@ -975,6 +1060,7 @@ mod tests {
         });
         assert!(output.contains("latest=unknown"));
         assert!(output.contains("status=unknown"));
+        assert!(output.contains("lookup_source=unknown"));
         assert!(output.contains("error=lookup backend unavailable"));
     }
 
@@ -990,5 +1076,33 @@ mod tests {
         let output = execute_release_channel_command("cache show", &path);
         assert!(output.contains("release channel error:"));
         assert!(output.contains("failed to parse release lookup cache"));
+    }
+
+    #[test]
+    fn regression_execute_release_channel_check_falls_back_to_stale_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let lookup_url = "http://127.0.0.1:9/releases";
+        let stale_time =
+            current_unix_timestamp_ms().saturating_sub(RELEASE_LOOKUP_CACHE_TTL_MS + 5_000);
+        let releases = vec![GitHubReleaseRecord {
+            tag_name: "v4.2.0".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(&cache_path, lookup_url, stale_time, &releases)
+            .expect("save stale cache");
+
+        let output = execute_release_channel_check_with_lookup_options(
+            &path,
+            "0.1.0",
+            lookup_url,
+            &cache_path,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(output.contains("latest=v4.2.0"));
+        assert!(output.contains("status=update_available"));
+        assert!(output.contains("lookup_source=cache_stale_fallback"));
     }
 }
