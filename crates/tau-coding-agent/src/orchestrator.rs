@@ -1,5 +1,13 @@
 use super::*;
 
+const ORCHESTRATOR_ROUTE_TRACE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutedPromptRunState {
+    Completed,
+    Interrupted,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_plan_first_prompt(
     agent: &mut Agent,
@@ -47,25 +55,65 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
     delegate_steps: bool,
     delegated_policy_context: Option<&str>,
 ) -> Result<()> {
+    let default_route_table = MultiAgentRouteTable::default();
+    run_plan_first_prompt_with_policy_context_and_routing(
+        agent,
+        session_runtime,
+        user_prompt,
+        turn_timeout_ms,
+        render_options,
+        max_plan_steps,
+        max_delegated_steps,
+        max_executor_response_chars,
+        max_delegated_step_response_chars,
+        max_delegated_total_response_chars,
+        delegate_steps,
+        delegated_policy_context,
+        &default_route_table,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    user_prompt: &str,
+    turn_timeout_ms: u64,
+    render_options: RenderOptions,
+    max_plan_steps: usize,
+    max_delegated_steps: usize,
+    max_executor_response_chars: usize,
+    max_delegated_step_response_chars: usize,
+    max_delegated_total_response_chars: usize,
+    delegate_steps: bool,
+    delegated_policy_context: Option<&str>,
+    route_table: &MultiAgentRouteTable,
+    route_trace_log_path: Option<&Path>,
+) -> Result<()> {
     let planner_prompt = build_plan_first_planner_prompt(user_prompt, max_plan_steps);
     let planner_render_options = RenderOptions {
         stream_output: false,
         stream_delay_ms: 0,
     };
-    let planner_status = run_prompt_with_cancellation(
+    let planner_state = run_routed_prompt_with_fallback(
         agent,
         session_runtime,
+        route_table,
+        MultiAgentRoutePhase::Planner,
+        None,
+        None,
         &planner_prompt,
+        "planner produced no text output",
         turn_timeout_ms,
-        tokio::signal::ctrl_c(),
         planner_render_options,
+        route_trace_log_path,
     )
     .await?;
-    report_prompt_status_internal(planner_status);
-    if planner_status != PromptRunStatus::Completed {
+    if planner_state == RoutedPromptRunState::Interrupted {
         return Ok(());
     }
-
     let plan_text = latest_assistant_text(agent).ok_or_else(|| {
         anyhow!("plan-first orchestrator failed: planner produced no text output")
     })?;
@@ -137,17 +185,21 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
                 step,
                 policy_context,
             );
-            let delegated_status = run_prompt_with_cancellation(
+            let delegated_state = run_routed_prompt_with_fallback(
                 agent,
                 session_runtime,
+                route_table,
+                MultiAgentRoutePhase::DelegatedStep,
+                Some(step.as_str()),
+                Some(index + 1),
                 &delegated_prompt,
+                &format!("delegated step {} produced no text output", index + 1),
                 turn_timeout_ms,
-                tokio::signal::ctrl_c(),
                 planner_render_options,
+                route_trace_log_path,
             )
             .await?;
-            report_prompt_status_internal(delegated_status);
-            if delegated_status != PromptRunStatus::Completed {
+            if delegated_state == RoutedPromptRunState::Interrupted {
                 return Ok(());
             }
             let delegated_text = latest_assistant_text(agent).ok_or_else(|| {
@@ -218,17 +270,25 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
         build_plan_first_execution_prompt(user_prompt, &plan_steps)
     };
 
-    let execution_status = run_prompt_with_cancellation(
+    let execution_state = run_routed_prompt_with_fallback(
         agent,
         session_runtime,
+        route_table,
+        MultiAgentRoutePhase::Review,
+        None,
+        None,
         &execution_prompt,
+        if delegate_steps {
+            "consolidation produced no text output"
+        } else {
+            "executor produced no text output"
+        },
         turn_timeout_ms,
-        tokio::signal::ctrl_c(),
         render_options,
+        route_trace_log_path,
     )
     .await?;
-    report_prompt_status_internal(execution_status);
-    if execution_status != PromptRunStatus::Completed {
+    if execution_state == RoutedPromptRunState::Interrupted {
         return Ok(());
     }
 
@@ -274,6 +334,264 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
     }
     println!("orchestrator trace: mode=plan-first phase=consolidation decision=accept");
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_routed_prompt_with_fallback(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    route_table: &MultiAgentRouteTable,
+    phase: MultiAgentRoutePhase,
+    step_text: Option<&str>,
+    step_index: Option<usize>,
+    base_prompt: &str,
+    empty_output_reason: &str,
+    turn_timeout_ms: u64,
+    render_options: RenderOptions,
+    route_trace_log_path: Option<&Path>,
+) -> Result<RoutedPromptRunState> {
+    let selection = select_multi_agent_route(route_table, phase, step_text);
+    emit_route_trace(
+        route_trace_log_path,
+        phase,
+        selection.category.as_deref(),
+        step_index,
+        "route-selected",
+        Some(&selection.primary_role),
+        None,
+        Some("accept"),
+        None,
+        Some(&selection.fallback_roles.join(",")),
+        None,
+    );
+
+    for (attempt_index, role) in selection.attempt_roles.iter().enumerate() {
+        let profile = resolve_multi_agent_role_profile(route_table, role);
+        let model_hint = profile.model.as_deref().unwrap_or("inherit");
+        let tool_policy_hint = profile.tool_policy_preset.as_deref().unwrap_or("inherit");
+        emit_route_trace(
+            route_trace_log_path,
+            phase,
+            selection.category.as_deref(),
+            step_index,
+            "attempt-start",
+            Some(role),
+            Some((attempt_index + 1, selection.attempt_roles.len())),
+            None,
+            None,
+            Some(&format!(
+                "model_hint={};tool_policy_preset={}",
+                model_hint, tool_policy_hint
+            )),
+            None,
+        );
+
+        let attempt_prompt = build_multi_agent_role_prompt(base_prompt, phase, role, &profile);
+        let attempt_status = match run_prompt_with_cancellation(
+            agent,
+            session_runtime,
+            &attempt_prompt,
+            turn_timeout_ms,
+            tokio::signal::ctrl_c(),
+            render_options,
+        )
+        .await
+        {
+            Ok(status) => status,
+            Err(error) => {
+                let has_fallback = attempt_index + 1 < selection.attempt_roles.len();
+                if has_fallback {
+                    let next_role = selection.attempt_roles[attempt_index + 1].as_str();
+                    emit_route_trace(
+                        route_trace_log_path,
+                        phase,
+                        selection.category.as_deref(),
+                        step_index,
+                        "fallback",
+                        Some(role),
+                        Some((attempt_index + 1, selection.attempt_roles.len())),
+                        Some("retry"),
+                        Some("prompt_execution_error"),
+                        Some(&format!("next_role={next_role} error={error}")),
+                        None,
+                    );
+                    continue;
+                }
+                emit_route_trace(
+                    route_trace_log_path,
+                    phase,
+                    selection.category.as_deref(),
+                    step_index,
+                    "fallback",
+                    Some(role),
+                    Some((attempt_index + 1, selection.attempt_roles.len())),
+                    Some("reject"),
+                    Some("prompt_execution_error_exhausted"),
+                    Some(&format!("error={error}")),
+                    None,
+                );
+                return Err(error).context(format!(
+                    "plan-first orchestrator failed: {} route exhausted after role '{}'",
+                    phase.as_str(),
+                    role
+                ));
+            }
+        };
+        report_prompt_status_internal(attempt_status);
+        if attempt_status != PromptRunStatus::Completed {
+            return Ok(RoutedPromptRunState::Interrupted);
+        }
+        let Some(assistant_text) = latest_assistant_text(agent) else {
+            emit_route_trace(
+                route_trace_log_path,
+                phase,
+                selection.category.as_deref(),
+                step_index,
+                "attempt-complete",
+                Some(role),
+                Some((attempt_index + 1, selection.attempt_roles.len())),
+                Some("reject"),
+                Some("empty_output"),
+                None,
+                Some(0),
+            );
+            bail!("plan-first orchestrator failed: {empty_output_reason}");
+        };
+        if assistant_text.trim().is_empty() {
+            emit_route_trace(
+                route_trace_log_path,
+                phase,
+                selection.category.as_deref(),
+                step_index,
+                "attempt-complete",
+                Some(role),
+                Some((attempt_index + 1, selection.attempt_roles.len())),
+                Some("reject"),
+                Some("empty_output"),
+                None,
+                Some(assistant_text.chars().count()),
+            );
+            bail!("plan-first orchestrator failed: {empty_output_reason}");
+        }
+        emit_route_trace(
+            route_trace_log_path,
+            phase,
+            selection.category.as_deref(),
+            step_index,
+            "attempt-complete",
+            Some(role),
+            Some((attempt_index + 1, selection.attempt_roles.len())),
+            Some("accept"),
+            None,
+            None,
+            Some(assistant_text.chars().count()),
+        );
+        return Ok(RoutedPromptRunState::Completed);
+    }
+
+    bail!(
+        "plan-first orchestrator failed: {} route did not yield any attempts",
+        phase.as_str()
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_route_trace(
+    route_trace_log_path: Option<&Path>,
+    phase: MultiAgentRoutePhase,
+    category: Option<&str>,
+    step_index: Option<usize>,
+    event: &str,
+    role: Option<&str>,
+    attempt: Option<(usize, usize)>,
+    decision: Option<&str>,
+    reason: Option<&str>,
+    detail: Option<&str>,
+    response_chars: Option<usize>,
+) {
+    let mut parts = vec![
+        "orchestrator trace: mode=plan-first".to_string(),
+        format!("phase={}", phase.as_str()),
+        format!("event={event}"),
+    ];
+    if let Some(category) = category {
+        parts.push(format!("category={}", flatten_whitespace(category)));
+    }
+    if let Some(step_index) = step_index {
+        parts.push(format!("step={step_index}"));
+    }
+    if let Some(role) = role {
+        parts.push(format!("role={role}"));
+    }
+    if let Some((index, total)) = attempt {
+        parts.push(format!("attempt={index}/{total}"));
+    }
+    if let Some(decision) = decision {
+        parts.push(format!("decision={decision}"));
+    }
+    if let Some(reason) = reason {
+        parts.push(format!("reason={reason}"));
+    }
+    if let Some(detail) = detail {
+        parts.push(format!("detail={}", flatten_whitespace(detail)));
+    }
+    if let Some(response_chars) = response_chars {
+        parts.push(format!("response_chars={response_chars}"));
+    }
+    println!("{}", parts.join(" "));
+
+    let Some(path) = route_trace_log_path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "orchestrator trace logger warning: failed to create {}: {error}",
+                    parent.display()
+                );
+                return;
+            }
+        }
+    }
+    let record = serde_json::json!({
+        "record_type": "orchestrator_route_trace_v1",
+        "schema_version": ORCHESTRATOR_ROUTE_TRACE_SCHEMA_VERSION,
+        "timestamp_unix_ms": current_unix_timestamp_ms(),
+        "mode": "plan-first",
+        "phase": phase.as_str(),
+        "category": category,
+        "step_index": step_index,
+        "event": event,
+        "role": role,
+        "attempt_index": attempt.map(|value| value.0),
+        "attempt_total": attempt.map(|value| value.1),
+        "decision": decision,
+        "reason": reason,
+        "detail": detail,
+        "response_chars": response_chars,
+    });
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        eprintln!(
+            "orchestrator trace logger warning: failed to open {}",
+            path.display()
+        );
+        return;
+    };
+    let Ok(line) = serde_json::to_string(&record) else {
+        eprintln!("orchestrator trace logger warning: failed to serialize route trace");
+        return;
+    };
+    if let Err(error) = writeln!(file, "{line}") {
+        eprintln!(
+            "orchestrator trace logger warning: failed to write {}: {error}",
+            path.display()
+        );
+    }
 }
 
 pub(crate) fn parse_numbered_plan_steps(plan: &str) -> Vec<String> {

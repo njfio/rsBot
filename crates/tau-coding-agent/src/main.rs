@@ -18,6 +18,7 @@ mod gemini_cli_client;
 mod github_issues;
 mod macro_profile_commands;
 mod model_catalog;
+mod multi_agent_router;
 mod observability_loggers;
 mod onboarding;
 mod orchestrator;
@@ -155,6 +156,10 @@ pub(crate) use crate::model_catalog::{
     render_model_show, render_models_list, ModelCatalog, ModelCatalogLoadOptions,
     MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
 };
+pub(crate) use crate::multi_agent_router::{
+    build_multi_agent_role_prompt, load_multi_agent_route_table, resolve_multi_agent_role_profile,
+    select_multi_agent_route, MultiAgentRoutePhase, MultiAgentRouteTable,
+};
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
@@ -163,6 +168,7 @@ pub(crate) use crate::onboarding::execute_onboarding_command;
 pub(crate) use crate::orchestrator::parse_numbered_plan_steps;
 pub(crate) use crate::orchestrator::run_plan_first_prompt;
 pub(crate) use crate::orchestrator::run_plan_first_prompt_with_policy_context;
+pub(crate) use crate::orchestrator::run_plan_first_prompt_with_policy_context_and_routing;
 pub(crate) use crate::package_manifest::{
     execute_package_activate_command, execute_package_activate_on_startup,
     execute_package_conflicts_command, execute_package_install_command,

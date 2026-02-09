@@ -607,6 +607,14 @@ pub(crate) struct Cli {
     pub(crate) orchestrator_delegate_steps: bool,
 
     #[arg(
+        long = "orchestrator-route-table",
+        env = "TAU_ORCHESTRATOR_ROUTE_TABLE",
+        value_name = "path",
+        help = "Optional JSON route-table path for multi-agent planner/delegated/review role routing"
+    )]
+    pub(crate) orchestrator_route_table: Option<PathBuf>,
+
+    #[arg(
         long,
         env = "TAU_PROMPT_FILE",
         conflicts_with = "prompt",

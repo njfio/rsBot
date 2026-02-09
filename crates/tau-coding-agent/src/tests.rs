@@ -47,21 +47,21 @@ use super::{
     execute_skills_trust_rotate_command, execute_skills_verify_command, execute_startup_preflight,
     format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
     initialize_session, is_retryable_provider_error, load_branch_aliases, load_credential_store,
-    load_macro_file, load_profile_store, load_session_bookmarks, load_trust_root_records,
-    parse_auth_command, parse_branch_alias_command, parse_command, parse_command_file,
-    parse_doctor_command_args, parse_integration_auth_command, parse_macro_command,
-    parse_numbered_plan_steps, parse_profile_command, parse_sandbox_command_tokens,
-    parse_session_bookmark_command, parse_session_diff_args, parse_session_search_args,
-    parse_session_stats_args, parse_skills_lock_diff_args, parse_skills_prune_args,
-    parse_skills_search_args, parse_skills_trust_list_args, parse_skills_trust_mutation_args,
-    parse_skills_verify_args, parse_trust_rotation_spec, parse_trusted_root_spec,
-    percentile_duration_ms, provider_auth_capability, refresh_provider_access_token,
-    register_runtime_extension_tool_hook_subscriber, render_audit_summary, render_command_help,
-    render_doctor_report, render_doctor_report_json, render_help_overview, render_macro_list,
-    render_macro_show, render_profile_diffs, render_profile_list, render_profile_show,
-    render_session_diff, render_session_graph_dot, render_session_graph_mermaid,
-    render_session_stats, render_session_stats_json, render_skills_list,
-    render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+    load_macro_file, load_multi_agent_route_table, load_profile_store, load_session_bookmarks,
+    load_trust_root_records, parse_auth_command, parse_branch_alias_command, parse_command,
+    parse_command_file, parse_doctor_command_args, parse_integration_auth_command,
+    parse_macro_command, parse_numbered_plan_steps, parse_profile_command,
+    parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
+    parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
+    parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
+    parse_skills_trust_mutation_args, parse_skills_verify_args, parse_trust_rotation_spec,
+    parse_trusted_root_spec, percentile_duration_ms, provider_auth_capability,
+    refresh_provider_access_token, register_runtime_extension_tool_hook_subscriber,
+    render_audit_summary, render_command_help, render_doctor_report, render_doctor_report_json,
+    render_help_overview, render_macro_list, render_macro_show, render_profile_diffs,
+    render_profile_list, render_profile_show, render_session_diff, render_session_graph_dot,
+    render_session_graph_mermaid, render_session_stats, render_session_stats_json,
+    render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
     render_skills_lock_write_success, render_skills_search, render_skills_show,
     render_skills_sync_drift_details, render_skills_trust_list, render_skills_verify_report,
     resolve_credential_store_encryption_mode, resolve_fallback_models, resolve_prompt_input,
@@ -69,12 +69,12 @@ use super::{
     resolve_session_graph_format, resolve_skill_trust_roots, resolve_skills_lock_path,
     resolve_store_backed_provider_credential, resolve_system_prompt, rpc_capabilities_payload,
     run_doctor_checks, run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
-    run_prompt_with_cancellation, save_branch_aliases, save_credential_store, save_macro_file,
-    save_profile_store, save_session_bookmarks, search_session_entries,
-    session_bookmark_path_for_session, session_message_preview, shared_lineage_prefix_depth,
-    stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
-    trust_record_status, unknown_command_message, validate_branch_alias_name,
-    validate_event_webhook_ingest_cli, validate_events_runner_cli,
+    run_plan_first_prompt_with_policy_context_and_routing, run_prompt_with_cancellation,
+    save_branch_aliases, save_credential_store, save_macro_file, save_profile_store,
+    save_session_bookmarks, search_session_entries, session_bookmark_path_for_session,
+    session_message_preview, shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
+    tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
+    validate_branch_alias_name, validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
     validate_profile_name, validate_rpc_frame_file, validate_session_file,
     validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand, AuthCommandConfig,
@@ -85,16 +85,17 @@ use super::{
     CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckResult, DoctorCommandConfig,
     DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
     IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
-    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
-    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
-    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
-    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
-    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
-    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
-    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus,
+    PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions,
+    RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
+    SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats,
+    SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
+    SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
+    ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
+    MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
+    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
+    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -350,6 +351,7 @@ fn test_cli() -> Cli {
         orchestrator_max_delegated_step_response_chars: 20_000,
         orchestrator_max_delegated_total_response_chars: 160_000,
         orchestrator_delegate_steps: false,
+        orchestrator_route_table: None,
         prompt_file: None,
         prompt_template_file: None,
         prompt_template_var: vec![],
@@ -825,6 +827,7 @@ fn unit_cli_orchestrator_flags_default_values_are_stable() {
     assert_eq!(cli.orchestrator_max_delegated_step_response_chars, 20_000);
     assert_eq!(cli.orchestrator_max_delegated_total_response_chars, 160_000);
     assert!(!cli.orchestrator_delegate_steps);
+    assert!(cli.orchestrator_route_table.is_none());
 }
 
 #[test]
@@ -843,6 +846,8 @@ fn functional_cli_orchestrator_flags_accept_overrides() {
         "80",
         "--orchestrator-max-delegated-total-response-chars",
         "240",
+        "--orchestrator-route-table",
+        ".tau/orchestrator/route-table.json",
         "--orchestrator-delegate-steps",
     ]);
     assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::PlanFirst);
@@ -851,6 +856,10 @@ fn functional_cli_orchestrator_flags_accept_overrides() {
     assert_eq!(cli.orchestrator_max_executor_response_chars, 160);
     assert_eq!(cli.orchestrator_max_delegated_step_response_chars, 80);
     assert_eq!(cli.orchestrator_max_delegated_total_response_chars, 240);
+    assert_eq!(
+        cli.orchestrator_route_table.as_deref(),
+        Some(Path::new(".tau/orchestrator/route-table.json"))
+    );
     assert!(cli.orchestrator_delegate_steps);
 }
 
@@ -13030,6 +13039,268 @@ fn unit_parse_numbered_plan_steps_accepts_deterministic_step_format() {
             "Implement fix".to_string(),
             "Verify".to_string(),
         ]
+    );
+}
+
+fn write_route_table_fixture(path: &Path, body: &str) {
+    std::fs::write(path, body).expect("write route table fixture");
+}
+
+#[tokio::test]
+async fn integration_run_plan_first_prompt_with_routing_uses_distinct_delegated_roles() {
+    let temp = tempdir().expect("tempdir");
+    let route_table_path = temp.path().join("route-table.json");
+    write_route_table_fixture(
+        &route_table_path,
+        r#"{
+  "schema_version": 1,
+  "roles": {
+    "planner": { "prompt_suffix": "Plan with strict ordering." },
+    "executor": { "prompt_suffix": "Execute only implementation steps." },
+    "reviewer": { "prompt_suffix": "Focus on verification evidence." }
+  },
+  "planner": { "role": "planner" },
+  "delegated": { "role": "executor" },
+  "delegated_categories": {
+    "verify": { "role": "reviewer" }
+  },
+  "review": { "role": "reviewer" }
+}"#,
+    );
+    let route_table = load_multi_agent_route_table(&route_table_path).expect("load route table");
+
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(ChatResponse {
+                    message: Message::assistant_text("1. Apply patch\n2. Verify behavior"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("patch applied"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("verification complete"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("final delegated response"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    run_plan_first_prompt_with_policy_context_and_routing(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        4,
+        512,
+        512,
+        1_024,
+        true,
+        Some("preset=balanced;max_command_length=4096"),
+        &route_table,
+        None,
+    )
+    .await
+    .expect("delegated routed execution should succeed");
+
+    let user_prompts = agent
+        .messages()
+        .iter()
+        .filter(|message| message.role == MessageRole::User)
+        .map(|message| message.text_content())
+        .collect::<Vec<_>>();
+    assert!(user_prompts
+        .iter()
+        .any(|prompt| prompt.contains("phase=planner") && prompt.contains("role=planner")));
+    assert!(user_prompts.iter().any(|prompt| {
+        prompt.contains("phase=delegated-step") && prompt.contains("role=executor")
+    }));
+    assert!(user_prompts.iter().any(|prompt| {
+        prompt.contains("phase=delegated-step") && prompt.contains("role=reviewer")
+    }));
+    assert!(user_prompts
+        .iter()
+        .any(|prompt| prompt.contains("phase=review") && prompt.contains("role=reviewer")));
+    assert_eq!(
+        agent
+            .messages()
+            .last()
+            .expect("assistant response")
+            .text_content(),
+        "final delegated response"
+    );
+}
+
+#[tokio::test]
+async fn functional_run_plan_first_prompt_with_routing_emits_fallback_trace_records() {
+    let temp = tempdir().expect("tempdir");
+    let route_table_path = temp.path().join("route-table.json");
+    let telemetry_log = temp.path().join("telemetry.ndjson");
+    write_route_table_fixture(
+        &route_table_path,
+        r#"{
+  "schema_version": 1,
+  "roles": {
+    "planner-primary": {},
+    "planner-fallback": {},
+    "reviewer": {}
+  },
+  "planner": { "role": "planner-primary", "fallback_roles": ["planner-fallback"] },
+  "delegated": { "role": "planner-fallback" },
+  "review": { "role": "reviewer" }
+}"#,
+    );
+    let route_table = load_multi_agent_route_table(&route_table_path).expect("load route table");
+
+    let mut agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Err(TauAiError::InvalidResponse(
+                    "planner primary failed".to_string(),
+                )),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("1. Inspect constraints\n2. Apply fix"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("final execution"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+            ])),
+        }),
+        AgentConfig::default(),
+    );
+    let mut runtime = None;
+
+    run_plan_first_prompt_with_policy_context_and_routing(
+        &mut agent,
+        &mut runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        4,
+        512,
+        512,
+        1_024,
+        false,
+        None,
+        &route_table,
+        Some(telemetry_log.as_path()),
+    )
+    .await
+    .expect("fallback planner route should recover");
+
+    let telemetry = std::fs::read_to_string(&telemetry_log).expect("read telemetry log");
+    assert!(telemetry.contains("\"record_type\":\"orchestrator_route_trace_v1\""));
+    assert!(telemetry.contains("\"event\":\"fallback\""));
+    assert!(telemetry.contains("\"decision\":\"retry\""));
+    assert!(telemetry.contains("\"reason\":\"prompt_execution_error\""));
+    assert!(telemetry.contains("\"phase\":\"planner\""));
+}
+
+#[tokio::test]
+async fn regression_routed_orchestrator_default_profile_matches_legacy_behavior() {
+    let legacy_responses = VecDeque::from([
+        Ok(ChatResponse {
+            message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }),
+        Ok(ChatResponse {
+            message: Message::assistant_text("legacy final"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }),
+    ]);
+    let routed_responses = VecDeque::from([
+        Ok(ChatResponse {
+            message: Message::assistant_text("1. Inspect constraints\n2. Apply change"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }),
+        Ok(ChatResponse {
+            message: Message::assistant_text("legacy final"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }),
+    ]);
+    let mut legacy_agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(legacy_responses),
+        }),
+        AgentConfig::default(),
+    );
+    let mut routed_agent = Agent::new(
+        Arc::new(SequenceClient {
+            outcomes: AsyncMutex::new(routed_responses),
+        }),
+        AgentConfig::default(),
+    );
+    let mut legacy_runtime = None;
+    let mut routed_runtime = None;
+
+    run_plan_first_prompt(
+        &mut legacy_agent,
+        &mut legacy_runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        4,
+        512,
+        512,
+        1_024,
+        false,
+    )
+    .await
+    .expect("legacy run should succeed");
+    run_plan_first_prompt_with_policy_context_and_routing(
+        &mut routed_agent,
+        &mut routed_runtime,
+        "ship feature",
+        0,
+        test_render_options(),
+        4,
+        4,
+        512,
+        512,
+        1_024,
+        false,
+        None,
+        &MultiAgentRouteTable::default(),
+        None,
+    )
+    .await
+    .expect("routed default run should succeed");
+
+    assert_eq!(
+        legacy_agent
+            .messages()
+            .last()
+            .expect("legacy final")
+            .text_content(),
+        routed_agent
+            .messages()
+            .last()
+            .expect("routed final")
+            .text_content()
     );
 }
 

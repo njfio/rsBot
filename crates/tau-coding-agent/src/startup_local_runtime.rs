@@ -78,6 +78,12 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         enabled: cli.extension_runtime_hooks,
         root: cli.extension_runtime_root.clone(),
     };
+    let orchestrator_route_table = if let Some(path) = cli.orchestrator_route_table.as_deref() {
+        load_multi_agent_route_table(path)?
+    } else {
+        MultiAgentRouteTable::default()
+    };
+    let orchestrator_route_trace_log = cli.telemetry_log.as_deref();
     let extension_runtime_registrations = if extension_runtime_hooks.enabled {
         discover_extension_runtime_registrations(&extension_runtime_hooks.root)
     } else {
@@ -116,6 +122,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 cli.orchestrator_max_delegated_step_response_chars,
                 cli.orchestrator_max_delegated_total_response_chars,
                 cli.orchestrator_delegate_steps,
+                &orchestrator_route_table,
+                orchestrator_route_trace_log,
                 tool_policy_json,
                 &extension_runtime_hooks,
             )
@@ -170,6 +178,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         orchestrator_max_delegated_total_response_chars: cli
             .orchestrator_max_delegated_total_response_chars,
         orchestrator_delegate_steps: cli.orchestrator_delegate_steps,
+        orchestrator_route_table: &orchestrator_route_table,
+        orchestrator_route_trace_log,
         command_context,
     };
     if let Some(command_file_path) = cli.command_file.as_deref() {

@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -19,8 +19,8 @@ use crate::{
     apply_extension_message_transforms, current_unix_timestamp_ms, dispatch_extension_runtime_hook,
     ensure_non_empty_text, handle_command_with_session_import_mode, persist_messages,
     print_assistant_messages, run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
-    Cli, CliOrchestratorMode, CommandAction, CommandExecutionContext, RenderOptions,
-    SessionRuntime,
+    run_plan_first_prompt_with_policy_context_and_routing, Cli, CliOrchestratorMode, CommandAction,
+    CommandExecutionContext, MultiAgentRouteTable, RenderOptions, SessionRuntime,
 };
 
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
@@ -69,6 +69,8 @@ pub(crate) struct InteractiveRuntimeConfig<'a> {
     pub(crate) orchestrator_max_delegated_step_response_chars: usize,
     pub(crate) orchestrator_max_delegated_total_response_chars: usize,
     pub(crate) orchestrator_delegate_steps: bool,
+    pub(crate) orchestrator_route_table: &'a MultiAgentRouteTable,
+    pub(crate) orchestrator_route_trace_log: Option<&'a Path>,
     pub(crate) command_context: CommandExecutionContext<'a>,
 }
 
@@ -149,6 +151,8 @@ pub(crate) async fn run_interactive(
                 config.orchestrator_max_delegated_step_response_chars,
                 config.orchestrator_max_delegated_total_response_chars,
                 config.orchestrator_delegate_steps,
+                config.orchestrator_route_table,
+                config.orchestrator_route_trace_log,
                 config.command_context.tool_policy_json,
                 config.extension_runtime_hooks,
             )
@@ -250,6 +254,8 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
     orchestrator_max_delegated_step_response_chars: usize,
     orchestrator_max_delegated_total_response_chars: usize,
     orchestrator_delegate_steps: bool,
+    orchestrator_route_table: &MultiAgentRouteTable,
+    orchestrator_route_trace_log: Option<&Path>,
     tool_policy_json: &serde_json::Value,
     extension_runtime_hooks: &RuntimeExtensionHooksConfig,
 ) -> Result<()> {
@@ -274,24 +280,42 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
         None
     };
 
-    let result = if let Some(policy_context) = policy_context.as_deref() {
-        run_plan_first_prompt_with_policy_context(
-            agent,
-            session_runtime,
-            &effective_prompt,
-            turn_timeout_ms,
-            render_options,
-            orchestrator_max_plan_steps,
-            orchestrator_max_delegated_steps,
-            orchestrator_max_executor_response_chars,
-            orchestrator_max_delegated_step_response_chars,
-            orchestrator_max_delegated_total_response_chars,
-            orchestrator_delegate_steps,
-            Some(policy_context),
-        )
-        .await
+    let uses_default_router = orchestrator_route_table == &MultiAgentRouteTable::default();
+    let result = if uses_default_router && orchestrator_route_trace_log.is_none() {
+        if let Some(policy_context) = policy_context.as_deref() {
+            run_plan_first_prompt_with_policy_context(
+                agent,
+                session_runtime,
+                &effective_prompt,
+                turn_timeout_ms,
+                render_options,
+                orchestrator_max_plan_steps,
+                orchestrator_max_delegated_steps,
+                orchestrator_max_executor_response_chars,
+                orchestrator_max_delegated_step_response_chars,
+                orchestrator_max_delegated_total_response_chars,
+                orchestrator_delegate_steps,
+                Some(policy_context),
+            )
+            .await
+        } else {
+            run_plan_first_prompt(
+                agent,
+                session_runtime,
+                &effective_prompt,
+                turn_timeout_ms,
+                render_options,
+                orchestrator_max_plan_steps,
+                orchestrator_max_delegated_steps,
+                orchestrator_max_executor_response_chars,
+                orchestrator_max_delegated_step_response_chars,
+                orchestrator_max_delegated_total_response_chars,
+                orchestrator_delegate_steps,
+            )
+            .await
+        }
     } else {
-        run_plan_first_prompt(
+        run_plan_first_prompt_with_policy_context_and_routing(
             agent,
             session_runtime,
             &effective_prompt,
@@ -303,6 +327,9 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
             orchestrator_max_delegated_step_response_chars,
             orchestrator_max_delegated_total_response_chars,
             orchestrator_delegate_steps,
+            policy_context.as_deref(),
+            orchestrator_route_table,
+            orchestrator_route_trace_log,
         )
         .await
     };
