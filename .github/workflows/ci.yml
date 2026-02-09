@@ -5,6 +5,8 @@ on:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+  schedule:
+    - cron: "0 8 * * 1"
   workflow_dispatch:
     inputs:
       run_coverage:
@@ -34,6 +36,10 @@ jobs:
     name: Quality (fmt + clippy + tests)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      run_coverage: ${{ steps.quality_mode.outputs.run_coverage }}
+      run_cross_platform: ${{ steps.quality_mode.outputs.run_cross_platform }}
+      heavy_reason: ${{ steps.quality_mode.outputs.heavy_reason }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -65,10 +71,20 @@ jobs:
           if [[ -z "${heavy_changed}" ]]; then
             heavy_changed="false"
           fi
+          coverage_requested="${{ inputs.run_coverage }}"
+          if [[ -z "${coverage_requested}" ]]; then
+            coverage_requested="false"
+          fi
+          cross_platform_requested="${{ inputs.run_cross_platform }}"
+          if [[ -z "${cross_platform_requested}" ]]; then
+            cross_platform_requested="false"
+          fi
           python3 .github/scripts/ci_quality_mode.py \
             --event-name "${{ github.event_name }}" \
             --head-ref "${{ github.head_ref }}" \
             --heavy-changed "${heavy_changed}" \
+            --run-coverage "${coverage_requested}" \
+            --run-cross-platform "${cross_platform_requested}" \
             --output "$GITHUB_OUTPUT" \
             --summary "$GITHUB_STEP_SUMMARY"
 
@@ -96,7 +112,8 @@ jobs:
 
   cross-platform-smoke:
     name: Cross-platform compile smoke (${{ matrix.os }})
-    if: github.event_name == 'workflow_dispatch' && inputs.run_cross_platform
+    needs: [quality-linux]
+    if: needs.quality-linux.outputs.run_cross_platform == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -120,7 +137,7 @@ jobs:
   coverage:
     name: Coverage (llvm-cov)
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && inputs.run_coverage
+    if: needs.quality-linux.outputs.run_coverage == 'true'
     outputs:
       line_coverage: ${{ steps.coverage.outputs.line_coverage }}
     needs: [quality-linux]
