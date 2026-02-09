@@ -1230,6 +1230,7 @@ pub(crate) struct Cli {
         default_value_t = false,
         conflicts_with = "events_validate",
         conflicts_with = "events_simulate",
+        conflicts_with = "events_dry_run",
         conflicts_with = "events_template_write",
         conflicts_with = "events_runner",
         conflicts_with = "event_webhook_ingest_file",
@@ -1256,6 +1257,7 @@ pub(crate) struct Cli {
         default_value_t = false,
         conflicts_with = "events_inspect",
         conflicts_with = "events_simulate",
+        conflicts_with = "events_dry_run",
         conflicts_with = "events_template_write",
         conflicts_with = "events_runner",
         conflicts_with = "event_webhook_ingest_file",
@@ -1282,6 +1284,7 @@ pub(crate) struct Cli {
         default_value_t = false,
         conflicts_with = "events_inspect",
         conflicts_with = "events_validate",
+        conflicts_with = "events_dry_run",
         conflicts_with = "events_template_write",
         conflicts_with = "events_runner",
         conflicts_with = "event_webhook_ingest_file",
@@ -1312,12 +1315,40 @@ pub(crate) struct Cli {
     pub(crate) events_simulate_horizon_seconds: u64,
 
     #[arg(
+        long = "events-dry-run",
+        env = "TAU_EVENTS_DRY_RUN",
+        default_value_t = false,
+        conflicts_with = "events_inspect",
+        conflicts_with = "events_validate",
+        conflicts_with = "events_simulate",
+        conflicts_with = "events_template_write",
+        conflicts_with = "events_runner",
+        conflicts_with = "event_webhook_ingest_file",
+        help = "Preview which events would execute now without mutating state or files"
+    )]
+    pub(crate) events_dry_run: bool,
+
+    #[arg(
+        long = "events-dry-run-json",
+        env = "TAU_EVENTS_DRY_RUN_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "events_dry_run",
+        help = "Emit --events-dry-run output as pretty JSON"
+    )]
+    pub(crate) events_dry_run_json: bool,
+
+    #[arg(
         long = "events-template-write",
         env = "TAU_EVENTS_TEMPLATE_WRITE",
         value_name = "PATH",
         conflicts_with = "events_inspect",
         conflicts_with = "events_validate",
         conflicts_with = "events_simulate",
+        conflicts_with = "events_dry_run",
         conflicts_with = "events_runner",
         conflicts_with = "event_webhook_ingest_file",
         help = "Write a schedule-specific event template JSON file and exit"

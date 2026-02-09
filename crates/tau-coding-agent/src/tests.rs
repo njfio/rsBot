@@ -414,6 +414,8 @@ fn test_cli() -> Cli {
         events_validate_json: false,
         events_simulate: false,
         events_simulate_json: false,
+        events_dry_run: false,
+        events_dry_run_json: false,
         events_simulate_horizon_seconds: 3_600,
         events_template_write: None,
         events_template_schedule: CliEventTemplateSchedule::Immediate,
@@ -14978,6 +14980,60 @@ fn regression_execute_startup_preflight_events_simulate_reports_invalid_entries(
     .expect("write invalid event");
 
     let handled = execute_startup_preflight(&cli).expect("simulate preflight should still handle");
+    assert!(handled);
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_events_dry_run_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.events_dry_run = true;
+    cli.events_dry_run_json = true;
+    cli.events_queue_limit = 4;
+
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(
+        cli.events_dir.join("dry-run.json"),
+        r#"{
+  "id": "dry-run-now",
+  "channel": "slack/C123",
+  "prompt": "dry run me",
+  "schedule": {"type":"immediate"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write dry-run event");
+
+    let handled = execute_startup_preflight(&cli).expect("events dry-run preflight");
+    assert!(handled);
+    assert!(cli.events_dir.join("dry-run.json").exists());
+    assert!(!cli.events_state_path.exists());
+}
+
+#[test]
+fn regression_execute_startup_preflight_events_dry_run_reports_invalid_entries() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.events_dry_run = true;
+
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(
+        cli.events_dir.join("dry-run-invalid.json"),
+        r#"{
+  "id": "dry-run-invalid",
+  "channel": "slack",
+  "prompt": "bad",
+  "schedule": {"type":"immediate"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write invalid dry-run event");
+
+    let handled = execute_startup_preflight(&cli).expect("dry-run preflight should still handle");
     assert!(handled);
 }
 

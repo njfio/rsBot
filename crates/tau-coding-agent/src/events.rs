@@ -202,6 +202,14 @@ struct EventsSimulateConfig {
     stale_immediate_max_age_seconds: u64,
 }
 
+#[derive(Debug, Clone)]
+struct EventsDryRunConfig {
+    events_dir: PathBuf,
+    state_path: PathBuf,
+    queue_limit: usize,
+    stale_immediate_max_age_seconds: u64,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct EventsSimulateRow {
     pub path: String,
@@ -229,6 +237,35 @@ pub(crate) struct EventsSimulateReport {
     pub within_horizon_rows: usize,
     pub rows: Vec<EventsSimulateRow>,
     pub diagnostics: Vec<EventsValidateDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct EventsDryRunRow {
+    pub path: String,
+    pub event_id: Option<String>,
+    pub channel: Option<String>,
+    pub schedule: Option<String>,
+    pub enabled: Option<bool>,
+    pub decision: String,
+    pub reason_code: String,
+    pub queue_position: Option<usize>,
+    pub last_run_unix_ms: Option<u64>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct EventsDryRunReport {
+    pub events_dir: String,
+    pub state_path: String,
+    pub now_unix_ms: u64,
+    pub queue_limit: usize,
+    pub total_files: usize,
+    pub evaluated_rows: usize,
+    pub execute_rows: usize,
+    pub skipped_rows: usize,
+    pub error_rows: usize,
+    pub malformed_files: usize,
+    pub rows: Vec<EventsDryRunRow>,
 }
 
 pub(crate) fn execute_events_inspect_command(cli: &Cli) -> Result<()> {
@@ -394,6 +431,29 @@ pub(crate) fn execute_events_simulate_command(cli: &Cli) -> Result<()> {
         );
     } else {
         println!("{}", render_events_simulate_report(&report));
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_events_dry_run_command(cli: &Cli) -> Result<()> {
+    let report = dry_run_events(
+        &EventsDryRunConfig {
+            events_dir: cli.events_dir.clone(),
+            state_path: cli.events_state_path.clone(),
+            queue_limit: cli.events_queue_limit.max(1),
+            stale_immediate_max_age_seconds: cli.events_stale_immediate_max_age_seconds,
+        },
+        current_unix_timestamp_ms(),
+    )?;
+
+    if cli.events_dry_run_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("failed to render events dry run json")?
+        );
+    } else {
+        println!("{}", render_events_dry_run_report(&report));
     }
     Ok(())
 }
@@ -1324,6 +1384,236 @@ fn render_events_simulate_report(report: &EventsSimulateReport) -> String {
     lines.join("\n")
 }
 
+fn dry_run_events(config: &EventsDryRunConfig, now_unix_ms: u64) -> Result<EventsDryRunReport> {
+    let state = load_runner_state(&config.state_path)?;
+    let event_paths = collect_event_definition_paths(&config.events_dir)?;
+    let total_files = event_paths.len();
+    let queue_limit = config.queue_limit.max(1);
+    let mut rows = Vec::new();
+    let mut malformed_files = 0usize;
+    let mut candidates = Vec::new();
+
+    for path in event_paths {
+        let path_text = path.display().to_string();
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(error) => {
+                malformed_files = malformed_files.saturating_add(1);
+                rows.push(EventsDryRunRow {
+                    path: path_text,
+                    event_id: None,
+                    channel: None,
+                    schedule: None,
+                    enabled: None,
+                    decision: "error".to_string(),
+                    reason_code: "read_error".to_string(),
+                    queue_position: None,
+                    last_run_unix_ms: None,
+                    message: Some(sanitize_error_message(&error.to_string())),
+                });
+                continue;
+            }
+        };
+        let definition = match serde_json::from_str::<EventDefinition>(&raw) {
+            Ok(value) => value,
+            Err(error) => {
+                malformed_files = malformed_files.saturating_add(1);
+                rows.push(EventsDryRunRow {
+                    path: path_text,
+                    event_id: None,
+                    channel: None,
+                    schedule: None,
+                    enabled: None,
+                    decision: "error".to_string(),
+                    reason_code: "json_parse".to_string(),
+                    queue_position: None,
+                    last_run_unix_ms: None,
+                    message: Some(sanitize_error_message(&error.to_string())),
+                });
+                continue;
+            }
+        };
+        let schedule = schedule_name(&definition.schedule).to_string();
+        if let Err(error) = ChannelStore::parse_channel_ref(&definition.channel) {
+            rows.push(EventsDryRunRow {
+                path: path_text,
+                event_id: Some(definition.id),
+                channel: Some(definition.channel),
+                schedule: Some(schedule),
+                enabled: Some(definition.enabled),
+                decision: "error".to_string(),
+                reason_code: "channel_ref_invalid".to_string(),
+                queue_position: None,
+                last_run_unix_ms: None,
+                message: Some(sanitize_error_message(&error.to_string())),
+            });
+            continue;
+        }
+        candidates.push((path, definition));
+    }
+
+    candidates.sort_by(|left, right| {
+        left.1
+            .id
+            .cmp(&right.1.id)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let mut queued = 0usize;
+    for (path, definition) in candidates {
+        let schedule = schedule_name(&definition.schedule).to_string();
+        let path_text = path.display().to_string();
+        let last_run_unix_ms = state.periodic_last_run_unix_ms.get(&definition.id).copied();
+
+        if queued >= queue_limit {
+            rows.push(EventsDryRunRow {
+                path: path_text,
+                event_id: Some(definition.id),
+                channel: Some(definition.channel),
+                schedule: Some(schedule),
+                enabled: Some(definition.enabled),
+                decision: "skip".to_string(),
+                reason_code: "queue_limit_reached".to_string(),
+                queue_position: None,
+                last_run_unix_ms,
+                message: None,
+            });
+            continue;
+        }
+
+        match due_decision(
+            &definition,
+            &state,
+            now_unix_ms,
+            config.stale_immediate_max_age_seconds,
+        ) {
+            Ok(DueDecision::Run) => {
+                queued = queued.saturating_add(1);
+                rows.push(EventsDryRunRow {
+                    path: path_text,
+                    event_id: Some(definition.id),
+                    channel: Some(definition.channel),
+                    schedule: Some(schedule),
+                    enabled: Some(definition.enabled),
+                    decision: "execute".to_string(),
+                    reason_code: "due_now".to_string(),
+                    queue_position: Some(queued),
+                    last_run_unix_ms,
+                    message: None,
+                });
+            }
+            Ok(DueDecision::NotDue) => {
+                rows.push(EventsDryRunRow {
+                    path: path_text,
+                    event_id: Some(definition.id),
+                    channel: Some(definition.channel),
+                    schedule: Some(schedule),
+                    enabled: Some(definition.enabled),
+                    decision: "skip".to_string(),
+                    reason_code: "not_due".to_string(),
+                    queue_position: None,
+                    last_run_unix_ms,
+                    message: None,
+                });
+            }
+            Ok(DueDecision::SkipStaleRemove) => {
+                rows.push(EventsDryRunRow {
+                    path: path_text,
+                    event_id: Some(definition.id),
+                    channel: Some(definition.channel),
+                    schedule: Some(schedule),
+                    enabled: Some(definition.enabled),
+                    decision: "skip".to_string(),
+                    reason_code: "stale_immediate".to_string(),
+                    queue_position: None,
+                    last_run_unix_ms,
+                    message: None,
+                });
+            }
+            Err(error) => {
+                rows.push(EventsDryRunRow {
+                    path: path_text,
+                    event_id: Some(definition.id),
+                    channel: Some(definition.channel),
+                    schedule: Some(schedule),
+                    enabled: Some(definition.enabled),
+                    decision: "error".to_string(),
+                    reason_code: "schedule_invalid".to_string(),
+                    queue_position: None,
+                    last_run_unix_ms,
+                    message: Some(sanitize_error_message(&error.to_string())),
+                });
+            }
+        }
+    }
+
+    rows.sort_by(|left, right| {
+        left.event_id
+            .as_deref()
+            .unwrap_or("")
+            .cmp(right.event_id.as_deref().unwrap_or(""))
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.reason_code.cmp(&right.reason_code))
+    });
+    let execute_rows = rows.iter().filter(|row| row.decision == "execute").count();
+    let skipped_rows = rows.iter().filter(|row| row.decision == "skip").count();
+    let error_rows = rows.iter().filter(|row| row.decision == "error").count();
+
+    Ok(EventsDryRunReport {
+        events_dir: config.events_dir.display().to_string(),
+        state_path: config.state_path.display().to_string(),
+        now_unix_ms,
+        queue_limit,
+        total_files,
+        evaluated_rows: rows.len(),
+        execute_rows,
+        skipped_rows,
+        error_rows,
+        malformed_files,
+        rows,
+    })
+}
+
+fn render_events_dry_run_report(report: &EventsDryRunReport) -> String {
+    let mut lines = vec![format!(
+        "events dry run: events_dir={} state_path={} now_unix_ms={} queue_limit={} total_files={} evaluated_rows={} execute_rows={} skipped_rows={} error_rows={} malformed_files={}",
+        report.events_dir,
+        report.state_path,
+        report.now_unix_ms,
+        report.queue_limit,
+        report.total_files,
+        report.evaluated_rows,
+        report.execute_rows,
+        report.skipped_rows,
+        report.error_rows,
+        report.malformed_files,
+    )];
+
+    for row in &report.rows {
+        lines.push(format!(
+            "events dry run row: path={} event_id={} schedule={} enabled={} decision={} reason_code={} queue_position={} last_run_unix_ms={} channel={} message={}",
+            row.path,
+            row.event_id.as_deref().unwrap_or("none"),
+            row.schedule.as_deref().unwrap_or("none"),
+            row.enabled
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.decision,
+            row.reason_code,
+            row.queue_position
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.last_run_unix_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.channel.as_deref().unwrap_or("none"),
+            row.message.as_deref().unwrap_or("none"),
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn due_decision(
     event: &EventDefinition,
     state: &EventRunnerState,
@@ -1543,13 +1833,14 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        due_decision, execute_events_template_write_command, ingest_webhook_immediate_event,
-        inspect_events, load_event_records, next_periodic_due_unix_ms,
-        render_events_inspect_report, render_events_simulate_report, render_events_validate_report,
-        simulate_events, validate_events_definitions, DueDecision, EventDefinition,
-        EventRunnerState, EventSchedule, EventSchedulerConfig, EventSchedulerRuntime,
-        EventWebhookIngestConfig, EventsInspectConfig, EventsSimulateConfig, EventsValidateConfig,
-        EventsValidateReport, WebhookSignatureAlgorithm,
+        dry_run_events, due_decision, execute_events_template_write_command,
+        ingest_webhook_immediate_event, inspect_events, load_event_records,
+        next_periodic_due_unix_ms, render_events_dry_run_report, render_events_inspect_report,
+        render_events_simulate_report, render_events_validate_report, simulate_events,
+        validate_events_definitions, DueDecision, EventDefinition, EventRunnerState, EventSchedule,
+        EventSchedulerConfig, EventSchedulerRuntime, EventWebhookIngestConfig, EventsDryRunConfig,
+        EventsInspectConfig, EventsSimulateConfig, EventsValidateConfig, EventsValidateReport,
+        WebhookSignatureAlgorithm,
     };
     use crate::{tools::ToolPolicy, Cli, CliEventTemplateSchedule, RenderOptions};
 
@@ -2361,6 +2652,225 @@ mod tests {
             .diagnostics
             .iter()
             .any(|item| item.reason_code == "json_parse"));
+    }
+
+    #[test]
+    fn unit_dry_run_events_applies_queue_limit_and_decisions() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+        let now = 1_700_000_600_000_u64;
+
+        write_event(
+            &events_dir.join("disabled.json"),
+            &EventDefinition {
+                id: "a-disabled".to_string(),
+                channel: "slack/C1".to_string(),
+                prompt: "disabled".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: false,
+                created_unix_ms: Some(now.saturating_sub(100)),
+            },
+        );
+        write_event(
+            &events_dir.join("due-a.json"),
+            &EventDefinition {
+                id: "b-due".to_string(),
+                channel: "slack/C2".to_string(),
+                prompt: "due".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(100)),
+            },
+        );
+        write_event(
+            &events_dir.join("due-b.json"),
+            &EventDefinition {
+                id: "c-due".to_string(),
+                channel: "slack/C3".to_string(),
+                prompt: "due-too".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(100)),
+            },
+        );
+
+        let report = dry_run_events(
+            &EventsDryRunConfig {
+                events_dir,
+                state_path: temp.path().join("state.json"),
+                queue_limit: 1,
+                stale_immediate_max_age_seconds: 86_400,
+            },
+            now,
+        )
+        .expect("dry run report");
+
+        assert_eq!(report.total_files, 3);
+        assert_eq!(report.evaluated_rows, 3);
+        assert_eq!(report.execute_rows, 1);
+        assert_eq!(report.skipped_rows, 2);
+        assert_eq!(report.error_rows, 0);
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.reason_code == "not_due" && row.decision == "skip"));
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.reason_code == "due_now" && row.decision == "execute"));
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.reason_code == "queue_limit_reached" && row.decision == "skip"));
+        assert_eq!(
+            report
+                .rows
+                .iter()
+                .find(|row| row.reason_code == "due_now")
+                .and_then(|row| row.queue_position),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn functional_render_events_dry_run_report_contains_summary_and_rows() {
+        let report = super::EventsDryRunReport {
+            events_dir: "/tmp/events".to_string(),
+            state_path: "/tmp/state.json".to_string(),
+            now_unix_ms: 123,
+            queue_limit: 2,
+            total_files: 1,
+            evaluated_rows: 1,
+            execute_rows: 1,
+            skipped_rows: 0,
+            error_rows: 0,
+            malformed_files: 0,
+            rows: vec![super::EventsDryRunRow {
+                path: "/tmp/events/a.json".to_string(),
+                event_id: Some("evt-1".to_string()),
+                channel: Some("slack/C1".to_string()),
+                schedule: Some("immediate".to_string()),
+                enabled: Some(true),
+                decision: "execute".to_string(),
+                reason_code: "due_now".to_string(),
+                queue_position: Some(1),
+                last_run_unix_ms: None,
+                message: None,
+            }],
+        };
+
+        let rendered = render_events_dry_run_report(&report);
+        assert!(rendered.contains("events dry run:"));
+        assert!(rendered.contains("queue_limit=2"));
+        assert!(rendered.contains("events dry run row:"));
+        assert!(rendered.contains("decision=execute"));
+    }
+
+    #[test]
+    fn integration_dry_run_events_is_read_only_for_event_files_and_state() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        let state_path = temp.path().join("state.json");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+        let now = 1_700_000_700_000_u64;
+
+        let stale_path = events_dir.join("stale.json");
+        write_event(
+            &stale_path,
+            &EventDefinition {
+                id: "stale-immediate".to_string(),
+                channel: "slack/C1".to_string(),
+                prompt: "stale".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(3_600_000)),
+            },
+        );
+        let stale_before = std::fs::read_to_string(&stale_path).expect("read stale before");
+
+        let report = dry_run_events(
+            &EventsDryRunConfig {
+                events_dir,
+                state_path: state_path.clone(),
+                queue_limit: 8,
+                stale_immediate_max_age_seconds: 60,
+            },
+            now,
+        )
+        .expect("dry run report");
+
+        assert!(stale_path.exists());
+        let stale_after = std::fs::read_to_string(&stale_path).expect("read stale after");
+        assert_eq!(stale_before, stale_after);
+        assert!(!state_path.exists());
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.reason_code == "stale_immediate"));
+    }
+
+    #[test]
+    fn regression_dry_run_events_reports_malformed_and_invalid_entries() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+        let now = 1_700_000_800_000_u64;
+
+        write_event(
+            &events_dir.join("invalid-channel.json"),
+            &EventDefinition {
+                id: "invalid-channel".to_string(),
+                channel: "slack".to_string(),
+                prompt: "bad channel".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(100)),
+            },
+        );
+        write_event(
+            &events_dir.join("invalid-schedule.json"),
+            &EventDefinition {
+                id: "invalid-schedule".to_string(),
+                channel: "slack/C2".to_string(),
+                prompt: "bad schedule".to_string(),
+                schedule: EventSchedule::Periodic {
+                    cron: "not-a-cron".to_string(),
+                    timezone: "UTC".to_string(),
+                },
+                enabled: true,
+                created_unix_ms: Some(now.saturating_sub(100)),
+            },
+        );
+        std::fs::write(events_dir.join("broken.json"), "{bad-json").expect("write malformed");
+
+        let report = dry_run_events(
+            &EventsDryRunConfig {
+                events_dir,
+                state_path: temp.path().join("state.json"),
+                queue_limit: 8,
+                stale_immediate_max_age_seconds: 86_400,
+            },
+            now,
+        )
+        .expect("dry run report");
+
+        assert_eq!(report.total_files, 3);
+        assert_eq!(report.evaluated_rows, 3);
+        assert_eq!(report.error_rows, 3);
+        assert_eq!(report.malformed_files, 1);
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.reason_code == "json_parse" && row.decision == "error"));
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.reason_code == "channel_ref_invalid" && row.decision == "error"));
+        assert!(report
+            .rows
+            .iter()
+            .any(|row| row.reason_code == "schedule_invalid" && row.decision == "error"));
     }
 
     #[tokio::test]

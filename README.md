@@ -717,6 +717,17 @@ cargo run -p tau-coding-agent -- \
   --events-simulate-json
 ```
 
+Preview event execution selection without mutating files or state:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --events-dir .tau/events \
+  --events-state-path .tau/events/state.json \
+  --events-queue-limit 64 \
+  --events-dry-run \
+  --events-dry-run-json
+```
+
 Queue a webhook-triggered immediate event from a payload file (debounced):
 
 ```bash
