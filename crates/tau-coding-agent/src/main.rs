@@ -63,6 +63,7 @@ mod tool_policy_config;
 mod tools;
 #[cfg(test)]
 mod transport_conformance;
+mod transport_health;
 mod trust_roots;
 
 use std::{
@@ -334,6 +335,7 @@ pub(crate) use crate::time_utils::{
 pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
 pub(crate) use crate::tool_policy_config::{build_tool_policy, tool_policy_to_json};
 use crate::tools::{tool_policy_preset_name, ToolPolicy};
+pub(crate) use crate::transport_health::TransportHealthSnapshot;
 pub(crate) use crate::trust_roots::{
     apply_trust_root_mutation_specs, apply_trust_root_mutations, load_trust_root_records,
     parse_trust_rotation_spec, parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,

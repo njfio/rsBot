@@ -363,6 +363,8 @@ fn test_cli() -> Cli {
         channel_store_root: PathBuf::from(".tau/channel-store"),
         channel_store_inspect: None,
         channel_store_repair: None,
+        transport_health_inspect: None,
+        transport_health_json: false,
         extension_exec_manifest: None,
         extension_exec_hook: None,
         extension_exec_payload_file: None,
