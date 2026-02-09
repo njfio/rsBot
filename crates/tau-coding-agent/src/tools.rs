@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentTool, ToolExecutionResult};
-use tau_ai::ToolDefinition;
+use tau_ai::{Message, ToolDefinition};
 use tokio::{process::Command, time::timeout};
 
 use crate::extension_manifest::{
@@ -44,6 +44,7 @@ const SESSION_LIST_DEFAULT_LIMIT: usize = 64;
 const SESSION_LIST_MAX_LIMIT: usize = 256;
 const SESSION_HISTORY_DEFAULT_LIMIT: usize = 40;
 const SESSION_HISTORY_MAX_LIMIT: usize = 200;
+const SESSION_SEND_MAX_MESSAGE_CHARS: usize = 8_000;
 const SESSION_SCAN_MAX_DEPTH: usize = 8;
 const SESSION_SCAN_MAX_DIRECTORIES: usize = 2_000;
 
@@ -230,6 +231,7 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(EditTool::new(policy.clone()));
     agent.register_tool(SessionsListTool::new(policy.clone()));
     agent.register_tool(SessionsHistoryTool::new(policy.clone()));
+    agent.register_tool(SessionsSendTool::new(policy.clone()));
     agent.register_tool(BashTool::new(policy));
 }
 
@@ -786,6 +788,137 @@ impl AgentTool for SessionsHistoryTool {
             "lineage_entries": lineage.len(),
             "returned": history_entries.len(),
             "history": history_entries,
+        }))
+    }
+}
+
+pub struct SessionsSendTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl SessionsSendTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for SessionsSendTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "sessions_send".to_string(),
+            description:
+                "Append a user handoff message into a target session store under allowed roots"
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to target session JSONL file"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": format!(
+                            "User handoff message (max {} characters)",
+                            SESSION_SEND_MAX_MESSAGE_CHARS
+                        )
+                    },
+                    "parent_id": {
+                        "type": "integer",
+                        "description": "Optional parent entry id. Defaults to current head."
+                    }
+                },
+                "required": ["path", "message"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let path = match required_string(&arguments, "path") {
+            Ok(path) => path,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        let message = match required_string(&arguments, "message") {
+            Ok(message) => message,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        let parent_id = match optional_u64(&arguments, "parent_id") {
+            Ok(parent_id) => parent_id,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        if message.trim().is_empty() {
+            return ToolExecutionResult::error(json!({
+                "path": path,
+                "error": "message must not be empty",
+            }));
+        }
+        if message.chars().count() > SESSION_SEND_MAX_MESSAGE_CHARS {
+            return ToolExecutionResult::error(json!({
+                "path": path,
+                "error": format!(
+                    "message exceeds max length of {} characters",
+                    SESSION_SEND_MAX_MESSAGE_CHARS
+                ),
+            }));
+        }
+
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Write) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": path,
+                    "error": error,
+                }))
+            }
+        };
+        if let Err(error) = validate_file_target(
+            &resolved,
+            PathMode::Write,
+            self.policy.enforce_regular_files,
+        ) {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
+
+        let mut store = match SessionStore::load(&resolved) {
+            Ok(store) => store,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": resolved.display().to_string(),
+                    "error": format!("failed to load session: {error}"),
+                }))
+            }
+        };
+
+        let before_entries = store.entries().len();
+        let previous_head_id = store.head_id();
+        let selected_parent_id = parent_id.or(previous_head_id);
+        let handoff_message = Message::user(message.clone());
+        let new_head_id = match store.append_messages(selected_parent_id, &[handoff_message]) {
+            Ok(head_id) => head_id,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": resolved.display().to_string(),
+                    "parent_id": selected_parent_id,
+                    "error": format!("failed to append handoff message: {error}"),
+                }))
+            }
+        };
+        let after_entries = store.entries().len();
+
+        ToolExecutionResult::ok(json!({
+            "path": resolved.display().to_string(),
+            "parent_id": selected_parent_id,
+            "previous_head_id": previous_head_id,
+            "new_head_id": new_head_id,
+            "before_entries": before_entries,
+            "after_entries": after_entries,
+            "appended_entries": after_entries.saturating_sub(before_entries),
+            "message_preview": session_message_preview(&Message::user(message)),
         }))
     }
 }
@@ -2004,7 +2137,7 @@ mod tests {
         command_available, evaluate_tool_approval_gate, evaluate_tool_rbac_gate,
         is_command_allowed, is_session_candidate_path, leading_executable, os_sandbox_mode_name,
         redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile,
-        BashTool, EditTool, OsSandboxMode, SessionsHistoryTool, SessionsListTool,
+        BashTool, EditTool, OsSandboxMode, SessionsHistoryTool, SessionsListTool, SessionsSendTool,
         ToolExecutionResult, ToolPolicy, ToolPolicyPreset, WriteTool,
     };
     use crate::session::SessionStore;
@@ -2224,6 +2357,117 @@ mod tests {
             .content
             .to_string()
             .contains("failed to load session"));
+    }
+
+    #[tokio::test]
+    async fn unit_sessions_send_tool_rejects_empty_message() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let tool = SessionsSendTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": session_path,
+                "message": "   ",
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .to_string()
+            .contains("message must not be empty"));
+    }
+
+    #[tokio::test]
+    async fn functional_sessions_send_tool_appends_and_reports_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load session");
+        store
+            .append_messages(None, &[Message::user("existing")])
+            .expect("append existing");
+        let previous_head_id = store.head_id();
+
+        let tool = SessionsSendTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": session_path,
+                "message": "handoff: finish report",
+            }))
+            .await;
+        assert!(!result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("previous_head_id")
+                .and_then(serde_json::Value::as_u64),
+            previous_head_id
+        );
+        assert_eq!(
+            result
+                .content
+                .get("appended_entries")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert!(result
+            .content
+            .get("new_head_id")
+            .and_then(serde_json::Value::as_u64)
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn integration_sessions_send_tool_persists_updated_session_state() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load session");
+        store
+            .append_messages(None, &[Message::system("root")])
+            .expect("append root");
+
+        let tool = SessionsSendTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": session_path,
+                "message": "delegate this follow-up",
+            }))
+            .await;
+        assert!(!result.is_error);
+
+        let persisted = SessionStore::load(&session_path).expect("reload session");
+        assert_eq!(persisted.entries().len(), 2);
+        assert_eq!(
+            crate::session_commands::session_message_role(&persisted.entries()[1].message),
+            "user"
+        );
+        assert_eq!(
+            crate::session_commands::session_message_preview(&persisted.entries()[1].message),
+            "delegate this follow-up"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_sessions_send_tool_rejects_unknown_parent_id() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load session");
+        store
+            .append_messages(None, &[Message::user("seed")])
+            .expect("append seed");
+
+        let tool = SessionsSendTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": session_path,
+                "message": "handoff",
+                "parent_id": 999999u64
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .to_string()
+            .contains("failed to append handoff message"));
     }
 
     #[tokio::test]
