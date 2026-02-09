@@ -728,6 +728,16 @@ cargo run -p tau-coding-agent -- \
   --events-dry-run-json
 ```
 
+Fail fast in CI when dry-run detects malformed or invalid event definitions:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --events-dir .tau/events \
+  --events-state-path .tau/events/state.json \
+  --events-dry-run \
+  --events-dry-run-strict
+```
+
 Queue a webhook-triggered immediate event from a payload file (debounced):
 
 ```bash

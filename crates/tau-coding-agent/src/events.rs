@@ -455,6 +455,7 @@ pub(crate) fn execute_events_dry_run_command(cli: &Cli) -> Result<()> {
     } else {
         println!("{}", render_events_dry_run_report(&report));
     }
+    enforce_events_dry_run_strict_mode(&report, cli.events_dry_run_strict)?;
     Ok(())
 }
 
@@ -1614,6 +1615,20 @@ fn render_events_dry_run_report(report: &EventsDryRunReport) -> String {
     lines.join("\n")
 }
 
+fn enforce_events_dry_run_strict_mode(report: &EventsDryRunReport, strict: bool) -> Result<()> {
+    if !strict {
+        return Ok(());
+    }
+    if report.error_rows > 0 {
+        bail!(
+            "events dry run strict failed: error_rows={} malformed_files={}",
+            report.error_rows,
+            report.malformed_files
+        );
+    }
+    Ok(())
+}
+
 fn due_decision(
     event: &EventDefinition,
     state: &EventRunnerState,
@@ -1833,14 +1848,14 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        dry_run_events, due_decision, execute_events_template_write_command,
-        ingest_webhook_immediate_event, inspect_events, load_event_records,
-        next_periodic_due_unix_ms, render_events_dry_run_report, render_events_inspect_report,
-        render_events_simulate_report, render_events_validate_report, simulate_events,
-        validate_events_definitions, DueDecision, EventDefinition, EventRunnerState, EventSchedule,
-        EventSchedulerConfig, EventSchedulerRuntime, EventWebhookIngestConfig, EventsDryRunConfig,
-        EventsInspectConfig, EventsSimulateConfig, EventsValidateConfig, EventsValidateReport,
-        WebhookSignatureAlgorithm,
+        dry_run_events, due_decision, enforce_events_dry_run_strict_mode,
+        execute_events_template_write_command, ingest_webhook_immediate_event, inspect_events,
+        load_event_records, next_periodic_due_unix_ms, render_events_dry_run_report,
+        render_events_inspect_report, render_events_simulate_report, render_events_validate_report,
+        simulate_events, validate_events_definitions, DueDecision, EventDefinition,
+        EventRunnerState, EventSchedule, EventSchedulerConfig, EventSchedulerRuntime,
+        EventWebhookIngestConfig, EventsDryRunConfig, EventsInspectConfig, EventsSimulateConfig,
+        EventsValidateConfig, EventsValidateReport, WebhookSignatureAlgorithm,
     };
     use crate::{tools::ToolPolicy, Cli, CliEventTemplateSchedule, RenderOptions};
 
@@ -2765,6 +2780,32 @@ mod tests {
         assert!(rendered.contains("queue_limit=2"));
         assert!(rendered.contains("events dry run row:"));
         assert!(rendered.contains("decision=execute"));
+    }
+
+    #[test]
+    fn unit_enforce_events_dry_run_strict_mode_rejects_error_rows() {
+        let clean = super::EventsDryRunReport {
+            events_dir: "/tmp/events".to_string(),
+            state_path: "/tmp/state.json".to_string(),
+            now_unix_ms: 123,
+            queue_limit: 2,
+            total_files: 0,
+            evaluated_rows: 0,
+            execute_rows: 0,
+            skipped_rows: 0,
+            error_rows: 0,
+            malformed_files: 0,
+            rows: Vec::new(),
+        };
+        enforce_events_dry_run_strict_mode(&clean, true).expect("strict clean should pass");
+        enforce_events_dry_run_strict_mode(&clean, false).expect("non-strict clean should pass");
+
+        let mut failing = clean.clone();
+        failing.error_rows = 2;
+        failing.malformed_files = 1;
+        let error = enforce_events_dry_run_strict_mode(&failing, true)
+            .expect_err("strict failing report should error");
+        assert!(error.to_string().contains("events dry run strict failed"));
     }
 
     #[test]

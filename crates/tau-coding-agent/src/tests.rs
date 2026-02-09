@@ -416,6 +416,7 @@ fn test_cli() -> Cli {
         events_simulate_json: false,
         events_dry_run: false,
         events_dry_run_json: false,
+        events_dry_run_strict: false,
         events_simulate_horizon_seconds: 3_600,
         events_template_write: None,
         events_template_schedule: CliEventTemplateSchedule::Immediate,
@@ -14990,6 +14991,7 @@ fn functional_execute_startup_preflight_runs_events_dry_run_mode() {
     set_workspace_tau_paths(&mut cli, temp.path());
     cli.events_dry_run = true;
     cli.events_dry_run_json = true;
+    cli.events_dry_run_strict = true;
     cli.events_queue_limit = 4;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
@@ -15035,6 +15037,32 @@ fn regression_execute_startup_preflight_events_dry_run_reports_invalid_entries()
 
     let handled = execute_startup_preflight(&cli).expect("dry-run preflight should still handle");
     assert!(handled);
+}
+
+#[test]
+fn integration_execute_startup_preflight_events_dry_run_strict_fails_on_invalid_entries() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.events_dry_run = true;
+    cli.events_dry_run_strict = true;
+
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(
+        cli.events_dir.join("dry-run-invalid-strict.json"),
+        r#"{
+  "id": "dry-run-invalid-strict",
+  "channel": "slack",
+  "prompt": "bad",
+  "schedule": {"type":"immediate"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write invalid strict dry-run event");
+
+    let error = execute_startup_preflight(&cli).expect_err("strict dry-run should fail");
+    assert!(error.to_string().contains("events dry run strict failed"));
 }
 
 #[test]

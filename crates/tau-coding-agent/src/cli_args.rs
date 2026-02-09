@@ -1342,6 +1342,19 @@ pub(crate) struct Cli {
     pub(crate) events_dry_run_json: bool,
 
     #[arg(
+        long = "events-dry-run-strict",
+        env = "TAU_EVENTS_DRY_RUN_STRICT",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "events_dry_run",
+        help = "Exit non-zero when --events-dry-run reports malformed or invalid definitions"
+    )]
+    pub(crate) events_dry_run_strict: bool,
+
+    #[arg(
         long = "events-template-write",
         env = "TAU_EVENTS_TEMPLATE_WRITE",
         value_name = "PATH",
