@@ -1,0 +1,5 @@
+{
+  "event": "issue-opened",
+  "issue_number": 42,
+  "title": "Demo issue payload"
+}

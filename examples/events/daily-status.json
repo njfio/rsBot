@@ -1,0 +1,12 @@
+{
+  "id": "daily-status",
+  "channel": "github/owner/repo#42",
+  "prompt": "Post a short daily status covering progress, risks, and blockers.",
+  "schedule": {
+    "type": "periodic",
+    "cron": "0 0/15 * * * * *",
+    "timezone": "UTC"
+  },
+  "enabled": true,
+  "created_unix_ms": 1700000000000
+}

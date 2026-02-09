@@ -428,14 +428,14 @@ Validate an extension manifest JSON and exit:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --extension-validate .tau/extensions/issue-assistant/extension.json
+  --extension-validate ./examples/extensions/issue-assistant/extension.json
 ```
 
 Inspect extension manifest metadata and declared inventory:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --extension-show .tau/extensions/issue-assistant/extension.json
+  --extension-show ./examples/extensions/issue-assistant/extension.json
 ```
 
 List discovered extension manifests from an extension root (including invalid entries):
@@ -443,16 +443,16 @@ List discovered extension manifests from an extension root (including invalid en
 ```bash
 cargo run -p tau-coding-agent -- \
   --extension-list \
-  --extension-list-root .tau/extensions
+  --extension-list-root ./examples/extensions
 ```
 
 Execute one declared process-runtime extension hook with a JSON payload:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --extension-exec-manifest .tau/extensions/issue-assistant/extension.json \
+  --extension-exec-manifest ./examples/extensions/issue-assistant/extension.json \
   --extension-exec-hook run-start \
-  --extension-exec-payload-file .tau/extensions/issue-assistant/payload.json
+  --extension-exec-payload-file ./examples/extensions/issue-assistant/payload.json
 ```
 
 Enable runtime lifecycle hook dispatch (`run-start`, `run-end`, `pre-tool-call`, `post-tool-call`) for prompt turns:
@@ -463,7 +463,7 @@ cargo run -p tau-coding-agent -- \
   --openai-api-key "$OPENAI_API_KEY" \
   --prompt "Summarize open issues" \
   --extension-runtime-hooks \
-  --extension-runtime-root .tau/extensions
+  --extension-runtime-root ./examples/extensions
 ```
 
 For `message-transform` hooks, extension responses can return a replacement prompt via `{"prompt":"..."}`.
@@ -512,14 +512,14 @@ Validate a reusable package manifest JSON and exit:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --package-validate .tau/packages/starter/package.json
+  --package-validate ./examples/starter/package.json
 ```
 
 Inspect package manifest metadata and component inventory:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --package-show .tau/packages/starter/package.json
+  --package-show ./examples/starter/package.json
 ```
 
 Install a local package manifest bundle into a versioned package root:
@@ -678,8 +678,8 @@ Inspect scheduled event due/queue health without executing events:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --events-dir .tau/events \
-  --events-state-path .tau/events/state.json \
+  --events-dir ./examples/events \
+  --events-state-path ./examples/events-state.json \
   --events-inspect \
   --events-inspect-json
 ```
@@ -688,8 +688,8 @@ Validate scheduled event definitions and fail fast on invalid files:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --events-dir .tau/events \
-  --events-state-path .tau/events/state.json \
+  --events-dir ./examples/events \
+  --events-state-path ./examples/events-state.json \
   --events-validate \
   --events-validate-json
 ```
@@ -710,8 +710,8 @@ Simulate next-due schedule posture without executing events:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --events-dir .tau/events \
-  --events-state-path .tau/events/state.json \
+  --events-dir ./examples/events \
+  --events-state-path ./examples/events-state.json \
   --events-simulate \
   --events-simulate-horizon-seconds 3600 \
   --events-simulate-json
@@ -721,8 +721,8 @@ Preview event execution selection without mutating files or state:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --events-dir .tau/events \
-  --events-state-path .tau/events/state.json \
+  --events-dir ./examples/events \
+  --events-state-path ./examples/events-state.json \
   --events-queue-limit 64 \
   --events-dry-run \
   --events-dry-run-json
@@ -732,8 +732,8 @@ Fail fast in CI when dry-run detects malformed or invalid event definitions:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --events-dir .tau/events \
-  --events-state-path .tau/events/state.json \
+  --events-dir ./examples/events \
+  --events-state-path ./examples/events-state.json \
   --events-dry-run \
   --events-dry-run-strict
 ```
@@ -742,8 +742,8 @@ Apply threshold governance (for example, fail when more than 10 events would exe
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --events-dir .tau/events \
-  --events-state-path .tau/events/state.json \
+  --events-dir ./examples/events \
+  --events-state-path ./examples/events-state.json \
   --events-dry-run \
   --events-dry-run-max-execute-rows 10 \
   --events-dry-run-max-error-rows 0

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "issue-assistant",
+  "version": "1.0.0",
+  "runtime": "process",
+  "entrypoint": "runtime.sh",
+  "hooks": [
+    "run-start",
+    "run-end",
+    "message-transform"
+  ],
+  "permissions": [
+    "run-commands"
+  ],
+  "timeout_ms": 5000
+}

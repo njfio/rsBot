@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "periodic_last_run_unix_ms": {},
+  "debounce_last_seen_unix_ms": {},
+  "signature_replay_last_seen_unix_ms": {}
+}
