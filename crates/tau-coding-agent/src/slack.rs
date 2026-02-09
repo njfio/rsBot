@@ -17,6 +17,10 @@ use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
+use crate::slack_helpers::{
+    is_retryable_slack_status, is_retryable_transport_error, parse_retry_after, retry_delay,
+    sanitize_for_path, truncate_for_error, truncate_for_slack,
+};
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
     evaluate_pairing_access, execute_canvas_command, pairing_policy_for_state_dir,
@@ -2353,65 +2357,6 @@ fn prompt_status_label(status: PromptRunStatus) -> &'static str {
         PromptRunStatus::Completed => "completed",
         PromptRunStatus::Cancelled => "cancelled",
         PromptRunStatus::TimedOut => "timed_out",
-    }
-}
-
-fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
-    headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-}
-
-fn retry_delay(base_delay_ms: u64, attempt: usize, retry_after_seconds: Option<u64>) -> Duration {
-    if let Some(retry_after_seconds) = retry_after_seconds {
-        return Duration::from_secs(retry_after_seconds);
-    }
-    let exponent = attempt.saturating_sub(1).min(6) as u32;
-    let scale = 2_u64.pow(exponent);
-    Duration::from_millis(base_delay_ms.max(1).saturating_mul(scale))
-}
-
-fn is_retryable_slack_status(status: u16) -> bool {
-    status == 429 || (500..600).contains(&status)
-}
-
-fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
-    error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
-}
-
-fn truncate_for_error(value: &str, max_chars: usize) -> String {
-    truncate_for_slack(value, max_chars)
-}
-
-fn truncate_for_slack(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let mut truncated = String::new();
-    for ch in value.chars().take(max_chars) {
-        truncated.push(ch);
-    }
-    truncated.push_str("...");
-    truncated
-}
-
-fn sanitize_for_path(raw: &str) -> String {
-    let sanitized = raw
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    let trimmed = sanitized.trim_matches('_');
-    if trimmed.is_empty() {
-        "channel".to_string()
-    } else {
-        trimmed.to_string()
     }
 }
 

@@ -49,6 +49,7 @@ mod session_runtime_helpers;
 mod skills;
 mod skills_commands;
 mod slack;
+mod slack_helpers;
 mod startup_config;
 mod startup_dispatch;
 mod startup_local_runtime;
