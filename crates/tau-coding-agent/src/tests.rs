@@ -2349,12 +2349,24 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert_eq!(openai_api["mode_supported"], true);
     assert_eq!(openai_api["available"], true);
     assert_eq!(openai_api["state"], "ready");
+    assert_eq!(openai_api["reason_code"], "ready");
+    assert_eq!(openai_api["backend_required"], false);
+    assert_eq!(openai_api["backend_health"], "not_required");
+    assert_eq!(openai_api["backend_reason_code"], "backend_not_required");
 
     let openai_oauth = row_for("openai", "oauth_token");
     assert_eq!(openai_oauth["mode_supported"], true);
     assert_eq!(openai_oauth["available"], true);
     assert_eq!(openai_oauth["state"], "ready");
     assert_eq!(openai_oauth["source"], "credential_store");
+    assert_eq!(openai_oauth["reason_code"], "ready");
+    assert_eq!(openai_oauth["expiry_state"], "expiring_soon");
+    assert_eq!(openai_oauth["backend_required"], true);
+    assert_eq!(openai_oauth["backend"], "codex_cli");
+    assert_eq!(openai_oauth["backend_health"], "ready");
+    assert_eq!(openai_oauth["backend_reason_code"], "backend_ready");
+    assert_eq!(openai_oauth["reauth_required"], false);
+    assert_eq!(openai_oauth["reauth_hint"], "none");
 
     let anthropic_oauth = row_for("anthropic", "oauth_token");
     assert_eq!(anthropic_oauth["mode_supported"], true);
@@ -2389,6 +2401,8 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert!(text_output.contains("state_counts=mode_mismatch:1,ready:8,unsupported_mode:3"));
     assert!(text_output.contains("state_counts_total=mode_mismatch:1,ready:8,unsupported_mode:3"));
     assert!(text_output.contains("auth matrix row: provider=openai mode=oauth_token"));
+    assert!(text_output.contains("backend_health=ready"));
+    assert!(text_output.contains("reason_code=ready"));
     assert!(!text_output.contains("oauth-access-secret"));
 }
 
@@ -3647,8 +3661,25 @@ fn unit_execute_auth_command_status_marks_expired_env_access_token_unavailable()
     assert_eq!(payload["entries"][0]["provider"], "openai");
     assert_eq!(payload["entries"][0]["mode"], "oauth_token");
     assert_eq!(payload["entries"][0]["state"], "expired_env_access_token");
+    assert_eq!(
+        payload["entries"][0]["reason_code"],
+        "expired_env_access_token"
+    );
     assert_eq!(payload["entries"][0]["available"], false);
     assert_eq!(payload["entries"][0]["source"], "OPENAI_ACCESS_TOKEN");
+    assert_eq!(payload["entries"][0]["expiry_state"], "expired");
+    assert_eq!(payload["entries"][0]["reauth_required"], true);
+    assert_eq!(payload["entries"][0]["backend_required"], true);
+    assert_eq!(payload["entries"][0]["backend"], "codex_cli");
+    assert_eq!(payload["entries"][0]["backend_health"], "ready");
+    assert_eq!(
+        payload["entries"][0]["backend_reason_code"],
+        "backend_ready"
+    );
+    assert!(payload["entries"][0]["reauth_hint"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("/auth login openai --mode oauth_token"));
     assert!(!output.contains("openai-expired-env-access"));
 
     restore_env_vars(snapshot);
@@ -5362,6 +5393,12 @@ fn regression_execute_auth_command_status_anthropic_oauth_reports_backend_disabl
     assert_eq!(entry["mode_supported"], true);
     assert_eq!(entry["available"], false);
     assert_eq!(entry["state"], "backend_disabled");
+    assert_eq!(entry["reason_code"], "backend_disabled");
+    assert_eq!(entry["backend_required"], true);
+    assert_eq!(entry["backend"], "claude_cli");
+    assert_eq!(entry["backend_health"], "disabled");
+    assert_eq!(entry["backend_reason_code"], "backend_disabled");
+    assert_eq!(entry["reauth_required"], false);
 }
 
 #[test]
@@ -5382,6 +5419,12 @@ fn regression_execute_auth_command_status_anthropic_oauth_reports_backend_unavai
     assert_eq!(entry["mode_supported"], true);
     assert_eq!(entry["available"], false);
     assert_eq!(entry["state"], "backend_unavailable");
+    assert_eq!(entry["reason_code"], "backend_unavailable");
+    assert_eq!(entry["backend_required"], true);
+    assert_eq!(entry["backend"], "claude_cli");
+    assert_eq!(entry["backend_health"], "unavailable");
+    assert_eq!(entry["backend_reason_code"], "backend_unavailable");
+    assert_eq!(entry["reauth_required"], false);
 }
 
 #[test]
@@ -5423,6 +5466,12 @@ fn regression_execute_auth_command_status_google_oauth_reports_backend_disabled(
     assert_eq!(entry["mode_supported"], true);
     assert_eq!(entry["available"], false);
     assert_eq!(entry["state"], "backend_disabled");
+    assert_eq!(entry["reason_code"], "backend_disabled");
+    assert_eq!(entry["backend_required"], true);
+    assert_eq!(entry["backend"], "gemini_cli");
+    assert_eq!(entry["backend_health"], "disabled");
+    assert_eq!(entry["backend_reason_code"], "backend_disabled");
+    assert_eq!(entry["reauth_required"], false);
 }
 
 #[test]
@@ -5443,6 +5492,12 @@ fn regression_execute_auth_command_status_google_oauth_reports_backend_unavailab
     assert_eq!(entry["mode_supported"], true);
     assert_eq!(entry["available"], false);
     assert_eq!(entry["state"], "backend_unavailable");
+    assert_eq!(entry["reason_code"], "backend_unavailable");
+    assert_eq!(entry["backend_required"], true);
+    assert_eq!(entry["backend"], "gemini_cli");
+    assert_eq!(entry["backend_health"], "unavailable");
+    assert_eq!(entry["backend_reason_code"], "backend_unavailable");
+    assert_eq!(entry["reauth_required"], false);
 }
 
 #[test]

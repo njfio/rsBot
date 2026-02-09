@@ -140,12 +140,29 @@ pub(crate) struct AuthStatusRow {
     available: bool,
     state: String,
     source: String,
+    reason_code: String,
     reason: String,
     expires_unix: Option<u64>,
     expires: Option<u64>,
+    expires_in_seconds: Option<i64>,
+    expiry_state: String,
     revoked: bool,
     refreshable: bool,
+    backend_required: bool,
+    backend: String,
+    backend_health: String,
+    backend_reason_code: String,
+    reauth_required: bool,
+    reauth_hint: String,
     next_action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthBackendProbe {
+    required: bool,
+    backend: String,
+    health: String,
+    reason_code: String,
 }
 
 const AUTH_MATRIX_PROVIDERS: [Provider; 3] =
@@ -1640,10 +1657,29 @@ pub(crate) fn auth_status_row_for_provider(
     store_error: Option<&str>,
 ) -> AuthStatusRow {
     let snapshot = provider_auth_snapshot_for_status(config, provider, store, store_error);
-    auth_status_row_from_snapshot(&snapshot)
+    let backend_probe = auth_backend_probe(config, provider, snapshot.method);
+    auth_status_row_from_snapshot(&snapshot, &backend_probe)
 }
 
-fn auth_status_row_from_snapshot(snapshot: &ProviderAuthSnapshot) -> AuthStatusRow {
+fn auth_status_row_from_snapshot(
+    snapshot: &ProviderAuthSnapshot,
+    backend_probe: &AuthBackendProbe,
+) -> AuthStatusRow {
+    let now_unix = current_unix_timestamp();
+    let expires_in_seconds = snapshot
+        .expires_unix
+        .map(|expires_unix| expires_unix as i64 - now_unix as i64);
+    let expiry_state = auth_expiry_state(snapshot, now_unix);
+    let reauth_required = auth_reauth_required(snapshot);
+    let reauth_hint = if reauth_required {
+        format!(
+            "run /auth login {} --mode {}",
+            snapshot.provider.as_str(),
+            snapshot.method.as_str()
+        )
+    } else {
+        "none".to_string()
+    };
     AuthStatusRow {
         provider: snapshot.provider.as_str().to_string(),
         mode: snapshot.method.as_str().to_string(),
@@ -1652,13 +1688,127 @@ fn auth_status_row_from_snapshot(snapshot: &ProviderAuthSnapshot) -> AuthStatusR
         available: snapshot.available,
         state: snapshot.state.clone(),
         source: snapshot.source.clone(),
+        reason_code: auth_reason_code(snapshot),
         reason: snapshot.reason.clone(),
         expires_unix: snapshot.expires_unix,
         expires: snapshot.expires_unix,
+        expires_in_seconds,
+        expiry_state,
         revoked: snapshot.revoked,
         refreshable: snapshot.refreshable,
+        backend_required: backend_probe.required,
+        backend: backend_probe.backend.clone(),
+        backend_health: backend_probe.health.clone(),
+        backend_reason_code: backend_probe.reason_code.clone(),
+        reauth_required,
+        reauth_hint,
         next_action: auth_next_action(snapshot),
     }
+}
+
+fn auth_backend_probe(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    method: ProviderAuthMethod,
+) -> AuthBackendProbe {
+    match (provider, method) {
+        (Provider::OpenAi, ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken) => {
+            auth_backend_probe_from_cli_state(
+                "codex_cli",
+                config.openai_codex_backend,
+                &config.openai_codex_cli,
+            )
+        }
+        (
+            Provider::Anthropic,
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
+        ) => auth_backend_probe_from_cli_state(
+            "claude_cli",
+            config.anthropic_claude_backend,
+            &config.anthropic_claude_cli,
+        ),
+        (Provider::Google, ProviderAuthMethod::OauthToken | ProviderAuthMethod::Adc) => {
+            auth_backend_probe_from_cli_state(
+                "gemini_cli",
+                config.google_gemini_backend,
+                &config.google_gemini_cli,
+            )
+        }
+        _ => AuthBackendProbe {
+            required: false,
+            backend: "none".to_string(),
+            health: "not_required".to_string(),
+            reason_code: "backend_not_required".to_string(),
+        },
+    }
+}
+
+fn auth_backend_probe_from_cli_state(
+    backend: &str,
+    enabled: bool,
+    executable: &str,
+) -> AuthBackendProbe {
+    if !enabled {
+        return AuthBackendProbe {
+            required: true,
+            backend: backend.to_string(),
+            health: "disabled".to_string(),
+            reason_code: "backend_disabled".to_string(),
+        };
+    }
+    if !is_executable_available(executable) {
+        return AuthBackendProbe {
+            required: true,
+            backend: backend.to_string(),
+            health: "unavailable".to_string(),
+            reason_code: "backend_unavailable".to_string(),
+        };
+    }
+    AuthBackendProbe {
+        required: true,
+        backend: backend.to_string(),
+        health: "ready".to_string(),
+        reason_code: "backend_ready".to_string(),
+    }
+}
+
+fn auth_reason_code(snapshot: &ProviderAuthSnapshot) -> String {
+    snapshot.state.clone()
+}
+
+fn auth_expiry_state(snapshot: &ProviderAuthSnapshot, now_unix: u64) -> String {
+    let Some(expires_unix) = snapshot.expires_unix else {
+        return if snapshot.method == ProviderAuthMethod::ApiKey
+            || snapshot.method == ProviderAuthMethod::Adc
+        {
+            "not_applicable".to_string()
+        } else {
+            "unknown".to_string()
+        };
+    };
+    if expires_unix <= now_unix {
+        return "expired".to_string();
+    }
+    let remaining = expires_unix.saturating_sub(now_unix);
+    if remaining <= 3_600 {
+        "expiring_soon".to_string()
+    } else {
+        "valid".to_string()
+    }
+}
+
+fn auth_reauth_required(snapshot: &ProviderAuthSnapshot) -> bool {
+    matches!(
+        snapshot.state.as_str(),
+        "missing_credential"
+            | "missing_access_token"
+            | "invalid_env_expires"
+            | "expired_env_access_token"
+            | "expired"
+            | "expired_refresh_pending"
+            | "revoked"
+            | "mode_mismatch"
+    )
 }
 
 fn auth_next_action(snapshot: &ProviderAuthSnapshot) -> String {
@@ -1987,7 +2137,7 @@ pub(crate) fn execute_auth_status_command(
     )];
     for row in rows {
         lines.push(format!(
-            "auth provider: name={} mode={} mode_supported={} supported={} available={} state={} source={} reason={} expires_unix={} expires={} revoked={} refreshable={} next_action={}",
+            "auth provider: name={} mode={} mode_supported={} supported={} available={} state={} source={} reason_code={} reason={} expires_unix={} expires={} expires_in_seconds={} expiry_state={} revoked={} refreshable={} backend_required={} backend={} backend_health={} backend_reason_code={} reauth_required={} reauth_hint={} next_action={}",
             row.provider,
             row.mode,
             row.mode_supported,
@@ -1995,6 +2145,7 @@ pub(crate) fn execute_auth_status_command(
             row.available,
             row.state,
             row.source,
+            row.reason_code,
             row.reason,
             row.expires_unix
                 .map(|value| value.to_string())
@@ -2002,8 +2153,18 @@ pub(crate) fn execute_auth_status_command(
             row.expires
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string()),
+            row.expires_in_seconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.expiry_state,
             row.revoked,
             row.refreshable,
+            row.backend_required,
+            row.backend,
+            row.backend_health,
+            row.backend_reason_code,
+            row.reauth_required,
+            row.reauth_hint,
             row.next_action
         ));
     }
@@ -2198,17 +2359,27 @@ pub(crate) fn execute_auth_matrix_command(
     )];
     for row in rows {
         lines.push(format!(
-            "auth matrix row: provider={} mode={} mode_supported={} available={} state={} source={} reason={} expires_unix={} revoked={}",
+            "auth matrix row: provider={} mode={} mode_supported={} available={} state={} source={} reason_code={} reason={} expires_unix={} expires_in_seconds={} expiry_state={} backend_required={} backend={} backend_health={} backend_reason_code={} reauth_required={} revoked={}",
             row.provider,
             row.mode,
             row.mode_supported,
             row.available,
             row.state,
             row.source,
+            row.reason_code,
             row.reason,
             row.expires_unix
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string()),
+            row.expires_in_seconds
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            row.expiry_state,
+            row.backend_required,
+            row.backend,
+            row.backend_health,
+            row.backend_reason_code,
+            row.reauth_required,
             row.revoked
         ));
     }
