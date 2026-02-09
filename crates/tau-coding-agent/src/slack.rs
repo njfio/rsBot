@@ -23,6 +23,7 @@ use crate::{
     rbac_policy_path_for_state_dir, run_prompt_with_cancellation, slack_principal,
     write_text_atomic, CanvasCommandConfig, CanvasEventOrigin, CanvasSessionLinkContext,
     PairingDecision, PromptRunStatus, RbacDecision, RenderOptions, SessionRuntime,
+    TransportHealthSnapshot,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -62,6 +63,8 @@ struct SlackBridgeState {
     schema_version: u32,
     #[serde(default)]
     processed_event_keys: Vec<String>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
 }
 
 impl Default for SlackBridgeState {
@@ -69,6 +72,7 @@ impl Default for SlackBridgeState {
         Self {
             schema_version: SLACK_STATE_SCHEMA_VERSION,
             processed_event_keys: Vec::new(),
+            health: TransportHealthSnapshot::default(),
         }
     }
 }
@@ -133,6 +137,18 @@ impl SlackBridgeStateStore {
             let removed = self.state.processed_event_keys.remove(0);
             self.processed_index.remove(&removed);
         }
+        true
+    }
+
+    fn transport_health(&self) -> &TransportHealthSnapshot {
+        &self.state.health
+    }
+
+    fn update_transport_health(&mut self, value: TransportHealthSnapshot) -> bool {
+        if self.state.health == value {
+            return false;
+        }
+        self.state.health = value;
         true
     }
 
@@ -726,10 +742,18 @@ impl SlackBridgeRuntime {
     }
 
     async fn run(&mut self) -> Result<()> {
+        let mut failure_streak = self.state_store.transport_health().failure_streak;
         loop {
+            let connect_started = Instant::now();
             let socket_url = match self.slack_client.open_socket_connection().await {
                 Ok(url) => url,
                 Err(error) => {
+                    failure_streak = failure_streak.saturating_add(1);
+                    self.persist_transport_health(
+                        &PollCycleReport::default(),
+                        connect_started.elapsed().as_millis() as u64,
+                        failure_streak,
+                    )?;
                     eprintln!("slack bridge failed to open socket connection: {error}");
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => {
@@ -745,7 +769,11 @@ impl SlackBridgeRuntime {
             println!("slack bridge socket connected");
             let session_result = self.run_socket_session(&socket_url).await;
             if let Err(error) = session_result {
+                failure_streak = failure_streak.saturating_add(1);
+                self.persist_transport_health(&PollCycleReport::default(), 0, failure_streak)?;
                 eprintln!("slack bridge socket session error: {error}");
+            } else {
+                failure_streak = 0;
             }
 
             tokio::select! {
@@ -765,6 +793,7 @@ impl SlackBridgeRuntime {
         let (mut sink, mut source) = stream.split();
 
         loop {
+            let cycle_started = Instant::now();
             let mut report = PollCycleReport::default();
             self.drain_finished_runs(&mut report).await?;
             self.try_start_queued_runs(&mut report).await?;
@@ -787,6 +816,9 @@ impl SlackBridgeRuntime {
                 }
             }
 
+            let cycle_duration_ms = cycle_started.elapsed().as_millis() as u64;
+            self.persist_transport_health(&report, cycle_duration_ms, 0)?;
+
             if report.discovered_events > 0
                 || report.queued_events > 0
                 || report.completed_runs > 0
@@ -804,6 +836,49 @@ impl SlackBridgeRuntime {
                     report.failed_events,
                 );
             }
+        }
+    }
+
+    fn persist_transport_health(
+        &mut self,
+        report: &PollCycleReport,
+        cycle_duration_ms: u64,
+        failure_streak: usize,
+    ) -> Result<()> {
+        let snapshot =
+            self.build_transport_health_snapshot(report, cycle_duration_ms, failure_streak);
+        if self.state_store.update_transport_health(snapshot) {
+            self.state_store.save()?;
+        }
+        Ok(())
+    }
+
+    fn build_transport_health_snapshot(
+        &self,
+        report: &PollCycleReport,
+        cycle_duration_ms: u64,
+        failure_streak: usize,
+    ) -> TransportHealthSnapshot {
+        let queue_depth = self
+            .channel_queues
+            .values()
+            .map(VecDeque::len)
+            .sum::<usize>();
+        let processed_events = report
+            .discovered_events
+            .saturating_sub(report.skipped_duplicate_events)
+            .saturating_sub(report.skipped_stale_events);
+        TransportHealthSnapshot {
+            updated_unix_ms: current_unix_timestamp_ms(),
+            cycle_duration_ms,
+            queue_depth,
+            active_runs: self.active_runs.len(),
+            failure_streak,
+            last_cycle_discovered: report.discovered_events,
+            last_cycle_processed: processed_events,
+            last_cycle_completed: report.completed_runs,
+            last_cycle_failed: report.failed_events,
+            last_cycle_duplicates: report.skipped_duplicate_events,
         }
     }
 
@@ -2263,7 +2338,7 @@ mod tests {
         channel_store::{ChannelArtifactRecord, ChannelStore},
         current_unix_timestamp_ms,
         tools::ToolPolicy,
-        RenderOptions,
+        RenderOptions, TransportHealthSnapshot,
     };
 
     struct StaticReplyClient;
@@ -2792,6 +2867,29 @@ mod tests {
         assert!(store.contains("c"));
     }
 
+    #[test]
+    fn regression_state_store_loads_legacy_state_without_health_snapshot() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("state.json");
+        std::fs::write(
+            &state_path,
+            r#"{
+  "schema_version": 1,
+  "processed_event_keys": ["a", "b"]
+}
+"#,
+        )
+        .expect("write legacy state");
+
+        let store = SlackBridgeStateStore::load(state_path, 8).expect("load store");
+        assert!(store.contains("a"));
+        assert!(store.contains("b"));
+        assert_eq!(
+            store.transport_health(),
+            &TransportHealthSnapshot::default()
+        );
+    }
+
     #[tokio::test]
     async fn integration_slack_api_client_retries_rate_limits() {
         let server = MockServer::start();
@@ -2951,6 +3049,36 @@ mod tests {
         let artifact_index = std::fs::read_to_string(channel_dir.join("artifacts/index.jsonl"))
             .expect("artifact index exists");
         assert!(artifact_index.contains("\"artifact_type\":\"slack-reply\""));
+
+        runtime
+            .persist_transport_health(&report, 33, 0)
+            .expect("persist transport health");
+        let state_raw =
+            std::fs::read_to_string(temp.path().join("state.json")).expect("read state file");
+        let state_json: serde_json::Value = serde_json::from_str(&state_raw).expect("state json");
+        let health = state_json
+            .get("health")
+            .and_then(serde_json::Value::as_object)
+            .expect("health object");
+        assert_eq!(
+            health
+                .get("last_cycle_completed")
+                .and_then(serde_json::Value::as_u64),
+            Some(report.completed_runs as u64)
+        );
+        assert_eq!(
+            health
+                .get("last_cycle_duplicates")
+                .and_then(serde_json::Value::as_u64),
+            Some(report.skipped_duplicate_events as u64)
+        );
+        assert!(
+            health
+                .get("updated_unix_ms")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+                > 0
+        );
     }
 
     #[tokio::test]

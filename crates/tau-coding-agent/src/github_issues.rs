@@ -24,7 +24,7 @@ use crate::{
     pairing_policy_for_state_dir, rbac_policy_path_for_state_dir, run_prompt_with_cancellation,
     session_message_preview, session_message_role, write_text_atomic, CanvasCommandConfig,
     CanvasEventOrigin, CanvasSessionLinkContext, PairingDecision, PromptRunStatus, RbacDecision,
-    RenderOptions, SessionRuntime,
+    RenderOptions, SessionRuntime, TransportHealthSnapshot,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -119,6 +119,8 @@ struct GithubIssuesBridgeState {
     processed_event_keys: Vec<String>,
     #[serde(default)]
     issue_sessions: BTreeMap<String, GithubIssueChatSessionState>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +139,7 @@ impl Default for GithubIssuesBridgeState {
             last_issue_scan_at: None,
             processed_event_keys: Vec::new(),
             issue_sessions: BTreeMap::new(),
+            health: TransportHealthSnapshot::default(),
         }
     }
 }
@@ -269,6 +272,18 @@ impl GithubIssuesBridgeStateStore {
             return false;
         }
         self.state.last_issue_scan_at = value;
+        true
+    }
+
+    fn transport_health(&self) -> &TransportHealthSnapshot {
+        &self.state.health
+    }
+
+    fn update_transport_health(&mut self, value: TransportHealthSnapshot) -> bool {
+        if self.state.health == value {
+            return false;
+        }
+        self.state.health = value;
         true
     }
 
@@ -935,9 +950,12 @@ impl GithubIssuesBridgeRuntime {
     }
 
     async fn run(&mut self) -> Result<()> {
+        let mut failure_streak = self.state_store.transport_health().failure_streak;
         loop {
+            let cycle_started = Instant::now();
             match self.poll_once().await {
                 Ok(report) => {
+                    failure_streak = 0;
                     println!(
                         "github bridge poll: repo={} discovered={} processed={} duplicate_skips={} failed={}",
                         self.repo.as_slug(),
@@ -948,6 +966,16 @@ impl GithubIssuesBridgeRuntime {
                     );
                 }
                 Err(error) => {
+                    failure_streak = failure_streak.saturating_add(1);
+                    let duration_ms = cycle_started.elapsed().as_millis() as u64;
+                    let snapshot = self.build_transport_health_snapshot(
+                        &PollCycleReport::default(),
+                        duration_ms,
+                        failure_streak,
+                    );
+                    if self.state_store.update_transport_health(snapshot) {
+                        self.state_store.save()?;
+                    }
                     eprintln!("github bridge poll error: {error}");
                 }
             }
@@ -963,6 +991,7 @@ impl GithubIssuesBridgeRuntime {
     }
 
     async fn poll_once(&mut self) -> Result<PollCycleReport> {
+        let cycle_started = Instant::now();
         let mut report = PollCycleReport::default();
         let mut state_dirty = false;
         tokio::task::yield_now().await;
@@ -1188,10 +1217,35 @@ impl GithubIssuesBridgeRuntime {
         {
             state_dirty = true;
         }
+        let duration_ms = cycle_started.elapsed().as_millis() as u64;
+        let snapshot = self.build_transport_health_snapshot(&report, duration_ms, 0);
+        if self.state_store.update_transport_health(snapshot) {
+            state_dirty = true;
+        }
         if state_dirty {
             self.state_store.save()?;
         }
         Ok(report)
+    }
+
+    fn build_transport_health_snapshot(
+        &self,
+        report: &PollCycleReport,
+        cycle_duration_ms: u64,
+        failure_streak: usize,
+    ) -> TransportHealthSnapshot {
+        TransportHealthSnapshot {
+            updated_unix_ms: current_unix_timestamp_ms(),
+            cycle_duration_ms,
+            queue_depth: 0,
+            active_runs: self.active_runs.len(),
+            failure_streak,
+            last_cycle_discovered: report.discovered_events,
+            last_cycle_processed: report.processed_events,
+            last_cycle_completed: report.processed_events.saturating_sub(report.failed_events),
+            last_cycle_failed: report.failed_events,
+            last_cycle_duplicates: report.skipped_duplicate_events,
+        }
     }
 
     async fn drain_finished_runs(
@@ -4378,6 +4432,10 @@ mod tests {
         assert!(state.contains("a"));
         assert!(state.contains("b"));
         assert!(state.issue_session(9).is_none());
+        assert_eq!(
+            state.transport_health(),
+            &crate::TransportHealthSnapshot::default()
+        );
     }
 
     #[test]
@@ -5004,6 +5062,46 @@ mod tests {
         assert_eq!(first.discovered_events, 1);
         assert_eq!(first.processed_events, 1);
         assert_eq!(first.failed_events, 0);
+
+        let state_path = temp.path().join("owner__repo").join("state.json");
+        let state_raw = std::fs::read_to_string(&state_path).expect("state file");
+        let state: serde_json::Value = serde_json::from_str(&state_raw).expect("state json");
+        let health = state
+            .get("health")
+            .and_then(serde_json::Value::as_object)
+            .expect("health object");
+        assert_eq!(
+            health
+                .get("last_cycle_discovered")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            health
+                .get("last_cycle_processed")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            health
+                .get("last_cycle_failed")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            health
+                .get("failure_streak")
+                .and_then(serde_json::Value::as_u64),
+            Some(0)
+        );
+        assert!(
+            health
+                .get("updated_unix_ms")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default()
+                > 0
+        );
+
         let second = runtime.poll_once().await.expect("second poll");
         assert_eq!(second.processed_events, 0);
         issues.assert_calls(2);
