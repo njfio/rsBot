@@ -547,13 +547,20 @@ pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -
                 Ok(Some(cache)) => {
                     let age_ms =
                         current_unix_timestamp_ms().saturating_sub(cache.fetched_at_unix_ms);
+                    let freshness = if age_ms <= RELEASE_LOOKUP_CACHE_TTL_MS {
+                        "fresh"
+                    } else {
+                        "stale"
+                    };
                     format!(
-                        "release cache: path={} status=present schema_version={} entries={} fetched_at_unix_ms={} age_ms={} source_url={}",
+                        "release cache: path={} status=present schema_version={} entries={} fetched_at_unix_ms={} age_ms={} ttl_ms={} freshness={} source_url={}",
                         cache_path.display(),
                         cache.schema_version,
                         cache.releases.len(),
                         cache.fetched_at_unix_ms,
                         age_ms,
+                        RELEASE_LOOKUP_CACHE_TTL_MS,
+                        freshness,
                         cache.source_url
                     )
                 }
@@ -746,6 +753,8 @@ mod tests {
         let present = execute_release_channel_command("cache show", &path);
         assert!(present.contains("status=present"));
         assert!(present.contains("entries=1"));
+        assert!(present.contains("ttl_ms=900000"));
+        assert!(present.contains("freshness=fresh"));
         assert!(present.contains("source_url=https://example.invalid/releases"));
 
         let cleared = execute_release_channel_command("cache clear", &path);
@@ -1076,6 +1085,32 @@ mod tests {
         let output = execute_release_channel_command("cache show", &path);
         assert!(output.contains("release channel error:"));
         assert!(output.contains("failed to parse release lookup cache"));
+    }
+
+    #[test]
+    fn regression_execute_release_channel_command_cache_show_reports_stale_freshness() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let stale_time =
+            current_unix_timestamp_ms().saturating_sub(RELEASE_LOOKUP_CACHE_TTL_MS + 5_000);
+        let releases = vec![GitHubReleaseRecord {
+            tag_name: "v8.8.8".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(
+            &cache_path,
+            "https://example.invalid/releases",
+            stale_time,
+            &releases,
+        )
+        .expect("save stale cache");
+
+        let output = execute_release_channel_command("cache show", &path);
+        assert!(output.contains("status=present"));
+        assert!(output.contains("freshness=stale"));
+        assert!(output.contains("ttl_ms=900000"));
     }
 
     #[test]
