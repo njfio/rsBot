@@ -210,6 +210,23 @@ struct EventsDryRunConfig {
     stale_immediate_max_age_seconds: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EventsDryRunGateConfig {
+    max_error_rows: Option<usize>,
+    max_execute_rows: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EventsDryRunGateOutcome {
+    status: &'static str,
+    reason_codes: Vec<String>,
+    execute_rows: usize,
+    skipped_rows: usize,
+    error_rows: usize,
+    max_error_rows: Option<usize>,
+    max_execute_rows: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct EventsSimulateRow {
     pub path: String,
@@ -455,7 +472,20 @@ pub(crate) fn execute_events_dry_run_command(cli: &Cli) -> Result<()> {
     } else {
         println!("{}", render_events_dry_run_report(&report));
     }
-    enforce_events_dry_run_strict_mode(&report, cli.events_dry_run_strict)?;
+
+    let max_error_rows = if cli.events_dry_run_strict {
+        Some(0)
+    } else {
+        cli.events_dry_run_max_error_rows
+            .map(|value| value as usize)
+    };
+    let gate_config = EventsDryRunGateConfig {
+        max_error_rows,
+        max_execute_rows: cli
+            .events_dry_run_max_execute_rows
+            .map(|value| value as usize),
+    };
+    enforce_events_dry_run_gate(&report, &gate_config)?;
     Ok(())
 }
 
@@ -1615,18 +1645,82 @@ fn render_events_dry_run_report(report: &EventsDryRunReport) -> String {
     lines.join("\n")
 }
 
-fn enforce_events_dry_run_strict_mode(report: &EventsDryRunReport, strict: bool) -> Result<()> {
-    if !strict {
-        return Ok(());
+fn evaluate_events_dry_run_gate(
+    report: &EventsDryRunReport,
+    config: &EventsDryRunGateConfig,
+) -> EventsDryRunGateOutcome {
+    let mut reason_codes = Vec::new();
+
+    if let Some(max_error_rows) = config.max_error_rows {
+        if report.error_rows > max_error_rows {
+            reason_codes.push("max_error_rows_exceeded".to_string());
+        }
     }
-    if report.error_rows > 0 {
-        bail!(
-            "events dry run strict failed: error_rows={} malformed_files={}",
-            report.error_rows,
-            report.malformed_files
-        );
+    if let Some(max_execute_rows) = config.max_execute_rows {
+        if report.execute_rows > max_execute_rows {
+            reason_codes.push("max_execute_rows_exceeded".to_string());
+        }
+    }
+
+    let status = if reason_codes.is_empty() {
+        "pass"
+    } else {
+        "fail"
+    };
+    EventsDryRunGateOutcome {
+        status,
+        reason_codes,
+        execute_rows: report.execute_rows,
+        skipped_rows: report.skipped_rows,
+        error_rows: report.error_rows,
+        max_error_rows: config.max_error_rows,
+        max_execute_rows: config.max_execute_rows,
+    }
+}
+
+fn render_events_dry_run_gate_summary(outcome: &EventsDryRunGateOutcome) -> String {
+    format!(
+        "events dry run gate: status={} reason_codes={} execute_rows={} skipped_rows={} error_rows={} max_error_rows={} max_execute_rows={}",
+        outcome.status,
+        if outcome.reason_codes.is_empty() {
+            "none".to_string()
+        } else {
+            outcome.reason_codes.join(",")
+        },
+        outcome.execute_rows,
+        outcome.skipped_rows,
+        outcome.error_rows,
+        outcome
+            .max_error_rows
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        outcome
+            .max_execute_rows
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    )
+}
+
+fn enforce_events_dry_run_gate(
+    report: &EventsDryRunReport,
+    config: &EventsDryRunGateConfig,
+) -> Result<()> {
+    let outcome = evaluate_events_dry_run_gate(report, config);
+    let summary = render_events_dry_run_gate_summary(&outcome);
+    eprintln!("{summary}");
+    if outcome.status == "fail" {
+        bail!("{summary}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn enforce_events_dry_run_strict_mode(report: &EventsDryRunReport, strict: bool) -> Result<()> {
+    let config = EventsDryRunGateConfig {
+        max_error_rows: if strict { Some(0) } else { None },
+        max_execute_rows: None,
+    };
+    enforce_events_dry_run_gate(report, &config)
 }
 
 fn due_decision(
@@ -1848,14 +1942,16 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        dry_run_events, due_decision, enforce_events_dry_run_strict_mode,
+        dry_run_events, due_decision, enforce_events_dry_run_gate,
+        enforce_events_dry_run_strict_mode, evaluate_events_dry_run_gate,
         execute_events_template_write_command, ingest_webhook_immediate_event, inspect_events,
-        load_event_records, next_periodic_due_unix_ms, render_events_dry_run_report,
-        render_events_inspect_report, render_events_simulate_report, render_events_validate_report,
-        simulate_events, validate_events_definitions, DueDecision, EventDefinition,
-        EventRunnerState, EventSchedule, EventSchedulerConfig, EventSchedulerRuntime,
-        EventWebhookIngestConfig, EventsDryRunConfig, EventsInspectConfig, EventsSimulateConfig,
-        EventsValidateConfig, EventsValidateReport, WebhookSignatureAlgorithm,
+        load_event_records, next_periodic_due_unix_ms, render_events_dry_run_gate_summary,
+        render_events_dry_run_report, render_events_inspect_report, render_events_simulate_report,
+        render_events_validate_report, simulate_events, validate_events_definitions, DueDecision,
+        EventDefinition, EventRunnerState, EventSchedule, EventSchedulerConfig,
+        EventSchedulerRuntime, EventWebhookIngestConfig, EventsDryRunConfig,
+        EventsDryRunGateConfig, EventsInspectConfig, EventsSimulateConfig, EventsValidateConfig,
+        EventsValidateReport, WebhookSignatureAlgorithm,
     };
     use crate::{tools::ToolPolicy, Cli, CliEventTemplateSchedule, RenderOptions};
 
@@ -2805,7 +2901,87 @@ mod tests {
         failing.malformed_files = 1;
         let error = enforce_events_dry_run_strict_mode(&failing, true)
             .expect_err("strict failing report should error");
-        assert!(error.to_string().contains("events dry run strict failed"));
+        assert!(error
+            .to_string()
+            .contains("events dry run gate: status=fail"));
+        assert!(error.to_string().contains("max_error_rows_exceeded"));
+    }
+
+    #[test]
+    fn unit_evaluate_events_dry_run_gate_applies_thresholds() {
+        let report = super::EventsDryRunReport {
+            events_dir: "/tmp/events".to_string(),
+            state_path: "/tmp/state.json".to_string(),
+            now_unix_ms: 123,
+            queue_limit: 2,
+            total_files: 0,
+            evaluated_rows: 0,
+            execute_rows: 3,
+            skipped_rows: 1,
+            error_rows: 2,
+            malformed_files: 0,
+            rows: Vec::new(),
+        };
+        let outcome = evaluate_events_dry_run_gate(
+            &report,
+            &EventsDryRunGateConfig {
+                max_error_rows: Some(1),
+                max_execute_rows: Some(2),
+            },
+        );
+        assert_eq!(outcome.status, "fail");
+        assert_eq!(
+            outcome.reason_codes,
+            vec![
+                "max_error_rows_exceeded".to_string(),
+                "max_execute_rows_exceeded".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn functional_render_events_dry_run_gate_summary_is_deterministic() {
+        let summary = render_events_dry_run_gate_summary(&super::EventsDryRunGateOutcome {
+            status: "pass",
+            reason_codes: Vec::new(),
+            execute_rows: 1,
+            skipped_rows: 2,
+            error_rows: 0,
+            max_error_rows: Some(0),
+            max_execute_rows: Some(5),
+        });
+        assert_eq!(
+            summary,
+            "events dry run gate: status=pass reason_codes=none execute_rows=1 skipped_rows=2 error_rows=0 max_error_rows=0 max_execute_rows=5"
+        );
+    }
+
+    #[test]
+    fn regression_enforce_events_dry_run_gate_includes_reason_codes_in_error() {
+        let report = super::EventsDryRunReport {
+            events_dir: "/tmp/events".to_string(),
+            state_path: "/tmp/state.json".to_string(),
+            now_unix_ms: 123,
+            queue_limit: 2,
+            total_files: 0,
+            evaluated_rows: 0,
+            execute_rows: 4,
+            skipped_rows: 0,
+            error_rows: 0,
+            malformed_files: 0,
+            rows: Vec::new(),
+        };
+        let error = enforce_events_dry_run_gate(
+            &report,
+            &EventsDryRunGateConfig {
+                max_error_rows: None,
+                max_execute_rows: Some(2),
+            },
+        )
+        .expect_err("gate should fail");
+        let rendered = error.to_string();
+        assert!(rendered.contains("events dry run gate: status=fail"));
+        assert!(rendered.contains("max_execute_rows_exceeded"));
     }
 
     #[test]

@@ -738,6 +738,17 @@ cargo run -p tau-coding-agent -- \
   --events-dry-run-strict
 ```
 
+Apply threshold governance (for example, fail when more than 10 events would execute now):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --events-dir .tau/events \
+  --events-state-path .tau/events/state.json \
+  --events-dry-run \
+  --events-dry-run-max-execute-rows 10 \
+  --events-dry-run-max-error-rows 0
+```
+
 Queue a webhook-triggered immediate event from a payload file (debounced):
 
 ```bash

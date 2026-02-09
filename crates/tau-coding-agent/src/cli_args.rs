@@ -1355,6 +1355,24 @@ pub(crate) struct Cli {
     pub(crate) events_dry_run_strict: bool,
 
     #[arg(
+        long = "events-dry-run-max-error-rows",
+        env = "TAU_EVENTS_DRY_RUN_MAX_ERROR_ROWS",
+        requires = "events_dry_run",
+        value_name = "count",
+        help = "Fail dry-run when error row count exceeds this threshold"
+    )]
+    pub(crate) events_dry_run_max_error_rows: Option<u64>,
+
+    #[arg(
+        long = "events-dry-run-max-execute-rows",
+        env = "TAU_EVENTS_DRY_RUN_MAX_EXECUTE_ROWS",
+        requires = "events_dry_run",
+        value_name = "count",
+        help = "Fail dry-run when execute row count exceeds this threshold"
+    )]
+    pub(crate) events_dry_run_max_execute_rows: Option<u64>,
+
+    #[arg(
         long = "events-template-write",
         env = "TAU_EVENTS_TEMPLATE_WRITE",
         value_name = "PATH",

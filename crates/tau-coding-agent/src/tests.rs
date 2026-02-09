@@ -417,6 +417,8 @@ fn test_cli() -> Cli {
         events_dry_run: false,
         events_dry_run_json: false,
         events_dry_run_strict: false,
+        events_dry_run_max_error_rows: None,
+        events_dry_run_max_execute_rows: None,
         events_simulate_horizon_seconds: 3_600,
         events_template_write: None,
         events_template_schedule: CliEventTemplateSchedule::Immediate,
@@ -15062,7 +15064,51 @@ fn integration_execute_startup_preflight_events_dry_run_strict_fails_on_invalid_
     .expect("write invalid strict dry-run event");
 
     let error = execute_startup_preflight(&cli).expect_err("strict dry-run should fail");
-    assert!(error.to_string().contains("events dry run strict failed"));
+    assert!(error
+        .to_string()
+        .contains("events dry run gate: status=fail"));
+    assert!(error.to_string().contains("max_error_rows_exceeded"));
+}
+
+#[test]
+fn integration_execute_startup_preflight_events_dry_run_max_execute_rows_fails() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.events_dry_run = true;
+    cli.events_dry_run_max_execute_rows = Some(1);
+
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(
+        cli.events_dir.join("dry-run-a.json"),
+        r#"{
+  "id": "dry-run-a",
+  "channel": "slack/C111",
+  "prompt": "a",
+  "schedule": {"type":"immediate"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write first dry-run event");
+    std::fs::write(
+        cli.events_dir.join("dry-run-b.json"),
+        r#"{
+  "id": "dry-run-b",
+  "channel": "slack/C222",
+  "prompt": "b",
+  "schedule": {"type":"immediate"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write second dry-run event");
+
+    let error = execute_startup_preflight(&cli).expect_err("max execute threshold should fail");
+    assert!(error
+        .to_string()
+        .contains("events dry run gate: status=fail"));
+    assert!(error.to_string().contains("max_execute_rows_exceeded"));
 }
 
 #[test]
