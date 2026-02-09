@@ -1,0 +1,5 @@
+{
+  "event": "run-start",
+  "channel": "github/owner/repo#42",
+  "prompt": "Summarize open items"
+}

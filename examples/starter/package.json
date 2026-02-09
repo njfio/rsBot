@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "tau-starter-bundle",
+  "version": "1.0.0",
+  "templates": [
+    {
+      "id": "review",
+      "path": "templates/review.txt"
+    }
+  ],
+  "skills": [
+    {
+      "id": "checks",
+      "path": "skills/checks/SKILL.md"
+    }
+  ],
+  "extensions": [
+    {
+      "id": "issue-assistant-manifest",
+      "path": "extensions/issue-assistant/extension.json"
+    },
+    {
+      "id": "issue-assistant-runtime",
+      "path": "extensions/issue-assistant/runtime.sh"
+    },
+    {
+      "id": "issue-assistant-payload",
+      "path": "extensions/issue-assistant/payload.json"
+    }
+  ],
+  "themes": [
+    {
+      "id": "tau-default",
+      "path": "themes/tau-default.json"
+    }
+  ]
+}

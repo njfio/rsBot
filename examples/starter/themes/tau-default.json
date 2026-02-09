@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "id": "tau-default",
+  "name": "Tau Default",
+  "palette": {
+    "background": "#0b1020",
+    "foreground": "#e5e7eb",
+    "accent": "#22c55e"
+  }
+}
