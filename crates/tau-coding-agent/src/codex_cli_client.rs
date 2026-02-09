@@ -326,7 +326,7 @@ while [ "$#" -gt 0 ]; do
     *) shift;;
   esac
 done
-cat >/dev/null
+while IFS= read -r _line; do :; done
 printf "mock codex reply" > "$out"
 "#,
         );
@@ -344,12 +344,42 @@ printf "mock codex reply" > "$out"
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn regression_codex_cli_client_mock_script_does_not_require_cat_in_path() {
+        let dir = tempdir().expect("tempdir");
+        let script = write_script(
+            dir.path(),
+            r#"
+PATH="/definitely-missing"
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) out="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+while IFS= read -r _line; do :; done
+printf "path independent reply" > "$out"
+"#,
+        );
+        let client = CodexCliClient::new(CodexCliConfig {
+            executable: script.display().to_string(),
+            extra_args: vec![],
+            timeout_ms: 5_000,
+        })
+        .expect("client");
+
+        let response = client.complete(test_request()).await.expect("complete");
+        assert_eq!(response.message.text_content(), "path independent reply");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn functional_codex_cli_client_falls_back_to_stdout() {
         let dir = tempdir().expect("tempdir");
         let script = write_script(
             dir.path(),
             r#"
-cat >/dev/null
+while IFS= read -r _line; do :; done
 printf "stdout fallback reply"
 "#,
         );
@@ -371,7 +401,7 @@ printf "stdout fallback reply"
         let script = write_script(
             dir.path(),
             r#"
-cat >/dev/null
+while IFS= read -r _line; do :; done
 echo "failed request" 1>&2
 exit 17
 "#,
@@ -405,7 +435,7 @@ while [ "$#" -gt 0 ]; do
     *) shift;;
   esac
 done
-cat >/dev/null
+while IFS= read -r _line; do :; done
 printf "streamed reply" > "$out"
 "#,
         );
