@@ -6123,6 +6123,198 @@ fn integration_build_provider_client_preserves_api_key_mode_behavior() {
     assert!(!ptr.is_null());
 }
 
+#[cfg(unix)]
+#[test]
+fn unit_build_provider_client_openai_api_key_mode_falls_back_to_codex_backend_when_key_missing() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let script = write_mock_codex_script(
+        temp.path(),
+        r#"
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) out="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+cat >/dev/null
+printf "codex api-key fallback response" > "$out"
+"#,
+    );
+
+    let mut cli = test_cli();
+    cli.openai_auth_mode = CliProviderAuthMode::ApiKey;
+    cli.openai_codex_backend = true;
+    cli.openai_codex_cli = script.display().to_string();
+    cli.openai_codex_timeout_ms = 5_000;
+    cli.api_key = None;
+    cli.openai_api_key = None;
+
+    let snapshot = snapshot_env_vars(&[
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "TAU_API_KEY",
+    ]);
+    std::env::remove_var("OPENAI_API_KEY");
+    std::env::remove_var("OPENROUTER_API_KEY");
+    std::env::remove_var("GROQ_API_KEY");
+    std::env::remove_var("XAI_API_KEY");
+    std::env::remove_var("MISTRAL_API_KEY");
+    std::env::remove_var("AZURE_OPENAI_API_KEY");
+    std::env::remove_var("TAU_API_KEY");
+
+    let client =
+        build_provider_client(&cli, Provider::OpenAi).expect("build codex fallback client");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let response = runtime
+        .block_on(client.complete(test_chat_request()))
+        .expect("codex fallback completion");
+    assert_eq!(
+        response.message.text_content(),
+        "codex api-key fallback response"
+    );
+
+    restore_env_vars(snapshot);
+}
+
+#[cfg(unix)]
+#[test]
+fn functional_build_provider_client_anthropic_api_key_mode_falls_back_to_claude_backend_when_key_missing(
+) {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let script = write_mock_claude_script(
+        temp.path(),
+        r#"
+if [ "$1" != "-p" ]; then
+  echo "missing -p" >&2
+  exit 8
+fi
+printf '{"type":"result","subtype":"success","is_error":false,"result":"claude api-key fallback response"}'
+"#,
+    );
+
+    let mut cli = test_cli();
+    cli.anthropic_auth_mode = CliProviderAuthMode::ApiKey;
+    cli.anthropic_claude_backend = true;
+    cli.anthropic_claude_cli = script.display().to_string();
+    cli.anthropic_claude_timeout_ms = 5_000;
+    cli.api_key = None;
+    cli.anthropic_api_key = None;
+
+    let snapshot = snapshot_env_vars(&["ANTHROPIC_API_KEY", "TAU_API_KEY"]);
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("TAU_API_KEY");
+
+    let client =
+        build_provider_client(&cli, Provider::Anthropic).expect("build claude fallback client");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let response = runtime
+        .block_on(client.complete(test_chat_request()))
+        .expect("claude fallback completion");
+    assert_eq!(
+        response.message.text_content(),
+        "claude api-key fallback response"
+    );
+
+    restore_env_vars(snapshot);
+}
+
+#[cfg(unix)]
+#[test]
+fn integration_build_provider_client_google_api_key_mode_falls_back_to_gemini_backend_when_key_missing(
+) {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let script = write_mock_gemini_script(
+        temp.path(),
+        r#"
+if [ "$1" != "-p" ]; then
+  echo "missing -p" >&2
+  exit 8
+fi
+printf '{"response":"gemini api-key fallback response"}'
+"#,
+    );
+
+    let mut cli = test_cli();
+    cli.google_auth_mode = CliProviderAuthMode::ApiKey;
+    cli.google_gemini_backend = true;
+    cli.google_gemini_cli = script.display().to_string();
+    cli.google_gemini_timeout_ms = 5_000;
+    cli.api_key = None;
+    cli.google_api_key = None;
+
+    let snapshot = snapshot_env_vars(&["GEMINI_API_KEY", "GOOGLE_API_KEY", "TAU_API_KEY"]);
+    std::env::remove_var("GEMINI_API_KEY");
+    std::env::remove_var("GOOGLE_API_KEY");
+    std::env::remove_var("TAU_API_KEY");
+
+    let client =
+        build_provider_client(&cli, Provider::Google).expect("build gemini fallback client");
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let response = runtime
+        .block_on(client.complete(test_chat_request()))
+        .expect("gemini fallback completion");
+    assert_eq!(
+        response.message.text_content(),
+        "gemini api-key fallback response"
+    );
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
+fn regression_build_provider_client_openai_api_key_mode_without_backend_keeps_missing_key_error() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let mut cli = test_cli();
+    cli.openai_auth_mode = CliProviderAuthMode::ApiKey;
+    cli.openai_codex_backend = false;
+    cli.api_key = None;
+    cli.openai_api_key = None;
+
+    let snapshot = snapshot_env_vars(&[
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "TAU_API_KEY",
+    ]);
+    std::env::remove_var("OPENAI_API_KEY");
+    std::env::remove_var("OPENROUTER_API_KEY");
+    std::env::remove_var("GROQ_API_KEY");
+    std::env::remove_var("XAI_API_KEY");
+    std::env::remove_var("MISTRAL_API_KEY");
+    std::env::remove_var("AZURE_OPENAI_API_KEY");
+    std::env::remove_var("TAU_API_KEY");
+
+    match build_provider_client(&cli, Provider::OpenAi) {
+        Ok(_) => panic!("missing key without backend should fail"),
+        Err(error) => {
+            assert!(error
+                .to_string()
+                .contains("missing OpenAI-compatible API key"));
+        }
+    }
+
+    restore_env_vars(snapshot);
+}
+
 #[test]
 fn unit_encrypt_and_decrypt_credential_store_secret_roundtrip_keyed() {
     let secret = "secret-token-123";
