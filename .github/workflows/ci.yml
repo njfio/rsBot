@@ -139,6 +139,9 @@ jobs:
               - "**/Cargo.toml"
               - "Cargo.toml"
               - "Cargo.lock"
+            helpers:
+              - ".github/workflows/**"
+              - ".github/scripts/**"
 
       - name: Determine rust scope
         id: rust_scope
@@ -155,7 +158,23 @@ jobs:
           echo "### Rust Scope" >> "$GITHUB_STEP_SUMMARY"
           echo "- Rust/Cargo changed: ${rust_changed}" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Determine helper test scope
+        id: helper_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper_tests_needed="${{ steps.change_scope.outputs.helpers }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            helper_tests_needed="true"
+          elif [[ -z "${helper_tests_needed}" ]]; then
+            helper_tests_needed="false"
+          fi
+          echo "helper_tests_needed=${helper_tests_needed}" >> "$GITHUB_OUTPUT"
+          echo "### Helper Tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Helper tests needed: ${helper_tests_needed}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Validate CI helper scripts
+        if: steps.helper_scope.outputs.helper_tests_needed == 'true'
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py"
 
       - name: Determine quality mode
