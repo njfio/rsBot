@@ -6,9 +6,11 @@ use std::process::Command;
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
-pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|status|logout|matrix> ...";
+pub(crate) const AUTH_USAGE: &str = "usage: /auth <login|reauth|status|logout|matrix> ...";
 pub(crate) const AUTH_LOGIN_USAGE: &str =
     "usage: /auth login <provider> [--mode <mode>] [--launch] [--json]";
+pub(crate) const AUTH_REAUTH_USAGE: &str =
+    "usage: /auth reauth <provider> [--mode <mode>] [--launch] [--json]";
 pub(crate) const AUTH_STATUS_USAGE: &str =
     "usage: /auth status [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--source-kind <all|flag|env|credential-store|none>] [--revoked <all|revoked|not-revoked>] [--json]";
 pub(crate) const AUTH_LOGOUT_USAGE: &str = "usage: /auth logout <provider> [--json]";
@@ -95,6 +97,12 @@ pub(crate) enum AuthCommand {
         launch: bool,
         json_output: bool,
     },
+    Reauth {
+        provider: Provider,
+        mode: Option<ProviderAuthMethod>,
+        launch: bool,
+        json_output: bool,
+    },
     Status {
         provider: Option<Provider>,
         mode: Option<ProviderAuthMethod>,
@@ -152,6 +160,12 @@ pub(crate) struct AuthStatusRow {
     backend: String,
     backend_health: String,
     backend_reason_code: String,
+    fallback_order: String,
+    fallback_mode: String,
+    fallback_available: bool,
+    fallback_reason_code: String,
+    fallback_hint: String,
+    reauth_prerequisites: String,
     reauth_required: bool,
     reauth_hint: String,
     next_action: String,
@@ -163,6 +177,16 @@ struct AuthBackendProbe {
     backend: String,
     health: String,
     reason_code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuthFallbackPlan {
+    order: String,
+    mode: String,
+    available: bool,
+    reason_code: String,
+    hint: String,
+    reauth_prerequisites: String,
 }
 
 const AUTH_MATRIX_PROVIDERS: [Provider; 3] =
@@ -249,6 +273,50 @@ pub(crate) fn parse_auth_command(command_args: &str) -> Result<AuthCommand> {
             }
 
             Ok(AuthCommand::Login {
+                provider,
+                mode,
+                launch,
+                json_output,
+            })
+        }
+        "reauth" => {
+            if tokens.len() < 2 {
+                bail!("{AUTH_REAUTH_USAGE}");
+            }
+            let provider = parse_auth_provider(tokens[1])?;
+            let mut mode = None;
+            let mut launch = false;
+            let mut json_output = false;
+
+            let mut index = 2usize;
+            while index < tokens.len() {
+                match tokens[index] {
+                    "--json" => {
+                        json_output = true;
+                        index += 1;
+                    }
+                    "--mode" => {
+                        if mode.is_some() {
+                            bail!("duplicate --mode flag; {AUTH_REAUTH_USAGE}");
+                        }
+                        let Some(raw_mode) = tokens.get(index + 1) else {
+                            bail!("missing auth mode after --mode; {AUTH_REAUTH_USAGE}");
+                        };
+                        mode = Some(parse_provider_auth_method_token(raw_mode)?);
+                        index += 2;
+                    }
+                    "--launch" => {
+                        if launch {
+                            bail!("duplicate --launch flag; {AUTH_REAUTH_USAGE}");
+                        }
+                        launch = true;
+                        index += 1;
+                    }
+                    other => bail!("unexpected argument '{}'; {AUTH_REAUTH_USAGE}", other),
+                }
+            }
+
+            Ok(AuthCommand::Reauth {
                 provider,
                 mode,
                 launch,
@@ -1650,6 +1718,137 @@ fn execute_anthropic_login_backend_ready(
     )
 }
 
+fn auth_reauth_status_label(row: &AuthStatusRow) -> &'static str {
+    if row.available {
+        "ready"
+    } else if row.reauth_required {
+        "reauth_required"
+    } else {
+        "recovery_required"
+    }
+}
+
+pub(crate) fn execute_auth_reauth_command(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    mode_override: Option<ProviderAuthMethod>,
+    launch: bool,
+    json_output: bool,
+) -> String {
+    let mode = mode_override
+        .unwrap_or_else(|| configured_provider_auth_method_from_config(config, provider));
+    let mode_config = auth_config_with_provider_mode(config, provider, mode);
+    let requires_store = mode != ProviderAuthMethod::ApiKey;
+    let (store, store_error) = if requires_store {
+        match load_credential_store(
+            &config.credential_store,
+            config.credential_store_encryption,
+            config.credential_store_key.as_deref(),
+        ) {
+            Ok(store) => (Some(store), None),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    let row = auth_status_row_for_provider(
+        &mode_config,
+        provider,
+        store.as_ref(),
+        store_error.as_deref(),
+    );
+    let status_label = auth_reauth_status_label(&row);
+    let reauth_command = format_auth_reauth_command(provider, mode);
+    let launch_supported = build_auth_login_launch_spec(config, provider, mode).is_ok();
+
+    if launch {
+        let login_result = execute_auth_login_command(config, provider, Some(mode), true, true);
+        let parsed_login_result: serde_json::Value = serde_json::from_str(&login_result)
+            .unwrap_or_else(|_| serde_json::json!({ "raw_result": login_result }));
+        let login_status = parsed_login_result
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let launch_executed = parsed_login_result
+            .get("launch_executed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if json_output {
+            return serde_json::json!({
+                "command": "auth.reauth",
+                "provider": provider.as_str(),
+                "mode": mode.as_str(),
+                "status": status_label,
+                "launch_requested": true,
+                "launch_executed": launch_executed,
+                "launch_supported": launch_supported,
+                "reauth_command": reauth_command,
+                "fallback_order": row.fallback_order,
+                "fallback_mode": row.fallback_mode,
+                "fallback_available": row.fallback_available,
+                "fallback_reason_code": row.fallback_reason_code,
+                "fallback_hint": row.fallback_hint,
+                "reauth_prerequisites": row.reauth_prerequisites,
+                "next_action": row.next_action,
+                "entry": row,
+                "login": parsed_login_result,
+            })
+            .to_string();
+        }
+        return format!(
+            "auth reauth: provider={} mode={} status={} launch_requested=true launch_executed={} launch_supported={} login_status={} reauth_command={} fallback_mode={} fallback_available={} fallback_hint={} next_action={}",
+            provider.as_str(),
+            mode.as_str(),
+            status_label,
+            launch_executed,
+            launch_supported,
+            login_status,
+            reauth_command,
+            row.fallback_mode,
+            row.fallback_available,
+            row.fallback_hint,
+            row.next_action
+        );
+    }
+
+    if json_output {
+        return serde_json::json!({
+            "command": "auth.reauth",
+            "provider": provider.as_str(),
+            "mode": mode.as_str(),
+            "status": status_label,
+            "launch_requested": false,
+            "launch_executed": false,
+            "launch_supported": launch_supported,
+            "reauth_command": reauth_command,
+            "fallback_order": row.fallback_order,
+            "fallback_mode": row.fallback_mode,
+            "fallback_available": row.fallback_available,
+            "fallback_reason_code": row.fallback_reason_code,
+            "fallback_hint": row.fallback_hint,
+            "reauth_prerequisites": row.reauth_prerequisites,
+            "next_action": row.next_action,
+            "entry": row,
+        })
+        .to_string();
+    }
+
+    format!(
+        "auth reauth: provider={} mode={} status={} launch_requested=false launch_executed=false launch_supported={} reauth_command={} fallback_order={} fallback_mode={} fallback_available={} fallback_hint={} reauth_prerequisites={} next_action={}",
+        provider.as_str(),
+        mode.as_str(),
+        status_label,
+        launch_supported,
+        reauth_command,
+        row.fallback_order,
+        row.fallback_mode,
+        row.fallback_available,
+        row.fallback_hint,
+        row.reauth_prerequisites,
+        row.next_action
+    )
+}
+
 pub(crate) fn auth_status_row_for_provider(
     config: &AuthCommandConfig,
     provider: Provider,
@@ -1658,12 +1857,14 @@ pub(crate) fn auth_status_row_for_provider(
 ) -> AuthStatusRow {
     let snapshot = provider_auth_snapshot_for_status(config, provider, store, store_error);
     let backend_probe = auth_backend_probe(config, provider, snapshot.method);
-    auth_status_row_from_snapshot(&snapshot, &backend_probe)
+    let fallback_plan = auth_fallback_plan(config, provider, snapshot.method, store, store_error);
+    auth_status_row_from_snapshot(&snapshot, &backend_probe, &fallback_plan)
 }
 
 fn auth_status_row_from_snapshot(
     snapshot: &ProviderAuthSnapshot,
     backend_probe: &AuthBackendProbe,
+    fallback_plan: &AuthFallbackPlan,
 ) -> AuthStatusRow {
     let now_unix = current_unix_timestamp();
     let expires_in_seconds = snapshot
@@ -1672,11 +1873,7 @@ fn auth_status_row_from_snapshot(
     let expiry_state = auth_expiry_state(snapshot, now_unix);
     let reauth_required = auth_reauth_required(snapshot);
     let reauth_hint = if reauth_required {
-        format!(
-            "run /auth login {} --mode {}",
-            snapshot.provider.as_str(),
-            snapshot.method.as_str()
-        )
+        format_auth_reauth_command(snapshot.provider, snapshot.method)
     } else {
         "none".to_string()
     };
@@ -1700,6 +1897,12 @@ fn auth_status_row_from_snapshot(
         backend: backend_probe.backend.clone(),
         backend_health: backend_probe.health.clone(),
         backend_reason_code: backend_probe.reason_code.clone(),
+        fallback_order: fallback_plan.order.clone(),
+        fallback_mode: fallback_plan.mode.clone(),
+        fallback_available: fallback_plan.available,
+        fallback_reason_code: fallback_plan.reason_code.clone(),
+        fallback_hint: fallback_plan.hint.clone(),
+        reauth_prerequisites: fallback_plan.reauth_prerequisites.clone(),
         reauth_required,
         reauth_hint,
         next_action: auth_next_action(snapshot),
@@ -1769,6 +1972,118 @@ fn auth_backend_probe_from_cli_state(
         backend: backend.to_string(),
         health: "ready".to_string(),
         reason_code: "backend_ready".to_string(),
+    }
+}
+
+fn provider_auth_recovery_order(provider: Provider) -> Vec<ProviderAuthMethod> {
+    match provider {
+        Provider::OpenAi | Provider::Anthropic => vec![
+            ProviderAuthMethod::OauthToken,
+            ProviderAuthMethod::SessionToken,
+            ProviderAuthMethod::ApiKey,
+        ],
+        Provider::Google => vec![
+            ProviderAuthMethod::OauthToken,
+            ProviderAuthMethod::Adc,
+            ProviderAuthMethod::ApiKey,
+        ],
+    }
+}
+
+fn format_auth_reauth_command(provider: Provider, method: ProviderAuthMethod) -> String {
+    format!(
+        "run /auth reauth {} --mode {}",
+        provider.as_str(),
+        method.as_str()
+    )
+}
+
+fn provider_reauth_prerequisites(provider: Provider, method: ProviderAuthMethod) -> String {
+    match (provider, method) {
+        (Provider::OpenAi, ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken) => {
+            "codex cli installed; run codex --login; --openai-codex-backend=true".to_string()
+        }
+        (
+            Provider::Anthropic,
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
+        ) => "claude cli installed; run claude then /login; --anthropic-claude-backend=true"
+            .to_string(),
+        (Provider::Google, ProviderAuthMethod::OauthToken) => {
+            "gemini cli installed; login with Google in gemini; --google-gemini-backend=true"
+                .to_string()
+        }
+        (Provider::Google, ProviderAuthMethod::Adc) => "gcloud installed; run gcloud auth application-default login; set GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION".to_string(),
+        (Provider::Google, ProviderAuthMethod::SessionToken) => {
+            "google session-token mode is unsupported; prefer oauth-token, adc, or api-key"
+                .to_string()
+        }
+        (_, ProviderAuthMethod::ApiKey) => missing_provider_api_key_message(provider).to_string(),
+        (_, ProviderAuthMethod::Adc) => {
+            "adc flow requires cloud credential bootstrap in the active environment".to_string()
+        }
+    }
+}
+
+fn auth_fallback_plan(
+    config: &AuthCommandConfig,
+    provider: Provider,
+    method: ProviderAuthMethod,
+    store: Option<&CredentialStoreData>,
+    store_error: Option<&str>,
+) -> AuthFallbackPlan {
+    let fallback_order_modes = provider_auth_recovery_order(provider);
+    let fallback_order = fallback_order_modes
+        .iter()
+        .map(|candidate| candidate.as_str())
+        .collect::<Vec<_>>()
+        .join(">");
+    let reauth_prerequisites = provider_reauth_prerequisites(provider, method);
+    let fallback_candidate = fallback_order_modes.iter().copied().find(|candidate| {
+        *candidate != method && provider_auth_capability(provider, *candidate).supported
+    });
+
+    let Some(fallback_mode) = fallback_candidate else {
+        return AuthFallbackPlan {
+            order: fallback_order,
+            mode: "none".to_string(),
+            available: false,
+            reason_code: "no_supported_fallback".to_string(),
+            hint: "none".to_string(),
+            reauth_prerequisites,
+        };
+    };
+
+    let fallback_config = auth_config_with_provider_mode(config, provider, fallback_mode);
+    let fallback_snapshot =
+        provider_auth_snapshot_for_status(&fallback_config, provider, store, store_error);
+    let fallback_flag = provider_auth_mode_flag(provider);
+    let fallback_command = format!("set {} {}", fallback_flag, fallback_mode.as_str());
+    let fallback_ready = fallback_snapshot.available;
+    let fallback_hint = if fallback_ready {
+        format!(
+            "{}; then {}",
+            fallback_command,
+            format_auth_reauth_command(provider, fallback_mode)
+        )
+    } else {
+        format!(
+            "{}; then {}",
+            fallback_command,
+            auth_next_action(&fallback_snapshot)
+        )
+    };
+
+    AuthFallbackPlan {
+        order: fallback_order,
+        mode: fallback_mode.as_str().to_string(),
+        available: fallback_ready,
+        reason_code: if fallback_ready {
+            "fallback_ready".to_string()
+        } else {
+            "fallback_unavailable".to_string()
+        },
+        hint: fallback_hint,
+        reauth_prerequisites,
     }
 }
 
@@ -1843,13 +2158,9 @@ fn auth_next_action(snapshot: &ProviderAuthSnapshot) -> String {
         | "expired"
         | "expired_refresh_pending"
         | "revoked"
-        | "mode_mismatch" => format!(
-            "run /auth login {} --mode {}",
-            snapshot.provider.as_str(),
-            snapshot.method.as_str()
-        ),
+        | "mode_mismatch" => format_auth_reauth_command(snapshot.provider, snapshot.method),
         "store_error" => {
-            "fix credential store accessibility and retry /auth status or /auth login".to_string()
+            "fix credential store accessibility and retry /auth status or /auth reauth".to_string()
         }
         _ => "inspect /auth status reason field".to_string(),
     }
@@ -2137,7 +2448,7 @@ pub(crate) fn execute_auth_status_command(
     )];
     for row in rows {
         lines.push(format!(
-            "auth provider: name={} mode={} mode_supported={} supported={} available={} state={} source={} reason_code={} reason={} expires_unix={} expires={} expires_in_seconds={} expiry_state={} revoked={} refreshable={} backend_required={} backend={} backend_health={} backend_reason_code={} reauth_required={} reauth_hint={} next_action={}",
+            "auth provider: name={} mode={} mode_supported={} supported={} available={} state={} source={} reason_code={} reason={} expires_unix={} expires={} expires_in_seconds={} expiry_state={} revoked={} refreshable={} backend_required={} backend={} backend_health={} backend_reason_code={} fallback_order={} fallback_mode={} fallback_available={} fallback_reason_code={} fallback_hint={} reauth_prerequisites={} reauth_required={} reauth_hint={} next_action={}",
             row.provider,
             row.mode,
             row.mode_supported,
@@ -2163,6 +2474,12 @@ pub(crate) fn execute_auth_status_command(
             row.backend,
             row.backend_health,
             row.backend_reason_code,
+            row.fallback_order,
+            row.fallback_mode,
+            row.fallback_available,
+            row.fallback_reason_code,
+            row.fallback_hint,
+            row.reauth_prerequisites,
             row.reauth_required,
             row.reauth_hint,
             row.next_action
@@ -2359,7 +2676,7 @@ pub(crate) fn execute_auth_matrix_command(
     )];
     for row in rows {
         lines.push(format!(
-            "auth matrix row: provider={} mode={} mode_supported={} available={} state={} source={} reason_code={} reason={} expires_unix={} expires_in_seconds={} expiry_state={} backend_required={} backend={} backend_health={} backend_reason_code={} reauth_required={} revoked={}",
+            "auth matrix row: provider={} mode={} mode_supported={} available={} state={} source={} reason_code={} reason={} expires_unix={} expires_in_seconds={} expiry_state={} backend_required={} backend={} backend_health={} backend_reason_code={} fallback_order={} fallback_mode={} fallback_available={} fallback_reason_code={} fallback_hint={} reauth_prerequisites={} reauth_required={} revoked={}",
             row.provider,
             row.mode,
             row.mode_supported,
@@ -2379,6 +2696,12 @@ pub(crate) fn execute_auth_matrix_command(
             row.backend,
             row.backend_health,
             row.backend_reason_code,
+            row.fallback_order,
+            row.fallback_mode,
+            row.fallback_available,
+            row.fallback_reason_code,
+            row.fallback_hint,
+            row.reauth_prerequisites,
             row.reauth_required,
             row.revoked
         ));
@@ -2477,6 +2800,12 @@ pub(crate) fn execute_auth_command(config: &AuthCommandConfig, command_args: &st
             launch,
             json_output,
         } => execute_auth_login_command(config, provider, mode, launch, json_output),
+        AuthCommand::Reauth {
+            provider,
+            mode,
+            launch,
+            json_output,
+        } => execute_auth_reauth_command(config, provider, mode, launch, json_output),
         AuthCommand::Status {
             provider,
             mode,

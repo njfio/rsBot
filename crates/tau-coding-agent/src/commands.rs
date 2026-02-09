@@ -246,11 +246,11 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/auth",
-        usage: "/auth <login|status|logout|matrix> ...",
+        usage: "/auth <login|reauth|status|logout|matrix> ...",
         description: "Manage provider authentication state and credential-store sessions",
         details:
-            "Supports login/status/logout flows plus provider-mode matrix diagnostics with optional --json output.",
-        example: "/auth matrix openai --mode oauth-token --json",
+            "Supports login/reauth/status/logout flows plus provider-mode matrix diagnostics with optional --json output.",
+        example: "/auth reauth openai --mode oauth-token --launch --json",
     },
     CommandSpec {
         name: "/canvas",

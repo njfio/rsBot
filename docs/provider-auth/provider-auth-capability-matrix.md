@@ -22,6 +22,20 @@ Core fields:
 
 Diagnostics (`/auth status` and `/auth matrix`) read from this abstraction and never emit secrets.
 
+## CLI Reauth and Fallback Semantics
+- `/auth reauth <provider> [--mode <mode>] [--launch] [--json]` provides explicit recovery guidance per provider/mode.
+- Diagnostics now emit fallback planning fields:
+- `fallback_order`: provider-specific auth-mode recovery chain.
+- `fallback_mode`: first supported fallback mode for the current provider/mode.
+- `fallback_available`: whether the fallback mode is currently healthy.
+- `fallback_hint`: concrete switch/recovery action.
+- `reauth_prerequisites`: provider/mode prerequisites (CLI login/bootstrap requirements).
+
+Current recovery order policy:
+- OpenAI: `oauth_token > session_token > api_key`
+- Anthropic: `oauth_token > session_token > api_key`
+- Google: `oauth_token > adc > api_key`
+
 ## Capability Matrix
 | Provider/Channel | Auth Method | Subscription Login Usable for API Calls | Status | Notes |
 |---|---|---|---|---|

@@ -1369,6 +1369,18 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         }
     );
 
+    let reauth = parse_auth_command("reauth openai --mode oauth-token --launch --json")
+        .expect("parse auth reauth");
+    assert_eq!(
+        reauth,
+        AuthCommand::Reauth {
+            provider: Provider::OpenAi,
+            mode: Some(ProviderAuthMethod::OauthToken),
+            launch: true,
+            json_output: true,
+        }
+    );
+
     let openrouter_login =
         parse_auth_command("login openrouter --mode api-key").expect("parse openrouter login");
     assert_eq!(
@@ -1558,6 +1570,17 @@ fn regression_parse_auth_command_rejects_unknown_provider_mode_and_usage_errors(
     assert!(duplicate_login_launch
         .to_string()
         .contains("usage: /auth login"));
+
+    let missing_reauth_provider = parse_auth_command("reauth").expect_err("usage fail for reauth");
+    assert!(missing_reauth_provider
+        .to_string()
+        .contains("usage: /auth reauth"));
+
+    let duplicate_reauth_launch =
+        parse_auth_command("reauth openai --launch --launch").expect_err("duplicate reauth launch");
+    assert!(duplicate_reauth_launch
+        .to_string()
+        .contains("usage: /auth reauth"));
 
     let invalid_matrix_args =
         parse_auth_command("matrix openai anthropic").expect_err("matrix args fail");
@@ -2353,6 +2376,13 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert_eq!(openai_api["backend_required"], false);
     assert_eq!(openai_api["backend_health"], "not_required");
     assert_eq!(openai_api["backend_reason_code"], "backend_not_required");
+    assert_eq!(
+        openai_api["fallback_order"],
+        "oauth_token>session_token>api_key"
+    );
+    assert_eq!(openai_api["fallback_mode"], "oauth_token");
+    assert_eq!(openai_api["fallback_available"], true);
+    assert_eq!(openai_api["fallback_reason_code"], "fallback_ready");
 
     let openai_oauth = row_for("openai", "oauth_token");
     assert_eq!(openai_oauth["mode_supported"], true);
@@ -2365,8 +2395,19 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert_eq!(openai_oauth["backend"], "codex_cli");
     assert_eq!(openai_oauth["backend_health"], "ready");
     assert_eq!(openai_oauth["backend_reason_code"], "backend_ready");
+    assert_eq!(
+        openai_oauth["fallback_order"],
+        "oauth_token>session_token>api_key"
+    );
+    assert_eq!(openai_oauth["fallback_mode"], "session_token");
+    assert_eq!(openai_oauth["fallback_available"], false);
+    assert_eq!(openai_oauth["fallback_reason_code"], "fallback_unavailable");
     assert_eq!(openai_oauth["reauth_required"], false);
     assert_eq!(openai_oauth["reauth_hint"], "none");
+    assert!(openai_oauth["fallback_hint"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("--openai-auth-mode session_token"));
 
     let anthropic_oauth = row_for("anthropic", "oauth_token");
     assert_eq!(anthropic_oauth["mode_supported"], true);
@@ -2403,6 +2444,8 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert!(text_output.contains("auth matrix row: provider=openai mode=oauth_token"));
     assert!(text_output.contains("backend_health=ready"));
     assert!(text_output.contains("reason_code=ready"));
+    assert!(text_output.contains("fallback_order=oauth_token>session_token>api_key"));
+    assert!(text_output.contains("fallback_reason_code=fallback_"));
     assert!(!text_output.contains("oauth-access-secret"));
 }
 
@@ -3629,6 +3672,123 @@ fn functional_execute_auth_command_login_status_logout_lifecycle() {
 }
 
 #[test]
+fn functional_execute_auth_command_reauth_reports_guidance_and_recovery_plan() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("reauth-guidance-credentials.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.openai_auth_mode = ProviderAuthMethod::OauthToken;
+
+    let snapshot = snapshot_env_vars(&[
+        "TAU_AUTH_ACCESS_TOKEN",
+        "TAU_AUTH_EXPIRES_UNIX",
+        "OPENAI_ACCESS_TOKEN",
+        "OPENAI_AUTH_EXPIRES_UNIX",
+    ]);
+    std::env::remove_var("TAU_AUTH_ACCESS_TOKEN");
+    std::env::remove_var("TAU_AUTH_EXPIRES_UNIX");
+    std::env::set_var("OPENAI_ACCESS_TOKEN", "openai-reauth-expired-access");
+    std::env::set_var(
+        "OPENAI_AUTH_EXPIRES_UNIX",
+        current_unix_timestamp().saturating_sub(2).to_string(),
+    );
+
+    let output = execute_auth_command(&config, "reauth openai --mode oauth-token --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse reauth payload");
+    assert_eq!(payload["command"], "auth.reauth");
+    assert_eq!(payload["provider"], "openai");
+    assert_eq!(payload["mode"], "oauth_token");
+    assert_eq!(payload["status"], "reauth_required");
+    assert_eq!(payload["launch_requested"], false);
+    assert_eq!(payload["launch_executed"], false);
+    assert_eq!(payload["launch_supported"], true);
+    assert!(payload["reauth_command"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("/auth reauth openai --mode oauth_token"));
+    assert_eq!(
+        payload["fallback_order"],
+        "oauth_token>session_token>api_key"
+    );
+    assert_eq!(payload["fallback_mode"], "session_token");
+    assert_eq!(payload["fallback_available"], false);
+    assert_eq!(payload["entry"]["state"], "expired_env_access_token");
+    assert!(!output.contains("openai-reauth-expired-access"));
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
+fn integration_execute_auth_command_reauth_supports_mode_transition_after_expiration() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("reauth-transition-credentials.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::None;
+    config.openai_auth_mode = ProviderAuthMethod::OauthToken;
+    config.api_key = Some("transition-api-key".to_string());
+    config.openai_api_key = None;
+
+    write_test_provider_credential(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::OauthToken,
+            access_token: Some("transition-expired-access".to_string()),
+            refresh_token: None,
+            expires_unix: Some(current_unix_timestamp().saturating_sub(10)),
+            revoked: false,
+        },
+    );
+
+    let expired_status = execute_auth_command(&config, "status openai --json");
+    let expired_payload: serde_json::Value =
+        serde_json::from_str(&expired_status).expect("parse expired status payload");
+    assert_eq!(expired_payload["entries"][0]["state"], "expired");
+    assert_eq!(expired_payload["entries"][0]["available"], false);
+
+    let reauth_output = execute_auth_command(&config, "reauth openai --json");
+    let reauth_payload: serde_json::Value =
+        serde_json::from_str(&reauth_output).expect("parse reauth transition payload");
+    assert_eq!(reauth_payload["status"], "reauth_required");
+    assert_eq!(reauth_payload["entry"]["state"], "expired");
+    assert!(reauth_payload["next_action"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("/auth reauth openai --mode oauth_token"));
+
+    set_provider_auth_mode(&mut config, Provider::OpenAi, ProviderAuthMethod::ApiKey);
+    let api_key_status = execute_auth_command(&config, "status openai --json");
+    let api_key_payload: serde_json::Value =
+        serde_json::from_str(&api_key_status).expect("parse api-key status payload");
+    assert_eq!(api_key_payload["entries"][0]["state"], "ready");
+    assert_eq!(api_key_payload["entries"][0]["available"], true);
+}
+
+#[test]
+fn regression_execute_auth_command_reauth_launch_rejects_unsupported_api_key_mode() {
+    let config = test_auth_command_config();
+    let output = execute_auth_command(&config, "reauth openai --mode api-key --launch --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("parse reauth payload");
+    assert_eq!(payload["command"], "auth.reauth");
+    assert_eq!(payload["provider"], "openai");
+    assert_eq!(payload["mode"], "api_key");
+    assert_eq!(payload["launch_requested"], true);
+    assert_eq!(payload["launch_supported"], false);
+    assert_eq!(payload["launch_executed"], false);
+    assert_eq!(payload["login"]["command"], "auth.login");
+    assert_eq!(payload["login"]["status"], "error");
+    assert!(payload["login"]["reason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("--launch is only supported"));
+}
+
+#[test]
 fn unit_execute_auth_command_status_marks_expired_env_access_token_unavailable() {
     let _env_lock = AUTH_ENV_TEST_LOCK
         .lock()
@@ -3676,10 +3836,20 @@ fn unit_execute_auth_command_status_marks_expired_env_access_token_unavailable()
         payload["entries"][0]["backend_reason_code"],
         "backend_ready"
     );
+    assert_eq!(
+        payload["entries"][0]["fallback_order"],
+        "oauth_token>session_token>api_key"
+    );
+    assert_eq!(payload["entries"][0]["fallback_mode"], "session_token");
+    assert_eq!(payload["entries"][0]["fallback_available"], false);
+    assert_eq!(
+        payload["entries"][0]["fallback_reason_code"],
+        "fallback_unavailable"
+    );
     assert!(payload["entries"][0]["reauth_hint"]
         .as_str()
         .unwrap_or_default()
-        .contains("/auth login openai --mode oauth_token"));
+        .contains("/auth reauth openai --mode oauth_token"));
     assert!(!output.contains("openai-expired-env-access"));
 
     restore_env_vars(snapshot);
@@ -8886,7 +9056,7 @@ fn functional_render_help_overview_lists_known_commands() {
     assert!(help.contains("/skills-lock-write [lockfile_path]"));
     assert!(help.contains("/skills-sync [lockfile_path]"));
     assert!(help.contains("/macro <save|run|list|show|delete> ..."));
-    assert!(help.contains("/auth <login|status|logout|matrix> ..."));
+    assert!(help.contains("/auth <login|reauth|status|logout|matrix> ..."));
     assert!(help.contains("/canvas <create|update|show|export|import>"));
     assert!(help.contains("/rbac <check|whoami> ..."));
     assert!(help.contains("/approvals <list|approve|reject> [--json] [--status <pending|approved|rejected|expired|consumed>] [request_id] [reason]"));

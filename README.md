@@ -96,8 +96,8 @@ Auth mode guidance (local subscription login vs CI):
 | Anthropic | `--anthropic-auth-mode oauth-token` or `session-token` with Claude backend (`--anthropic-claude-backend=true`) | `--anthropic-auth-mode api-key` with `ANTHROPIC_API_KEY` |
 | Google | `--google-auth-mode oauth-token` (Gemini login) or `--google-auth-mode adc` (Vertex/ADC) with Gemini backend (`--google-gemini-backend=true`) | `--google-auth-mode api-key` with `GEMINI_API_KEY` |
 
-`/auth status` and `/auth matrix` include `supported`, `available`, `source`, `expires`, `refreshable`, and `next_action` fields for deterministic diagnostics and machine parsing.
-`/auth login` supports an opt-in `--launch` mode for provider CLI login bootstrap (`codex --login`, `claude`, `gemini`, `gcloud auth application-default login`).
+`/auth status` and `/auth matrix` include deterministic machine-readable auth diagnostics: `supported`, `available`, `source`, `expires`, `refreshable`, `fallback_order`, `fallback_mode`, `fallback_available`, `reauth_prerequisites`, and `next_action`.
+`/auth login` and `/auth reauth` support an opt-in `--launch` mode for provider CLI login bootstrap (`codex --login`, `claude`, `gemini`, `gcloud auth application-default login`).
 
 Set an API key for your provider:
 
@@ -141,6 +141,16 @@ cargo run -p tau-coding-agent -- \
 ```
 
 `tau-coding-agent` prefers provider credential-store oauth/session entries when present; if the OpenAI entry is missing and Codex backend is enabled, it falls back to `codex exec` for local subscription-backed runs.
+
+Use explicit reauth diagnostics and recovery planning:
+
+```bash
+# emits recovery/fallback hints without launching provider CLI
+/auth reauth openai --mode oauth-token --json
+
+# launches provider login flow when supported
+/auth reauth openai --mode oauth-token --launch --json
+```
 
 Use Anthropic with Claude Code subscription login (without setting `ANTHROPIC_API_KEY`):
 
