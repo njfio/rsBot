@@ -99,13 +99,6 @@ pub(crate) fn default_release_channel_path() -> Result<PathBuf> {
         .join("release-channel.json"))
 }
 
-pub(crate) fn default_release_lookup_cache_path() -> Result<PathBuf> {
-    Ok(std::env::current_dir()
-        .context("failed to resolve current working directory")?
-        .join(".tau")
-        .join("release-lookup-cache.json"))
-}
-
 pub(crate) fn parse_release_channel_command(command_args: &str) -> Result<ReleaseChannelCommand> {
     let tokens = command_args
         .split_whitespace()

@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser};
 
 use crate::{
-    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode,
-    CliEventTemplateSchedule, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    release_channel_commands::RELEASE_LOOKUP_CACHE_TTL_MS, CliBashProfile, CliCommandFileErrorMode,
+    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliOrchestratorMode,
+    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
+    CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -703,6 +704,23 @@ pub(crate) struct Cli {
         help = "Optional release channel initialized by onboarding (stable|beta|dev)"
     )]
     pub(crate) onboard_release_channel: Option<String>,
+
+    #[arg(
+        long = "doctor-release-cache-file",
+        env = "TAU_DOCTOR_RELEASE_CACHE_FILE",
+        default_value = ".tau/release-lookup-cache.json",
+        help = "Cache file path used by /doctor --online release metadata lookup"
+    )]
+    pub(crate) doctor_release_cache_file: PathBuf,
+
+    #[arg(
+        long = "doctor-release-cache-ttl-ms",
+        env = "TAU_DOCTOR_RELEASE_CACHE_TTL_MS",
+        default_value_t = RELEASE_LOOKUP_CACHE_TTL_MS,
+        value_parser = parse_positive_u64,
+        help = "Cache freshness TTL in milliseconds for /doctor --online release metadata lookups"
+    )]
+    pub(crate) doctor_release_cache_ttl_ms: u64,
 
     #[arg(
         long = "channel-store-root",

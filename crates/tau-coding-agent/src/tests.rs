@@ -364,6 +364,8 @@ fn test_cli() -> Cli {
         onboard_non_interactive: false,
         onboard_profile: "default".to_string(),
         onboard_release_channel: None,
+        doctor_release_cache_file: PathBuf::from(".tau/release-lookup-cache.json"),
+        doctor_release_cache_ttl_ms: 900_000,
         channel_store_root: PathBuf::from(".tau/channel-store"),
         channel_store_inspect: None,
         channel_store_repair: None,
@@ -5849,6 +5851,39 @@ fn regression_cli_onboarding_release_channel_requires_onboard() {
 }
 
 #[test]
+fn unit_cli_doctor_release_cache_flags_default_values_are_stable() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert_eq!(
+        cli.doctor_release_cache_file,
+        PathBuf::from(".tau/release-lookup-cache.json")
+    );
+    assert_eq!(cli.doctor_release_cache_ttl_ms, 900_000);
+}
+
+#[test]
+fn functional_cli_doctor_release_cache_flags_accept_overrides() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--doctor-release-cache-file",
+        "/tmp/custom-doctor-cache.json",
+        "--doctor-release-cache-ttl-ms",
+        "120000",
+    ]);
+    assert_eq!(
+        cli.doctor_release_cache_file,
+        PathBuf::from("/tmp/custom-doctor-cache.json")
+    );
+    assert_eq!(cli.doctor_release_cache_ttl_ms, 120_000);
+}
+
+#[test]
+fn regression_cli_doctor_release_cache_ttl_rejects_zero() {
+    let parse = Cli::try_parse_from(["tau-rs", "--doctor-release-cache-ttl-ms", "0"]);
+    let error = parse.expect_err("zero ttl should be rejected");
+    assert!(error.to_string().contains("value must be greater than 0"));
+}
+
+#[test]
 fn unit_is_retryable_provider_error_classifies_status_errors() {
     assert!(is_retryable_provider_error(&TauAiError::HttpStatus {
         status: 429,
@@ -7530,6 +7565,8 @@ fn unit_build_doctor_command_config_collects_sorted_unique_provider_states() {
     cli.skills_dir = PathBuf::from("/tmp/skills");
     cli.skills_lock_file = Some(PathBuf::from("/tmp/custom.lock.json"));
     cli.skill_trust_root_file = Some(PathBuf::from("/tmp/trust-roots.json"));
+    cli.doctor_release_cache_file = PathBuf::from("/tmp/doctor-cache.json");
+    cli.doctor_release_cache_ttl_ms = 180_000;
     cli.openai_api_key = Some("openai-key".to_string());
     cli.anthropic_api_key = Some("anthropic-key".to_string());
     cli.google_api_key = None;
@@ -7567,10 +7604,11 @@ fn unit_build_doctor_command_config_collects_sorted_unique_provider_states() {
     assert!(config
         .release_channel_path
         .ends_with(Path::new(".tau").join("release-channel.json")));
-    assert!(config
-        .release_lookup_cache_path
-        .ends_with(Path::new(".tau").join("release-lookup-cache.json")));
-    assert_eq!(config.release_lookup_cache_ttl_ms, 900_000);
+    assert_eq!(
+        config.release_lookup_cache_path,
+        PathBuf::from("/tmp/doctor-cache.json")
+    );
+    assert_eq!(config.release_lookup_cache_ttl_ms, 180_000);
 
     let provider_rows = config
         .provider_keys

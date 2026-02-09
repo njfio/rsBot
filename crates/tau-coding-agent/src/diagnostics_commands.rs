@@ -1,8 +1,7 @@
 use super::*;
 use crate::cli_executable::is_executable_available;
 use crate::release_channel_commands::{
-    compare_versions, default_release_lookup_cache_path, release_lookup_url,
-    resolve_latest_channel_release_cached, ReleaseChannel, RELEASE_LOOKUP_CACHE_TTL_MS,
+    compare_versions, release_lookup_url, resolve_latest_channel_release_cached, ReleaseChannel,
 };
 
 pub(crate) const DOCTOR_USAGE: &str = "usage: /doctor [--json] [--online]";
@@ -400,9 +399,8 @@ pub(crate) fn build_doctor_command_config(
         provider_keys,
         release_channel_path: default_release_channel_path()
             .unwrap_or_else(|_| PathBuf::from(".tau/release-channel.json")),
-        release_lookup_cache_path: default_release_lookup_cache_path()
-            .unwrap_or_else(|_| PathBuf::from(".tau/release-lookup-cache.json")),
-        release_lookup_cache_ttl_ms: RELEASE_LOOKUP_CACHE_TTL_MS,
+        release_lookup_cache_path: cli.doctor_release_cache_file.clone(),
+        release_lookup_cache_ttl_ms: cli.doctor_release_cache_ttl_ms,
         session_enabled: !cli.no_session,
         session_path: cli.session.clone(),
         skills_dir: cli.skills_dir.clone(),

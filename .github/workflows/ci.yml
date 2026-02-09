@@ -104,10 +104,14 @@ jobs:
 
       - name: Run codex light smoke tests
         if: steps.quality_mode.outputs.mode == 'codex-light'
+        env:
+          RUST_MIN_STACK: "8388608"
         run: cargo test --workspace --lib --bins
 
       - name: Run workspace tests
         if: steps.quality_mode.outputs.mode != 'codex-light'
+        env:
+          RUST_MIN_STACK: "8388608"
         run: cargo test --workspace
 
   cross-platform-smoke:
