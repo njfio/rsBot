@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeSet, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
@@ -17,8 +18,10 @@ use crate::extension_manifest::{
 };
 use crate::{
     authorize_tool_for_principal, authorize_tool_for_principal_with_policy_path,
-    evaluate_approval_gate, resolve_local_principal, ApprovalAction, ApprovalGateResult,
-    RbacDecision,
+    evaluate_approval_gate, resolve_local_principal,
+    session::SessionStore,
+    session_commands::{session_message_preview, session_message_role},
+    ApprovalAction, ApprovalGateResult, RbacDecision,
 };
 
 const SAFE_BASH_ENV_VARS: &[&str] = &[
@@ -36,6 +39,30 @@ const STRICT_COMMAND_ALLOWLIST: &[&str] = &[
     "awk", "cat", "cut", "du", "echo", "env", "fd", "find", "grep", "head", "ls", "printf", "pwd",
     "rg", "sed", "sort", "stat", "tail", "tr", "uniq", "wc",
 ];
+
+const SESSION_LIST_DEFAULT_LIMIT: usize = 64;
+const SESSION_LIST_MAX_LIMIT: usize = 256;
+const SESSION_HISTORY_DEFAULT_LIMIT: usize = 40;
+const SESSION_HISTORY_MAX_LIMIT: usize = 200;
+const SESSION_SCAN_MAX_DEPTH: usize = 8;
+const SESSION_SCAN_MAX_DIRECTORIES: usize = 2_000;
+
+#[derive(Debug, Clone, Serialize)]
+struct SessionInventoryEntry {
+    path: String,
+    entries: usize,
+    head_id: Option<u64>,
+    newest_role: String,
+    newest_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SessionHistoryEntry {
+    id: u64,
+    parent_id: Option<u64>,
+    role: String,
+    preview: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BashCommandProfile {
@@ -201,6 +228,8 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(ReadTool::new(policy.clone()));
     agent.register_tool(WriteTool::new(policy.clone()));
     agent.register_tool(EditTool::new(policy.clone()));
+    agent.register_tool(SessionsListTool::new(policy.clone()));
+    agent.register_tool(SessionsHistoryTool::new(policy.clone()));
     agent.register_tool(BashTool::new(policy));
 }
 
@@ -579,6 +608,184 @@ impl AgentTool for EditTool {
         ToolExecutionResult::ok(json!({
             "path": resolved.display().to_string(),
             "replacements": replacements,
+        }))
+    }
+}
+
+pub struct SessionsListTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl SessionsListTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for SessionsListTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "sessions_list".to_string(),
+            description: "List session stores discovered under allowed roots".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": format!(
+                            "Maximum sessions to return (default {}, max {})",
+                            SESSION_LIST_DEFAULT_LIMIT,
+                            SESSION_LIST_MAX_LIMIT
+                        )
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let limit = match optional_usize(
+            &arguments,
+            "limit",
+            SESSION_LIST_DEFAULT_LIMIT,
+            SESSION_LIST_MAX_LIMIT,
+        ) {
+            Ok(limit) => limit,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+
+        match collect_session_inventory(&self.policy, limit) {
+            Ok((sessions, skipped_invalid)) => ToolExecutionResult::ok(json!({
+                "limit": limit,
+                "returned": sessions.len(),
+                "skipped_invalid": skipped_invalid,
+                "sessions": sessions,
+            })),
+            Err(error) => ToolExecutionResult::error(json!({ "error": error })),
+        }
+    }
+}
+
+pub struct SessionsHistoryTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl SessionsHistoryTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for SessionsHistoryTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "sessions_history".to_string(),
+            description: "Read bounded lineage/history from a session store".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to session JSONL file"
+                    },
+                    "head_id": {
+                        "type": "integer",
+                        "description": "Optional lineage head id. Defaults to current head."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": format!(
+                            "Maximum lineage entries to return from the tail (default {}, max {})",
+                            SESSION_HISTORY_DEFAULT_LIMIT,
+                            SESSION_HISTORY_MAX_LIMIT
+                        )
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let path = match required_string(&arguments, "path") {
+            Ok(path) => path,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        let limit = match optional_usize(
+            &arguments,
+            "limit",
+            SESSION_HISTORY_DEFAULT_LIMIT,
+            SESSION_HISTORY_MAX_LIMIT,
+        ) {
+            Ok(limit) => limit,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        let head_id = match optional_u64(&arguments, "head_id") {
+            Ok(head_id) => head_id,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Read) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": path,
+                    "error": error,
+                }))
+            }
+        };
+        if let Err(error) =
+            validate_file_target(&resolved, PathMode::Read, self.policy.enforce_regular_files)
+        {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
+
+        let store = match SessionStore::load(&resolved) {
+            Ok(store) => store,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": resolved.display().to_string(),
+                    "error": format!("failed to load session: {error}"),
+                }))
+            }
+        };
+
+        let selected_head_id = head_id.or_else(|| store.head_id());
+        let lineage = match store.lineage_entries(selected_head_id) {
+            Ok(entries) => entries,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": resolved.display().to_string(),
+                    "head_id": selected_head_id,
+                    "error": format!("failed to resolve session lineage: {error}"),
+                }))
+            }
+        };
+
+        let start = lineage.len().saturating_sub(limit);
+        let history_entries = lineage[start..]
+            .iter()
+            .map(|entry| SessionHistoryEntry {
+                id: entry.id,
+                parent_id: entry.parent_id,
+                role: session_message_role(&entry.message),
+                preview: session_message_preview(&entry.message),
+            })
+            .collect::<Vec<_>>();
+
+        ToolExecutionResult::ok(json!({
+            "path": resolved.display().to_string(),
+            "head_id": selected_head_id,
+            "lineage_entries": lineage.len(),
+            "returned": history_entries.len(),
+            "history": history_entries,
         }))
     }
 }
@@ -1216,6 +1423,144 @@ impl AgentTool for BashTool {
     }
 }
 
+fn collect_session_inventory(
+    policy: &ToolPolicy,
+    limit: usize,
+) -> Result<(Vec<SessionInventoryEntry>, usize), String> {
+    let session_paths = discover_session_paths(policy, limit)?;
+    let mut sessions = Vec::with_capacity(session_paths.len());
+    let mut skipped_invalid = 0usize;
+
+    for path in session_paths {
+        if sessions.len() >= limit {
+            break;
+        }
+        match SessionStore::load(&path) {
+            Ok(store) => {
+                let newest = store.entries().last();
+                sessions.push(SessionInventoryEntry {
+                    path: path.display().to_string(),
+                    entries: store.entries().len(),
+                    head_id: store.head_id(),
+                    newest_role: newest
+                        .map(|entry| session_message_role(&entry.message))
+                        .unwrap_or_else(|| "none".to_string()),
+                    newest_preview: newest
+                        .map(|entry| session_message_preview(&entry.message))
+                        .unwrap_or_else(|| "(empty session)".to_string()),
+                });
+            }
+            Err(_) => {
+                skipped_invalid += 1;
+            }
+        }
+    }
+
+    sessions.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok((sessions, skipped_invalid))
+}
+
+fn discover_session_paths(policy: &ToolPolicy, limit: usize) -> Result<Vec<PathBuf>, String> {
+    let mut roots = if policy.allowed_roots.is_empty() {
+        vec![std::env::current_dir().map_err(|error| format!("failed to resolve cwd: {error}"))?]
+    } else {
+        policy.allowed_roots.clone()
+    };
+    roots.sort_by_key(|left| left.display().to_string());
+
+    let mut found = Vec::new();
+    let mut seen = BTreeSet::new();
+    for root in roots {
+        if found.len() >= limit {
+            break;
+        }
+        let tau_root = root.join(".tau");
+        if !tau_root.exists() {
+            continue;
+        }
+
+        let mut queue = VecDeque::from([(tau_root, 0usize)]);
+        let mut visited_directories = 0usize;
+        while let Some((directory, depth)) = queue.pop_front() {
+            if found.len() >= limit || visited_directories >= SESSION_SCAN_MAX_DIRECTORIES {
+                break;
+            }
+            visited_directories += 1;
+
+            let entries = std::fs::read_dir(&directory).map_err(|error| {
+                format!(
+                    "failed to scan session directory '{}': {error}",
+                    directory.display()
+                )
+            })?;
+            let mut child_paths = entries
+                .filter_map(|entry| entry.ok().map(|item| item.path()))
+                .collect::<Vec<_>>();
+            child_paths.sort();
+
+            for path in child_paths {
+                if found.len() >= limit {
+                    break;
+                }
+                let metadata = match std::fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(_) => continue,
+                };
+                if metadata.file_type().is_symlink() {
+                    continue;
+                }
+                if metadata.is_dir() {
+                    if depth < SESSION_SCAN_MAX_DEPTH {
+                        queue.push_back((path, depth + 1));
+                    }
+                    continue;
+                }
+                if !metadata.is_file() || !is_session_candidate_path(&path) {
+                    continue;
+                }
+                let canonical = canonicalize_best_effort(&path).map_err(|error| {
+                    format!(
+                        "failed to canonicalize session candidate '{}': {error}",
+                        path.display()
+                    )
+                })?;
+                let key = canonical.display().to_string();
+                if seen.insert(key) {
+                    found.push(canonical);
+                }
+            }
+        }
+    }
+
+    found.sort();
+    Ok(found)
+}
+
+fn is_session_candidate_path(path: &Path) -> bool {
+    if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+        return false;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if file_name == "default.jsonl"
+        || file_name == "session.jsonl"
+        || file_name.starts_with("issue-")
+    {
+        return true;
+    }
+
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .map(|value| value.eq_ignore_ascii_case("sessions"))
+            .unwrap_or(false)
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PathMode {
     Read,
@@ -1374,6 +1719,38 @@ fn required_string(arguments: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(|value| value.to_string())
         .ok_or_else(|| format!("missing required string argument '{key}'"))
+}
+
+fn optional_usize(
+    arguments: &Value,
+    key: &str,
+    default: usize,
+    max: usize,
+) -> Result<usize, String> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(default);
+    };
+    let parsed = value
+        .as_u64()
+        .ok_or_else(|| format!("optional argument '{key}' must be an integer"))?
+        as usize;
+    if parsed == 0 {
+        return Err(format!("optional argument '{key}' must be greater than 0"));
+    }
+    if parsed > max {
+        return Err(format!("optional argument '{key}' exceeds maximum {max}"));
+    }
+    Ok(parsed)
+}
+
+fn optional_u64(arguments: &Value, key: &str) -> Result<Option<u64>, String> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .as_u64()
+        .ok_or_else(|| format!("optional argument '{key}' must be an integer"))?;
+    Ok(Some(parsed))
 }
 
 fn resolve_sandbox_spec(
@@ -1625,11 +2002,14 @@ mod tests {
     use super::{
         bash_profile_name, build_spec_from_command_template, canonicalize_best_effort,
         command_available, evaluate_tool_approval_gate, evaluate_tool_rbac_gate,
-        is_command_allowed, leading_executable, os_sandbox_mode_name, redact_secrets,
-        resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool, EditTool,
-        OsSandboxMode, ToolExecutionResult, ToolPolicy, ToolPolicyPreset, WriteTool,
+        is_command_allowed, is_session_candidate_path, leading_executable, os_sandbox_mode_name,
+        redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile,
+        BashTool, EditTool, OsSandboxMode, SessionsHistoryTool, SessionsListTool,
+        ToolExecutionResult, ToolPolicy, ToolPolicyPreset, WriteTool,
     };
+    use crate::session::SessionStore;
     use crate::ApprovalAction;
+    use tau_ai::Message;
 
     fn test_policy(path: &Path) -> Arc<ToolPolicy> {
         Arc::new(ToolPolicy::new(vec![path.to_path_buf()]))
@@ -1684,6 +2064,166 @@ mod tests {
             }),
         );
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn unit_is_session_candidate_path_matches_expected_shapes() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let issue_path = temp.path().join(".tau/github/repo/sessions/issue-42.jsonl");
+        let event_log = temp.path().join(".tau/events/runner.jsonl");
+        let non_jsonl = temp.path().join(".tau/sessions/default.txt");
+
+        assert!(is_session_candidate_path(&session_path));
+        assert!(is_session_candidate_path(&issue_path));
+        assert!(!is_session_candidate_path(&event_log));
+        assert!(!is_session_candidate_path(&non_jsonl));
+    }
+
+    #[tokio::test]
+    async fn functional_sessions_list_tool_reports_session_inventory() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load session");
+        store
+            .append_messages(
+                None,
+                &[
+                    Message::system("system seed"),
+                    Message::user("plan the day"),
+                    Message::assistant_text("done"),
+                ],
+            )
+            .expect("append messages");
+
+        let tool = SessionsListTool::new(test_policy(temp.path()));
+        let result = tool.execute(serde_json::json!({ "limit": 16 })).await;
+        assert!(!result.is_error);
+
+        assert_eq!(
+            result
+                .content
+                .get("returned")
+                .and_then(serde_json::Value::as_u64),
+            Some(1)
+        );
+        let sessions = result
+            .content
+            .get("sessions")
+            .and_then(serde_json::Value::as_array)
+            .expect("sessions array");
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0]
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .ends_with(".tau/sessions/default.jsonl"));
+        assert_eq!(
+            sessions[0]
+                .get("newest_role")
+                .and_then(serde_json::Value::as_str),
+            Some("assistant")
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_sessions_history_tool_returns_bounded_lineage() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let mut store = SessionStore::load(&session_path).expect("load session");
+        let head = store
+            .append_messages(
+                None,
+                &[
+                    Message::system("root"),
+                    Message::user("step one"),
+                    Message::assistant_text("step two"),
+                    Message::user("step three"),
+                ],
+            )
+            .expect("append messages");
+
+        let tool = SessionsHistoryTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": session_path,
+                "head_id": head,
+                "limit": 2
+            }))
+            .await;
+        assert!(!result.is_error);
+        assert_eq!(
+            result
+                .content
+                .get("lineage_entries")
+                .and_then(serde_json::Value::as_u64),
+            Some(4)
+        );
+        assert_eq!(
+            result
+                .content
+                .get("returned")
+                .and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
+        let history = result
+            .content
+            .get("history")
+            .and_then(serde_json::Value::as_array)
+            .expect("history array");
+        assert_eq!(history.len(), 2);
+        assert_eq!(
+            history[0].get("role").and_then(serde_json::Value::as_str),
+            Some("assistant")
+        );
+        assert_eq!(
+            history[1].get("role").and_then(serde_json::Value::as_str),
+            Some("user")
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_sessions_history_tool_rejects_paths_outside_allowed_roots() {
+        let root = tempdir().expect("root");
+        let outside = tempdir().expect("outside");
+        let outside_session = outside.path().join(".tau/sessions/default.jsonl");
+        let mut outside_store = SessionStore::load(&outside_session).expect("load outside session");
+        outside_store
+            .append_messages(None, &[Message::user("outside")])
+            .expect("append outside");
+
+        let tool = SessionsHistoryTool::new(test_policy(root.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": outside_session,
+                "limit": 5
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.to_string().contains("outside allowed roots"));
+    }
+
+    #[tokio::test]
+    async fn regression_sessions_history_tool_reports_malformed_session_files() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/broken.jsonl");
+        if let Some(parent) = session_path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(&session_path, "not-valid-jsonl\n").expect("write malformed session");
+
+        let tool = SessionsHistoryTool::new(test_policy(temp.path()));
+        let result = tool
+            .execute(serde_json::json!({
+                "path": session_path,
+                "limit": 5
+            }))
+            .await;
+        assert!(result.is_error);
+        assert!(result
+            .content
+            .to_string()
+            .contains("failed to load session"));
     }
 
     #[tokio::test]
