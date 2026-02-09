@@ -1323,6 +1323,8 @@ impl SlackBridgeRuntime {
             lines.push("latest_run_id: none".to_string());
         }
 
+        lines.extend(self.state_store.transport_health().status_lines());
+
         lines.join("\n")
     }
 
@@ -2895,6 +2897,19 @@ mod tests {
         assert_eq!(detail.as_deref(), Some("abcdefghijklmnopqrstuvwxyz"));
     }
 
+    #[tokio::test]
+    async fn functional_render_channel_status_includes_transport_health_fields() {
+        let server = MockServer::start();
+        let temp = tempdir().expect("tempdir");
+        let config = test_config(&server.base_url(), temp.path());
+        let runtime = SlackBridgeRuntime::new(config).await.expect("runtime");
+
+        let status = runtime.render_channel_status("C1");
+        assert!(status.contains("Tau status for channel C1: idle"));
+        assert!(status.contains("transport_failure_streak: 0"));
+        assert!(status.contains("transport_last_cycle_processed: 0"));
+    }
+
     #[test]
     fn unit_render_slack_command_response_appends_marker_footer() {
         let event = SlackBridgeEvent {
@@ -3180,7 +3195,8 @@ mod tests {
                 .path("/chat.postMessage")
                 .body_includes("\"channel\":\"C1\"")
                 .body_includes("Tau status for channel C1: idle")
-                .body_includes("tau-slack-event:EvStatus:C1:12.2");
+                .body_includes("tau-slack-event:EvStatus:C1:12.2")
+                .body_includes("transport_failure_streak: 0");
             then.status(200)
                 .json_body(json!({"ok": true, "channel": "C1", "ts": "4.1"}));
         });

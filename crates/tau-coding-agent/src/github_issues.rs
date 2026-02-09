@@ -2363,6 +2363,8 @@ impl GithubIssuesBridgeRuntime {
         } else {
             lines.push("latest_run_id: none".to_string());
         }
+        lines.extend(self.state_store.transport_health().status_lines());
+
         if let Some(session) = self.state_store.issue_session(issue_number) {
             lines.push(format!("chat_session_id: {}", session.session_id));
             lines.push(format!(
@@ -4682,6 +4684,34 @@ mod tests {
         assert!(status.contains("artifacts_total: 1"));
         assert!(status.contains("artifacts_active: 1"));
         assert!(status.contains("artifacts_latest_id: artifact-"));
+        assert!(status.contains("transport_failure_streak: 0"));
+        assert!(status.contains("transport_last_cycle_processed: 0"));
+    }
+
+    #[tokio::test]
+    async fn regression_render_issue_status_defaults_health_lines_for_legacy_state() {
+        let temp = tempdir().expect("tempdir");
+        let repo_state_dir = temp.path().join("owner__repo");
+        std::fs::create_dir_all(&repo_state_dir).expect("repo state dir");
+        std::fs::write(
+            repo_state_dir.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "last_issue_scan_at": null,
+  "processed_event_keys": [],
+  "issue_sessions": {}
+}
+"#,
+        )
+        .expect("write legacy state");
+
+        let config = test_bridge_config("http://127.0.0.1", temp.path());
+        let runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let status = runtime.render_issue_status(7);
+        assert!(status.contains("transport_failure_streak: 0"));
+        assert!(status.contains("transport_last_cycle_processed: 0"));
     }
 
     #[test]
@@ -5618,7 +5648,8 @@ mod tests {
         let status_post = server.mock(|when, then| {
             when.method(POST)
                 .path("/repos/owner/repo/issues/9/comments")
-                .body_includes("Tau status for issue #9: idle");
+                .body_includes("Tau status for issue #9: idle")
+                .body_includes("transport_failure_streak: 0");
             then.status(201).json_body(json!({
                 "id": 930,
                 "html_url": "https://example.test/comment/930"
