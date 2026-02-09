@@ -95,3 +95,9 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ```
 
 All wrappers support `--skip-build` and `--binary <path>` for prebuilt binaries.
+
+## Cleanup local generated artifacts
+
+```bash
+./scripts/dev/clean-local-artifacts.sh
+```

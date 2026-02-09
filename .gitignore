@@ -2,3 +2,8 @@
 **/*.rs.bk
 .env
 .tau/
+ci-artifacts/
+.github/scripts/__pycache__/
+*.pyc
+/=
+/]

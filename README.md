@@ -70,6 +70,12 @@ Run deterministic local demos:
 ./scripts/demo/package.sh
 ```
 
+Clean generated local artifacts/noise:
+
+```bash
+./scripts/dev/clean-local-artifacts.sh
+```
+
 Example assets referenced by guides and smoke tests:
 
 - `./examples/starter/package.json`
