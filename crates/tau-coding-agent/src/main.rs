@@ -143,8 +143,9 @@ pub(crate) use crate::diagnostics_commands::{
     DoctorCommandOutputFormat, DoctorStatus,
 };
 use crate::events::{
-    execute_events_inspect_command, ingest_webhook_immediate_event, run_event_scheduler,
-    EventSchedulerConfig, EventWebhookIngestConfig,
+    execute_events_inspect_command, execute_events_validate_command,
+    ingest_webhook_immediate_event, run_event_scheduler, EventSchedulerConfig,
+    EventWebhookIngestConfig,
 };
 pub(crate) use crate::extension_manifest::{
     apply_extension_message_transforms, dispatch_extension_runtime_hook,

@@ -166,6 +166,34 @@ pub(crate) struct EventsInspectReport {
     pub periodic_missing_last_run_state: usize,
 }
 
+#[derive(Debug, Clone)]
+struct EventsValidateConfig {
+    events_dir: PathBuf,
+    state_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct EventsValidateDiagnostic {
+    pub path: String,
+    pub event_id: Option<String>,
+    pub reason_code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct EventsValidateReport {
+    pub events_dir: String,
+    pub state_path: String,
+    pub now_unix_ms: u64,
+    pub total_files: usize,
+    pub valid_files: usize,
+    pub invalid_files: usize,
+    pub malformed_files: usize,
+    pub failed_files: usize,
+    pub disabled_files: usize,
+    pub diagnostics: Vec<EventsValidateDiagnostic>,
+}
+
 pub(crate) fn execute_events_inspect_command(cli: &Cli) -> Result<()> {
     let report = inspect_events(
         &EventsInspectConfig {
@@ -185,6 +213,36 @@ pub(crate) fn execute_events_inspect_command(cli: &Cli) -> Result<()> {
         );
     } else {
         println!("{}", render_events_inspect_report(&report));
+    }
+    Ok(())
+}
+
+pub(crate) fn execute_events_validate_command(cli: &Cli) -> Result<()> {
+    let report = validate_events_definitions(
+        &EventsValidateConfig {
+            events_dir: cli.events_dir.clone(),
+            state_path: cli.events_state_path.clone(),
+        },
+        current_unix_timestamp_ms(),
+    )?;
+
+    if cli.events_validate_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("failed to render events validate json")?
+        );
+    } else {
+        println!("{}", render_events_validate_report(&report));
+    }
+
+    if report.failed_files > 0 {
+        bail!(
+            "events validate failed: failed_files={} invalid_files={} malformed_files={}",
+            report.failed_files,
+            report.invalid_files,
+            report.malformed_files
+        );
     }
     Ok(())
 }
@@ -753,6 +811,170 @@ fn render_events_inspect_report(report: &EventsInspectReport) -> String {
     )
 }
 
+fn validate_events_definitions(
+    config: &EventsValidateConfig,
+    now_unix_ms: u64,
+) -> Result<EventsValidateReport> {
+    let state = load_runner_state(&config.state_path)?;
+    let event_paths = collect_event_definition_paths(&config.events_dir)?;
+
+    let mut report = EventsValidateReport {
+        events_dir: config.events_dir.display().to_string(),
+        state_path: config.state_path.display().to_string(),
+        now_unix_ms,
+        total_files: event_paths.len(),
+        valid_files: 0,
+        invalid_files: 0,
+        malformed_files: 0,
+        failed_files: 0,
+        disabled_files: 0,
+        diagnostics: Vec::new(),
+    };
+
+    for path in event_paths {
+        let path_text = path.display().to_string();
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(error) => {
+                report.malformed_files = report.malformed_files.saturating_add(1);
+                report.diagnostics.push(EventsValidateDiagnostic {
+                    path: path_text,
+                    event_id: None,
+                    reason_code: "read_error".to_string(),
+                    message: sanitize_error_message(&error.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let definition = match serde_json::from_str::<EventDefinition>(&raw) {
+            Ok(value) => value,
+            Err(error) => {
+                report.malformed_files = report.malformed_files.saturating_add(1);
+                report.diagnostics.push(EventsValidateDiagnostic {
+                    path: path_text,
+                    event_id: None,
+                    reason_code: "json_parse".to_string(),
+                    message: sanitize_error_message(&error.to_string()),
+                });
+                continue;
+            }
+        };
+
+        if !definition.enabled {
+            report.disabled_files = report.disabled_files.saturating_add(1);
+        }
+
+        let mut has_failure = false;
+        if let Err(error) = ChannelStore::parse_channel_ref(&definition.channel) {
+            has_failure = true;
+            report.diagnostics.push(EventsValidateDiagnostic {
+                path: path_text.clone(),
+                event_id: Some(definition.id.clone()),
+                reason_code: "channel_ref_invalid".to_string(),
+                message: sanitize_error_message(&error.to_string()),
+            });
+        }
+
+        if let Err(error) = validate_event_schedule(&definition, &state, now_unix_ms) {
+            has_failure = true;
+            report.diagnostics.push(EventsValidateDiagnostic {
+                path: path_text,
+                event_id: Some(definition.id.clone()),
+                reason_code: "schedule_invalid".to_string(),
+                message: sanitize_error_message(&error.to_string()),
+            });
+        }
+
+        if has_failure {
+            report.invalid_files = report.invalid_files.saturating_add(1);
+        } else {
+            report.valid_files = report.valid_files.saturating_add(1);
+        }
+    }
+
+    report.failed_files = report.invalid_files.saturating_add(report.malformed_files);
+    Ok(report)
+}
+
+fn render_events_validate_report(report: &EventsValidateReport) -> String {
+    let mut lines = vec![format!(
+        "events validate: events_dir={} state_path={} now_unix_ms={} total_files={} valid_files={} invalid_files={} malformed_files={} failed_files={} disabled_files={}",
+        report.events_dir,
+        report.state_path,
+        report.now_unix_ms,
+        report.total_files,
+        report.valid_files,
+        report.invalid_files,
+        report.malformed_files,
+        report.failed_files,
+        report.disabled_files,
+    )];
+
+    for diagnostic in &report.diagnostics {
+        lines.push(format!(
+            "events validate error: path={} event_id={} reason_code={} message={}",
+            diagnostic.path,
+            diagnostic
+                .event_id
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .unwrap_or("none"),
+            diagnostic.reason_code,
+            diagnostic.message
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn validate_event_schedule(
+    event: &EventDefinition,
+    state: &EventRunnerState,
+    now_unix_ms: u64,
+) -> Result<()> {
+    match &event.schedule {
+        EventSchedule::Immediate => Ok(()),
+        EventSchedule::At { .. } => Ok(()),
+        EventSchedule::Periodic { cron, timezone } => {
+            let from_unix_ms = state
+                .periodic_last_run_unix_ms
+                .get(&event.id)
+                .copied()
+                .unwrap_or_else(|| now_unix_ms.saturating_sub(60_000));
+            let _ = next_periodic_due_unix_ms(cron, timezone, from_unix_ms)?;
+            Ok(())
+        }
+    }
+}
+
+fn collect_event_definition_paths(events_dir: &Path) -> Result<Vec<PathBuf>> {
+    if !events_dir.exists() {
+        return Ok(Vec::new());
+    }
+    if !events_dir.is_dir() {
+        bail!("events dir is not a directory: {}", events_dir.display());
+    }
+
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(events_dir)
+        .with_context(|| format!("failed to read {}", events_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read entry in {}", events_dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) == Some("json") {
+            paths.push(path);
+        }
+    }
+    paths.sort_by_key(|path| path.display().to_string());
+    Ok(paths)
+}
+
+fn sanitize_error_message(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn due_decision(
     event: &EventDefinition,
     state: &EventRunnerState,
@@ -972,9 +1194,10 @@ mod tests {
 
     use super::{
         due_decision, ingest_webhook_immediate_event, inspect_events, load_event_records,
-        next_periodic_due_unix_ms, render_events_inspect_report, DueDecision, EventDefinition,
-        EventRunnerState, EventSchedule, EventSchedulerConfig, EventSchedulerRuntime,
-        EventWebhookIngestConfig, EventsInspectConfig, WebhookSignatureAlgorithm,
+        next_periodic_due_unix_ms, render_events_inspect_report, render_events_validate_report,
+        validate_events_definitions, DueDecision, EventDefinition, EventRunnerState, EventSchedule,
+        EventSchedulerConfig, EventSchedulerRuntime, EventWebhookIngestConfig, EventsInspectConfig,
+        EventsValidateConfig, EventsValidateReport, WebhookSignatureAlgorithm,
     };
     use crate::{tools::ToolPolicy, RenderOptions};
 
@@ -1334,6 +1557,170 @@ mod tests {
         assert_eq!(report.due_eval_failed_events, 1);
         assert_eq!(report.stale_immediate_events, 1);
         assert_eq!(report.queued_now_events, 0);
+    }
+
+    #[test]
+    fn unit_validate_events_definitions_classifies_channel_and_schedule_failures() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+
+        write_event(
+            &events_dir.join("invalid.json"),
+            &EventDefinition {
+                id: "invalid".to_string(),
+                channel: "slack".to_string(),
+                prompt: "bad".to_string(),
+                schedule: EventSchedule::Periodic {
+                    cron: "not-a-cron".to_string(),
+                    timezone: "UTC".to_string(),
+                },
+                enabled: true,
+                created_unix_ms: Some(1_700_000_000_000),
+            },
+        );
+
+        let report = validate_events_definitions(
+            &EventsValidateConfig {
+                events_dir,
+                state_path: temp.path().join("state.json"),
+            },
+            1_700_000_100_000,
+        )
+        .expect("validate report");
+
+        assert_eq!(report.total_files, 1);
+        assert_eq!(report.valid_files, 0);
+        assert_eq!(report.invalid_files, 1);
+        assert_eq!(report.malformed_files, 0);
+        assert_eq!(report.failed_files, 1);
+        assert_eq!(report.diagnostics.len(), 2);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|item| item.reason_code == "channel_ref_invalid"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|item| item.reason_code == "schedule_invalid"));
+    }
+
+    #[test]
+    fn functional_render_events_validate_report_includes_summary_and_diagnostics() {
+        let rendered = render_events_validate_report(&EventsValidateReport {
+            events_dir: "/tmp/events".to_string(),
+            state_path: "/tmp/events/state.json".to_string(),
+            now_unix_ms: 1_234,
+            total_files: 3,
+            valid_files: 1,
+            invalid_files: 1,
+            malformed_files: 1,
+            failed_files: 2,
+            disabled_files: 1,
+            diagnostics: vec![super::EventsValidateDiagnostic {
+                path: "/tmp/events/bad.json".to_string(),
+                event_id: Some("bad".to_string()),
+                reason_code: "schedule_invalid".to_string(),
+                message: "invalid cron expression".to_string(),
+            }],
+        });
+
+        assert!(rendered.contains("events validate:"));
+        assert!(rendered.contains("failed_files=2"));
+        assert!(rendered.contains("events validate error:"));
+        assert!(rendered.contains("reason_code=schedule_invalid"));
+    }
+
+    #[test]
+    fn integration_validate_events_definitions_reports_mixed_file_health() {
+        let temp = tempdir().expect("tempdir");
+        let events_dir = temp.path().join("events");
+        std::fs::create_dir_all(&events_dir).expect("create events dir");
+        let state_path = temp.path().join("state.json");
+
+        write_event(
+            &events_dir.join("valid.json"),
+            &EventDefinition {
+                id: "valid".to_string(),
+                channel: "slack/C123".to_string(),
+                prompt: "ok".to_string(),
+                schedule: EventSchedule::Immediate,
+                enabled: true,
+                created_unix_ms: Some(1_700_000_000_000),
+            },
+        );
+        write_event(
+            &events_dir.join("invalid-periodic.json"),
+            &EventDefinition {
+                id: "invalid-periodic".to_string(),
+                channel: "github/owner/repo#10".to_string(),
+                prompt: "bad schedule".to_string(),
+                schedule: EventSchedule::Periodic {
+                    cron: "0/1 * * * * * *".to_string(),
+                    timezone: "Not/AZone".to_string(),
+                },
+                enabled: false,
+                created_unix_ms: Some(1_700_000_000_000),
+            },
+        );
+        std::fs::write(events_dir.join("broken.json"), "{bad-json").expect("write malformed");
+        std::fs::write(
+            &state_path,
+            r#"{
+  "schema_version": 1,
+  "periodic_last_run_unix_ms": {
+    "invalid-periodic": 1700000000000
+  },
+  "debounce_last_seen_unix_ms": {},
+  "signature_replay_last_seen_unix_ms": {}
+}
+"#,
+        )
+        .expect("write state");
+
+        let report = validate_events_definitions(
+            &EventsValidateConfig {
+                events_dir,
+                state_path,
+            },
+            1_700_000_100_000,
+        )
+        .expect("validate report");
+
+        assert_eq!(report.total_files, 3);
+        assert_eq!(report.valid_files, 1);
+        assert_eq!(report.invalid_files, 1);
+        assert_eq!(report.malformed_files, 1);
+        assert_eq!(report.failed_files, 2);
+        assert_eq!(report.disabled_files, 1);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|item| item.reason_code == "json_parse"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|item| item.reason_code == "schedule_invalid"));
+    }
+
+    #[test]
+    fn regression_validate_events_definitions_handles_missing_events_dir() {
+        let temp = tempdir().expect("tempdir");
+        let report = validate_events_definitions(
+            &EventsValidateConfig {
+                events_dir: temp.path().join("missing-events"),
+                state_path: temp.path().join("missing-state.json"),
+            },
+            1_700_000_200_000,
+        )
+        .expect("validate report");
+
+        assert_eq!(report.total_files, 0);
+        assert_eq!(report.valid_files, 0);
+        assert_eq!(report.invalid_files, 0);
+        assert_eq!(report.malformed_files, 0);
+        assert_eq!(report.failed_files, 0);
+        assert!(report.diagnostics.is_empty());
     }
 
     #[tokio::test]

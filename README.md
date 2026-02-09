@@ -684,6 +684,16 @@ cargo run -p tau-coding-agent -- \
   --events-inspect-json
 ```
 
+Validate scheduled event definitions and fail fast on invalid files:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --events-dir .tau/events \
+  --events-state-path .tau/events/state.json \
+  --events-validate \
+  --events-validate-json
+```
+
 Queue a webhook-triggered immediate event from a payload file (debounced):
 
 ```bash

@@ -410,6 +410,8 @@ fn test_cli() -> Cli {
         rpc_serve_ndjson: false,
         events_inspect: false,
         events_inspect_json: false,
+        events_validate: false,
+        events_validate_json: false,
         events_runner: false,
         events_dir: PathBuf::from(".tau/events"),
         events_state_path: PathBuf::from(".tau/events/state.json"),
@@ -14833,6 +14835,57 @@ fn functional_execute_startup_preflight_runs_events_inspect_mode() {
     let handled = execute_startup_preflight(&cli).expect("events inspect preflight");
     assert!(handled);
     assert!(cli.events_dir.join("inspect.json").exists());
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_events_validate_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.events_validate = true;
+    cli.events_validate_json = true;
+
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(
+        cli.events_dir.join("validate.json"),
+        r#"{
+  "id": "validate-now",
+  "channel": "slack/C123",
+  "prompt": "validate me",
+  "schedule": {"type":"immediate"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write validate event");
+
+    let handled = execute_startup_preflight(&cli).expect("events validate preflight");
+    assert!(handled);
+}
+
+#[test]
+fn regression_execute_startup_preflight_events_validate_fails_on_invalid_entry() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.events_validate = true;
+
+    std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
+    std::fs::write(
+        cli.events_dir.join("invalid.json"),
+        r#"{
+  "id": "invalid",
+  "channel": "slack/C123",
+  "prompt": "bad",
+  "schedule": {"type":"periodic","cron":"invalid-cron","timezone":"UTC"},
+  "enabled": true
+}
+"#,
+    )
+    .expect("write invalid event");
+
+    let error = execute_startup_preflight(&cli).expect_err("invalid event should fail");
+    assert!(error.to_string().contains("events validate failed"));
 }
 
 #[test]

@@ -1228,6 +1228,7 @@ pub(crate) struct Cli {
         long = "events-inspect",
         env = "TAU_EVENTS_INSPECT",
         default_value_t = false,
+        conflicts_with = "events_validate",
         conflicts_with = "events_runner",
         conflicts_with = "event_webhook_ingest_file",
         help = "Inspect scheduled events state and due/queue diagnostics, then exit"
@@ -1246,6 +1247,30 @@ pub(crate) struct Cli {
         help = "Emit --events-inspect output as pretty JSON"
     )]
     pub(crate) events_inspect_json: bool,
+
+    #[arg(
+        long = "events-validate",
+        env = "TAU_EVENTS_VALIDATE",
+        default_value_t = false,
+        conflicts_with = "events_inspect",
+        conflicts_with = "events_runner",
+        conflicts_with = "event_webhook_ingest_file",
+        help = "Validate scheduled event definition files and exit non-zero on invalid entries"
+    )]
+    pub(crate) events_validate: bool,
+
+    #[arg(
+        long = "events-validate-json",
+        env = "TAU_EVENTS_VALIDATE_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "events_validate",
+        help = "Emit --events-validate output as pretty JSON"
+    )]
+    pub(crate) events_validate_json: bool,
 
     #[arg(
         long = "events-runner",
