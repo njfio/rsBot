@@ -9,6 +9,7 @@ list_only="false"
 json_output="false"
 has_only_filter="false"
 report_file=""
+fail_fast="false"
 
 demo_scripts=(
   "local.sh"
@@ -132,7 +133,7 @@ print_summary_json() {
 
 print_usage() {
   cat <<EOF
-Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--report-file PATH] [--help]
+Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--report-file PATH] [--fail-fast] [--help]
 
 Run checked-in Tau demo wrappers (local/rpc/events/package) with deterministic summary output.
 
@@ -144,6 +145,7 @@ Options:
   --only DEMOS      Comma-separated subset (names: local,rpc,events,package)
   --json            Emit deterministic JSON output for list/summary modes
   --report-file     Write deterministic JSON report artifact to path
+  --fail-fast       Stop after first failed wrapper
   --help            Show this usage message
 EOF
 }
@@ -209,6 +211,10 @@ while [[ $# -gt 0 ]]; do
       fi
       report_file="$2"
       shift 2
+      ;;
+    --fail-fast)
+      fail_fast="true"
+      shift
       ;;
     --help)
       print_usage
@@ -307,6 +313,10 @@ for demo_script in "${selected_demo_scripts[@]}"; do
   else
     failed=$((failed + 1))
     log_error "[demo:all] FAIL ${demo_script}"
+    if [[ "${fail_fast}" == "true" ]]; then
+      log_error "[demo:all] fail-fast triggered; stopping after ${demo_script}"
+      break
+    fi
   fi
 done
 
