@@ -88,7 +88,7 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         usage: RELEASE_CHANNEL_USAGE,
         description: "Show or persist release track selection",
         details:
-            "Supports stable/beta/dev release tracks and persists selections in project-local .tau metadata.",
+            "Supports stable/beta/dev release tracks, online checks, and cache show/clear operations in project-local .tau metadata.",
         example: "/release-channel set beta",
     },
     CommandSpec {

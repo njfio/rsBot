@@ -9667,7 +9667,7 @@ fn functional_render_help_overview_lists_known_commands() {
     assert!(help.contains("/session-stats"));
     assert!(help.contains("/session-diff [<left-id> <right-id>]"));
     assert!(help.contains("/doctor"));
-    assert!(help.contains("/release-channel [show|set <stable|beta|dev>|check]"));
+    assert!(help.contains("/release-channel [show|set <stable|beta|dev>|check|cache <show|clear>]"));
     assert!(help.contains("/session-graph-export <path>"));
     assert!(help.contains("/session-export <path>"));
     assert!(help.contains("/session-import <path>"));
@@ -9804,7 +9804,8 @@ fn functional_render_command_help_supports_doctor_topic_without_slash() {
 fn functional_render_command_help_supports_release_channel_topic_without_slash() {
     let help = render_command_help("release-channel").expect("render help");
     assert!(help.contains("command: /release-channel"));
-    assert!(help.contains("usage: /release-channel [show|set <stable|beta|dev>|check]"));
+    assert!(help
+        .contains("usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear>]"));
     assert!(help.contains("example: /release-channel set beta"));
 }
 

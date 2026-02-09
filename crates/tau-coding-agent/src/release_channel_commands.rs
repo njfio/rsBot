@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) const RELEASE_CHANNEL_USAGE: &str =
-    "usage: /release-channel [show|set <stable|beta|dev>|check]";
+    "usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear>]";
 pub(crate) const RELEASE_CHANNEL_SCHEMA_VERSION: u32 = 1;
 pub(crate) const RELEASE_LOOKUP_CACHE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const RELEASE_LOOKUP_CACHE_TTL_MS: u64 = 15 * 60 * 1_000;
@@ -54,6 +54,8 @@ pub(crate) enum ReleaseChannelCommand {
     Show,
     Set(ReleaseChannel),
     Check,
+    CacheShow,
+    CacheClear,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,7 +123,25 @@ pub(crate) fn parse_release_channel_command(command_args: &str) -> Result<Releas
         return Ok(ReleaseChannelCommand::Set(channel));
     }
 
+    if tokens.len() == 2 && tokens[0] == "cache" {
+        return match tokens[1] {
+            "show" => Ok(ReleaseChannelCommand::CacheShow),
+            "clear" => Ok(ReleaseChannelCommand::CacheClear),
+            _ => bail!("{RELEASE_CHANNEL_USAGE}"),
+        };
+    }
+
     bail!("{RELEASE_CHANNEL_USAGE}");
+}
+
+fn release_lookup_cache_path_for_release_channel_store(path: &Path) -> Result<PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "release channel path {} does not have a parent directory",
+            path.display()
+        )
+    })?;
+    Ok(parent.join("release-lookup-cache.json"))
 }
 
 pub(crate) fn load_release_channel_store(path: &Path) -> Result<Option<ReleaseChannel>> {
@@ -242,7 +262,7 @@ fn current_unix_timestamp_ms() -> u64 {
     }
 }
 
-fn load_release_lookup_cache(path: &Path, url: &str) -> Result<Option<ReleaseLookupCacheFile>> {
+fn load_release_lookup_cache_file(path: &Path) -> Result<Option<ReleaseLookupCacheFile>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -258,6 +278,13 @@ fn load_release_lookup_cache(path: &Path, url: &str) -> Result<Option<ReleaseLoo
             RELEASE_LOOKUP_CACHE_SCHEMA_VERSION
         );
     }
+    Ok(Some(parsed))
+}
+
+fn load_release_lookup_cache(path: &Path, url: &str) -> Result<Option<ReleaseLookupCacheFile>> {
+    let Some(parsed) = load_release_lookup_cache_file(path)? else {
+        return Ok(None);
+    };
     if parsed.source_url != url {
         return Ok(None);
     }
@@ -467,6 +494,65 @@ pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -
                 resolve_latest_channel_release(channel, RELEASE_LOOKUP_URL)
             })
         }
+        ReleaseChannelCommand::CacheShow => {
+            let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
+                Ok(path) => path,
+                Err(error) => {
+                    return format!(
+                        "release channel error: path={} error={error}",
+                        path.display()
+                    );
+                }
+            };
+            match load_release_lookup_cache_file(&cache_path) {
+                Ok(Some(cache)) => {
+                    let age_ms =
+                        current_unix_timestamp_ms().saturating_sub(cache.fetched_at_unix_ms);
+                    format!(
+                        "release cache: path={} status=present schema_version={} entries={} fetched_at_unix_ms={} age_ms={} source_url={}",
+                        cache_path.display(),
+                        cache.schema_version,
+                        cache.releases.len(),
+                        cache.fetched_at_unix_ms,
+                        age_ms,
+                        cache.source_url
+                    )
+                }
+                Ok(None) => format!(
+                    "release cache: path={} status=missing",
+                    cache_path.display()
+                ),
+                Err(error) => format!(
+                    "release channel error: path={} error={error}",
+                    cache_path.display()
+                ),
+            }
+        }
+        ReleaseChannelCommand::CacheClear => {
+            let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
+                Ok(path) => path,
+                Err(error) => {
+                    return format!(
+                        "release channel error: path={} error={error}",
+                        path.display()
+                    );
+                }
+            };
+            match std::fs::remove_file(&cache_path) {
+                Ok(()) => format!(
+                    "release cache clear: path={} status=removed",
+                    cache_path.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => format!(
+                    "release cache clear: path={} status=already_missing",
+                    cache_path.display()
+                ),
+                Err(error) => format!(
+                    "release channel error: path={} error={error}",
+                    cache_path.display()
+                ),
+            }
+        }
     }
 }
 
@@ -493,11 +579,22 @@ mod tests {
             parse_release_channel_command("check").expect("check command"),
             ReleaseChannelCommand::Check
         );
+        assert_eq!(
+            parse_release_channel_command("cache show").expect("cache show command"),
+            ReleaseChannelCommand::CacheShow
+        );
+        assert_eq!(
+            parse_release_channel_command("cache clear").expect("cache clear command"),
+            ReleaseChannelCommand::CacheClear
+        );
 
         let invalid = parse_release_channel_command("set nightly").expect_err("invalid channel");
         assert!(invalid.to_string().contains("expected stable|beta|dev"));
 
         let invalid = parse_release_channel_command("check now").expect_err("invalid extra arg");
+        assert!(invalid.to_string().contains(RELEASE_CHANNEL_USAGE));
+        let invalid =
+            parse_release_channel_command("cache inspect").expect_err("invalid cache subcommand");
         assert!(invalid.to_string().contains(RELEASE_CHANNEL_USAGE));
     }
 
@@ -582,6 +679,42 @@ mod tests {
         let show = execute_release_channel_command("show", &path);
         assert!(show.contains("channel=dev"));
         assert!(show.contains("source=store"));
+    }
+
+    #[test]
+    fn functional_execute_release_channel_command_cache_show_and_clear_round_trip() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+
+        let missing = execute_release_channel_command("cache show", &path);
+        assert!(missing.contains("status=missing"));
+        assert!(missing.contains(&format!("path={}", cache_path.display())));
+
+        let releases = vec![GitHubReleaseRecord {
+            tag_name: "v9.9.9".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(
+            &cache_path,
+            "https://example.invalid/releases",
+            current_unix_timestamp_ms(),
+            &releases,
+        )
+        .expect("save cache");
+
+        let present = execute_release_channel_command("cache show", &path);
+        assert!(present.contains("status=present"));
+        assert!(present.contains("entries=1"));
+        assert!(present.contains("source_url=https://example.invalid/releases"));
+
+        let cleared = execute_release_channel_command("cache clear", &path);
+        assert!(cleared.contains("status=removed"));
+        assert!(!cache_path.exists());
+
+        let cleared_again = execute_release_channel_command("cache clear", &path);
+        assert!(cleared_again.contains("status=already_missing"));
     }
 
     #[test]
@@ -843,5 +976,19 @@ mod tests {
         assert!(output.contains("latest=unknown"));
         assert!(output.contains("status=unknown"));
         assert!(output.contains("error=lookup backend unavailable"));
+    }
+
+    #[test]
+    fn regression_execute_release_channel_command_cache_show_reports_parse_errors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let parent = cache_path.parent().expect("cache parent");
+        std::fs::create_dir_all(parent).expect("create cache dir");
+        std::fs::write(&cache_path, "{malformed-json").expect("write malformed cache");
+
+        let output = execute_release_channel_command("cache show", &path);
+        assert!(output.contains("release channel error:"));
+        assert!(output.contains("failed to parse release lookup cache"));
     }
 }
