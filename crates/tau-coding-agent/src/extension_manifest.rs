@@ -1582,6 +1582,24 @@ fn extension_process_test_guard() -> std::sync::MutexGuard<'static, ()> {
         .expect("extension process test lock")
 }
 
+fn format_extension_process_stdin_payload(request_json: &str) -> String {
+    let mut payload = String::with_capacity(request_json.len() + 1);
+    payload.push_str(request_json);
+    payload.push('\n');
+    payload
+}
+
+fn extension_shell_fallback_candidates() -> &'static [&'static str] {
+    #[cfg(unix)]
+    {
+        &["/bin/sh", "sh"]
+    }
+    #[cfg(not(unix))]
+    {
+        &["sh"]
+    }
+}
+
 fn run_extension_process_with_timeout(
     entrypoint: &Path,
     request_json: &str,
@@ -1600,16 +1618,29 @@ fn run_extension_process_with_timeout(
     let mut child = match spawn_child(&mut Command::new(entrypoint)) {
         Ok(child) => child,
         Err(error) => {
-            let mut fallback = Command::new("sh");
-            fallback.arg(entrypoint);
-            match spawn_child(&mut fallback) {
-                Ok(child) => child,
-                Err(fallback_error) => {
+            let mut fallback_errors = Vec::new();
+            let mut spawned = None;
+            for candidate in extension_shell_fallback_candidates() {
+                let mut fallback = Command::new(candidate);
+                fallback.arg(entrypoint);
+                match spawn_child(&mut fallback) {
+                    Ok(child) => {
+                        spawned = Some(child);
+                        break;
+                    }
+                    Err(candidate_error) => {
+                        fallback_errors.push(format!("{candidate}: {candidate_error}"));
+                    }
+                }
+            }
+            match spawned {
+                Some(child) => child,
+                None => {
                     return Err(anyhow!(
-                        "failed to spawn extension process {}: {} (fallback to sh failed: {})",
+                        "failed to spawn extension process {}: {} (fallback attempts failed: {})",
                         entrypoint.display(),
                         error,
-                        fallback_error
+                        fallback_errors.join("; ")
                     ));
                 }
             }
@@ -1617,13 +1648,17 @@ fn run_extension_process_with_timeout(
     };
 
     {
+        let stdin_payload = format_extension_process_stdin_payload(request_json);
         let stdin = child
             .stdin
             .as_mut()
             .ok_or_else(|| anyhow!("failed to open extension process stdin"))?;
         stdin
-            .write_all(request_json.as_bytes())
+            .write_all(stdin_payload.as_bytes())
             .context("failed to write extension payload to process stdin")?;
+        stdin
+            .flush()
+            .context("failed to flush extension payload to process stdin")?;
     }
     child.stdin.take();
 
@@ -1880,7 +1915,8 @@ mod tests {
         apply_extension_message_transforms, discover_extension_runtime_registrations,
         dispatch_extension_registered_command, dispatch_extension_runtime_hook,
         evaluate_extension_policy_override, execute_extension_process_hook,
-        execute_extension_registered_tool, list_extension_manifests,
+        execute_extension_registered_tool, extension_shell_fallback_candidates,
+        format_extension_process_stdin_payload, list_extension_manifests,
         parse_message_transform_response_prompt, parse_policy_override_response,
         render_extension_list_report, render_extension_manifest_report,
         required_permission_for_hook, validate_extension_manifest, ExtensionHook,
@@ -2479,6 +2515,20 @@ mod tests {
     }
 
     #[test]
+    fn unit_format_extension_process_stdin_payload_appends_newline() {
+        let payload = format_extension_process_stdin_payload(r#"{"hook":"run-start"}"#);
+        assert_eq!(payload, "{\"hook\":\"run-start\"}\n");
+    }
+
+    #[test]
+    fn unit_extension_shell_fallback_candidates_include_sh() {
+        let candidates = extension_shell_fallback_candidates();
+        assert!(candidates.contains(&"sh"));
+        #[cfg(unix)]
+        assert_eq!(candidates.first().copied(), Some("/bin/sh"));
+    }
+
+    #[test]
     fn functional_apply_extension_message_transforms_rewrites_prompt() {
         let temp = tempdir().expect("tempdir");
         let root = temp.path().join("extensions");
@@ -2488,7 +2538,7 @@ mod tests {
         let script_path = extension_dir.join("transform.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":\"rewritten prompt\"}'\n",
+            "#!/bin/sh\nIFS= read -r _input\nprintf '{\"prompt\":\"rewritten prompt\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -2509,10 +2559,50 @@ mod tests {
         .expect("write manifest");
 
         let result = apply_extension_message_transforms(&root, "original prompt");
-        assert_eq!(result.prompt, "rewritten prompt");
+        assert_eq!(
+            result.prompt, "rewritten prompt",
+            "transform diagnostics: {:?}",
+            result.diagnostics
+        );
         assert_eq!(result.executed, 1);
         assert_eq!(result.applied, 1);
         assert_eq!(result.applied_ids, vec!["transformer@0.1.0".to_string()]);
+    }
+
+    #[test]
+    fn integration_apply_extension_message_transforms_supports_strict_line_readers() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("strict-transformer");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("transform.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nset -eu\nIFS= read -r _input\nprintf '{\"prompt\":\"strict rewritten\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "strict-transformer",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "transform.sh",
+  "hooks": ["message-transform"],
+  "permissions": ["run-commands"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        let result = apply_extension_message_transforms(&root, "original prompt");
+        assert_eq!(result.prompt, "strict rewritten");
+        assert_eq!(result.executed, 1);
+        assert_eq!(result.applied, 1);
     }
 
     #[test]
@@ -2527,14 +2617,14 @@ mod tests {
         let a_script = a_dir.join("transform.sh");
         fs::write(
             &a_script,
-            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":\"alpha\"}'\n",
+            "#!/bin/sh\nIFS= read -r _input\nprintf '{\"prompt\":\"alpha\"}'\n",
         )
         .expect("write a script");
         make_executable(&a_script);
         let b_script = b_dir.join("transform.sh");
         fs::write(
             &b_script,
-            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":\"beta\"}'\n",
+            "#!/bin/sh\nIFS= read -r _input\nprintf '{\"prompt\":\"beta\"}'\n",
         )
         .expect("write b script");
         make_executable(&b_script);
@@ -2590,7 +2680,7 @@ mod tests {
         let script_path = extension_dir.join("transform.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":123}'\n",
+            "#!/bin/sh\nIFS= read -r _input\nprintf '{\"prompt\":123}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
@@ -2621,6 +2711,45 @@ mod tests {
     }
 
     #[test]
+    fn regression_apply_extension_message_transforms_remains_stable_over_repeated_runs() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join("extensions");
+        let extension_dir = root.join("stable-transformer");
+        fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+        let script_path = extension_dir.join("transform.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nset -eu\nIFS= read -r _input\nprintf '{\"prompt\":\"stable rewritten\"}'\n",
+        )
+        .expect("write script");
+        make_executable(&script_path);
+
+        fs::write(
+            extension_dir.join("extension.json"),
+            r#"{
+  "schema_version": 1,
+  "id": "stable-transformer",
+  "version": "0.1.0",
+  "runtime": "process",
+  "entrypoint": "transform.sh",
+  "hooks": ["message-transform"],
+  "permissions": ["run-commands"],
+  "timeout_ms": 5000
+}"#,
+        )
+        .expect("write manifest");
+
+        for _ in 0..24 {
+            let result = apply_extension_message_transforms(&root, "original prompt");
+            assert_eq!(result.prompt, "stable rewritten");
+            assert_eq!(result.executed, 1);
+            assert_eq!(result.applied, 1);
+            assert!(result.diagnostics.is_empty());
+        }
+    }
+
+    #[test]
     fn regression_apply_extension_message_transforms_skips_missing_permission() {
         let temp = tempdir().expect("tempdir");
         let root = temp.path().join("extensions");
@@ -2630,7 +2759,7 @@ mod tests {
         let script_path = extension_dir.join("transform.sh");
         fs::write(
             &script_path,
-            "#!/bin/sh\nread -r _input\nprintf '{\"prompt\":\"rewritten\"}'\n",
+            "#!/bin/sh\nIFS= read -r _input\nprintf '{\"prompt\":\"rewritten\"}'\n",
         )
         .expect("write script");
         make_executable(&script_path);
