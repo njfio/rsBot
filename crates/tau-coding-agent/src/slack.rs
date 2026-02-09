@@ -18,9 +18,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
 use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
 use crate::{
-    current_unix_timestamp_ms, evaluate_pairing_access, pairing_policy_for_state_dir,
-    run_prompt_with_cancellation, write_text_atomic, PairingDecision, PromptRunStatus,
-    RenderOptions, SessionRuntime,
+    authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
+    evaluate_pairing_access, pairing_policy_for_state_dir, rbac_policy_path_for_state_dir,
+    run_prompt_with_cancellation, slack_principal, write_text_atomic, PairingDecision,
+    PromptRunStatus, RbacDecision, RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -922,11 +923,67 @@ impl SlackBridgeRuntime {
             return Ok(());
         }
 
+        let slack_command = parse_slack_command(&event, &self.bot_user_id);
+        let rbac_principal = slack_principal(&event.user_id);
+        let rbac_action = rbac_action_for_slack_command(slack_command.as_ref());
+        let rbac_policy_path = rbac_policy_path_for_state_dir(&self.config.state_dir);
+        match authorize_action_for_principal_with_policy_path(
+            &rbac_principal,
+            &rbac_action,
+            rbac_policy_path.as_path(),
+        ) {
+            Ok(RbacDecision::Allow { .. }) => {}
+            Ok(RbacDecision::Deny {
+                reason_code,
+                matched_role,
+                matched_pattern,
+            }) => {
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": now_unix_ms,
+                    "event_key": event.key,
+                    "channel": event.channel_id,
+                    "event_id": event.event_id,
+                    "command": "rbac-authorization",
+                    "status": "denied",
+                    "reason_code": reason_code,
+                    "matched_role": matched_role,
+                    "matched_pattern": matched_pattern,
+                    "principal": rbac_principal,
+                    "action": rbac_action,
+                    "actor_id": event.user_id,
+                }))?;
+                if self.state_store.mark_processed(&event.key) {
+                    self.state_store.save()?;
+                }
+                return Ok(());
+            }
+            Err(error) => {
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": now_unix_ms,
+                    "event_key": event.key,
+                    "channel": event.channel_id,
+                    "event_id": event.event_id,
+                    "command": "rbac-authorization",
+                    "status": "error",
+                    "reason_code": "rbac_policy_error",
+                    "principal": rbac_principal,
+                    "action": rbac_action,
+                    "actor_id": event.user_id,
+                    "error": error.to_string(),
+                }))?;
+                if self.state_store.mark_processed(&event.key) {
+                    self.state_store.save()?;
+                }
+                report.failed_events = report.failed_events.saturating_add(1);
+                return Ok(());
+            }
+        }
+
         if self.state_store.mark_processed(&event.key) {
             self.state_store.save()?;
         }
 
-        if let Some(command) = parse_slack_command(&event, &self.bot_user_id) {
+        if let Some(command) = slack_command {
             self.handle_slack_command(&event, command, report).await?;
             return Ok(());
         }
@@ -1466,7 +1523,10 @@ async fn run_prompt_for_event(
             max_tokens: None,
         },
     );
-    crate::tools::register_builtin_tools(&mut agent, config.tool_policy.clone());
+    let mut tool_policy = config.tool_policy.clone();
+    tool_policy.rbac_principal = Some(slack_principal(&event.user_id));
+    tool_policy.rbac_policy_path = Some(rbac_policy_path_for_state_dir(&config.state_dir));
+    crate::tools::register_builtin_tools(&mut agent, tool_policy);
 
     let usage = Arc::new(Mutex::new(PromptUsageSummary::default()));
     agent.subscribe({
@@ -1834,6 +1894,18 @@ fn slack_command_usage() -> String {
         "- `/tau artifacts [purge|run <run_id>|show <artifact_id>]`",
     ]
     .join("\n")
+}
+
+fn rbac_action_for_slack_command(command: Option<&SlackCommand>) -> String {
+    match command {
+        Some(SlackCommand::Help) => "command:/tau-help".to_string(),
+        Some(SlackCommand::Status) => "command:/tau-status".to_string(),
+        Some(SlackCommand::Stop) => "command:/tau-stop".to_string(),
+        Some(SlackCommand::Artifacts { .. }) => "command:/tau-artifacts".to_string(),
+        Some(SlackCommand::ArtifactShow { .. }) => "command:/tau-artifacts-show".to_string(),
+        Some(SlackCommand::Invalid { .. }) => "command:/tau-invalid".to_string(),
+        None => "command:/tau-run".to_string(),
+    }
 }
 
 fn parse_slack_command(event: &SlackBridgeEvent, bot_user_id: &str) -> Option<SlackCommand> {
@@ -3062,6 +3134,81 @@ mod tests {
             .expect("read outbound log");
         assert!(outbound.contains("\"status\":\"denied\""));
         assert!(outbound.contains("\"reason_code\":\"deny_actor_not_paired_or_allowlisted\""));
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_denies_unbound_actor_in_rbac_team_mode() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST).path("/chat.postMessage");
+            then.status(200)
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "1.1"}));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let security_dir = temp.path().join("security");
+        std::fs::create_dir_all(&security_dir).expect("security dir");
+        std::fs::write(
+            security_dir.join("allowlist.json"),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "slack:C1": ["U1"]
+  }
+}
+"#,
+        )
+        .expect("write strict allowlist");
+        std::fs::write(
+            security_dir.join("rbac.json"),
+            r#"{
+  "schema_version": 1,
+  "team_mode": true,
+  "bindings": [],
+  "roles": {}
+}
+"#,
+        )
+        .expect("write rbac policy");
+
+        let config = test_config(&server.base_url(), temp.path());
+        let mut runtime = SlackBridgeRuntime::new(config).await.expect("runtime");
+
+        let now_seconds = current_unix_timestamp_ms() / 1000;
+        let envelope = SlackSocketEnvelope {
+            envelope_id: "env-rbac-deny".to_string(),
+            envelope_type: "events_api".to_string(),
+            payload: json!({
+                "type": "event_callback",
+                "event_id": "EvRbacDeny",
+                "event_time": now_seconds,
+                "event": {
+                    "type": "app_mention",
+                    "user": "U1",
+                    "channel": "C1",
+                    "text": "<@UBOT> /tau status",
+                    "ts": "56.1"
+                }
+            }),
+        };
+
+        let mut report = PollCycleReport::default();
+        runtime
+            .handle_envelope(envelope, &mut report)
+            .await
+            .expect("handle envelope");
+
+        assert_eq!(report.discovered_events, 1);
+        assert_eq!(report.queued_events, 0);
+        assert_eq!(report.failed_events, 0);
+        post.assert_calls(0);
+
+        let outbound = std::fs::read_to_string(temp.path().join("outbound-events.jsonl"))
+            .expect("read outbound log");
+        assert!(outbound.contains("\"command\":\"rbac-authorization\""));
+        assert!(outbound.contains("\"status\":\"denied\""));
+        assert!(outbound.contains("\"reason_code\":\"deny_unbound_principal\""));
     }
 
     #[tokio::test]

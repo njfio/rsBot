@@ -17,9 +17,11 @@ use tokio::sync::watch;
 use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
 use crate::session_commands::{parse_session_search_args, search_session_entries};
 use crate::{
-    current_unix_timestamp_ms, evaluate_pairing_access, pairing_policy_for_state_dir,
-    run_prompt_with_cancellation, session_message_preview, session_message_role, write_text_atomic,
-    PairingDecision, PromptRunStatus, RenderOptions, SessionRuntime,
+    authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
+    evaluate_pairing_access, github_principal, pairing_policy_for_state_dir,
+    rbac_policy_path_for_state_dir, run_prompt_with_cancellation, session_message_preview,
+    session_message_role, write_text_atomic, PairingDecision, PromptRunStatus, RbacDecision,
+    RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -931,6 +933,80 @@ impl GithubIssuesBridgeRuntime {
                         reason_code
                     );
                     continue;
+                }
+
+                let rbac_principal = github_principal(&event.author_login);
+                let rbac_action = rbac_action_for_event(&action);
+                let rbac_policy_path = rbac_policy_path_for_state_dir(&self.config.state_dir);
+                match authorize_action_for_principal_with_policy_path(
+                    &rbac_principal,
+                    &rbac_action,
+                    rbac_policy_path.as_path(),
+                ) {
+                    Ok(RbacDecision::Allow { .. }) => {}
+                    Ok(RbacDecision::Deny {
+                        reason_code,
+                        matched_role,
+                        matched_pattern,
+                    }) => {
+                        self.append_channel_log(
+                            &event,
+                            "inbound",
+                            json!({
+                                "kind": event.kind.as_str(),
+                                "author_login": event.author_login,
+                                "body": event.body,
+                                "action": format!("{action:?}"),
+                                "rbac": {
+                                    "decision": "deny",
+                                    "reason_code": reason_code,
+                                    "matched_role": matched_role,
+                                    "matched_pattern": matched_pattern,
+                                    "principal": rbac_principal,
+                                    "action": rbac_action,
+                                },
+                            }),
+                        )?;
+                        self.outbound_log.append(&json!({
+                            "timestamp_unix_ms": current_unix_timestamp_ms(),
+                            "repo": self.repo.as_slug(),
+                            "event_key": event.key.clone(),
+                            "issue_number": event.issue_number,
+                            "command": "rbac-authorization",
+                            "status": "denied",
+                            "reason_code": reason_code,
+                            "matched_role": matched_role,
+                            "matched_pattern": matched_pattern,
+                            "principal": rbac_principal,
+                            "action": rbac_action,
+                            "actor_id": event.author_login,
+                        }))?;
+                        if self.state_store.mark_processed(&event.key) {
+                            state_dirty = true;
+                        }
+                        report.processed_events = report.processed_events.saturating_add(1);
+                        continue;
+                    }
+                    Err(error) => {
+                        self.outbound_log.append(&json!({
+                            "timestamp_unix_ms": current_unix_timestamp_ms(),
+                            "repo": self.repo.as_slug(),
+                            "event_key": event.key.clone(),
+                            "issue_number": event.issue_number,
+                            "command": "rbac-authorization",
+                            "status": "error",
+                            "reason_code": "rbac_policy_error",
+                            "principal": rbac_principal,
+                            "action": rbac_action,
+                            "actor_id": event.author_login,
+                            "error": error.to_string(),
+                        }))?;
+                        if self.state_store.mark_processed(&event.key) {
+                            state_dirty = true;
+                        }
+                        report.failed_events = report.failed_events.saturating_add(1);
+                        continue;
+                    }
                 }
 
                 if let Err(error) = self
@@ -2042,6 +2118,30 @@ impl GithubIssuesBridgeRuntime {
     }
 }
 
+fn rbac_action_for_event(action: &EventAction) -> String {
+    match action {
+        EventAction::RunPrompt { .. } => "command:/tau-run".to_string(),
+        EventAction::Command(command) => match command {
+            TauIssueCommand::Run { .. } => "command:/tau-run".to_string(),
+            TauIssueCommand::Stop => "command:/tau-stop".to_string(),
+            TauIssueCommand::Status => "command:/tau-status".to_string(),
+            TauIssueCommand::Compact => "command:/tau-compact".to_string(),
+            TauIssueCommand::Help => "command:/tau-help".to_string(),
+            TauIssueCommand::ChatStart => "command:/tau-chat-start".to_string(),
+            TauIssueCommand::ChatResume => "command:/tau-chat-resume".to_string(),
+            TauIssueCommand::ChatReset => "command:/tau-chat-reset".to_string(),
+            TauIssueCommand::ChatExport => "command:/tau-chat-export".to_string(),
+            TauIssueCommand::ChatStatus => "command:/tau-chat-status".to_string(),
+            TauIssueCommand::ChatShow { .. } => "command:/tau-chat-show".to_string(),
+            TauIssueCommand::ChatSearch { .. } => "command:/tau-chat-search".to_string(),
+            TauIssueCommand::Artifacts { .. } => "command:/tau-artifacts".to_string(),
+            TauIssueCommand::ArtifactShow { .. } => "command:/tau-artifacts-show".to_string(),
+            TauIssueCommand::Summarize { .. } => "command:/tau-summarize".to_string(),
+            TauIssueCommand::Invalid { .. } => "command:/tau-invalid".to_string(),
+        },
+    }
+}
+
 async fn execute_issue_run_task(params: IssueRunTaskParams) -> RunTaskResult {
     let IssueRunTaskParams {
         github_client,
@@ -2199,7 +2299,10 @@ async fn run_prompt_for_event(
             max_tokens: None,
         },
     );
-    crate::tools::register_builtin_tools(&mut agent, config.tool_policy.clone());
+    let mut tool_policy = config.tool_policy.clone();
+    tool_policy.rbac_principal = Some(github_principal(&event.author_login));
+    tool_policy.rbac_policy_path = Some(rbac_policy_path_for_state_dir(&config.state_dir));
+    crate::tools::register_builtin_tools(&mut agent, tool_policy);
 
     let usage = Arc::new(Mutex::new(PromptUsageSummary::default()));
     agent.subscribe({
@@ -3752,6 +3855,91 @@ mod tests {
         .expect("read outbound log");
         assert!(outbound.contains("\"status\":\"denied\""));
         assert!(outbound.contains("\"reason_code\":\"deny_actor_not_paired_or_allowlisted\""));
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_poll_denies_unbound_actor_in_rbac_team_mode() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 31,
+                "number": 88,
+                "title": "RBAC policy",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/88/comments");
+            then.status(200).json_body(json!([{
+                "id": 8801,
+                "body": "/tau status",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let status_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/88/comments")
+                .body_includes("Current status for issue");
+            then.status(201).json_body(json!({
+                "id": 8888,
+                "html_url": "https://example.test/comment/8888"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let security_dir = temp.path().join("security");
+        std::fs::create_dir_all(&security_dir).expect("security dir");
+        std::fs::write(
+            security_dir.join("allowlist.json"),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "github:owner/repo": ["alice"]
+  }
+}
+"#,
+        )
+        .expect("write strict allowlist");
+        std::fs::write(
+            security_dir.join("rbac.json"),
+            r#"{
+  "schema_version": 1,
+  "team_mode": true,
+  "bindings": [],
+  "roles": {}
+}
+"#,
+        )
+        .expect("write rbac policy");
+
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.discovered_events, 1);
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        status_post.assert_calls(0);
+
+        let outbound = std::fs::read_to_string(
+            temp.path()
+                .join("owner__repo")
+                .join("outbound-events.jsonl"),
+        )
+        .expect("read outbound log");
+        assert!(outbound.contains("\"command\":\"rbac-authorization\""));
+        assert!(outbound.contains("\"status\":\"denied\""));
+        assert!(outbound.contains("\"reason_code\":\"deny_unbound_principal\""));
     }
 
     #[tokio::test]

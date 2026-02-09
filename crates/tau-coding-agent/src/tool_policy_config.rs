@@ -111,5 +111,10 @@ pub(crate) fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
             .extension_policy_override_root
             .as_ref()
             .map(|path| path.display().to_string()),
+        "rbac_principal": policy.rbac_principal.clone(),
+        "rbac_policy_path": policy
+            .rbac_policy_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
     })
 }

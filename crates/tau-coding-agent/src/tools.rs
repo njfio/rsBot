@@ -15,7 +15,11 @@ use tokio::{process::Command, time::timeout};
 use crate::extension_manifest::{
     evaluate_extension_policy_override, execute_extension_registered_tool, ExtensionRegisteredTool,
 };
-use crate::{evaluate_approval_gate, ApprovalAction, ApprovalGateResult};
+use crate::{
+    authorize_tool_for_principal, authorize_tool_for_principal_with_policy_path,
+    evaluate_approval_gate, resolve_local_principal, ApprovalAction, ApprovalGateResult,
+    RbacDecision,
+};
 
 const SAFE_BASH_ENV_VARS: &[&str] = &[
     "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TMP", "TEMP",
@@ -80,6 +84,8 @@ pub struct ToolPolicy {
     pub bash_dry_run: bool,
     pub tool_policy_trace: bool,
     pub extension_policy_override_root: Option<PathBuf>,
+    pub rbac_principal: Option<String>,
+    pub rbac_policy_path: Option<PathBuf>,
 }
 
 impl ToolPolicy {
@@ -104,6 +110,8 @@ impl ToolPolicy {
             bash_dry_run: false,
             tool_policy_trace: false,
             extension_policy_override_root: None,
+            rbac_principal: None,
+            rbac_policy_path: None,
         };
         policy.apply_preset(ToolPolicyPreset::Balanced);
         policy
@@ -389,6 +397,18 @@ impl AgentTool for WriteTool {
             }));
         }
 
+        if let Some(rbac_result) = evaluate_tool_rbac_gate(
+            self.policy.rbac_principal.as_deref(),
+            "write",
+            self.policy.rbac_policy_path.as_deref(),
+            json!({
+                "path": resolved.display().to_string(),
+                "content_bytes": content_size,
+            }),
+        ) {
+            return rbac_result;
+        }
+
         if let Some(approval_result) = evaluate_tool_approval_gate(ApprovalAction::ToolWrite {
             path: resolved.display().to_string(),
             content_bytes: content_size,
@@ -486,6 +506,19 @@ impl AgentTool for EditTool {
                 "path": resolved.display().to_string(),
                 "error": error,
             }));
+        }
+
+        if let Some(rbac_result) = evaluate_tool_rbac_gate(
+            self.policy.rbac_principal.as_deref(),
+            "edit",
+            self.policy.rbac_policy_path.as_deref(),
+            json!({
+                "path": resolved.display().to_string(),
+                "find": find,
+                "replace_bytes": replace.len(),
+            }),
+        ) {
+            return rbac_result;
         }
 
         if let Some(approval_result) = evaluate_tool_approval_gate(ApprovalAction::ToolEdit {
@@ -653,6 +686,54 @@ fn evaluate_tool_approval_gate(action: ApprovalAction) -> Option<ToolExecutionRe
             "action": action_payload,
             "reason_code": "approval_gate_error",
             "error": format!("failed to evaluate approval gate: {error}"),
+        }))),
+    }
+}
+
+fn evaluate_tool_rbac_gate(
+    principal: Option<&str>,
+    tool_name: &str,
+    policy_path: Option<&Path>,
+    action_payload: Value,
+) -> Option<ToolExecutionResult> {
+    let principal = principal
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(resolve_local_principal);
+    let decision = if let Some(policy_path) = policy_path {
+        authorize_tool_for_principal_with_policy_path(
+            Some(principal.as_str()),
+            tool_name,
+            policy_path,
+        )
+    } else {
+        authorize_tool_for_principal(Some(principal.as_str()), tool_name)
+    };
+    match decision {
+        Ok(RbacDecision::Allow { .. }) => None,
+        Ok(RbacDecision::Deny {
+            reason_code,
+            matched_role,
+            matched_pattern,
+        }) => Some(ToolExecutionResult::error(json!({
+            "policy_rule": "rbac",
+            "principal": principal,
+            "action": format!("tool:{tool_name}"),
+            "payload": action_payload,
+            "reason_code": reason_code,
+            "matched_role": matched_role,
+            "matched_pattern": matched_pattern,
+            "error": "rbac denied tool execution",
+            "hint": "run '/rbac check tool:* --json' to inspect active role policy",
+        }))),
+        Err(error) => Some(ToolExecutionResult::error(json!({
+            "policy_rule": "rbac",
+            "principal": principal,
+            "action": format!("tool:{tool_name}"),
+            "payload": action_payload,
+            "reason_code": "rbac_policy_error",
+            "error": format!("failed to evaluate rbac policy: {error}"),
         }))),
     }
 }
@@ -877,6 +958,18 @@ impl AgentTool for BashTool {
                 None
             }
         };
+
+        if let Some(rbac_result) = evaluate_tool_rbac_gate(
+            self.policy.rbac_principal.as_deref(),
+            "bash",
+            self.policy.rbac_policy_path.as_deref(),
+            json!({
+                "command": command.clone(),
+                "cwd": cwd.as_ref().map(|value| value.display().to_string()),
+            }),
+        ) {
+            return rbac_result;
+        }
 
         if let Some(approval_result) = evaluate_tool_approval_gate(ApprovalAction::ToolBash {
             command: command.clone(),
@@ -1531,10 +1624,10 @@ mod tests {
 
     use super::{
         bash_profile_name, build_spec_from_command_template, canonicalize_best_effort,
-        command_available, evaluate_tool_approval_gate, is_command_allowed, leading_executable,
-        os_sandbox_mode_name, redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool,
-        BashCommandProfile, BashTool, EditTool, OsSandboxMode, ToolExecutionResult, ToolPolicy,
-        ToolPolicyPreset, WriteTool,
+        command_available, evaluate_tool_approval_gate, evaluate_tool_rbac_gate,
+        is_command_allowed, leading_executable, os_sandbox_mode_name, redact_secrets,
+        resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool, EditTool,
+        OsSandboxMode, ToolExecutionResult, ToolPolicy, ToolPolicyPreset, WriteTool,
     };
     use crate::ApprovalAction;
 
@@ -1576,6 +1669,20 @@ mod tests {
             path: "/tmp/example.txt".to_string(),
             content_bytes: 12,
         });
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn regression_tool_rbac_gate_is_noop_when_policy_is_missing() {
+        let result = evaluate_tool_rbac_gate(
+            Some("local:operator"),
+            "write",
+            None,
+            serde_json::json!({
+                "path": "/tmp/example.txt",
+                "content_bytes": 12,
+            }),
+        );
         assert!(result.is_none());
     }
 

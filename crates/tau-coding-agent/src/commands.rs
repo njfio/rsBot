@@ -253,6 +253,14 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/auth matrix openai --mode oauth-token --json",
     },
     CommandSpec {
+        name: "/rbac",
+        usage: RBAC_USAGE,
+        description: "Inspect RBAC principal resolution and authorization decisions",
+        details:
+            "Use whoami to resolve principal bindings and check to evaluate one action against active role policy.",
+        example: "/rbac check command:/policy --json",
+    },
+    CommandSpec {
         name: "/approvals",
         usage: APPROVALS_USAGE,
         description: "Review and decide queued HITL approval requests",
@@ -375,6 +383,7 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "/branches",
     "/macro",
     "/auth",
+    "/rbac",
     "/approvals",
     "/integration-auth",
     "/pair",
@@ -651,6 +660,42 @@ pub(crate) fn handle_command_with_session_import_mode(
             }
         }
         return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/rbac" {
+        println!("{}", execute_rbac_command(command_args));
+        return Ok(CommandAction::Continue);
+    }
+
+    let rbac_principal = resolve_local_principal();
+    match authorize_command_for_principal(&rbac_principal, command_name) {
+        Ok(RbacDecision::Allow { .. }) => {}
+        Ok(RbacDecision::Deny {
+            reason_code,
+            matched_role,
+            matched_pattern,
+        }) => {
+            println!(
+                "rbac gate: status=denied principal={} action=command:{} reason_code={} matched_role={} matched_pattern={}",
+                rbac_principal,
+                command_name,
+                reason_code,
+                matched_role.as_deref().unwrap_or("none"),
+                matched_pattern.as_deref().unwrap_or("none")
+            );
+            println!(
+                "rbac gate hint: run '/rbac check command:{} --principal {}' for diagnostics",
+                command_name, rbac_principal
+            );
+            return Ok(CommandAction::Continue);
+        }
+        Err(error) => {
+            println!(
+                "rbac gate error: principal={} action=command:{} error={error}",
+                rbac_principal, command_name
+            );
+            return Ok(CommandAction::Continue);
+        }
     }
 
     if command_name == "/approvals" {

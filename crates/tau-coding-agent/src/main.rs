@@ -31,6 +31,7 @@ mod provider_client;
 mod provider_credentials;
 mod provider_fallback;
 mod qa_loop_commands;
+mod rbac;
 mod rpc_capabilities;
 mod rpc_protocol;
 mod runtime_cli_validation;
@@ -206,6 +207,12 @@ pub(crate) use crate::provider_fallback::{
 };
 pub(crate) use crate::qa_loop_commands::{
     execute_qa_loop_cli_command, execute_qa_loop_preflight_command, QA_LOOP_USAGE,
+};
+pub(crate) use crate::rbac::{
+    authorize_action_for_principal_with_policy_path, authorize_command_for_principal,
+    authorize_tool_for_principal, authorize_tool_for_principal_with_policy_path,
+    execute_rbac_command, github_principal, rbac_policy_path_for_state_dir,
+    resolve_local_principal, slack_principal, RbacDecision, RBAC_USAGE,
 };
 pub(crate) use crate::rpc_capabilities::execute_rpc_capabilities_command;
 #[cfg(test)]

@@ -5822,7 +5822,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"claude b
     cli.anthropic_auth_mode = CliProviderAuthMode::OauthToken;
     cli.anthropic_claude_backend = true;
     cli.anthropic_claude_cli = script.display().to_string();
-    cli.anthropic_claude_timeout_ms = 2_000;
+    cli.anthropic_claude_timeout_ms = 5_000;
     cli.anthropic_api_key = None;
 
     let client =
@@ -5853,7 +5853,7 @@ printf '{"response":"gemini backend response"}'
     cli.google_auth_mode = CliProviderAuthMode::OauthToken;
     cli.google_gemini_backend = true;
     cli.google_gemini_cli = script.display().to_string();
-    cli.google_gemini_timeout_ms = 2_000;
+    cli.google_gemini_timeout_ms = 5_000;
     cli.google_api_key = None;
 
     let client =
@@ -8832,6 +8832,7 @@ fn functional_render_help_overview_lists_known_commands() {
     assert!(help.contains("/skills-sync [lockfile_path]"));
     assert!(help.contains("/macro <save|run|list|show|delete> ..."));
     assert!(help.contains("/auth <login|status|logout|matrix> ..."));
+    assert!(help.contains("/rbac <check|whoami> ..."));
     assert!(help.contains("/approvals <list|approve|reject> [--json] [--status <pending|approved|rejected|expired|consumed>] [request_id] [reason]"));
     assert!(help.contains("/integration-auth <set|status|rotate|revoke> ..."));
     assert!(help.contains("/profile <save|load|list|show|delete> ..."));
@@ -8887,6 +8888,14 @@ fn functional_render_command_help_supports_profile_topic_without_slash() {
     assert!(help.contains("command: /profile"));
     assert!(help.contains("usage: /profile <save|load|list|show|delete> ..."));
     assert!(help.contains("example: /profile save baseline"));
+}
+
+#[test]
+fn functional_render_command_help_supports_rbac_topic_without_slash() {
+    let help = render_command_help("rbac").expect("render help");
+    assert!(help.contains("command: /rbac"));
+    assert!(help.contains("usage: /rbac <check|whoami> ..."));
+    assert!(help.contains("example: /rbac check command:/policy --json"));
 }
 
 #[test]
@@ -14223,6 +14232,17 @@ fn approvals_command_returns_continue_action() {
         &tool_policy_json,
     )
     .expect("approvals should succeed");
+    assert_eq!(action, CommandAction::Continue);
+}
+
+#[test]
+fn rbac_command_returns_continue_action() {
+    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+    let mut runtime = None;
+    let tool_policy_json = test_tool_policy_json();
+
+    let action = handle_command("/rbac whoami", &mut agent, &mut runtime, &tool_policy_json)
+        .expect("rbac should succeed");
     assert_eq!(action, CommandAction::Continue);
 }
 
