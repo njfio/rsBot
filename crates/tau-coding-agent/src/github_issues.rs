@@ -34,6 +34,13 @@ const EVENT_KEY_MARKER_SUFFIX: &str = " -->";
 const CHAT_SHOW_DEFAULT_LIMIT: usize = 10;
 const CHAT_SHOW_MAX_LIMIT: usize = 50;
 const CHAT_SEARCH_MAX_LIMIT: usize = 50;
+const GITHUB_ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024;
+const GITHUB_ATTACHMENT_SUPPORTED_EXTENSIONS: &[&str] = &[
+    "txt", "md", "json", "yaml", "yml", "toml", "log", "csv", "tsv", "rs", "py", "js", "ts", "tsx",
+    "jsx", "go", "java", "c", "cpp", "h", "hpp", "sh", "zsh", "bash", "sql", "xml", "html", "css",
+    "scss", "diff", "patch", "png", "jpg", "jpeg", "gif", "bmp", "webp", "pdf", "zip", "gz", "tar",
+    "tgz",
+];
 
 #[derive(Clone)]
 pub(crate) struct GithubIssuesBridgeRuntimeConfig {
@@ -334,6 +341,12 @@ struct GithubCommentCreateResponse {
     html_url: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct GithubBytesResponse {
+    bytes: Vec<u8>,
+    content_type: Option<String>,
+}
+
 #[derive(Clone)]
 struct GithubApiClient {
     http: reqwest::Client,
@@ -502,6 +515,79 @@ impl GithubApiClient {
         .await
     }
 
+    async fn download_url_bytes(&self, url: &str) -> Result<GithubBytesResponse> {
+        let request = || self.http.get(url);
+        self.request_bytes("download issue attachment", request)
+            .await
+    }
+
+    async fn request_bytes<F>(
+        &self,
+        operation: &str,
+        mut request_builder: F,
+    ) -> Result<GithubBytesResponse>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        let mut attempt = 0_usize;
+        loop {
+            attempt = attempt.saturating_add(1);
+            let response = request_builder()
+                .header("x-tau-retry-attempt", attempt.saturating_sub(1).to_string())
+                .send()
+                .await;
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        let content_type = response
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|value| value.to_str().ok())
+                            .map(|value| value.to_string());
+                        let bytes = response
+                            .bytes()
+                            .await
+                            .with_context(|| format!("failed to read github {operation} body"))?;
+                        return Ok(GithubBytesResponse {
+                            bytes: bytes.to_vec(),
+                            content_type,
+                        });
+                    }
+
+                    let retry_after = parse_retry_after(response.headers());
+                    let body = response.text().await.unwrap_or_default();
+                    if attempt < self.retry_max_attempts
+                        && is_retryable_github_status(status.as_u16())
+                    {
+                        tokio::time::sleep(retry_delay(
+                            self.retry_base_delay_ms,
+                            attempt,
+                            retry_after,
+                        ))
+                        .await;
+                        continue;
+                    }
+
+                    bail!(
+                        "github api {operation} failed with status {}: {}",
+                        status.as_u16(),
+                        truncate_for_error(&body, 800)
+                    );
+                }
+                Err(error) => {
+                    if attempt < self.retry_max_attempts && is_retryable_transport_error(&error) {
+                        tokio::time::sleep(retry_delay(self.retry_base_delay_ms, attempt, None))
+                            .await;
+                        continue;
+                    }
+                    return Err(error)
+                        .with_context(|| format!("github api {operation} request failed"));
+                }
+            }
+        }
+    }
+
     async fn request_json<T, F>(&self, operation: &str, mut request_builder: F) -> Result<T>
     where
         T: DeserializeOwned,
@@ -604,7 +690,29 @@ struct PromptRunReport {
     status: PromptRunStatus,
     assistant_reply: String,
     usage: PromptUsageSummary,
+    downloaded_attachments: Vec<DownloadedGithubAttachment>,
     artifact: ChannelArtifactRecord,
+}
+
+struct RunPromptForEventRequest<'a> {
+    config: &'a GithubIssuesBridgeRuntimeConfig,
+    github_client: &'a GithubApiClient,
+    repo: &'a RepoRef,
+    repository_state_dir: &'a Path,
+    event: &'a GithubBridgeEvent,
+    prompt: &'a str,
+    run_id: &'a str,
+    cancel_rx: watch::Receiver<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct DownloadedGithubAttachment {
+    source_url: String,
+    original_name: String,
+    path: PathBuf,
+    content_type: Option<String>,
+    bytes: u64,
+    checksum_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2498,15 +2606,16 @@ async fn execute_issue_run_task(params: IssueRunTaskParams) -> RunTaskResult {
         started_unix_ms,
     } = params;
     let started = Instant::now();
-    let run_result = run_prompt_for_event(
-        &config,
-        &repo,
-        &repository_state_dir,
-        &event,
-        &prompt,
-        &run_id,
+    let run_result = run_prompt_for_event(RunPromptForEventRequest {
+        config: &config,
+        github_client: &github_client,
+        repo: &repo,
+        repository_state_dir: &repository_state_dir,
+        event: &event,
+        prompt: &prompt,
+        run_id: &run_id,
         cancel_rx,
-    )
+    })
     .await;
 
     let completed_unix_ms = current_unix_timestamp_ms();
@@ -2616,20 +2725,30 @@ async fn post_issue_comment_chunks(
     outcome
 }
 
-async fn run_prompt_for_event(
-    config: &GithubIssuesBridgeRuntimeConfig,
-    repo: &RepoRef,
-    repository_state_dir: &Path,
-    event: &GithubBridgeEvent,
-    prompt: &str,
-    run_id: &str,
-    mut cancel_rx: watch::Receiver<bool>,
-) -> Result<PromptRunReport> {
+async fn run_prompt_for_event(request: RunPromptForEventRequest<'_>) -> Result<PromptRunReport> {
+    let RunPromptForEventRequest {
+        config,
+        github_client,
+        repo,
+        repository_state_dir,
+        event,
+        prompt,
+        run_id,
+        mut cancel_rx,
+    } = request;
+
     let channel_store = ChannelStore::open(
         &repository_state_dir.join("channel-store"),
         "github",
         &format!("issue-{}", event.issue_number),
     )?;
+    let downloaded_attachments = download_issue_attachments(
+        github_client,
+        &channel_store.attachments_dir(),
+        &event.key,
+        &event.body,
+    )
+    .await?;
     let session_path = channel_store.session_path();
     let mut agent = Agent::new(
         config.client.clone(),
@@ -2679,7 +2798,7 @@ async fn run_prompt_for_event(
         &mut agent,
     )?);
 
-    let formatted_prompt = render_event_prompt(repo, event, prompt);
+    let formatted_prompt = render_event_prompt(repo, event, prompt, &downloaded_attachments);
     let start_index = agent.messages().len();
     let cancellation_signal = async move {
         loop {
@@ -2717,7 +2836,14 @@ async fn run_prompt_for_event(
         "private",
         normalize_artifact_retention_days(config.artifact_retention_days),
         "md",
-        &render_issue_artifact_markdown(repo, event, run_id, status, &assistant_reply),
+        &render_issue_artifact_markdown(
+            repo,
+            event,
+            run_id,
+            status,
+            &assistant_reply,
+            &downloaded_attachments,
+        ),
     )?;
     channel_store.sync_context_from_messages(agent.messages())?;
     channel_store.append_log_entry(&ChannelLogEntry {
@@ -2741,6 +2867,16 @@ async fn run_prompt_for_event(
                 "bytes": artifact.bytes,
                 "expires_unix_ms": artifact.expires_unix_ms,
             },
+            "downloaded_attachments": downloaded_attachments.iter().map(|attachment| {
+                json!({
+                    "source_url": attachment.source_url,
+                    "original_name": attachment.original_name,
+                    "path": attachment.path.display().to_string(),
+                    "content_type": attachment.content_type,
+                    "bytes": attachment.bytes,
+                    "checksum_sha256": attachment.checksum_sha256,
+                })
+            }).collect::<Vec<_>>(),
         }),
     })?;
     Ok(PromptRunReport {
@@ -2749,8 +2885,145 @@ async fn run_prompt_for_event(
         status,
         assistant_reply,
         usage,
+        downloaded_attachments,
         artifact,
     })
+}
+
+async fn download_issue_attachments(
+    github_client: &GithubApiClient,
+    attachments_root: &Path,
+    event_key: &str,
+    text: &str,
+) -> Result<Vec<DownloadedGithubAttachment>> {
+    let urls = extract_attachment_urls(text);
+    if urls.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let file_dir = attachments_root.join(sanitize_for_path(event_key));
+    std::fs::create_dir_all(&file_dir)
+        .with_context(|| format!("failed to create {}", file_dir.display()))?;
+
+    let mut downloaded = Vec::new();
+    for (index, url) in urls.iter().enumerate() {
+        let payload = match github_client.download_url_bytes(url).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                eprintln!(
+                    "github attachment download failed: event={} url={} error={error}",
+                    event_key, url
+                );
+                continue;
+            }
+        };
+        if payload.bytes.len() > GITHUB_ATTACHMENT_MAX_BYTES {
+            eprintln!(
+                "github attachment skipped due size limit: event={} url={} bytes={} limit={}",
+                event_key,
+                url,
+                payload.bytes.len(),
+                GITHUB_ATTACHMENT_MAX_BYTES
+            );
+            continue;
+        }
+
+        let original_name = attachment_filename_from_url(url, index + 1);
+        let safe_name = sanitize_for_path(&original_name);
+        let safe_name = if safe_name.is_empty() {
+            format!("attachment-{}.bin", index + 1)
+        } else {
+            safe_name
+        };
+        let path = file_dir.join(format!("{:02}-{}", index + 1, safe_name));
+        std::fs::write(&path, &payload.bytes)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        downloaded.push(DownloadedGithubAttachment {
+            source_url: url.clone(),
+            original_name,
+            path,
+            content_type: payload.content_type,
+            bytes: payload.bytes.len() as u64,
+            checksum_sha256: sha256_hex(&payload.bytes),
+        });
+    }
+
+    Ok(downloaded)
+}
+
+fn extract_attachment_urls(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut seen = HashSet::new();
+    for token in text.split_whitespace() {
+        if let Some(markdown_url) = extract_markdown_link_url(token) {
+            push_attachment_url(markdown_url, &mut urls, &mut seen);
+        }
+        push_attachment_url(token, &mut urls, &mut seen);
+    }
+    urls
+}
+
+fn extract_markdown_link_url(token: &str) -> Option<&str> {
+    let start = token.find("](")?;
+    let remainder = &token[start + 2..];
+    let end = remainder.find(')')?;
+    Some(&remainder[..end])
+}
+
+fn push_attachment_url(raw: &str, urls: &mut Vec<String>, seen: &mut HashSet<String>) {
+    let candidate = raw.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            '"' | '\'' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+        )
+    });
+    if !candidate.starts_with("http://") && !candidate.starts_with("https://") {
+        return;
+    }
+    let candidate = candidate.trim_end_matches(['.', ',', ';', ':']);
+    if !is_supported_attachment_url(candidate) {
+        return;
+    }
+    if seen.insert(candidate.to_string()) {
+        urls.push(candidate.to_string());
+    }
+}
+
+fn is_supported_attachment_url(url: &str) -> bool {
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(parsed) => parsed,
+        Err(_) => return false,
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if host == "user-attachments.githubusercontent.com" || host.ends_with(".githubusercontent.com")
+    {
+        return true;
+    }
+
+    let extension = parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .and_then(|segment| segment.rsplit('.').next())
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    GITHUB_ATTACHMENT_SUPPORTED_EXTENSIONS.contains(&extension.as_str())
+}
+
+fn attachment_filename_from_url(url: &str, index: usize) -> String {
+    if let Ok(parsed) = reqwest::Url::parse(url) {
+        if let Some(name) = parsed
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .filter(|name| !name.trim().is_empty())
+        {
+            return name.to_string();
+        }
+    }
+    format!("attachment-{}.bin", index)
 }
 
 fn initialize_issue_session_runtime(
@@ -2791,8 +3064,13 @@ fn collect_assistant_reply(messages: &[tau_ai::Message]) -> String {
     }
 }
 
-fn render_event_prompt(repo: &RepoRef, event: &GithubBridgeEvent, prompt: &str) -> String {
-    format!(
+fn render_event_prompt(
+    repo: &RepoRef,
+    event: &GithubBridgeEvent,
+    prompt: &str,
+    downloaded_attachments: &[DownloadedGithubAttachment],
+) -> String {
+    let mut rendered = format!(
         "You are responding as Tau inside GitHub issues.\nRepository: {}\nIssue: #{} ({})\nAuthor: @{}\nEvent: {}\n\nUser message:\n{}\n\nProvide a direct, actionable response suitable for a GitHub issue comment.",
         repo.as_slug(),
         event.issue_number,
@@ -2800,7 +3078,24 @@ fn render_event_prompt(repo: &RepoRef, event: &GithubBridgeEvent, prompt: &str) 
         event.author_login,
         event.kind.as_str(),
         prompt
-    )
+    );
+    if !downloaded_attachments.is_empty() {
+        rendered.push_str("\n\nDownloaded attachments:\n");
+        for attachment in downloaded_attachments {
+            rendered.push_str(&format!(
+                "- name={} path={} content_type={} bytes={} source_url={}\n",
+                attachment.original_name,
+                attachment.path.display(),
+                attachment
+                    .content_type
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                attachment.bytes,
+                attachment.source_url
+            ));
+        }
+    }
+    rendered
 }
 
 fn render_issue_comment_response_parts(
@@ -2813,7 +3108,7 @@ fn render_issue_comment_response_parts(
     }
     let usage = &run.usage;
     let status = format!("{:?}", run.status).to_lowercase();
-    let footer = format!(
+    let mut footer = format!(
         "{EVENT_KEY_MARKER_PREFIX}{}{EVENT_KEY_MARKER_SUFFIX}\n_Tau run `{}` | status `{}` | model `{}` | tokens in/out/total `{}/{}/{}` | cost `unavailable`_\n_artifact `{}` | sha256 `{}` | bytes `{}`_",
         event.key,
         run.run_id,
@@ -2826,6 +3121,12 @@ fn render_issue_comment_response_parts(
         run.artifact.checksum_sha256,
         run.artifact.bytes
     );
+    if !run.downloaded_attachments.is_empty() {
+        footer.push_str(&format!(
+            "\n_attachments downloaded `{}`_",
+            run.downloaded_attachments.len()
+        ));
+    }
     (content, footer)
 }
 
@@ -2929,20 +3230,40 @@ fn render_issue_artifact_markdown(
     run_id: &str,
     status: PromptRunStatus,
     assistant_reply: &str,
+    downloaded_attachments: &[DownloadedGithubAttachment],
 ) -> String {
     let status_label = prompt_status_label(status);
-    [
+    let mut lines = vec![
         "# Tau Artifact".to_string(),
         format!("repository: {}", repo.as_slug()),
         format!("issue_number: {}", event.issue_number),
         format!("event_key: {}", event.key),
         format!("run_id: {}", run_id),
         format!("status: {}", status_label),
-        String::new(),
-        "## Assistant Reply".to_string(),
-        assistant_reply.trim().to_string(),
-    ]
-    .join("\n")
+    ];
+    if downloaded_attachments.is_empty() {
+        lines.push("attachments: none".to_string());
+    } else {
+        lines.push(format!("attachments: {}", downloaded_attachments.len()));
+        for attachment in downloaded_attachments {
+            lines.push(format!(
+                "- name={} path={} content_type={} bytes={} source_url={} checksum_sha256={}",
+                attachment.original_name,
+                attachment.path.display(),
+                attachment
+                    .content_type
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                attachment.bytes,
+                attachment.source_url,
+                attachment.checksum_sha256
+            ));
+        }
+    }
+    lines.push(String::new());
+    lines.push("## Assistant Reply".to_string());
+    lines.push(assistant_reply.trim().to_string());
+    lines.join("\n")
 }
 
 fn normalize_artifact_retention_days(days: u64) -> Option<u64> {
@@ -3451,7 +3772,11 @@ fn short_key_hash(key: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc, time::Duration};
+    use std::{
+        path::{Path, PathBuf},
+        sync::Arc,
+        time::Duration,
+    };
 
     use async_trait::async_trait;
     use httpmock::prelude::*;
@@ -3461,16 +3786,17 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        collect_issue_events, event_action_from_body, extract_footer_event_keys,
-        is_retryable_github_status, issue_session_id, normalize_artifact_retention_days,
-        parse_rfc3339_to_unix_ms, parse_tau_issue_command, post_issue_comment_chunks,
-        render_issue_command_comment, render_issue_comment_chunks_with_limit,
-        render_issue_comment_response_parts, retry_delay, run_prompt_for_event, sanitize_for_path,
-        session_path_for_issue, EventAction, GithubApiClient, GithubBridgeEvent,
+        collect_issue_events, event_action_from_body, extract_attachment_urls,
+        extract_footer_event_keys, is_retryable_github_status, issue_session_id,
+        normalize_artifact_retention_days, parse_rfc3339_to_unix_ms, parse_tau_issue_command,
+        post_issue_comment_chunks, render_event_prompt, render_issue_command_comment,
+        render_issue_comment_chunks_with_limit, render_issue_comment_response_parts, retry_delay,
+        run_prompt_for_event, sanitize_for_path, session_path_for_issue,
+        DownloadedGithubAttachment, EventAction, GithubApiClient, GithubBridgeEvent,
         GithubBridgeEventKind, GithubIssue, GithubIssueComment, GithubIssuesBridgeRuntime,
         GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore, GithubUser, PromptRunReport,
-        PromptUsageSummary, RepoRef, SessionStore, TauIssueCommand, CHAT_SHOW_DEFAULT_LIMIT,
-        EVENT_KEY_MARKER_PREFIX,
+        PromptUsageSummary, RepoRef, RunPromptForEventRequest, SessionStore, TauIssueCommand,
+        CHAT_SHOW_DEFAULT_LIMIT, EVENT_KEY_MARKER_PREFIX,
     };
     use crate::{
         channel_store::{ChannelArtifactRecord, ChannelStore},
@@ -3577,6 +3903,7 @@ mod tests {
                 request_duration_ms: 0,
                 finish_reason: None,
             },
+            downloaded_attachments: Vec::new(),
             artifact: ChannelArtifactRecord {
                 id: "artifact-1".to_string(),
                 run_id: "run-1".to_string(),
@@ -3653,18 +3980,28 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let config = test_bridge_config("http://unused.local", temp.path());
         let repo = RepoRef::parse("owner/repo").expect("repo");
+        let github_client = GithubApiClient::new(
+            "http://unused.local".to_string(),
+            "token".to_string(),
+            repo.clone(),
+            2_000,
+            1,
+            1,
+        )
+        .expect("github client");
         let event = test_issue_event();
         let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
-        let report = run_prompt_for_event(
-            &config,
-            &repo,
-            temp.path(),
-            &event,
-            "hello from test",
-            "run-default-retention",
+        let report = run_prompt_for_event(RunPromptForEventRequest {
+            config: &config,
+            github_client: &github_client,
+            repo: &repo,
+            repository_state_dir: temp.path(),
+            event: &event,
+            prompt: "hello from test",
+            run_id: "run-default-retention",
             cancel_rx,
-        )
+        })
         .await
         .expect("run prompt");
         assert!(report.artifact.expires_unix_ms.is_some());
@@ -3676,18 +4013,28 @@ mod tests {
         let mut config = test_bridge_config("http://unused.local", temp.path());
         config.artifact_retention_days = 0;
         let repo = RepoRef::parse("owner/repo").expect("repo");
+        let github_client = GithubApiClient::new(
+            "http://unused.local".to_string(),
+            "token".to_string(),
+            repo.clone(),
+            2_000,
+            1,
+            1,
+        )
+        .expect("github client");
         let event = test_issue_event();
         let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
-        let report = run_prompt_for_event(
-            &config,
-            &repo,
-            temp.path(),
-            &event,
-            "hello from test",
-            "run-zero-retention",
+        let report = run_prompt_for_event(RunPromptForEventRequest {
+            config: &config,
+            github_client: &github_client,
+            repo: &repo,
+            repository_state_dir: temp.path(),
+            event: &event,
+            prompt: "hello from test",
+            run_id: "run-zero-retention",
             cancel_rx,
-        )
+        })
         .await
         .expect("run prompt");
         assert_eq!(report.artifact.expires_unix_ms, None);
@@ -3817,6 +4164,41 @@ mod tests {
         assert!(rendered.contains("Chat session status for issue #12."));
         assert!(rendered.contains("tau-event-key:issue-comment-created:123"));
         assert!(rendered.contains("Tau command `chat-status` | status `reported`"));
+    }
+
+    #[test]
+    fn unit_extract_attachment_urls_supports_markdown_and_bare_links() {
+        let text = "See [trace](https://example.com/files/trace.log) and https://example.com/images/graph.png plus duplicate https://example.com/files/trace.log";
+        let urls = extract_attachment_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://example.com/files/trace.log");
+        assert_eq!(urls[1], "https://example.com/images/graph.png");
+    }
+
+    #[test]
+    fn unit_extract_attachment_urls_accepts_localhost_port_with_extension() {
+        let url = "http://127.0.0.1:1234/assets/trace.log";
+        let urls = extract_attachment_urls(url);
+        assert_eq!(urls, vec![url.to_string()]);
+        assert!(super::is_supported_attachment_url(url));
+    }
+
+    #[test]
+    fn functional_render_event_prompt_includes_downloaded_attachments() {
+        let repo = RepoRef::parse("owner/repo").expect("repo");
+        let event = test_issue_event();
+        let attachments = vec![DownloadedGithubAttachment {
+            source_url: "https://example.com/files/trace.log".to_string(),
+            original_name: "trace.log".to_string(),
+            path: PathBuf::from("/tmp/attachments/trace.log"),
+            content_type: Some("text/plain".to_string()),
+            bytes: 42,
+            checksum_sha256: "abc123".to_string(),
+        }];
+        let prompt = render_event_prompt(&repo, &event, "inspect this", &attachments);
+        assert!(prompt.contains("Downloaded attachments:"));
+        assert!(prompt.contains("name=trace.log"));
+        assert!(prompt.contains("source_url=https://example.com/files/trace.log"));
     }
 
     #[tokio::test]
@@ -4341,6 +4723,89 @@ mod tests {
         let artifact_index = std::fs::read_to_string(channel_dir.join("artifacts/index.jsonl"))
             .expect("artifact index exists");
         assert!(artifact_index.contains("\"artifact_type\":\"github-issue-reply\""));
+    }
+
+    #[tokio::test]
+    async fn integration_run_prompt_for_event_downloads_issue_attachments_and_records_provenance() {
+        let server = MockServer::start();
+        let attachment_url = format!("{}/assets/trace.log", server.base_url());
+        let attachment_download = server.mock(|when, then| {
+            when.method(GET).path("/assets/trace.log");
+            then.status(200)
+                .header("content-type", "text/plain")
+                .body("trace-line-1\ntrace-line-2\n");
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let repo = RepoRef::parse("owner/repo").expect("repo");
+        let github_client = GithubApiClient::new(
+            server.base_url(),
+            "token".to_string(),
+            repo.clone(),
+            2_000,
+            1,
+            1,
+        )
+        .expect("github client");
+        let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let event = GithubBridgeEvent {
+            key: "issue-comment-created:1200".to_string(),
+            kind: GithubBridgeEventKind::CommentCreated,
+            issue_number: 20,
+            issue_title: "Attachment".to_string(),
+            author_login: "alice".to_string(),
+            occurred_at: "2026-01-01T00:00:01Z".to_string(),
+            body: attachment_url.clone(),
+            raw_payload: json!({"id": 1200}),
+        };
+        let report = run_prompt_for_event(RunPromptForEventRequest {
+            config: &config,
+            github_client: &github_client,
+            repo: &repo,
+            repository_state_dir: temp.path(),
+            event: &event,
+            prompt: &attachment_url,
+            run_id: "run-attachment",
+            cancel_rx,
+        })
+        .await
+        .expect("run prompt");
+        assert_eq!(report.downloaded_attachments.len(), 1);
+        assert_eq!(report.downloaded_attachments[0].source_url, attachment_url);
+        attachment_download.assert_calls(1);
+
+        let channel_store =
+            ChannelStore::open(&temp.path().join("channel-store"), "github", "issue-20")
+                .expect("channel store");
+        let attachment_dir = channel_store
+            .attachments_dir()
+            .join(sanitize_for_path("issue-comment-created:1200"));
+        assert!(attachment_dir.exists());
+        let attachment_entries = std::fs::read_dir(&attachment_dir)
+            .expect("read attachment dir")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect attachments");
+        assert_eq!(attachment_entries.len(), 1);
+        let attachment_payload =
+            std::fs::read_to_string(attachment_entries[0].path()).expect("attachment payload");
+        assert!(attachment_payload.contains("trace-line-1"));
+
+        let channel_log = std::fs::read_to_string(channel_store.log_path()).expect("channel log");
+        assert!(channel_log.contains("\"downloaded_attachments\""));
+
+        let artifacts = channel_store
+            .load_artifact_records_tolerant()
+            .expect("artifact records");
+        assert_eq!(artifacts.records.len(), 1);
+        let artifact_payload = std::fs::read_to_string(
+            channel_store
+                .channel_dir()
+                .join(&artifacts.records[0].relative_path),
+        )
+        .expect("artifact payload");
+        assert!(artifact_payload.contains("attachments: 1"));
+        assert!(artifact_payload.contains("source_url=http://"));
     }
 
     #[tokio::test]
