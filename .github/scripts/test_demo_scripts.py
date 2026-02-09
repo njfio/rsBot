@@ -44,6 +44,19 @@ exit 1
     path.chmod(0o755)
 
 
+def write_sleeping_binary(path: Path, sleep_seconds: int = 5) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+sleep {sleep_seconds}
+echo \"mock-slow-ok $*\"
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
 def run_demo_script(
     script_name: str,
     binary_path: Path,
@@ -130,6 +143,16 @@ class DemoScriptsTests(unittest.TestCase):
     def test_unit_all_script_fail_fast_flag_is_accepted(self) -> None:
         completed = subprocess.run(
             [str(SCRIPTS_DIR / "all.sh"), "--list", "--fail-fast"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("local.sh", completed.stdout)
+
+    def test_unit_all_script_timeout_flag_is_accepted(self) -> None:
+        completed = subprocess.run(
+            [str(SCRIPTS_DIR / "all.sh"), "--list", "--timeout-seconds", "5"],
             text=True,
             capture_output=True,
             check=False,
@@ -246,6 +269,23 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertIn("[demo:all] summary: total=1 passed=0 failed=1", completed.stdout)
             self.assertIn("fail-fast triggered", completed.stderr)
 
+    def test_functional_local_script_timeout_fails_with_timeout_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            write_sleeping_binary(binary_path)
+
+            completed = run_demo_script(
+                "local.sh",
+                binary_path,
+                trace_path,
+                extra_args=["--timeout-seconds", "1"],
+            )
+            self.assertEqual(completed.returncode, 124)
+            self.assertIn("TIMEOUT onboard-non-interactive after 1s", completed.stderr)
+            self.assertIn("[demo:local] [1] onboard-non-interactive", completed.stdout)
+
     def test_integration_demo_scripts_use_checked_in_example_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -329,6 +369,39 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(payload["demos"], [{"name": "rpc.sh", "status": "failed", "exit_code": 1}])
             self.assertIn("fail-fast triggered", completed.stderr)
 
+    def test_integration_all_script_timeout_summary_marks_wrapper_failed_with_timeout_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            report_path = root / "timeouts" / "report.json"
+            write_sleeping_binary(binary_path)
+
+            completed = run_demo_script(
+                "all.sh",
+                binary_path,
+                trace_path,
+                extra_args=[
+                    "--only",
+                    "local,rpc",
+                    "--timeout-seconds",
+                    "1",
+                    "--fail-fast",
+                    "--report-file",
+                    str(report_path),
+                    "--json",
+                ],
+            )
+            self.assertEqual(completed.returncode, 1)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["summary"], {"total": 1, "passed": 0, "failed": 1})
+            self.assertEqual(payload["demos"], [{"name": "local.sh", "status": "failed", "exit_code": 124}])
+            self.assertIn("TIMEOUT onboard-non-interactive after 1s", completed.stderr)
+            self.assertIn("fail-fast triggered", completed.stderr)
+
+            report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report_payload, payload)
+
     def test_regression_scripts_fail_closed_when_binary_missing_in_skip_build_mode(self) -> None:
         completed = subprocess.run(
             [
@@ -391,6 +464,18 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["total"], 4)
             self.assertEqual(payload["summary"]["failed"], 4)
             self.assertEqual(payload["summary"]["passed"], 0)
+
+    def test_regression_all_script_timeout_rejects_non_positive_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            write_mock_binary(binary_path)
+
+            completed = run_demo_script("all.sh", binary_path, trace_path, extra_args=["--timeout-seconds", "0"])
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("invalid value for --timeout-seconds", completed.stderr)
+            self.assertFalse(trace_path.exists())
 
 
 if __name__ == "__main__":

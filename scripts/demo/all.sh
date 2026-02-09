@@ -10,6 +10,7 @@ json_output="false"
 has_only_filter="false"
 report_file=""
 fail_fast="false"
+timeout_seconds=""
 
 demo_scripts=(
   "local.sh"
@@ -133,7 +134,7 @@ print_summary_json() {
 
 print_usage() {
   cat <<EOF
-Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--report-file PATH] [--fail-fast] [--help]
+Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--report-file PATH] [--fail-fast] [--timeout-seconds N] [--help]
 
 Run checked-in Tau demo wrappers (local/rpc/events/package) with deterministic summary output.
 
@@ -146,6 +147,7 @@ Options:
   --json            Emit deterministic JSON output for list/summary modes
   --report-file     Write deterministic JSON report artifact to path
   --fail-fast       Stop after first failed wrapper
+  --timeout-seconds Positive integer timeout for each wrapper step
   --help            Show this usage message
 EOF
 }
@@ -216,6 +218,20 @@ while [[ $# -gt 0 ]]; do
       fail_fast="true"
       shift
       ;;
+    --timeout-seconds)
+      if [[ $# -lt 2 ]]; then
+        log_error "missing value for --timeout-seconds"
+        print_usage >&2
+        exit 2
+      fi
+      if [[ ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+        log_error "invalid value for --timeout-seconds (expected positive integer): $2"
+        print_usage >&2
+        exit 2
+      fi
+      timeout_seconds="$2"
+      shift 2
+      ;;
     --help)
       print_usage
       exit 0
@@ -285,6 +301,9 @@ for demo_script in "${selected_demo_scripts[@]}"; do
   args=("${script_dir}/${demo_script}" "--repo-root" "${repo_root}" "--binary" "${binary}")
   if [[ "${skip_build}" == "true" ]]; then
     args+=("--skip-build")
+  fi
+  if [[ -n "${timeout_seconds}" ]]; then
+    args+=("--timeout-seconds" "${timeout_seconds}")
   fi
 
   if [[ "${json_output}" == "true" ]]; then
