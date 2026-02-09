@@ -267,6 +267,30 @@ enum ReleaseCachePruneDecision {
     RemoveStale,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseCachePruneRecoveryReason {
+    InvalidPayload,
+    UnsupportedSchema,
+}
+
+impl ReleaseCachePruneRecoveryReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            ReleaseCachePruneRecoveryReason::InvalidPayload => "invalid_payload",
+            ReleaseCachePruneRecoveryReason::UnsupportedSchema => "unsupported_schema",
+        }
+    }
+}
+
+enum ReleaseCachePruneLoadOutcome {
+    Missing,
+    Present(ReleaseLookupCacheFile),
+    RecoverableError {
+        reason: ReleaseCachePruneRecoveryReason,
+    },
+    FatalError(anyhow::Error),
+}
+
 fn compute_release_cache_age_counters(age_ms: u64, ttl_ms: u64) -> ReleaseCacheAgeCounters {
     if age_ms <= ttl_ms {
         return ReleaseCacheAgeCounters {
@@ -333,6 +357,38 @@ fn load_release_lookup_cache_file(path: &Path) -> Result<Option<ReleaseLookupCac
         );
     }
     Ok(Some(parsed))
+}
+
+fn load_release_lookup_cache_for_prune(path: &Path) -> ReleaseCachePruneLoadOutcome {
+    if !path.exists() {
+        return ReleaseCachePruneLoadOutcome::Missing;
+    }
+
+    let raw = match std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read release lookup cache {}", path.display()))
+    {
+        Ok(raw) => raw,
+        Err(error) => return ReleaseCachePruneLoadOutcome::FatalError(error),
+    };
+
+    let parsed = match serde_json::from_str::<ReleaseLookupCacheFile>(&raw)
+        .with_context(|| format!("failed to parse release lookup cache {}", path.display()))
+    {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            return ReleaseCachePruneLoadOutcome::RecoverableError {
+                reason: ReleaseCachePruneRecoveryReason::InvalidPayload,
+            }
+        }
+    };
+
+    if parsed.schema_version != RELEASE_LOOKUP_CACHE_SCHEMA_VERSION {
+        return ReleaseCachePruneLoadOutcome::RecoverableError {
+            reason: ReleaseCachePruneRecoveryReason::UnsupportedSchema,
+        };
+    }
+
+    ReleaseCachePruneLoadOutcome::Present(parsed)
 }
 
 fn load_release_lookup_cache(path: &Path, url: &str) -> Result<Option<ReleaseLookupCacheFile>> {
@@ -565,12 +621,12 @@ fn execute_release_channel_cache_prune_with_options(
     cache_path: &Path,
     cache_ttl_ms: u64,
 ) -> String {
-    match load_release_lookup_cache_file(cache_path) {
-        Ok(None) => format!(
+    match load_release_lookup_cache_for_prune(cache_path) {
+        ReleaseCachePruneLoadOutcome::Missing => format!(
             "release cache prune: path={} status=missing",
             cache_path.display()
         ),
-        Ok(Some(cache)) => {
+        ReleaseCachePruneLoadOutcome::Present(cache) => {
             let age_ms = current_unix_timestamp_ms().saturating_sub(cache.fetched_at_unix_ms);
             let age_counters = compute_release_cache_age_counters(age_ms, cache_ttl_ms);
             let expires_at_unix_ms =
@@ -615,7 +671,25 @@ fn execute_release_channel_cache_prune_with_options(
                 },
             }
         }
-        Err(error) => format!(
+        ReleaseCachePruneLoadOutcome::RecoverableError { reason } => {
+            match std::fs::remove_file(cache_path) {
+                Ok(()) => format!(
+                    "release cache prune: path={} status=removed reason={} recovery_action=removed_invalid_cache",
+                    cache_path.display(),
+                    reason.as_str()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => format!(
+                    "release cache prune: path={} status=missing reason={} recovery_action=already_missing",
+                    cache_path.display(),
+                    reason.as_str()
+                ),
+                Err(error) => format!(
+                    "release channel error: path={} error={error}",
+                    cache_path.display()
+                ),
+            }
+        }
+        ReleaseCachePruneLoadOutcome::FatalError(error) => format!(
             "release channel error: path={} error={error}",
             cache_path.display()
         ),
@@ -1007,6 +1081,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unit_load_release_lookup_cache_for_prune_classifies_invalid_payload_and_schema() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("release-lookup-cache.json");
+
+        std::fs::write(&path, "{malformed-json").expect("write malformed cache");
+        let invalid_payload = load_release_lookup_cache_for_prune(&path);
+        assert!(matches!(
+            invalid_payload,
+            ReleaseCachePruneLoadOutcome::RecoverableError {
+                reason: ReleaseCachePruneRecoveryReason::InvalidPayload
+            }
+        ));
+
+        std::fs::write(
+            &path,
+            r#"{"schema_version":99,"source_url":"https://example.invalid/releases","fetched_at_unix_ms":1,"releases":[]}"#,
+        )
+        .expect("write unsupported schema cache");
+        let unsupported_schema = load_release_lookup_cache_for_prune(&path);
+        assert!(matches!(
+            unsupported_schema,
+            ReleaseCachePruneLoadOutcome::RecoverableError {
+                reason: ReleaseCachePruneRecoveryReason::UnsupportedSchema
+            }
+        ));
+    }
+
     fn parse_u64_field(output: &str, key: &str) -> u64 {
         output
             .split_whitespace()
@@ -1188,6 +1290,22 @@ mod tests {
     }
 
     #[test]
+    fn functional_execute_release_channel_command_cache_prune_recovers_invalid_payload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let parent = cache_path.parent().expect("cache parent");
+        std::fs::create_dir_all(parent).expect("create cache dir");
+        std::fs::write(&cache_path, "{malformed-json").expect("write malformed cache");
+
+        let output = execute_release_channel_command("cache prune", &path);
+        assert!(output.contains("status=removed"));
+        assert!(output.contains("reason=invalid_payload"));
+        assert!(output.contains("recovery_action=removed_invalid_cache"));
+        assert!(!cache_path.exists());
+    }
+
+    #[test]
     fn functional_render_release_channel_check_reports_update_available() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("release-channel.json");
@@ -1347,6 +1465,54 @@ mod tests {
         assert!(pruned.contains("is_expired=false"));
         assert!(cache_path.exists());
         mock.assert_calls(1);
+    }
+
+    #[test]
+    fn integration_execute_release_channel_command_refresh_corrupt_prune_refresh_recovers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"[{"tag_name":"v14.0.0","prerelease":false,"draft":false},{"tag_name":"v14.1.0-beta.1","prerelease":true,"draft":false}]"#,
+                );
+        });
+        let url = format!("{}/releases", server.base_url());
+
+        let refreshed = execute_release_channel_command_with_lookup_options(
+            "cache refresh",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(refreshed.contains("status=refreshed"));
+        assert!(cache_path.exists());
+
+        std::fs::write(&cache_path, "{malformed-json").expect("write malformed cache");
+        let pruned = execute_release_channel_command_with_lookup_options(
+            "cache prune",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(pruned.contains("status=removed"));
+        assert!(pruned.contains("reason=invalid_payload"));
+        assert!(pruned.contains("recovery_action=removed_invalid_cache"));
+        assert!(!cache_path.exists());
+
+        let refreshed_again = execute_release_channel_command_with_lookup_options(
+            "cache refresh",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(refreshed_again.contains("status=refreshed"));
+        assert!(cache_path.exists());
+        mock.assert_calls(2);
     }
 
     #[test]
@@ -1699,6 +1865,23 @@ mod tests {
         assert!(output.contains("is_expired=true"));
         assert!(parse_u64_field(&output, "stale_by_ms") > 0);
         assert!(parse_bool_field(&output, "is_expired"));
+        assert!(!cache_path.exists());
+    }
+
+    #[test]
+    fn regression_execute_release_channel_command_cache_prune_invalid_payload_no_error_status() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let parent = cache_path.parent().expect("cache parent");
+        std::fs::create_dir_all(parent).expect("create cache dir");
+        std::fs::write(&cache_path, "{malformed-json").expect("write malformed cache");
+
+        let output = execute_release_channel_command("cache prune", &path);
+        assert!(output.contains("status=removed"));
+        assert!(output.contains("reason=invalid_payload"));
+        assert!(output.contains("recovery_action=removed_invalid_cache"));
+        assert!(!output.contains("release channel error:"));
         assert!(!cache_path.exists());
     }
 
