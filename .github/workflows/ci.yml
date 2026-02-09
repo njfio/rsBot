@@ -41,8 +41,84 @@ jobs:
       run_cross_platform: ${{ steps.quality_mode.outputs.run_cross_platform }}
       heavy_reason: ${{ steps.quality_mode.outputs.heavy_reason }}
     steps:
-      - name: Checkout
+      - name: Checkout (attempt 1)
+        id: checkout_attempt_1
         uses: actions/checkout@v6
+        continue-on-error: true
+
+      - name: Backoff before checkout retry 2
+        if: steps.checkout_attempt_1.outcome == 'failure'
+        shell: bash
+        run: sleep 3
+
+      - name: Checkout (attempt 2)
+        id: checkout_attempt_2
+        if: steps.checkout_attempt_1.outcome == 'failure'
+        uses: actions/checkout@v6
+        continue-on-error: true
+
+      - name: Backoff before checkout retry 3
+        if: steps.checkout_attempt_1.outcome == 'failure' && steps.checkout_attempt_2.outcome == 'failure'
+        shell: bash
+        run: sleep 6
+
+      - name: Checkout (attempt 3)
+        id: checkout_attempt_3
+        if: steps.checkout_attempt_1.outcome == 'failure' && steps.checkout_attempt_2.outcome == 'failure'
+        uses: actions/checkout@v6
+        continue-on-error: true
+
+      - name: Evaluate checkout retry outcomes
+        id: checkout_retry_report
+        if: always() && (steps.checkout_attempt_1.outcome == 'success' || steps.checkout_attempt_2.outcome == 'success' || steps.checkout_attempt_3.outcome == 'success')
+        shell: bash
+        run: |
+          set -euo pipefail
+          attempt_1="${{ steps.checkout_attempt_1.outcome }}"
+          attempt_2="${{ steps.checkout_attempt_2.outcome }}"
+          attempt_3="${{ steps.checkout_attempt_3.outcome }}"
+          if [[ -z "${attempt_2}" ]]; then
+            attempt_2="skipped"
+          fi
+          if [[ -z "${attempt_3}" ]]; then
+            attempt_3="skipped"
+          fi
+
+          python3 .github/scripts/ci_checkout_retry.py \
+            --outcomes "${attempt_1},${attempt_2},${attempt_3}" \
+            --max-attempts 3 \
+            --base-delay-seconds 3 \
+            --cap-delay-seconds 6 \
+            --max-total-delay-seconds 12 \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --output "$GITHUB_OUTPUT"
+
+      - name: Fail when checkout retries are exhausted
+        if: steps.checkout_attempt_1.outcome != 'success' && steps.checkout_attempt_2.outcome != 'success' && steps.checkout_attempt_3.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          attempt_1="${{ steps.checkout_attempt_1.outcome }}"
+          attempt_2="${{ steps.checkout_attempt_2.outcome }}"
+          attempt_3="${{ steps.checkout_attempt_3.outcome }}"
+          if [[ -z "${attempt_2}" ]]; then
+            attempt_2="skipped"
+          fi
+          if [[ -z "${attempt_3}" ]]; then
+            attempt_3="skipped"
+          fi
+
+          echo "::error::checkout failed after 3 bounded attempts; mode=checkout_retries_exhausted; outcomes=${attempt_1},${attempt_2},${attempt_3}"
+          {
+            echo "### Checkout Retry"
+            echo "- Status: failure"
+            echo "- Mode: checkout_retries_exhausted"
+            echo "- Outcomes: ${attempt_1},${attempt_2},${attempt_3}"
+            echo "- Max attempts: 3"
+            echo "- Retry delays (s): [3, 6]"
+            echo "- Planned total delay (s): 9"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Detect change scope
         id: change_scope
