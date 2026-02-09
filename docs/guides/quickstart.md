@@ -101,6 +101,8 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ./scripts/demo/package.sh
 ```
 
+`all.sh --json` and report-file payloads include `duration_ms` per wrapper entry.
+
 All wrappers support `--skip-build` and `--binary <path>` for prebuilt binaries.
 
 ## Cleanup local generated artifacts

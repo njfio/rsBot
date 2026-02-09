@@ -103,6 +103,13 @@ def run_demo_script(
     )
 
 
+def assert_duration_ms_field(test_case: unittest.TestCase, entry: dict[str, object]) -> None:
+    test_case.assertIn("duration_ms", entry)
+    duration = entry["duration_ms"]
+    test_case.assertIsInstance(duration, int)
+    test_case.assertGreaterEqual(duration, 0)
+
+
 class DemoScriptsTests(unittest.TestCase):
     def test_unit_script_argument_parser_rejects_unknown_argument(self) -> None:
         completed = subprocess.run(
@@ -286,7 +293,12 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, msg=completed.stderr)
             payload = json.loads(completed.stdout)
             self.assertEqual(payload["summary"], {"total": 1, "passed": 1, "failed": 0})
-            self.assertEqual(payload["demos"], [{"name": "local.sh", "status": "passed", "exit_code": 0}])
+            self.assertEqual(len(payload["demos"]), 1)
+            entry = payload["demos"][0]
+            self.assertEqual(entry["name"], "local.sh")
+            self.assertEqual(entry["status"], "passed")
+            self.assertEqual(entry["exit_code"], 0)
+            assert_duration_ms_field(self, entry)
             self.assertIn("[demo:all] [1] local.sh", completed.stderr)
 
     def test_functional_all_script_report_file_writes_summary_payload(self) -> None:
@@ -308,6 +320,8 @@ class DemoScriptsTests(unittest.TestCase):
                 [entry["name"] for entry in payload["demos"]],
                 ["local.sh", "rpc.sh", "events.sh", "package.sh"],
             )
+            for entry in payload["demos"]:
+                assert_duration_ms_field(self, entry)
 
     def test_functional_all_script_fail_fast_stops_after_first_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -425,7 +439,12 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             payload = json.loads(completed.stdout)
             self.assertEqual(payload["summary"], {"total": 1, "passed": 0, "failed": 1})
-            self.assertEqual(payload["demos"], [{"name": "rpc.sh", "status": "failed", "exit_code": 1}])
+            self.assertEqual(len(payload["demos"]), 1)
+            entry = payload["demos"][0]
+            self.assertEqual(entry["name"], "rpc.sh")
+            self.assertEqual(entry["status"], "failed")
+            self.assertEqual(entry["exit_code"], 1)
+            assert_duration_ms_field(self, entry)
             self.assertIn("fail-fast triggered", completed.stderr)
 
     def test_integration_all_script_timeout_summary_marks_wrapper_failed_with_timeout_exit(self) -> None:
@@ -454,7 +473,12 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             payload = json.loads(completed.stdout)
             self.assertEqual(payload["summary"], {"total": 1, "passed": 0, "failed": 1})
-            self.assertEqual(payload["demos"], [{"name": "local.sh", "status": "failed", "exit_code": 124}])
+            self.assertEqual(len(payload["demos"]), 1)
+            entry = payload["demos"][0]
+            self.assertEqual(entry["name"], "local.sh")
+            self.assertEqual(entry["status"], "failed")
+            self.assertEqual(entry["exit_code"], 124)
+            assert_duration_ms_field(self, entry)
             self.assertIn("TIMEOUT onboard-non-interactive after 1s", completed.stderr)
             self.assertIn("fail-fast triggered", completed.stderr)
 
@@ -523,6 +547,8 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["total"], 4)
             self.assertEqual(payload["summary"]["failed"], 4)
             self.assertEqual(payload["summary"]["passed"], 0)
+            for entry in payload["demos"]:
+                assert_duration_ms_field(self, entry)
 
     def test_regression_all_script_timeout_rejects_non_positive_values(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

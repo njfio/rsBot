@@ -77,6 +77,8 @@ Run deterministic local demos:
 ./scripts/demo/package.sh
 ```
 
+`all.sh --json` and `--report-file` entries include `duration_ms` per wrapper.
+
 Clean generated local artifacts/noise:
 
 ```bash

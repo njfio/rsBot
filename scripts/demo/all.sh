@@ -102,6 +102,19 @@ print_demo_list_json() {
 run_demo_names=()
 run_demo_statuses=()
 run_demo_exit_codes=()
+run_demo_durations_ms=()
+
+current_time_ms() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+    return 0
+  fi
+
+  date +%s | awk '{ print $1 * 1000 }'
+}
 
 write_report_file() {
   local payload="$1"
@@ -150,10 +163,11 @@ print_summary_json() {
       if [[ "${idx}" -eq "${last_index}" ]]; then
         comma=""
       fi
-      printf '    {"name":"%s","status":"%s","exit_code":%s}%s\n' \
+      printf '    {"name":"%s","status":"%s","exit_code":%s,"duration_ms":%s}%s\n' \
         "${run_demo_names[$idx]}" \
         "${run_demo_statuses[$idx]}" \
         "${run_demo_exit_codes[$idx]}" \
+        "${run_demo_durations_ms[$idx]}" \
         "${comma}"
     done
   fi
@@ -329,6 +343,7 @@ for demo_script in "${selected_demo_scripts[@]}"; do
   if [[ -n "${timeout_seconds}" ]]; then
     args+=("--timeout-seconds" "${timeout_seconds}")
   fi
+  started_ms="$(current_time_ms)"
 
   if [[ "${json_output}" == "true" ]]; then
     if "${args[@]}" >&2; then
@@ -345,10 +360,16 @@ for demo_script in "${selected_demo_scripts[@]}"; do
     demo_exit_code=$?
     demo_status="failed"
   fi
+  ended_ms="$(current_time_ms)"
+  demo_duration_ms=$((ended_ms - started_ms))
+  if [[ "${demo_duration_ms}" -lt 0 ]]; then
+    demo_duration_ms=0
+  fi
 
   run_demo_names+=("${demo_script}")
   run_demo_statuses+=("${demo_status}")
   run_demo_exit_codes+=("${demo_exit_code}")
+  run_demo_durations_ms+=("${demo_duration_ms}")
 
   if [[ "${demo_status}" == "passed" ]]; then
     passed=$((passed + 1))
