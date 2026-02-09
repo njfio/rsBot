@@ -30,6 +30,28 @@ fn log_provider_auth_resolution(
     );
 }
 
+fn should_use_subscription_backend_fallback(
+    cli: &Cli,
+    provider: Provider,
+    auth_mode: ProviderAuthMethod,
+    error: &anyhow::Error,
+) -> bool {
+    if auth_mode != ProviderAuthMethod::ApiKey {
+        return false;
+    }
+    if !error
+        .to_string()
+        .contains(missing_provider_api_key_message(provider))
+    {
+        return false;
+    }
+    match provider {
+        Provider::OpenAi => cli.openai_codex_backend,
+        Provider::Anthropic => cli.anthropic_claude_backend,
+        Provider::Google => cli.google_gemini_backend,
+    }
+}
+
 fn is_azure_openai_endpoint(api_base: &str) -> bool {
     let normalized = api_base.trim().to_ascii_lowercase();
     normalized.contains(".openai.azure.com") || normalized.contains("/openai/deployments/")
@@ -137,7 +159,15 @@ pub(crate) fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc
             let resolved = match resolver.resolve(provider, auth_mode) {
                 Ok(resolved) => Some(resolved),
                 Err(error) => {
-                    if openai_codex_backend_enabled(cli, auth_mode)
+                    if should_use_subscription_backend_fallback(cli, provider, auth_mode, &error) {
+                        tracing::debug!(
+                            provider = provider.as_str(),
+                            auth_mode = auth_mode.as_str(),
+                            auth_source = "codex_cli",
+                            "openai api-key auth missing key; falling back to codex cli backend"
+                        );
+                        None
+                    } else if openai_codex_backend_enabled(cli, auth_mode)
                         && openai_credential_store_missing_provider_entry(cli)
                     {
                         tracing::debug!(
@@ -196,7 +226,25 @@ pub(crate) fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc
             }
 
             let resolver = CliProviderCredentialResolver { cli };
-            let resolved = resolver.resolve(provider, auth_mode)?;
+            let resolved = match resolver.resolve(provider, auth_mode) {
+                Ok(resolved) => Some(resolved),
+                Err(error) => {
+                    if should_use_subscription_backend_fallback(cli, provider, auth_mode, &error) {
+                        tracing::debug!(
+                            provider = provider.as_str(),
+                            auth_mode = auth_mode.as_str(),
+                            auth_source = "claude_cli",
+                            "anthropic api-key auth missing key; falling back to claude cli backend"
+                        );
+                        None
+                    } else {
+                        return Err(error);
+                    }
+                }
+            };
+            let Some(resolved) = resolved else {
+                return build_anthropic_claude_client(cli, ProviderAuthMethod::OauthToken);
+            };
             let api_key = resolved_secret_for_provider(&resolved, provider)?;
             let client = AnthropicClient::new(AnthropicConfig {
                 api_base: cli.anthropic_api_base.clone(),
@@ -225,7 +273,25 @@ pub(crate) fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc
             }
 
             let resolver = CliProviderCredentialResolver { cli };
-            let resolved = resolver.resolve(provider, auth_mode)?;
+            let resolved = match resolver.resolve(provider, auth_mode) {
+                Ok(resolved) => Some(resolved),
+                Err(error) => {
+                    if should_use_subscription_backend_fallback(cli, provider, auth_mode, &error) {
+                        tracing::debug!(
+                            provider = provider.as_str(),
+                            auth_mode = auth_mode.as_str(),
+                            auth_source = "gemini_cli",
+                            "google api-key auth missing key; falling back to gemini cli backend"
+                        );
+                        None
+                    } else {
+                        return Err(error);
+                    }
+                }
+            };
+            let Some(resolved) = resolved else {
+                return build_google_gemini_client(cli, ProviderAuthMethod::OauthToken);
+            };
             let api_key = resolved_secret_for_provider(&resolved, provider)?;
             let client = GoogleClient::new(GoogleConfig {
                 api_base: cli.google_api_base.clone(),
