@@ -35,3 +35,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 jsonschema = "0.41"
 sha2 = "0.10"
 wait-timeout = "0.2"
+yrs = "0.25"

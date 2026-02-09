@@ -253,6 +253,14 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/auth matrix openai --mode oauth-token --json",
     },
     CommandSpec {
+        name: "/canvas",
+        usage: CANVAS_USAGE,
+        description: "Manage collaborative live-canvas state backed by Yrs CRDT persistence",
+        details:
+            "Supports create/update/show/export flows for node and edge state with deterministic markdown/json renderers.",
+        example: "/canvas update architecture node-upsert api \"API Service\" 120 64",
+    },
+    CommandSpec {
         name: "/rbac",
         usage: RBAC_USAGE,
         description: "Inspect RBAC principal resolution and authorization decisions",
@@ -383,6 +391,7 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "/branches",
     "/macro",
     "/auth",
+    "/canvas",
     "/rbac",
     "/approvals",
     "/integration-auth",
@@ -659,6 +668,21 @@ pub(crate) fn handle_command_with_session_import_mode(
                 None => println!("{}", unknown_help_topic_message(&topic)),
             }
         }
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/canvas" {
+        println!(
+            "{}",
+            execute_canvas_command(
+                command_args,
+                &CanvasCommandConfig {
+                    canvas_root: PathBuf::from(".tau/canvas"),
+                    channel_store_root: PathBuf::from(".tau/channel-store"),
+                    principal: resolve_local_principal(),
+                }
+            )
+        );
         return Ok(CommandAction::Continue);
     }
 
