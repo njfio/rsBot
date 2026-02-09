@@ -1320,8 +1320,13 @@ impl GithubIssuesBridgeRuntime {
                     "No active run for this issue. Current state is idle.".to_string()
                 };
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "stop",
+                        "acknowledged",
+                        &message,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1337,8 +1342,13 @@ impl GithubIssuesBridgeRuntime {
             TauIssueCommand::Status => {
                 let status = self.render_issue_status(event.issue_number);
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &status)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "status",
+                        "reported",
+                        &status,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1357,10 +1367,6 @@ impl GithubIssuesBridgeRuntime {
                 } else {
                     self.render_issue_artifacts(event.issue_number, run_id.as_deref())?
                 };
-                let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &artifact_report)
-                    .await?;
                 let command_name = if purge {
                     "artifacts-purge"
                 } else if run_id.is_some() {
@@ -1368,6 +1374,15 @@ impl GithubIssuesBridgeRuntime {
                 } else {
                     "artifacts"
                 };
+                let posted = self
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        command_name,
+                        "reported",
+                        &artifact_report,
+                    )
+                    .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
                     "repo": self.repo.as_slug(),
@@ -1384,8 +1399,13 @@ impl GithubIssuesBridgeRuntime {
                 let artifact_report =
                     self.render_issue_artifact_show(event.issue_number, &artifact_id)?;
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &artifact_report)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "artifacts-show",
+                        "reported",
+                        &artifact_report,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1424,8 +1444,13 @@ impl GithubIssuesBridgeRuntime {
                     },
                 );
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &output)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "canvas",
+                        "reported",
+                        &output,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1450,20 +1475,23 @@ impl GithubIssuesBridgeRuntime {
                 if self.state_store.clear_issue_session(event.issue_number) {
                     *state_dirty = true;
                 }
+                let compact_message = format!(
+                    "Session compact complete for issue #{}.\n\nremoved_entries={} retained_entries={} head={}",
+                    event.issue_number,
+                    compact_report.removed_entries,
+                    compact_report.retained_entries,
+                    compact_report
+                        .head_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                );
                 let posted = self
-                    .github_client
-                    .create_issue_comment(
+                    .post_issue_command_comment(
                         event.issue_number,
-                        &format!(
-                            "Session compact complete for issue #{}.\n\nremoved_entries={} retained_entries={} head={}",
-                            event.issue_number,
-                            compact_report.removed_entries,
-                            compact_report.retained_entries,
-                            compact_report
-                                .head_id
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|| "none".to_string())
-                        ),
+                        &event.key,
+                        "compact",
+                        "completed",
+                        &compact_message,
                     )
                     .await?;
                 self.outbound_log.append(&json!({
@@ -1485,8 +1513,13 @@ impl GithubIssuesBridgeRuntime {
             TauIssueCommand::Help => {
                 let message = tau_command_usage();
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "help",
+                        "reported",
+                        &message,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1528,8 +1561,13 @@ impl GithubIssuesBridgeRuntime {
                     )
                 };
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "chat-start",
+                        "completed",
+                        &message,
+                    )
                     .await?;
                 if self.state_store.update_issue_session(
                     event.issue_number,
@@ -1584,8 +1622,13 @@ impl GithubIssuesBridgeRuntime {
                     )
                 };
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "chat-resume",
+                        "completed",
+                        &message,
+                    )
                     .await?;
                 if self.state_store.update_issue_session(
                     event.issue_number,
@@ -1618,8 +1661,13 @@ impl GithubIssuesBridgeRuntime {
                         active.run_id
                     );
                     let posted = self
-                        .github_client
-                        .create_issue_comment(event.issue_number, &message)
+                        .post_issue_command_comment(
+                            event.issue_number,
+                            &event.key,
+                            "chat-reset",
+                            "blocked",
+                            &message,
+                        )
                         .await?;
                     self.outbound_log.append(&json!({
                         "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1644,8 +1692,13 @@ impl GithubIssuesBridgeRuntime {
                         event.issue_number, removed_session, removed_lock
                     );
                     let posted = self
-                        .github_client
-                        .create_issue_comment(event.issue_number, &message)
+                        .post_issue_command_comment(
+                            event.issue_number,
+                            &event.key,
+                            "chat-reset",
+                            "completed",
+                            &message,
+                        )
                         .await?;
                     self.outbound_log.append(&json!({
                         "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1708,8 +1761,13 @@ impl GithubIssuesBridgeRuntime {
                     )
                 };
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "chat-export",
+                        "completed",
+                        &message,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1816,8 +1874,13 @@ impl GithubIssuesBridgeRuntime {
                     )
                 };
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "chat-status",
+                        "reported",
+                        &message,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1897,8 +1960,13 @@ impl GithubIssuesBridgeRuntime {
                     lines.join("\n")
                 };
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "chat-show",
+                        "reported",
+                        &message,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1954,8 +2022,13 @@ impl GithubIssuesBridgeRuntime {
                     lines.join("\n")
                 };
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "chat-search",
+                        "reported",
+                        &message,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -1976,8 +2049,13 @@ impl GithubIssuesBridgeRuntime {
             }
             TauIssueCommand::Invalid { message } => {
                 let posted = self
-                    .github_client
-                    .create_issue_comment(event.issue_number, &message)
+                    .post_issue_command_comment(
+                        event.issue_number,
+                        &event.key,
+                        "invalid",
+                        "usage-reported",
+                        &message,
+                    )
                     .await?;
                 self.outbound_log.append(&json!({
                     "timestamp_unix_ms": current_unix_timestamp_ms(),
@@ -2344,6 +2422,20 @@ impl GithubIssuesBridgeRuntime {
             ));
         }
         Ok(lines.join("\n"))
+    }
+
+    async fn post_issue_command_comment(
+        &self,
+        issue_number: u64,
+        event_key: &str,
+        command: &str,
+        status: &str,
+        message: &str,
+    ) -> Result<GithubCommentCreateResponse> {
+        let body = render_issue_command_comment(event_key, command, status, message);
+        self.github_client
+            .create_issue_comment(issue_number, &body)
+            .await
     }
 
     fn append_channel_log(
@@ -2735,6 +2827,32 @@ fn render_issue_comment_response_parts(
         run.artifact.bytes
     );
     (content, footer)
+}
+
+fn render_issue_command_comment(
+    event_key: &str,
+    command: &str,
+    status: &str,
+    message: &str,
+) -> String {
+    let content = if message.trim().is_empty() {
+        "Tau command response.".to_string()
+    } else {
+        message.trim().to_string()
+    };
+    let command = if command.trim().is_empty() {
+        "unknown"
+    } else {
+        command.trim()
+    };
+    let status = if status.trim().is_empty() {
+        "unknown"
+    } else {
+        status.trim()
+    };
+    format!(
+        "{content}\n\n---\n{EVENT_KEY_MARKER_PREFIX}{event_key}{EVENT_KEY_MARKER_SUFFIX}\n_Tau command `{command}` | status `{status}`_"
+    )
 }
 
 fn render_issue_comment_chunks(event: &GithubBridgeEvent, run: &PromptRunReport) -> Vec<String> {
@@ -3346,12 +3464,13 @@ mod tests {
         collect_issue_events, event_action_from_body, extract_footer_event_keys,
         is_retryable_github_status, issue_session_id, normalize_artifact_retention_days,
         parse_rfc3339_to_unix_ms, parse_tau_issue_command, post_issue_comment_chunks,
-        render_issue_comment_chunks_with_limit, render_issue_comment_response_parts, retry_delay,
-        run_prompt_for_event, sanitize_for_path, session_path_for_issue, EventAction,
-        GithubApiClient, GithubBridgeEvent, GithubBridgeEventKind, GithubIssue, GithubIssueComment,
-        GithubIssuesBridgeRuntime, GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore,
-        GithubUser, PromptRunReport, PromptUsageSummary, RepoRef, SessionStore, TauIssueCommand,
-        CHAT_SHOW_DEFAULT_LIMIT, EVENT_KEY_MARKER_PREFIX,
+        render_issue_command_comment, render_issue_comment_chunks_with_limit,
+        render_issue_comment_response_parts, retry_delay, run_prompt_for_event, sanitize_for_path,
+        session_path_for_issue, EventAction, GithubApiClient, GithubBridgeEvent,
+        GithubBridgeEventKind, GithubIssue, GithubIssueComment, GithubIssuesBridgeRuntime,
+        GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore, GithubUser, PromptRunReport,
+        PromptUsageSummary, RepoRef, SessionStore, TauIssueCommand, CHAT_SHOW_DEFAULT_LIMIT,
+        EVENT_KEY_MARKER_PREFIX,
     };
     use crate::{
         channel_store::{ChannelArtifactRecord, ChannelStore},
@@ -3685,6 +3804,19 @@ mod tests {
         let session = session_path_for_issue(root, 9);
         assert!(session.ends_with("sessions/issue-9.jsonl"));
         assert_eq!(sanitize_for_path("owner/repo"), "owner_repo");
+    }
+
+    #[test]
+    fn unit_render_issue_command_comment_appends_marker_footer() {
+        let rendered = render_issue_command_comment(
+            "issue-comment-created:123",
+            "chat-status",
+            "reported",
+            "Chat session status for issue #12.",
+        );
+        assert!(rendered.contains("Chat session status for issue #12."));
+        assert!(rendered.contains("tau-event-key:issue-comment-created:123"));
+        assert!(rendered.contains("Tau command `chat-status` | status `reported`"));
     }
 
     #[tokio::test]
@@ -4433,6 +4565,63 @@ mod tests {
         working_post.assert_calls(1);
         update.assert_calls(1);
         fallback_post.assert_calls(0);
+    }
+
+    #[tokio::test]
+    async fn regression_bridge_poll_hydrates_command_replay_markers_from_existing_bot_comments() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 40,
+                "number": 19,
+                "title": "Replay Marker",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues/19/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 1901,
+                    "body": "/tau status",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                },
+                {
+                    "id": 1902,
+                    "body": "Tau status for issue #19: idle\n\n---\n<!-- tau-event-key:issue-comment-created:1901 -->\n_Tau command `status` | status `reported`_",
+                    "created_at": "2026-01-01T00:00:02Z",
+                    "updated_at": "2026-01-01T00:00:02Z",
+                    "user": {"login":"tau"}
+                }
+            ]));
+        });
+        let status_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/19/comments")
+                .body_includes("Tau status for issue #19: idle");
+            then.status(201).json_body(json!({
+                "id": 1903,
+                "html_url": "https://example.test/comment/1903"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.discovered_events, 1);
+        assert_eq!(report.processed_events, 0);
+        assert_eq!(report.skipped_duplicate_events, 1);
+        assert_eq!(report.failed_events, 0);
+        status_post.assert_calls(0);
     }
 
     #[tokio::test]
