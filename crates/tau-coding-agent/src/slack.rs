@@ -19,9 +19,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore};
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
-    evaluate_pairing_access, pairing_policy_for_state_dir, rbac_policy_path_for_state_dir,
-    run_prompt_with_cancellation, slack_principal, write_text_atomic, PairingDecision,
-    PromptRunStatus, RbacDecision, RenderOptions, SessionRuntime,
+    evaluate_pairing_access, execute_canvas_command, pairing_policy_for_state_dir,
+    rbac_policy_path_for_state_dir, run_prompt_with_cancellation, slack_principal,
+    write_text_atomic, CanvasCommandConfig, CanvasEventOrigin, CanvasSessionLinkContext,
+    PairingDecision, PromptRunStatus, RbacDecision, RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
 
@@ -596,6 +597,7 @@ enum SlackCommand {
     Stop,
     Artifacts { purge: bool, run_id: Option<String> },
     ArtifactShow { artifact_id: String },
+    Canvas { args: String },
     Invalid { message: String },
 }
 
@@ -1125,6 +1127,40 @@ impl SlackBridgeRuntime {
                 "reported",
                 Some(json!({"artifact_id": artifact_id})),
             ),
+            SlackCommand::Canvas { args } => {
+                let channel_store = ChannelStore::open(
+                    &self.state_dir.join("channel-store"),
+                    "slack",
+                    &event.channel_id,
+                )?;
+                let session_path = channel_store.session_path();
+                let session_head_id = SessionStore::load(&session_path)
+                    .ok()
+                    .and_then(|store| store.head_id());
+                (
+                    execute_canvas_command(
+                        &args,
+                        &CanvasCommandConfig {
+                            canvas_root: self.state_dir.join("canvas"),
+                            channel_store_root: self.state_dir.join("channel-store"),
+                            principal: slack_principal(&event.user_id),
+                            origin: CanvasEventOrigin {
+                                transport: "slack".to_string(),
+                                channel: Some(event.channel_id.clone()),
+                                source_event_key: Some(event.key.clone()),
+                                source_unix_ms: Some(event.occurred_unix_ms),
+                            },
+                            session_link: Some(CanvasSessionLinkContext {
+                                session_path,
+                                session_head_id,
+                            }),
+                        },
+                    ),
+                    "canvas",
+                    "reported",
+                    Some(json!({"canvas_args": args})),
+                )
+            }
             SlackCommand::Invalid { message } => (message, "invalid", "usage_reported", None),
         };
 
@@ -1892,6 +1928,7 @@ fn slack_command_usage() -> String {
         "- `/tau status`",
         "- `/tau stop`",
         "- `/tau artifacts [purge|run <run_id>|show <artifact_id>]`",
+        "- `/tau canvas <create|update|show|export|import> ...`",
     ]
     .join("\n")
 }
@@ -1903,6 +1940,7 @@ fn rbac_action_for_slack_command(command: Option<&SlackCommand>) -> String {
         Some(SlackCommand::Stop) => "command:/tau-stop".to_string(),
         Some(SlackCommand::Artifacts { .. }) => "command:/tau-artifacts".to_string(),
         Some(SlackCommand::ArtifactShow { .. }) => "command:/tau-artifacts-show".to_string(),
+        Some(SlackCommand::Canvas { .. }) => "command:/tau-canvas".to_string(),
         Some(SlackCommand::Invalid { .. }) => "command:/tau-invalid".to_string(),
         None => "command:/tau-run".to_string(),
     }
@@ -1983,6 +2021,18 @@ fn parse_slack_command(event: &SlackBridgeEvent, bot_user_id: &str) -> Option<Sl
                         message: "Usage: /tau artifacts [purge|run <run_id>|show <artifact_id>]"
                             .to_string(),
                     },
+                }
+            }
+        }
+        "canvas" => {
+            if remainder.is_empty() {
+                SlackCommand::Invalid {
+                    message: "Usage: /tau canvas <create|update|show|export|import> ..."
+                        .to_string(),
+                }
+            } else {
+                SlackCommand::Canvas {
+                    args: remainder.to_string(),
                 }
             }
         }
@@ -2577,6 +2627,16 @@ mod tests {
                 artifact_id: "artifact-9".to_string()
             })
         );
+        let dm = test_event_with_text(
+            SlackBridgeEventKind::DirectMessage,
+            "/tau canvas show architecture --json",
+        );
+        assert_eq!(
+            parse_slack_command(&dm, "UBOT"),
+            Some(SlackCommand::Canvas {
+                args: "show architecture --json".to_string()
+            })
+        );
         let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "hello");
         assert_eq!(parse_slack_command(&dm, "UBOT"), None);
     }
@@ -2612,6 +2672,11 @@ mod tests {
             Some(SlackCommand::Invalid { .. })
         ));
         let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau artifacts show");
+        assert!(matches!(
+            parse_slack_command(&dm, "UBOT"),
+            Some(SlackCommand::Invalid { .. })
+        ));
+        let dm = test_event_with_text(SlackBridgeEventKind::DirectMessage, "/tau canvas");
         assert!(matches!(
             parse_slack_command(&dm, "UBOT"),
             Some(SlackCommand::Invalid { .. })
@@ -2994,6 +3059,55 @@ mod tests {
         status_post.assert_calls(1);
         stop_post.assert_calls(1);
         assert_eq!(report.queued_events, 0);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_canvas_command_posts_state_and_persists_replay_event() {
+        let server = MockServer::start();
+        let canvas_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/chat.postMessage")
+                .body_includes("\"channel\":\"C1\"")
+                .body_includes("canvas create: id=architecture")
+                .body_includes("event_id=");
+            then.status(200)
+                .json_body(json!({"ok": true, "channel": "C1", "ts": "4.9"}));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_config(&server.base_url(), temp.path());
+        let mut runtime = SlackBridgeRuntime::new(config).await.expect("runtime");
+        let now_seconds = current_unix_timestamp_ms() / 1000;
+        let canvas = SlackSocketEnvelope {
+            envelope_id: "env-canvas".to_string(),
+            envelope_type: "events_api".to_string(),
+            payload: json!({
+                "type": "event_callback",
+                "event_id": "EvCanvas",
+                "event_time": now_seconds,
+                "event": {
+                    "type": "app_mention",
+                    "user": "U1",
+                    "channel": "C1",
+                    "text": "<@UBOT> /tau canvas create architecture",
+                    "ts": "12.9"
+                }
+            }),
+        };
+
+        let mut report = PollCycleReport::default();
+        runtime
+            .handle_envelope(canvas, &mut report)
+            .await
+            .expect("canvas command");
+        canvas_post.assert_calls(1);
+        assert_eq!(report.queued_events, 0);
+
+        let events_path = temp.path().join("canvas/architecture/events.jsonl");
+        let payload = std::fs::read_to_string(events_path).expect("events");
+        assert!(payload.contains("\"event_id\":"));
+        assert!(payload.contains("\"transport\":\"slack\""));
+        assert!(payload.contains("\"source_event_key\":\"EvCanvas:C1:12.9\""));
     }
 
     #[tokio::test]

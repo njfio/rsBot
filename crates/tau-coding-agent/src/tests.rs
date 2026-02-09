@@ -8832,7 +8832,7 @@ fn functional_render_help_overview_lists_known_commands() {
     assert!(help.contains("/skills-sync [lockfile_path]"));
     assert!(help.contains("/macro <save|run|list|show|delete> ..."));
     assert!(help.contains("/auth <login|status|logout|matrix> ..."));
-    assert!(help.contains("/canvas <create|update|show|export>"));
+    assert!(help.contains("/canvas <create|update|show|export|import>"));
     assert!(help.contains("/rbac <check|whoami> ..."));
     assert!(help.contains("/approvals <list|approve|reject> [--json] [--status <pending|approved|rejected|expired|consumed>] [request_id] [reason]"));
     assert!(help.contains("/integration-auth <set|status|rotate|revoke> ..."));
@@ -8895,7 +8895,7 @@ fn functional_render_command_help_supports_profile_topic_without_slash() {
 fn functional_render_command_help_supports_canvas_topic_without_slash() {
     let help = render_command_help("canvas").expect("render help");
     assert!(help.contains("command: /canvas"));
-    assert!(help.contains("usage: /canvas <create|update|show|export>"));
+    assert!(help.contains("usage: /canvas <create|update|show|export|import>"));
     assert!(help.contains("example: /canvas update architecture node-upsert"));
 }
 

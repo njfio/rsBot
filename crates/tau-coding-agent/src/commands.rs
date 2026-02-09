@@ -257,7 +257,7 @@ pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
         usage: CANVAS_USAGE,
         description: "Manage collaborative live-canvas state backed by Yrs CRDT persistence",
         details:
-            "Supports create/update/show/export flows for node and edge state with deterministic markdown/json renderers.",
+            "Supports create/update/show/export/import flows for node and edge state with deterministic markdown/json renderers and replay-safe event envelopes.",
         example: "/canvas update architecture node-upsert api \"API Service\" 120 64",
     },
     CommandSpec {
@@ -672,6 +672,12 @@ pub(crate) fn handle_command_with_session_import_mode(
     }
 
     if command_name == "/canvas" {
+        let session_link = session_runtime
+            .as_ref()
+            .map(|runtime| CanvasSessionLinkContext {
+                session_path: runtime.store.path().to_path_buf(),
+                session_head_id: runtime.active_head,
+            });
         println!(
             "{}",
             execute_canvas_command(
@@ -680,6 +686,8 @@ pub(crate) fn handle_command_with_session_import_mode(
                     canvas_root: PathBuf::from(".tau/canvas"),
                     channel_store_root: PathBuf::from(".tau/channel-store"),
                     principal: resolve_local_principal(),
+                    origin: CanvasEventOrigin::default(),
+                    session_link,
                 }
             )
         );

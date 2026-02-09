@@ -3,7 +3,8 @@ use crate::channel_store::{ChannelLogEntry, ChannelStore};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-#[cfg(test)]
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::io::BufRead;
 use std::io::Write;
 #[cfg(test)]
@@ -13,18 +14,51 @@ use yrs::updates::decoder::Decode;
 use yrs::{Doc, Map, MapPrelim, MapRef, Out, ReadTxn, StateVector, Transact, Update};
 
 const CANVAS_SCHEMA_VERSION: u32 = 1;
+const CANVAS_EVENT_SCHEMA_VERSION: u32 = 1;
+const CANVAS_SESSION_LINK_SCHEMA_VERSION: u32 = 1;
 const CANVAS_ROOT_TYPE: &str = "canvas";
 const CANVAS_NODES_KEY: &str = "nodes";
 const CANVAS_EDGES_KEY: &str = "edges";
 
 pub(crate) const CANVAS_USAGE: &str =
-    "/canvas <create|update|show|export> <canvas_id> ... (run /help /canvas)";
+    "/canvas <create|update|show|export|import> <canvas_id> ... (run /help /canvas)";
+
+fn canvas_event_schema_version() -> u32 {
+    CANVAS_EVENT_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanvasEventOrigin {
+    pub(crate) transport: String,
+    pub(crate) channel: Option<String>,
+    pub(crate) source_event_key: Option<String>,
+    pub(crate) source_unix_ms: Option<u64>,
+}
+
+impl Default for CanvasEventOrigin {
+    fn default() -> Self {
+        Self {
+            transport: "local".to_string(),
+            channel: None,
+            source_event_key: None,
+            source_unix_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanvasSessionLinkContext {
+    pub(crate) session_path: PathBuf,
+    pub(crate) session_head_id: Option<u64>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CanvasCommandConfig {
     pub(crate) canvas_root: PathBuf,
     pub(crate) channel_store_root: PathBuf,
     pub(crate) principal: String,
+    pub(crate) origin: CanvasEventOrigin,
+    pub(crate) session_link: Option<CanvasSessionLinkContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,10 +93,18 @@ struct CanvasStoreMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct CanvasEventEntry {
+    #[serde(default = "canvas_event_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    event_id: String,
     timestamp_unix_ms: u64,
     principal: String,
     action: String,
     details: Value,
+    #[serde(default)]
+    origin: CanvasEventOriginRecord,
+    #[serde(default)]
+    session_link: Option<CanvasSessionLinkRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -82,6 +124,10 @@ enum CanvasCommand {
         canvas_id: String,
         format: CanvasExportFormat,
         path: Option<PathBuf>,
+    },
+    Import {
+        canvas_id: String,
+        path: PathBuf,
     },
 }
 
@@ -117,6 +163,53 @@ enum CanvasShowFormat {
 enum CanvasExportFormat {
     Markdown,
     Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CanvasEventOriginRecord {
+    transport: String,
+    channel: Option<String>,
+    source_event_key: Option<String>,
+    source_unix_ms: Option<u64>,
+}
+
+impl Default for CanvasEventOriginRecord {
+    fn default() -> Self {
+        Self {
+            transport: "local".to_string(),
+            channel: None,
+            source_event_key: None,
+            source_unix_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CanvasSessionLinkRecord {
+    session_path: String,
+    session_head_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CanvasSessionLinkEntry {
+    schema_version: u32,
+    timestamp_unix_ms: u64,
+    event_id: String,
+    principal: String,
+    canvas_id: String,
+    session_path: String,
+    session_head_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReplayGuardDecision {
+    Apply,
+    Duplicate,
+    OutOfOrder {
+        source_stream: String,
+        latest_event_id: String,
+        latest_source_unix_ms: u64,
+    },
 }
 
 impl CanvasExportFormat {
@@ -157,6 +250,7 @@ fn parse_canvas_command(command_args: &str) -> Result<CanvasCommand> {
         "update" => parse_canvas_update_command(&tokens),
         "show" => parse_canvas_show_command(&tokens),
         "export" => parse_canvas_export_command(&tokens),
+        "import" => parse_canvas_import_command(&tokens),
         other => bail!("unknown canvas subcommand '{other}'"),
     }
 }
@@ -277,6 +371,16 @@ fn parse_canvas_export_command(tokens: &[String]) -> Result<CanvasCommand> {
     })
 }
 
+fn parse_canvas_import_command(tokens: &[String]) -> Result<CanvasCommand> {
+    if tokens.len() != 3 {
+        bail!("usage: /canvas import <canvas_id> <path>");
+    }
+    Ok(CanvasCommand::Import {
+        canvas_id: tokens[1].clone(),
+        path: PathBuf::from(tokens[2].clone()),
+    })
+}
+
 fn run_canvas_command(command: CanvasCommand, config: &CanvasCommandConfig) -> Result<String> {
     match command {
         CanvasCommand::Create { canvas_id } => execute_canvas_create(config, &canvas_id),
@@ -289,16 +393,31 @@ fn run_canvas_command(command: CanvasCommand, config: &CanvasCommandConfig) -> R
             format,
             path,
         } => execute_canvas_export(config, &canvas_id, format, path.as_deref()),
+        CanvasCommand::Import { canvas_id, path } => {
+            execute_canvas_import(config, &canvas_id, &path)
+        }
     }
 }
 
 fn execute_canvas_create(config: &CanvasCommandConfig, canvas_id: &str) -> Result<String> {
     let store = CanvasStore::open(&config.canvas_root, canvas_id)?;
+    let origin = canvas_event_origin_record(config);
+    let event_id = canvas_event_id(config, canvas_id, "create");
+    match evaluate_replay_guard(&store, &event_id, &origin)? {
+        ReplayGuardDecision::Apply => {}
+        decision => {
+            return Ok(render_replay_guard_message(
+                canvas_id, "create", &event_id, &decision,
+            ))
+        }
+    }
     let doc = store.load_doc()?;
     initialize_canvas_document(&doc);
     store.save_doc(&doc)?;
     let snapshot = canvas_snapshot_from_doc(&doc, canvas_id)?;
     let event = CanvasEventEntry {
+        schema_version: CANVAS_EVENT_SCHEMA_VERSION,
+        event_id: event_id.clone(),
         timestamp_unix_ms: current_unix_timestamp_ms(),
         principal: config.principal.clone(),
         action: "create".to_string(),
@@ -307,15 +426,19 @@ fn execute_canvas_create(config: &CanvasCommandConfig, canvas_id: &str) -> Resul
             "nodes": snapshot.nodes.len(),
             "edges": snapshot.edges.len(),
         }),
+        origin,
+        session_link: canvas_session_link_record(config),
     };
     store.append_event(&event)?;
+    store.append_session_link(canvas_id, &event)?;
     append_canvas_event_to_channel_store(config, canvas_id, &event)?;
     Ok(format!(
-        "canvas create: id={} path={} nodes={} edges={}",
+        "canvas create: id={} path={} nodes={} edges={} event_id={}",
         canvas_id,
         store.canvas_dir().display(),
         snapshot.nodes.len(),
-        snapshot.edges.len()
+        snapshot.edges.len(),
+        event_id
     ))
 }
 
@@ -325,18 +448,41 @@ fn execute_canvas_update(
     op: CanvasUpdateOp,
 ) -> Result<String> {
     let store = CanvasStore::open(&config.canvas_root, canvas_id)?;
+    let action = canvas_update_action_name(&op);
+    let origin = canvas_event_origin_record(config);
+    let event_id = canvas_event_id(config, canvas_id, action);
+    match evaluate_replay_guard(&store, &event_id, &origin)? {
+        ReplayGuardDecision::Apply => {}
+        decision => {
+            return Ok(render_replay_guard_message(
+                canvas_id, action, &event_id, &decision,
+            ))
+        }
+    }
     let doc = store.load_doc()?;
-    let event = apply_canvas_update(&doc, canvas_id, &config.principal, op)?;
+    let (action, details) = apply_canvas_update(&doc, canvas_id, op)?;
+    let event = CanvasEventEntry {
+        schema_version: CANVAS_EVENT_SCHEMA_VERSION,
+        event_id: event_id.clone(),
+        timestamp_unix_ms: current_unix_timestamp_ms(),
+        principal: config.principal.clone(),
+        action: action.to_string(),
+        details,
+        origin,
+        session_link: canvas_session_link_record(config),
+    };
     store.save_doc(&doc)?;
     store.append_event(&event)?;
+    store.append_session_link(canvas_id, &event)?;
     append_canvas_event_to_channel_store(config, canvas_id, &event)?;
     let snapshot = canvas_snapshot_from_doc(&doc, canvas_id)?;
     Ok(format!(
-        "canvas update: id={} action={} nodes={} edges={}",
+        "canvas update: id={} action={} nodes={} edges={} event_id={}",
         canvas_id,
         event.action,
         snapshot.nodes.len(),
-        snapshot.edges.len()
+        snapshot.edges.len(),
+        event_id
     ))
 }
 
@@ -389,6 +535,62 @@ fn execute_canvas_export(
     ))
 }
 
+fn execute_canvas_import(
+    config: &CanvasCommandConfig,
+    canvas_id: &str,
+    source: &Path,
+) -> Result<String> {
+    let store = CanvasStore::open(&config.canvas_root, canvas_id)?;
+    let origin = canvas_event_origin_record(config);
+    let event_id = canvas_event_id(config, canvas_id, "import");
+    match evaluate_replay_guard(&store, &event_id, &origin)? {
+        ReplayGuardDecision::Apply => {}
+        decision => {
+            return Ok(render_replay_guard_message(
+                canvas_id, "import", &event_id, &decision,
+            ))
+        }
+    }
+
+    let raw = std::fs::read_to_string(source)
+        .with_context(|| format!("failed to read import snapshot {}", source.display()))?;
+    let snapshot = serde_json::from_str::<CanvasSnapshot>(&raw)
+        .with_context(|| format!("failed to parse import snapshot {}", source.display()))?;
+    let snapshot = validate_import_snapshot(snapshot, canvas_id)?;
+
+    let doc = store.load_doc()?;
+    replace_doc_with_snapshot(&doc, &snapshot)?;
+    store.save_doc(&doc)?;
+
+    let event = CanvasEventEntry {
+        schema_version: CANVAS_EVENT_SCHEMA_VERSION,
+        event_id: event_id.clone(),
+        timestamp_unix_ms: current_unix_timestamp_ms(),
+        principal: config.principal.clone(),
+        action: "import".to_string(),
+        details: json!({
+            "canvas_id": canvas_id,
+            "source_path": source.display().to_string(),
+            "nodes": snapshot.nodes.len(),
+            "edges": snapshot.edges.len(),
+        }),
+        origin,
+        session_link: canvas_session_link_record(config),
+    };
+    store.append_event(&event)?;
+    store.append_session_link(canvas_id, &event)?;
+    append_canvas_event_to_channel_store(config, canvas_id, &event)?;
+
+    Ok(format!(
+        "canvas import: id={} source={} nodes={} edges={} event_id={}",
+        canvas_id,
+        source.display(),
+        snapshot.nodes.len(),
+        snapshot.edges.len(),
+        event_id
+    ))
+}
+
 fn default_canvas_export_path(store: &CanvasStore, format: CanvasExportFormat) -> PathBuf {
     let stem = sanitize_for_path(&store.canvas_id);
     store
@@ -396,12 +598,273 @@ fn default_canvas_export_path(store: &CanvasStore, format: CanvasExportFormat) -
         .join(format!("{}-snapshot.{}", stem, format.extension()))
 }
 
+fn canvas_update_action_name(op: &CanvasUpdateOp) -> &'static str {
+    match op {
+        CanvasUpdateOp::NodeUpsert { .. } => "node-upsert",
+        CanvasUpdateOp::NodeRemove { .. } => "node-remove",
+        CanvasUpdateOp::EdgeUpsert { .. } => "edge-upsert",
+        CanvasUpdateOp::EdgeRemove { .. } => "edge-remove",
+    }
+}
+
+fn canvas_event_origin_record(config: &CanvasCommandConfig) -> CanvasEventOriginRecord {
+    let mut transport = config.origin.transport.trim().to_string();
+    if transport.is_empty() {
+        transport = "local".to_string();
+    }
+    CanvasEventOriginRecord {
+        transport,
+        channel: config
+            .origin
+            .channel
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        source_event_key: config
+            .origin
+            .source_event_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        source_unix_ms: config.origin.source_unix_ms.filter(|value| *value > 0),
+    }
+}
+
+fn canvas_session_link_record(config: &CanvasCommandConfig) -> Option<CanvasSessionLinkRecord> {
+    config
+        .session_link
+        .as_ref()
+        .map(|link| CanvasSessionLinkRecord {
+            session_path: link.session_path.display().to_string(),
+            session_head_id: link.session_head_id,
+        })
+}
+
+fn canvas_event_id(config: &CanvasCommandConfig, canvas_id: &str, action: &str) -> String {
+    let origin = canvas_event_origin_record(config);
+    if let Some(source_event_key) = origin.source_event_key.as_deref() {
+        return format!(
+            "{}:{}:{}:{}:{}",
+            origin.transport,
+            origin.channel.as_deref().unwrap_or("default"),
+            source_event_key,
+            canvas_id,
+            action
+        );
+    }
+
+    let timestamp_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let seed = format!(
+        "{}:{}:{}:{}:{}",
+        timestamp_ns, config.principal, origin.transport, canvas_id, action
+    );
+    let mut hasher = Sha256::new();
+    hasher.update(seed.as_bytes());
+    let digest = hasher.finalize();
+    format!(
+        "local:{}:{}:{}:{:02x}{:02x}{:02x}{:02x}",
+        canvas_id, action, timestamp_ns, digest[0], digest[1], digest[2], digest[3]
+    )
+}
+
+fn evaluate_replay_guard(
+    store: &CanvasStore,
+    event_id: &str,
+    origin: &CanvasEventOriginRecord,
+) -> Result<ReplayGuardDecision> {
+    let events = store.load_events()?;
+    if events.iter().any(|event| event.event_id == event_id) {
+        return Ok(ReplayGuardDecision::Duplicate);
+    }
+
+    let Some(source_unix_ms) = origin.source_unix_ms else {
+        return Ok(ReplayGuardDecision::Apply);
+    };
+    let source_stream = source_stream_id(origin);
+    if source_stream == "local" {
+        return Ok(ReplayGuardDecision::Apply);
+    }
+
+    let latest = events
+        .iter()
+        .filter(|event| source_stream_id(&event.origin) == source_stream)
+        .filter_map(|event| {
+            event
+                .origin
+                .source_unix_ms
+                .map(|unix_ms| (unix_ms, event.event_id.clone()))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+
+    if let Some((latest_source_unix_ms, latest_event_id)) = latest {
+        if (source_unix_ms, event_id) <= (latest_source_unix_ms, latest_event_id.as_str()) {
+            return Ok(ReplayGuardDecision::OutOfOrder {
+                source_stream,
+                latest_event_id,
+                latest_source_unix_ms,
+            });
+        }
+    }
+
+    Ok(ReplayGuardDecision::Apply)
+}
+
+fn source_stream_id(origin: &CanvasEventOriginRecord) -> String {
+    let transport = origin.transport.trim();
+    if transport.is_empty() || transport == "local" {
+        return "local".to_string();
+    }
+    format!(
+        "{}:{}",
+        transport,
+        origin.channel.as_deref().unwrap_or("default")
+    )
+}
+
+fn render_replay_guard_message(
+    canvas_id: &str,
+    action: &str,
+    event_id: &str,
+    decision: &ReplayGuardDecision,
+) -> String {
+    match decision {
+        ReplayGuardDecision::Apply => unreachable!("render helper only used for replay skips"),
+        ReplayGuardDecision::Duplicate => format!(
+            "canvas replay: id={} action={} status=duplicate-skipped event_id={}",
+            canvas_id, action, event_id
+        ),
+        ReplayGuardDecision::OutOfOrder {
+            source_stream,
+            latest_event_id,
+            latest_source_unix_ms,
+        } => format!(
+            "canvas replay: id={} action={} status=out-of-order-skipped event_id={} source={} latest_event_id={} latest_source_unix_ms={}",
+            canvas_id, action, event_id, source_stream, latest_event_id, latest_source_unix_ms
+        ),
+    }
+}
+
+fn validate_import_snapshot(
+    snapshot: CanvasSnapshot,
+    expected_canvas_id: &str,
+) -> Result<CanvasSnapshot> {
+    if snapshot.schema_version != CANVAS_SCHEMA_VERSION {
+        bail!(
+            "unsupported canvas snapshot schema: expected {}, found {}",
+            CANVAS_SCHEMA_VERSION,
+            snapshot.schema_version
+        );
+    }
+    if snapshot.canvas_id != expected_canvas_id {
+        bail!(
+            "canvas snapshot id mismatch: expected '{}', found '{}'",
+            expected_canvas_id,
+            snapshot.canvas_id
+        );
+    }
+
+    let mut node_ids = HashSet::new();
+    for node in &snapshot.nodes {
+        let node_id = node.id.trim();
+        if node_id.is_empty() {
+            bail!("canvas snapshot contains a node with empty id");
+        }
+        if !node_ids.insert(node_id.to_string()) {
+            bail!("canvas snapshot has duplicate node id '{}'", node.id);
+        }
+    }
+
+    let mut edge_ids = HashSet::new();
+    for edge in &snapshot.edges {
+        let edge_id = edge.id.trim();
+        if edge_id.is_empty() {
+            bail!("canvas snapshot contains an edge with empty id");
+        }
+        if !edge_ids.insert(edge_id.to_string()) {
+            bail!("canvas snapshot has duplicate edge id '{}'", edge.id);
+        }
+        if !node_ids.contains(edge.from.as_str()) {
+            bail!(
+                "canvas snapshot edge '{}' references missing source node '{}'",
+                edge.id,
+                edge.from
+            );
+        }
+        if !node_ids.contains(edge.to.as_str()) {
+            bail!(
+                "canvas snapshot edge '{}' references missing destination node '{}'",
+                edge.id,
+                edge.to
+            );
+        }
+    }
+
+    let mut normalized = snapshot;
+    normalized
+        .nodes
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    normalized
+        .edges
+        .sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(normalized)
+}
+
+fn replace_doc_with_snapshot(doc: &Doc, snapshot: &CanvasSnapshot) -> Result<()> {
+    initialize_canvas_document(doc);
+    let root = doc.get_or_insert_map(CANVAS_ROOT_TYPE);
+    let mut txn = doc.transact_mut();
+    let nodes: MapRef = root.get_or_init(&mut txn, CANVAS_NODES_KEY);
+    let edges: MapRef = root.get_or_init(&mut txn, CANVAS_EDGES_KEY);
+
+    let node_keys = nodes
+        .iter(&txn)
+        .map(|(node_id, _)| node_id.to_string())
+        .collect::<Vec<_>>();
+    for node_id in node_keys {
+        nodes.remove(&mut txn, &node_id);
+    }
+
+    let edge_keys = edges
+        .iter(&txn)
+        .map(|(edge_id, _)| edge_id.to_string())
+        .collect::<Vec<_>>();
+    for edge_id in edge_keys {
+        edges.remove(&mut txn, &edge_id);
+    }
+
+    for node in &snapshot.nodes {
+        let node_map = get_or_insert_child_map(&nodes, &mut txn, &node.id);
+        node_map.insert(&mut txn, "label", node.label.clone());
+        node_map.insert(&mut txn, "x", node.x);
+        node_map.insert(&mut txn, "y", node.y);
+    }
+
+    for edge in &snapshot.edges {
+        let edge_map = get_or_insert_child_map(&edges, &mut txn, &edge.id);
+        edge_map.insert(&mut txn, "from", edge.from.clone());
+        edge_map.insert(&mut txn, "to", edge.to.clone());
+        match edge.label.as_deref() {
+            Some(value) if !value.trim().is_empty() => {
+                edge_map.insert(&mut txn, "label", value.to_string());
+            }
+            _ => {
+                edge_map.remove(&mut txn, "label");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn apply_canvas_update(
     doc: &Doc,
     canvas_id: &str,
-    principal: &str,
     op: CanvasUpdateOp,
-) -> Result<CanvasEventEntry> {
+) -> Result<(&'static str, Value)> {
     initialize_canvas_document(doc);
     let root = doc.get_or_insert_map(CANVAS_ROOT_TYPE);
     let mut txn = doc.transact_mut();
@@ -493,12 +956,7 @@ fn apply_canvas_update(
         }
     };
 
-    Ok(CanvasEventEntry {
-        timestamp_unix_ms: current_unix_timestamp_ms(),
-        principal: principal.to_string(),
-        action: action.to_string(),
-        details,
-    })
+    Ok((action, details))
 }
 
 fn collect_edge_ids_for_node<T: ReadTxn>(edges: &MapRef, txn: &T, node_id: &str) -> Vec<String> {
@@ -687,7 +1145,7 @@ fn append_canvas_event_to_channel_store(
     store.append_log_entry(&ChannelLogEntry {
         timestamp_unix_ms: event.timestamp_unix_ms,
         direction: "internal".to_string(),
-        event_key: Some(format!("canvas:{}", event.action)),
+        event_key: Some(format!("canvas:{}:{}", event.action, event.event_id)),
         source: "canvas".to_string(),
         payload,
     })
@@ -729,6 +1187,10 @@ impl CanvasStore {
         self.canvas_dir().join("events.jsonl")
     }
 
+    fn session_links_path(&self) -> PathBuf {
+        self.canvas_dir().join("session-links.jsonl")
+    }
+
     fn exports_dir(&self) -> PathBuf {
         self.canvas_dir().join("exports")
     }
@@ -740,7 +1202,11 @@ impl CanvasStore {
         std::fs::create_dir_all(self.exports_dir())
             .with_context(|| format!("failed to create {}", self.exports_dir().display()))?;
 
-        for path in [self.state_path(), self.events_path()] {
+        for path in [
+            self.state_path(),
+            self.events_path(),
+            self.session_links_path(),
+        ] {
             if !path.exists() {
                 std::fs::write(&path, "")
                     .with_context(|| format!("failed to initialize {}", path.display()))?;
@@ -808,9 +1274,29 @@ impl CanvasStore {
         append_jsonl_line(&self.events_path(), event)
     }
 
-    #[cfg(test)]
     fn load_events(&self) -> Result<Vec<CanvasEventEntry>> {
         read_jsonl_records(&self.events_path())
+    }
+
+    fn append_session_link(&self, canvas_id: &str, event: &CanvasEventEntry) -> Result<()> {
+        let Some(link) = &event.session_link else {
+            return Ok(());
+        };
+        let entry = CanvasSessionLinkEntry {
+            schema_version: CANVAS_SESSION_LINK_SCHEMA_VERSION,
+            timestamp_unix_ms: event.timestamp_unix_ms,
+            event_id: event.event_id.clone(),
+            principal: event.principal.clone(),
+            canvas_id: canvas_id.to_string(),
+            session_path: link.session_path.clone(),
+            session_head_id: link.session_head_id,
+        };
+        append_jsonl_line(&self.session_links_path(), &entry)
+    }
+
+    #[cfg(test)]
+    fn load_session_links(&self) -> Result<Vec<CanvasSessionLinkEntry>> {
+        read_jsonl_records(&self.session_links_path())
     }
 }
 
@@ -830,7 +1316,6 @@ where
     Ok(())
 }
 
-#[cfg(test)]
 fn read_jsonl_records<T>(path: &Path) -> Result<Vec<T>>
 where
     T: for<'de> Deserialize<'de>,
@@ -938,6 +1423,7 @@ fn resolve_safe_canvas_path(canvas_dir: &Path, relative_path: &str) -> Result<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionStore;
     use tempfile::tempdir;
 
     fn test_config(root: &Path) -> CanvasCommandConfig {
@@ -945,11 +1431,13 @@ mod tests {
             canvas_root: root.join(".tau/canvas"),
             channel_store_root: root.join(".tau/channel-store"),
             principal: "local:test-user".to_string(),
+            origin: CanvasEventOrigin::default(),
+            session_link: None,
         }
     }
 
     #[test]
-    fn unit_parse_canvas_command_supports_create_show_export_and_update_operations() {
+    fn unit_parse_canvas_command_supports_create_show_export_import_and_update_operations() {
         let create = parse_canvas_command("create architecture").expect("parse create");
         assert_eq!(
             create,
@@ -992,6 +1480,15 @@ mod tests {
                 canvas_id: "architecture".to_string(),
                 format: CanvasExportFormat::Markdown,
                 path: Some(PathBuf::from("/tmp/canvas.md")),
+            }
+        );
+
+        let import = parse_canvas_command("import architecture /tmp/canvas.json").expect("parse");
+        assert_eq!(
+            import,
+            CanvasCommand::Import {
+                canvas_id: "architecture".to_string(),
+                path: PathBuf::from("/tmp/canvas.json"),
             }
         );
     }
@@ -1059,6 +1556,59 @@ mod tests {
     }
 
     #[test]
+    fn functional_execute_canvas_import_validates_schema_and_preserves_deterministic_rendering() {
+        let temp = tempdir().expect("tempdir");
+        let config = test_config(temp.path());
+
+        execute_canvas_command("create architecture", &config);
+        execute_canvas_command(
+            "update architecture node-upsert api \"API Service\" 10 20",
+            &config,
+        );
+        execute_canvas_command(
+            "update architecture node-upsert db \"DB Service\" 30 40",
+            &config,
+        );
+        execute_canvas_command(
+            "update architecture edge-upsert e1 api db \"flow\"",
+            &config,
+        );
+        let exported_json = temp.path().join("architecture-export.json");
+        execute_canvas_command(
+            format!("export architecture json {}", exported_json.display()).as_str(),
+            &config,
+        );
+
+        let imported = execute_canvas_command(
+            format!("import architecture {}", exported_json.display()).as_str(),
+            &config,
+        );
+        assert!(imported.contains("canvas import: id=architecture"));
+
+        let snapshot_json = execute_canvas_command("show architecture --json", &config);
+        let snapshot = serde_json::from_str::<CanvasSnapshot>(&snapshot_json).expect("snapshot");
+        assert_eq!(snapshot.nodes.len(), 2);
+        assert_eq!(snapshot.edges.len(), 1);
+        let markdown_a = render_canvas_markdown(&snapshot);
+        let markdown_b = render_canvas_markdown(&snapshot);
+        assert_eq!(markdown_a, markdown_b);
+
+        let invalid_path = temp.path().join("invalid-snapshot.json");
+        let mut invalid_snapshot = snapshot.clone();
+        invalid_snapshot.schema_version = CANVAS_SCHEMA_VERSION + 1;
+        std::fs::write(
+            &invalid_path,
+            serde_json::to_string_pretty(&invalid_snapshot).expect("encode"),
+        )
+        .expect("write invalid");
+        let invalid = execute_canvas_command(
+            format!("import architecture {}", invalid_path.display()).as_str(),
+            &config,
+        );
+        assert!(invalid.contains("unsupported canvas snapshot schema"));
+    }
+
+    #[test]
     fn integration_canvas_crdt_converges_under_concurrent_updates() {
         let doc_a = Doc::with_client_id(1);
         let doc_b = Doc::with_client_id(2);
@@ -1067,7 +1617,6 @@ mod tests {
         apply_canvas_update(
             &doc_a,
             "architecture",
-            "local:a",
             CanvasUpdateOp::NodeUpsert {
                 node_id: "root".to_string(),
                 label: "Root".to_string(),
@@ -1081,7 +1630,6 @@ mod tests {
         apply_canvas_update(
             &doc_a,
             "architecture",
-            "local:a",
             CanvasUpdateOp::NodeUpsert {
                 node_id: "api".to_string(),
                 label: "API".to_string(),
@@ -1093,7 +1641,6 @@ mod tests {
         apply_canvas_update(
             &doc_b,
             "architecture",
-            "local:b",
             CanvasUpdateOp::NodeUpsert {
                 node_id: "db".to_string(),
                 label: "DB".to_string(),
@@ -1106,7 +1653,6 @@ mod tests {
         apply_canvas_update(
             &doc_a,
             "architecture",
-            "local:a",
             CanvasUpdateOp::EdgeUpsert {
                 edge_id: "edge-api".to_string(),
                 from: "root".to_string(),
@@ -1118,7 +1664,6 @@ mod tests {
         apply_canvas_update(
             &doc_b,
             "architecture",
-            "local:b",
             CanvasUpdateOp::EdgeUpsert {
                 edge_id: "edge-db".to_string(),
                 from: "root".to_string(),
@@ -1162,9 +1707,11 @@ mod tests {
         let logs = store.load_log_entries().expect("load logs");
         assert!(logs.len() >= 4);
         assert!(logs.iter().all(|entry| entry.source == "canvas"));
-        assert!(logs
-            .iter()
-            .any(|entry| entry.event_key.as_deref() == Some("canvas:create")));
+        assert!(logs.iter().any(|entry| entry
+            .event_key
+            .as_deref()
+            .map(|value| value.starts_with("canvas:create:"))
+            .unwrap_or(false)));
         let inspect = store.inspect().expect("inspect channel store");
         assert_eq!(inspect.invalid_log_lines, 0);
 
@@ -1174,6 +1721,10 @@ mod tests {
         assert!(events
             .iter()
             .all(|event| event.principal == "local:test-user"));
+        assert!(events
+            .iter()
+            .all(|event| event.schema_version == CANVAS_EVENT_SCHEMA_VERSION));
+        assert!(events.iter().all(|event| !event.event_id.is_empty()));
     }
 
     #[test]
@@ -1223,6 +1774,83 @@ mod tests {
         let json_a = render_canvas_json(&snapshot).expect("json a");
         let json_b = render_canvas_json(&snapshot).expect("json b");
         assert_eq!(json_a, json_b);
+    }
+
+    #[test]
+    fn integration_canvas_replay_guard_is_idempotent_for_duplicate_and_out_of_order_remote_events()
+    {
+        let temp = tempdir().expect("tempdir");
+        let mut config = test_config(temp.path());
+        config.origin = CanvasEventOrigin {
+            transport: "github".to_string(),
+            channel: Some("issue-42".to_string()),
+            source_event_key: Some("issue-comment-created:100".to_string()),
+            source_unix_ms: Some(1_000),
+        };
+
+        let create = execute_canvas_command("create architecture", &config);
+        assert!(create.contains("canvas create: id=architecture"));
+        let duplicate = execute_canvas_command("create architecture", &config);
+        assert!(duplicate.contains("status=duplicate-skipped"));
+
+        config.origin = CanvasEventOrigin {
+            transport: "github".to_string(),
+            channel: Some("issue-42".to_string()),
+            source_event_key: Some("issue-comment-created:300".to_string()),
+            source_unix_ms: Some(3_000),
+        };
+        let latest = execute_canvas_command(
+            "update architecture node-upsert api \"API Latest\" 30 30",
+            &config,
+        );
+        assert!(latest.contains("action=node-upsert"));
+
+        config.origin = CanvasEventOrigin {
+            transport: "github".to_string(),
+            channel: Some("issue-42".to_string()),
+            source_event_key: Some("issue-comment-created:200".to_string()),
+            source_unix_ms: Some(2_000),
+        };
+        let stale = execute_canvas_command(
+            "update architecture node-upsert api \"API Stale\" 20 20",
+            &config,
+        );
+        assert!(stale.contains("status=out-of-order-skipped"));
+
+        let show = execute_canvas_command("show architecture --json", &config);
+        let snapshot = serde_json::from_str::<CanvasSnapshot>(&show).expect("snapshot");
+        assert_eq!(snapshot.nodes.len(), 1);
+        assert_eq!(snapshot.nodes[0].label, "API Latest");
+
+        let canvas_store = CanvasStore::open(&config.canvas_root, "architecture").expect("store");
+        let events = canvas_store.load_events().expect("events");
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn integration_canvas_session_link_index_persists_session_head_association() {
+        let temp = tempdir().expect("tempdir");
+        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let mut session_store = SessionStore::load(&session_path).expect("session load");
+        let head = session_store
+            .append_messages(None, &[tau_ai::Message::system("sys")])
+            .expect("append head");
+
+        let mut config = test_config(temp.path());
+        config.session_link = Some(CanvasSessionLinkContext {
+            session_path: session_path.clone(),
+            session_head_id: head,
+        });
+
+        let create = execute_canvas_command("create architecture", &config);
+        assert!(create.contains("canvas create: id=architecture"));
+
+        let canvas_store = CanvasStore::open(&config.canvas_root, "architecture").expect("store");
+        let links = canvas_store.load_session_links().expect("load links");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].schema_version, CANVAS_SESSION_LINK_SCHEMA_VERSION);
+        assert_eq!(links[0].session_path, session_path.display().to_string());
+        assert_eq!(links[0].session_head_id, head);
     }
 
     #[test]

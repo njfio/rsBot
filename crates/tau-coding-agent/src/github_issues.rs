@@ -18,9 +18,10 @@ use crate::channel_store::{ChannelArtifactRecord, ChannelLogEntry, ChannelStore}
 use crate::session_commands::{parse_session_search_args, search_session_entries};
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
-    evaluate_pairing_access, github_principal, pairing_policy_for_state_dir,
-    rbac_policy_path_for_state_dir, run_prompt_with_cancellation, session_message_preview,
-    session_message_role, write_text_atomic, PairingDecision, PromptRunStatus, RbacDecision,
+    evaluate_pairing_access, execute_canvas_command, github_principal,
+    pairing_policy_for_state_dir, rbac_policy_path_for_state_dir, run_prompt_with_cancellation,
+    session_message_preview, session_message_role, write_text_atomic, CanvasCommandConfig,
+    CanvasEventOrigin, CanvasSessionLinkContext, PairingDecision, PromptRunStatus, RbacDecision,
     RenderOptions, SessionRuntime,
 };
 use crate::{session::SessionStore, tools::ToolPolicy};
@@ -644,6 +645,9 @@ enum TauIssueCommand {
     },
     ArtifactShow {
         artifact_id: String,
+    },
+    Canvas {
+        args: String,
     },
     Summarize {
         focus: Option<String>,
@@ -1374,6 +1378,46 @@ impl GithubIssuesBridgeRuntime {
                     "artifact_id": artifact_id,
                     "posted_comment_id": posted.id,
                     "posted_comment_url": posted.html_url,
+                }))?;
+            }
+            TauIssueCommand::Canvas { args } => {
+                let session_path =
+                    session_path_for_issue(&self.repository_state_dir, event.issue_number);
+                let session_head_id = SessionStore::load(&session_path)
+                    .ok()
+                    .and_then(|store| store.head_id());
+                let output = execute_canvas_command(
+                    &args,
+                    &CanvasCommandConfig {
+                        canvas_root: self.repository_state_dir.join("canvas"),
+                        channel_store_root: self.repository_state_dir.join("channel-store"),
+                        principal: github_principal(&event.author_login),
+                        origin: CanvasEventOrigin {
+                            transport: "github".to_string(),
+                            channel: Some(issue_session_id(event.issue_number)),
+                            source_event_key: Some(event.key.clone()),
+                            source_unix_ms: parse_rfc3339_to_unix_ms(&event.occurred_at),
+                        },
+                        session_link: Some(CanvasSessionLinkContext {
+                            session_path,
+                            session_head_id,
+                        }),
+                    },
+                );
+                let posted = self
+                    .github_client
+                    .create_issue_comment(event.issue_number, &output)
+                    .await?;
+                self.outbound_log.append(&json!({
+                    "timestamp_unix_ms": current_unix_timestamp_ms(),
+                    "repo": self.repo.as_slug(),
+                    "event_key": event.key,
+                    "issue_number": event.issue_number,
+                    "command": "canvas",
+                    "status": "reported",
+                    "posted_comment_id": posted.id,
+                    "posted_comment_url": posted.html_url,
+                    "canvas_args": args,
                 }))?;
             }
             TauIssueCommand::Compact => {
@@ -2136,6 +2180,7 @@ fn rbac_action_for_event(action: &EventAction) -> String {
             TauIssueCommand::ChatSearch { .. } => "command:/tau-chat-search".to_string(),
             TauIssueCommand::Artifacts { .. } => "command:/tau-artifacts".to_string(),
             TauIssueCommand::ArtifactShow { .. } => "command:/tau-artifacts-show".to_string(),
+            TauIssueCommand::Canvas { .. } => "command:/tau-canvas".to_string(),
             TauIssueCommand::Summarize { .. } => "command:/tau-summarize".to_string(),
             TauIssueCommand::Invalid { .. } => "command:/tau-invalid".to_string(),
         },
@@ -2772,6 +2817,18 @@ fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
                 }
             }
         }
+        "canvas" => {
+            if remainder.is_empty() {
+                TauIssueCommand::Invalid {
+                    message: "Usage: /tau canvas <create|update|show|export|import> ..."
+                        .to_string(),
+                }
+            } else {
+                TauIssueCommand::Canvas {
+                    args: remainder.to_string(),
+                }
+            }
+        }
         "summarize" => {
             let focus = (!remainder.is_empty()).then(|| remainder.to_string());
             TauIssueCommand::Summarize { focus }
@@ -2793,6 +2850,7 @@ fn tau_command_usage() -> String {
         "- `/tau help`",
         "- `/tau chat <start|resume|reset|export|status|show [limit]|search <query>>`",
         "- `/tau artifacts [purge|run <run_id>|show <artifact_id>]`",
+        "- `/tau canvas <create|update|show|export|import> ...`",
         "- `/tau summarize [focus]`",
     ]
     .join("\n")
@@ -2962,6 +3020,11 @@ fn issue_session_id(issue_number: u64) -> String {
     format!("issue-{}", issue_number)
 }
 
+fn parse_rfc3339_to_unix_ms(raw: &str) -> Option<u64> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    u64::try_from(parsed.timestamp_millis()).ok()
+}
+
 fn sanitize_for_path(raw: &str) -> String {
     raw.chars()
         .map(|ch| {
@@ -3048,13 +3111,13 @@ mod tests {
     use super::{
         collect_issue_events, event_action_from_body, extract_footer_event_keys,
         is_retryable_github_status, issue_session_id, normalize_artifact_retention_days,
-        parse_tau_issue_command, post_issue_comment_chunks, render_issue_comment_chunks_with_limit,
-        render_issue_comment_response_parts, retry_delay, run_prompt_for_event, sanitize_for_path,
-        session_path_for_issue, EventAction, GithubApiClient, GithubBridgeEvent,
-        GithubBridgeEventKind, GithubIssue, GithubIssueComment, GithubIssuesBridgeRuntime,
-        GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore, GithubUser, PromptRunReport,
-        PromptUsageSummary, RepoRef, SessionStore, TauIssueCommand, CHAT_SHOW_DEFAULT_LIMIT,
-        EVENT_KEY_MARKER_PREFIX,
+        parse_rfc3339_to_unix_ms, parse_tau_issue_command, post_issue_comment_chunks,
+        render_issue_comment_chunks_with_limit, render_issue_comment_response_parts, retry_delay,
+        run_prompt_for_event, sanitize_for_path, session_path_for_issue, EventAction,
+        GithubApiClient, GithubBridgeEvent, GithubBridgeEventKind, GithubIssue, GithubIssueComment,
+        GithubIssuesBridgeRuntime, GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore,
+        GithubUser, PromptRunReport, PromptUsageSummary, RepoRef, SessionStore, TauIssueCommand,
+        CHAT_SHOW_DEFAULT_LIMIT, EVENT_KEY_MARKER_PREFIX,
     };
     use crate::{
         channel_store::{ChannelArtifactRecord, ChannelStore},
@@ -3373,6 +3436,12 @@ mod tests {
     }
 
     #[test]
+    fn unit_parse_rfc3339_to_unix_ms_handles_valid_and_invalid_values() {
+        assert!(parse_rfc3339_to_unix_ms("2026-01-01T00:00:01Z").is_some());
+        assert_eq!(parse_rfc3339_to_unix_ms("invalid"), None);
+    }
+
+    #[test]
     fn unit_footer_key_extraction_and_path_helpers_are_stable() {
         let text = "hello\n<!-- rsbot-event-key:abc -->\nworld\n<!-- rsbot-event-key:def -->";
         let keys = extract_footer_event_keys(text);
@@ -3605,6 +3674,12 @@ mod tests {
                 artifact_id: "artifact-123".to_string()
             })
         );
+        assert_eq!(
+            parse_tau_issue_command("/tau canvas show architecture --json"),
+            Some(TauIssueCommand::Canvas {
+                args: "show architecture --json".to_string()
+            })
+        );
         assert_eq!(parse_tau_issue_command("plain message"), None);
     }
 
@@ -3624,6 +3699,8 @@ mod tests {
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed =
             parse_tau_issue_command("/tau artifacts show artifact-a extra").expect("command parse");
+        assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
+        let parsed = parse_tau_issue_command("/tau canvas").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed = parse_tau_issue_command("/tau help extra").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
@@ -4635,6 +4712,68 @@ mod tests {
         assert_eq!(report.processed_events, 1);
         assert_eq!(report.failed_events, 0);
         help_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_canvas_command_persists_replay_safe_event() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 26,
+                "number": 18,
+                "title": "Canvas",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/18/comments");
+            then.status(200).json_body(json!([{
+                "id": 1112,
+                "body": "/tau canvas create architecture",
+                "created_at": "2026-01-01T00:00:01Z",
+                "updated_at": "2026-01-01T00:00:01Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let canvas_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/18/comments")
+                .body_includes("canvas create: id=architecture")
+                .body_includes("event_id=");
+            then.status(201).json_body(json!({
+                "id": 990,
+                "html_url": "https://example.test/comment/990"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        canvas_post.assert_calls(1);
+
+        let events_path = temp
+            .path()
+            .join("owner__repo/canvas/architecture/events.jsonl");
+        let payload = std::fs::read_to_string(events_path).expect("events payload");
+        assert!(payload.contains("\"event_id\":"));
+        assert!(payload.contains("\"transport\":\"github\""));
+        assert!(payload.contains("\"source_event_key\":\"issue-comment-created:1112\""));
+
+        let links_path = temp
+            .path()
+            .join("owner__repo/canvas/architecture/session-links.jsonl");
+        let links = std::fs::read_to_string(links_path).expect("session links");
+        assert!(links.contains("\"canvas_id\":\"architecture\""));
     }
 
     #[tokio::test]

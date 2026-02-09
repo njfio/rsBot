@@ -95,7 +95,10 @@ pub(crate) use crate::auth_commands::execute_auth_command;
 pub(crate) use crate::auth_commands::{parse_auth_command, AuthCommand};
 pub(crate) use crate::auth_types::{CredentialStoreEncryptionMode, ProviderAuthMethod};
 pub(crate) use crate::bootstrap_helpers::{command_file_error_mode_label, init_tracing};
-pub(crate) use crate::canvas::{execute_canvas_command, CanvasCommandConfig, CANVAS_USAGE};
+pub(crate) use crate::canvas::{
+    execute_canvas_command, CanvasCommandConfig, CanvasEventOrigin, CanvasSessionLinkContext,
+    CANVAS_USAGE,
+};
 use crate::channel_store::ChannelStore;
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
