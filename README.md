@@ -215,6 +215,12 @@ Run interactive mode:
 cargo run -p tau-coding-agent -- --model openai/gpt-4o-mini
 ```
 
+Run the standalone Tau TUI demo (deterministic smoke-friendly settings shown):
+
+```bash
+cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
+```
+
 Run interactive mode with plan-first orchestration on each user turn:
 
 ```bash
