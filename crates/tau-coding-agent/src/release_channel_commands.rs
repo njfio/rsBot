@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) const RELEASE_CHANNEL_USAGE: &str =
-    "usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear>]";
+    "usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear|refresh>]";
 pub(crate) const RELEASE_CHANNEL_SCHEMA_VERSION: u32 = 1;
 pub(crate) const RELEASE_LOOKUP_CACHE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const RELEASE_LOOKUP_CACHE_TTL_MS: u64 = 15 * 60 * 1_000;
@@ -56,6 +56,7 @@ pub(crate) enum ReleaseChannelCommand {
     Check,
     CacheShow,
     CacheClear,
+    CacheRefresh,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +128,7 @@ pub(crate) fn parse_release_channel_command(command_args: &str) -> Result<Releas
         return match tokens[1] {
             "show" => Ok(ReleaseChannelCommand::CacheShow),
             "clear" => Ok(ReleaseChannelCommand::CacheClear),
+            "refresh" => Ok(ReleaseChannelCommand::CacheRefresh),
             _ => bail!("{RELEASE_CHANNEL_USAGE}"),
         };
     }
@@ -476,7 +478,52 @@ fn execute_release_channel_check_with_lookup_options(
     })
 }
 
+fn execute_release_channel_cache_refresh_with_lookup_options(
+    cache_path: &Path,
+    lookup_url: &str,
+) -> String {
+    let fetched_at_unix_ms = current_unix_timestamp_ms();
+    match fetch_release_records(lookup_url) {
+        Ok(releases) => match save_release_lookup_cache(
+            cache_path,
+            lookup_url,
+            fetched_at_unix_ms,
+            &releases,
+        ) {
+            Ok(()) => format!(
+                "release cache refresh: path={} status=refreshed entries={} fetched_at_unix_ms={} source_url={}",
+                cache_path.display(),
+                releases.len(),
+                fetched_at_unix_ms,
+                lookup_url
+            ),
+            Err(error) => format!(
+                "release channel error: path={} error={error}",
+                cache_path.display()
+            ),
+        },
+        Err(error) => format!(
+            "release channel error: path={} error={error}",
+            cache_path.display()
+        ),
+    }
+}
+
 pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -> String {
+    execute_release_channel_command_with_lookup_options(
+        command_args,
+        path,
+        RELEASE_LOOKUP_URL,
+        RELEASE_LOOKUP_CACHE_TTL_MS,
+    )
+}
+
+fn execute_release_channel_command_with_lookup_options(
+    command_args: &str,
+    path: &Path,
+    lookup_url: &str,
+    cache_ttl_ms: u64,
+) -> String {
     let command = match parse_release_channel_command(command_args) {
         Ok(command) => command,
         Err(error) => {
@@ -528,10 +575,22 @@ pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -
             execute_release_channel_check_with_lookup_options(
                 path,
                 env!("CARGO_PKG_VERSION"),
-                RELEASE_LOOKUP_URL,
+                lookup_url,
                 &cache_path,
-                RELEASE_LOOKUP_CACHE_TTL_MS,
+                cache_ttl_ms,
             )
+        }
+        ReleaseChannelCommand::CacheRefresh => {
+            let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
+                Ok(path) => path,
+                Err(error) => {
+                    return format!(
+                        "release channel error: path={} error={error}",
+                        path.display()
+                    );
+                }
+            };
+            execute_release_channel_cache_refresh_with_lookup_options(&cache_path, lookup_url)
         }
         ReleaseChannelCommand::CacheShow => {
             let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
@@ -547,7 +606,7 @@ pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -
                 Ok(Some(cache)) => {
                     let age_ms =
                         current_unix_timestamp_ms().saturating_sub(cache.fetched_at_unix_ms);
-                    let freshness = if age_ms <= RELEASE_LOOKUP_CACHE_TTL_MS {
+                    let freshness = if age_ms <= cache_ttl_ms {
                         "fresh"
                     } else {
                         "stale"
@@ -559,7 +618,7 @@ pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -
                         cache.releases.len(),
                         cache.fetched_at_unix_ms,
                         age_ms,
-                        RELEASE_LOOKUP_CACHE_TTL_MS,
+                        cache_ttl_ms,
                         freshness,
                         cache.source_url
                     )
@@ -608,7 +667,7 @@ mod tests {
     use httpmock::prelude::*;
 
     #[test]
-    fn unit_parse_release_channel_command_supports_show_set_and_check() {
+    fn unit_parse_release_channel_command_supports_show_set_check_and_cache_subcommands() {
         assert_eq!(
             parse_release_channel_command("").expect("default command"),
             ReleaseChannelCommand::Show
@@ -632,6 +691,10 @@ mod tests {
         assert_eq!(
             parse_release_channel_command("cache clear").expect("cache clear command"),
             ReleaseChannelCommand::CacheClear
+        );
+        assert_eq!(
+            parse_release_channel_command("cache refresh").expect("cache refresh command"),
+            ReleaseChannelCommand::CacheRefresh
         );
 
         let invalid = parse_release_channel_command("set nightly").expect_err("invalid channel");
@@ -766,6 +829,46 @@ mod tests {
     }
 
     #[test]
+    fn functional_execute_release_channel_command_cache_refresh_and_show_round_trip() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"[{"tag_name":"v9.0.0-beta.2","prerelease":true,"draft":false},{"tag_name":"v8.9.4","prerelease":false,"draft":false}]"#,
+                );
+        });
+        let url = format!("{}/releases", server.base_url());
+
+        let refreshed = execute_release_channel_command_with_lookup_options(
+            "cache refresh",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(refreshed.contains("status=refreshed"));
+        assert!(refreshed.contains("entries=2"));
+        assert!(refreshed.contains(&format!("path={}", cache_path.display())));
+        assert!(refreshed.contains(&format!("source_url={url}")));
+
+        let show = execute_release_channel_command_with_lookup_options(
+            "cache show",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(show.contains("status=present"));
+        assert!(show.contains("entries=2"));
+        assert!(show.contains("freshness=fresh"));
+        assert!(show.contains(&format!("source_url={url}")));
+        mock.assert_calls(1);
+    }
+
+    #[test]
     fn functional_render_release_channel_check_reports_update_available() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("release-channel.json");
@@ -835,6 +938,41 @@ mod tests {
         assert!(second.contains("status=update_available"));
         assert!(second.contains("lookup_source=cache_fresh"));
         mock.assert_calls(1);
+    }
+
+    #[test]
+    fn integration_execute_release_channel_command_cache_refresh_persists_lookup_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"[{"tag_name":"v10.1.0","prerelease":false,"draft":false},{"tag_name":"v10.2.0-beta.1","prerelease":true,"draft":false}]"#,
+                );
+        });
+        let url = format!("{}/releases", server.base_url());
+
+        let output = execute_release_channel_command_with_lookup_options(
+            "cache refresh",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(output.contains("status=refreshed"));
+        assert!(output.contains("entries=2"));
+        mock.assert_calls(1);
+
+        let cached = load_release_lookup_cache(&cache_path, &url)
+            .expect("load refreshed cache")
+            .expect("refreshed cache should exist");
+        assert_eq!(cached.schema_version, RELEASE_LOOKUP_CACHE_SCHEMA_VERSION);
+        assert_eq!(cached.source_url, url);
+        assert_eq!(cached.releases.len(), 2);
+        assert_eq!(cached.releases[0].tag_name, "v10.1.0");
     }
 
     #[test]
@@ -1085,6 +1223,42 @@ mod tests {
         let output = execute_release_channel_command("cache show", &path);
         assert!(output.contains("release channel error:"));
         assert!(output.contains("failed to parse release lookup cache"));
+    }
+
+    #[test]
+    fn regression_execute_release_channel_command_cache_refresh_reports_lookup_errors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let cache_path = temp.path().join(".tau/release-lookup-cache.json");
+        let original_url = "https://example.invalid/releases";
+        let original_releases = vec![GitHubReleaseRecord {
+            tag_name: "v7.0.1".to_string(),
+            prerelease: false,
+            draft: false,
+        }];
+        save_release_lookup_cache(
+            &cache_path,
+            original_url,
+            current_unix_timestamp_ms(),
+            &original_releases,
+        )
+        .expect("seed cache");
+
+        let output = execute_release_channel_command_with_lookup_options(
+            "cache refresh",
+            &path,
+            "http://127.0.0.1:9/releases",
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(output.contains("release channel error:"));
+        assert!(output.contains("failed to fetch release metadata"));
+
+        let cached = load_release_lookup_cache_file(&cache_path)
+            .expect("load seeded cache")
+            .expect("cache should still exist");
+        assert_eq!(cached.source_url, original_url);
+        assert_eq!(cached.releases.len(), 1);
+        assert_eq!(cached.releases[0].tag_name, "v7.0.1");
     }
 
     #[test]
