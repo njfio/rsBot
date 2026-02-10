@@ -220,8 +220,12 @@ pub(crate) use crate::multi_agent_router::{
     select_multi_agent_route, MultiAgentRoutePhase, MultiAgentRouteTable,
 };
 #[cfg(test)]
+pub(crate) use crate::multi_channel_runtime::build_multi_channel_incident_timeline_report;
+#[cfg(test)]
 pub(crate) use crate::multi_channel_runtime::build_multi_channel_route_inspect_report;
-pub(crate) use crate::multi_channel_runtime::execute_multi_channel_route_inspect_command;
+pub(crate) use crate::multi_channel_runtime::{
+    execute_multi_channel_incident_timeline_command, execute_multi_channel_route_inspect_command,
+};
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
@@ -295,9 +299,9 @@ pub(crate) use crate::runtime_cli_validation::{
     validate_gateway_service_cli, validate_github_issues_bridge_cli,
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
-    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
-    validate_multi_channel_send_cli, validate_project_index_cli, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli,
+    validate_multi_channel_incident_timeline_cli, validate_multi_channel_live_ingest_cli,
+    validate_multi_channel_live_runner_cli, validate_multi_channel_send_cli,
+    validate_project_index_cli, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
 };
 pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,

@@ -1081,6 +1081,73 @@ pub(crate) struct Cli {
     pub(crate) multi_channel_route_inspect_json: bool,
 
     #[arg(
+        long = "multi-channel-incident-timeline",
+        env = "TAU_MULTI_CHANNEL_INCIDENT_TIMELINE",
+        conflicts_with = "channel_store_inspect",
+        conflicts_with = "channel_store_repair",
+        conflicts_with = "transport_health_inspect",
+        conflicts_with = "dashboard_status_inspect",
+        conflicts_with = "multi_channel_status_inspect",
+        conflicts_with = "multi_channel_route_inspect_file",
+        conflicts_with = "multi_agent_status_inspect",
+        conflicts_with = "gateway_status_inspect",
+        conflicts_with = "deployment_status_inspect",
+        conflicts_with = "custom_command_status_inspect",
+        conflicts_with = "voice_status_inspect",
+        help = "Build bounded multi-channel incident timeline and optional replay export from channel-store logs"
+    )]
+    pub(crate) multi_channel_incident_timeline: bool,
+
+    #[arg(
+        long = "multi-channel-incident-timeline-json",
+        env = "TAU_MULTI_CHANNEL_INCIDENT_TIMELINE_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "multi_channel_incident_timeline",
+        help = "Emit --multi-channel-incident-timeline output as pretty JSON"
+    )]
+    pub(crate) multi_channel_incident_timeline_json: bool,
+
+    #[arg(
+        long = "multi-channel-incident-start-unix-ms",
+        env = "TAU_MULTI_CHANNEL_INCIDENT_START_UNIX_MS",
+        requires = "multi_channel_incident_timeline",
+        value_name = "unix_ms",
+        help = "Lower bound (inclusive) unix timestamp in milliseconds for incident timeline filtering"
+    )]
+    pub(crate) multi_channel_incident_start_unix_ms: Option<u64>,
+
+    #[arg(
+        long = "multi-channel-incident-end-unix-ms",
+        env = "TAU_MULTI_CHANNEL_INCIDENT_END_UNIX_MS",
+        requires = "multi_channel_incident_timeline",
+        value_name = "unix_ms",
+        help = "Upper bound (inclusive) unix timestamp in milliseconds for incident timeline filtering"
+    )]
+    pub(crate) multi_channel_incident_end_unix_ms: Option<u64>,
+
+    #[arg(
+        long = "multi-channel-incident-event-limit",
+        env = "TAU_MULTI_CHANNEL_INCIDENT_EVENT_LIMIT",
+        requires = "multi_channel_incident_timeline",
+        value_name = "count",
+        help = "Maximum number of incident timeline events to include after filtering (default: 200)"
+    )]
+    pub(crate) multi_channel_incident_event_limit: Option<usize>,
+
+    #[arg(
+        long = "multi-channel-incident-replay-export",
+        env = "TAU_MULTI_CHANNEL_INCIDENT_REPLAY_EXPORT",
+        requires = "multi_channel_incident_timeline",
+        value_name = "path",
+        help = "Write incident replay export artifact JSON to PATH without mutating runtime state"
+    )]
+    pub(crate) multi_channel_incident_replay_export: Option<PathBuf>,
+
+    #[arg(
         long = "multi-agent-status-inspect",
         env = "TAU_MULTI_AGENT_STATUS_INSPECT",
         conflicts_with = "channel_store_inspect",

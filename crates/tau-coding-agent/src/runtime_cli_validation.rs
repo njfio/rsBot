@@ -39,6 +39,10 @@ fn multi_channel_send_mode_requested(cli: &Cli) -> bool {
     cli.multi_channel_send.is_some()
 }
 
+fn multi_channel_incident_timeline_mode_requested(cli: &Cli) -> bool {
+    cli.multi_channel_incident_timeline
+}
+
 fn project_index_mode_requested(cli: &Cli) -> bool {
     cli.project_index_build || cli.project_index_query.is_some() || cli.project_index_inspect
 }
@@ -96,6 +100,7 @@ pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.multi_channel_live_readiness_preflight
         || multi_channel_channel_lifecycle_mode_requested(cli)
         || cli.multi_channel_route_inspect_file.is_some()
+        || cli.multi_channel_incident_timeline
         || cli.multi_agent_contract_runner
         || cli.browser_automation_contract_runner
         || cli.memory_contract_runner
@@ -545,6 +550,92 @@ pub(crate) fn validate_multi_channel_live_ingest_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_multi_channel_incident_timeline_cli(cli: &Cli) -> Result<()> {
+    if !multi_channel_incident_timeline_mode_requested(cli) {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--multi-channel-incident-timeline cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.channel_store_inspect.is_some()
+        || cli.channel_store_repair.is_some()
+        || cli.transport_health_inspect.is_some()
+        || cli.github_status_inspect.is_some()
+        || cli.operator_control_summary
+        || cli.multi_channel_status_inspect
+        || cli.multi_channel_route_inspect_file.is_some()
+        || cli.dashboard_status_inspect
+        || cli.multi_agent_status_inspect
+        || cli.gateway_remote_profile_inspect
+        || cli.gateway_status_inspect
+        || cli.deployment_status_inspect
+        || cli.custom_command_status_inspect
+        || cli.voice_status_inspect
+    {
+        bail!("--multi-channel-incident-timeline cannot be combined with status/inspection preflight commands");
+    }
+    if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
+        || gateway_openresponses_mode_requested(cli)
+        || cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_channel_live_connectors_runner
+        || cli.multi_channel_live_ingest_file.is_some()
+        || cli.multi_channel_live_readiness_preflight
+        || multi_channel_channel_lifecycle_mode_requested(cli)
+        || multi_channel_send_mode_requested(cli)
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.deployment_wasm_inspect_manifest.is_some()
+        || project_index_mode_requested(cli)
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!("--multi-channel-incident-timeline cannot be combined with active transport/runtime commands");
+    }
+
+    let start = cli.multi_channel_incident_start_unix_ms;
+    let end = cli.multi_channel_incident_end_unix_ms;
+    if let (Some(start_unix_ms), Some(end_unix_ms)) = (start, end) {
+        if end_unix_ms < start_unix_ms {
+            bail!(
+                "--multi-channel-incident-end-unix-ms must be greater than or equal to --multi-channel-incident-start-unix-ms"
+            );
+        }
+    }
+    if let Some(limit) = cli.multi_channel_incident_event_limit {
+        if limit == 0 {
+            bail!("--multi-channel-incident-event-limit must be greater than 0");
+        }
+    }
+    if cli.multi_channel_state_dir.exists() && !cli.multi_channel_state_dir.is_dir() {
+        bail!(
+            "--multi-channel-state-dir '{}' must point to a directory when it exists",
+            cli.multi_channel_state_dir.display()
+        );
+    }
+    if let Some(path) = cli.multi_channel_incident_replay_export.as_ref() {
+        if path.exists() && path.is_dir() {
+            bail!(
+                "--multi-channel-incident-replay-export '{}' must point to a file path",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<()> {
     if !multi_channel_channel_lifecycle_mode_requested(cli) {
         return Ok(());
@@ -572,6 +663,7 @@ pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<
         || cli.operator_control_summary
         || cli.multi_channel_status_inspect
         || cli.multi_channel_route_inspect_file.is_some()
+        || cli.multi_channel_incident_timeline
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
         || cli.gateway_remote_profile_inspect
@@ -661,6 +753,7 @@ pub(crate) fn validate_multi_channel_send_cli(cli: &Cli) -> Result<()> {
         || cli.operator_control_summary
         || cli.multi_channel_status_inspect
         || cli.multi_channel_route_inspect_file.is_some()
+        || cli.multi_channel_incident_timeline
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
         || cli.gateway_remote_profile_inspect
@@ -1159,6 +1252,7 @@ pub(crate) fn validate_gateway_remote_profile_inspect_cli(cli: &Cli) -> Result<(
         || cli.multi_channel_live_readiness_preflight
         || multi_channel_channel_lifecycle_mode_requested(cli)
         || cli.multi_channel_route_inspect_file.is_some()
+        || cli.multi_channel_incident_timeline
         || cli.multi_agent_contract_runner
         || cli.browser_automation_contract_runner
         || cli.browser_automation_preflight
