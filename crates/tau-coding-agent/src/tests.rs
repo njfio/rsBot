@@ -92,24 +92,25 @@ use super::{
     validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
     AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
     CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
-    CliEventTemplateSchedule, CliMultiChannelOutboundMode, CliMultiChannelTransport,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
-    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
-    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
-    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
-    DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand,
-    IntegrationCredentialStoreRecord, MacroCommand, MacroFile, MultiAgentRouteTable,
-    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
-    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
-    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
-    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
-    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
-    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
-    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode,
+    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
+    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+    CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult,
+    DoctorCommandArgs, DoctorCommandConfig, DoctorCommandOutputFormat,
+    DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus, DoctorStatus,
+    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
+    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
+    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
+    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
+    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
+    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
+    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
+    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
+    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
+    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
+    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -550,7 +551,12 @@ fn test_cli() -> Cli {
         dashboard_retry_base_delay_ms: 0,
         gateway_openresponses_server: false,
         gateway_openresponses_bind: "127.0.0.1:8787".to_string(),
+        gateway_openresponses_auth_mode: CliGatewayOpenResponsesAuthMode::Token,
         gateway_openresponses_auth_token: None,
+        gateway_openresponses_auth_password: None,
+        gateway_openresponses_session_ttl_seconds: 3_600,
+        gateway_openresponses_rate_limit_window_seconds: 60,
+        gateway_openresponses_rate_limit_max_requests: 120,
         gateway_openresponses_max_input_chars: 32_000,
         gateway_contract_runner: false,
         gateway_fixture: PathBuf::from(
@@ -1967,7 +1973,15 @@ fn unit_cli_gateway_runner_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.gateway_openresponses_server);
     assert_eq!(cli.gateway_openresponses_bind, "127.0.0.1:8787");
+    assert_eq!(
+        cli.gateway_openresponses_auth_mode,
+        CliGatewayOpenResponsesAuthMode::Token
+    );
     assert!(cli.gateway_openresponses_auth_token.is_none());
+    assert!(cli.gateway_openresponses_auth_password.is_none());
+    assert_eq!(cli.gateway_openresponses_session_ttl_seconds, 3_600);
+    assert_eq!(cli.gateway_openresponses_rate_limit_window_seconds, 60);
+    assert_eq!(cli.gateway_openresponses_rate_limit_max_requests, 120);
     assert_eq!(cli.gateway_openresponses_max_input_chars, 32_000);
     assert!(!cli.gateway_contract_runner);
     assert_eq!(
@@ -1986,17 +2000,33 @@ fn functional_cli_gateway_openresponses_flags_accept_explicit_overrides() {
         "--gateway-openresponses-server",
         "--gateway-openresponses-bind",
         "127.0.0.1:8899",
-        "--gateway-openresponses-auth-token",
-        "secret-token",
+        "--gateway-openresponses-auth-mode",
+        "password-session",
+        "--gateway-openresponses-auth-password",
+        "secret-password",
+        "--gateway-openresponses-session-ttl-seconds",
+        "1800",
+        "--gateway-openresponses-rate-limit-window-seconds",
+        "30",
+        "--gateway-openresponses-rate-limit-max-requests",
+        "40",
         "--gateway-openresponses-max-input-chars",
         "24000",
     ]);
     assert!(cli.gateway_openresponses_server);
     assert_eq!(cli.gateway_openresponses_bind, "127.0.0.1:8899");
     assert_eq!(
-        cli.gateway_openresponses_auth_token.as_deref(),
-        Some("secret-token")
+        cli.gateway_openresponses_auth_mode,
+        CliGatewayOpenResponsesAuthMode::PasswordSession
     );
+    assert!(cli.gateway_openresponses_auth_token.is_none());
+    assert_eq!(
+        cli.gateway_openresponses_auth_password.as_deref(),
+        Some("secret-password")
+    );
+    assert_eq!(cli.gateway_openresponses_session_ttl_seconds, 1_800);
+    assert_eq!(cli.gateway_openresponses_rate_limit_window_seconds, 30);
+    assert_eq!(cli.gateway_openresponses_rate_limit_max_requests, 40);
     assert_eq!(cli.gateway_openresponses_max_input_chars, 24_000);
 }
 
@@ -14681,6 +14711,7 @@ fn regression_validate_gateway_service_cli_rejects_whitespace_stop_reason() {
 fn unit_validate_gateway_openresponses_server_cli_accepts_minimum_configuration() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
     cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
 
     validate_gateway_openresponses_server_cli(&cli)
@@ -14691,6 +14722,7 @@ fn unit_validate_gateway_openresponses_server_cli_accepts_minimum_configuration(
 fn functional_validate_gateway_openresponses_server_cli_rejects_prompt_conflicts() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
     cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
     cli.prompt = Some("conflict".to_string());
 
@@ -14705,6 +14737,7 @@ fn functional_validate_gateway_openresponses_server_cli_rejects_prompt_conflicts
 fn integration_validate_gateway_openresponses_server_cli_rejects_transport_conflicts() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
     cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
     cli.github_issues_bridge = true;
 
@@ -14719,12 +14752,13 @@ fn integration_validate_gateway_openresponses_server_cli_rejects_transport_confl
 fn regression_validate_gateway_openresponses_server_cli_requires_auth_token() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
     cli.gateway_openresponses_auth_token = None;
 
     let error = validate_gateway_openresponses_server_cli(&cli)
         .expect_err("missing auth token should fail");
     assert!(error.to_string().contains(
-        "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
+        "--gateway-openresponses-auth-token is required when --gateway-openresponses-auth-mode=token"
     ));
 }
 
@@ -14732,12 +14766,52 @@ fn regression_validate_gateway_openresponses_server_cli_requires_auth_token() {
 fn regression_validate_gateway_openresponses_server_cli_rejects_whitespace_auth_token() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
     cli.gateway_openresponses_auth_token = Some("   ".to_string());
 
     let error = validate_gateway_openresponses_server_cli(&cli)
         .expect_err("whitespace auth token should fail");
     assert!(error.to_string().contains(
-        "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
+        "--gateway-openresponses-auth-token is required when --gateway-openresponses-auth-mode=token"
+    ));
+}
+
+#[test]
+fn unit_validate_gateway_openresponses_server_cli_accepts_password_session_configuration() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
+    cli.gateway_openresponses_auth_password = Some("pw-secret".to_string());
+
+    validate_gateway_openresponses_server_cli(&cli)
+        .expect("password-session config should validate");
+}
+
+#[test]
+fn regression_validate_gateway_openresponses_server_cli_requires_password_for_password_mode() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
+    cli.gateway_openresponses_auth_password = None;
+
+    let error =
+        validate_gateway_openresponses_server_cli(&cli).expect_err("missing password should fail");
+    assert!(error.to_string().contains(
+        "--gateway-openresponses-auth-password is required when --gateway-openresponses-auth-mode=password-session"
+    ));
+}
+
+#[test]
+fn regression_validate_gateway_openresponses_server_cli_rejects_non_loopback_localhost_dev() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::LocalhostDev;
+    cli.gateway_openresponses_bind = "0.0.0.0:8787".to_string();
+
+    let error =
+        validate_gateway_openresponses_server_cli(&cli).expect_err("non-loopback bind should fail");
+    assert!(error.to_string().contains(
+        "--gateway-openresponses-auth-mode=localhost-dev requires loopback bind address"
     ));
 }
 
@@ -14745,6 +14819,7 @@ fn regression_validate_gateway_openresponses_server_cli_rejects_whitespace_auth_
 fn regression_validate_gateway_openresponses_server_cli_rejects_zero_max_input_chars() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
     cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
     cli.gateway_openresponses_max_input_chars = 0;
 
@@ -14759,6 +14834,7 @@ fn regression_validate_gateway_openresponses_server_cli_rejects_zero_max_input_c
 fn regression_validate_gateway_openresponses_server_cli_rejects_invalid_bind() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
     cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
     cli.gateway_openresponses_bind = "invalid-bind".to_string();
 

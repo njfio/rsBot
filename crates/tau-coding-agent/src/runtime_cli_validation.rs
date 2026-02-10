@@ -643,18 +643,50 @@ pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()>
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    if auth_token.is_none() {
-        bail!(
-            "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
-        );
-    }
+    let auth_password = cli
+        .gateway_openresponses_auth_password
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     if cli.gateway_openresponses_max_input_chars == 0 {
         bail!("--gateway-openresponses-max-input-chars must be greater than 0");
     }
+    if cli.gateway_openresponses_session_ttl_seconds == 0 {
+        bail!("--gateway-openresponses-session-ttl-seconds must be greater than 0");
+    }
+    if cli.gateway_openresponses_rate_limit_window_seconds == 0 {
+        bail!("--gateway-openresponses-rate-limit-window-seconds must be greater than 0");
+    }
+    if cli.gateway_openresponses_rate_limit_max_requests == 0 {
+        bail!("--gateway-openresponses-rate-limit-max-requests must be greater than 0");
+    }
 
-    crate::gateway_openresponses::validate_gateway_openresponses_bind(
+    let bind = crate::gateway_openresponses::validate_gateway_openresponses_bind(
         &cli.gateway_openresponses_bind,
     )?;
+    match cli.gateway_openresponses_auth_mode {
+        CliGatewayOpenResponsesAuthMode::Token => {
+            if auth_token.is_none() {
+                bail!(
+                    "--gateway-openresponses-auth-token is required when --gateway-openresponses-auth-mode=token"
+                );
+            }
+        }
+        CliGatewayOpenResponsesAuthMode::PasswordSession => {
+            if auth_password.is_none() {
+                bail!(
+                    "--gateway-openresponses-auth-password is required when --gateway-openresponses-auth-mode=password-session"
+                );
+            }
+        }
+        CliGatewayOpenResponsesAuthMode::LocalhostDev => {
+            if !bind.ip().is_loopback() {
+                bail!(
+                    "--gateway-openresponses-auth-mode=localhost-dev requires loopback bind address"
+                );
+            }
+        }
+    }
     Ok(())
 }
 

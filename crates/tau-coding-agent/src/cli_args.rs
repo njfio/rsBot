@@ -5,8 +5,9 @@ use clap::{ArgAction, Parser};
 use crate::{
     release_channel_commands::RELEASE_LOOKUP_CACHE_TTL_MS, CliBashProfile, CliCommandFileErrorMode,
     CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule,
-    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
-    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -2512,12 +2513,60 @@ pub(crate) struct Cli {
     pub(crate) gateway_openresponses_bind: String,
 
     #[arg(
+        long = "gateway-openresponses-auth-mode",
+        env = "TAU_GATEWAY_OPENRESPONSES_AUTH_MODE",
+        value_enum,
+        default_value_t = CliGatewayOpenResponsesAuthMode::Token,
+        requires = "gateway_openresponses_server",
+        help = "Gateway auth mode: token, password-session, or localhost-dev"
+    )]
+    pub(crate) gateway_openresponses_auth_mode: CliGatewayOpenResponsesAuthMode,
+
+    #[arg(
         long = "gateway-openresponses-auth-token",
         env = "TAU_GATEWAY_OPENRESPONSES_AUTH_TOKEN",
         requires = "gateway_openresponses_server",
-        help = "Bearer token required by --gateway-openresponses-server"
+        help = "Bearer token used when --gateway-openresponses-auth-mode=token"
     )]
     pub(crate) gateway_openresponses_auth_token: Option<String>,
+
+    #[arg(
+        long = "gateway-openresponses-auth-password",
+        env = "TAU_GATEWAY_OPENRESPONSES_AUTH_PASSWORD",
+        requires = "gateway_openresponses_server",
+        help = "Password used by /gateway/auth/session when --gateway-openresponses-auth-mode=password-session"
+    )]
+    pub(crate) gateway_openresponses_auth_password: Option<String>,
+
+    #[arg(
+        long = "gateway-openresponses-session-ttl-seconds",
+        env = "TAU_GATEWAY_OPENRESPONSES_SESSION_TTL_SECONDS",
+        default_value_t = 3600,
+        value_parser = parse_positive_u64,
+        requires = "gateway_openresponses_server",
+        help = "Session token TTL in seconds for password-session auth mode"
+    )]
+    pub(crate) gateway_openresponses_session_ttl_seconds: u64,
+
+    #[arg(
+        long = "gateway-openresponses-rate-limit-window-seconds",
+        env = "TAU_GATEWAY_OPENRESPONSES_RATE_LIMIT_WINDOW_SECONDS",
+        default_value_t = 60,
+        value_parser = parse_positive_u64,
+        requires = "gateway_openresponses_server",
+        help = "Rate-limit window size in seconds"
+    )]
+    pub(crate) gateway_openresponses_rate_limit_window_seconds: u64,
+
+    #[arg(
+        long = "gateway-openresponses-rate-limit-max-requests",
+        env = "TAU_GATEWAY_OPENRESPONSES_RATE_LIMIT_MAX_REQUESTS",
+        default_value_t = 120,
+        value_parser = parse_positive_usize,
+        requires = "gateway_openresponses_server",
+        help = "Maximum accepted requests per auth principal within one rate-limit window"
+    )]
+    pub(crate) gateway_openresponses_rate_limit_max_requests: usize,
 
     #[arg(
         long = "gateway-openresponses-max-input-chars",
