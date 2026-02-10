@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "deployment-invalid-error-code",
+  "description": "Regression fixture with unsupported error_code for malformed input.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "deployment-malformed-unsupported-error-code",
+      "deploy_target": "wasm",
+      "runtime_profile": "native",
+      "blueprint_id": "wasm-runtime-mismatch",
+      "environment": "staging",
+      "region": "iad",
+      "container_image": "ghcr.io/njfio/tau:staging",
+      "wasm_module": "edge/runtime.wasm",
+      "replicas": 1,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 422,
+        "error_code": "deployment_not_a_real_error",
+        "response_body": {
+          "status": "rejected",
+          "reason": "runtime_target_mismatch"
+        }
+      }
+    }
+  ]
+}

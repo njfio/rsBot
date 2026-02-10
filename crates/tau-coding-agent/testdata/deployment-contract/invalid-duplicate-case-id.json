@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "name": "deployment-invalid-duplicate-case-id",
+  "description": "Regression fixture with duplicate case_id entries.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "deploy_target": "container",
+      "runtime_profile": "native",
+      "blueprint_id": "staging-container",
+      "environment": "staging",
+      "region": "us-west-2",
+      "container_image": "ghcr.io/njfio/tau:staging",
+      "replicas": 1,
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "blueprint_id": "staging-container",
+          "deploy_target": "container",
+          "runtime_profile": "native",
+          "environment": "staging",
+          "region": "us-west-2",
+          "artifact": "ghcr.io/njfio/tau:staging",
+          "replicas": 1,
+          "rollout_strategy": "recreate"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "deploy_target": "wasm",
+      "runtime_profile": "wasm_wasi",
+      "blueprint_id": "edge-wasm",
+      "environment": "staging",
+      "region": "iad",
+      "wasm_module": "edge/runtime.wasm",
+      "replicas": 1,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "blueprint_id": "edge-wasm",
+          "deploy_target": "wasm",
+          "runtime_profile": "wasm_wasi",
+          "environment": "staging",
+          "region": "iad",
+          "artifact": "edge/runtime.wasm",
+          "replicas": 1,
+          "rollout_strategy": "canary"
+        }
+      }
+    }
+  ]
+}

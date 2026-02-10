@@ -17,6 +17,7 @@ mod custom_command_contract;
 mod custom_command_runtime;
 mod dashboard_contract;
 mod dashboard_runtime;
+mod deployment_contract;
 mod diagnostics_commands;
 mod events;
 mod extension_manifest;

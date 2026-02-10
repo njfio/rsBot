@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "name": "deployment-rollout-pass",
+  "description": "Success-only fixture for deterministic cloud deployment and WASM rollout checks.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "deployment-container-staging",
+      "deploy_target": "container",
+      "runtime_profile": "native",
+      "blueprint_id": "staging-container",
+      "environment": "staging",
+      "region": "us-west-2",
+      "container_image": "ghcr.io/njfio/tau:staging",
+      "replicas": 1,
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "blueprint_id": "staging-container",
+          "deploy_target": "container",
+          "runtime_profile": "native",
+          "environment": "staging",
+          "region": "us-west-2",
+          "artifact": "ghcr.io/njfio/tau:staging",
+          "replicas": 1,
+          "rollout_strategy": "recreate"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "deployment-k8s-production",
+      "deploy_target": "kubernetes",
+      "runtime_profile": "native",
+      "blueprint_id": "prod-k8s",
+      "environment": "production",
+      "region": "us-east-1",
+      "container_image": "ghcr.io/njfio/tau:prod",
+      "replicas": 3,
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "blueprint_id": "prod-k8s",
+          "deploy_target": "kubernetes",
+          "runtime_profile": "native",
+          "environment": "production",
+          "region": "us-east-1",
+          "artifact": "ghcr.io/njfio/tau:prod",
+          "replicas": 3,
+          "rollout_strategy": "rolling"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "deployment-wasm-edge",
+      "deploy_target": "wasm",
+      "runtime_profile": "wasm_wasi",
+      "blueprint_id": "edge-wasm",
+      "environment": "production",
+      "region": "iad",
+      "wasm_module": "edge/runtime.wasm",
+      "replicas": 2,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "blueprint_id": "edge-wasm",
+          "deploy_target": "wasm",
+          "runtime_profile": "wasm_wasi",
+          "environment": "production",
+          "region": "iad",
+          "artifact": "edge/runtime.wasm",
+          "replicas": 2,
+          "rollout_strategy": "canary"
+        }
+      }
+    }
+  ]
+}

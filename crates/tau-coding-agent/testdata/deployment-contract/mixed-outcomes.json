@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "name": "deployment-mixed-outcomes",
+  "description": "Deterministic contract fixture covering cloud + WASM blueprint success, malformed runtime mismatch, and retryable control-plane failures.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "deployment-success-wasm",
+      "deploy_target": "wasm",
+      "runtime_profile": "wasm_wasi",
+      "blueprint_id": "edge-wasm",
+      "environment": "staging",
+      "region": "iad",
+      "wasm_module": "edge/runtime.wasm",
+      "replicas": 2,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "blueprint_id": "edge-wasm",
+          "deploy_target": "wasm",
+          "runtime_profile": "wasm_wasi",
+          "environment": "staging",
+          "region": "iad",
+          "artifact": "edge/runtime.wasm",
+          "replicas": 2,
+          "rollout_strategy": "canary"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "deployment-malformed-runtime-mismatch",
+      "deploy_target": "wasm",
+      "runtime_profile": "native",
+      "blueprint_id": "wasm-runtime-mismatch",
+      "environment": "staging",
+      "region": "iad",
+      "container_image": "ghcr.io/njfio/tau:staging",
+      "wasm_module": "edge/runtime.wasm",
+      "replicas": 1,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 422,
+        "error_code": "deployment_unsupported_runtime",
+        "response_body": {
+          "status": "rejected",
+          "reason": "runtime_target_mismatch"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "deployment-retryable-control-plane",
+      "deploy_target": "kubernetes",
+      "runtime_profile": "native",
+      "blueprint_id": "prod-k8s",
+      "environment": "production",
+      "region": "us-east-1",
+      "container_image": "ghcr.io/njfio/tau:prod",
+      "replicas": 3,
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "status_code": 503,
+        "error_code": "deployment_backend_unavailable",
+        "response_body": {
+          "status": "retryable",
+          "reason": "control_plane_unavailable"
+        }
+      }
+    }
+  ]
+}
