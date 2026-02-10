@@ -15,6 +15,7 @@ pub(crate) async fn run_transport_mode_if_requested(
     validate_multi_agent_contract_runner_cli(cli)?;
     validate_memory_contract_runner_cli(cli)?;
     validate_dashboard_contract_runner_cli(cli)?;
+    validate_gateway_contract_runner_cli(cli)?;
 
     if cli.github_issues_bridge {
         let repo_slug = cli.github_repo.clone().ok_or_else(|| {
@@ -187,6 +188,19 @@ pub(crate) async fn run_transport_mode_if_requested(
             processed_case_cap: cli.dashboard_processed_case_cap.max(1),
             retry_max_attempts: cli.dashboard_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.dashboard_retry_base_delay_ms,
+        })
+        .await?;
+        return Ok(true);
+    }
+
+    if cli.gateway_contract_runner {
+        run_gateway_contract_runner(GatewayRuntimeConfig {
+            fixture_path: cli.gateway_fixture.clone(),
+            state_dir: cli.gateway_state_dir.clone(),
+            queue_limit: 64,
+            processed_case_cap: 10_000,
+            retry_max_attempts: 4,
+            retry_base_delay_ms: 0,
         })
         .await?;
         return Ok(true);

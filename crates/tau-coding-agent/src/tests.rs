@@ -78,26 +78,27 @@ use super::{
     tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
     validate_branch_alias_name, validate_dashboard_contract_runner_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
-    validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
-    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_contract_runner_cli, validate_profile_name, validate_rpc_frame_file,
-    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand,
-    AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
-    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliEventTemplateSchedule,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
-    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
-    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
-    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus,
-    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
-    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
-    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
-    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
-    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
-    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
-    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
-    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
-    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    validate_gateway_contract_runner_cli, validate_github_issues_bridge_cli,
+    validate_macro_command_entry, validate_macro_name, validate_memory_contract_runner_cli,
+    validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
+    validate_profile_name, validate_rpc_frame_file, validate_session_file,
+    validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand, AuthCommandConfig,
+    BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliOrchestratorMode,
+    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
+    CliWebhookSignatureAlgorithm, ClientRoute, CommandAction, CommandExecutionContext,
+    CommandFileEntry, CommandFileReport, CredentialStoreData, CredentialStoreEncryptionMode,
+    DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs, DoctorCommandConfig,
+    DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
+    IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
+    MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus,
+    PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions,
+    RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
+    SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats,
+    SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
+    SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
+    ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
+    MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
     SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
     SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
     SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
@@ -495,6 +496,11 @@ fn test_cli() -> Cli {
         dashboard_processed_case_cap: 10_000,
         dashboard_retry_max_attempts: 4,
         dashboard_retry_base_delay_ms: 0,
+        gateway_contract_runner: false,
+        gateway_fixture: PathBuf::from(
+            "crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json",
+        ),
+        gateway_state_dir: PathBuf::from(".tau/gateway"),
         github_issues_bridge: false,
         github_repo: None,
         github_token: None,
@@ -1505,6 +1511,41 @@ fn functional_cli_dashboard_runner_flags_accept_explicit_overrides() {
 fn regression_cli_dashboard_fixture_requires_dashboard_runner_flag() {
     let parse = Cli::try_parse_from(["tau-rs", "--dashboard-fixture", "fixtures/dashboard.json"]);
     let error = parse.expect_err("fixture flag should require dashboard runner mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_gateway_runner_flags_default_to_disabled() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert!(!cli.gateway_contract_runner);
+    assert_eq!(
+        cli.gateway_fixture,
+        PathBuf::from("crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json")
+    );
+    assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway"));
+}
+
+#[test]
+fn functional_cli_gateway_runner_flags_accept_explicit_overrides() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--gateway-contract-runner",
+        "--gateway-fixture",
+        "fixtures/gateway.json",
+        "--gateway-state-dir",
+        ".tau/gateway-custom",
+    ]);
+    assert!(cli.gateway_contract_runner);
+    assert_eq!(cli.gateway_fixture, PathBuf::from("fixtures/gateway.json"));
+    assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway-custom"));
+}
+
+#[test]
+fn regression_cli_gateway_fixture_requires_gateway_runner_flag() {
+    let parse = Cli::try_parse_from(["tau-rs", "--gateway-fixture", "fixtures/gateway.json"]);
+    let error = parse.expect_err("fixture flag should require gateway runner mode");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -12873,6 +12914,104 @@ fn regression_validate_dashboard_contract_runner_cli_requires_fixture_file() {
 
     let error =
         validate_dashboard_contract_runner_cli(&cli).expect_err("directory fixture should fail");
+    assert!(error.to_string().contains("must point to a file"));
+}
+
+#[test]
+fn unit_validate_gateway_contract_runner_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("gateway-fixture.json");
+    std::fs::write(
+        &fixture_path,
+        r#"{
+  "schema_version": 1,
+  "name": "single-case",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "gateway-success-only",
+      "method": "GET",
+      "endpoint": "/v1/health",
+      "actor_id": "ops-bot",
+      "body": {},
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status":"accepted",
+          "method":"GET",
+          "endpoint":"/v1/health",
+          "actor_id":"ops-bot"
+        }
+      }
+    }
+  ]
+}"#,
+    )
+    .expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.gateway_contract_runner = true;
+    cli.gateway_fixture = fixture_path;
+
+    validate_gateway_contract_runner_cli(&cli).expect("gateway runner config should validate");
+}
+
+#[test]
+fn functional_validate_gateway_contract_runner_cli_rejects_prompt_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.gateway_contract_runner = true;
+    cli.gateway_fixture = fixture_path;
+    cli.prompt = Some("conflict".to_string());
+
+    let error = validate_gateway_contract_runner_cli(&cli).expect_err("prompt conflict");
+    assert!(error
+        .to_string()
+        .contains("--gateway-contract-runner cannot be combined"));
+}
+
+#[test]
+fn integration_validate_gateway_contract_runner_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.gateway_contract_runner = true;
+    cli.gateway_fixture = fixture_path;
+    cli.multi_agent_contract_runner = true;
+
+    let error = validate_gateway_contract_runner_cli(&cli).expect_err("transport conflict");
+    assert!(error.to_string().contains(
+        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, or --dashboard-contract-runner"
+    ));
+}
+
+#[test]
+fn regression_validate_gateway_contract_runner_cli_requires_existing_fixture() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.gateway_contract_runner = true;
+    cli.gateway_fixture = temp.path().join("missing.json");
+
+    let error =
+        validate_gateway_contract_runner_cli(&cli).expect_err("missing fixture should fail");
+    assert!(error.to_string().contains("does not exist"));
+}
+
+#[test]
+fn regression_validate_gateway_contract_runner_cli_requires_fixture_file() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.gateway_contract_runner = true;
+    cli.gateway_fixture = temp.path().to_path_buf();
+
+    let error =
+        validate_gateway_contract_runner_cli(&cli).expect_err("directory fixture should fail");
     assert!(error.to_string().contains("must point to a file"));
 }
 

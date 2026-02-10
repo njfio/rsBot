@@ -306,6 +306,43 @@ pub(crate) fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_gateway_contract_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.gateway_contract_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--gateway-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--gateway-contract-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+    {
+        bail!("--gateway-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, or --dashboard-contract-runner");
+    }
+    if !cli.gateway_fixture.exists() {
+        bail!(
+            "--gateway-fixture '{}' does not exist",
+            cli.gateway_fixture.display()
+        );
+    }
+    if !cli.gateway_fixture.is_file() {
+        bail!(
+            "--gateway-fixture '{}' must point to a file",
+            cli.gateway_fixture.display()
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_event_webhook_ingest_cli(cli: &Cli) -> Result<()> {
     if cli.event_webhook_ingest_file.is_none() {
         return Ok(());

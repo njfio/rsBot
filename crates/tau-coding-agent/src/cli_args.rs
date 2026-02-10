@@ -1940,6 +1940,31 @@ pub(crate) struct Cli {
     pub(crate) dashboard_retry_base_delay_ms: u64,
 
     #[arg(
+        long = "gateway-contract-runner",
+        env = "TAU_GATEWAY_CONTRACT_RUNNER",
+        default_value_t = false,
+        help = "Run fixture-driven gateway runtime contract scenarios"
+    )]
+    pub(crate) gateway_contract_runner: bool,
+
+    #[arg(
+        long = "gateway-fixture",
+        env = "TAU_GATEWAY_FIXTURE",
+        default_value = "crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json",
+        requires = "gateway_contract_runner",
+        help = "Path to gateway runtime contract fixture JSON"
+    )]
+    pub(crate) gateway_fixture: PathBuf,
+
+    #[arg(
+        long = "gateway-state-dir",
+        env = "TAU_GATEWAY_STATE_DIR",
+        default_value = ".tau/gateway",
+        help = "Directory for gateway runtime state and channel-store outputs"
+    )]
+    pub(crate) gateway_state_dir: PathBuf,
+
+    #[arg(
         long = "github-issues-bridge",
         env = "TAU_GITHUB_ISSUES_BRIDGE",
         default_value_t = false,

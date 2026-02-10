@@ -18,8 +18,8 @@ mod dashboard_runtime;
 mod diagnostics_commands;
 mod events;
 mod extension_manifest;
-#[allow(dead_code)]
 mod gateway_contract;
+mod gateway_runtime;
 mod gemini_cli_client;
 mod github_issues;
 mod github_issues_helpers;
@@ -254,9 +254,10 @@ pub(crate) use crate::rpc_protocol::{
 };
 pub(crate) use crate::runtime_cli_validation::{
     validate_dashboard_contract_runner_cli, validate_event_webhook_ingest_cli,
-    validate_events_runner_cli, validate_github_issues_bridge_cli,
-    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_contract_runner_cli, validate_slack_bridge_cli,
+    validate_events_runner_cli, validate_gateway_contract_runner_cli,
+    validate_github_issues_bridge_cli, validate_memory_contract_runner_cli,
+    validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
+    validate_slack_bridge_cli,
 };
 pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
@@ -366,6 +367,7 @@ pub(crate) use crate::trust_roots::{
     parse_trust_rotation_spec, parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,
 };
 use dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
+use gateway_runtime::{run_gateway_contract_runner, GatewayRuntimeConfig};
 use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
 use memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
 use multi_agent_runtime::{run_multi_agent_contract_runner, MultiAgentRuntimeConfig};
