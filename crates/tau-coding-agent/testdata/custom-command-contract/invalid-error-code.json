@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "custom-command-invalid-error-code",
+  "description": "Fixture with unsupported error code for regression coverage.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-invalid-error-code",
+      "operation": "create",
+      "command_name": "deploy_release",
+      "template": "",
+      "arguments": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 422,
+        "error_code": "custom_command_unknown_error",
+        "response_body": {
+          "status": "rejected",
+          "reason": "invalid_template"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "name": "custom-command-mixed-outcomes",
+  "description": "Deterministic custom command contract replay matrix with success, malformed input, and retryable failure outcomes.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-create-success",
+      "operation": "create",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}}",
+      "arguments": {
+        "env": "prod"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "operation": "create",
+          "command_name": "deploy_release"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-malformed-invalid-operation",
+      "operation": "shipit",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}}",
+      "arguments": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 400,
+        "error_code": "custom_command_invalid_operation",
+        "response_body": {
+          "status": "rejected",
+          "reason": "invalid_operation"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-retryable-run-backend",
+      "operation": "run",
+      "command_name": "triage_alerts",
+      "template": "",
+      "arguments": {
+        "severity": "high"
+      },
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "status_code": 503,
+        "error_code": "custom_command_backend_unavailable",
+        "response_body": {
+          "status": "retryable",
+          "reason": "backend_unavailable"
+        }
+      }
+    }
+  ]
+}

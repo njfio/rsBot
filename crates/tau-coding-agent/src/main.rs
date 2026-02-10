@@ -13,6 +13,7 @@ mod cli_types;
 mod codex_cli_client;
 mod commands;
 mod credentials;
+mod custom_command_contract;
 mod dashboard_contract;
 mod dashboard_runtime;
 mod diagnostics_commands;

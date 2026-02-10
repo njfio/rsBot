@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "name": "custom-command-invalid-duplicate-case-id",
+  "description": "Fixture with duplicate case ids for regression testing.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "operation": "create",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}}",
+      "arguments": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "operation": "create",
+          "command_name": "deploy_release"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "operation": "delete",
+      "command_name": "deploy_release",
+      "template": "",
+      "arguments": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "accepted",
+          "operation": "delete",
+          "command_name": "deploy_release"
+        }
+      }
+    }
+  ]
+}

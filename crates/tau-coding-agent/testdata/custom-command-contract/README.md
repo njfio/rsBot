@@ -1,0 +1,21 @@
+# Custom Command Contract Fixtures
+
+This fixture corpus defines deterministic contract coverage for no-code custom command authoring
+and lifecycle operations.
+
+## Files
+
+- `mixed-outcomes.json`: success + malformed_input + retryable_failure matrix.
+- `invalid-duplicate-case-id.json`: regression fixture for duplicate `case_id`.
+- `invalid-error-code.json`: regression fixture for unsupported `error_code`.
+
+## Schema Notes
+
+- Fixture schema version: `1`.
+- Supported operations: `create`, `update`, `delete`, `run`, `list`.
+- Outcome coverage: `success`, `malformed_input`, `retryable_failure`.
+- Supported deterministic error codes:
+  - `custom_command_invalid_operation`
+  - `custom_command_invalid_name`
+  - `custom_command_invalid_template`
+  - `custom_command_backend_unavailable`
