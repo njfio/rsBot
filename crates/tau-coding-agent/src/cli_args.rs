@@ -5,9 +5,10 @@ use clap::{ArgAction, Parser};
 use crate::{
     release_channel_commands::RELEASE_LOOKUP_CACHE_TTL_MS, CliBashProfile, CliCommandFileErrorMode,
     CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
-    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode,
-    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
-    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
+    CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -1058,6 +1059,7 @@ pub(crate) struct Cli {
         conflicts_with = "dashboard_status_inspect",
         conflicts_with = "multi_channel_status_inspect",
         conflicts_with = "multi_agent_status_inspect",
+        conflicts_with = "gateway_remote_profile_inspect",
         conflicts_with = "deployment_status_inspect",
         conflicts_with = "custom_command_status_inspect",
         conflicts_with = "voice_status_inspect",
@@ -1077,6 +1079,36 @@ pub(crate) struct Cli {
         help = "Emit --gateway-status-inspect output as pretty JSON"
     )]
     pub(crate) gateway_status_json: bool,
+
+    #[arg(
+        long = "gateway-remote-profile-inspect",
+        env = "TAU_GATEWAY_REMOTE_PROFILE_INSPECT",
+        conflicts_with = "channel_store_inspect",
+        conflicts_with = "channel_store_repair",
+        conflicts_with = "transport_health_inspect",
+        conflicts_with = "dashboard_status_inspect",
+        conflicts_with = "multi_channel_status_inspect",
+        conflicts_with = "multi_agent_status_inspect",
+        conflicts_with = "gateway_status_inspect",
+        conflicts_with = "deployment_status_inspect",
+        conflicts_with = "custom_command_status_inspect",
+        conflicts_with = "voice_status_inspect",
+        help = "Inspect gateway remote-access posture and risk reason codes without starting the gateway"
+    )]
+    pub(crate) gateway_remote_profile_inspect: bool,
+
+    #[arg(
+        long = "gateway-remote-profile-json",
+        env = "TAU_GATEWAY_REMOTE_PROFILE_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "gateway_remote_profile_inspect",
+        help = "Emit --gateway-remote-profile-inspect output as pretty JSON"
+    )]
+    pub(crate) gateway_remote_profile_json: bool,
 
     #[arg(
         long = "gateway-service-start",
@@ -3072,6 +3104,15 @@ pub(crate) struct Cli {
         help = "Socket address for --gateway-openresponses-server (host:port)"
     )]
     pub(crate) gateway_openresponses_bind: String,
+
+    #[arg(
+        long = "gateway-remote-profile",
+        env = "TAU_GATEWAY_REMOTE_PROFILE",
+        value_enum,
+        default_value_t = CliGatewayRemoteProfile::LocalOnly,
+        help = "Gateway remote-access posture: local-only, password-remote, or proxy-remote"
+    )]
+    pub(crate) gateway_remote_profile: CliGatewayRemoteProfile,
 
     #[arg(
         long = "gateway-openresponses-auth-mode",

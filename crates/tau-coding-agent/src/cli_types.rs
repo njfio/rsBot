@@ -140,6 +140,23 @@ impl CliGatewayOpenResponsesAuthMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliGatewayRemoteProfile {
+    LocalOnly,
+    PasswordRemote,
+    ProxyRemote,
+}
+
+impl CliGatewayRemoteProfile {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CliGatewayRemoteProfile::LocalOnly => "local-only",
+            CliGatewayRemoteProfile::PasswordRemote => "password-remote",
+            CliGatewayRemoteProfile::ProxyRemote => "proxy-remote",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CliDaemonProfile {
     Auto,
     Launchd,

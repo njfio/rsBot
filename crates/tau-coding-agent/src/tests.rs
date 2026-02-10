@@ -85,35 +85,35 @@ use super::{
     validate_deployment_wasm_inspect_cli, validate_deployment_wasm_package_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
-    validate_gateway_service_cli, validate_github_issues_bridge_cli, validate_macro_command_entry,
-    validate_macro_name, validate_memory_contract_runner_cli,
-    validate_multi_agent_contract_runner_cli, validate_multi_channel_channel_lifecycle_cli,
-    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_connectors_runner_cli,
-    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
-    validate_profile_name, validate_project_index_cli, validate_rpc_frame_file,
-    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
-    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    validate_gateway_remote_profile_inspect_cli, validate_gateway_service_cli,
+    validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
+    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
+    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
+    validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_ingest_cli,
+    validate_multi_channel_live_runner_cli, validate_profile_name, validate_project_index_cli,
+    validate_rpc_frame_file, validate_session_file, validate_skills_prune_file_name,
+    validate_slack_bridge_cli, validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig,
+    BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
     CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
-    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode,
-    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
-    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
-    ClientRoute, CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
-    CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult,
-    DoctorCommandArgs, DoctorCommandConfig, DoctorCommandOutputFormat,
-    DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus, DoctorStatus,
-    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
-    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
-    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
-    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
-    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
-    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
-    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
-    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
-    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
-    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
-    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
-    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
+    CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
+    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
+    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
+    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
+    DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand,
+    IntegrationCredentialStoreRecord, MacroCommand, MacroFile, MultiAgentRouteTable,
+    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
+    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
+    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
+    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
+    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
+    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
+    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
+    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
+    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -408,6 +408,8 @@ fn test_cli() -> Cli {
         multi_agent_status_json: false,
         gateway_status_inspect: false,
         gateway_status_json: false,
+        gateway_remote_profile_inspect: false,
+        gateway_remote_profile_json: false,
         gateway_service_start: false,
         gateway_service_stop: false,
         gateway_service_stop_reason: None,
@@ -612,6 +614,7 @@ fn test_cli() -> Cli {
         dashboard_retry_base_delay_ms: 0,
         gateway_openresponses_server: false,
         gateway_openresponses_bind: "127.0.0.1:8787".to_string(),
+        gateway_remote_profile: CliGatewayRemoteProfile::LocalOnly,
         gateway_openresponses_auth_mode: CliGatewayOpenResponsesAuthMode::Token,
         gateway_openresponses_auth_token: None,
         gateway_openresponses_auth_password: None,
@@ -2973,6 +2976,51 @@ fn functional_cli_gateway_status_inspect_accepts_json_and_state_dir_override() {
 #[test]
 fn regression_cli_gateway_status_json_requires_gateway_status_inspect() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-status-json"]);
+    let error = parse.expect_err("json output should require inspect flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_gateway_remote_profile_flags_default_to_local_only() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.gateway_remote_profile_inspect);
+    assert!(!cli.gateway_remote_profile_json);
+    assert_eq!(
+        cli.gateway_remote_profile,
+        CliGatewayRemoteProfile::LocalOnly
+    );
+}
+
+#[test]
+fn functional_cli_gateway_remote_profile_inspect_accepts_json_and_profile_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-remote-profile-inspect",
+        "--gateway-remote-profile-json",
+        "--gateway-openresponses-server",
+        "--gateway-remote-profile",
+        "proxy-remote",
+        "--gateway-openresponses-auth-mode",
+        "token",
+        "--gateway-openresponses-auth-token",
+        "edge-token",
+        "--gateway-openresponses-bind",
+        "127.0.0.1:8787",
+    ]);
+    assert!(cli.gateway_remote_profile_inspect);
+    assert!(cli.gateway_remote_profile_json);
+    assert_eq!(
+        cli.gateway_remote_profile,
+        CliGatewayRemoteProfile::ProxyRemote
+    );
+    assert!(cli.gateway_openresponses_server);
+}
+
+#[test]
+fn regression_cli_gateway_remote_profile_json_requires_inspect() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-remote-profile-json"]);
     let error = parse.expect_err("json output should require inspect flag");
     assert!(error
         .to_string()
@@ -15372,6 +15420,28 @@ fn regression_validate_daemon_cli_rejects_whitespace_stop_reason() {
 }
 
 #[test]
+fn unit_validate_gateway_remote_profile_inspect_cli_accepts_minimum_configuration() {
+    let mut cli = test_cli();
+    cli.gateway_remote_profile_inspect = true;
+
+    validate_gateway_remote_profile_inspect_cli(&cli)
+        .expect("gateway remote profile inspect config should validate");
+}
+
+#[test]
+fn functional_validate_gateway_remote_profile_inspect_cli_rejects_prompt_conflicts() {
+    let mut cli = test_cli();
+    cli.gateway_remote_profile_inspect = true;
+    cli.prompt = Some("conflict".to_string());
+
+    let error =
+        validate_gateway_remote_profile_inspect_cli(&cli).expect_err("prompt conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("--gateway-remote-profile-inspect cannot be combined"));
+}
+
+#[test]
 fn unit_validate_gateway_openresponses_server_cli_accepts_minimum_configuration() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
@@ -15477,6 +15547,23 @@ fn regression_validate_gateway_openresponses_server_cli_rejects_non_loopback_loc
     assert!(error.to_string().contains(
         "--gateway-openresponses-auth-mode=localhost-dev requires loopback bind address"
     ));
+}
+
+#[test]
+fn integration_validate_gateway_openresponses_server_cli_rejects_unsafe_local_only_remote_combo() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_remote_profile = CliGatewayRemoteProfile::LocalOnly;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
+    cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
+    cli.gateway_openresponses_bind = "0.0.0.0:8787".to_string();
+
+    let error = validate_gateway_openresponses_server_cli(&cli)
+        .expect_err("non-loopback local-only profile should fail");
+    assert!(error
+        .to_string()
+        .contains("gateway remote profile rejected"));
+    assert!(error.to_string().contains("local_only_non_loopback_bind"));
 }
 
 #[test]
@@ -20942,6 +21029,37 @@ fn functional_execute_startup_preflight_runs_gateway_status_inspect_mode() {
 
     let handled = execute_startup_preflight(&cli).expect("gateway status inspect preflight");
     assert!(handled);
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_gateway_remote_profile_inspect_mode() {
+    let mut cli = test_cli();
+    cli.gateway_remote_profile_inspect = true;
+    cli.gateway_remote_profile_json = true;
+    cli.gateway_openresponses_server = true;
+    cli.gateway_remote_profile = CliGatewayRemoteProfile::ProxyRemote;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
+    cli.gateway_openresponses_auth_token = Some("edge-token".to_string());
+    cli.gateway_openresponses_bind = "127.0.0.1:8787".to_string();
+
+    let handled =
+        execute_startup_preflight(&cli).expect("gateway remote profile inspect preflight");
+    assert!(handled);
+}
+
+#[test]
+fn regression_execute_startup_preflight_gateway_remote_profile_inspect_fails_closed() {
+    let mut cli = test_cli();
+    cli.gateway_remote_profile_inspect = true;
+    cli.gateway_openresponses_server = true;
+    cli.gateway_remote_profile = CliGatewayRemoteProfile::LocalOnly;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
+    cli.gateway_openresponses_auth_token = Some("edge-token".to_string());
+    cli.gateway_openresponses_bind = "0.0.0.0:8787".to_string();
+
+    let error = execute_startup_preflight(&cli)
+        .expect_err("unsafe local-only remote profile should fail closed");
+    assert!(error.to_string().contains("local_only_non_loopback_bind"));
 }
 
 #[test]
