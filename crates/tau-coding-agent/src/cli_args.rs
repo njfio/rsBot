@@ -3226,6 +3226,28 @@ pub(crate) struct Cli {
     pub(crate) deployment_wasm_package_json: bool,
 
     #[arg(
+        long = "deployment-wasm-inspect-manifest",
+        env = "TAU_DEPLOYMENT_WASM_INSPECT_MANIFEST",
+        conflicts_with = "deployment_contract_runner",
+        conflicts_with = "deployment_wasm_package_module",
+        help = "Inspect a packaged deployment WASM manifest for control-plane profile compliance and exit"
+    )]
+    pub(crate) deployment_wasm_inspect_manifest: Option<PathBuf>,
+
+    #[arg(
+        long = "deployment-wasm-inspect-json",
+        env = "TAU_DEPLOYMENT_WASM_INSPECT_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "deployment_wasm_inspect_manifest",
+        help = "Emit --deployment-wasm-inspect-manifest output as pretty JSON"
+    )]
+    pub(crate) deployment_wasm_inspect_json: bool,
+
+    #[arg(
         long = "deployment-queue-limit",
         env = "TAU_DEPLOYMENT_QUEUE_LIMIT",
         default_value_t = 64,

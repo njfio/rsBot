@@ -95,6 +95,7 @@ pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.gateway_openresponses_server
         || cli.deployment_contract_runner
         || cli.deployment_wasm_package_module.is_some()
+        || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
         || cli.browser_automation_preflight
@@ -585,6 +586,8 @@ pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
         || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
     {
@@ -900,6 +903,7 @@ pub(crate) fn validate_daemon_cli(cli: &Cli) -> Result<()> {
         || cli.gateway_openresponses_server
         || cli.deployment_contract_runner
         || cli.deployment_wasm_package_module.is_some()
+        || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
         || gateway_service_mode_requested(cli)
@@ -1223,6 +1227,56 @@ pub(crate) fn validate_deployment_wasm_package_cli(cli: &Cli) -> Result<()> {
         bail!(
             "--deployment-state-dir '{}' must point to a directory when it exists",
             cli.deployment_state_dir.display()
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_deployment_wasm_inspect_cli(cli: &Cli) -> Result<()> {
+    if cli.deployment_wasm_inspect_manifest.is_none() {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--deployment-wasm-inspect-manifest cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
+        || gateway_openresponses_mode_requested(cli)
+        || cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!(
+            "--deployment-wasm-inspect-manifest cannot be combined with active transport/runtime commands"
+        );
+    }
+    let manifest_path = cli
+        .deployment_wasm_inspect_manifest
+        .as_ref()
+        .ok_or_else(|| anyhow!("--deployment-wasm-inspect-manifest is required"))?;
+    if !manifest_path.exists() {
+        bail!(
+            "--deployment-wasm-inspect-manifest '{}' does not exist",
+            manifest_path.display()
+        );
+    }
+    if !manifest_path.is_file() {
+        bail!(
+            "--deployment-wasm-inspect-manifest '{}' must point to a file",
+            manifest_path.display()
         );
     }
     Ok(())

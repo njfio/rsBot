@@ -71,6 +71,8 @@ Manifest guarantees:
 - deterministic SHA-256 hash (`artifact_sha256`)
 - deterministic size (`artifact_size_bytes`)
 - runtime profile compatibility (`runtime_profile`)
+- control-plane runtime constraint profile (`runtime_constraints.profile_id`)
+- import-module observation for ABI/compliance checks (`observed_import_modules`)
 - capability constraints (`capability_constraints`)
 - deployment state tracking (`state.json` `wasm_deliverables` entry)
 
@@ -78,8 +80,28 @@ Compatibility matrix:
 
 - Supported `deploy_target`: `wasm`
 - Supported runtime profile(s): `wasm_wasi`
+- Control-plane profile: `control_plane_gateway_v1`
 - Required module format: valid WASM binary magic header (`\\0asm`)
 - Unsupported in this path: native/container image packaging, host capability negotiation, and runtime sandbox policy synthesis
+
+## WASM deliverable inspect/report
+
+Inspect an existing manifest/artifact pair and emit compliance status:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --deployment-wasm-inspect-manifest .tau/deployment/wasm-artifacts/edge-wasm/<sha>.manifest.json \
+  --deployment-wasm-inspect-json
+```
+
+Inspect report fields include:
+
+- `constraint_profile_id`
+- `compliant`
+- `reason_codes`
+- `observed_import_modules`
+- `required_feature_gates`
+- `max_artifact_size_bytes`
 
 ## Deterministic demo path
 

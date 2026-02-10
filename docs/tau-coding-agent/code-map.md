@@ -97,7 +97,7 @@ Use this area for skill packaging, verification, registry support, and lock work
 - `gateway_ws_protocol.rs`: websocket control-plane frame schema, version compatibility, parse/error contracts, and fixture replay compatibility tests.
 - `deployment_contract.rs`: cloud deployment + WASM deliverable fixture/schema contract definitions and validators.
 - `deployment_runtime.rs`: deployment/WASM runtime loop (queueing, retries, dedupe, channel-store writes).
-- `deployment_wasm.rs`: WASM artifact packaging, manifest verification, and deployment state deliverable tracking.
+- `deployment_wasm.rs`: WASM artifact packaging, control-plane profile/ABI compliance checks, manifest inspect reporting, and deployment state deliverable tracking.
 - `browser_automation_contract.rs`: browser automation fixture/schema contract definitions, capability checks, and replay evaluation.
 - `browser_automation_runtime.rs`: browser automation runtime loop (queueing, retry, guardrails, dedupe, channel-store writes).
 - `memory_contract.rs`: semantic-memory fixture/schema contract definitions and validators.

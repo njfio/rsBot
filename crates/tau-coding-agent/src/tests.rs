@@ -82,17 +82,18 @@ use super::{
     tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
     validate_branch_alias_name, validate_custom_command_contract_runner_cli, validate_daemon_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
-    validate_deployment_wasm_package_cli, validate_event_webhook_ingest_cli,
-    validate_events_runner_cli, validate_gateway_contract_runner_cli,
-    validate_gateway_openresponses_server_cli, validate_gateway_service_cli,
-    validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
-    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
-    validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_ingest_cli,
-    validate_multi_channel_live_runner_cli, validate_profile_name, validate_project_index_cli,
-    validate_rpc_frame_file, validate_session_file, validate_skills_prune_file_name,
-    validate_slack_bridge_cli, validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig,
-    BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    validate_deployment_wasm_inspect_cli, validate_deployment_wasm_package_cli,
+    validate_event_webhook_ingest_cli, validate_events_runner_cli,
+    validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
+    validate_gateway_service_cli, validate_github_issues_bridge_cli, validate_macro_command_entry,
+    validate_macro_name, validate_memory_contract_runner_cli,
+    validate_multi_agent_contract_runner_cli, validate_multi_channel_channel_lifecycle_cli,
+    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_connectors_runner_cli,
+    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
+    validate_profile_name, validate_project_index_cli, validate_rpc_frame_file,
+    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
+    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
     CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
     CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode,
     CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
@@ -632,6 +633,8 @@ fn test_cli() -> Cli {
         deployment_wasm_package_runtime_profile: CliDeploymentWasmRuntimeProfile::WasmWasi,
         deployment_wasm_package_output_dir: PathBuf::from(".tau/deployment/wasm-artifacts"),
         deployment_wasm_package_json: false,
+        deployment_wasm_inspect_manifest: None,
+        deployment_wasm_inspect_json: false,
         deployment_queue_limit: 64,
         deployment_processed_case_cap: 10_000,
         deployment_retry_max_attempts: 4,
@@ -2293,6 +2296,8 @@ fn unit_cli_deployment_runner_flags_default_to_disabled() {
         PathBuf::from(".tau/deployment/wasm-artifacts")
     );
     assert!(!cli.deployment_wasm_package_json);
+    assert!(cli.deployment_wasm_inspect_manifest.is_none());
+    assert!(!cli.deployment_wasm_inspect_json);
     assert_eq!(
         cli.deployment_fixture,
         PathBuf::from("crates/tau-coding-agent/testdata/deployment-contract/mixed-outcomes.json")
@@ -2347,6 +2352,30 @@ fn regression_cli_deployment_wasm_package_json_requires_module_flag() {
 }
 
 #[test]
+fn functional_cli_deployment_wasm_inspect_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--deployment-wasm-inspect-manifest",
+        "fixtures/edge.manifest.json",
+        "--deployment-wasm-inspect-json",
+    ]);
+    assert_eq!(
+        cli.deployment_wasm_inspect_manifest,
+        Some(PathBuf::from("fixtures/edge.manifest.json"))
+    );
+    assert!(cli.deployment_wasm_inspect_json);
+}
+
+#[test]
+fn regression_cli_deployment_wasm_inspect_json_requires_manifest_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--deployment-wasm-inspect-json"]);
+    let error = parse.expect_err("inspect json should require inspect manifest");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
 fn regression_cli_deployment_wasm_package_conflicts_with_deployment_runner() {
     let parse = try_parse_cli_with_stack([
         "tau-rs",
@@ -2355,6 +2384,19 @@ fn regression_cli_deployment_wasm_package_conflicts_with_deployment_runner() {
         "fixtures/edge.wasm",
     ]);
     let error = parse.expect_err("wasm package should conflict with deployment runner");
+    assert!(error.to_string().contains("cannot be used with"));
+}
+
+#[test]
+fn regression_cli_deployment_wasm_inspect_conflicts_with_package_mode() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--deployment-wasm-package-module",
+        "fixtures/edge.wasm",
+        "--deployment-wasm-inspect-manifest",
+        "fixtures/edge.manifest.json",
+    ]);
+    let error = parse.expect_err("inspect mode should conflict with package mode");
     assert!(error.to_string().contains("cannot be used with"));
 }
 
@@ -15709,6 +15751,71 @@ fn regression_validate_deployment_wasm_package_cli_rejects_non_directory_output(
 }
 
 #[test]
+fn unit_validate_deployment_wasm_inspect_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("edge.manifest.json");
+    std::fs::write(&manifest_path, "{}").expect("write manifest placeholder");
+
+    let mut cli = test_cli();
+    cli.deployment_wasm_inspect_manifest = Some(manifest_path);
+
+    validate_deployment_wasm_inspect_cli(&cli)
+        .expect("deployment wasm inspect config should validate");
+}
+
+#[test]
+fn functional_validate_deployment_wasm_inspect_cli_rejects_prompt_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("edge.manifest.json");
+    std::fs::write(&manifest_path, "{}").expect("write manifest placeholder");
+
+    let mut cli = test_cli();
+    cli.deployment_wasm_inspect_manifest = Some(manifest_path);
+    cli.prompt = Some("conflict".to_string());
+    let error =
+        validate_deployment_wasm_inspect_cli(&cli).expect_err("prompt conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("--deployment-wasm-inspect-manifest cannot be combined"));
+}
+
+#[test]
+fn integration_validate_deployment_wasm_inspect_cli_rejects_runtime_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("edge.manifest.json");
+    std::fs::write(&manifest_path, "{}").expect("write manifest placeholder");
+
+    let mut cli = test_cli();
+    cli.deployment_wasm_inspect_manifest = Some(manifest_path);
+    cli.events_runner = true;
+    let error =
+        validate_deployment_wasm_inspect_cli(&cli).expect_err("runtime conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("active transport/runtime commands"));
+}
+
+#[test]
+fn regression_validate_deployment_wasm_inspect_cli_requires_existing_manifest() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.deployment_wasm_inspect_manifest = Some(temp.path().join("missing.manifest.json"));
+    let error =
+        validate_deployment_wasm_inspect_cli(&cli).expect_err("missing manifest should fail");
+    assert!(error.to_string().contains("does not exist"));
+}
+
+#[test]
+fn regression_validate_deployment_wasm_inspect_cli_rejects_directory_manifest_path() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.deployment_wasm_inspect_manifest = Some(temp.path().to_path_buf());
+    let error = validate_deployment_wasm_inspect_cli(&cli)
+        .expect_err("directory manifest path should fail");
+    assert!(error.to_string().contains("must point to a file"));
+}
+
+#[test]
 fn unit_validate_custom_command_contract_runner_cli_accepts_minimum_configuration() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("custom-command-fixture.json");
@@ -20526,6 +20633,36 @@ fn integration_execute_startup_preflight_deployment_wasm_package_updates_state_m
 }
 
 #[test]
+fn functional_execute_startup_preflight_runs_deployment_wasm_inspect_mode() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("edge.wasm");
+    std::fs::write(
+        &module_path,
+        [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+    )
+    .expect("write wasm");
+
+    let package_report = crate::deployment_wasm::package_deployment_wasm_artifact(
+        &crate::deployment_wasm::DeploymentWasmPackageConfig {
+            module_path,
+            blueprint_id: "edge-wasm-inspect".to_string(),
+            runtime_profile: "wasm_wasi".to_string(),
+            output_dir: temp.path().join("wasm-out"),
+            state_dir: temp.path().join(".tau/deployment"),
+        },
+    )
+    .expect("package wasm");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.deployment_wasm_inspect_manifest = Some(PathBuf::from(package_report.manifest_path));
+    cli.deployment_wasm_inspect_json = true;
+
+    let handled = execute_startup_preflight(&cli).expect("deployment wasm inspect preflight");
+    assert!(handled);
+}
+
+#[test]
 fn regression_execute_startup_preflight_deployment_wasm_package_fails_closed() {
     let temp = tempdir().expect("tempdir");
     let invalid_module_path = temp.path().join("invalid.bin");
@@ -20540,6 +20677,23 @@ fn regression_execute_startup_preflight_deployment_wasm_package_fails_closed() {
     let error =
         execute_startup_preflight(&cli).expect_err("invalid wasm package preflight should fail");
     assert!(error.to_string().contains("invalid wasm module"));
+}
+
+#[test]
+fn regression_execute_startup_preflight_deployment_wasm_inspect_fails_closed() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("invalid.manifest.json");
+    std::fs::write(&manifest_path, "{invalid-json").expect("write invalid manifest");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.deployment_wasm_inspect_manifest = Some(manifest_path);
+
+    let error =
+        execute_startup_preflight(&cli).expect_err("invalid wasm inspect preflight should fail");
+    assert!(error
+        .to_string()
+        .contains("invalid deployment wasm manifest"));
 }
 
 #[test]
