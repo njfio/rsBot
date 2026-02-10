@@ -105,7 +105,6 @@ pub(crate) fn load_multi_agent_route_table(path: &Path) -> Result<MultiAgentRout
     parse_multi_agent_route_table_with_source(&raw, &path.display().to_string())
 }
 
-#[cfg(test)]
 pub(crate) fn parse_multi_agent_route_table(raw: &str) -> Result<MultiAgentRouteTable> {
     parse_multi_agent_route_table_with_source(raw, "<inline-route-table>")
 }

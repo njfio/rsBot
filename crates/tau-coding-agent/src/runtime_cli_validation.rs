@@ -174,6 +174,51 @@ pub(crate) fn validate_multi_channel_contract_runner_cli(cli: &Cli) -> Result<()
     Ok(())
 }
 
+pub(crate) fn validate_multi_agent_contract_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.multi_agent_contract_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--multi-agent-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--multi-agent-contract-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+    {
+        bail!("--multi-agent-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --memory-contract-runner, or --dashboard-contract-runner");
+    }
+    if cli.multi_agent_queue_limit == 0 {
+        bail!("--multi-agent-queue-limit must be greater than 0");
+    }
+    if cli.multi_agent_processed_case_cap == 0 {
+        bail!("--multi-agent-processed-case-cap must be greater than 0");
+    }
+    if cli.multi_agent_retry_max_attempts == 0 {
+        bail!("--multi-agent-retry-max-attempts must be greater than 0");
+    }
+    if !cli.multi_agent_fixture.exists() {
+        bail!(
+            "--multi-agent-fixture '{}' does not exist",
+            cli.multi_agent_fixture.display()
+        );
+    }
+    if !cli.multi_agent_fixture.is_file() {
+        bail!(
+            "--multi-agent-fixture '{}' must point to a file",
+            cli.multi_agent_fixture.display()
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_memory_contract_runner_cli(cli: &Cli) -> Result<()> {
     if !cli.memory_contract_runner {
         return Ok(());

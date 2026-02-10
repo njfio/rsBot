@@ -27,9 +27,9 @@ mod mcp_server;
 mod memory_contract;
 mod memory_runtime;
 mod model_catalog;
-#[cfg(test)]
 mod multi_agent_contract;
 mod multi_agent_router;
+mod multi_agent_runtime;
 mod multi_channel_contract;
 mod multi_channel_runtime;
 mod observability_loggers;
@@ -253,8 +253,8 @@ pub(crate) use crate::rpc_protocol::{
 pub(crate) use crate::runtime_cli_validation::{
     validate_dashboard_contract_runner_cli, validate_event_webhook_ingest_cli,
     validate_events_runner_cli, validate_github_issues_bridge_cli,
-    validate_memory_contract_runner_cli, validate_multi_channel_contract_runner_cli,
-    validate_slack_bridge_cli,
+    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
+    validate_multi_channel_contract_runner_cli, validate_slack_bridge_cli,
 };
 pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
@@ -366,6 +366,7 @@ pub(crate) use crate::trust_roots::{
 use dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
 use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
 use memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
+use multi_agent_runtime::{run_multi_agent_contract_runner, MultiAgentRuntimeConfig};
 use multi_channel_runtime::{run_multi_channel_contract_runner, MultiChannelRuntimeConfig};
 use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
 

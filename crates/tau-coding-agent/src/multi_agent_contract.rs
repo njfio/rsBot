@@ -436,38 +436,69 @@ fn validate_case_route_table_contract(case: &MultiAgentContractCase) -> Result<(
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn run_multi_agent_contract_replay<D: MultiAgentContractDriver>(
-    fixture: &MultiAgentContractFixture,
-    driver: &mut D,
-) -> Result<MultiAgentReplaySummary> {
-    validate_multi_agent_contract_fixture(fixture)?;
-    let mut summary = MultiAgentReplaySummary {
-        discovered_cases: fixture.cases.len(),
-        ..MultiAgentReplaySummary::default()
+pub(crate) fn evaluate_multi_agent_case(case: &MultiAgentContractCase) -> MultiAgentReplayResult {
+    let route_table_raw = match serde_json::to_string(&case.route_table) {
+        Ok(raw) => raw,
+        Err(_) => {
+            return MultiAgentReplayResult {
+                step: MultiAgentReplayStep::MalformedInput,
+                error_code: Some(MULTI_AGENT_ERROR_INVALID_ROUTE_TABLE.to_string()),
+                selected_role: String::new(),
+                attempted_roles: Vec::new(),
+                category: String::new(),
+            };
+        }
     };
 
-    for case in &fixture.cases {
-        let result = driver.apply_case(case)?;
-        assert_multi_agent_replay_matches_expectation(case, &result)?;
-        match case.expected.outcome {
-            MultiAgentOutcomeKind::Success => {
-                summary.success_cases = summary.success_cases.saturating_add(1);
-            }
-            MultiAgentOutcomeKind::MalformedInput => {
-                summary.malformed_cases = summary.malformed_cases.saturating_add(1);
-            }
-            MultiAgentOutcomeKind::RetryableFailure => {
-                summary.retryable_failures = summary.retryable_failures.saturating_add(1);
-            }
+    let table = match parse_multi_agent_route_table(&route_table_raw) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            return MultiAgentReplayResult {
+                step: MultiAgentReplayStep::MalformedInput,
+                error_code: Some(MULTI_AGENT_ERROR_INVALID_ROUTE_TABLE.to_string()),
+                selected_role: String::new(),
+                attempted_roles: Vec::new(),
+                category: String::new(),
+            };
         }
+    };
+
+    if case.simulate_retryable_failure {
+        return MultiAgentReplayResult {
+            step: MultiAgentReplayStep::RetryableFailure,
+            error_code: Some(MULTI_AGENT_ERROR_ROLE_UNAVAILABLE.to_string()),
+            selected_role: String::new(),
+            attempted_roles: Vec::new(),
+            category: String::new(),
+        };
     }
 
-    Ok(summary)
+    if case.phase == MultiAgentRoutePhase::DelegatedStep && case.step_text.trim().is_empty() {
+        return MultiAgentReplayResult {
+            step: MultiAgentReplayStep::MalformedInput,
+            error_code: Some(MULTI_AGENT_ERROR_EMPTY_STEP_TEXT.to_string()),
+            selected_role: String::new(),
+            attempted_roles: Vec::new(),
+            category: String::new(),
+        };
+    }
+
+    let step_text = if case.phase == MultiAgentRoutePhase::DelegatedStep {
+        Some(case.step_text.as_str())
+    } else {
+        None
+    };
+    let selection = select_multi_agent_route(&table, case.phase, step_text);
+    MultiAgentReplayResult {
+        step: MultiAgentReplayStep::Success,
+        error_code: None,
+        selected_role: selection.primary_role,
+        attempted_roles: selection.attempt_roles,
+        category: selection.category.unwrap_or_default(),
+    }
 }
 
-#[cfg(test)]
-fn assert_multi_agent_replay_matches_expectation(
+pub(crate) fn validate_multi_agent_case_result_against_contract(
     case: &MultiAgentContractCase,
     result: &MultiAgentReplayResult,
 ) -> Result<()> {
@@ -556,6 +587,36 @@ fn assert_multi_agent_replay_matches_expectation(
     Ok(())
 }
 
+#[cfg(test)]
+pub(crate) fn run_multi_agent_contract_replay<D: MultiAgentContractDriver>(
+    fixture: &MultiAgentContractFixture,
+    driver: &mut D,
+) -> Result<MultiAgentReplaySummary> {
+    validate_multi_agent_contract_fixture(fixture)?;
+    let mut summary = MultiAgentReplaySummary {
+        discovered_cases: fixture.cases.len(),
+        ..MultiAgentReplaySummary::default()
+    };
+
+    for case in &fixture.cases {
+        let result = driver.apply_case(case)?;
+        validate_multi_agent_case_result_against_contract(case, &result)?;
+        match case.expected.outcome {
+            MultiAgentOutcomeKind::Success => {
+                summary.success_cases = summary.success_cases.saturating_add(1);
+            }
+            MultiAgentOutcomeKind::MalformedInput => {
+                summary.malformed_cases = summary.malformed_cases.saturating_add(1);
+            }
+            MultiAgentOutcomeKind::RetryableFailure => {
+                summary.retryable_failures = summary.retryable_failures.saturating_add(1);
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
 fn supported_error_codes() -> [&'static str; 3] {
     [
         MULTI_AGENT_ERROR_INVALID_ROUTE_TABLE,
@@ -568,16 +629,11 @@ fn supported_error_codes() -> [&'static str; 3] {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use anyhow::Context;
-
     use super::{
-        load_multi_agent_contract_fixture, parse_multi_agent_contract_fixture,
-        run_multi_agent_contract_replay, MultiAgentContractCase, MultiAgentContractDriver,
-        MultiAgentReplayResult, MultiAgentReplayStep, MULTI_AGENT_ERROR_EMPTY_STEP_TEXT,
-        MULTI_AGENT_ERROR_INVALID_ROUTE_TABLE, MULTI_AGENT_ERROR_ROLE_UNAVAILABLE,
+        evaluate_multi_agent_case, load_multi_agent_contract_fixture,
+        parse_multi_agent_contract_fixture, run_multi_agent_contract_replay,
+        MultiAgentContractCase, MultiAgentContractDriver, MultiAgentReplayResult,
     };
-    use crate::multi_agent_router::{parse_multi_agent_route_table, select_multi_agent_route};
-    use crate::MultiAgentRoutePhase;
 
     fn fixture_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -594,55 +650,7 @@ mod tests {
             &mut self,
             case: &MultiAgentContractCase,
         ) -> anyhow::Result<MultiAgentReplayResult> {
-            let route_table_raw = serde_json::to_string(&case.route_table)
-                .context("failed to encode route_table for replay")?;
-            let table = match parse_multi_agent_route_table(&route_table_raw) {
-                Ok(parsed) => parsed,
-                Err(_) => {
-                    return Ok(MultiAgentReplayResult {
-                        step: MultiAgentReplayStep::MalformedInput,
-                        error_code: Some(MULTI_AGENT_ERROR_INVALID_ROUTE_TABLE.to_string()),
-                        selected_role: String::new(),
-                        attempted_roles: Vec::new(),
-                        category: String::new(),
-                    });
-                }
-            };
-
-            if case.simulate_retryable_failure {
-                return Ok(MultiAgentReplayResult {
-                    step: MultiAgentReplayStep::RetryableFailure,
-                    error_code: Some(MULTI_AGENT_ERROR_ROLE_UNAVAILABLE.to_string()),
-                    selected_role: String::new(),
-                    attempted_roles: Vec::new(),
-                    category: String::new(),
-                });
-            }
-
-            if case.phase == MultiAgentRoutePhase::DelegatedStep && case.step_text.trim().is_empty()
-            {
-                return Ok(MultiAgentReplayResult {
-                    step: MultiAgentReplayStep::MalformedInput,
-                    error_code: Some(MULTI_AGENT_ERROR_EMPTY_STEP_TEXT.to_string()),
-                    selected_role: String::new(),
-                    attempted_roles: Vec::new(),
-                    category: String::new(),
-                });
-            }
-
-            let step_text = if case.phase == MultiAgentRoutePhase::DelegatedStep {
-                Some(case.step_text.as_str())
-            } else {
-                None
-            };
-            let selection = select_multi_agent_route(&table, case.phase, step_text);
-            Ok(MultiAgentReplayResult {
-                step: MultiAgentReplayStep::Success,
-                error_code: None,
-                selected_role: selection.primary_role,
-                attempted_roles: selection.attempt_roles,
-                category: selection.category.unwrap_or_default(),
-            })
+            Ok(evaluate_multi_agent_case(case))
         }
     }
 

@@ -79,25 +79,25 @@ use super::{
     validate_branch_alias_name, validate_dashboard_contract_runner_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
-    validate_memory_contract_runner_cli, validate_multi_channel_contract_runner_cli,
-    validate_profile_name, validate_rpc_frame_file, validate_session_file,
-    validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand, AuthCommandConfig,
-    BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliOrchestratorMode,
-    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
-    CliWebhookSignatureAlgorithm, ClientRoute, CommandAction, CommandExecutionContext,
-    CommandFileEntry, CommandFileReport, CredentialStoreData, CredentialStoreEncryptionMode,
-    DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs, DoctorCommandConfig,
-    DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
-    IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
-    MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus,
-    PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions,
-    RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
-    SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats,
-    SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
-    SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
-    ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
-    MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
+    validate_multi_channel_contract_runner_cli, validate_profile_name, validate_rpc_frame_file,
+    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand,
+    AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliEventTemplateSchedule,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
+    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
+    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
+    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus,
+    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
+    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
+    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
+    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
+    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
+    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
+    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
+    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
+    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
     SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
     SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
     SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
@@ -466,6 +466,15 @@ fn test_cli() -> Cli {
         multi_channel_processed_event_cap: 10_000,
         multi_channel_retry_max_attempts: 4,
         multi_channel_retry_base_delay_ms: 0,
+        multi_agent_contract_runner: false,
+        multi_agent_fixture: PathBuf::from(
+            "crates/tau-coding-agent/testdata/multi-agent-contract/mixed-outcomes.json",
+        ),
+        multi_agent_state_dir: PathBuf::from(".tau/multi-agent"),
+        multi_agent_queue_limit: 64,
+        multi_agent_processed_case_cap: 10_000,
+        multi_agent_retry_max_attempts: 4,
+        multi_agent_retry_base_delay_ms: 0,
         memory_contract_runner: false,
         memory_fixture: PathBuf::from(
             "crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json",
@@ -1325,6 +1334,67 @@ fn regression_cli_multi_channel_fixture_requires_multi_channel_runner_flag() {
         "fixtures/multi-channel.json",
     ]);
     let error = parse.expect_err("fixture flag should require multi-channel runner mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_multi_agent_runner_flags_default_to_disabled() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert!(!cli.multi_agent_contract_runner);
+    assert_eq!(
+        cli.multi_agent_fixture,
+        PathBuf::from("crates/tau-coding-agent/testdata/multi-agent-contract/mixed-outcomes.json")
+    );
+    assert_eq!(cli.multi_agent_state_dir, PathBuf::from(".tau/multi-agent"));
+    assert_eq!(cli.multi_agent_queue_limit, 64);
+    assert_eq!(cli.multi_agent_processed_case_cap, 10_000);
+    assert_eq!(cli.multi_agent_retry_max_attempts, 4);
+    assert_eq!(cli.multi_agent_retry_base_delay_ms, 0);
+}
+
+#[test]
+fn functional_cli_multi_agent_runner_flags_accept_explicit_overrides() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--multi-agent-contract-runner",
+        "--multi-agent-fixture",
+        "fixtures/multi-agent.json",
+        "--multi-agent-state-dir",
+        ".tau/multi-agent-custom",
+        "--multi-agent-queue-limit",
+        "90",
+        "--multi-agent-processed-case-cap",
+        "12000",
+        "--multi-agent-retry-max-attempts",
+        "6",
+        "--multi-agent-retry-base-delay-ms",
+        "30",
+    ]);
+    assert!(cli.multi_agent_contract_runner);
+    assert_eq!(
+        cli.multi_agent_fixture,
+        PathBuf::from("fixtures/multi-agent.json")
+    );
+    assert_eq!(
+        cli.multi_agent_state_dir,
+        PathBuf::from(".tau/multi-agent-custom")
+    );
+    assert_eq!(cli.multi_agent_queue_limit, 90);
+    assert_eq!(cli.multi_agent_processed_case_cap, 12_000);
+    assert_eq!(cli.multi_agent_retry_max_attempts, 6);
+    assert_eq!(cli.multi_agent_retry_base_delay_ms, 30);
+}
+
+#[test]
+fn regression_cli_multi_agent_fixture_requires_multi_agent_runner_flag() {
+    let parse = Cli::try_parse_from([
+        "tau-rs",
+        "--multi-agent-fixture",
+        "fixtures/multi-agent.json",
+    ]);
+    let error = parse.expect_err("fixture flag should require multi-agent runner mode");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -12344,6 +12414,138 @@ fn regression_validate_multi_channel_contract_runner_cli_requires_fixture_file()
 
     let error = validate_multi_channel_contract_runner_cli(&cli)
         .expect_err("directory fixture should fail");
+    assert!(error.to_string().contains("must point to a file"));
+}
+
+#[test]
+fn unit_validate_multi_agent_contract_runner_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("multi-agent-fixture.json");
+    std::fs::write(
+        &fixture_path,
+        r#"{
+  "schema_version": 1,
+  "name": "single-case",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "planner-success",
+      "phase": "planner",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "reviewer": {}
+        },
+        "planner": { "role": "planner" },
+        "delegated": { "role": "planner" },
+        "review": { "role": "reviewer" }
+      },
+      "expected": {
+        "outcome": "success",
+        "selected_role": "planner",
+        "attempted_roles": ["planner"]
+      }
+    }
+  ]
+}"#,
+    )
+    .expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.multi_agent_contract_runner = true;
+    cli.multi_agent_fixture = fixture_path;
+
+    validate_multi_agent_contract_runner_cli(&cli)
+        .expect("multi-agent runner config should validate");
+}
+
+#[test]
+fn functional_validate_multi_agent_contract_runner_cli_rejects_prompt_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.multi_agent_contract_runner = true;
+    cli.multi_agent_fixture = fixture_path;
+    cli.prompt = Some("conflict".to_string());
+
+    let error = validate_multi_agent_contract_runner_cli(&cli).expect_err("prompt conflict");
+    assert!(error
+        .to_string()
+        .contains("--multi-agent-contract-runner cannot be combined"));
+}
+
+#[test]
+fn integration_validate_multi_agent_contract_runner_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.multi_agent_contract_runner = true;
+    cli.multi_agent_fixture = fixture_path;
+    cli.dashboard_contract_runner = true;
+
+    let error = validate_multi_agent_contract_runner_cli(&cli).expect_err("transport conflict");
+    assert!(error.to_string().contains(
+        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --memory-contract-runner, or --dashboard-contract-runner"
+    ));
+}
+
+#[test]
+fn regression_validate_multi_agent_contract_runner_cli_rejects_zero_limits() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.multi_agent_contract_runner = true;
+    cli.multi_agent_fixture = fixture_path.clone();
+    cli.multi_agent_queue_limit = 0;
+    let queue_error = validate_multi_agent_contract_runner_cli(&cli).expect_err("zero queue");
+    assert!(queue_error
+        .to_string()
+        .contains("--multi-agent-queue-limit must be greater than 0"));
+
+    cli.multi_agent_queue_limit = 1;
+    cli.multi_agent_processed_case_cap = 0;
+    let processed_error =
+        validate_multi_agent_contract_runner_cli(&cli).expect_err("zero processed cap");
+    assert!(processed_error
+        .to_string()
+        .contains("--multi-agent-processed-case-cap must be greater than 0"));
+
+    cli.multi_agent_processed_case_cap = 1;
+    cli.multi_agent_retry_max_attempts = 0;
+    let retry_error = validate_multi_agent_contract_runner_cli(&cli).expect_err("zero retry max");
+    assert!(retry_error
+        .to_string()
+        .contains("--multi-agent-retry-max-attempts must be greater than 0"));
+}
+
+#[test]
+fn regression_validate_multi_agent_contract_runner_cli_requires_existing_fixture() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.multi_agent_contract_runner = true;
+    cli.multi_agent_fixture = temp.path().join("missing.json");
+
+    let error =
+        validate_multi_agent_contract_runner_cli(&cli).expect_err("missing fixture should fail");
+    assert!(error.to_string().contains("does not exist"));
+}
+
+#[test]
+fn regression_validate_multi_agent_contract_runner_cli_requires_fixture_file() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.multi_agent_contract_runner = true;
+    cli.multi_agent_fixture = temp.path().to_path_buf();
+
+    let error =
+        validate_multi_agent_contract_runner_cli(&cli).expect_err("directory fixture should fail");
     assert!(error.to_string().contains("must point to a file"));
 }
 

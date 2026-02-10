@@ -1729,6 +1729,67 @@ pub(crate) struct Cli {
     pub(crate) multi_channel_retry_base_delay_ms: u64,
 
     #[arg(
+        long = "multi-agent-contract-runner",
+        env = "TAU_MULTI_AGENT_CONTRACT_RUNNER",
+        default_value_t = false,
+        help = "Run fixture-driven multi-agent runtime contract scenarios"
+    )]
+    pub(crate) multi_agent_contract_runner: bool,
+
+    #[arg(
+        long = "multi-agent-fixture",
+        env = "TAU_MULTI_AGENT_FIXTURE",
+        default_value = "crates/tau-coding-agent/testdata/multi-agent-contract/mixed-outcomes.json",
+        requires = "multi_agent_contract_runner",
+        help = "Path to multi-agent runtime contract fixture JSON"
+    )]
+    pub(crate) multi_agent_fixture: PathBuf,
+
+    #[arg(
+        long = "multi-agent-state-dir",
+        env = "TAU_MULTI_AGENT_STATE_DIR",
+        default_value = ".tau/multi-agent",
+        help = "Directory for multi-agent runtime state and channel-store outputs"
+    )]
+    pub(crate) multi_agent_state_dir: PathBuf,
+
+    #[arg(
+        long = "multi-agent-queue-limit",
+        env = "TAU_MULTI_AGENT_QUEUE_LIMIT",
+        default_value_t = 64,
+        requires = "multi_agent_contract_runner",
+        help = "Maximum multi-agent fixture cases processed per runtime cycle"
+    )]
+    pub(crate) multi_agent_queue_limit: usize,
+
+    #[arg(
+        long = "multi-agent-processed-case-cap",
+        env = "TAU_MULTI_AGENT_PROCESSED_CASE_CAP",
+        default_value_t = 10_000,
+        requires = "multi_agent_contract_runner",
+        help = "Maximum processed-case keys retained for multi-agent duplicate suppression"
+    )]
+    pub(crate) multi_agent_processed_case_cap: usize,
+
+    #[arg(
+        long = "multi-agent-retry-max-attempts",
+        env = "TAU_MULTI_AGENT_RETRY_MAX_ATTEMPTS",
+        default_value_t = 4,
+        requires = "multi_agent_contract_runner",
+        help = "Maximum retry attempts for transient multi-agent runtime failures"
+    )]
+    pub(crate) multi_agent_retry_max_attempts: usize,
+
+    #[arg(
+        long = "multi-agent-retry-base-delay-ms",
+        env = "TAU_MULTI_AGENT_RETRY_BASE_DELAY_MS",
+        default_value_t = 0,
+        requires = "multi_agent_contract_runner",
+        help = "Base backoff delay in milliseconds for multi-agent runtime retries (0 disables delay)"
+    )]
+    pub(crate) multi_agent_retry_base_delay_ms: u64,
+
+    #[arg(
         long = "memory-contract-runner",
         env = "TAU_MEMORY_CONTRACT_RUNNER",
         default_value_t = false,
