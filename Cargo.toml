@@ -3,6 +3,7 @@ members = [
   "crates/tau-core",
   "crates/tau-ai",
   "crates/tau-agent-core",
+  "crates/tau-runtime",
   "crates/tau-tui",
   "crates/tau-coding-agent",
 ]

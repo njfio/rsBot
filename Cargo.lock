@@ -2648,6 +2648,7 @@ dependencies = [
  "tau-agent-core",
  "tau-ai",
  "tau-core",
+ "tau-runtime",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2664,6 +2665,19 @@ name = "tau-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tempfile",
+]
+
+[[package]]
+name = "tau-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tau-ai",
+ "tau-core",
  "tempfile",
 ]
 

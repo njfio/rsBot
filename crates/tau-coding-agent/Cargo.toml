@@ -17,6 +17,7 @@ ed25519-dalek.workspace = true
 futures-util.workspace = true
 hmac.workspace = true
 tau-core = { path = "../tau-core" }
+tau-runtime = { path = "../tau-runtime" }
 tau-agent-core = { path = "../tau-agent-core" }
 tau-ai = { path = "../tau-ai" }
 reqwest.workspace = true
