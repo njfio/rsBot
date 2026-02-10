@@ -443,6 +443,9 @@ Supported commands:
 - `/tau status`
 - `/tau auth status [openai|anthropic|google]`
 - `/tau doctor [--online]`
+- `/tau approvals list [--json] [--status pending|approved|rejected|expired|consumed]`
+- `/tau approvals approve <request_id> [reason]`
+- `/tau approvals reject <request_id> [reason]`
 
 Command responses include a normalized footer:
 
@@ -457,10 +460,12 @@ Command metadata is persisted in outbound channel-store log payloads under:
 
 Operator scope rule:
 
-- `/tau auth status` and `/tau doctor` require allowlisted operator scope
-  (`allow_allowlist` or `allow_allowlist_and_pairing` pairing outcomes).
+- `/tau auth status`, `/tau doctor`, and all `/tau approvals ...` commands require allowlisted
+  operator scope (`allow_allowlist` or `allow_allowlist_and_pairing` pairing outcomes).
 - When scope is insufficient, command execution fails closed with
   `command_rbac_denied`.
+- Approval decisions also persist `decision_actor` from transport actor mapping
+  (`<transport>:<conversation_id>:<actor_id>`) to keep review actions auditable.
 
 ## Outbound delivery modes
 

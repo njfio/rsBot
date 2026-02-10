@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::approvals::{
+    approval_paths_for_state_dir, execute_approvals_command_with_paths_and_actor,
+};
 use crate::auth_commands::execute_auth_command;
 use crate::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
 use crate::diagnostics_commands::{
@@ -67,6 +70,14 @@ const COMMAND_REASON_STATUS_REPORTED: &str = "command_status_reported";
 const COMMAND_REASON_AUTH_STATUS_REPORTED: &str = "command_auth_status_reported";
 const COMMAND_REASON_AUTH_STATUS_FAILED: &str = "command_auth_status_failed";
 const COMMAND_REASON_DOCTOR_REPORTED: &str = "command_doctor_reported";
+const COMMAND_REASON_APPROVALS_LIST_REPORTED: &str = "command_approvals_list_reported";
+const COMMAND_REASON_APPROVALS_APPROVED: &str = "command_approvals_approved";
+const COMMAND_REASON_APPROVALS_REJECTED: &str = "command_approvals_rejected";
+const COMMAND_REASON_APPROVALS_FAILED: &str = "command_approvals_failed";
+const COMMAND_REASON_APPROVALS_UNKNOWN_REQUEST: &str = "command_approvals_unknown_request";
+const COMMAND_REASON_APPROVALS_STALE_REQUEST: &str = "command_approvals_stale_request";
+const COMMAND_REASON_APPROVALS_ACTOR_MAPPING_FAILED: &str =
+    "command_approvals_actor_mapping_failed";
 
 fn multi_channel_runtime_state_schema_version() -> u32 {
     MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION
@@ -287,8 +298,23 @@ struct PersistEventOutcome {
 enum MultiChannelTauCommand {
     Help,
     Status,
-    AuthStatus { provider: Option<String> },
-    Doctor { online: bool },
+    AuthStatus {
+        provider: Option<String>,
+    },
+    Doctor {
+        online: bool,
+    },
+    Approvals {
+        action: MultiChannelTauApprovalsAction,
+        args: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MultiChannelTauApprovalsAction {
+    List,
+    Approve,
+    Reject,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -982,6 +1008,57 @@ impl MultiChannelRuntime {
                     output.as_str(),
                 ))
             }
+            MultiChannelTauCommand::Approvals { action, args } => {
+                let (policy_path, store_path) =
+                    approval_paths_for_state_dir(&self.config.state_dir);
+                let decision_actor = if matches!(
+                    action,
+                    MultiChannelTauApprovalsAction::Approve
+                        | MultiChannelTauApprovalsAction::Reject
+                ) {
+                    match build_multi_channel_approver_actor(event) {
+                        Some(actor) => Some(actor),
+                        None => {
+                            let response =
+                                "command denied: missing transport actor mapping for approval decision.";
+                            return Some(build_multi_channel_command_execution(
+                                "approvals",
+                                COMMAND_STATUS_FAILED,
+                                COMMAND_REASON_APPROVALS_ACTOR_MAPPING_FAILED,
+                                response,
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                let output = execute_approvals_command_with_paths_and_actor(
+                    args.as_str(),
+                    &policy_path,
+                    &store_path,
+                    decision_actor.as_deref(),
+                );
+                let failed = output.trim_start().starts_with("approvals error:");
+                let (status, reason_code) = if failed {
+                    (
+                        COMMAND_STATUS_FAILED,
+                        approvals_failure_reason_code(&action, output.as_str()),
+                    )
+                } else {
+                    (
+                        COMMAND_STATUS_REPORTED,
+                        approvals_success_reason_code(&action),
+                    )
+                };
+                let command_line = format!("approvals {}", args.trim());
+                Some(build_multi_channel_command_execution(
+                    command_line.as_str(),
+                    status,
+                    reason_code,
+                    output.as_str(),
+                ))
+            }
         }
     }
 
@@ -1402,6 +1479,46 @@ impl MultiChannelRuntime {
             }
         }
     }
+}
+
+fn approvals_success_reason_code(action: &MultiChannelTauApprovalsAction) -> &'static str {
+    match action {
+        MultiChannelTauApprovalsAction::List => COMMAND_REASON_APPROVALS_LIST_REPORTED,
+        MultiChannelTauApprovalsAction::Approve => COMMAND_REASON_APPROVALS_APPROVED,
+        MultiChannelTauApprovalsAction::Reject => COMMAND_REASON_APPROVALS_REJECTED,
+    }
+}
+
+fn approvals_failure_reason_code(
+    action: &MultiChannelTauApprovalsAction,
+    output: &str,
+) -> &'static str {
+    if matches!(
+        action,
+        MultiChannelTauApprovalsAction::Approve | MultiChannelTauApprovalsAction::Reject
+    ) {
+        if output.contains("not found") {
+            return COMMAND_REASON_APPROVALS_UNKNOWN_REQUEST;
+        }
+        if output.contains("is not pending") {
+            return COMMAND_REASON_APPROVALS_STALE_REQUEST;
+        }
+    }
+    COMMAND_REASON_APPROVALS_FAILED
+}
+
+fn build_multi_channel_approver_actor(event: &MultiChannelInboundEvent) -> Option<String> {
+    let conversation_id = event.conversation_id.trim();
+    let actor_id = event.actor_id.trim();
+    if conversation_id.is_empty() || actor_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}:{}:{}",
+        event.transport.as_str(),
+        conversation_id,
+        actor_id
+    ))
 }
 
 fn pairing_policy_channel(event: &MultiChannelInboundEvent) -> String {
@@ -1917,7 +2034,92 @@ fn parse_multi_channel_tau_command(
             }
             Ok(Some(MultiChannelTauCommand::Doctor { online }))
         }
+        "approvals" => {
+            let remaining = tokens.collect::<Vec<_>>();
+            parse_multi_channel_tau_approvals_command(&remaining)
+        }
         _ => Err(COMMAND_REASON_UNKNOWN.to_string()),
+    }
+}
+
+fn parse_multi_channel_tau_approvals_command(
+    tokens: &[&str],
+) -> std::result::Result<Option<MultiChannelTauCommand>, String> {
+    let Some(action) = tokens.first().copied() else {
+        return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+    };
+
+    match action {
+        "list" => {
+            let mut emit_json = false;
+            let mut status_filter = None;
+            let mut index = 1usize;
+            while index < tokens.len() {
+                match tokens[index] {
+                    "--json" => {
+                        if emit_json {
+                            return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+                        }
+                        emit_json = true;
+                        index = index.saturating_add(1);
+                    }
+                    "--status" => {
+                        let Some(raw_status) = tokens.get(index.saturating_add(1)).copied() else {
+                            return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+                        };
+                        let normalized_status = raw_status.trim().to_ascii_lowercase();
+                        if !matches!(
+                            normalized_status.as_str(),
+                            "pending" | "approved" | "rejected" | "expired" | "consumed"
+                        ) {
+                            return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+                        }
+                        status_filter = Some(normalized_status);
+                        index = index.saturating_add(2);
+                    }
+                    _ => return Err(COMMAND_REASON_INVALID_ARGS.to_string()),
+                }
+            }
+            let mut args = vec!["list".to_string()];
+            if emit_json {
+                args.push("--json".to_string());
+            }
+            if let Some(status) = status_filter {
+                args.push("--status".to_string());
+                args.push(status);
+            }
+            Ok(Some(MultiChannelTauCommand::Approvals {
+                action: MultiChannelTauApprovalsAction::List,
+                args: args.join(" "),
+            }))
+        }
+        "approve" | "reject" => {
+            let Some(request_id) = tokens.get(1).map(|value| value.trim()) else {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            };
+            if request_id.is_empty() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            let reason = tokens
+                .iter()
+                .skip(2)
+                .filter(|token| !token.trim().is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut args = format!("{action} {request_id}");
+            if !reason.is_empty() {
+                args.push(' ');
+                args.push_str(reason.as_str());
+            }
+            let action = if action == "approve" {
+                MultiChannelTauApprovalsAction::Approve
+            } else {
+                MultiChannelTauApprovalsAction::Reject
+            };
+            Ok(Some(MultiChannelTauCommand::Approvals { action, args }))
+        }
+        _ => Err(COMMAND_REASON_INVALID_ARGS.to_string()),
     }
 }
 
@@ -1939,6 +2141,7 @@ fn render_multi_channel_tau_command_line(command: &MultiChannelTauCommand) -> St
                 "doctor".to_string()
             }
         }
+        MultiChannelTauCommand::Approvals { args, .. } => format!("approvals {args}"),
     }
 }
 
@@ -1949,6 +2152,9 @@ fn render_multi_channel_tau_command_help() -> String {
         "- /tau status",
         "- /tau auth status [openai|anthropic|google]",
         "- /tau doctor [--online]",
+        "- /tau approvals list [--json] [--status pending|approved|rejected|expired|consumed]",
+        "- /tau approvals approve <request_id> [reason]",
+        "- /tau approvals reject <request_id> [reason]",
     ]
     .join("\n")
 }
@@ -1991,7 +2197,9 @@ fn build_multi_channel_command_execution(
 fn command_requires_operator_scope(command: &MultiChannelTauCommand) -> bool {
     matches!(
         command,
-        MultiChannelTauCommand::AuthStatus { .. } | MultiChannelTauCommand::Doctor { .. }
+        MultiChannelTauCommand::AuthStatus { .. }
+            | MultiChannelTauCommand::Doctor { .. }
+            | MultiChannelTauCommand::Approvals { .. }
     )
 }
 
@@ -2277,6 +2485,18 @@ mod tests {
         .expect("write channel policy");
     }
 
+    fn write_approval_policy(root: &Path, payload: &str) {
+        let approvals_dir = root.join(".tau/approvals");
+        std::fs::create_dir_all(&approvals_dir).expect("create approvals dir");
+        std::fs::write(approvals_dir.join("policy.json"), payload).expect("write approval policy");
+    }
+
+    fn write_approval_store(root: &Path, payload: &str) {
+        let approvals_dir = root.join(".tau/approvals");
+        std::fs::create_dir_all(&approvals_dir).expect("create approvals dir");
+        std::fs::write(approvals_dir.join("requests.json"), payload).expect("write approval store");
+    }
+
     fn write_multi_channel_route_bindings(root: &Path, payload: &str) {
         let security_dir = root.join(".tau/multi-channel/security");
         std::fs::create_dir_all(&security_dir).expect("create multi-channel security dir");
@@ -2427,6 +2647,30 @@ mod tests {
             Some(super::MultiChannelTauCommand::Doctor { online: true })
         );
         assert_eq!(
+            super::parse_multi_channel_tau_command("/tau approvals list --json --status pending")
+                .expect("parse"),
+            Some(super::MultiChannelTauCommand::Approvals {
+                action: super::MultiChannelTauApprovalsAction::List,
+                args: "list --json --status pending".to_string(),
+            })
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau approvals approve req-7 looks_safe")
+                .expect("parse"),
+            Some(super::MultiChannelTauCommand::Approvals {
+                action: super::MultiChannelTauApprovalsAction::Approve,
+                args: "approve req-7 looks_safe".to_string(),
+            })
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau approvals reject req-8 blocked")
+                .expect("parse"),
+            Some(super::MultiChannelTauCommand::Approvals {
+                action: super::MultiChannelTauApprovalsAction::Reject,
+                args: "reject req-8 blocked".to_string(),
+            })
+        );
+        assert_eq!(
             super::parse_multi_channel_tau_command("plain text").expect("parse"),
             None
         );
@@ -2450,6 +2694,20 @@ mod tests {
         assert_eq!(
             super::parse_multi_channel_tau_command("/tau unknown").expect_err("unknown command"),
             "command_unknown"
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau approvals").expect_err("missing action"),
+            "command_invalid_args"
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau approvals list --status maybe")
+                .expect_err("invalid status"),
+            "command_invalid_args"
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau approvals approve")
+                .expect_err("missing request id"),
+            "command_invalid_args"
         );
     }
 
@@ -2607,6 +2865,385 @@ mod tests {
         assert_eq!(
             command_entry.payload["command"]["reason_code"].as_str(),
             Some("command_doctor_reported")
+        );
+    }
+
+    #[tokio::test]
+    async fn functional_runner_executes_tau_approvals_list_for_allowlisted_operator() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "telegram:approval-room": ["telegram-operator"]
+  }
+}
+"#,
+        );
+        write_approval_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "enabled": true,
+  "strict_mode": true,
+  "timeout_seconds": 3600,
+  "rules": []
+}
+"#,
+        );
+        write_approval_store(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "next_request_id": 2,
+  "requests": [
+    {
+      "id": "req-1",
+      "rule_id": "command-review",
+      "action_kind": "command",
+      "action_summary": "command name=/danger args='now'",
+      "fingerprint": "seed",
+      "status": "pending",
+      "created_at_ms": 1,
+      "expires_at_ms": 9999999999999,
+      "decision_at_ms": null,
+      "decision_reason": null,
+      "decision_actor": null,
+      "consumed_at_ms": null
+    }
+  ]
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-command-approvals-list-1",
+            "approval-room",
+            "telegram-operator",
+            "/tau approvals list --status pending",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "approval-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("reported")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_approvals_list_reported")
+        );
+        let response = command_entry.payload["response"]
+            .as_str()
+            .expect("response");
+        assert!(response.contains("approvals summary:"));
+        assert!(response.contains("req-1"));
+    }
+
+    #[tokio::test]
+    async fn integration_runner_executes_tau_approvals_approve_and_persists_actor_mapping() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "telegram:approval-room": ["telegram-operator"]
+  }
+}
+"#,
+        );
+        write_approval_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "enabled": true,
+  "strict_mode": true,
+  "timeout_seconds": 3600,
+  "rules": [
+    {
+      "id": "command-review",
+      "action": "command",
+      "command_names": ["/danger"]
+    }
+  ]
+}
+"#,
+        );
+        write_approval_store(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "next_request_id": 2,
+  "requests": [
+    {
+      "id": "req-42",
+      "rule_id": "command-review",
+      "action_kind": "command",
+      "action_summary": "command name=/danger args='now'",
+      "fingerprint": "seed",
+      "status": "pending",
+      "created_at_ms": 1,
+      "expires_at_ms": 9999999999999,
+      "decision_at_ms": null,
+      "decision_reason": null,
+      "decision_actor": null,
+      "consumed_at_ms": null
+    }
+  ]
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-command-approvals-approve-1",
+            "approval-room",
+            "telegram-operator",
+            "/tau approvals approve req-42 approved_from_channel",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "approval-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("reported")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_approvals_approved")
+        );
+
+        let raw_store = std::fs::read_to_string(temp.path().join(".tau/approvals/requests.json"))
+            .expect("read approval store");
+        let store_json: Value = serde_json::from_str(&raw_store).expect("parse approval store");
+        let request = store_json["requests"]
+            .as_array()
+            .expect("requests array")
+            .iter()
+            .find(|entry| entry["id"].as_str() == Some("req-42"))
+            .expect("approval request");
+        assert_eq!(request["status"].as_str(), Some("approved"));
+        assert_eq!(
+            request["decision_actor"].as_str(),
+            Some("telegram:approval-room:telegram-operator")
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_runner_tau_approvals_approve_unknown_request_fails_closed() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "telegram:approval-room": ["telegram-operator"]
+  }
+}
+"#,
+        );
+        write_approval_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "enabled": true,
+  "strict_mode": true,
+  "timeout_seconds": 3600,
+  "rules": []
+}
+"#,
+        );
+        write_approval_store(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "next_request_id": 1,
+  "requests": []
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-command-approvals-unknown-1",
+            "approval-room",
+            "telegram-operator",
+            "/tau approvals approve req-404 blocked",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "approval-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("failed")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_approvals_unknown_request")
+        );
+        let response = command_entry.payload["response"]
+            .as_str()
+            .expect("response");
+        assert!(response.contains("approvals error:"));
+    }
+
+    #[tokio::test]
+    async fn regression_runner_tau_approvals_reject_stale_request_fails_closed() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "telegram:approval-room": ["telegram-operator"]
+  }
+}
+"#,
+        );
+        write_approval_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "enabled": true,
+  "strict_mode": true,
+  "timeout_seconds": 3600,
+  "rules": []
+}
+"#,
+        );
+        write_approval_store(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "next_request_id": 2,
+  "requests": [
+    {
+      "id": "req-9",
+      "rule_id": "command-review",
+      "action_kind": "command",
+      "action_summary": "command name=/danger args='now'",
+      "fingerprint": "seed",
+      "status": "approved",
+      "created_at_ms": 1,
+      "expires_at_ms": 9999999999999,
+      "decision_at_ms": 10,
+      "decision_reason": "already approved",
+      "decision_actor": "local-command",
+      "consumed_at_ms": null
+    }
+  ]
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-command-approvals-stale-1",
+            "approval-room",
+            "telegram-operator",
+            "/tau approvals reject req-9 blocked",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "approval-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("failed")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_approvals_stale_request")
         );
     }
 
