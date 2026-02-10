@@ -2150,6 +2150,24 @@ pub(crate) struct Cli {
     pub(crate) gateway_state_dir: PathBuf,
 
     #[arg(
+        long = "gateway-guardrail-failure-streak-threshold",
+        env = "TAU_GATEWAY_GUARDRAIL_FAILURE_STREAK_THRESHOLD",
+        default_value_t = 2,
+        requires = "gateway_contract_runner",
+        help = "Failure streak threshold that forces gateway rollout gate to hold"
+    )]
+    pub(crate) gateway_guardrail_failure_streak_threshold: usize,
+
+    #[arg(
+        long = "gateway-guardrail-retryable-failures-threshold",
+        env = "TAU_GATEWAY_GUARDRAIL_RETRYABLE_FAILURES_THRESHOLD",
+        default_value_t = 2,
+        requires = "gateway_contract_runner",
+        help = "Per-cycle retryable failure threshold that forces gateway rollout gate to hold"
+    )]
+    pub(crate) gateway_guardrail_retryable_failures_threshold: usize,
+
+    #[arg(
         long = "deployment-contract-runner",
         env = "TAU_DEPLOYMENT_CONTRACT_RUNNER",
         default_value_t = false,

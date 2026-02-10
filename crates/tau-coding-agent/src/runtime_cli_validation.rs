@@ -396,6 +396,12 @@ pub(crate) fn validate_gateway_contract_runner_cli(cli: &Cli) -> Result<()> {
             cli.gateway_fixture.display()
         );
     }
+    if cli.gateway_guardrail_failure_streak_threshold == 0 {
+        bail!("--gateway-guardrail-failure-streak-threshold must be greater than 0");
+    }
+    if cli.gateway_guardrail_retryable_failures_threshold == 0 {
+        bail!("--gateway-guardrail-retryable-failures-threshold must be greater than 0");
+    }
 
     Ok(())
 }

@@ -516,6 +516,8 @@ fn test_cli() -> Cli {
             "crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json",
         ),
         gateway_state_dir: PathBuf::from(".tau/gateway"),
+        gateway_guardrail_failure_streak_threshold: 2,
+        gateway_guardrail_retryable_failures_threshold: 2,
         deployment_contract_runner: false,
         deployment_fixture: PathBuf::from(
             "crates/tau-coding-agent/testdata/deployment-contract/mixed-outcomes.json",
@@ -1665,6 +1667,8 @@ fn unit_cli_gateway_runner_flags_default_to_disabled() {
         PathBuf::from("crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json")
     );
     assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway"));
+    assert_eq!(cli.gateway_guardrail_failure_streak_threshold, 2);
+    assert_eq!(cli.gateway_guardrail_retryable_failures_threshold, 2);
 }
 
 #[test]
@@ -1676,16 +1680,35 @@ fn functional_cli_gateway_runner_flags_accept_explicit_overrides() {
         "fixtures/gateway.json",
         "--gateway-state-dir",
         ".tau/gateway-custom",
+        "--gateway-guardrail-failure-streak-threshold",
+        "4",
+        "--gateway-guardrail-retryable-failures-threshold",
+        "5",
     ]);
     assert!(cli.gateway_contract_runner);
     assert_eq!(cli.gateway_fixture, PathBuf::from("fixtures/gateway.json"));
     assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway-custom"));
+    assert_eq!(cli.gateway_guardrail_failure_streak_threshold, 4);
+    assert_eq!(cli.gateway_guardrail_retryable_failures_threshold, 5);
 }
 
 #[test]
 fn regression_cli_gateway_fixture_requires_gateway_runner_flag() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-fixture", "fixtures/gateway.json"]);
     let error = parse.expect_err("fixture flag should require gateway runner mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_gateway_guardrail_flags_require_gateway_runner_flag() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-guardrail-failure-streak-threshold",
+        "3",
+    ]);
+    let error = parse.expect_err("guardrail failure threshold should require gateway runner mode");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -13635,6 +13658,33 @@ fn integration_validate_gateway_contract_runner_cli_rejects_transport_conflicts(
     assert!(error.to_string().contains(
         "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, or --dashboard-contract-runner"
     ));
+}
+
+#[test]
+fn regression_validate_gateway_contract_runner_cli_rejects_zero_guardrail_thresholds() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.gateway_contract_runner = true;
+    cli.gateway_fixture = fixture_path.clone();
+    cli.gateway_guardrail_failure_streak_threshold = 0;
+
+    let failure_streak_error = validate_gateway_contract_runner_cli(&cli)
+        .expect_err("zero failure-streak threshold should fail");
+    assert!(failure_streak_error
+        .to_string()
+        .contains("--gateway-guardrail-failure-streak-threshold must be greater than 0"));
+
+    cli.gateway_guardrail_failure_streak_threshold = 1;
+    cli.gateway_guardrail_retryable_failures_threshold = 0;
+
+    let retryable_error = validate_gateway_contract_runner_cli(&cli)
+        .expect_err("zero retryable-failures threshold should fail");
+    assert!(retryable_error
+        .to_string()
+        .contains("--gateway-guardrail-retryable-failures-threshold must be greater than 0"));
 }
 
 #[test]

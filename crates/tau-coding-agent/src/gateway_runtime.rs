@@ -17,6 +17,8 @@ use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapsho
 
 const GATEWAY_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 const GATEWAY_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
+const DEFAULT_GATEWAY_GUARDRAIL_FAILURE_STREAK_THRESHOLD: usize = 2;
+const DEFAULT_GATEWAY_GUARDRAIL_RETRYABLE_FAILURES_THRESHOLD: usize = 2;
 
 fn gateway_runtime_state_schema_version() -> u32 {
     GATEWAY_RUNTIME_STATE_SCHEMA_VERSION
@@ -30,6 +32,8 @@ pub(crate) struct GatewayRuntimeConfig {
     pub(crate) processed_case_cap: usize,
     pub(crate) retry_max_attempts: usize,
     pub(crate) retry_base_delay_ms: u64,
+    pub(crate) guardrail_failure_streak_threshold: usize,
+    pub(crate) guardrail_retryable_failures_threshold: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -50,6 +54,10 @@ struct GatewayRuntimeCycleReport {
     timestamp_unix_ms: u64,
     health_state: String,
     health_reason: String,
+    rollout_gate: String,
+    rollout_reason_code: String,
+    guardrail_failure_streak_threshold: usize,
+    guardrail_retryable_failures_threshold: usize,
     reason_codes: Vec<String>,
     discovered_cases: usize,
     queued_cases: usize,
@@ -62,6 +70,33 @@ struct GatewayRuntimeCycleReport {
     upserted_requests: usize,
     backlog_cases: usize,
     failure_streak: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct GatewayRolloutGuardrailState {
+    gate: String,
+    reason_code: String,
+    failure_streak_threshold: usize,
+    retryable_failures_threshold: usize,
+    failure_streak: usize,
+    last_failed_cases: usize,
+    last_retryable_failures: usize,
+    updated_unix_ms: u64,
+}
+
+impl Default for GatewayRolloutGuardrailState {
+    fn default() -> Self {
+        Self {
+            gate: "pass".to_string(),
+            reason_code: "guardrail_checks_passing".to_string(),
+            failure_streak_threshold: DEFAULT_GATEWAY_GUARDRAIL_FAILURE_STREAK_THRESHOLD,
+            retryable_failures_threshold: DEFAULT_GATEWAY_GUARDRAIL_RETRYABLE_FAILURES_THRESHOLD,
+            failure_streak: 0,
+            last_failed_cases: 0,
+            last_retryable_failures: 0,
+            updated_unix_ms: current_unix_timestamp_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +123,8 @@ struct GatewayRuntimeState {
     requests: Vec<GatewayRequestRecord>,
     #[serde(default)]
     health: TransportHealthSnapshot,
+    #[serde(default)]
+    guardrail: GatewayRolloutGuardrailState,
 }
 
 impl Default for GatewayRuntimeState {
@@ -97,6 +134,7 @@ impl Default for GatewayRuntimeState {
             processed_case_keys: Vec::new(),
             requests: Vec::new(),
             health: TransportHealthSnapshot::default(),
+            guardrail: GatewayRolloutGuardrailState::default(),
         }
     }
 }
@@ -234,13 +272,21 @@ impl GatewayRuntime {
         );
         let classification = health.classify();
         let reason_codes = cycle_reason_codes(&summary);
+        let guardrail = evaluate_gateway_rollout_guardrail(
+            &summary,
+            &health,
+            self.config.guardrail_failure_streak_threshold,
+            self.config.guardrail_retryable_failures_threshold,
+        );
         self.state.health = health.clone();
+        self.state.guardrail = guardrail.clone();
 
         save_gateway_runtime_state(&self.state_path(), &self.state)?;
         append_gateway_cycle_report(
             &self.config.state_dir.join(GATEWAY_RUNTIME_EVENTS_LOG_FILE),
             &summary,
             &health,
+            &guardrail,
             &classification.reason,
             &reason_codes,
         )?;
@@ -468,6 +514,7 @@ fn append_gateway_cycle_report(
     path: &Path,
     summary: &GatewayRuntimeSummary,
     health: &TransportHealthSnapshot,
+    guardrail: &GatewayRolloutGuardrailState,
     health_reason: &str,
     reason_codes: &[String],
 ) -> Result<()> {
@@ -481,6 +528,10 @@ fn append_gateway_cycle_report(
         timestamp_unix_ms: current_unix_timestamp_ms(),
         health_state: health.classify().state.as_str().to_string(),
         health_reason: health_reason.to_string(),
+        rollout_gate: guardrail.gate.clone(),
+        rollout_reason_code: guardrail.reason_code.clone(),
+        guardrail_failure_streak_threshold: guardrail.failure_streak_threshold,
+        guardrail_retryable_failures_threshold: guardrail.retryable_failures_threshold,
         reason_codes: reason_codes.to_vec(),
         discovered_cases: summary.discovered_cases,
         queued_cases: summary.queued_cases,
@@ -506,6 +557,37 @@ fn append_gateway_cycle_report(
     file.flush()
         .with_context(|| format!("failed to flush {}", path.display()))?;
     Ok(())
+}
+
+fn evaluate_gateway_rollout_guardrail(
+    summary: &GatewayRuntimeSummary,
+    health: &TransportHealthSnapshot,
+    failure_streak_threshold: usize,
+    retryable_failures_threshold: usize,
+) -> GatewayRolloutGuardrailState {
+    let failure_streak_threshold = failure_streak_threshold.max(1);
+    let retryable_failures_threshold = retryable_failures_threshold.max(1);
+    let (gate, reason_code) =
+        if health.failure_streak >= failure_streak_threshold && summary.failed_cases > 0 {
+            ("hold", "failure_streak_threshold_exceeded")
+        } else if summary.retryable_failures >= retryable_failures_threshold {
+            ("hold", "retryable_failures_threshold_exceeded")
+        } else if summary.malformed_cases > 0 {
+            ("hold", "malformed_input_observed")
+        } else {
+            ("pass", "guardrail_checks_passing")
+        };
+
+    GatewayRolloutGuardrailState {
+        gate: gate.to_string(),
+        reason_code: reason_code.to_string(),
+        failure_streak_threshold,
+        retryable_failures_threshold,
+        failure_streak: health.failure_streak,
+        last_failed_cases: summary.failed_cases,
+        last_retryable_failures: summary.retryable_failures,
+        updated_unix_ms: current_unix_timestamp_ms(),
+    }
 }
 
 fn render_gateway_snapshot(records: &[GatewayRequestRecord], actor_id: &str) -> String {
@@ -608,12 +690,14 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        load_gateway_runtime_state, retry_delay_ms, GatewayRuntime, GatewayRuntimeConfig,
+        evaluate_gateway_rollout_guardrail, load_gateway_runtime_state, retry_delay_ms,
+        GatewayRuntime, GatewayRuntimeConfig, GatewayRuntimeSummary,
         GATEWAY_RUNTIME_EVENTS_LOG_FILE,
     };
     use crate::channel_store::ChannelStore;
     use crate::gateway_contract::{load_gateway_contract_fixture, parse_gateway_contract_fixture};
     use crate::transport_health::TransportHealthState;
+    use crate::TransportHealthSnapshot;
 
     fn fixture_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -630,6 +714,8 @@ mod tests {
             processed_case_cap: 10_000,
             retry_max_attempts: 2,
             retry_base_delay_ms: 0,
+            guardrail_failure_streak_threshold: 2,
+            guardrail_retryable_failures_threshold: 2,
         }
     }
 
@@ -639,6 +725,42 @@ mod tests {
         assert_eq!(retry_delay_ms(10, 1), 10);
         assert_eq!(retry_delay_ms(10, 2), 20);
         assert_eq!(retry_delay_ms(10, 3), 40);
+    }
+
+    #[test]
+    fn unit_guardrail_evaluator_respects_failure_and_retry_thresholds() {
+        let summary = GatewayRuntimeSummary {
+            retryable_failures: 1,
+            failed_cases: 0,
+            ..GatewayRuntimeSummary::default()
+        };
+        let health = TransportHealthSnapshot::default();
+        let pass = evaluate_gateway_rollout_guardrail(&summary, &health, 2, 2);
+        assert_eq!(pass.gate, "pass");
+        assert_eq!(pass.reason_code, "guardrail_checks_passing");
+
+        let hold_retryable = evaluate_gateway_rollout_guardrail(&summary, &health, 2, 1);
+        assert_eq!(hold_retryable.gate, "hold");
+        assert_eq!(
+            hold_retryable.reason_code,
+            "retryable_failures_threshold_exceeded"
+        );
+
+        let failed_summary = GatewayRuntimeSummary {
+            failed_cases: 1,
+            ..GatewayRuntimeSummary::default()
+        };
+        let failure_health = TransportHealthSnapshot {
+            failure_streak: 2,
+            ..TransportHealthSnapshot::default()
+        };
+        let hold_failure =
+            evaluate_gateway_rollout_guardrail(&failed_summary, &failure_health, 2, 2);
+        assert_eq!(hold_failure.gate, "hold");
+        assert_eq!(
+            hold_failure.reason_code,
+            "failure_streak_threshold_exceeded"
+        );
     }
 
     #[tokio::test]
@@ -671,6 +793,15 @@ mod tests {
             state.health.classify().state,
             TransportHealthState::Degraded
         );
+        assert_eq!(state.guardrail.gate, "hold");
+        assert_eq!(
+            state.guardrail.reason_code,
+            "retryable_failures_threshold_exceeded"
+        );
+        assert_eq!(state.guardrail.failure_streak_threshold, 2);
+        assert_eq!(state.guardrail.retryable_failures_threshold, 2);
+        assert_eq!(state.guardrail.last_failed_cases, 1);
+        assert_eq!(state.guardrail.last_retryable_failures, 2);
 
         let events_log =
             std::fs::read_to_string(config.state_dir.join(GATEWAY_RUNTIME_EVENTS_LOG_FILE))
@@ -773,6 +904,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let mut config = build_config(temp.path());
         config.retry_max_attempts = 1;
+        config.guardrail_failure_streak_threshold = 1;
 
         let failing_fixture = parse_gateway_contract_fixture(
             r#"{
@@ -835,6 +967,11 @@ mod tests {
         let state_after_fail = load_gateway_runtime_state(&config.state_dir.join("state.json"))
             .expect("load state after fail");
         assert_eq!(state_after_fail.health.failure_streak, 1);
+        assert_eq!(state_after_fail.guardrail.gate, "hold");
+        assert_eq!(
+            state_after_fail.guardrail.reason_code,
+            "failure_streak_threshold_exceeded"
+        );
 
         let success = runtime
             .run_once(&success_fixture)
@@ -848,6 +985,11 @@ mod tests {
         assert_eq!(
             state_after_success.health.classify().state,
             TransportHealthState::Healthy
+        );
+        assert_eq!(state_after_success.guardrail.gate, "pass");
+        assert_eq!(
+            state_after_success.guardrail.reason_code,
+            "guardrail_checks_passing"
         );
     }
 
@@ -904,6 +1046,11 @@ mod tests {
             .map(|line| serde_json::from_str::<Value>(line).expect("valid json line"))
             .collect::<Vec<_>>();
         assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["rollout_gate"].as_str(), Some("pass"));
+        assert_eq!(
+            parsed[0]["rollout_reason_code"].as_str(),
+            Some("guardrail_checks_passing")
+        );
         let reason_codes = parsed[0]["reason_codes"]
             .as_array()
             .expect("reason codes array");
@@ -931,6 +1078,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["health_state"].as_str(), Some("degraded"));
+        assert_eq!(parsed[0]["rollout_gate"].as_str(), Some("hold"));
+        assert_eq!(
+            parsed[0]["rollout_reason_code"].as_str(),
+            Some("retryable_failures_threshold_exceeded")
+        );
         assert!(parsed[0]["health_reason"]
             .as_str()
             .unwrap_or_default()

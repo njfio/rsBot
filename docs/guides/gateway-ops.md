@@ -44,8 +44,13 @@ Primary state files:
 
 Guardrail interpretation:
 
-- `rollout_gate=pass`: health is `healthy`, promotion can continue.
-- `rollout_gate=hold`: health is `degraded` or `failing`, pause promotion and investigate.
+- `rollout_gate=pass`: guardrail thresholds are satisfied, promotion can continue.
+- `rollout_gate=hold`: a guardrail threshold is breached; inspect `rollout_reason_code`.
+
+Configurable guardrail thresholds (runner flags):
+
+- `--gateway-guardrail-failure-streak-threshold` (default `2`)
+- `--gateway-guardrail-retryable-failures-threshold` (default `2`)
 
 ## Deterministic demo path
 
@@ -65,7 +70,7 @@ Guardrail interpretation:
    `--transport-health-inspect gateway --transport-health-json`
    `--gateway-status-inspect --gateway-status-json`
 5. Promote by increasing fixture complexity gradually while monitoring:
-   `failure_streak`, `last_cycle_failed`, `queue_depth`, `rollout_gate`.
+   `failure_streak`, `last_cycle_failed`, `last_retryable_failures`, `queue_depth`, `rollout_gate`, `rollout_reason_code`.
 
 ## Rollback plan
 

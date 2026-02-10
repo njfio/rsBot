@@ -68,6 +68,8 @@ struct GatewayStatusStateFile {
     requests: Vec<GatewayStatusRequestRecord>,
     #[serde(default)]
     health: TransportHealthSnapshot,
+    #[serde(default)]
+    guardrail: GatewayStatusGuardrailState,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -118,6 +120,24 @@ struct GatewayStatusRequestRecord {
     status_code: u16,
     #[serde(default)]
     error_code: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayStatusGuardrailState {
+    #[serde(default)]
+    gate: String,
+    #[serde(default)]
+    reason_code: String,
+    #[serde(default)]
+    failure_streak_threshold: usize,
+    #[serde(default)]
+    retryable_failures_threshold: usize,
+    #[serde(default)]
+    failure_streak: usize,
+    #[serde(default)]
+    last_failed_cases: usize,
+    #[serde(default)]
+    last_retryable_failures: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -355,11 +375,17 @@ struct GatewayStatusInspectReport {
     health_state: String,
     health_reason: String,
     rollout_gate: String,
+    rollout_reason_code: String,
     processed_case_count: usize,
     request_count: usize,
     method_counts: BTreeMap<String, usize>,
     status_code_counts: BTreeMap<String, usize>,
     error_code_counts: BTreeMap<String, usize>,
+    guardrail_failure_streak_threshold: usize,
+    guardrail_retryable_failures_threshold: usize,
+    guardrail_failure_streak: usize,
+    guardrail_last_failed_cases: usize,
+    guardrail_last_retryable_failures: usize,
     cycle_reports: usize,
     invalid_cycle_reports: usize,
     last_reason_codes: Vec<String>,
@@ -1053,10 +1079,22 @@ fn collect_gateway_status_report(cli: &Cli) -> Result<GatewayStatusInspectReport
     } else {
         classification.reason
     };
-    let rollout_gate = if classification.state.as_str() == "healthy" {
+    let fallback_rollout_gate = if classification.state.as_str() == "healthy" {
         "pass"
     } else {
         "hold"
+    };
+    let rollout_gate = match state.guardrail.gate.trim().to_ascii_lowercase().as_str() {
+        "pass" => "pass",
+        "hold" => "hold",
+        _ => fallback_rollout_gate,
+    };
+    let rollout_reason_code = if !state.guardrail.reason_code.trim().is_empty() {
+        state.guardrail.reason_code.trim().to_string()
+    } else if rollout_gate == "pass" {
+        "guardrail_checks_passing".to_string()
+    } else {
+        "health_state_not_healthy".to_string()
     };
 
     let mut method_counts = BTreeMap::new();
@@ -1084,11 +1122,17 @@ fn collect_gateway_status_report(cli: &Cli) -> Result<GatewayStatusInspectReport
         health_state: classification.state.as_str().to_string(),
         health_reason,
         rollout_gate: rollout_gate.to_string(),
+        rollout_reason_code,
         processed_case_count: state.processed_case_keys.len(),
         request_count: state.requests.len(),
         method_counts,
         status_code_counts,
         error_code_counts,
+        guardrail_failure_streak_threshold: state.guardrail.failure_streak_threshold,
+        guardrail_retryable_failures_threshold: state.guardrail.retryable_failures_threshold,
+        guardrail_failure_streak: state.guardrail.failure_streak,
+        guardrail_last_failed_cases: state.guardrail.last_failed_cases,
+        guardrail_last_retryable_failures: state.guardrail.last_retryable_failures,
         cycle_reports: cycle_summary.cycle_reports,
         invalid_cycle_reports: cycle_summary.invalid_cycle_reports,
         last_reason_codes: cycle_summary.last_reason_codes,
@@ -1716,18 +1760,24 @@ fn render_gateway_status_report(report: &GatewayStatusInspectReport) -> String {
         report.last_reason_codes.join(",")
     };
     format!(
-        "gateway status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_case_count={} request_count={} method_counts={} status_code_counts={} error_code_counts={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        "gateway status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} rollout_reason_code={} processed_case_count={} request_count={} method_counts={} status_code_counts={} error_code_counts={} guardrail_failure_streak_threshold={} guardrail_retryable_failures_threshold={} guardrail_failure_streak={} guardrail_last_failed_cases={} guardrail_last_retryable_failures={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
         report.state_path,
         report.events_log_path,
         report.events_log_present,
         report.health_state,
         report.health_reason,
         report.rollout_gate,
+        report.rollout_reason_code,
         report.processed_case_count,
         report.request_count,
         render_counter_map(&report.method_counts),
         render_counter_map(&report.status_code_counts),
         render_counter_map(&report.error_code_counts),
+        report.guardrail_failure_streak_threshold,
+        report.guardrail_retryable_failures_threshold,
+        report.guardrail_failure_streak,
+        report.guardrail_last_failed_cases,
+        report.guardrail_last_retryable_failures,
         report.cycle_reports,
         report.invalid_cycle_reports,
         reason_codes,
@@ -2948,6 +2998,16 @@ invalid-json-line
     "last_cycle_completed": 2,
     "last_cycle_failed": 0,
     "last_cycle_duplicates": 0
+  },
+  "guardrail": {
+    "gate": "pass",
+    "reason_code": "guardrail_checks_passing",
+    "failure_streak_threshold": 2,
+    "retryable_failures_threshold": 2,
+    "failure_streak": 0,
+    "last_failed_cases": 0,
+    "last_retryable_failures": 1,
+    "updated_unix_ms": 750
   }
 }
 "#,
@@ -2968,12 +3028,18 @@ invalid-json-line
         let report = collect_gateway_status_report(&cli).expect("collect gateway status report");
         assert_eq!(report.health_state, TransportHealthState::Healthy.as_str());
         assert_eq!(report.rollout_gate, "pass");
+        assert_eq!(report.rollout_reason_code, "guardrail_checks_passing");
         assert_eq!(report.processed_case_count, 2);
         assert_eq!(report.request_count, 2);
         assert_eq!(report.method_counts.get("GET"), Some(&1));
         assert_eq!(report.method_counts.get("POST"), Some(&1));
         assert_eq!(report.status_code_counts.get("201"), Some(&1));
         assert_eq!(report.status_code_counts.get("503"), Some(&1));
+        assert_eq!(report.guardrail_failure_streak_threshold, 2);
+        assert_eq!(report.guardrail_retryable_failures_threshold, 2);
+        assert_eq!(report.guardrail_failure_streak, 0);
+        assert_eq!(report.guardrail_last_failed_cases, 0);
+        assert_eq!(report.guardrail_last_retryable_failures, 1);
         assert_eq!(
             report.error_code_counts.get("gateway_backend_unavailable"),
             Some(&1)
@@ -2997,8 +3063,11 @@ invalid-json-line
         let rendered = render_gateway_status_report(&report);
         assert!(rendered.contains("gateway status inspect:"));
         assert!(rendered.contains("rollout_gate=pass"));
+        assert!(rendered.contains("rollout_reason_code=guardrail_checks_passing"));
         assert!(rendered.contains("method_counts=GET:1,POST:1"));
         assert!(rendered.contains("status_code_counts=201:1,503:1"));
+        assert!(rendered.contains("guardrail_failure_streak_threshold=2"));
+        assert!(rendered.contains("guardrail_retryable_failures_threshold=2"));
         assert!(rendered.contains(
             "reason_code_counts=duplicate_cases_skipped:1,healthy_cycle:2,retry_attempted:1"
         ));
@@ -3043,6 +3112,12 @@ invalid-json-line
         assert!(report.reason_code_counts.is_empty());
         assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
         assert_eq!(report.rollout_gate, "hold");
+        assert_eq!(report.rollout_reason_code, "health_state_not_healthy");
+        assert_eq!(report.guardrail_failure_streak_threshold, 0);
+        assert_eq!(report.guardrail_retryable_failures_threshold, 0);
+        assert_eq!(report.guardrail_failure_streak, 0);
+        assert_eq!(report.guardrail_last_failed_cases, 0);
+        assert_eq!(report.guardrail_last_retryable_failures, 0);
     }
 
     #[test]

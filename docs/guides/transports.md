@@ -266,7 +266,9 @@ cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
   --gateway-contract-runner \
   --gateway-fixture crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json \
-  --gateway-state-dir .tau/gateway
+  --gateway-state-dir .tau/gateway \
+  --gateway-guardrail-failure-streak-threshold 2 \
+  --gateway-guardrail-retryable-failures-threshold 2
 ```
 
 The runner writes state and observability output under:

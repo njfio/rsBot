@@ -218,6 +218,12 @@ pub(crate) async fn run_transport_mode_if_requested(
             processed_case_cap: 10_000,
             retry_max_attempts: 4,
             retry_base_delay_ms: 0,
+            guardrail_failure_streak_threshold: cli
+                .gateway_guardrail_failure_streak_threshold
+                .max(1),
+            guardrail_retryable_failures_threshold: cli
+                .gateway_guardrail_retryable_failures_threshold
+                .max(1),
         })
         .await?;
         return Ok(true);
