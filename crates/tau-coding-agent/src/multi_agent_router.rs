@@ -59,7 +59,8 @@ impl Default for MultiAgentRouteTable {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum MultiAgentRoutePhase {
     Planner,
     DelegatedStep,
@@ -101,22 +102,33 @@ pub(crate) fn load_multi_agent_route_table(path: &Path) -> Result<MultiAgentRout
 
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read orchestrator route table {}", path.display()))?;
-    let mut parsed = serde_json::from_str::<MultiAgentRouteTable>(&raw).with_context(|| {
-        format!(
-            "failed to parse orchestrator route table {}",
-            path.display()
-        )
-    })?;
-    normalize_and_validate_route_table(path, &mut parsed)?;
+    parse_multi_agent_route_table_with_source(&raw, &path.display().to_string())
+}
+
+#[cfg(test)]
+pub(crate) fn parse_multi_agent_route_table(raw: &str) -> Result<MultiAgentRouteTable> {
+    parse_multi_agent_route_table_with_source(raw, "<inline-route-table>")
+}
+
+fn parse_multi_agent_route_table_with_source(
+    raw: &str,
+    source_label: &str,
+) -> Result<MultiAgentRouteTable> {
+    let mut parsed = serde_json::from_str::<MultiAgentRouteTable>(raw)
+        .with_context(|| format!("failed to parse orchestrator route table {}", source_label))?;
+    normalize_and_validate_route_table(source_label, &mut parsed)?;
     Ok(parsed)
 }
 
-fn normalize_and_validate_route_table(path: &Path, table: &mut MultiAgentRouteTable) -> Result<()> {
+fn normalize_and_validate_route_table(
+    source_label: &str,
+    table: &mut MultiAgentRouteTable,
+) -> Result<()> {
     if table.schema_version != ROUTE_TABLE_SCHEMA_VERSION {
         bail!(
             "unsupported orchestrator route table schema_version {} in {} (expected {})",
             table.schema_version,
-            path.display(),
+            source_label,
             ROUTE_TABLE_SCHEMA_VERSION
         );
     }
@@ -126,7 +138,7 @@ fn normalize_and_validate_route_table(path: &Path, table: &mut MultiAgentRouteTa
         let role = normalize_role_name(raw_role.as_str())
             .with_context(|| format!("invalid role name '{}'", raw_role))?;
         if normalized_roles.insert(role.clone(), profile).is_some() {
-            bail!("duplicate role '{}' in {}", role, path.display());
+            bail!("duplicate role '{}' in {}", role, source_label);
         }
     }
     if normalized_roles.is_empty() {
@@ -134,20 +146,25 @@ fn normalize_and_validate_route_table(path: &Path, table: &mut MultiAgentRouteTa
     }
     table.roles = normalized_roles;
 
-    normalize_route_target(path, &table.roles, &mut table.planner, "planner")?;
-    normalize_route_target(path, &table.roles, &mut table.delegated, "delegated")?;
-    normalize_route_target(path, &table.roles, &mut table.review, "review")?;
+    normalize_route_target(source_label, &table.roles, &mut table.planner, "planner")?;
+    normalize_route_target(
+        source_label,
+        &table.roles,
+        &mut table.delegated,
+        "delegated",
+    )?;
+    normalize_route_target(source_label, &table.roles, &mut table.review, "review")?;
 
     for (raw_category, target) in &mut table.delegated_categories {
         let category = raw_category.trim();
         if category.is_empty() {
             bail!(
                 "delegated route category cannot be empty in {}",
-                path.display()
+                source_label
             );
         }
         normalize_route_target(
-            path,
+            source_label,
             &table.roles,
             target,
             &format!("delegated_categories['{}']", category),
@@ -158,7 +175,7 @@ fn normalize_and_validate_route_table(path: &Path, table: &mut MultiAgentRouteTa
 }
 
 fn normalize_route_target(
-    path: &Path,
+    source_label: &str,
     roles: &BTreeMap<String, MultiAgentRoleProfile>,
     target: &mut MultiAgentRouteTarget,
     field_name: &str,
@@ -166,9 +183,7 @@ fn normalize_route_target(
     let primary = normalize_role_name(target.role.as_str()).with_context(|| {
         format!(
             "invalid role '{}' for route target '{}' in {}",
-            target.role,
-            field_name,
-            path.display()
+            target.role, field_name, source_label
         )
     })?;
     if !roles.contains_key(primary.as_str()) {
@@ -176,7 +191,7 @@ fn normalize_route_target(
             "route target '{}' references unknown role '{}' in {}",
             field_name,
             primary,
-            path.display()
+            source_label
         );
     }
 
@@ -186,9 +201,7 @@ fn normalize_route_target(
         let role = normalize_role_name(raw_role.as_str()).with_context(|| {
             format!(
                 "invalid fallback role '{}' for route target '{}' in {}",
-                raw_role,
-                field_name,
-                path.display()
+                raw_role, field_name, source_label
             )
         })?;
         if role == primary {
@@ -199,7 +212,7 @@ fn normalize_route_target(
                 "route target '{}' references unknown fallback role '{}' in {}",
                 field_name,
                 role,
-                path.display()
+                source_label
             );
         }
         if seen.insert(role.clone()) {

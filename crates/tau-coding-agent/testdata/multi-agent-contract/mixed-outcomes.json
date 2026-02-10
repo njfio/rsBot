@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "name": "multi-agent-routing-mixed-outcomes",
+  "description": "Covers success, malformed input, and retryable failure routing outcomes.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "planner-success",
+      "phase": "planner",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "planner-fallback": {},
+          "executor": {},
+          "reviewer": {}
+        },
+        "planner": {
+          "role": "planner",
+          "fallback_roles": [
+            "planner-fallback"
+          ]
+        },
+        "delegated": {
+          "role": "executor"
+        },
+        "review": {
+          "role": "reviewer"
+        }
+      },
+      "expected": {
+        "outcome": "success",
+        "selected_role": "planner",
+        "attempted_roles": [
+          "planner",
+          "planner-fallback"
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "delegated-malformed-route-table",
+      "phase": "delegated_step",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "default": {}
+        },
+        "planner": {
+          "role": "default"
+        },
+        "delegated": {
+          "role": "missing-role"
+        },
+        "review": {
+          "role": "default"
+        }
+      },
+      "step_text": "triage CI flakes and log anomalies",
+      "expected": {
+        "outcome": "malformed_input",
+        "error_code": "multi_agent_invalid_route_table"
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "delegated-retryable-role-unavailable",
+      "phase": "delegated_step",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "executor": {},
+          "reviewer": {}
+        },
+        "planner": {
+          "role": "planner"
+        },
+        "delegated": {
+          "role": "executor",
+          "fallback_roles": [
+            "reviewer"
+          ]
+        },
+        "delegated_categories": {
+          "triage": {
+            "role": "reviewer"
+          }
+        },
+        "review": {
+          "role": "reviewer"
+        }
+      },
+      "step_text": "triage runtime alert backlog",
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "error_code": "multi_agent_role_unavailable"
+      }
+    }
+  ]
+}

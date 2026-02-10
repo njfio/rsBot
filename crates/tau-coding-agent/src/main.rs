@@ -27,6 +27,8 @@ mod mcp_server;
 mod memory_contract;
 mod memory_runtime;
 mod model_catalog;
+#[cfg(test)]
+mod multi_agent_contract;
 mod multi_agent_router;
 mod multi_channel_contract;
 mod multi_channel_runtime;
