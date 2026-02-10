@@ -55,6 +55,17 @@ Bridge control commands in issue comments:
 - `/tau artifacts|artifacts run <run_id>|artifacts show <artifact_id>|artifacts purge`
 - `/tau demo-index list|run [scenario[,scenario...]] [--timeout-seconds <n>]|report`
 
+Issue command response schema (normalized):
+- Footer format: ``Tau command `<command>` | status `<status>` | reason_code `<reason_code>` ``.
+- Status taxonomy:
+- `acknowledged`: command accepted (for example stop/cancel acknowledgement).
+- `reported`: command completed and returned diagnostics/control output.
+- `failed`: command execution failed.
+- Artifact pointers: `label: id=\`...\` path=\`...\` bytes=\`...\``.
+- Oversized command output is truncated deterministically and spilled to a channel-store artifact:
+- `output_truncated: true`
+- `overflow_artifact: id=\`...\` path=\`...\` bytes=\`...\``
+
 Auth diagnostics commands:
 - `/tau auth status`: report provider auth posture with strict-subscription context.
 - `/tau auth matrix`: report cross-provider mode/availability matrix and filters.

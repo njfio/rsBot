@@ -2157,13 +2157,13 @@ impl GithubIssuesBridgeRuntime {
                                     .to_string(),
                             );
                         }
-                        lines.push(format!(
-                            "report_artifact: id=`{}` path=`{}`",
-                            execution.report_artifact.id, execution.report_artifact.relative_path
+                        lines.push(render_issue_artifact_pointer_line(
+                            "report_artifact",
+                            &execution.report_artifact,
                         ));
-                        lines.push(format!(
-                            "log_artifact: id=`{}` path=`{}`",
-                            execution.log_artifact.id, execution.log_artifact.relative_path
+                        lines.push(render_issue_artifact_pointer_line(
+                            "log_artifact",
+                            &execution.log_artifact,
                         ));
                         lines.push(
                             "Use `/tau demo-index report` to inspect latest report pointers."
@@ -2298,13 +2298,13 @@ impl GithubIssuesBridgeRuntime {
                             execution.subscription_strict
                         ));
                         lines.extend(posture);
-                        lines.push(format!(
-                            "report_artifact: id=`{}` path=`{}`",
-                            execution.report_artifact.id, execution.report_artifact.relative_path
+                        lines.push(render_issue_artifact_pointer_line(
+                            "report_artifact",
+                            &execution.report_artifact,
                         ));
-                        lines.push(format!(
-                            "json_artifact: id=`{}` path=`{}`",
-                            execution.json_artifact.id, execution.json_artifact.relative_path
+                        lines.push(render_issue_artifact_pointer_line(
+                            "json_artifact",
+                            &execution.json_artifact,
                         ));
                         lines.push(
                             "Use `/tau artifacts show <artifact_id>` to inspect full diagnostics."
@@ -2407,13 +2407,13 @@ impl GithubIssuesBridgeRuntime {
                                 lines.push(format!("- {highlighted}"));
                             }
                         }
-                        lines.push(format!(
-                            "report_artifact: id=`{}` path=`{}`",
-                            execution.report_artifact.id, execution.report_artifact.relative_path
+                        lines.push(render_issue_artifact_pointer_line(
+                            "report_artifact",
+                            &execution.report_artifact,
                         ));
-                        lines.push(format!(
-                            "json_artifact: id=`{}` path=`{}`",
-                            execution.json_artifact.id, execution.json_artifact.relative_path
+                        lines.push(render_issue_artifact_pointer_line(
+                            "json_artifact",
+                            &execution.json_artifact,
                         ));
                         lines.push(
                             "Use `/tau artifacts show <artifact_id>` to inspect full diagnostics."
@@ -4291,10 +4291,92 @@ impl GithubIssuesBridgeRuntime {
         status: &str,
         message: &str,
     ) -> Result<GithubCommentCreateResponse> {
-        let body = render_issue_command_comment(event_key, command, status, message);
-        self.github_client
+        let normalized_status = normalize_issue_command_status(status).to_string();
+        let reason_code = issue_command_reason_code(command, &normalized_status);
+        let mut content = if message.trim().is_empty() {
+            "Tau command response.".to_string()
+        } else {
+            message.trim().to_string()
+        };
+        let mut overflow_artifact: Option<ChannelArtifactRecord> = None;
+        let mut body = render_issue_command_comment(
+            event_key,
+            command,
+            &normalized_status,
+            &reason_code,
+            &content,
+        );
+        if body.chars().count() > GITHUB_COMMENT_MAX_CHARS {
+            let channel_store = ChannelStore::open(
+                &self.repository_state_dir.join("channel-store"),
+                "github",
+                &format!("issue-{issue_number}"),
+            )?;
+            let run_id = format!(
+                "command-overflow-{}-{}-{}",
+                issue_number,
+                current_unix_timestamp_ms(),
+                short_key_hash(event_key)
+            );
+            let retention_days =
+                normalize_artifact_retention_days(self.config.artifact_retention_days);
+            let artifact = channel_store.write_text_artifact(
+                &run_id,
+                "github-issue-command-overflow",
+                "private",
+                retention_days,
+                "txt",
+                &content,
+            )?;
+            let overflow_suffix = format!(
+                "output_truncated: true\n{}",
+                render_issue_artifact_pointer_line("overflow_artifact", &artifact)
+            );
+            let mut excerpt_len = content.chars().count();
+            loop {
+                let excerpt = split_at_char_index(&content, excerpt_len).0;
+                content = if excerpt.trim().is_empty() {
+                    overflow_suffix.clone()
+                } else {
+                    format!("{}\n\n{}", excerpt.trim_end(), overflow_suffix)
+                };
+                body = render_issue_command_comment(
+                    event_key,
+                    command,
+                    &normalized_status,
+                    &reason_code,
+                    &content,
+                );
+                if body.chars().count() <= GITHUB_COMMENT_MAX_CHARS || excerpt_len == 0 {
+                    break;
+                }
+                let overflow = body.chars().count() - GITHUB_COMMENT_MAX_CHARS;
+                excerpt_len = excerpt_len.saturating_sub(overflow.saturating_add(8));
+            }
+            overflow_artifact = Some(artifact);
+        }
+        let posted = self
+            .github_client
             .create_issue_comment(issue_number, &body)
-            .await
+            .await?;
+        self.outbound_log.append(&json!({
+            "timestamp_unix_ms": current_unix_timestamp_ms(),
+            "repo": self.repo.as_slug(),
+            "event_key": event_key,
+            "issue_number": issue_number,
+            "command": command,
+            "status": normalized_status,
+            "reason_code": reason_code,
+            "posted_comment_id": posted.id,
+            "posted_comment_url": posted.html_url,
+            "overflow_artifact": overflow_artifact.as_ref().map(|artifact| json!({
+                "id": artifact.id,
+                "path": artifact.relative_path,
+                "bytes": artifact.bytes,
+                "checksum_sha256": artifact.checksum_sha256,
+            })),
+        }))?;
+        Ok(posted)
     }
 
     fn append_channel_log(
@@ -4942,10 +5024,56 @@ fn render_issue_comment_response_parts(
     (content, footer)
 }
 
+fn normalize_issue_command_status(status: &str) -> &'static str {
+    let normalized = status.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "acknowledged" | "accepted" => "acknowledged",
+        "failed" | "error" => "failed",
+        "reported" | "completed" | "healthy" | "warning" | "degraded" => "reported",
+        _ => "reported",
+    }
+}
+
+fn sanitize_reason_token(raw: &str) -> String {
+    let mut normalized = String::new();
+    let mut last_was_sep = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            normalized.push('_');
+            last_was_sep = true;
+        }
+    }
+    let trimmed = normalized.trim_matches('_');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn issue_command_reason_code(command: &str, status: &str) -> String {
+    format!(
+        "issue_command_{}_{}",
+        sanitize_reason_token(command),
+        sanitize_reason_token(status)
+    )
+}
+
+fn render_issue_artifact_pointer_line(label: &str, artifact: &ChannelArtifactRecord) -> String {
+    format!(
+        "{label}: id=`{}` path=`{}` bytes=`{}`",
+        artifact.id, artifact.relative_path, artifact.bytes
+    )
+}
+
 fn render_issue_command_comment(
     event_key: &str,
     command: &str,
     status: &str,
+    reason_code: &str,
     message: &str,
 ) -> String {
     let content = if message.trim().is_empty() {
@@ -4959,12 +5087,17 @@ fn render_issue_command_comment(
         command.trim()
     };
     let status = if status.trim().is_empty() {
-        "unknown"
+        "reported"
     } else {
         status.trim()
     };
+    let reason_code = if reason_code.trim().is_empty() {
+        "issue_command_unknown_reported"
+    } else {
+        reason_code.trim()
+    };
     format!(
-        "{content}\n\n---\n{EVENT_KEY_MARKER_PREFIX}{event_key}{EVENT_KEY_MARKER_SUFFIX}\n_Tau command `{command}` | status `{status}`_"
+        "{content}\n\n---\n{EVENT_KEY_MARKER_PREFIX}{event_key}{EVENT_KEY_MARKER_SUFFIX}\n_Tau command `{command}` | status `{status}` | reason_code `{reason_code}`_"
     )
 }
 
@@ -5878,8 +6011,9 @@ mod tests {
     use super::{
         collect_issue_events, evaluate_attachment_content_type_policy,
         evaluate_attachment_url_policy, event_action_from_body, extract_attachment_urls,
-        extract_footer_event_keys, is_retryable_github_status, issue_matches_required_labels,
-        issue_matches_required_numbers, issue_session_id, normalize_artifact_retention_days,
+        extract_footer_event_keys, is_retryable_github_status, issue_command_reason_code,
+        issue_matches_required_labels, issue_matches_required_numbers, issue_session_id,
+        normalize_artifact_retention_days, normalize_issue_command_status,
         normalize_relative_channel_path, parse_rfc3339_to_unix_ms, parse_tau_issue_command,
         post_issue_comment_chunks, render_event_prompt, render_issue_command_comment,
         render_issue_comment_chunks_with_limit, render_issue_comment_response_parts, retry_delay,
@@ -6464,11 +6598,62 @@ printf '%s\n' "${payload}"
             "issue-comment-created:123",
             "chat-status",
             "reported",
+            "issue_command_chat_status_reported",
             "Chat session status for issue #12.",
         );
         assert!(rendered.contains("Chat session status for issue #12."));
         assert!(rendered.contains("tau-event-key:issue-comment-created:123"));
-        assert!(rendered.contains("Tau command `chat-status` | status `reported`"));
+        assert!(rendered.contains(
+            "Tau command `chat-status` | status `reported` | reason_code `issue_command_chat_status_reported`"
+        ));
+    }
+
+    #[test]
+    fn unit_issue_command_status_and_reason_code_helpers_are_stable() {
+        assert_eq!(normalize_issue_command_status("healthy"), "reported");
+        assert_eq!(normalize_issue_command_status("completed"), "reported");
+        assert_eq!(
+            normalize_issue_command_status("acknowledged"),
+            "acknowledged"
+        );
+        assert_eq!(normalize_issue_command_status("failed"), "failed");
+        assert_eq!(
+            issue_command_reason_code("auth-status", "reported"),
+            "issue_command_auth_status_reported"
+        );
+        assert_eq!(
+            issue_command_reason_code("demo-index-run", "failed"),
+            "issue_command_demo_index_run_failed"
+        );
+    }
+
+    #[test]
+    fn functional_render_issue_command_comment_normalizes_footer_schema_across_commands() {
+        let stop_status = normalize_issue_command_status("acknowledged");
+        let stop_reason = issue_command_reason_code("stop", stop_status);
+        let stop = render_issue_command_comment(
+            "issue-comment-created:stop",
+            "stop",
+            stop_status,
+            &stop_reason,
+            "stop response",
+        );
+        assert!(stop.contains(
+            "Tau command `stop` | status `acknowledged` | reason_code `issue_command_stop_acknowledged`"
+        ));
+
+        let health_status = normalize_issue_command_status("healthy");
+        let health_reason = issue_command_reason_code("health", health_status);
+        let health = render_issue_command_comment(
+            "issue-comment-created:health",
+            "health",
+            health_status,
+            &health_reason,
+            "health response",
+        );
+        assert!(health.contains(
+            "Tau command `health` | status `reported` | reason_code `issue_command_health_reported`"
+        ));
     }
 
     #[test]
@@ -6867,6 +7052,56 @@ printf '%s\n' "${payload}"
         update.assert_calls(1);
         fallback.assert_calls(1);
         append.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn regression_post_issue_command_comment_spills_large_output_to_overflow_artifact() {
+        let server = MockServer::start();
+        let post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/77/comments")
+                .body_includes("output_truncated: true")
+                .body_includes("overflow_artifact: id=`artifact-");
+            then.status(201).json_body(json!({
+                "id": 7702,
+                "html_url": "https://example.test/comment/7702"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let oversized = "x".repeat(80_000);
+        let posted = runtime
+            .post_issue_command_comment(
+                77,
+                "issue-comment-created:7701",
+                "status",
+                "reported",
+                &oversized,
+            )
+            .await
+            .expect("post");
+        assert_eq!(posted.id, 7702);
+        post.assert_calls(1);
+
+        let store = ChannelStore::open(
+            &temp.path().join("owner__repo").join("channel-store"),
+            "github",
+            "issue-77",
+        )
+        .expect("channel store");
+        let artifacts = store
+            .load_artifact_records_tolerant()
+            .expect("artifact records");
+        let overflow_count = artifacts
+            .records
+            .iter()
+            .filter(|record| record.artifact_type == "github-issue-command-overflow")
+            .count();
+        assert_eq!(overflow_count, 1);
     }
 
     #[test]
@@ -8601,7 +8836,8 @@ printf '%s\n' "${payload}"
             when.method(POST)
                 .path("/repos/owner/repo/issues/9/comments")
                 .body_includes("Tau status for issue #9: idle")
-                .body_includes("transport_failure_streak: 0");
+                .body_includes("transport_failure_streak: 0")
+                .body_includes("reason_code `issue_command_status_reported`");
             then.status(201).json_body(json!({
                 "id": 930,
                 "html_url": "https://example.test/comment/930"
@@ -8610,7 +8846,8 @@ printf '%s\n' "${payload}"
         let stop_post = server.mock(|when, then| {
             when.method(POST)
                 .path("/repos/owner/repo/issues/9/comments")
-                .body_includes("No active run for this issue. Current state is idle.");
+                .body_includes("No active run for this issue. Current state is idle.")
+                .body_includes("reason_code `issue_command_stop_acknowledged`");
             then.status(201).json_body(json!({
                 "id": 931,
                 "html_url": "https://example.test/comment/931"
@@ -8621,7 +8858,8 @@ printf '%s\n' "${payload}"
                 .path("/repos/owner/repo/issues/9/comments")
                 .body_includes("Tau health for issue #9: healthy")
                 .body_includes("transport_health_reason:")
-                .body_includes("transport_health_recommendation:");
+                .body_includes("transport_health_recommendation:")
+                .body_includes("reason_code `issue_command_health_reported`");
             then.status(201).json_body(json!({
                 "id": 932,
                 "html_url": "https://example.test/comment/932"
@@ -8639,6 +8877,64 @@ printf '%s\n' "${payload}"
         status_post.assert_calls(1);
         stop_post.assert_calls(1);
         health_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_command_logs_include_normalized_reason_codes() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 120,
+                "number": 12,
+                "title": "Reason code logs",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/12/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 1201,
+                    "body": "/tau status",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let _status_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/12/comments")
+                .body_includes("Tau status for issue #12: idle");
+            then.status(201).json_body(json!({
+                "id": 1202,
+                "html_url": "https://example.test/comment/1202"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+
+        let outbound = std::fs::read_to_string(
+            temp.path()
+                .join("owner__repo")
+                .join("outbound-events.jsonl"),
+        )
+        .expect("read outbound log");
+        assert!(outbound.contains("\"command\":\"status\""));
+        assert!(outbound.contains("\"status\":\"reported\""));
+        assert!(outbound.contains("\"reason_code\":\"issue_command_status_reported\""));
     }
 
     #[tokio::test]
