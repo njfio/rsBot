@@ -95,6 +95,8 @@ Use this area for skill packaging, verification, registry support, and lock work
 - `deployment_contract.rs`: cloud deployment + WASM deliverable fixture/schema contract definitions and validators.
 - `deployment_runtime.rs`: deployment/WASM runtime loop (queueing, retries, dedupe, channel-store writes).
 - `deployment_wasm.rs`: WASM artifact packaging, manifest verification, and deployment state deliverable tracking.
+- `browser_automation_contract.rs`: browser automation fixture/schema contract definitions, capability checks, and replay evaluation.
+- `browser_automation_runtime.rs`: browser automation runtime loop (queueing, retry, guardrails, dedupe, channel-store writes).
 - `memory_contract.rs`: semantic-memory fixture/schema contract definitions and validators.
 - `memory_runtime.rs`: semantic-memory runtime loop (state transitions, retries, dedupe, channel-store writes).
 - `multi_channel_contract.rs`: multi-channel (Telegram/Discord/WhatsApp) fixture/schema contract.
@@ -133,6 +135,8 @@ Use this area for narrow utility behavior reused across startup/runtime modules.
 - `deployment_contract.rs`: deployment/WASM fixture/schema compatibility and replay contract tests.
 - `deployment_runtime.rs`: deployment/WASM runtime tests for retries, idempotency, and health signals.
 - `deployment_wasm.rs`: deployment WASM package/manifest tests (hash validation, constraints, regression guards).
+- `browser_automation_contract.rs`: browser automation schema/fixture compatibility and replay contract tests.
+- `browser_automation_runtime.rs`: fixture-driven browser automation runtime tests for guardrails, retries, and idempotency.
 - `memory_contract.rs`: semantic-memory schema/fixture compatibility and replay contract tests.
 - `memory_runtime.rs`: semantic-memory runtime tests for retries, idempotency, and health signals.
 - `transport_conformance.rs`: replay conformance fixtures for bridge/scheduler flows.

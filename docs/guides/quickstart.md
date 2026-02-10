@@ -96,6 +96,7 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ./scripts/demo/all.sh --only local,rpc --fail-fast
 ./scripts/demo/all.sh --only multi-channel --fail-fast
 ./scripts/demo/all.sh --only multi-agent --fail-fast
+./scripts/demo/all.sh --only browser-automation --fail-fast
 ./scripts/demo/all.sh --only gateway --fail-fast
 ./scripts/demo/all.sh --only deployment --fail-fast
 ./scripts/demo/all.sh --only custom-command --fail-fast
@@ -107,6 +108,7 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ./scripts/demo/package.sh
 ./scripts/demo/multi-channel.sh
 ./scripts/demo/multi-agent.sh
+./scripts/demo/browser-automation.sh
 ./scripts/demo/memory.sh
 ./scripts/demo/dashboard.sh
 ./scripts/demo/gateway.sh

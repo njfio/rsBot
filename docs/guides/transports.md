@@ -278,6 +278,67 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/memory-ops.md`.
 
+## Browser automation contract runner
+
+Use this fixture-driven runtime mode to validate browser navigate/snapshot/action flows,
+retry handling, and policy guardrails before enabling live browser automation.
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --browser-automation-contract-runner \
+  --browser-automation-fixture crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json \
+  --browser-automation-state-dir .tau/browser-automation \
+  --browser-automation-queue-limit 64 \
+  --browser-automation-processed-case-cap 10000 \
+  --browser-automation-retry-max-attempts 4 \
+  --browser-automation-retry-base-delay-ms 0 \
+  --browser-automation-action-timeout-ms 4000 \
+  --browser-automation-max-actions-per-case 4
+```
+
+The runner writes state and observability output under:
+
+- `.tau/browser-automation/state.json`
+- `.tau/browser-automation/runtime-events.jsonl`
+- `.tau/browser-automation/channel-store/browser-automation/fixtures/...`
+
+Inspect browser automation transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --browser-automation-state-dir .tau/browser-automation \
+  --transport-health-inspect browser-automation \
+  --transport-health-json
+```
+
+Run browser automation readiness preflight:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --browser-automation-preflight
+```
+
+JSON output mode:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --browser-automation-preflight \
+  --browser-automation-preflight-json
+```
+
+Troubleshooting:
+
+- `browser_automation.npx` not ready: install Node.js/npm and ensure `npx` is on `PATH`.
+- `browser_automation.playwright_cli` missing: install `@playwright/mcp` or set `--browser-automation-playwright-cli` to a valid wrapper binary.
+- Unsafe browser actions are denied by default; enable `--browser-automation-allow-unsafe-actions` only for approved fixtures.
+- Tune `--browser-automation-action-timeout-ms` and `--browser-automation-retry-max-attempts` if valid flows are timing out under policy limits.
+
+Demo command path:
+
+- `./scripts/demo/browser-automation.sh`
+- `./scripts/demo/all.sh --only browser-automation --fail-fast`
+
 ## Dashboard contract runner
 
 Use this fixture-driven runtime mode to validate dashboard state transitions, control actions,
