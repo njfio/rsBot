@@ -1,6 +1,7 @@
 use super::*;
 
 mod cache;
+mod update_state;
 
 use cache::{
     compute_release_cache_age_counters, compute_release_cache_expires_at_unix_ms,
@@ -10,11 +11,15 @@ use cache::{
 };
 #[cfg(test)]
 use cache::{ReleaseCacheAgeCounters, ReleaseCachePruneRecoveryReason};
+use update_state::{
+    load_release_update_state_file, save_release_update_state_file, ReleaseUpdateStateFile,
+};
 
 pub(crate) const RELEASE_CHANNEL_USAGE: &str =
-    "usage: /release-channel [show|set <stable|beta|dev>|check|cache <show|clear|refresh|prune>]";
-pub(crate) const RELEASE_CHANNEL_SCHEMA_VERSION: u32 = 1;
+    "usage: /release-channel [show|set <stable|beta|dev>|check|plan [--target <version>] [--dry-run]|apply [--target <version>] [--dry-run]|cache <show|clear|refresh|prune>]";
+pub(crate) const RELEASE_CHANNEL_SCHEMA_VERSION: u32 = 2;
 pub(crate) const RELEASE_LOOKUP_CACHE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const RELEASE_UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const RELEASE_LOOKUP_CACHE_TTL_MS: u64 = 15 * 60 * 1_000;
 const RELEASE_LOOKUP_URL: &str = "https://api.github.com/repos/njfio/Tau/releases?per_page=30";
 const RELEASE_LOOKUP_USER_AGENT: &str = "tau-coding-agent/release-channel-check";
@@ -65,16 +70,108 @@ pub(crate) enum ReleaseChannelCommand {
     Show,
     Set(ReleaseChannel),
     Check,
+    Plan {
+        target: Option<String>,
+        dry_run: bool,
+    },
+    Apply {
+        target: Option<String>,
+        dry_run: bool,
+    },
     CacheShow,
     CacheClear,
     CacheRefresh,
     CachePrune,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseUpdateAction {
+    Upgrade,
+    Noop,
+    Blocked,
+}
+
+impl ReleaseUpdateAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            ReleaseUpdateAction::Upgrade => "upgrade",
+            ReleaseUpdateAction::Noop => "noop",
+            ReleaseUpdateAction::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReleaseUpdateGuardCode {
+    Ok,
+    InvalidCurrentVersion,
+    InvalidTargetVersion,
+    StablePrereleaseDisallowed,
+    MajorVersionJumpBlocked,
+}
+
+impl ReleaseUpdateGuardCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            ReleaseUpdateGuardCode::Ok => "ok",
+            ReleaseUpdateGuardCode::InvalidCurrentVersion => "invalid_current_version",
+            ReleaseUpdateGuardCode::InvalidTargetVersion => "invalid_target_version",
+            ReleaseUpdateGuardCode::StablePrereleaseDisallowed => "stable_prerelease_disallowed",
+            ReleaseUpdateGuardCode::MajorVersionJumpBlocked => "major_version_jump_blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseUpdateGuardOutcome {
+    code: ReleaseUpdateGuardCode,
+    reason: String,
+}
+
+impl ReleaseUpdateGuardOutcome {
+    fn ok() -> Self {
+        Self {
+            code: ReleaseUpdateGuardCode::Ok,
+            reason: "target_compatible".to_string(),
+        }
+    }
+
+    fn blocked(code: ReleaseUpdateGuardCode, reason: impl Into<String>) -> Self {
+        Self {
+            code,
+            reason: reason.into(),
+        }
+    }
+
+    fn allowed(&self) -> bool {
+        self.code == ReleaseUpdateGuardCode::Ok
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) struct ReleaseChannelRollbackMetadata {
+    #[serde(default)]
+    pub(crate) previous_channel: Option<ReleaseChannel>,
+    #[serde(default)]
+    pub(crate) previous_version: Option<String>,
+    #[serde(default)]
+    pub(crate) reference_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct ReleaseChannelStoreFile {
     pub(crate) schema_version: u32,
     pub(crate) release_channel: ReleaseChannel,
+    #[serde(default)]
+    pub(crate) rollback: ReleaseChannelRollbackMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyReleaseChannelStoreFile {
+    schema_version: u32,
+    release_channel: ReleaseChannel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,6 +220,22 @@ pub(crate) fn parse_release_channel_command(command_args: &str) -> Result<Releas
         return Ok(ReleaseChannelCommand::Check);
     }
 
+    if tokens.first() == Some(&"plan") {
+        let options = parse_release_update_command_options(&tokens[1..])?;
+        return Ok(ReleaseChannelCommand::Plan {
+            target: options.target,
+            dry_run: options.dry_run,
+        });
+    }
+
+    if tokens.first() == Some(&"apply") {
+        let options = parse_release_update_command_options(&tokens[1..])?;
+        return Ok(ReleaseChannelCommand::Apply {
+            target: options.target,
+            dry_run: options.dry_run,
+        });
+    }
+
     if tokens.len() == 2 && tokens[0] == "set" {
         let channel = tokens[1].parse::<ReleaseChannel>()?;
         return Ok(ReleaseChannelCommand::Set(channel));
@@ -141,6 +254,38 @@ pub(crate) fn parse_release_channel_command(command_args: &str) -> Result<Releas
     bail!("{RELEASE_CHANNEL_USAGE}");
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ReleaseUpdateCommandOptions {
+    target: Option<String>,
+    dry_run: bool,
+}
+
+fn parse_release_update_command_options(tokens: &[&str]) -> Result<ReleaseUpdateCommandOptions> {
+    let mut options = ReleaseUpdateCommandOptions::default();
+    let mut index = 0usize;
+    while index < tokens.len() {
+        match tokens[index] {
+            "--dry-run" => {
+                options.dry_run = true;
+                index += 1;
+            }
+            "--target" => {
+                let Some(raw_target) = tokens.get(index + 1) else {
+                    bail!("{RELEASE_CHANNEL_USAGE}");
+                };
+                let target = raw_target.trim();
+                if target.is_empty() {
+                    bail!("{RELEASE_CHANNEL_USAGE}");
+                }
+                options.target = Some(target.to_string());
+                index += 2;
+            }
+            _ => bail!("{RELEASE_CHANNEL_USAGE}"),
+        }
+    }
+    Ok(options)
+}
+
 fn release_lookup_cache_path_for_release_channel_store(path: &Path) -> Result<PathBuf> {
     let parent = path.parent().ok_or_else(|| {
         anyhow!(
@@ -151,33 +296,70 @@ fn release_lookup_cache_path_for_release_channel_store(path: &Path) -> Result<Pa
     Ok(parent.join("release-lookup-cache.json"))
 }
 
+fn release_update_state_path_for_release_channel_store(path: &Path) -> Result<PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "release channel path {} does not have a parent directory",
+            path.display()
+        )
+    })?;
+    Ok(parent.join("release-update-state.json"))
+}
+
 pub(crate) fn load_release_channel_store(path: &Path) -> Result<Option<ReleaseChannel>> {
+    Ok(load_release_channel_store_file(path)?.map(|store| store.release_channel))
+}
+
+fn load_release_channel_store_file(path: &Path) -> Result<Option<ReleaseChannelStoreFile>> {
     if !path.exists() {
         return Ok(None);
     }
 
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read release channel file {}", path.display()))?;
-    let parsed = serde_json::from_str::<ReleaseChannelStoreFile>(&raw)
+    let value = serde_json::from_str::<serde_json::Value>(&raw)
         .with_context(|| format!("failed to parse release channel file {}", path.display()))?;
-    if parsed.schema_version != RELEASE_CHANNEL_SCHEMA_VERSION {
-        bail!(
-            "unsupported release channel schema_version {} in {} (expected {})",
-            parsed.schema_version,
+    let schema_version = value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            anyhow!(
+                "release channel file {} is missing schema_version",
+                path.display()
+            )
+        })?;
+
+    match schema_version {
+        1 => {
+            let legacy = serde_json::from_value::<LegacyReleaseChannelStoreFile>(value)
+                .with_context(|| {
+                    format!("failed to parse release channel file {}", path.display())
+                })?;
+            Ok(Some(ReleaseChannelStoreFile {
+                schema_version: RELEASE_CHANNEL_SCHEMA_VERSION,
+                release_channel: legacy.release_channel,
+                rollback: ReleaseChannelRollbackMetadata::default(),
+            }))
+        }
+        version if version == RELEASE_CHANNEL_SCHEMA_VERSION as u64 => {
+            let parsed =
+                serde_json::from_value::<ReleaseChannelStoreFile>(value).with_context(|| {
+                    format!("failed to parse release channel file {}", path.display())
+                })?;
+            Ok(Some(parsed))
+        }
+        other => bail!(
+            "unsupported release channel schema_version {} in {} (expected {} or 1)",
+            other,
             path.display(),
             RELEASE_CHANNEL_SCHEMA_VERSION
-        );
+        ),
     }
-    Ok(Some(parsed.release_channel))
 }
 
-pub(crate) fn save_release_channel_store(path: &Path, channel: ReleaseChannel) -> Result<()> {
-    let payload = ReleaseChannelStoreFile {
-        schema_version: RELEASE_CHANNEL_SCHEMA_VERSION,
-        release_channel: channel,
-    };
+fn save_release_channel_store_file(path: &Path, payload: &ReleaseChannelStoreFile) -> Result<()> {
     let mut encoded =
-        serde_json::to_string_pretty(&payload).context("failed to encode release channel store")?;
+        serde_json::to_string_pretty(payload).context("failed to encode release channel store")?;
     encoded.push('\n');
     let parent = path.parent().ok_or_else(|| {
         anyhow!(
@@ -192,6 +374,53 @@ pub(crate) fn save_release_channel_store(path: &Path, channel: ReleaseChannel) -
         )
     })?;
     write_text_atomic(path, &encoded)
+}
+
+pub(crate) fn save_release_channel_store(path: &Path, channel: ReleaseChannel) -> Result<()> {
+    let existing = load_release_channel_store_file(path)?;
+    let payload = ReleaseChannelStoreFile {
+        schema_version: RELEASE_CHANNEL_SCHEMA_VERSION,
+        release_channel: channel,
+        rollback: existing.map(|store| store.rollback).unwrap_or_default(),
+    };
+    save_release_channel_store_file(path, &payload)
+}
+
+fn resolve_release_channel_and_metadata(
+    path: &Path,
+) -> Result<(ReleaseChannel, &'static str, ReleaseChannelRollbackMetadata)> {
+    match load_release_channel_store_file(path)? {
+        Some(store) => Ok((store.release_channel, "store", store.rollback)),
+        None => Ok((
+            ReleaseChannel::Stable,
+            "default",
+            ReleaseChannelRollbackMetadata::default(),
+        )),
+    }
+}
+
+fn render_rollback_fields(rollback: &ReleaseChannelRollbackMetadata) -> String {
+    format!(
+        "rollback_channel={} rollback_version={} rollback_reason={} rollback_reference_unix_ms={}",
+        rollback
+            .previous_channel
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        rollback
+            .previous_version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("none"),
+        rollback
+            .reason
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("none"),
+        rollback
+            .reference_unix_ms
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    )
 }
 
 fn select_latest_channel_release(
@@ -248,6 +477,75 @@ pub(crate) fn compare_versions(current: &str, latest: &str) -> Option<std::cmp::
         }
     }
     Some(std::cmp::Ordering::Equal)
+}
+
+fn major_version(raw: &str) -> Option<u64> {
+    parse_version_segments(raw).and_then(|segments| segments.first().copied())
+}
+
+fn evaluate_release_update_guard(
+    channel: ReleaseChannel,
+    current_version: &str,
+    target_version: &str,
+) -> ReleaseUpdateGuardOutcome {
+    if parse_version_segments(current_version).is_none() {
+        return ReleaseUpdateGuardOutcome::blocked(
+            ReleaseUpdateGuardCode::InvalidCurrentVersion,
+            format!("invalid current version '{}'", current_version),
+        );
+    }
+    if parse_version_segments(target_version).is_none() {
+        return ReleaseUpdateGuardOutcome::blocked(
+            ReleaseUpdateGuardCode::InvalidTargetVersion,
+            format!("invalid target version '{}'", target_version),
+        );
+    }
+    if channel == ReleaseChannel::Stable && target_version.contains('-') {
+        return ReleaseUpdateGuardOutcome::blocked(
+            ReleaseUpdateGuardCode::StablePrereleaseDisallowed,
+            format!(
+                "stable channel blocks prerelease target '{}'",
+                target_version
+            ),
+        );
+    }
+    let Some(current_major) = major_version(current_version) else {
+        return ReleaseUpdateGuardOutcome::blocked(
+            ReleaseUpdateGuardCode::InvalidCurrentVersion,
+            format!("invalid current version '{}'", current_version),
+        );
+    };
+    let Some(target_major) = major_version(target_version) else {
+        return ReleaseUpdateGuardOutcome::blocked(
+            ReleaseUpdateGuardCode::InvalidTargetVersion,
+            format!("invalid target version '{}'", target_version),
+        );
+    };
+    if target_major > current_major.saturating_add(1) {
+        return ReleaseUpdateGuardOutcome::blocked(
+            ReleaseUpdateGuardCode::MajorVersionJumpBlocked,
+            format!(
+                "major version jump blocked current_major={} target_major={}",
+                current_major, target_major
+            ),
+        );
+    }
+    ReleaseUpdateGuardOutcome::ok()
+}
+
+fn resolve_release_update_action(
+    guard: &ReleaseUpdateGuardOutcome,
+    current_version: &str,
+    target_version: &str,
+) -> ReleaseUpdateAction {
+    if !guard.allowed() {
+        return ReleaseUpdateAction::Blocked;
+    }
+    match compare_versions(current_version, target_version) {
+        Some(std::cmp::Ordering::Less) => ReleaseUpdateAction::Upgrade,
+        Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => ReleaseUpdateAction::Noop,
+        None => ReleaseUpdateAction::Blocked,
+    }
 }
 
 fn resolve_channel_latest_or_unknown(
@@ -369,9 +667,8 @@ fn render_release_channel_check_with_lookup<F>(
 where
     F: Fn(ReleaseChannel) -> Result<LatestChannelReleaseResolution>,
 {
-    let (channel, channel_source) = match load_release_channel_store(path) {
-        Ok(Some(channel)) => (channel, "store"),
-        Ok(None) => (ReleaseChannel::Stable, "default"),
+    let (channel, channel_source, _) = match resolve_release_channel_and_metadata(path) {
+        Ok(resolution) => resolution,
         Err(error) => {
             return format!(
                 "release channel error: path={} error={error}",
@@ -541,6 +838,311 @@ fn execute_release_channel_cache_prune_with_options(
     }
 }
 
+fn sanitize_output_token(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "none".to_string();
+    }
+    trimmed.split_whitespace().collect::<Vec<_>>().join("_")
+}
+
+fn resolve_release_update_target(
+    channel: ReleaseChannel,
+    lookup_url: &str,
+    cache_path: &Path,
+    cache_ttl_ms: u64,
+    target_override: Option<&str>,
+) -> Result<(String, String, String)> {
+    if let Some(target) = target_override {
+        let normalized = target.trim().to_string();
+        return Ok((normalized.clone(), normalized, "override".to_string()));
+    }
+    let resolution =
+        resolve_latest_channel_release_cached(channel, lookup_url, cache_path, cache_ttl_ms)?;
+    let lookup_source = release_lookup_source_label(resolution.source).to_string();
+    let Some(latest) = resolution.latest else {
+        bail!("no release records for channel {}", channel);
+    };
+    Ok((latest.clone(), latest, lookup_source))
+}
+
+fn execute_release_channel_plan_with_lookup_options(
+    path: &Path,
+    lookup_url: &str,
+    cache_ttl_ms: u64,
+    dry_run: bool,
+    target_override: Option<&str>,
+) -> String {
+    let (channel, channel_source, rollback) = match resolve_release_channel_and_metadata(path) {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                path.display()
+            );
+        }
+    };
+    let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
+        Ok(path) => path,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                path.display()
+            );
+        }
+    };
+    let state_path = match release_update_state_path_for_release_channel_store(path) {
+        Ok(path) => path,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                path.display()
+            );
+        }
+    };
+    let existing_state = match load_release_update_state_file(&state_path) {
+        Ok(state) => state,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                state_path.display()
+            );
+        }
+    };
+    let (target_version, latest_version, lookup_source) = match resolve_release_update_target(
+        channel,
+        lookup_url,
+        &cache_path,
+        cache_ttl_ms,
+        target_override,
+    ) {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            return format!(
+                "release channel plan: path={} channel={} channel_source={} current={} latest=unknown target=unknown action=blocked dry_run={} guard_code=no_release_records guard_reason={} lookup_source=unknown {}",
+                path.display(),
+                channel,
+                channel_source,
+                env!("CARGO_PKG_VERSION"),
+                dry_run,
+                sanitize_output_token(error.to_string().as_str()),
+                render_rollback_fields(&rollback),
+            );
+        }
+    };
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let guard = evaluate_release_update_guard(channel, &current_version, &target_version);
+    let action = resolve_release_update_action(&guard, &current_version, &target_version);
+    let planned_at_unix_ms = current_unix_timestamp_ms();
+    let state = ReleaseUpdateStateFile {
+        schema_version: RELEASE_UPDATE_STATE_SCHEMA_VERSION,
+        channel,
+        current_version: current_version.clone(),
+        target_version: target_version.clone(),
+        action: action.as_str().to_string(),
+        dry_run,
+        lookup_source: lookup_source.clone(),
+        guard_code: guard.code.as_str().to_string(),
+        guard_reason: guard.reason.clone(),
+        planned_at_unix_ms,
+        apply_attempts: existing_state
+            .as_ref()
+            .map(|state| state.apply_attempts)
+            .unwrap_or(0),
+        last_apply_unix_ms: existing_state
+            .as_ref()
+            .and_then(|state| state.last_apply_unix_ms),
+        last_apply_status: existing_state
+            .as_ref()
+            .and_then(|state| state.last_apply_status.clone()),
+        last_apply_target: existing_state
+            .as_ref()
+            .and_then(|state| state.last_apply_target.clone()),
+        rollback_channel: rollback.previous_channel,
+        rollback_version: rollback.previous_version.clone(),
+    };
+    if let Err(error) = save_release_update_state_file(&state_path, &state) {
+        return format!(
+            "release channel error: path={} error={error}",
+            state_path.display()
+        );
+    }
+    format!(
+        "release channel plan: path={} state_path={} channel={} channel_source={} current={} latest={} target={} action={} dry_run={} lookup_source={} guard_code={} guard_reason={} planned_at_unix_ms={} {} status=saved",
+        path.display(),
+        state_path.display(),
+        channel,
+        channel_source,
+        current_version,
+        latest_version,
+        target_version,
+        action.as_str(),
+        dry_run,
+        lookup_source,
+        guard.code.as_str(),
+        sanitize_output_token(guard.reason.as_str()),
+        planned_at_unix_ms,
+        render_rollback_fields(&rollback),
+    )
+}
+
+fn execute_release_channel_apply_with_lookup_options(
+    path: &Path,
+    lookup_url: &str,
+    cache_ttl_ms: u64,
+    dry_run: bool,
+    target_override: Option<&str>,
+) -> String {
+    let (channel, channel_source, mut rollback) = match resolve_release_channel_and_metadata(path) {
+        Ok(resolution) => resolution,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                path.display()
+            );
+        }
+    };
+    let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
+        Ok(path) => path,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                path.display()
+            );
+        }
+    };
+    let state_path = match release_update_state_path_for_release_channel_store(path) {
+        Ok(path) => path,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                path.display()
+            );
+        }
+    };
+    let existing_state = match load_release_update_state_file(&state_path) {
+        Ok(state) => state,
+        Err(error) => {
+            return format!(
+                "release channel error: path={} error={error}",
+                state_path.display()
+            );
+        }
+    };
+
+    let target_source_override = target_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let resolved = if let Some(target) = target_source_override {
+        Ok((
+            target.to_string(),
+            target.to_string(),
+            "override".to_string(),
+        ))
+    } else if let Some(state) = existing_state.as_ref() {
+        Ok((
+            state.target_version.clone(),
+            state.target_version.clone(),
+            "state".to_string(),
+        ))
+    } else {
+        resolve_release_update_target(channel, lookup_url, &cache_path, cache_ttl_ms, None)
+    };
+    let (target_version, latest_version, lookup_source) = match resolved {
+        Ok(values) => values,
+        Err(error) => {
+            return format!(
+                "release channel apply: path={} channel={} channel_source={} current={} latest=unknown target=unknown action=blocked dry_run={} guard_code=no_release_records guard_reason={} lookup_source=unknown {} status=blocked",
+                path.display(),
+                channel,
+                channel_source,
+                env!("CARGO_PKG_VERSION"),
+                dry_run,
+                sanitize_output_token(error.to_string().as_str()),
+                render_rollback_fields(&rollback),
+            );
+        }
+    };
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let guard = evaluate_release_update_guard(channel, &current_version, &target_version);
+    let action = resolve_release_update_action(&guard, &current_version, &target_version);
+    let status = match action {
+        ReleaseUpdateAction::Blocked => "blocked",
+        ReleaseUpdateAction::Noop => "noop",
+        ReleaseUpdateAction::Upgrade if dry_run => "dry_run",
+        ReleaseUpdateAction::Upgrade => "applied_metadata",
+    };
+
+    let apply_timestamp = current_unix_timestamp_ms();
+    if action == ReleaseUpdateAction::Upgrade && !dry_run {
+        rollback.previous_channel = Some(channel);
+        rollback.previous_version = Some(current_version.clone());
+        rollback.reference_unix_ms = Some(apply_timestamp);
+        rollback.reason = Some("apply_upgrade".to_string());
+        let store_payload = ReleaseChannelStoreFile {
+            schema_version: RELEASE_CHANNEL_SCHEMA_VERSION,
+            release_channel: channel,
+            rollback: rollback.clone(),
+        };
+        if let Err(error) = save_release_channel_store_file(path, &store_payload) {
+            return format!(
+                "release channel error: path={} error={error}",
+                path.display()
+            );
+        }
+    }
+
+    let state = ReleaseUpdateStateFile {
+        schema_version: RELEASE_UPDATE_STATE_SCHEMA_VERSION,
+        channel,
+        current_version: current_version.clone(),
+        target_version: target_version.clone(),
+        action: action.as_str().to_string(),
+        dry_run,
+        lookup_source: lookup_source.clone(),
+        guard_code: guard.code.as_str().to_string(),
+        guard_reason: guard.reason.clone(),
+        planned_at_unix_ms: existing_state
+            .as_ref()
+            .map(|state| state.planned_at_unix_ms)
+            .unwrap_or(apply_timestamp),
+        apply_attempts: existing_state
+            .as_ref()
+            .map(|state| state.apply_attempts.saturating_add(1))
+            .unwrap_or(1),
+        last_apply_unix_ms: Some(apply_timestamp),
+        last_apply_status: Some(status.to_string()),
+        last_apply_target: Some(target_version.clone()),
+        rollback_channel: rollback.previous_channel,
+        rollback_version: rollback.previous_version.clone(),
+    };
+    if let Err(error) = save_release_update_state_file(&state_path, &state) {
+        return format!(
+            "release channel error: path={} error={error}",
+            state_path.display()
+        );
+    }
+    format!(
+        "release channel apply: path={} state_path={} channel={} channel_source={} current={} latest={} target={} action={} dry_run={} lookup_source={} guard_code={} guard_reason={} apply_attempts={} last_apply_unix_ms={} {} status={}",
+        path.display(),
+        state_path.display(),
+        channel,
+        channel_source,
+        current_version,
+        latest_version,
+        target_version,
+        action.as_str(),
+        dry_run,
+        lookup_source,
+        guard.code.as_str(),
+        sanitize_output_token(guard.reason.as_str()),
+        state.apply_attempts,
+        apply_timestamp,
+        render_rollback_fields(&rollback),
+        status,
+    )
+}
+
 pub(crate) fn execute_release_channel_command(command_args: &str, path: &Path) -> String {
     execute_release_channel_command_with_lookup_options(
         command_args,
@@ -567,33 +1169,59 @@ fn execute_release_channel_command_with_lookup_options(
     };
 
     match command {
-        ReleaseChannelCommand::Show => match load_release_channel_store(path) {
-            Ok(Some(channel)) => format!(
-                "release channel: path={} channel={} source=store",
+        ReleaseChannelCommand::Show => match resolve_release_channel_and_metadata(path) {
+            Ok((channel, source, rollback)) => format!(
+                "release channel: path={} channel={} source={} {}",
                 path.display(),
-                channel
-            ),
-            Ok(None) => format!(
-                "release channel: path={} channel={} source=default",
-                path.display(),
-                ReleaseChannel::Stable
+                channel,
+                source,
+                render_rollback_fields(&rollback),
             ),
             Err(error) => format!(
                 "release channel error: path={} error={error}",
                 path.display()
             ),
         },
-        ReleaseChannelCommand::Set(channel) => match save_release_channel_store(path, channel) {
-            Ok(()) => format!(
-                "release channel set: path={} channel={} status=saved",
-                path.display(),
-                channel
-            ),
-            Err(error) => format!(
-                "release channel error: path={} error={error}",
-                path.display()
-            ),
-        },
+        ReleaseChannelCommand::Set(channel) => {
+            let existing = match load_release_channel_store_file(path) {
+                Ok(state) => state,
+                Err(error) => {
+                    return format!(
+                        "release channel error: path={} error={error}",
+                        path.display()
+                    );
+                }
+            };
+            let previous_channel = existing
+                .as_ref()
+                .map(|store| store.release_channel)
+                .unwrap_or(ReleaseChannel::Stable);
+            let mut rollback = existing.map(|store| store.rollback).unwrap_or_default();
+            if previous_channel != channel {
+                rollback.previous_channel = Some(previous_channel);
+                rollback.previous_version = Some(env!("CARGO_PKG_VERSION").to_string());
+                rollback.reference_unix_ms = Some(current_unix_timestamp_ms());
+                rollback.reason = Some("channel_switch".to_string());
+            }
+            let payload = ReleaseChannelStoreFile {
+                schema_version: RELEASE_CHANNEL_SCHEMA_VERSION,
+                release_channel: channel,
+                rollback: rollback.clone(),
+            };
+            match save_release_channel_store_file(path, &payload) {
+                Ok(()) => format!(
+                    "release channel set: path={} channel={} previous_channel={} status=saved {}",
+                    path.display(),
+                    channel,
+                    previous_channel,
+                    render_rollback_fields(&rollback),
+                ),
+                Err(error) => format!(
+                    "release channel error: path={} error={error}",
+                    path.display()
+                ),
+            }
+        }
         ReleaseChannelCommand::Check => {
             let cache_path = match release_lookup_cache_path_for_release_channel_store(path) {
                 Ok(path) => path,
@@ -610,6 +1238,24 @@ fn execute_release_channel_command_with_lookup_options(
                 lookup_url,
                 &cache_path,
                 cache_ttl_ms,
+            )
+        }
+        ReleaseChannelCommand::Plan { target, dry_run } => {
+            execute_release_channel_plan_with_lookup_options(
+                path,
+                lookup_url,
+                cache_ttl_ms,
+                dry_run,
+                target.as_deref(),
+            )
+        }
+        ReleaseChannelCommand::Apply { target, dry_run } => {
+            execute_release_channel_apply_with_lookup_options(
+                path,
+                lookup_url,
+                cache_ttl_ms,
+                dry_run,
+                target.as_deref(),
             )
         }
         ReleaseChannelCommand::CacheRefresh => {
@@ -725,7 +1371,8 @@ mod tests {
     use httpmock::prelude::*;
 
     #[test]
-    fn unit_parse_release_channel_command_supports_show_set_check_and_cache_subcommands() {
+    fn unit_parse_release_channel_command_supports_show_set_check_plan_apply_and_cache_subcommands()
+    {
         assert_eq!(
             parse_release_channel_command("").expect("default command"),
             ReleaseChannelCommand::Show
@@ -741,6 +1388,35 @@ mod tests {
         assert_eq!(
             parse_release_channel_command("check").expect("check command"),
             ReleaseChannelCommand::Check
+        );
+        assert_eq!(
+            parse_release_channel_command("plan").expect("plan command"),
+            ReleaseChannelCommand::Plan {
+                target: None,
+                dry_run: false,
+            }
+        );
+        assert_eq!(
+            parse_release_channel_command("plan --target v1.2.3 --dry-run")
+                .expect("plan with options"),
+            ReleaseChannelCommand::Plan {
+                target: Some("v1.2.3".to_string()),
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            parse_release_channel_command("apply --dry-run").expect("apply command"),
+            ReleaseChannelCommand::Apply {
+                target: None,
+                dry_run: true,
+            }
+        );
+        assert_eq!(
+            parse_release_channel_command("apply --target v2.0.0").expect("apply target command"),
+            ReleaseChannelCommand::Apply {
+                target: Some("v2.0.0".to_string()),
+                dry_run: false,
+            }
         );
         assert_eq!(
             parse_release_channel_command("cache show").expect("cache show command"),
@@ -766,6 +1442,9 @@ mod tests {
         assert!(invalid.to_string().contains(RELEASE_CHANNEL_USAGE));
         let invalid =
             parse_release_channel_command("cache inspect").expect_err("invalid cache subcommand");
+        assert!(invalid.to_string().contains(RELEASE_CHANNEL_USAGE));
+        let invalid = parse_release_channel_command("plan --target")
+            .expect_err("plan missing target value should fail");
         assert!(invalid.to_string().contains(RELEASE_CHANNEL_USAGE));
     }
 
@@ -980,6 +1659,19 @@ mod tests {
             .unwrap_or_else(|| panic!("missing bool field '{key}' in output: {output}"))
     }
 
+    fn parse_string_field(output: &str, key: &str) -> String {
+        output
+            .split_whitespace()
+            .find_map(|token| {
+                let (field_key, field_value) = token.split_once('=')?;
+                if field_key == key {
+                    return Some(field_value.to_string());
+                }
+                None
+            })
+            .unwrap_or_else(|| panic!("missing string field '{key}' in output: {output}"))
+    }
+
     #[test]
     fn functional_execute_release_channel_command_show_and_set_round_trip() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -988,14 +1680,110 @@ mod tests {
         let initial = execute_release_channel_command("", &path);
         assert!(initial.contains("channel=stable"));
         assert!(initial.contains("source=default"));
+        assert!(initial.contains("rollback_channel=none"));
 
         let set_output = execute_release_channel_command("set dev", &path);
         assert!(set_output.contains("channel=dev"));
+        assert!(set_output.contains("previous_channel=stable"));
         assert!(set_output.contains("status=saved"));
+        assert!(set_output.contains("rollback_channel=stable"));
+        assert!(set_output.contains("rollback_version="));
+        assert!(set_output.contains("rollback_reason=channel_switch"));
 
         let show = execute_release_channel_command("show", &path);
         assert!(show.contains("channel=dev"));
         assert!(show.contains("source=store"));
+        assert!(show.contains("rollback_channel=stable"));
+        assert!(show.contains("rollback_reason=channel_switch"));
+    }
+
+    #[test]
+    fn functional_execute_release_channel_command_plan_dry_run_writes_update_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let output = execute_release_channel_command_with_lookup_options(
+            "plan --target v99.0.0 --dry-run",
+            &path,
+            "https://example.invalid/releases",
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+
+        assert!(output.contains("release channel plan:"));
+        assert!(output.contains("action=blocked"));
+        assert!(output.contains("dry_run=true"));
+        assert!(output.contains("lookup_source=override"));
+        assert!(output.contains("guard_code=major_version_jump_blocked"));
+        assert!(output.contains("status=saved"));
+        assert!(output.contains("state_path="));
+
+        let state_path = temp.path().join(".tau/release-update-state.json");
+        let state = load_release_update_state_file(&state_path)
+            .expect("load update state")
+            .expect("update state should exist");
+        assert_eq!(state.schema_version, RELEASE_UPDATE_STATE_SCHEMA_VERSION);
+        assert_eq!(state.target_version, "v99.0.0");
+        assert_eq!(state.action, "blocked");
+        assert!(state.dry_run);
+    }
+
+    #[test]
+    fn integration_execute_release_channel_plan_and_apply_persists_lifecycle_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        save_release_channel_store(&path, ReleaseChannel::Beta).expect("save release channel");
+
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/releases");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"[{"tag_name":"v0.2.0-beta.1","prerelease":true,"draft":false},{"tag_name":"v0.1.0","prerelease":false,"draft":false}]"#,
+                );
+        });
+        let url = format!("{}/releases", server.base_url());
+
+        let plan = execute_release_channel_command_with_lookup_options(
+            "plan",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(plan.contains("action=upgrade"));
+        assert!(plan.contains("guard_code=ok"));
+        assert!(plan.contains("status=saved"));
+
+        let apply = execute_release_channel_command_with_lookup_options(
+            "apply",
+            &path,
+            &url,
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(apply.contains("action=upgrade"));
+        assert!(apply.contains("status=applied_metadata"));
+        assert!(apply.contains("guard_code=ok"));
+        assert!(apply.contains("apply_attempts=1"));
+        assert!(apply.contains("rollback_channel=beta"));
+        assert!(apply.contains("rollback_reason=apply_upgrade"));
+        assert_eq!(
+            parse_string_field(&apply, "status"),
+            "applied_metadata".to_string()
+        );
+        mock.assert_calls(1);
+
+        let state_path = temp.path().join(".tau/release-update-state.json");
+        let state = load_release_update_state_file(&state_path)
+            .expect("load update state")
+            .expect("update state should exist");
+        assert_eq!(state.channel, ReleaseChannel::Beta);
+        assert_eq!(state.target_version, "v0.2.0-beta.1");
+        assert_eq!(state.action, "upgrade");
+        assert_eq!(state.apply_attempts, 1);
+        assert_eq!(state.last_apply_status.as_deref(), Some("applied_metadata"));
+
+        let show = execute_release_channel_command("show", &path);
+        assert!(show.contains("rollback_channel=beta"));
+        assert!(show.contains("rollback_reason=apply_upgrade"));
     }
 
     #[test]
@@ -1499,6 +2287,21 @@ mod tests {
     }
 
     #[test]
+    fn regression_load_release_channel_store_supports_legacy_schema_version_one() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("release-channel.json");
+        std::fs::write(&path, r#"{"schema_version":1,"release_channel":"dev"}"#)
+            .expect("write legacy payload");
+
+        let channel = load_release_channel_store(&path).expect("load release channel");
+        assert_eq!(channel, Some(ReleaseChannel::Dev));
+
+        let show = execute_release_channel_command("show", &path);
+        assert!(show.contains("channel=dev"));
+        assert!(show.contains("rollback_channel=none"));
+    }
+
+    #[test]
     fn regression_fetch_release_records_reports_http_and_payload_failures() {
         let error_server = MockServer::start();
         let error_mock = error_server.mock(|when, then| {
@@ -1524,6 +2327,42 @@ mod tests {
         assert!(parse_error
             .to_string()
             .contains("failed to parse release lookup response"));
+    }
+
+    #[test]
+    fn regression_execute_release_channel_apply_blocks_prerelease_target_on_stable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        save_release_channel_store(&path, ReleaseChannel::Stable).expect("save release channel");
+
+        let output = execute_release_channel_command_with_lookup_options(
+            "apply --target v1.2.0-beta.1",
+            &path,
+            "https://example.invalid/releases",
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(output.contains("action=blocked"));
+        assert!(output.contains("status=blocked"));
+        assert!(output.contains("guard_code=stable_prerelease_disallowed"));
+    }
+
+    #[test]
+    fn regression_execute_release_channel_plan_fails_closed_on_malformed_update_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".tau/release-channel.json");
+        let state_path = temp.path().join(".tau/release-update-state.json");
+        std::fs::create_dir_all(state_path.parent().expect("state parent"))
+            .expect("create state dir");
+        std::fs::write(&state_path, "{invalid-json").expect("write malformed update state");
+
+        let output = execute_release_channel_command_with_lookup_options(
+            "plan --target v0.1.1",
+            &path,
+            "https://example.invalid/releases",
+            RELEASE_LOOKUP_CACHE_TTL_MS,
+        );
+        assert!(output.contains("release channel error:"));
+        assert!(output.contains("failed to parse release update state"));
     }
 
     #[test]

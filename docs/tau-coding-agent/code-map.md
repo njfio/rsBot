@@ -41,6 +41,7 @@ Use this area when adding or changing flags, defaults, and typed CLI input behav
 - `auth_commands.rs`: provider auth command handling.
 - `release_channel_commands.rs`: `/release-channel` command parsing/rendering and dispatch.
 - `release_channel_commands/cache.rs`: release lookup cache load/save/prune helpers.
+- `release_channel_commands/update_state.rs`: release update plan/apply lifecycle state persistence.
 - `diagnostics_commands.rs`: doctor/audit/policy diagnostics commands.
 - `macro_profile_commands.rs`: macro/profile command workflows.
 

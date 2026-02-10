@@ -24,6 +24,12 @@ Interactive onboarding mode:
 cargo run -p tau-coding-agent -- --onboard --onboard-profile default
 ```
 
+Release channel planning/apply workflow runbook:
+
+```bash
+cat docs/guides/release-channel-ops.md
+```
+
 ## Auth modes
 
 | Provider | Local/dev recommended | CI/automation recommended |
