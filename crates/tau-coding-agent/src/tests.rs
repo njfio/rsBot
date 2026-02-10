@@ -1308,6 +1308,30 @@ fn regression_cli_multi_channel_fixture_requires_multi_channel_runner_flag() {
 }
 
 #[test]
+fn unit_cli_transport_health_inspect_accepts_multi_channel_target() {
+    let cli = Cli::parse_from(["tau-rs", "--transport-health-inspect", "multi-channel"]);
+    assert_eq!(
+        cli.transport_health_inspect.as_deref(),
+        Some("multi-channel")
+    );
+}
+
+#[test]
+fn functional_cli_transport_health_inspect_accepts_multi_channel_state_dir_override() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--transport-health-inspect",
+        "multi-channel",
+        "--multi-channel-state-dir",
+        ".tau/multi-channel-alt",
+    ]);
+    assert_eq!(
+        cli.multi_channel_state_dir,
+        PathBuf::from(".tau/multi-channel-alt")
+    );
+}
+
+#[test]
 fn unit_cli_qa_loop_flags_default_to_disabled() {
     let cli = Cli::parse_from(["tau-rs"]);
     assert!(!cli.qa_loop);

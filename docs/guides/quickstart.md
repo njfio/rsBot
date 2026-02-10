@@ -94,11 +94,13 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ./scripts/demo/all.sh --only rpc,events --json
 ./scripts/demo/all.sh --report-file .tau/reports/demo-summary.json
 ./scripts/demo/all.sh --only local,rpc --fail-fast
+./scripts/demo/all.sh --only multi-channel --fail-fast
 ./scripts/demo/all.sh --only local --timeout-seconds 30 --fail-fast
 ./scripts/demo/local.sh
 ./scripts/demo/rpc.sh
 ./scripts/demo/events.sh
 ./scripts/demo/package.sh
+./scripts/demo/multi-channel.sh
 ```
 
 `all.sh --json` and report-file payloads include `duration_ms` per wrapper entry.

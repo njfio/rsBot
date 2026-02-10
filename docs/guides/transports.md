@@ -83,6 +83,18 @@ The runner writes channel-store output under:
 Runtime state for duplicate suppression is persisted at:
 
 - `.tau/multi-channel/state.json`
+- `.tau/multi-channel/runtime-events.jsonl` (per-cycle observability log)
+
+Inspect multi-channel transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-state-dir .tau/multi-channel \
+  --transport-health-inspect multi-channel \
+  --transport-health-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/multi-channel-ops.md`.
 
 ## ChannelStore inspection and repair
 

@@ -1,6 +1,7 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -11,9 +12,10 @@ use crate::multi_channel_contract::{
     event_contract_key, load_multi_channel_contract_fixture, MultiChannelContractFixture,
     MultiChannelEventKind, MultiChannelInboundEvent,
 };
-use crate::{current_unix_timestamp_ms, write_text_atomic};
+use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
 
 const MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
+const MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
 
 fn multi_channel_runtime_state_schema_version() -> u32 {
     MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION
@@ -40,12 +42,31 @@ pub(crate) struct MultiChannelRuntimeSummary {
     pub(crate) failed_events: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct MultiChannelRuntimeCycleReport {
+    timestamp_unix_ms: u64,
+    health_state: String,
+    health_reason: String,
+    reason_codes: Vec<String>,
+    discovered_events: usize,
+    queued_events: usize,
+    completed_events: usize,
+    duplicate_skips: usize,
+    transient_failures: usize,
+    retry_attempts: usize,
+    failed_events: usize,
+    backlog_events: usize,
+    failure_streak: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MultiChannelRuntimeState {
     #[serde(default = "multi_channel_runtime_state_schema_version")]
     schema_version: u32,
     #[serde(default)]
     processed_event_keys: Vec<String>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
 }
 
 impl Default for MultiChannelRuntimeState {
@@ -53,6 +74,7 @@ impl Default for MultiChannelRuntimeState {
         Self {
             schema_version: MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION,
             processed_event_keys: Vec::new(),
+            health: TransportHealthSnapshot::default(),
         }
     }
 }
@@ -63,6 +85,8 @@ pub(crate) async fn run_multi_channel_contract_runner(
     let fixture = load_multi_channel_contract_fixture(&config.fixture_path)?;
     let mut runtime = MultiChannelRuntime::new(config)?;
     let summary = runtime.run_once(&fixture).await?;
+    let health = runtime.transport_health().clone();
+    let classification = health.classify();
     println!(
         "multi-channel runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={}",
         summary.discovered_events,
@@ -72,6 +96,13 @@ pub(crate) async fn run_multi_channel_contract_runner(
         summary.retry_attempts,
         summary.transient_failures,
         summary.failed_events
+    );
+    println!(
+        "multi-channel runner health: state={} failure_streak={} queue_depth={} reason={}",
+        classification.state.as_str(),
+        health.failure_streak,
+        health.queue_depth,
+        classification.reason
     );
     Ok(())
 }
@@ -101,10 +132,15 @@ impl MultiChannelRuntime {
         self.config.state_dir.join("state.json")
     }
 
+    fn transport_health(&self) -> &TransportHealthSnapshot {
+        &self.state.health
+    }
+
     async fn run_once(
         &mut self,
         fixture: &MultiChannelContractFixture,
     ) -> Result<MultiChannelRuntimeSummary> {
+        let cycle_started = Instant::now();
         let mut summary = MultiChannelRuntimeSummary {
             discovered_events: fixture.events.len(),
             ..MultiChannelRuntimeSummary::default()
@@ -166,7 +202,28 @@ impl MultiChannelRuntime {
             }
         }
 
+        let cycle_duration_ms =
+            u64::try_from(cycle_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let health = build_transport_health_snapshot(
+            &summary,
+            cycle_duration_ms,
+            self.state.health.failure_streak,
+        );
+        let classification = health.classify();
+        let reason_codes = cycle_reason_codes(&summary);
+        self.state.health = health.clone();
+
         save_multi_channel_runtime_state(&self.state_path(), &self.state)?;
+        append_multi_channel_cycle_report(
+            &self
+                .config
+                .state_dir
+                .join(MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE),
+            &summary,
+            &health,
+            &classification.reason,
+            &reason_codes,
+        )?;
         Ok(summary)
     }
 
@@ -233,6 +290,101 @@ impl MultiChannelRuntime {
             }
         }
     }
+}
+
+fn build_transport_health_snapshot(
+    summary: &MultiChannelRuntimeSummary,
+    cycle_duration_ms: u64,
+    previous_failure_streak: usize,
+) -> TransportHealthSnapshot {
+    let backlog_events = summary
+        .discovered_events
+        .saturating_sub(summary.queued_events);
+    let failure_streak = if summary.failed_events > 0 {
+        previous_failure_streak.saturating_add(1)
+    } else {
+        0
+    };
+    TransportHealthSnapshot {
+        updated_unix_ms: current_unix_timestamp_ms(),
+        cycle_duration_ms,
+        queue_depth: backlog_events,
+        active_runs: 0,
+        failure_streak,
+        last_cycle_discovered: summary.discovered_events,
+        last_cycle_processed: summary
+            .completed_events
+            .saturating_add(summary.failed_events)
+            .saturating_add(summary.duplicate_skips),
+        last_cycle_completed: summary.completed_events,
+        last_cycle_failed: summary.failed_events,
+        last_cycle_duplicates: summary.duplicate_skips,
+    }
+}
+
+fn cycle_reason_codes(summary: &MultiChannelRuntimeSummary) -> Vec<String> {
+    let mut codes = Vec::new();
+    if summary.discovered_events > summary.queued_events {
+        codes.push("queue_backpressure_applied".to_string());
+    }
+    if summary.duplicate_skips > 0 {
+        codes.push("duplicate_events_skipped".to_string());
+    }
+    if summary.retry_attempts > 0 {
+        codes.push("retry_attempted".to_string());
+    }
+    if summary.transient_failures > 0 {
+        codes.push("transient_failures_observed".to_string());
+    }
+    if summary.failed_events > 0 {
+        codes.push("event_processing_failed".to_string());
+    }
+    if codes.is_empty() {
+        codes.push("healthy_cycle".to_string());
+    }
+    codes
+}
+
+fn append_multi_channel_cycle_report(
+    path: &Path,
+    summary: &MultiChannelRuntimeSummary,
+    health: &TransportHealthSnapshot,
+    health_reason: &str,
+    reason_codes: &[String],
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let payload = MultiChannelRuntimeCycleReport {
+        timestamp_unix_ms: current_unix_timestamp_ms(),
+        health_state: health.classify().state.as_str().to_string(),
+        health_reason: health_reason.to_string(),
+        reason_codes: reason_codes.to_vec(),
+        discovered_events: summary.discovered_events,
+        queued_events: summary.queued_events,
+        completed_events: summary.completed_events,
+        duplicate_skips: summary.duplicate_skips,
+        transient_failures: summary.transient_failures,
+        retry_attempts: summary.retry_attempts,
+        failed_events: summary.failed_events,
+        backlog_events: summary
+            .discovered_events
+            .saturating_sub(summary.queued_events),
+        failure_streak: health.failure_streak,
+    };
+    let line = serde_json::to_string(&payload).context("serialize multi-channel runtime report")?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("failed to flush {}", path.display()))?;
+    Ok(())
 }
 
 fn render_response(event: &MultiChannelInboundEvent) -> String {
@@ -336,6 +488,7 @@ fn save_multi_channel_runtime_state(path: &Path, state: &MultiChannelRuntimeStat
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use serde_json::Value;
     use tempfile::tempdir;
 
     use super::{
@@ -346,6 +499,7 @@ mod tests {
     use crate::multi_channel_contract::{
         load_multi_channel_contract_fixture, parse_multi_channel_contract_fixture,
     };
+    use crate::transport_health::TransportHealthState;
 
     fn fixture_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -387,6 +541,23 @@ mod tests {
         assert_eq!(summary.completed_events, 3);
         assert_eq!(summary.duplicate_skips, 0);
         assert_eq!(summary.failed_events, 0);
+
+        let state = load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
+            .expect("load state");
+        assert_eq!(state.health.last_cycle_discovered, 3);
+        assert_eq!(state.health.last_cycle_completed, 3);
+        assert_eq!(state.health.last_cycle_failed, 0);
+        assert_eq!(state.health.failure_streak, 0);
+        assert_eq!(state.health.classify().state, TransportHealthState::Healthy);
+
+        let events_log = std::fs::read_to_string(
+            config
+                .state_dir
+                .join(super::MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE),
+        )
+        .expect("read runtime events log");
+        assert!(events_log.contains("healthy_cycle"));
+        assert!(events_log.contains("\"health_state\":\"healthy\""));
 
         for event in &fixture.events {
             let store = ChannelStore::open(
@@ -467,5 +638,139 @@ mod tests {
         let second_summary = second_runtime.run_once(&fixture).await.expect("second run");
         assert_eq!(second_summary.completed_events, 0);
         assert_eq!(second_summary.duplicate_skips, 3);
+    }
+
+    #[tokio::test]
+    async fn integration_runner_failure_streak_increments_and_resets_on_successful_cycle() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.retry_max_attempts = 2;
+
+        let failing_fixture_raw = r#"{
+  "schema_version": 1,
+  "name": "persistent-failure",
+  "events": [
+    {
+      "schema_version": 1,
+      "transport": "discord",
+      "event_kind": "message",
+      "event_id": "discord-failing-1",
+      "conversation_id": "discord-channel-failing",
+      "actor_id": "discord-user-1",
+      "timestamp_ms": 1760200000000,
+      "text": "retry me",
+      "metadata": { "simulate_transient_failures": 5 }
+    }
+  ]
+}"#;
+        let failing_fixture = parse_multi_channel_contract_fixture(failing_fixture_raw)
+            .expect("parse failing fixture");
+        let success_fixture = load_multi_channel_contract_fixture(&config.fixture_path)
+            .expect("load success fixture");
+
+        let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+        let first_failed = runtime
+            .run_once(&failing_fixture)
+            .await
+            .expect("first failed cycle");
+        assert_eq!(first_failed.failed_events, 1);
+        let state_after_first =
+            load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
+                .expect("state first");
+        assert_eq!(state_after_first.health.failure_streak, 1);
+        assert_eq!(
+            state_after_first.health.classify().state,
+            TransportHealthState::Degraded
+        );
+
+        let second_failed = runtime
+            .run_once(&failing_fixture)
+            .await
+            .expect("second failed cycle");
+        assert_eq!(second_failed.failed_events, 1);
+        let state_after_second =
+            load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
+                .expect("state second");
+        assert_eq!(state_after_second.health.failure_streak, 2);
+
+        let third_failed = runtime
+            .run_once(&failing_fixture)
+            .await
+            .expect("third failed cycle");
+        assert_eq!(third_failed.failed_events, 1);
+        let state_after_third =
+            load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
+                .expect("state third");
+        assert_eq!(state_after_third.health.failure_streak, 3);
+        assert_eq!(
+            state_after_third.health.classify().state,
+            TransportHealthState::Failing
+        );
+
+        let success = runtime
+            .run_once(&success_fixture)
+            .await
+            .expect("successful cycle");
+        assert_eq!(success.failed_events, 0);
+        assert_eq!(success.completed_events, 3);
+        let state_after_success =
+            load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
+                .expect("state success");
+        assert_eq!(state_after_success.health.failure_streak, 0);
+        assert_eq!(
+            state_after_success.health.classify().state,
+            TransportHealthState::Healthy
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_runner_emits_reason_codes_for_failed_cycles() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.retry_max_attempts = 2;
+        let failing_fixture_raw = r#"{
+  "schema_version": 1,
+  "name": "failed-cycle-reasons",
+  "events": [
+    {
+      "schema_version": 1,
+      "transport": "whatsapp",
+      "event_kind": "message",
+      "event_id": "whatsapp-failing-1",
+      "conversation_id": "whatsapp-chat-failing",
+      "actor_id": "whatsapp-user-1",
+      "timestamp_ms": 1760300000000,
+      "text": "retries",
+      "metadata": { "simulate_transient_failures": 5 }
+    }
+  ]
+}"#;
+        let failing_fixture =
+            parse_multi_channel_contract_fixture(failing_fixture_raw).expect("parse fixture");
+
+        let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&failing_fixture).await.expect("run once");
+        assert_eq!(summary.failed_events, 1);
+        assert_eq!(summary.retry_attempts, 1);
+
+        let events_log = std::fs::read_to_string(
+            config
+                .state_dir
+                .join(super::MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE),
+        )
+        .expect("read runtime events log");
+        let first_line = events_log.lines().next().expect("at least one report line");
+        let report: Value = serde_json::from_str(first_line).expect("parse report");
+        assert_eq!(report["health_state"], "degraded");
+        let reason_codes = report["reason_codes"]
+            .as_array()
+            .expect("reason code array");
+        let reason_codes_set = reason_codes
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(reason_codes_set.contains("retry_attempted"));
+        assert!(reason_codes_set.contains("transient_failures_observed"));
+        assert!(reason_codes_set.contains("event_processing_failed"));
     }
 }

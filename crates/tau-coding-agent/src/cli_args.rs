@@ -756,7 +756,7 @@ pub(crate) struct Cli {
         conflicts_with = "channel_store_inspect",
         conflicts_with = "channel_store_repair",
         value_name = "target",
-        help = "Inspect transport health snapshot(s) and exit. Targets: slack, github, github:owner/repo"
+        help = "Inspect transport health snapshot(s) and exit. Targets: slack, github, github:owner/repo, multi-channel"
     )]
     pub(crate) transport_health_inspect: Option<String>,
 
@@ -1662,7 +1662,6 @@ pub(crate) struct Cli {
         long = "multi-channel-state-dir",
         env = "TAU_MULTI_CHANNEL_STATE_DIR",
         default_value = ".tau/multi-channel",
-        requires = "multi_channel_contract_runner",
         help = "Directory for multi-channel runtime state and channel-store outputs"
     )]
     pub(crate) multi_channel_state_dir: PathBuf,
