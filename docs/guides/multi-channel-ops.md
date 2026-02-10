@@ -33,6 +33,7 @@ cargo run -p tau-coding-agent -- \
 Primary state files:
 
 - `.tau/multi-channel/state.json`
+- `.tau/multi-channel/live-connectors-state.json`
 - `.tau/multi-channel/runtime-events.jsonl`
 - `.tau/multi-channel/route-traces.jsonl`
 - `.tau/multi-channel/security/channel-lifecycle.json`
@@ -200,6 +201,68 @@ cargo run -p tau-coding-agent -- \
 Use the same command for `discord` and `whatsapp` payloads by changing
 `--multi-channel-live-ingest-transport` and `--multi-channel-live-ingest-file`.
 
+## Live connector runner (polling + webhook)
+
+`--multi-channel-live-connectors-runner` bridges provider APIs directly into
+`--multi-channel-live-ingest-dir` NDJSON inbox files, then existing
+`--multi-channel-live-runner` processes those envelopes.
+
+Connector mode support:
+
+- Telegram: `disabled`, `polling`, `webhook`
+- Discord: `disabled`, `polling`
+- WhatsApp: `disabled`, `webhook`
+
+Polling example (one cycle, deterministic exit):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-live-connectors-runner \
+  --multi-channel-live-connectors-poll-once \
+  --multi-channel-live-ingest-dir .tau/multi-channel/live-ingress \
+  --multi-channel-live-connectors-state-path .tau/multi-channel/live-connectors-state.json \
+  --multi-channel-telegram-ingress-mode polling \
+  --multi-channel-discord-ingress-mode polling \
+  --multi-channel-discord-ingress-channel-id discord-room-1,discord-room-2 \
+  --multi-channel-telegram-bot-token <token> \
+  --multi-channel-discord-bot-token <token>
+```
+
+Webhook example (long-running bridge):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-live-connectors-runner \
+  --multi-channel-live-ingest-dir .tau/multi-channel/live-ingress \
+  --multi-channel-live-connectors-state-path .tau/multi-channel/live-connectors-state.json \
+  --multi-channel-live-webhook-bind 127.0.0.1:8788 \
+  --multi-channel-telegram-ingress-mode webhook \
+  --multi-channel-whatsapp-ingress-mode webhook \
+  --multi-channel-telegram-webhook-secret <secret> \
+  --multi-channel-whatsapp-webhook-verify-token <verify-token> \
+  --multi-channel-whatsapp-webhook-app-secret <app-secret>
+```
+
+Status inspect:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-live-connectors-status \
+  --multi-channel-live-connectors-status-json \
+  --multi-channel-live-connectors-state-path .tau/multi-channel/live-connectors-state.json
+```
+
+Connector status fields include:
+
+- per-channel `liveness`, `events_ingested`, `duplicates_skipped`
+- `retry_attempts`, `auth_failures`, `parse_failures`, `provider_failures`
+- `last_error_code`, `last_success_unix_ms`, `last_error_unix_ms`
+
+Secret resolution follows existing outbound secret flow:
+
+- direct CLI/env (`--multi-channel-telegram-bot-token`, etc.)
+- integration store IDs (`telegram-bot-token`, `discord-bot-token`, `whatsapp-access-token`)
+
 ## Channel lifecycle operations
 
 Tau supports deterministic lifecycle operations per transport:
@@ -340,22 +403,27 @@ Channel secrets can be seeded via integration store:
 
 1. Validate fixture/live runtime locally:
    `cargo test -p tau-coding-agent multi_channel -- --nocapture`
-2. Run deterministic demo (contract + live ingress path):
+2. Validate connector ingest paths:
+   `cargo test -p tau-coding-agent multi_channel_live_connectors -- --test-threads=1`
+3. Run deterministic demo (contract + live ingress path):
    `./scripts/demo/multi-channel.sh`
-3. Confirm health snapshot is `healthy` before promotion:
+4. Confirm health snapshot is `healthy` before promotion:
    `--transport-health-inspect multi-channel --transport-health-json`
-4. Confirm status rollout gate is `pass` before promotion:
+5. Confirm status rollout gate is `pass` before promotion:
    `--multi-channel-status-inspect --multi-channel-status-json`
-5. Promote by increasing fixture/event complexity incrementally while monitoring:
+6. For connector mode, confirm connector status liveness before promotion:
+   `--multi-channel-live-connectors-status --multi-channel-live-connectors-status-json`
+7. Promote by increasing fixture/event complexity incrementally while monitoring:
    `failure_streak`, `last_cycle_failed`, `queue_depth`.
 
 ## Rollback plan
 
-1. Stop invoking `--multi-channel-contract-runner` and `--multi-channel-live-runner`.
-2. Preserve `.tau/multi-channel/` for incident analysis.
-3. Revert to last known-good revision:
+1. Stop invoking `--multi-channel-live-connectors-runner`.
+2. Stop invoking `--multi-channel-contract-runner` and `--multi-channel-live-runner`.
+3. Preserve `.tau/multi-channel/` for incident analysis.
+4. Revert to last known-good revision:
    `git revert <commit>`
-4. Re-run validation matrix before re-enable.
+5. Re-run validation matrix before re-enable.
 
 ## Troubleshooting
 

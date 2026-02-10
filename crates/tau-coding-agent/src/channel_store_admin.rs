@@ -393,6 +393,9 @@ struct MultiChannelStatusInspectReport {
     last_reason_codes: Vec<String>,
     reason_code_counts: BTreeMap<String, usize>,
     health: TransportHealthSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connectors:
+        Option<crate::multi_channel_live_connectors::MultiChannelLiveConnectorsStatusReport>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1057,6 +1060,15 @@ fn collect_multi_channel_status_report(cli: &Cli) -> Result<MultiChannelStatusIn
         increment_count(&mut transport_counts, &transport.to_ascii_lowercase());
     }
 
+    let connectors =
+        match crate::multi_channel_live_connectors::load_multi_channel_live_connectors_status_report(
+            &cli.multi_channel_live_connectors_state_path,
+        ) {
+            Ok(report) if report.state_present => Some(report),
+            Ok(_) => None,
+            Err(_) => None,
+        };
+
     Ok(MultiChannelStatusInspectReport {
         state_path: state_path.display().to_string(),
         events_log_path: events_log_path.display().to_string(),
@@ -1071,6 +1083,7 @@ fn collect_multi_channel_status_report(cli: &Cli) -> Result<MultiChannelStatusIn
         last_reason_codes: cycle_summary.last_reason_codes,
         reason_code_counts: cycle_summary.reason_code_counts,
         health: state.health,
+        connectors,
     })
 }
 
@@ -1781,8 +1794,44 @@ fn render_multi_channel_status_report(report: &MultiChannelStatusInspectReport) 
     } else {
         report.last_reason_codes.join(",")
     };
+    let connector_summary = report
+        .connectors
+        .as_ref()
+        .map(|connectors| {
+            let mut channel_rows = Vec::new();
+            for (channel, state) in &connectors.channels {
+                channel_rows.push(format!(
+                    "{}:{}:{}:{}:{}",
+                    channel,
+                    if state.mode.trim().is_empty() {
+                        "unknown"
+                    } else {
+                        state.mode.as_str()
+                    },
+                    if state.liveness.trim().is_empty() {
+                        "unknown"
+                    } else {
+                        state.liveness.as_str()
+                    },
+                    state.events_ingested,
+                    state.duplicates_skipped
+                ));
+            }
+            channel_rows.sort();
+            format!(
+                "state_present={} processed_event_count={} channels={}",
+                connectors.state_present,
+                connectors.processed_event_count,
+                if channel_rows.is_empty() {
+                    "none".to_string()
+                } else {
+                    channel_rows.join(",")
+                }
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
     format!(
-        "multi-channel status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_event_count={} transport_counts={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        "multi-channel status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_event_count={} transport_counts={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={} connectors={}",
         report.state_path,
         report.events_log_path,
         report.events_log_present,
@@ -1799,6 +1848,7 @@ fn render_multi_channel_status_report(report: &MultiChannelStatusInspectReport) 
         report.health.failure_streak,
         report.health.last_cycle_failed,
         report.health.last_cycle_completed,
+        connector_summary,
     )
 }
 

@@ -40,6 +40,7 @@ mod multi_agent_router;
 mod multi_agent_runtime;
 mod multi_channel_contract;
 mod multi_channel_lifecycle;
+mod multi_channel_live_connectors;
 mod multi_channel_live_ingress;
 mod multi_channel_outbound;
 mod multi_channel_policy;
@@ -133,8 +134,9 @@ pub(crate) use crate::cli_args::Cli;
 pub(crate) use crate::cli_types::{
     CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode,
     CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
-    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
-    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
@@ -269,6 +271,8 @@ pub(crate) use crate::rpc_protocol::{
     execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
     execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
 };
+#[cfg(test)]
+pub(crate) use crate::runtime_cli_validation::validate_multi_channel_live_connectors_runner_cli;
 pub(crate) use crate::runtime_cli_validation::{
     validate_custom_command_contract_runner_cli, validate_dashboard_contract_runner_cli,
     validate_deployment_contract_runner_cli, validate_deployment_wasm_package_cli,

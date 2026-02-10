@@ -122,6 +122,55 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.multi_channel_live_connectors_status {
+        let report =
+            crate::multi_channel_live_connectors::load_multi_channel_live_connectors_status_report(
+                &cli.multi_channel_live_connectors_state_path,
+            )?;
+        if cli.multi_channel_live_connectors_status_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render live connector status json")?
+            );
+        } else {
+            let mut channel_lines = Vec::new();
+            for (channel, status) in &report.channels {
+                channel_lines.push(format!(
+                    "{}:mode={} liveness={} ingested={} duplicates={} retries={} auth_failures={} parse_failures={} provider_failures={} last_error_code={}",
+                    channel,
+                    if status.mode.is_empty() { "unknown" } else { status.mode.as_str() },
+                    if status.liveness.is_empty() { "unknown" } else { status.liveness.as_str() },
+                    status.events_ingested,
+                    status.duplicates_skipped,
+                    status.retry_attempts,
+                    status.auth_failures,
+                    status.parse_failures,
+                    status.provider_failures,
+                    if status.last_error_code.is_empty() {
+                        "none"
+                    } else {
+                        status.last_error_code.as_str()
+                    }
+                ));
+            }
+            channel_lines.sort();
+            println!(
+                "multi-channel live connectors status: state_path={} state_present={} schema_version={} processed_event_count={} channels={}",
+                report.state_path,
+                report.state_present,
+                report.schema_version,
+                report.processed_event_count,
+                if channel_lines.is_empty() {
+                    "none".to_string()
+                } else {
+                    channel_lines.join(" | ")
+                }
+            );
+        }
+        return Ok(true);
+    }
+
     if cli.extension_exec_manifest.is_some() {
         execute_extension_exec_command(cli)?;
         return Ok(true);

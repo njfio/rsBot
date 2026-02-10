@@ -272,6 +272,98 @@ pub(crate) fn validate_multi_channel_live_runner_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_multi_channel_live_connectors_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.multi_channel_live_connectors_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--multi-channel-live-connectors-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--multi-channel-live-connectors-runner cannot be used together with --no-session");
+    }
+    if cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_channel_live_ingest_file.is_some()
+        || cli.multi_channel_live_readiness_preflight
+    {
+        bail!("--multi-channel-live-connectors-runner cannot be combined with --multi-channel-contract-runner, --multi-channel-live-runner, --multi-channel-live-ingest-file, or --multi-channel-live-readiness-preflight");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.memory_contract_runner
+    {
+        bail!("--multi-channel-live-connectors-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, or --memory-contract-runner");
+    }
+    if cli.multi_channel_processed_event_cap == 0 {
+        bail!("--multi-channel-processed-event-cap must be greater than 0");
+    }
+    if cli.multi_channel_retry_max_attempts == 0 {
+        bail!("--multi-channel-retry-max-attempts must be greater than 0");
+    }
+    if cli.multi_channel_live_ingress_dir.exists() && !cli.multi_channel_live_ingress_dir.is_dir() {
+        bail!(
+            "--multi-channel-live-ingress-dir '{}' must point to a directory when it exists",
+            cli.multi_channel_live_ingress_dir.display()
+        );
+    }
+    if cli.multi_channel_live_connectors_state_path.exists()
+        && !cli.multi_channel_live_connectors_state_path.is_file()
+    {
+        bail!(
+            "--multi-channel-live-connectors-state-path '{}' must point to a file when it exists",
+            cli.multi_channel_live_connectors_state_path.display()
+        );
+    }
+
+    let telegram_mode = cli.multi_channel_telegram_ingress_mode;
+    let discord_mode = cli.multi_channel_discord_ingress_mode;
+    let whatsapp_mode = cli.multi_channel_whatsapp_ingress_mode;
+    if telegram_mode.is_disabled() && discord_mode.is_disabled() && whatsapp_mode.is_disabled() {
+        bail!(
+            "at least one connector mode must be enabled: --multi-channel-telegram-ingress-mode, --multi-channel-discord-ingress-mode, or --multi-channel-whatsapp-ingress-mode"
+        );
+    }
+    if discord_mode.is_webhook() {
+        bail!("--multi-channel-discord-ingress-mode=webhook is not supported; use polling");
+    }
+    if whatsapp_mode.is_polling() {
+        bail!("--multi-channel-whatsapp-ingress-mode=polling is not supported; use webhook");
+    }
+    if discord_mode.is_polling()
+        && cli
+            .multi_channel_discord_ingress_channel_ids
+            .iter()
+            .all(|value| value.trim().is_empty())
+    {
+        bail!(
+            "--multi-channel-discord-ingress-channel-id is required when --multi-channel-discord-ingress-mode=polling"
+        );
+    }
+    if telegram_mode.is_webhook() || whatsapp_mode.is_webhook() {
+        crate::gateway_openresponses::validate_gateway_openresponses_bind(
+            &cli.multi_channel_live_webhook_bind,
+        )
+        .with_context(|| {
+            format!(
+                "invalid --multi-channel-live-webhook-bind '{}'",
+                cli.multi_channel_live_webhook_bind
+            )
+        })?;
+    }
+    if cli.multi_channel_live_connectors_poll_once
+        && (telegram_mode.is_webhook() || whatsapp_mode.is_webhook())
+    {
+        bail!(
+            "--multi-channel-live-connectors-poll-once cannot be used with webhook connector modes"
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_multi_channel_live_ingest_cli(cli: &Cli) -> Result<()> {
     if cli.multi_channel_live_ingest_file.is_none() {
         return Ok(());

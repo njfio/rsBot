@@ -170,6 +170,35 @@ impl From<CliMultiChannelTransport> for MultiChannelTransport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliMultiChannelLiveConnectorMode {
+    Disabled,
+    Polling,
+    Webhook,
+}
+
+impl CliMultiChannelLiveConnectorMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CliMultiChannelLiveConnectorMode::Disabled => "disabled",
+            CliMultiChannelLiveConnectorMode::Polling => "polling",
+            CliMultiChannelLiveConnectorMode::Webhook => "webhook",
+        }
+    }
+
+    pub(crate) fn is_disabled(self) -> bool {
+        matches!(self, CliMultiChannelLiveConnectorMode::Disabled)
+    }
+
+    pub(crate) fn is_polling(self) -> bool {
+        matches!(self, CliMultiChannelLiveConnectorMode::Polling)
+    }
+
+    pub(crate) fn is_webhook(self) -> bool {
+        matches!(self, CliMultiChannelLiveConnectorMode::Webhook)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CliMultiChannelOutboundMode {
     ChannelStore,
     DryRun,

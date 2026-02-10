@@ -87,12 +87,13 @@ use super::{
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
-    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
-    validate_profile_name, validate_rpc_frame_file, validate_session_file,
-    validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
-    AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
-    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
-    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode,
+    validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_ingest_cli,
+    validate_multi_channel_live_runner_cli, validate_profile_name, validate_rpc_frame_file,
+    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
+    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule,
+    CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
     CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
     CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
     CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
@@ -488,6 +489,21 @@ fn test_cli() -> Cli {
         event_webhook_signature_max_skew_seconds: 300,
         multi_channel_contract_runner: false,
         multi_channel_live_runner: false,
+        multi_channel_live_connectors_runner: false,
+        multi_channel_live_connectors_status: false,
+        multi_channel_live_connectors_status_json: false,
+        multi_channel_live_connectors_state_path: PathBuf::from(
+            ".tau/multi-channel/live-connectors-state.json",
+        ),
+        multi_channel_live_connectors_poll_once: false,
+        multi_channel_live_webhook_bind: "127.0.0.1:8788".to_string(),
+        multi_channel_telegram_ingress_mode: CliMultiChannelLiveConnectorMode::Disabled,
+        multi_channel_discord_ingress_mode: CliMultiChannelLiveConnectorMode::Disabled,
+        multi_channel_whatsapp_ingress_mode: CliMultiChannelLiveConnectorMode::Disabled,
+        multi_channel_discord_ingress_channel_ids: vec![],
+        multi_channel_telegram_webhook_secret: None,
+        multi_channel_whatsapp_webhook_verify_token: None,
+        multi_channel_whatsapp_webhook_app_secret: None,
         multi_channel_live_ingest_file: None,
         multi_channel_live_ingest_transport: None,
         multi_channel_live_ingest_provider: "native-ingress".to_string(),
@@ -1421,6 +1437,31 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.multi_channel_contract_runner);
     assert!(!cli.multi_channel_live_runner);
+    assert!(!cli.multi_channel_live_connectors_runner);
+    assert!(!cli.multi_channel_live_connectors_status);
+    assert!(!cli.multi_channel_live_connectors_status_json);
+    assert!(!cli.multi_channel_live_connectors_poll_once);
+    assert_eq!(
+        cli.multi_channel_live_connectors_state_path,
+        PathBuf::from(".tau/multi-channel/live-connectors-state.json")
+    );
+    assert_eq!(cli.multi_channel_live_webhook_bind, "127.0.0.1:8788");
+    assert_eq!(
+        cli.multi_channel_telegram_ingress_mode,
+        CliMultiChannelLiveConnectorMode::Disabled
+    );
+    assert_eq!(
+        cli.multi_channel_discord_ingress_mode,
+        CliMultiChannelLiveConnectorMode::Disabled
+    );
+    assert_eq!(
+        cli.multi_channel_whatsapp_ingress_mode,
+        CliMultiChannelLiveConnectorMode::Disabled
+    );
+    assert!(cli.multi_channel_discord_ingress_channel_ids.is_empty());
+    assert!(cli.multi_channel_telegram_webhook_secret.is_none());
+    assert!(cli.multi_channel_whatsapp_webhook_verify_token.is_none());
+    assert!(cli.multi_channel_whatsapp_webhook_app_secret.is_none());
     assert!(cli.multi_channel_live_ingest_file.is_none());
     assert!(cli.multi_channel_live_ingest_transport.is_none());
     assert_eq!(cli.multi_channel_live_ingest_provider, "native-ingress");
@@ -1648,6 +1689,68 @@ fn functional_cli_multi_channel_live_runner_flags_accept_explicit_overrides() {
 }
 
 #[test]
+fn functional_cli_multi_channel_live_connectors_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--multi-channel-live-connectors-runner",
+        "--multi-channel-live-connectors-poll-once",
+        "--multi-channel-live-connectors-state-path",
+        ".tau/multi-channel/connectors.json",
+        "--multi-channel-live-webhook-bind",
+        "0.0.0.0:9797",
+        "--multi-channel-telegram-ingress-mode",
+        "polling",
+        "--multi-channel-discord-ingress-mode",
+        "polling",
+        "--multi-channel-whatsapp-ingress-mode",
+        "webhook",
+        "--multi-channel-discord-ingress-channel-id",
+        "room-1,room-2",
+        "--multi-channel-telegram-webhook-secret",
+        "telegram-secret",
+        "--multi-channel-whatsapp-webhook-verify-token",
+        "wa-verify",
+        "--multi-channel-whatsapp-webhook-app-secret",
+        "wa-secret",
+    ]);
+    assert!(cli.multi_channel_live_connectors_runner);
+    assert!(cli.multi_channel_live_connectors_poll_once);
+    assert_eq!(
+        cli.multi_channel_live_connectors_state_path,
+        PathBuf::from(".tau/multi-channel/connectors.json")
+    );
+    assert_eq!(cli.multi_channel_live_webhook_bind, "0.0.0.0:9797");
+    assert_eq!(
+        cli.multi_channel_telegram_ingress_mode,
+        CliMultiChannelLiveConnectorMode::Polling
+    );
+    assert_eq!(
+        cli.multi_channel_discord_ingress_mode,
+        CliMultiChannelLiveConnectorMode::Polling
+    );
+    assert_eq!(
+        cli.multi_channel_whatsapp_ingress_mode,
+        CliMultiChannelLiveConnectorMode::Webhook
+    );
+    assert_eq!(
+        cli.multi_channel_discord_ingress_channel_ids,
+        vec!["room-1".to_string(), "room-2".to_string()]
+    );
+    assert_eq!(
+        cli.multi_channel_telegram_webhook_secret.as_deref(),
+        Some("telegram-secret")
+    );
+    assert_eq!(
+        cli.multi_channel_whatsapp_webhook_verify_token.as_deref(),
+        Some("wa-verify")
+    );
+    assert_eq!(
+        cli.multi_channel_whatsapp_webhook_app_secret.as_deref(),
+        Some("wa-secret")
+    );
+}
+
+#[test]
 fn functional_cli_multi_channel_outbound_provider_secret_flags_accept_overrides() {
     let cli = parse_cli_with_stack([
         "tau-rs",
@@ -1723,6 +1826,15 @@ fn regression_cli_multi_channel_live_ingest_transport_requires_ingest_file() {
     let parse =
         try_parse_cli_with_stack(["tau-rs", "--multi-channel-live-ingest-transport", "discord"]);
     let error = parse.expect_err("transport flag should require ingest-file");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_multi_channel_live_connectors_status_json_requires_status_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--multi-channel-live-connectors-status-json"]);
+    let error = parse.expect_err("status json should require connector status action");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -14124,6 +14236,104 @@ fn regression_validate_multi_channel_live_runner_cli_rejects_zero_limits() {
     assert!(timeout_error
         .to_string()
         .contains("--multi-channel-outbound-http-timeout-ms must be greater than 0"));
+}
+
+#[test]
+fn unit_validate_multi_channel_live_connectors_runner_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+
+    let mut cli = test_cli();
+    cli.multi_channel_live_connectors_runner = true;
+    cli.multi_channel_live_ingress_dir = temp.path().join("live-ingress");
+    cli.multi_channel_live_connectors_state_path = temp.path().join("connectors-state.json");
+    cli.multi_channel_telegram_ingress_mode = CliMultiChannelLiveConnectorMode::Polling;
+
+    validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect("multi-channel live connectors config should validate");
+}
+
+#[test]
+fn functional_validate_multi_channel_live_connectors_runner_cli_rejects_prompt_conflicts() {
+    let temp = tempdir().expect("tempdir");
+
+    let mut cli = test_cli();
+    cli.multi_channel_live_connectors_runner = true;
+    cli.multi_channel_live_ingress_dir = temp.path().join("live-ingress");
+    cli.multi_channel_live_connectors_state_path = temp.path().join("connectors-state.json");
+    cli.multi_channel_telegram_ingress_mode = CliMultiChannelLiveConnectorMode::Polling;
+    cli.prompt = Some("conflict".to_string());
+
+    let error =
+        validate_multi_channel_live_connectors_runner_cli(&cli).expect_err("prompt conflict");
+    assert!(error
+        .to_string()
+        .contains("--multi-channel-live-connectors-runner cannot be combined"));
+}
+
+#[test]
+fn integration_validate_multi_channel_live_connectors_runner_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+
+    let mut cli = test_cli();
+    cli.multi_channel_live_connectors_runner = true;
+    cli.multi_channel_live_ingress_dir = temp.path().join("live-ingress");
+    cli.multi_channel_live_connectors_state_path = temp.path().join("connectors-state.json");
+    cli.multi_channel_telegram_ingress_mode = CliMultiChannelLiveConnectorMode::Polling;
+    cli.events_runner = true;
+
+    let error = validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect_err("transport conflict should fail");
+    assert!(error.to_string().contains(
+        "--github-issues-bridge, --slack-bridge, --events-runner, or --memory-contract-runner"
+    ));
+}
+
+#[test]
+fn regression_validate_multi_channel_live_connectors_runner_cli_rejects_invalid_modes_and_bindings()
+{
+    let temp = tempdir().expect("tempdir");
+
+    let mut cli = test_cli();
+    cli.multi_channel_live_connectors_runner = true;
+    cli.multi_channel_live_ingress_dir = temp.path().join("live-ingress");
+    cli.multi_channel_live_connectors_state_path = temp.path().join("connectors-state.json");
+
+    let no_mode_error = validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect_err("missing mode should fail");
+    assert!(no_mode_error
+        .to_string()
+        .contains("at least one connector mode must be enabled"));
+
+    cli.multi_channel_discord_ingress_mode = CliMultiChannelLiveConnectorMode::Webhook;
+    let discord_mode_error = validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect_err("discord webhook should fail");
+    assert!(discord_mode_error
+        .to_string()
+        .contains("--multi-channel-discord-ingress-mode=webhook is not supported"));
+
+    cli.multi_channel_discord_ingress_mode = CliMultiChannelLiveConnectorMode::Polling;
+    let discord_ids_error = validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect_err("discord polling without channel ids should fail");
+    assert!(discord_ids_error
+        .to_string()
+        .contains("--multi-channel-discord-ingress-channel-id is required"));
+
+    cli.multi_channel_discord_ingress_channel_ids = vec!["ops-room".to_string()];
+    cli.multi_channel_whatsapp_ingress_mode = CliMultiChannelLiveConnectorMode::Webhook;
+    cli.multi_channel_live_connectors_poll_once = true;
+    let poll_once_error = validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect_err("poll once cannot pair with webhook mode");
+    assert!(poll_once_error.to_string().contains(
+        "--multi-channel-live-connectors-poll-once cannot be used with webhook connector modes"
+    ));
+
+    cli.multi_channel_live_connectors_poll_once = false;
+    cli.multi_channel_live_webhook_bind = "invalid bind".to_string();
+    let bind_error = validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect_err("invalid bind should fail");
+    assert!(bind_error
+        .to_string()
+        .contains("invalid --multi-channel-live-webhook-bind"));
 }
 
 #[test]

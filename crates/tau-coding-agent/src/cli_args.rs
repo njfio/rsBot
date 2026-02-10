@@ -5,9 +5,9 @@ use clap::{ArgAction, Parser};
 use crate::{
     release_channel_commands::RELEASE_LOOKUP_CACHE_TTL_MS, CliBashProfile, CliCommandFileErrorMode,
     CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule,
-    CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
+    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -1992,6 +1992,140 @@ pub(crate) struct Cli {
         help = "Run live-ingress multi-channel runtime using local adapter inbox files for Telegram/Discord/WhatsApp"
     )]
     pub(crate) multi_channel_live_runner: bool,
+
+    #[arg(
+        long = "multi-channel-live-connectors-runner",
+        env = "TAU_MULTI_CHANNEL_LIVE_CONNECTORS_RUNNER",
+        default_value_t = false,
+        conflicts_with = "multi_channel_contract_runner",
+        conflicts_with = "multi_channel_live_runner",
+        conflicts_with = "multi_channel_live_ingest_file",
+        conflicts_with = "multi_channel_live_readiness_preflight",
+        help = "Run live ingress connectors for Telegram/Discord/WhatsApp (polling and/or webhook bridges)"
+    )]
+    pub(crate) multi_channel_live_connectors_runner: bool,
+
+    #[arg(
+        long = "multi-channel-live-connectors-status",
+        env = "TAU_MULTI_CHANNEL_LIVE_CONNECTORS_STATUS",
+        default_value_t = false,
+        conflicts_with = "multi_channel_contract_runner",
+        conflicts_with = "multi_channel_live_runner",
+        conflicts_with = "multi_channel_live_connectors_runner",
+        conflicts_with = "multi_channel_live_ingest_file",
+        conflicts_with = "multi_channel_live_readiness_preflight",
+        help = "Inspect persisted live connector liveness/error counters and exit"
+    )]
+    pub(crate) multi_channel_live_connectors_status: bool,
+
+    #[arg(
+        long = "multi-channel-live-connectors-status-json",
+        env = "TAU_MULTI_CHANNEL_LIVE_CONNECTORS_STATUS_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "multi_channel_live_connectors_status",
+        help = "Emit --multi-channel-live-connectors-status output as pretty JSON"
+    )]
+    pub(crate) multi_channel_live_connectors_status_json: bool,
+
+    #[arg(
+        long = "multi-channel-live-connectors-state-path",
+        env = "TAU_MULTI_CHANNEL_LIVE_CONNECTORS_STATE_PATH",
+        default_value = ".tau/multi-channel/live-connectors-state.json",
+        help = "Path to live connector state/counter snapshot used by runner and status inspect"
+    )]
+    pub(crate) multi_channel_live_connectors_state_path: PathBuf,
+
+    #[arg(
+        long = "multi-channel-live-connectors-poll-once",
+        env = "TAU_MULTI_CHANNEL_LIVE_CONNECTORS_POLL_ONCE",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "multi_channel_live_connectors_runner",
+        help = "Run one polling connector cycle and exit (cannot be combined with webhook connector modes)"
+    )]
+    pub(crate) multi_channel_live_connectors_poll_once: bool,
+
+    #[arg(
+        long = "multi-channel-live-webhook-bind",
+        env = "TAU_MULTI_CHANNEL_LIVE_WEBHOOK_BIND",
+        default_value = "127.0.0.1:8788",
+        requires = "multi_channel_live_connectors_runner",
+        help = "Bind address for live connector webhook server when webhook connector modes are enabled"
+    )]
+    pub(crate) multi_channel_live_webhook_bind: String,
+
+    #[arg(
+        long = "multi-channel-telegram-ingress-mode",
+        env = "TAU_MULTI_CHANNEL_TELEGRAM_INGRESS_MODE",
+        value_enum,
+        default_value_t = CliMultiChannelLiveConnectorMode::Disabled,
+        requires = "multi_channel_live_connectors_runner",
+        help = "Telegram connector mode for live connectors runner (disabled, polling, webhook)"
+    )]
+    pub(crate) multi_channel_telegram_ingress_mode: CliMultiChannelLiveConnectorMode,
+
+    #[arg(
+        long = "multi-channel-discord-ingress-mode",
+        env = "TAU_MULTI_CHANNEL_DISCORD_INGRESS_MODE",
+        value_enum,
+        default_value_t = CliMultiChannelLiveConnectorMode::Disabled,
+        requires = "multi_channel_live_connectors_runner",
+        help = "Discord connector mode for live connectors runner (disabled, polling)"
+    )]
+    pub(crate) multi_channel_discord_ingress_mode: CliMultiChannelLiveConnectorMode,
+
+    #[arg(
+        long = "multi-channel-whatsapp-ingress-mode",
+        env = "TAU_MULTI_CHANNEL_WHATSAPP_INGRESS_MODE",
+        value_enum,
+        default_value_t = CliMultiChannelLiveConnectorMode::Disabled,
+        requires = "multi_channel_live_connectors_runner",
+        help = "WhatsApp connector mode for live connectors runner (disabled, webhook)"
+    )]
+    pub(crate) multi_channel_whatsapp_ingress_mode: CliMultiChannelLiveConnectorMode,
+
+    #[arg(
+        long = "multi-channel-discord-ingress-channel-id",
+        env = "TAU_MULTI_CHANNEL_DISCORD_INGRESS_CHANNEL_ID",
+        value_delimiter = ',',
+        requires = "multi_channel_live_connectors_runner",
+        help = "Discord channel ids polled when --multi-channel-discord-ingress-mode=polling (repeatable)"
+    )]
+    pub(crate) multi_channel_discord_ingress_channel_ids: Vec<String>,
+
+    #[arg(
+        long = "multi-channel-telegram-webhook-secret",
+        env = "TAU_MULTI_CHANNEL_TELEGRAM_WEBHOOK_SECRET",
+        hide_env_values = true,
+        requires = "multi_channel_live_connectors_runner",
+        help = "Optional Telegram webhook secret token required in X-Telegram-Bot-Api-Secret-Token"
+    )]
+    pub(crate) multi_channel_telegram_webhook_secret: Option<String>,
+
+    #[arg(
+        long = "multi-channel-whatsapp-webhook-verify-token",
+        env = "TAU_MULTI_CHANNEL_WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+        hide_env_values = true,
+        requires = "multi_channel_live_connectors_runner",
+        help = "Verify token used for WhatsApp webhook subscription challenge"
+    )]
+    pub(crate) multi_channel_whatsapp_webhook_verify_token: Option<String>,
+
+    #[arg(
+        long = "multi-channel-whatsapp-webhook-app-secret",
+        env = "TAU_MULTI_CHANNEL_WHATSAPP_WEBHOOK_APP_SECRET",
+        hide_env_values = true,
+        requires = "multi_channel_live_connectors_runner",
+        help = "App secret used to verify X-Hub-Signature-256 for WhatsApp webhook posts"
+    )]
+    pub(crate) multi_channel_whatsapp_webhook_app_secret: Option<String>,
 
     #[arg(
         long = "multi-channel-live-ingest-file",
