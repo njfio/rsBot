@@ -79,7 +79,11 @@ pub(crate) fn default_pairing_policy_config() -> Result<PairingPolicyConfig> {
 pub(crate) fn pairing_policy_for_state_dir(state_dir: &Path) -> PairingPolicyConfig {
     let state_name = state_dir.file_name().and_then(|value| value.to_str());
     let tau_root = match state_name {
-        Some("github") | Some("slack") | Some("events") | Some("channel-store") => state_dir
+        Some("github")
+        | Some("slack")
+        | Some("events")
+        | Some("channel-store")
+        | Some("multi-channel") => state_dir
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or(state_dir),
@@ -728,6 +732,13 @@ mod tests {
         let transport_policy = pairing_policy_for_state_dir(&transport_root);
         assert_eq!(
             transport_policy.registry_path,
+            PathBuf::from(".tau/security/pairings.json")
+        );
+
+        let multi_channel_root = PathBuf::from(".tau/multi-channel");
+        let multi_channel_policy = pairing_policy_for_state_dir(&multi_channel_root);
+        assert_eq!(
+            multi_channel_policy.registry_path,
             PathBuf::from(".tau/security/pairings.json")
         );
 

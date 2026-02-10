@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
 use crate::multi_channel_contract::{
@@ -13,6 +13,7 @@ use crate::multi_channel_contract::{
     MultiChannelEventKind, MultiChannelInboundEvent,
 };
 use crate::multi_channel_live_ingress::parse_multi_channel_live_inbound_envelope;
+use crate::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
 use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
 
 const MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
@@ -22,6 +23,8 @@ const MULTI_CHANNEL_LIVE_INGRESS_SOURCES: [(&str, &str); 3] = [
     ("discord", "discord.ndjson"),
     ("whatsapp", "whatsapp.ndjson"),
 ];
+const PAIRING_REASON_ALLOW_PERMISSIVE_MODE: &str = "allow_permissive_mode";
+const PAIRING_REASON_DENY_POLICY_EVALUATION_ERROR: &str = "deny_policy_evaluation_error";
 
 fn multi_channel_runtime_state_schema_version() -> u32 {
     MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION
@@ -56,6 +59,10 @@ pub(crate) struct MultiChannelRuntimeSummary {
     pub(crate) transient_failures: usize,
     pub(crate) retry_attempts: usize,
     pub(crate) failed_events: usize,
+    pub(crate) policy_checked_events: usize,
+    pub(crate) policy_enforced_events: usize,
+    pub(crate) policy_allowed_events: usize,
+    pub(crate) policy_denied_events: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -71,6 +78,10 @@ struct MultiChannelRuntimeCycleReport {
     transient_failures: usize,
     retry_attempts: usize,
     failed_events: usize,
+    policy_checked_events: usize,
+    policy_enforced_events: usize,
+    policy_allowed_events: usize,
+    policy_denied_events: usize,
     backlog_events: usize,
     failure_streak: usize,
 }
@@ -104,14 +115,18 @@ pub(crate) async fn run_multi_channel_contract_runner(
     let health = runtime.transport_health().clone();
     let classification = health.classify();
     println!(
-        "multi-channel runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={}",
+        "multi-channel runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={} policy_checked={} policy_enforced={} policy_allowed={} policy_denied={}",
         summary.discovered_events,
         summary.queued_events,
         summary.completed_events,
         summary.duplicate_skips,
         summary.retry_attempts,
         summary.transient_failures,
-        summary.failed_events
+        summary.failed_events,
+        summary.policy_checked_events,
+        summary.policy_enforced_events,
+        summary.policy_allowed_events,
+        summary.policy_denied_events
     );
     println!(
         "multi-channel runner health: state={} failure_streak={} queue_depth={} reason={}",
@@ -139,14 +154,18 @@ pub(crate) async fn run_multi_channel_live_runner(
     let health = runtime.transport_health().clone();
     let classification = health.classify();
     println!(
-        "multi-channel live runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={}",
+        "multi-channel live runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={} policy_checked={} policy_enforced={} policy_allowed={} policy_denied={}",
         summary.discovered_events,
         summary.queued_events,
         summary.completed_events,
         summary.duplicate_skips,
         summary.retry_attempts,
         summary.transient_failures,
-        summary.failed_events
+        summary.failed_events,
+        summary.policy_checked_events,
+        summary.policy_enforced_events,
+        summary.policy_allowed_events,
+        summary.policy_denied_events
     );
     println!(
         "multi-channel live runner health: state={} failure_streak={} queue_depth={} reason={}",
@@ -219,6 +238,13 @@ impl MultiChannelRuntime {
                 summary.duplicate_skips = summary.duplicate_skips.saturating_add(1);
                 continue;
             }
+            let now_unix_ms = current_unix_timestamp_ms();
+            let (policy_channel, pairing_decision) =
+                self.evaluate_pairing_decision(&event, now_unix_ms);
+            summary.policy_checked_events = summary.policy_checked_events.saturating_add(1);
+            if pairing_decision_is_enforced(&pairing_decision) {
+                summary.policy_enforced_events = summary.policy_enforced_events.saturating_add(1);
+            }
 
             let simulated_transient_failures = simulated_transient_failures(&event);
             let mut attempt = 1usize;
@@ -235,10 +261,17 @@ impl MultiChannelRuntime {
                     continue;
                 }
 
-                match self.persist_event(&event, &event_key) {
+                match self.persist_event(&event, &event_key, &policy_channel, &pairing_decision) {
                     Ok(()) => {
                         self.record_processed_event(&event_key);
                         summary.completed_events = summary.completed_events.saturating_add(1);
+                        if matches!(pairing_decision, PairingDecision::Allow { .. }) {
+                            summary.policy_allowed_events =
+                                summary.policy_allowed_events.saturating_add(1);
+                        } else {
+                            summary.policy_denied_events =
+                                summary.policy_denied_events.saturating_add(1);
+                        }
                         break;
                     }
                     Err(error) => {
@@ -285,21 +318,88 @@ impl MultiChannelRuntime {
         Ok(summary)
     }
 
-    fn persist_event(&self, event: &MultiChannelInboundEvent, event_key: &str) -> Result<()> {
+    fn evaluate_pairing_decision(
+        &self,
+        event: &MultiChannelInboundEvent,
+        now_unix_ms: u64,
+    ) -> (String, PairingDecision) {
+        let policy_channel = pairing_policy_channel(event);
+        let pairing_policy = pairing_policy_for_state_dir(&self.config.state_dir);
+        let pairing_decision = match evaluate_pairing_access(
+            &pairing_policy,
+            &policy_channel,
+            event.actor_id.as_str(),
+            now_unix_ms,
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                eprintln!(
+                    "multi-channel policy evaluation failed: transport={} event_id={} actor_id={} policy_channel={} error={error}",
+                    event.transport.as_str(),
+                    event.event_id.trim(),
+                    event.actor_id.trim(),
+                    policy_channel
+                );
+                PairingDecision::Deny {
+                    reason_code: PAIRING_REASON_DENY_POLICY_EVALUATION_ERROR.to_string(),
+                }
+            }
+        };
+        (policy_channel, pairing_decision)
+    }
+
+    fn persist_event(
+        &self,
+        event: &MultiChannelInboundEvent,
+        event_key: &str,
+        policy_channel: &str,
+        pairing_decision: &PairingDecision,
+    ) -> Result<()> {
         let store = ChannelStore::open(
             &self.config.state_dir.join("channel-store"),
             event.transport.as_str(),
             &event.conversation_id,
         )?;
         let timestamp_unix_ms = current_unix_timestamp_ms();
+        let pairing_status = pairing_decision_status(pairing_decision);
+        let pairing_reason_code = pairing_decision.reason_code().to_string();
+        let pairing_payload = json!({
+            "decision": pairing_status,
+            "reason_code": pairing_reason_code,
+            "channel": policy_channel,
+            "actor_id": event.actor_id.trim(),
+        });
+        let mut inbound_payload =
+            serde_json::to_value(event).context("serialize inbound event payload")?;
+        if let Value::Object(map) = &mut inbound_payload {
+            map.insert("pairing".to_string(), pairing_payload.clone());
+        }
 
         store.append_log_entry(&ChannelLogEntry {
             timestamp_unix_ms,
             direction: "inbound".to_string(),
             event_key: Some(event_key.to_string()),
             source: event.transport.as_str().to_string(),
-            payload: serde_json::to_value(event).context("serialize inbound event payload")?,
+            payload: inbound_payload,
         })?;
+
+        if let PairingDecision::Deny { reason_code } = pairing_decision {
+            store.append_log_entry(&ChannelLogEntry {
+                timestamp_unix_ms: current_unix_timestamp_ms(),
+                direction: "outbound".to_string(),
+                event_key: Some(event_key.to_string()),
+                source: "tau-multi-channel-runner".to_string(),
+                payload: json!({
+                    "status": "denied",
+                    "reason_code": reason_code,
+                    "policy_channel": policy_channel,
+                    "actor_id": event.actor_id.trim(),
+                    "event_key": event_key,
+                    "transport": event.transport.as_str(),
+                }),
+            })?;
+            return Ok(());
+        }
 
         if !event.text.trim().is_empty() {
             store.append_context_entry(&ChannelContextEntry {
@@ -319,6 +419,7 @@ impl MultiChannelRuntime {
                 "response": response_text,
                 "event_key": event_key,
                 "transport": event.transport.as_str(),
+                "pairing": pairing_payload,
             }),
         })?;
         store.append_context_entry(&ChannelContextEntry {
@@ -348,6 +449,26 @@ impl MultiChannelRuntime {
             }
         }
     }
+}
+
+fn pairing_policy_channel(event: &MultiChannelInboundEvent) -> String {
+    format!(
+        "{}:{}",
+        event.transport.as_str(),
+        event.conversation_id.trim()
+    )
+}
+
+fn pairing_decision_status(decision: &PairingDecision) -> &'static str {
+    if matches!(decision, PairingDecision::Allow { .. }) {
+        "allow"
+    } else {
+        "deny"
+    }
+}
+
+fn pairing_decision_is_enforced(decision: &PairingDecision) -> bool {
+    decision.reason_code() != PAIRING_REASON_ALLOW_PERMISSIVE_MODE
 }
 
 fn load_multi_channel_live_events(ingress_dir: &Path) -> Result<Vec<MultiChannelInboundEvent>> {
@@ -427,23 +548,39 @@ fn build_transport_health_snapshot(
 
 fn cycle_reason_codes(summary: &MultiChannelRuntimeSummary) -> Vec<String> {
     let mut codes = Vec::new();
+    let mut operational_issue_detected = false;
     if summary.discovered_events > summary.queued_events {
+        operational_issue_detected = true;
         codes.push("queue_backpressure_applied".to_string());
     }
     if summary.duplicate_skips > 0 {
+        operational_issue_detected = true;
         codes.push("duplicate_events_skipped".to_string());
     }
     if summary.retry_attempts > 0 {
+        operational_issue_detected = true;
         codes.push("retry_attempted".to_string());
     }
     if summary.transient_failures > 0 {
+        operational_issue_detected = true;
         codes.push("transient_failures_observed".to_string());
     }
     if summary.failed_events > 0 {
+        operational_issue_detected = true;
         codes.push("event_processing_failed".to_string());
     }
-    if codes.is_empty() {
+    if !operational_issue_detected {
         codes.push("healthy_cycle".to_string());
+    }
+    if summary.policy_checked_events > 0 {
+        if summary.policy_enforced_events > 0 {
+            codes.push("pairing_policy_enforced".to_string());
+        } else {
+            codes.push("pairing_policy_permissive".to_string());
+        }
+    }
+    if summary.policy_denied_events > 0 {
+        codes.push("pairing_policy_denied_events".to_string());
     }
     codes
 }
@@ -473,6 +610,10 @@ fn append_multi_channel_cycle_report(
         transient_failures: summary.transient_failures,
         retry_attempts: summary.retry_attempts,
         failed_events: summary.failed_events,
+        policy_checked_events: summary.policy_checked_events,
+        policy_enforced_events: summary.policy_enforced_events,
+        policy_allowed_events: summary.policy_allowed_events,
+        policy_denied_events: summary.policy_denied_events,
         backlog_events: summary
             .discovered_events
             .saturating_sub(summary.queued_events),
@@ -589,6 +730,7 @@ fn save_multi_channel_runtime_state(path: &Path, state: &MultiChannelRuntimeStat
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
     use serde_json::Value;
@@ -602,6 +744,7 @@ mod tests {
     use crate::channel_store::ChannelStore;
     use crate::multi_channel_contract::{
         load_multi_channel_contract_fixture, parse_multi_channel_contract_fixture,
+        MultiChannelEventKind, MultiChannelInboundEvent, MultiChannelTransport,
     };
     use crate::transport_health::TransportHealthState;
 
@@ -652,12 +795,59 @@ mod tests {
             .expect("write ingress file");
     }
 
+    fn write_pairing_allowlist(root: &Path, payload: &str) {
+        let security_dir = root.join(".tau/security");
+        std::fs::create_dir_all(&security_dir).expect("create security dir");
+        std::fs::write(security_dir.join("allowlist.json"), payload).expect("write allowlist");
+    }
+
+    fn write_pairing_registry(root: &Path, payload: &str) {
+        let security_dir = root.join(".tau/security");
+        std::fs::create_dir_all(&security_dir).expect("create security dir");
+        std::fs::write(security_dir.join("pairings.json"), payload).expect("write pairings");
+    }
+
+    fn sample_event(
+        transport: MultiChannelTransport,
+        event_id: &str,
+        conversation_id: &str,
+        actor_id: &str,
+        text: &str,
+    ) -> MultiChannelInboundEvent {
+        MultiChannelInboundEvent {
+            schema_version: 1,
+            transport,
+            event_kind: MultiChannelEventKind::Message,
+            event_id: event_id.to_string(),
+            conversation_id: conversation_id.to_string(),
+            thread_id: String::new(),
+            actor_id: actor_id.to_string(),
+            actor_display: String::new(),
+            timestamp_ms: 1_760_200_000_000,
+            text: text.to_string(),
+            attachments: Vec::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
     #[test]
     fn unit_retry_delay_ms_scales_with_attempt_number() {
         assert_eq!(retry_delay_ms(0, 1), 0);
         assert_eq!(retry_delay_ms(10, 1), 10);
         assert_eq!(retry_delay_ms(10, 2), 20);
         assert_eq!(retry_delay_ms(10, 3), 40);
+    }
+
+    #[test]
+    fn unit_pairing_policy_channel_includes_transport_prefix() {
+        let event = sample_event(
+            MultiChannelTransport::Discord,
+            "evt-1",
+            "ops-room",
+            "discord-user-1",
+            "hello",
+        );
+        assert_eq!(super::pairing_policy_channel(&event), "discord:ops-room");
     }
 
     #[tokio::test]
@@ -674,6 +864,10 @@ mod tests {
         assert_eq!(summary.completed_events, 3);
         assert_eq!(summary.duplicate_skips, 0);
         assert_eq!(summary.failed_events, 0);
+        assert_eq!(summary.policy_checked_events, 3);
+        assert_eq!(summary.policy_enforced_events, 0);
+        assert_eq!(summary.policy_allowed_events, 3);
+        assert_eq!(summary.policy_denied_events, 0);
 
         let state = load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
             .expect("load state");
@@ -691,6 +885,7 @@ mod tests {
         .expect("read runtime events log");
         assert!(events_log.contains("healthy_cycle"));
         assert!(events_log.contains("\"health_state\":\"healthy\""));
+        assert!(events_log.contains("pairing_policy_permissive"));
 
         for event in &fixture.events {
             let store = ChannelStore::open(
@@ -703,7 +898,126 @@ mod tests {
             let context = store.load_context_entries().expect("load context");
             assert_eq!(logs.len(), 2);
             assert!(context.len() >= 2);
+            assert_eq!(
+                logs[0].payload["pairing"]["decision"].as_str(),
+                Some("allow")
+            );
+            assert_eq!(
+                logs[0].payload["pairing"]["reason_code"].as_str(),
+                Some("allow_permissive_mode")
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn functional_runner_allows_allowlisted_actor_in_strict_mode() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "telegram:chat-allow": ["telegram-allowed-user"]
+  }
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let events = vec![sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-allow-1",
+            "chat-allow",
+            "telegram-allowed-user",
+            "allowlist actor",
+        )];
+        let summary = runtime.run_once_events(&events).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+        assert_eq!(summary.policy_checked_events, 1);
+        assert_eq!(summary.policy_enforced_events, 1);
+        assert_eq!(summary.policy_allowed_events, 1);
+        assert_eq!(summary.policy_denied_events, 0);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "chat-allow",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let context = store.load_context_entries().expect("load context");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(context.len(), 2);
+        assert_eq!(
+            logs[0].payload["pairing"]["reason_code"].as_str(),
+            Some("allow_allowlist")
+        );
+
+        let events_log = std::fs::read_to_string(
+            temp.path()
+                .join(".tau/multi-channel")
+                .join(super::MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE),
+        )
+        .expect("read events log");
+        assert!(events_log.contains("pairing_policy_enforced"));
+    }
+
+    #[tokio::test]
+    async fn integration_runner_denies_unpaired_actor_in_strict_mode() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {}
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let events = vec![sample_event(
+            MultiChannelTransport::Discord,
+            "dc-deny-1",
+            "discord-room-deny",
+            "discord-unknown-user",
+            "restricted actor",
+        )];
+        let summary = runtime.run_once_events(&events).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+        assert_eq!(summary.policy_checked_events, 1);
+        assert_eq!(summary.policy_enforced_events, 1);
+        assert_eq!(summary.policy_allowed_events, 0);
+        assert_eq!(summary.policy_denied_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "discord",
+            "discord-room-deny",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let context = store.load_context_entries().expect("load context");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(context.len(), 0);
+        assert_eq!(logs[1].payload["status"].as_str(), Some("denied"));
+        assert_eq!(
+            logs[1].payload["reason_code"].as_str(),
+            Some("deny_actor_not_paired_or_allowlisted")
+        );
+
+        let events_log = std::fs::read_to_string(
+            temp.path()
+                .join(".tau/multi-channel")
+                .join(super::MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE),
+        )
+        .expect("read events log");
+        assert!(events_log.contains("pairing_policy_denied_events"));
     }
 
     #[tokio::test]
@@ -736,6 +1050,8 @@ mod tests {
         assert_eq!(summary.transient_failures, 1);
         assert_eq!(summary.retry_attempts, 1);
         assert_eq!(summary.failed_events, 0);
+        assert_eq!(summary.policy_checked_events, 1);
+        assert_eq!(summary.policy_allowed_events, 1);
     }
 
     #[tokio::test]
@@ -751,6 +1067,8 @@ mod tests {
         assert_eq!(summary.discovered_events, 3);
         assert_eq!(summary.queued_events, 2);
         assert_eq!(summary.completed_events, 2);
+        assert_eq!(summary.policy_checked_events, 2);
+        assert_eq!(summary.policy_allowed_events, 2);
         let state = load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
             .expect("load state");
         assert_eq!(state.processed_event_keys.len(), 2);
@@ -777,6 +1095,96 @@ mod tests {
             .expect("second run");
         assert_eq!(second_summary.completed_events, 0);
         assert_eq!(second_summary.duplicate_skips, 3);
+        assert_eq!(second_summary.policy_checked_events, 0);
+    }
+
+    #[tokio::test]
+    async fn regression_runner_denies_expired_pairing_in_strict_evaluation() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_registry(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "pairings": [
+    {
+      "channel": "whatsapp:incident-room",
+      "actor_id": "15551234567",
+      "paired_by": "ops",
+      "issued_unix_ms": 1,
+      "expires_unix_ms": 2
+    }
+  ]
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let events = vec![sample_event(
+            MultiChannelTransport::Whatsapp,
+            "wa-expired-1",
+            "incident-room",
+            "15551234567",
+            "expired pairing should fail",
+        )];
+        let summary = runtime.run_once_events(&events).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_enforced_events, 1);
+        assert_eq!(summary.policy_denied_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "whatsapp",
+            "incident-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        assert_eq!(
+            logs[1].payload["reason_code"].as_str(),
+            Some("deny_actor_not_paired_or_allowlisted")
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_runner_denies_empty_actor_id_fail_closed_in_strict_mode() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {}
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let events = vec![sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-empty-actor-1",
+            "chat-empty-actor",
+            "   ",
+            "actor missing test",
+        )];
+        let summary = runtime.run_once_events(&events).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_enforced_events, 1);
+        assert_eq!(summary.policy_denied_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "chat-empty-actor",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let context = store.load_context_entries().expect("load context");
+        assert_eq!(context.len(), 0);
+        assert_eq!(
+            logs[1].payload["reason_code"].as_str(),
+            Some("deny_actor_id_missing")
+        );
     }
 
     #[tokio::test]
@@ -914,6 +1322,7 @@ mod tests {
         assert!(reason_codes_set.contains("retry_attempted"));
         assert!(reason_codes_set.contains("transient_failures_observed"));
         assert!(reason_codes_set.contains("event_processing_failed"));
+        assert!(reason_codes_set.contains("pairing_policy_permissive"));
     }
 
     #[test]

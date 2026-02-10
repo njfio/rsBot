@@ -44,6 +44,33 @@ Primary state files:
 - `retry_attempted`
 - `transient_failures_observed`
 - `event_processing_failed`
+- `pairing_policy_permissive`
+- `pairing_policy_enforced`
+- `pairing_policy_denied_events`
+
+## Pairing and allowlist policy
+
+The multi-channel runtime evaluates pairing/allowlist policy per inbound event before generating a
+response.
+
+Policy files:
+
+- `.tau/security/allowlist.json`
+- `.tau/security/pairings.json`
+
+Policy channel key format used by Telegram/Discord/WhatsApp:
+
+- `<transport>:<conversation_id>`
+
+Examples:
+
+- `telegram:chat-100`
+- `discord:discord-channel-88`
+- `whatsapp:phone-55:15551234567`
+
+When strict policy is active, unknown actors are denied with deterministic reason codes
+(`deny_actor_not_paired_or_allowlisted`, `deny_actor_id_missing`). Denied events are recorded in
+channel-store logs and runtime cycle reason codes.
 
 ## Deterministic demo path
 
