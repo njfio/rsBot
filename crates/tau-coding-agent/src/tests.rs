@@ -25,28 +25,28 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::{
     apply_trust_root_mutations, branch_alias_path_for_session, build_auth_command_config,
-    build_doctor_command_config, build_multi_channel_route_inspect_report, build_profile_defaults,
-    build_provider_client, build_tool_policy, command_file_error_mode_label,
-    compose_startup_system_prompt, compute_session_entry_depths, compute_session_stats,
-    current_unix_timestamp, decrypt_credential_store_secret, default_macro_config_path,
-    default_profile_store_path, default_skills_lock_path, derive_skills_prune_candidates,
-    encrypt_credential_store_secret, ensure_non_empty_text, escape_graph_label,
-    evaluate_multi_channel_live_readiness, execute_auth_command, execute_branch_alias_command,
-    execute_channel_store_admin_command, execute_command_file, execute_doctor_cli_command,
-    execute_doctor_command, execute_doctor_command_with_options, execute_integration_auth_command,
-    execute_macro_command, execute_multi_channel_route_inspect_command,
-    execute_package_activate_command, execute_package_activate_on_startup,
-    execute_package_conflicts_command, execute_package_install_command,
-    execute_package_list_command, execute_package_remove_command, execute_package_rollback_command,
-    execute_package_show_command, execute_package_update_command, execute_package_validate_command,
-    execute_profile_command, execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
-    execute_rpc_dispatch_ndjson_command, execute_rpc_serve_ndjson_command,
-    execute_rpc_validate_frame_command, execute_session_bookmark_command,
-    execute_session_diff_command, execute_session_graph_export_command,
-    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
-    execute_skills_lock_diff_command, execute_skills_lock_write_command,
-    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
-    execute_skills_sync_command, execute_skills_trust_add_command,
+    build_doctor_command_config, build_multi_channel_incident_timeline_report,
+    build_multi_channel_route_inspect_report, build_profile_defaults, build_provider_client,
+    build_tool_policy, command_file_error_mode_label, compose_startup_system_prompt,
+    compute_session_entry_depths, compute_session_stats, current_unix_timestamp,
+    decrypt_credential_store_secret, default_macro_config_path, default_profile_store_path,
+    default_skills_lock_path, derive_skills_prune_candidates, encrypt_credential_store_secret,
+    ensure_non_empty_text, escape_graph_label, evaluate_multi_channel_live_readiness,
+    execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
+    execute_command_file, execute_doctor_cli_command, execute_doctor_command,
+    execute_doctor_command_with_options, execute_integration_auth_command, execute_macro_command,
+    execute_multi_channel_route_inspect_command, execute_package_activate_command,
+    execute_package_activate_on_startup, execute_package_conflicts_command,
+    execute_package_install_command, execute_package_list_command, execute_package_remove_command,
+    execute_package_rollback_command, execute_package_show_command, execute_package_update_command,
+    execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
+    execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
+    execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
+    execute_session_bookmark_command, execute_session_diff_command,
+    execute_session_graph_export_command, execute_session_search_command,
+    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
+    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
+    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, execute_startup_preflight,
     format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
@@ -89,6 +89,7 @@ use super::{
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
+    validate_multi_channel_incident_timeline_cli,
     validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_ingest_cli,
     validate_multi_channel_live_runner_cli, validate_multi_channel_send_cli, validate_profile_name,
     validate_project_index_cli, validate_rpc_frame_file, validate_session_file,
@@ -409,6 +410,12 @@ pub(crate) fn test_cli() -> Cli {
         multi_channel_status_json: false,
         multi_channel_route_inspect_file: None,
         multi_channel_route_inspect_json: false,
+        multi_channel_incident_timeline: false,
+        multi_channel_incident_timeline_json: false,
+        multi_channel_incident_start_unix_ms: None,
+        multi_channel_incident_end_unix_ms: None,
+        multi_channel_incident_event_limit: None,
+        multi_channel_incident_replay_export: None,
         multi_agent_status_inspect: false,
         multi_agent_status_json: false,
         gateway_status_inspect: false,
@@ -3047,6 +3054,58 @@ fn functional_cli_multi_channel_route_inspect_accepts_json_and_state_dir_overrid
 fn regression_cli_multi_channel_route_inspect_json_requires_file_flag() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--multi-channel-route-inspect-json"]);
     let error = parse.expect_err("json output should require route inspect file flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_multi_channel_incident_timeline_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.multi_channel_incident_timeline);
+    assert!(!cli.multi_channel_incident_timeline_json);
+    assert!(cli.multi_channel_incident_start_unix_ms.is_none());
+    assert!(cli.multi_channel_incident_end_unix_ms.is_none());
+    assert!(cli.multi_channel_incident_event_limit.is_none());
+    assert!(cli.multi_channel_incident_replay_export.is_none());
+}
+
+#[test]
+fn functional_cli_multi_channel_incident_timeline_accepts_filters_and_export_path() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--multi-channel-incident-timeline",
+        "--multi-channel-incident-timeline-json",
+        "--multi-channel-incident-start-unix-ms",
+        "1760200000000",
+        "--multi-channel-incident-end-unix-ms",
+        "1760200009999",
+        "--multi-channel-incident-event-limit",
+        "25",
+        "--multi-channel-incident-replay-export",
+        ".tau/incident-replay.json",
+    ]);
+    assert!(cli.multi_channel_incident_timeline);
+    assert!(cli.multi_channel_incident_timeline_json);
+    assert_eq!(
+        cli.multi_channel_incident_start_unix_ms,
+        Some(1_760_200_000_000)
+    );
+    assert_eq!(
+        cli.multi_channel_incident_end_unix_ms,
+        Some(1_760_200_009_999)
+    );
+    assert_eq!(cli.multi_channel_incident_event_limit, Some(25));
+    assert_eq!(
+        cli.multi_channel_incident_replay_export,
+        Some(PathBuf::from(".tau/incident-replay.json"))
+    );
+}
+
+#[test]
+fn regression_cli_multi_channel_incident_timeline_json_requires_timeline_mode() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--multi-channel-incident-timeline-json"]);
+    let error = parse.expect_err("json output should require incident timeline mode");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -15111,6 +15170,51 @@ fn regression_validate_multi_channel_send_cli_rejects_channel_store_mode() {
 }
 
 #[test]
+fn unit_validate_multi_channel_incident_timeline_cli_accepts_minimum_configuration() {
+    let mut cli = test_cli();
+    cli.multi_channel_incident_timeline = true;
+    validate_multi_channel_incident_timeline_cli(&cli)
+        .expect("incident timeline config should validate");
+}
+
+#[test]
+fn functional_validate_multi_channel_incident_timeline_cli_rejects_prompt_conflicts() {
+    let mut cli = test_cli();
+    cli.multi_channel_incident_timeline = true;
+    cli.prompt = Some("conflict".to_string());
+    let error = validate_multi_channel_incident_timeline_cli(&cli)
+        .expect_err("prompt conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("--multi-channel-incident-timeline cannot be combined"));
+}
+
+#[test]
+fn integration_validate_multi_channel_incident_timeline_cli_rejects_runtime_conflicts() {
+    let mut cli = test_cli();
+    cli.multi_channel_incident_timeline = true;
+    cli.events_runner = true;
+    let error = validate_multi_channel_incident_timeline_cli(&cli)
+        .expect_err("runtime conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("active transport/runtime commands"));
+}
+
+#[test]
+fn regression_validate_multi_channel_incident_timeline_cli_rejects_inverted_window() {
+    let mut cli = test_cli();
+    cli.multi_channel_incident_timeline = true;
+    cli.multi_channel_incident_start_unix_ms = Some(200);
+    cli.multi_channel_incident_end_unix_ms = Some(100);
+    let error = validate_multi_channel_incident_timeline_cli(&cli)
+        .expect_err("inverted window should fail");
+    assert!(error.to_string().contains(
+        "--multi-channel-incident-end-unix-ms must be greater than or equal to --multi-channel-incident-start-unix-ms"
+    ));
+}
+
+#[test]
 fn unit_validate_multi_agent_contract_runner_cli_accepts_minimum_configuration() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("multi-agent-fixture.json");
@@ -16921,6 +17025,206 @@ fn regression_build_multi_channel_route_inspect_report_rejects_empty_file() {
     assert!(error
         .to_string()
         .contains(event_path.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn unit_build_multi_channel_incident_timeline_report_aggregates_outcomes_and_reason_codes() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_incident_timeline = true;
+
+    let channel_dir = cli
+        .multi_channel_state_dir
+        .join("channel-store/channels/discord/ops-room");
+    std::fs::create_dir_all(&channel_dir).expect("create channel dir");
+    std::fs::write(
+        channel_dir.join("log.jsonl"),
+        r#"{"timestamp_unix_ms":1760200000000,"direction":"inbound","event_key":"evt-allow","source":"discord","payload":{"transport":"discord","conversation_id":"ops-room","route_session_key":"ops-room","route":{"binding_id":"discord-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200000010,"direction":"outbound","event_key":"evt-allow","source":"tau-multi-channel-runner","payload":{"event_key":"evt-allow","response":"ok","delivery":{"mode":"dry_run","receipts":[{"status":"dry_run"}]}}}
+{"timestamp_unix_ms":1760200000020,"direction":"inbound","event_key":"evt-denied","source":"discord","payload":{"transport":"discord","conversation_id":"ops-room","route_session_key":"ops-room","route":{"binding_id":"discord-ops","binding_matched":true},"channel_policy":{"reason_code":"deny_channel_policy_mention_required"}}}
+{"timestamp_unix_ms":1760200000030,"direction":"outbound","event_key":"evt-denied","source":"tau-multi-channel-runner","payload":{"status":"denied","reason_code":"deny_channel_policy_mention_required"}}
+{"timestamp_unix_ms":1760200000040,"direction":"inbound","event_key":"evt-retried","source":"discord","payload":{"transport":"discord","conversation_id":"ops-room","route_session_key":"ops-room","route":{"binding_id":"discord-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200000050,"direction":"outbound","event_key":"evt-retried","source":"tau-multi-channel-runner","payload":{"status":"delivery_failed","reason_code":"delivery_provider_unavailable","retryable":true}}
+{"timestamp_unix_ms":1760200000060,"direction":"outbound","event_key":"evt-retried","source":"tau-multi-channel-runner","payload":{"event_key":"evt-retried","response":"after retry","delivery":{"mode":"provider","receipts":[{"status":"sent"}]}}}
+{"timestamp_unix_ms":1760200000070,"direction":"inbound","event_key":"evt-failed","source":"discord","payload":{"transport":"discord","conversation_id":"ops-room","route_session_key":"ops-room","route":{"binding_id":"discord-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200000080,"direction":"outbound","event_key":"evt-failed","source":"tau-multi-channel-runner","payload":{"status":"delivery_failed","reason_code":"delivery_request_rejected","retryable":false}}
+"#,
+    )
+    .expect("write channel log");
+
+    let report =
+        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    assert_eq!(report.timeline.len(), 4);
+    assert_eq!(report.outcomes.allowed, 1);
+    assert_eq!(report.outcomes.denied, 1);
+    assert_eq!(report.outcomes.retried, 1);
+    assert_eq!(report.outcomes.failed, 1);
+    assert_eq!(
+        report
+            .policy_reason_code_counts
+            .get("allow_channel_policy_allow_from_any")
+            .copied(),
+        Some(3)
+    );
+    assert_eq!(
+        report
+            .policy_reason_code_counts
+            .get("deny_channel_policy_mention_required")
+            .copied(),
+        Some(1)
+    );
+    assert_eq!(
+        report
+            .delivery_reason_code_counts
+            .get("delivery_provider_unavailable")
+            .copied(),
+        Some(1)
+    );
+    assert_eq!(
+        report
+            .delivery_reason_code_counts
+            .get("delivery_request_rejected")
+            .copied(),
+        Some(1)
+    );
+}
+
+#[test]
+fn functional_build_multi_channel_incident_timeline_report_writes_replay_export() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_incident_timeline = true;
+    cli.multi_channel_incident_event_limit = Some(1);
+    let replay_export_path = temp.path().join("artifacts/incident-replay.json");
+    cli.multi_channel_incident_replay_export = Some(replay_export_path.clone());
+
+    let channel_dir = cli
+        .multi_channel_state_dir
+        .join("channel-store/channels/telegram/ops-chat");
+    std::fs::create_dir_all(&channel_dir).expect("create channel dir");
+    std::fs::write(
+        channel_dir.join("log.jsonl"),
+        r#"{"timestamp_unix_ms":1760200100000,"direction":"inbound","event_key":"evt-1","source":"telegram","payload":{"transport":"telegram","conversation_id":"ops-chat","route_session_key":"ops-chat","route":{"binding_id":"telegram-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200100010,"direction":"outbound","event_key":"evt-1","source":"tau-multi-channel-runner","payload":{"event_key":"evt-1","response":"ok","delivery":{"mode":"dry_run","receipts":[{"status":"dry_run"}]}}}
+{"timestamp_unix_ms":1760200100020,"direction":"inbound","event_key":"evt-2","source":"telegram","payload":{"transport":"telegram","conversation_id":"ops-chat","route_session_key":"ops-chat","route":{"binding_id":"telegram-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200100030,"direction":"outbound","event_key":"evt-2","source":"tau-multi-channel-runner","payload":{"status":"denied","reason_code":"deny_channel_policy_mention_required"}}
+"#,
+    )
+    .expect("write channel log");
+
+    let report =
+        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    assert_eq!(report.timeline.len(), 1);
+    assert_eq!(report.truncated_event_count, 1);
+    let replay_export = report.replay_export.expect("replay export summary");
+    assert_eq!(replay_export.path, replay_export_path.display().to_string());
+    assert!(!replay_export.checksum_sha256.is_empty());
+
+    let replay_raw = std::fs::read_to_string(&replay_export_path).expect("read replay artifact");
+    let replay_json: serde_json::Value =
+        serde_json::from_str(&replay_raw).expect("parse replay artifact");
+    assert_eq!(replay_json["schema_version"].as_u64(), Some(1));
+    assert_eq!(
+        replay_json["events"].as_array().map(|items| items.len()),
+        Some(1)
+    );
+}
+
+#[test]
+fn integration_build_multi_channel_incident_timeline_report_reads_sample_channel_store_corpus() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_incident_timeline = true;
+
+    let telegram_dir = cli
+        .multi_channel_state_dir
+        .join("channel-store/channels/telegram/tg-ops");
+    let discord_dir = cli
+        .multi_channel_state_dir
+        .join("channel-store/channels/discord/dc-ops");
+    let whatsapp_dir = cli
+        .multi_channel_state_dir
+        .join("channel-store/channels/whatsapp/wa-ops");
+    std::fs::create_dir_all(&telegram_dir).expect("create telegram dir");
+    std::fs::create_dir_all(&discord_dir).expect("create discord dir");
+    std::fs::create_dir_all(&whatsapp_dir).expect("create whatsapp dir");
+    std::fs::write(
+        telegram_dir.join("log.jsonl"),
+        r#"{"timestamp_unix_ms":1760200400000,"direction":"inbound","event_key":"evt-tg","source":"telegram","payload":{"transport":"telegram","conversation_id":"tg-ops","route_session_key":"tg-ops","route":{"binding_id":"tg-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200400010,"direction":"outbound","event_key":"evt-tg","source":"tau-multi-channel-runner","payload":{"event_key":"evt-tg","response":"ok","delivery":{"mode":"dry_run","receipts":[{"status":"dry_run"}]}}}
+"#,
+    )
+    .expect("write telegram log");
+    std::fs::write(
+        discord_dir.join("log.jsonl"),
+        r#"{"timestamp_unix_ms":1760200400100,"direction":"inbound","event_key":"evt-dc","source":"discord","payload":{"transport":"discord","conversation_id":"dc-ops","route_session_key":"dc-ops","route":{"binding_id":"dc-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200400110,"direction":"outbound","event_key":"evt-dc","source":"tau-multi-channel-runner","payload":{"status":"delivery_failed","reason_code":"delivery_provider_unavailable","retryable":true}}
+{"timestamp_unix_ms":1760200400120,"direction":"outbound","event_key":"evt-dc","source":"tau-multi-channel-runner","payload":{"event_key":"evt-dc","response":"ok","delivery":{"mode":"provider","receipts":[{"status":"sent"}]}}}
+"#,
+    )
+    .expect("write discord log");
+    std::fs::write(
+        whatsapp_dir.join("log.jsonl"),
+        r#"{"timestamp_unix_ms":1760200400200,"direction":"inbound","event_key":"evt-wa","source":"whatsapp","payload":{"transport":"whatsapp","conversation_id":"wa-ops","route_session_key":"wa-ops","route":{"binding_id":"wa-ops","binding_matched":false},"channel_policy":{"reason_code":"deny_channel_policy_mention_required"}}}
+{"timestamp_unix_ms":1760200400210,"direction":"outbound","event_key":"evt-wa","source":"tau-multi-channel-runner","payload":{"status":"denied","reason_code":"deny_channel_policy_mention_required"}}
+"#,
+    )
+    .expect("write whatsapp log");
+
+    let report =
+        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    assert_eq!(report.timeline.len(), 3);
+    assert_eq!(report.scanned_channel_count, 3);
+    assert_eq!(report.outcomes.allowed, 1);
+    assert_eq!(report.outcomes.retried, 1);
+    assert_eq!(report.outcomes.denied, 1);
+    assert_eq!(
+        report
+            .route_reason_code_counts
+            .get("route_binding_matched")
+            .copied(),
+        Some(2)
+    );
+    assert_eq!(
+        report
+            .route_reason_code_counts
+            .get("route_binding_default")
+            .copied(),
+        Some(1)
+    );
+}
+
+#[test]
+fn regression_build_multi_channel_incident_timeline_report_tolerates_malformed_log_lines() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_incident_timeline = true;
+
+    let channel_dir = cli
+        .multi_channel_state_dir
+        .join("channel-store/channels/whatsapp/ops-room");
+    std::fs::create_dir_all(&channel_dir).expect("create channel dir");
+    std::fs::write(
+        channel_dir.join("log.jsonl"),
+        r#"{"timestamp_unix_ms":1760200200000,"direction":"inbound","event_key":"evt-1","source":"whatsapp","payload":{"transport":"whatsapp","conversation_id":"ops-room","route_session_key":"ops-room","route":{"binding_id":"wa-ops","binding_matched":false},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{bad-json-line
+{"timestamp_unix_ms":1760200200010,"direction":"outbound","event_key":"evt-1","source":"tau-multi-channel-runner","payload":{"event_key":"evt-1","response":"ok","delivery":{"mode":"dry_run","receipts":[{"status":"dry_run"}]}}}
+"#,
+    )
+    .expect("write channel log");
+
+    let report =
+        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    assert_eq!(report.timeline.len(), 1);
+    assert_eq!(report.invalid_line_count, 1);
+    assert!(
+        !report.diagnostics.is_empty(),
+        "malformed line should surface diagnostic message"
+    );
 }
 
 #[test]
@@ -20972,6 +21276,43 @@ fn integration_execute_startup_preflight_runs_multi_channel_send_command() {
     let logs = store.load_log_entries().expect("load channel logs");
     assert!(!logs.is_empty(), "send preflight should persist audit log");
     assert_eq!(logs[0].source, "multi_channel_send");
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_multi_channel_incident_timeline_command() {
+    let temp = tempdir().expect("tempdir");
+    let replay_export_path = temp.path().join("exports/incident-replay.json");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_incident_timeline = true;
+    cli.multi_channel_incident_timeline_json = true;
+    cli.multi_channel_incident_event_limit = Some(10);
+    cli.multi_channel_incident_replay_export = Some(replay_export_path.clone());
+
+    let channel_dir = cli
+        .multi_channel_state_dir
+        .join("channel-store/channels/discord/ops-room");
+    std::fs::create_dir_all(&channel_dir).expect("create channel dir");
+    std::fs::write(
+        channel_dir.join("log.jsonl"),
+        r#"{"timestamp_unix_ms":1760200300000,"direction":"inbound","event_key":"evt-preflight","source":"discord","payload":{"transport":"discord","conversation_id":"ops-room","route_session_key":"ops-room","route":{"binding_id":"discord-ops","binding_matched":true},"channel_policy":{"reason_code":"allow_channel_policy_allow_from_any"}}}
+{"timestamp_unix_ms":1760200300010,"direction":"outbound","event_key":"evt-preflight","source":"tau-multi-channel-runner","payload":{"event_key":"evt-preflight","response":"ok","delivery":{"mode":"dry_run","receipts":[{"status":"dry_run"}]}}}
+"#,
+    )
+    .expect("write channel log");
+
+    let handled =
+        execute_startup_preflight(&cli).expect("multi-channel incident timeline preflight");
+    assert!(handled);
+    assert!(
+        replay_export_path.exists(),
+        "incident replay export should be written"
+    );
+    let replay_raw = std::fs::read_to_string(&replay_export_path).expect("read replay export");
+    let replay_json: serde_json::Value =
+        serde_json::from_str(&replay_raw).expect("parse replay export");
+    assert_eq!(replay_json["schema_version"].as_u64(), Some(1));
 }
 
 #[test]
