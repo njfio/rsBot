@@ -44,6 +44,7 @@ mod multi_channel_contract;
 mod multi_channel_lifecycle;
 mod multi_channel_live_connectors;
 mod multi_channel_live_ingress;
+mod multi_channel_media;
 mod multi_channel_outbound;
 mod multi_channel_policy;
 mod multi_channel_routing;

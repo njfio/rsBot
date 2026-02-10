@@ -199,6 +199,7 @@ pub(crate) async fn run_transport_mode_if_requested(
             retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
             outbound: build_multi_channel_outbound_config(cli),
             telemetry: build_multi_channel_telemetry_config(cli),
+            media: build_multi_channel_media_config(cli),
         })
         .await?;
         return Ok(true);
@@ -216,6 +217,7 @@ pub(crate) async fn run_transport_mode_if_requested(
             retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
             outbound: build_multi_channel_outbound_config(cli),
             telemetry: build_multi_channel_telemetry_config(cli),
+            media: build_multi_channel_media_config(cli),
         })
         .await?;
         return Ok(true);
@@ -449,5 +451,15 @@ fn build_multi_channel_telemetry_config(
         usage_summary_enabled: cli.multi_channel_telemetry_usage_summary,
         include_identifiers: cli.multi_channel_telemetry_include_identifiers,
         typing_presence_min_response_chars: cli.multi_channel_telemetry_min_response_chars.max(1),
+    }
+}
+
+fn build_multi_channel_media_config(
+    cli: &Cli,
+) -> crate::multi_channel_media::MultiChannelMediaUnderstandingConfig {
+    crate::multi_channel_media::MultiChannelMediaUnderstandingConfig {
+        enabled: cli.multi_channel_media_understanding,
+        max_attachments_per_event: cli.multi_channel_media_max_attachments.max(1),
+        max_summary_chars: cli.multi_channel_media_max_summary_chars.max(16),
     }
 }

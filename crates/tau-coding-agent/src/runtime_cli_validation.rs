@@ -265,6 +265,12 @@ pub(crate) fn validate_multi_channel_contract_runner_cli(cli: &Cli) -> Result<()
     if cli.multi_channel_retry_max_attempts == 0 {
         bail!("--multi-channel-retry-max-attempts must be greater than 0");
     }
+    if cli.multi_channel_media_max_attachments == 0 {
+        bail!("--multi-channel-media-max-attachments must be greater than 0");
+    }
+    if cli.multi_channel_media_max_summary_chars == 0 {
+        bail!("--multi-channel-media-max-summary-chars must be greater than 0");
+    }
     if cli.multi_channel_outbound_max_chars == 0 {
         bail!("--multi-channel-outbound-max-chars must be greater than 0");
     }
@@ -327,6 +333,12 @@ pub(crate) fn validate_multi_channel_live_runner_cli(cli: &Cli) -> Result<()> {
     }
     if cli.multi_channel_retry_max_attempts == 0 {
         bail!("--multi-channel-retry-max-attempts must be greater than 0");
+    }
+    if cli.multi_channel_media_max_attachments == 0 {
+        bail!("--multi-channel-media-max-attachments must be greater than 0");
+    }
+    if cli.multi_channel_media_max_summary_chars == 0 {
+        bail!("--multi-channel-media-max-summary-chars must be greater than 0");
     }
     if cli.multi_channel_outbound_max_chars == 0 {
         bail!("--multi-channel-outbound-max-chars must be greater than 0");

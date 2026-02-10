@@ -47,6 +47,15 @@ Telemetry controls (runtime flags, privacy-safe defaults):
 - `--multi-channel-telemetry-include-identifiers=true|false` (default `false`)
 - `--multi-channel-telemetry-min-response-chars=<N>` (default `120`)
 
+Media understanding controls (runtime flags, bounded defaults):
+
+- `--multi-channel-media-understanding=true|false` (default `true`)
+- `--multi-channel-media-max-attachments=<N>` (default `4`)
+- `--multi-channel-media-max-summary-chars=<N>` (default `280`)
+
+Inbound channel-store log entries include a `media_understanding` payload with per-attachment
+decision and reason-code details (`processed|skipped|failed`).
+
 `--multi-channel-status-inspect` now includes telemetry counters and policy snapshot:
 
 - lifecycle counters: typing + presence totals/per-transport
@@ -66,6 +75,16 @@ Telemetry controls (runtime flags, privacy-safe defaults):
 - `pairing_policy_denied_events`
 - `telemetry_lifecycle_emitted`
 - `telemetry_usage_summary_emitted`
+
+Attachment-level media-understanding reason codes are persisted per event in channel-store logs:
+
+- `media_image_described`
+- `media_audio_transcribed`
+- `media_video_summarized`
+- `media_unsupported_attachment_type`
+- `media_attachment_limit_exceeded`
+- `media_duplicate_attachment`
+- `media_provider_error`
 
 ## Pairing and allowlist policy
 

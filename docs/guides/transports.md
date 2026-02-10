@@ -80,7 +80,10 @@ cargo run -p tau-coding-agent -- \
   --multi-channel-queue-limit 64 \
   --multi-channel-processed-event-cap 10000 \
   --multi-channel-retry-max-attempts 4 \
-  --multi-channel-retry-base-delay-ms 0
+  --multi-channel-retry-base-delay-ms 0 \
+  --multi-channel-media-understanding true \
+  --multi-channel-media-max-attachments 4 \
+  --multi-channel-media-max-summary-chars 280
 ```
 
 The runner writes channel-store output under:
@@ -93,6 +96,10 @@ Runtime state for duplicate suppression is persisted at:
 
 - `.tau/multi-channel/state.json`
 - `.tau/multi-channel/runtime-events.jsonl` (per-cycle observability log)
+
+Inbound `channel-store` logs also include per-event `media_understanding` diagnostics for
+supported image/audio/video attachments (and explicit skip/failure reason codes for unsupported
+media).
 
 Inspect multi-channel transport health snapshot:
 
