@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "name": "gateway-mixed-outcomes",
+  "description": "Deterministic gateway contract replay matrix with success, malformed input, and retryable failure outcomes.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "gateway-success",
+      "method": "POST",
+      "endpoint": "/v1/tasks",
+      "actor_id": "ops-bot",
+      "body": {
+        "task": "reindex"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "method": "POST",
+          "endpoint": "/v1/tasks",
+          "actor_id": "ops-bot"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "gateway-malformed-unsupported-method",
+      "method": "TRACE",
+      "endpoint": "/v1/tasks",
+      "actor_id": "ops-bot",
+      "body": {
+        "task": "reindex"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 405,
+        "error_code": "gateway_unsupported_method",
+        "response_body": {
+          "status": "rejected",
+          "reason": "unsupported_method"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "gateway-retryable-backend",
+      "method": "GET",
+      "endpoint": "/v1/tasks/42",
+      "actor_id": "ops-bot",
+      "body": {},
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "status_code": 503,
+        "error_code": "gateway_backend_unavailable",
+        "response_body": {
+          "status": "retryable",
+          "reason": "backend_unavailable"
+        }
+      }
+    }
+  ]
+}

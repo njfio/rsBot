@@ -18,6 +18,8 @@ mod dashboard_runtime;
 mod diagnostics_commands;
 mod events;
 mod extension_manifest;
+#[allow(dead_code)]
+mod gateway_contract;
 mod gemini_cli_client;
 mod github_issues;
 mod github_issues_helpers;

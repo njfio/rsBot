@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "gateway-invalid-error-code",
+  "description": "Regression fixture asserting unsupported gateway error codes are rejected.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "gateway-malformed-unsupported-error-code",
+      "method": "TRACE",
+      "endpoint": "/v1/tasks",
+      "actor_id": "ops-bot",
+      "body": {
+        "task": "reindex"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 405,
+        "error_code": "gateway_method_forbidden",
+        "response_body": {
+          "status": "rejected",
+          "reason": "unsupported_method"
+        }
+      }
+    }
+  ]
+}

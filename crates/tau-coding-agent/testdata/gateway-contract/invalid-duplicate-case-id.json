@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "name": "gateway-invalid-duplicate-case-id",
+  "description": "Regression fixture asserting duplicate case identifiers are rejected deterministically.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "method": "GET",
+      "endpoint": "/v1/health",
+      "actor_id": "ops-bot",
+      "body": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "accepted",
+          "method": "GET",
+          "endpoint": "/v1/health",
+          "actor_id": "ops-bot"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "method": "POST",
+      "endpoint": "/v1/tasks",
+      "actor_id": "ops-bot",
+      "body": {
+        "task": "reindex"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "method": "POST",
+          "endpoint": "/v1/tasks",
+          "actor_id": "ops-bot"
+        }
+      }
+    }
+  ]
+}
