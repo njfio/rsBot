@@ -4,7 +4,38 @@ Run all commands from repository root.
 
 ## Scope
 
-This runbook covers the fixture-driven gateway runtime (`--gateway-contract-runner`).
+This runbook covers:
+
+- fixture-driven gateway runtime (`--gateway-contract-runner`)
+- gateway service lifecycle control (`--gateway-service-start|stop|status`)
+
+## Service lifecycle commands
+
+Start service mode (persists lifecycle posture):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-state-dir .tau/gateway \
+  --gateway-service-start
+```
+
+Stop service mode with an explicit reason:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-state-dir .tau/gateway \
+  --gateway-service-stop \
+  --gateway-service-stop-reason maintenance_window
+```
+
+Inspect lifecycle posture:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-state-dir .tau/gateway \
+  --gateway-service-status \
+  --gateway-service-status-json
+```
 
 ## Health and observability signals
 
@@ -46,6 +77,7 @@ Guardrail interpretation:
 
 - `rollout_gate=pass`: guardrail thresholds are satisfied, promotion can continue.
 - `rollout_gate=hold`: a guardrail threshold is breached; inspect `rollout_reason_code`.
+- `rollout_reason_code=service_stopped`: lifecycle stop posture is forcing rollout hold.
 
 Configurable guardrail thresholds (runner flags):
 
@@ -64,17 +96,20 @@ Configurable guardrail thresholds (runner flags):
    `cargo test -p tau-coding-agent gateway_contract -- --test-threads=1`
 2. Validate runtime behavior coverage:
    `cargo test -p tau-coding-agent gateway_runtime -- --test-threads=1`
-3. Run deterministic demo:
+3. Start service lifecycle posture:
+   `--gateway-service-start`
+4. Run deterministic demo:
    `./scripts/demo/gateway.sh`
-4. Verify transport health and status gate:
+5. Verify transport health and status gate:
    `--transport-health-inspect gateway --transport-health-json`
    `--gateway-status-inspect --gateway-status-json`
-5. Promote by increasing fixture complexity gradually while monitoring:
+6. Promote by increasing fixture complexity gradually while monitoring:
    `failure_streak`, `last_cycle_failed`, `last_retryable_failures`, `queue_depth`, `rollout_gate`, `rollout_reason_code`.
 
 ## Rollback plan
 
-1. Stop invoking `--gateway-contract-runner`.
+1. Stop service lifecycle posture:
+   `--gateway-service-stop --gateway-service-stop-reason emergency_rollback`
 2. Preserve `.tau/gateway/` for incident analysis.
 3. Revert to last known-good revision:
    `git revert <commit>`

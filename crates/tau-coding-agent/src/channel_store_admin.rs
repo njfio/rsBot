@@ -30,6 +30,17 @@ struct TransportHealthStateFile {
     health: TransportHealthSnapshot,
 }
 
+fn gateway_service_default_status() -> String {
+    "running".to_string()
+}
+
+fn normalize_gateway_service_status(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "stopped" => "stopped",
+        _ => "running",
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 struct DashboardStatusStateFile {
     #[serde(default)]
@@ -70,6 +81,8 @@ struct GatewayStatusStateFile {
     health: TransportHealthSnapshot,
     #[serde(default)]
     guardrail: GatewayStatusGuardrailState,
+    #[serde(default)]
+    service: GatewayStatusServiceState,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -138,6 +151,41 @@ struct GatewayStatusGuardrailState {
     last_failed_cases: usize,
     #[serde(default)]
     last_retryable_failures: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct GatewayStatusServiceState {
+    #[serde(default = "gateway_service_default_status")]
+    status: String,
+    #[serde(default)]
+    startup_attempts: u64,
+    #[serde(default)]
+    startup_failure_streak: usize,
+    #[serde(default)]
+    last_startup_error: String,
+    #[serde(default)]
+    last_started_unix_ms: u64,
+    #[serde(default)]
+    last_stopped_unix_ms: u64,
+    #[serde(default)]
+    last_transition_unix_ms: u64,
+    #[serde(default)]
+    last_stop_reason: String,
+}
+
+impl Default for GatewayStatusServiceState {
+    fn default() -> Self {
+        Self {
+            status: gateway_service_default_status(),
+            startup_attempts: 0,
+            startup_failure_streak: 0,
+            last_startup_error: String::new(),
+            last_started_unix_ms: 0,
+            last_stopped_unix_ms: 0,
+            last_transition_unix_ms: 0,
+            last_stop_reason: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -376,6 +424,16 @@ struct GatewayStatusInspectReport {
     health_reason: String,
     rollout_gate: String,
     rollout_reason_code: String,
+    service_status: String,
+    service_last_transition_unix_ms: u64,
+    service_last_started_unix_ms: u64,
+    service_last_stopped_unix_ms: u64,
+    service_last_stop_reason: String,
+    service_startup_attempts: u64,
+    service_startup_failure_streak: usize,
+    service_last_startup_error: String,
+    guardrail_gate: String,
+    guardrail_reason_code: String,
     processed_case_count: usize,
     request_count: usize,
     method_counts: BTreeMap<String, usize>,
@@ -1079,22 +1137,33 @@ fn collect_gateway_status_report(cli: &Cli) -> Result<GatewayStatusInspectReport
     } else {
         classification.reason
     };
-    let fallback_rollout_gate = if classification.state.as_str() == "healthy" {
+    let fallback_guardrail_gate = if classification.state.as_str() == "healthy" {
         "pass"
     } else {
         "hold"
     };
-    let rollout_gate = match state.guardrail.gate.trim().to_ascii_lowercase().as_str() {
+    let guardrail_gate = match state.guardrail.gate.trim().to_ascii_lowercase().as_str() {
         "pass" => "pass",
         "hold" => "hold",
-        _ => fallback_rollout_gate,
+        _ => fallback_guardrail_gate,
     };
-    let rollout_reason_code = if !state.guardrail.reason_code.trim().is_empty() {
+    let guardrail_reason_code = if !state.guardrail.reason_code.trim().is_empty() {
         state.guardrail.reason_code.trim().to_string()
-    } else if rollout_gate == "pass" {
+    } else if guardrail_gate == "pass" {
         "guardrail_checks_passing".to_string()
     } else {
         "health_state_not_healthy".to_string()
+    };
+    let service_status = normalize_gateway_service_status(&state.service.status).to_string();
+    let rollout_gate = if service_status == "stopped" {
+        "hold".to_string()
+    } else {
+        guardrail_gate.to_string()
+    };
+    let rollout_reason_code = if service_status == "stopped" {
+        "service_stopped".to_string()
+    } else {
+        guardrail_reason_code.clone()
     };
 
     let mut method_counts = BTreeMap::new();
@@ -1121,8 +1190,18 @@ fn collect_gateway_status_report(cli: &Cli) -> Result<GatewayStatusInspectReport
         events_log_present: cycle_summary.events_log_present,
         health_state: classification.state.as_str().to_string(),
         health_reason,
-        rollout_gate: rollout_gate.to_string(),
+        rollout_gate,
         rollout_reason_code,
+        service_status,
+        service_last_transition_unix_ms: state.service.last_transition_unix_ms,
+        service_last_started_unix_ms: state.service.last_started_unix_ms,
+        service_last_stopped_unix_ms: state.service.last_stopped_unix_ms,
+        service_last_stop_reason: state.service.last_stop_reason.clone(),
+        service_startup_attempts: state.service.startup_attempts,
+        service_startup_failure_streak: state.service.startup_failure_streak,
+        service_last_startup_error: state.service.last_startup_error.clone(),
+        guardrail_gate: guardrail_gate.to_string(),
+        guardrail_reason_code,
         processed_case_count: state.processed_case_keys.len(),
         request_count: state.requests.len(),
         method_counts,
@@ -1759,8 +1838,18 @@ fn render_gateway_status_report(report: &GatewayStatusInspectReport) -> String {
     } else {
         report.last_reason_codes.join(",")
     };
+    let service_last_startup_error = if report.service_last_startup_error.trim().is_empty() {
+        "none".to_string()
+    } else {
+        report.service_last_startup_error.clone()
+    };
+    let service_last_stop_reason = if report.service_last_stop_reason.trim().is_empty() {
+        "none".to_string()
+    } else {
+        report.service_last_stop_reason.clone()
+    };
     format!(
-        "gateway status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} rollout_reason_code={} processed_case_count={} request_count={} method_counts={} status_code_counts={} error_code_counts={} guardrail_failure_streak_threshold={} guardrail_retryable_failures_threshold={} guardrail_failure_streak={} guardrail_last_failed_cases={} guardrail_last_retryable_failures={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        "gateway status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} rollout_reason_code={} service_status={} service_last_transition_unix_ms={} service_last_started_unix_ms={} service_last_stopped_unix_ms={} service_last_stop_reason={} service_startup_attempts={} service_startup_failure_streak={} service_last_startup_error={} guardrail_gate={} guardrail_reason_code={} processed_case_count={} request_count={} method_counts={} status_code_counts={} error_code_counts={} guardrail_failure_streak_threshold={} guardrail_retryable_failures_threshold={} guardrail_failure_streak={} guardrail_last_failed_cases={} guardrail_last_retryable_failures={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
         report.state_path,
         report.events_log_path,
         report.events_log_present,
@@ -1768,6 +1857,16 @@ fn render_gateway_status_report(report: &GatewayStatusInspectReport) -> String {
         report.health_reason,
         report.rollout_gate,
         report.rollout_reason_code,
+        report.service_status,
+        report.service_last_transition_unix_ms,
+        report.service_last_started_unix_ms,
+        report.service_last_stopped_unix_ms,
+        service_last_stop_reason,
+        report.service_startup_attempts,
+        report.service_startup_failure_streak,
+        service_last_startup_error,
+        report.guardrail_gate,
+        report.guardrail_reason_code,
         report.processed_case_count,
         report.request_count,
         render_counter_map(&report.method_counts),
@@ -3029,6 +3128,9 @@ invalid-json-line
         assert_eq!(report.health_state, TransportHealthState::Healthy.as_str());
         assert_eq!(report.rollout_gate, "pass");
         assert_eq!(report.rollout_reason_code, "guardrail_checks_passing");
+        assert_eq!(report.service_status, "running");
+        assert_eq!(report.guardrail_gate, "pass");
+        assert_eq!(report.guardrail_reason_code, "guardrail_checks_passing");
         assert_eq!(report.processed_case_count, 2);
         assert_eq!(report.request_count, 2);
         assert_eq!(report.method_counts.get("GET"), Some(&1));
@@ -3113,11 +3215,80 @@ invalid-json-line
         assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
         assert_eq!(report.rollout_gate, "hold");
         assert_eq!(report.rollout_reason_code, "health_state_not_healthy");
+        assert_eq!(report.service_status, "running");
+        assert_eq!(report.guardrail_gate, "hold");
+        assert_eq!(report.guardrail_reason_code, "health_state_not_healthy");
         assert_eq!(report.guardrail_failure_streak_threshold, 0);
         assert_eq!(report.guardrail_retryable_failures_threshold, 0);
         assert_eq!(report.guardrail_failure_streak, 0);
         assert_eq!(report.guardrail_last_failed_cases, 0);
         assert_eq!(report.guardrail_last_retryable_failures, 0);
+    }
+
+    #[test]
+    fn integration_collect_gateway_status_report_service_stop_forces_rollout_hold() {
+        let temp = tempdir().expect("tempdir");
+        let gateway_root = temp.path().join("gateway");
+        std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
+        std::fs::write(
+            gateway_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "requests": [],
+  "health": {
+    "updated_unix_ms": 901,
+    "cycle_duration_ms": 11,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  },
+  "guardrail": {
+    "gate": "pass",
+    "reason_code": "guardrail_checks_passing",
+    "failure_streak_threshold": 2,
+    "retryable_failures_threshold": 2,
+    "failure_streak": 0,
+    "last_failed_cases": 0,
+    "last_retryable_failures": 0,
+    "updated_unix_ms": 902
+  },
+  "service": {
+    "status": "stopped",
+    "startup_attempts": 3,
+    "startup_failure_streak": 0,
+    "last_startup_error": "",
+    "last_started_unix_ms": 850,
+    "last_stopped_unix_ms": 900,
+    "last_transition_unix_ms": 900,
+    "last_stop_reason": "maintenance_window"
+  }
+}
+"#,
+        )
+        .expect("write gateway state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.gateway_state_dir = gateway_root;
+
+        let report = collect_gateway_status_report(&cli).expect("collect gateway status report");
+        assert_eq!(report.service_status, "stopped");
+        assert_eq!(report.rollout_gate, "hold");
+        assert_eq!(report.rollout_reason_code, "service_stopped");
+        assert_eq!(report.guardrail_gate, "pass");
+        assert_eq!(report.guardrail_reason_code, "guardrail_checks_passing");
+        assert_eq!(report.service_last_stop_reason, "maintenance_window");
+        assert_eq!(report.service_startup_attempts, 3);
+
+        let rendered = render_gateway_status_report(&report);
+        assert!(rendered.contains("service_status=stopped"));
+        assert!(rendered.contains("rollout_reason_code=service_stopped"));
+        assert!(rendered.contains("guardrail_gate=pass"));
     }
 
     #[test]

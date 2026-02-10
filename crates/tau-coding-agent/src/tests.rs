@@ -80,23 +80,23 @@ use super::{
     validate_branch_alias_name, validate_custom_command_contract_runner_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
-    validate_gateway_contract_runner_cli, validate_github_issues_bridge_cli,
-    validate_macro_command_entry, validate_macro_name, validate_memory_contract_runner_cli,
-    validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
-    validate_multi_channel_live_runner_cli, validate_profile_name, validate_rpc_frame_file,
-    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
-    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliOrchestratorMode,
-    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
-    CliWebhookSignatureAlgorithm, ClientRoute, CommandAction, CommandExecutionContext,
-    CommandFileEntry, CommandFileReport, CredentialStoreData, CredentialStoreEncryptionMode,
-    DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs, DoctorCommandConfig,
-    DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
-    DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord,
-    MacroCommand, MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults,
-    ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod,
-    ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
+    validate_gateway_contract_runner_cli, validate_gateway_service_cli,
+    validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
+    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
+    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_runner_cli,
+    validate_profile_name, validate_rpc_frame_file, validate_session_file,
+    validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
+    AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliEventTemplateSchedule,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
+    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
+    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
+    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
+    DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand,
+    IntegrationCredentialStoreRecord, MacroCommand, MacroFile, MultiAgentRouteTable,
+    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
+    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
     SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
     SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
     SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
@@ -385,6 +385,11 @@ fn test_cli() -> Cli {
         multi_agent_status_json: false,
         gateway_status_inspect: false,
         gateway_status_json: false,
+        gateway_service_start: false,
+        gateway_service_stop: false,
+        gateway_service_stop_reason: None,
+        gateway_service_status: false,
+        gateway_service_status_json: false,
         deployment_status_inspect: false,
         deployment_status_json: false,
         custom_command_status_inspect: false,
@@ -2216,6 +2221,81 @@ fn regression_cli_gateway_status_json_requires_gateway_status_inspect() {
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_gateway_service_flags_default_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.gateway_service_start);
+    assert!(!cli.gateway_service_stop);
+    assert!(cli.gateway_service_stop_reason.is_none());
+    assert!(!cli.gateway_service_status);
+    assert!(!cli.gateway_service_status_json);
+}
+
+#[test]
+fn functional_cli_gateway_service_stop_accepts_reason_and_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-service-stop",
+        "--gateway-service-stop-reason",
+        "operator_planned_maintenance",
+        "--gateway-state-dir",
+        ".tau/gateway-service",
+    ]);
+    assert!(cli.gateway_service_stop);
+    assert_eq!(
+        cli.gateway_service_stop_reason.as_deref(),
+        Some("operator_planned_maintenance")
+    );
+    assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway-service"));
+}
+
+#[test]
+fn functional_cli_gateway_service_status_accepts_json_and_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-service-status",
+        "--gateway-service-status-json",
+        "--gateway-state-dir",
+        ".tau/gateway-service",
+    ]);
+    assert!(cli.gateway_service_status);
+    assert!(cli.gateway_service_status_json);
+    assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway-service"));
+}
+
+#[test]
+fn regression_cli_gateway_service_status_json_requires_gateway_service_status() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-service-status-json"]);
+    let error = parse.expect_err("json output should require gateway service status flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_gateway_service_stop_reason_requires_gateway_service_stop() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-service-stop-reason",
+        "operator_planned_maintenance",
+    ]);
+    let error = parse.expect_err("stop reason should require gateway service stop flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_gateway_service_start_conflicts_with_gateway_service_stop() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-service-start",
+        "--gateway-service-stop",
+    ]);
+    let error = parse.expect_err("start and stop should conflict");
+    assert!(error.to_string().contains("cannot be used with"));
 }
 
 #[test]
@@ -13796,6 +13876,51 @@ fn regression_validate_dashboard_contract_runner_cli_requires_fixture_file() {
 }
 
 #[test]
+fn unit_validate_gateway_service_cli_accepts_status_mode() {
+    let mut cli = test_cli();
+    cli.gateway_service_status = true;
+    cli.gateway_service_status_json = true;
+
+    validate_gateway_service_cli(&cli).expect("gateway service status config should validate");
+}
+
+#[test]
+fn functional_validate_gateway_service_cli_rejects_prompt_conflicts() {
+    let mut cli = test_cli();
+    cli.gateway_service_start = true;
+    cli.prompt = Some("conflict".to_string());
+
+    let error = validate_gateway_service_cli(&cli).expect_err("prompt conflict");
+    assert!(error
+        .to_string()
+        .contains("--gateway-service-* commands cannot be combined"));
+}
+
+#[test]
+fn integration_validate_gateway_service_cli_rejects_transport_conflicts() {
+    let mut cli = test_cli();
+    cli.gateway_service_stop = true;
+    cli.gateway_contract_runner = true;
+
+    let error = validate_gateway_service_cli(&cli).expect_err("transport conflict");
+    assert!(error.to_string().contains(
+        "--gateway-service-* commands cannot be combined with active transport runtime flags"
+    ));
+}
+
+#[test]
+fn regression_validate_gateway_service_cli_rejects_whitespace_stop_reason() {
+    let mut cli = test_cli();
+    cli.gateway_service_stop = true;
+    cli.gateway_service_stop_reason = Some("   ".to_string());
+
+    let error = validate_gateway_service_cli(&cli).expect_err("whitespace stop reason should fail");
+    assert!(error
+        .to_string()
+        .contains("--gateway-service-stop-reason cannot be empty or whitespace"));
+}
+
+#[test]
 fn unit_validate_gateway_contract_runner_cli_accepts_minimum_configuration() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("gateway-fixture.json");
@@ -18454,6 +18579,57 @@ fn functional_execute_startup_preflight_runs_gateway_status_inspect_mode() {
 
     let handled = execute_startup_preflight(&cli).expect("gateway status inspect preflight");
     assert!(handled);
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_gateway_service_start_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.gateway_service_start = true;
+
+    let handled = execute_startup_preflight(&cli).expect("gateway service start preflight");
+    assert!(handled);
+
+    let state_raw =
+        std::fs::read_to_string(cli.gateway_state_dir.join("state.json")).expect("read state");
+    let parsed: serde_json::Value = serde_json::from_str(&state_raw).expect("parse state");
+    assert_eq!(parsed["service"]["status"].as_str(), Some("running"));
+    assert!(parsed["service"]["startup_attempts"].as_u64().unwrap_or(0) >= 1);
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_gateway_service_stop_and_status_modes() {
+    let temp = tempdir().expect("tempdir");
+    let mut start_cli = test_cli();
+    set_workspace_tau_paths(&mut start_cli, temp.path());
+    start_cli.gateway_service_start = true;
+    execute_startup_preflight(&start_cli).expect("gateway service start preflight");
+
+    let mut stop_cli = test_cli();
+    set_workspace_tau_paths(&mut stop_cli, temp.path());
+    stop_cli.gateway_service_stop = true;
+    stop_cli.gateway_service_stop_reason = Some("maintenance_window".to_string());
+    let stop_handled =
+        execute_startup_preflight(&stop_cli).expect("gateway service stop preflight");
+    assert!(stop_handled);
+
+    let state_raw = std::fs::read_to_string(stop_cli.gateway_state_dir.join("state.json"))
+        .expect("read stopped state");
+    let parsed: serde_json::Value = serde_json::from_str(&state_raw).expect("parse stopped state");
+    assert_eq!(parsed["service"]["status"].as_str(), Some("stopped"));
+    assert_eq!(
+        parsed["service"]["last_stop_reason"].as_str(),
+        Some("maintenance_window")
+    );
+
+    let mut status_cli = test_cli();
+    set_workspace_tau_paths(&mut status_cli, temp.path());
+    status_cli.gateway_service_status = true;
+    status_cli.gateway_service_status_json = true;
+    let status_handled =
+        execute_startup_preflight(&status_cli).expect("gateway service status preflight");
+    assert!(status_handled);
 }
 
 #[test]

@@ -19,6 +19,9 @@ const GATEWAY_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 const GATEWAY_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
 const DEFAULT_GATEWAY_GUARDRAIL_FAILURE_STREAK_THRESHOLD: usize = 2;
 const DEFAULT_GATEWAY_GUARDRAIL_RETRYABLE_FAILURES_THRESHOLD: usize = 2;
+const GATEWAY_SERVICE_STATUS_RUNNING: &str = "running";
+const GATEWAY_SERVICE_STATUS_STOPPED: &str = "stopped";
+const DEFAULT_GATEWAY_SERVICE_STOP_REASON: &str = "operator_requested";
 
 fn gateway_runtime_state_schema_version() -> u32 {
     GATEWAY_RUNTIME_STATE_SCHEMA_VERSION
@@ -99,6 +102,52 @@ impl Default for GatewayRolloutGuardrailState {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct GatewayServiceLifecycleState {
+    status: String,
+    startup_attempts: u64,
+    startup_failure_streak: usize,
+    last_startup_error: String,
+    last_started_unix_ms: u64,
+    last_stopped_unix_ms: u64,
+    last_transition_unix_ms: u64,
+    last_stop_reason: String,
+}
+
+impl Default for GatewayServiceLifecycleState {
+    fn default() -> Self {
+        let now = current_unix_timestamp_ms();
+        Self {
+            status: GATEWAY_SERVICE_STATUS_RUNNING.to_string(),
+            startup_attempts: 0,
+            startup_failure_streak: 0,
+            last_startup_error: String::new(),
+            last_started_unix_ms: now,
+            last_stopped_unix_ms: 0,
+            last_transition_unix_ms: now,
+            last_stop_reason: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct GatewayServiceStatusReport {
+    pub(crate) state_path: String,
+    pub(crate) service_status: String,
+    pub(crate) rollout_gate: String,
+    pub(crate) rollout_reason_code: String,
+    pub(crate) guardrail_gate: String,
+    pub(crate) guardrail_reason_code: String,
+    pub(crate) service_startup_attempts: u64,
+    pub(crate) service_startup_failure_streak: usize,
+    pub(crate) service_last_startup_error: String,
+    pub(crate) service_last_started_unix_ms: u64,
+    pub(crate) service_last_stopped_unix_ms: u64,
+    pub(crate) service_last_transition_unix_ms: u64,
+    pub(crate) service_last_stop_reason: String,
+    pub(crate) health: TransportHealthSnapshot,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct GatewayRequestRecord {
     case_key: String,
@@ -125,6 +174,8 @@ struct GatewayRuntimeState {
     health: TransportHealthSnapshot,
     #[serde(default)]
     guardrail: GatewayRolloutGuardrailState,
+    #[serde(default)]
+    service: GatewayServiceLifecycleState,
 }
 
 impl Default for GatewayRuntimeState {
@@ -135,6 +186,7 @@ impl Default for GatewayRuntimeState {
             requests: Vec::new(),
             health: TransportHealthSnapshot::default(),
             guardrail: GatewayRolloutGuardrailState::default(),
+            service: GatewayServiceLifecycleState::default(),
         }
     }
 }
@@ -169,6 +221,85 @@ pub(crate) async fn run_gateway_contract_runner(config: GatewayRuntimeConfig) ->
     Ok(())
 }
 
+pub(crate) fn start_gateway_service_mode(state_dir: &Path) -> Result<GatewayServiceStatusReport> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    let state_path = gateway_state_path(state_dir);
+    let mut state = load_gateway_runtime_state(&state_path)?;
+    normalize_gateway_service_state(&mut state.service);
+
+    let now = current_unix_timestamp_ms();
+    state.service.status = GATEWAY_SERVICE_STATUS_RUNNING.to_string();
+    state.service.startup_attempts = state.service.startup_attempts.saturating_add(1);
+    state.service.startup_failure_streak = 0;
+    state.service.last_startup_error.clear();
+    state.service.last_started_unix_ms = now;
+    state.service.last_transition_unix_ms = now;
+
+    save_gateway_runtime_state(&state_path, &state)?;
+    Ok(build_gateway_service_status_report(&state_path, &state))
+}
+
+pub(crate) fn stop_gateway_service_mode(
+    state_dir: &Path,
+    stop_reason: Option<&str>,
+) -> Result<GatewayServiceStatusReport> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    let state_path = gateway_state_path(state_dir);
+    let mut state = load_gateway_runtime_state(&state_path)?;
+    normalize_gateway_service_state(&mut state.service);
+
+    let now = current_unix_timestamp_ms();
+    state.service.status = GATEWAY_SERVICE_STATUS_STOPPED.to_string();
+    state.service.last_stopped_unix_ms = now;
+    state.service.last_transition_unix_ms = now;
+    state.service.last_stop_reason = normalized_gateway_stop_reason(stop_reason);
+
+    save_gateway_runtime_state(&state_path, &state)?;
+    Ok(build_gateway_service_status_report(&state_path, &state))
+}
+
+pub(crate) fn inspect_gateway_service_mode(state_dir: &Path) -> Result<GatewayServiceStatusReport> {
+    std::fs::create_dir_all(state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    let state_path = gateway_state_path(state_dir);
+    let mut state = load_gateway_runtime_state(&state_path)?;
+    normalize_gateway_service_state(&mut state.service);
+    Ok(build_gateway_service_status_report(&state_path, &state))
+}
+
+pub(crate) fn render_gateway_service_status_report(report: &GatewayServiceStatusReport) -> String {
+    format!(
+        "gateway service status: state_path={} service_status={} rollout_gate={} rollout_reason_code={} guardrail_gate={} guardrail_reason_code={} startup_attempts={} startup_failure_streak={} last_startup_error={} last_started_unix_ms={} last_stopped_unix_ms={} last_transition_unix_ms={} last_stop_reason={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        report.state_path,
+        report.service_status,
+        report.rollout_gate,
+        report.rollout_reason_code,
+        report.guardrail_gate,
+        report.guardrail_reason_code,
+        report.service_startup_attempts,
+        report.service_startup_failure_streak,
+        if report.service_last_startup_error.trim().is_empty() {
+            "none".to_string()
+        } else {
+            report.service_last_startup_error.clone()
+        },
+        report.service_last_started_unix_ms,
+        report.service_last_stopped_unix_ms,
+        report.service_last_transition_unix_ms,
+        if report.service_last_stop_reason.trim().is_empty() {
+            "none".to_string()
+        } else {
+            report.service_last_stop_reason.clone()
+        },
+        report.health.queue_depth,
+        report.health.failure_streak,
+        report.health.last_cycle_failed,
+        report.health.last_cycle_completed
+    )
+}
+
 struct GatewayRuntime {
     config: GatewayRuntimeConfig,
     state: GatewayRuntimeState,
@@ -185,6 +316,7 @@ impl GatewayRuntime {
         state
             .requests
             .sort_by(|left, right| left.case_key.cmp(&right.case_key));
+        normalize_gateway_service_state(&mut state.service);
 
         let processed_case_keys = state.processed_case_keys.iter().cloned().collect();
         Ok(Self {
@@ -431,6 +563,84 @@ impl GatewayRuntime {
                 self.processed_case_keys.remove(&key);
             }
         }
+    }
+}
+
+fn gateway_state_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("state.json")
+}
+
+fn normalized_gateway_stop_reason(raw: Option<&str>) -> String {
+    let trimmed = raw.unwrap_or_default().trim();
+    if trimmed.is_empty() {
+        DEFAULT_GATEWAY_SERVICE_STOP_REASON.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalized_gateway_service_status(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        GATEWAY_SERVICE_STATUS_STOPPED => GATEWAY_SERVICE_STATUS_STOPPED,
+        _ => GATEWAY_SERVICE_STATUS_RUNNING,
+    }
+}
+
+fn normalize_gateway_service_state(service: &mut GatewayServiceLifecycleState) {
+    let normalized = normalized_gateway_service_status(&service.status);
+    service.status = normalized.to_string();
+    if normalized == GATEWAY_SERVICE_STATUS_RUNNING {
+        service.startup_failure_streak = 0;
+        service.last_startup_error = service.last_startup_error.trim().to_string();
+    }
+    if service.last_transition_unix_ms == 0 {
+        service.last_transition_unix_ms = current_unix_timestamp_ms();
+    }
+    if normalized == GATEWAY_SERVICE_STATUS_RUNNING && service.last_started_unix_ms == 0 {
+        service.last_started_unix_ms = service.last_transition_unix_ms;
+    }
+}
+
+fn build_gateway_service_status_report(
+    state_path: &Path,
+    state: &GatewayRuntimeState,
+) -> GatewayServiceStatusReport {
+    let guardrail_gate = match state.guardrail.gate.trim().to_ascii_lowercase().as_str() {
+        "hold" => "hold".to_string(),
+        "pass" => "pass".to_string(),
+        _ if state.health.classify().state.as_str() == "healthy" => "pass".to_string(),
+        _ => "hold".to_string(),
+    };
+    let guardrail_reason_code = if !state.guardrail.reason_code.trim().is_empty() {
+        state.guardrail.reason_code.trim().to_string()
+    } else if guardrail_gate == "pass" {
+        "guardrail_checks_passing".to_string()
+    } else {
+        "health_state_not_healthy".to_string()
+    };
+
+    let service_status = normalized_gateway_service_status(&state.service.status).to_string();
+    let (rollout_gate, rollout_reason_code) = if service_status == GATEWAY_SERVICE_STATUS_STOPPED {
+        ("hold".to_string(), "service_stopped".to_string())
+    } else {
+        (guardrail_gate.clone(), guardrail_reason_code.clone())
+    };
+
+    GatewayServiceStatusReport {
+        state_path: state_path.display().to_string(),
+        service_status,
+        rollout_gate,
+        rollout_reason_code,
+        guardrail_gate,
+        guardrail_reason_code,
+        service_startup_attempts: state.service.startup_attempts,
+        service_startup_failure_streak: state.service.startup_failure_streak,
+        service_last_startup_error: state.service.last_startup_error.clone(),
+        service_last_started_unix_ms: state.service.last_started_unix_ms,
+        service_last_stopped_unix_ms: state.service.last_stopped_unix_ms,
+        service_last_transition_unix_ms: state.service.last_transition_unix_ms,
+        service_last_stop_reason: state.service.last_stop_reason.clone(),
+        health: state.health.clone(),
     }
 }
 
@@ -690,9 +900,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        evaluate_gateway_rollout_guardrail, load_gateway_runtime_state, retry_delay_ms,
-        GatewayRuntime, GatewayRuntimeConfig, GatewayRuntimeSummary,
-        GATEWAY_RUNTIME_EVENTS_LOG_FILE,
+        evaluate_gateway_rollout_guardrail, inspect_gateway_service_mode,
+        load_gateway_runtime_state, render_gateway_service_status_report, retry_delay_ms,
+        start_gateway_service_mode, stop_gateway_service_mode, GatewayRuntime,
+        GatewayRuntimeConfig, GatewayRuntimeSummary, GATEWAY_RUNTIME_EVENTS_LOG_FILE,
     };
     use crate::channel_store::ChannelStore;
     use crate::gateway_contract::{load_gateway_contract_fixture, parse_gateway_contract_fixture};
@@ -761,6 +972,77 @@ mod tests {
             hold_failure.reason_code,
             "failure_streak_threshold_exceeded"
         );
+    }
+
+    #[test]
+    fn unit_service_mode_start_and_stop_emit_deterministic_reports() {
+        let temp = tempdir().expect("tempdir");
+        let state_dir = temp.path().join(".tau/gateway-service");
+
+        let started = start_gateway_service_mode(&state_dir).expect("start service");
+        assert_eq!(started.service_status, "running");
+        assert_eq!(started.rollout_gate, "pass");
+        assert_eq!(started.guardrail_gate, "pass");
+        assert!(started.service_startup_attempts >= 1);
+
+        let stopped = stop_gateway_service_mode(&state_dir, Some("maintenance_window"))
+            .expect("stop service");
+        assert_eq!(stopped.service_status, "stopped");
+        assert_eq!(stopped.rollout_gate, "hold");
+        assert_eq!(stopped.rollout_reason_code, "service_stopped");
+        assert_eq!(stopped.service_last_stop_reason, "maintenance_window");
+    }
+
+    #[test]
+    fn functional_service_mode_status_roundtrip_persists_lifecycle_state() {
+        let temp = tempdir().expect("tempdir");
+        let state_dir = temp.path().join(".tau/gateway-service");
+
+        start_gateway_service_mode(&state_dir).expect("start service");
+        stop_gateway_service_mode(&state_dir, Some("operator_requested")).expect("stop service");
+
+        let report = inspect_gateway_service_mode(&state_dir).expect("inspect service");
+        assert_eq!(report.service_status, "stopped");
+        assert_eq!(report.rollout_gate, "hold");
+        assert_eq!(report.service_last_stop_reason, "operator_requested");
+
+        let rendered = render_gateway_service_status_report(&report);
+        assert!(rendered.contains("gateway service status:"));
+        assert!(rendered.contains("service_status=stopped"));
+    }
+
+    #[test]
+    fn regression_service_mode_status_normalizes_legacy_state_without_service_block() {
+        let temp = tempdir().expect("tempdir");
+        let state_dir = temp.path().join(".tau/gateway-service");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        std::fs::write(
+            state_dir.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "requests": [],
+  "health": {
+    "updated_unix_ms": 910,
+    "cycle_duration_ms": 9,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 0,
+    "last_cycle_processed": 0,
+    "last_cycle_completed": 0,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write legacy state");
+
+        let report = inspect_gateway_service_mode(&state_dir).expect("inspect service");
+        assert_eq!(report.service_status, "running");
+        assert_eq!(report.rollout_gate, "pass");
+        assert_eq!(report.rollout_reason_code, "guardrail_checks_passing");
     }
 
     #[tokio::test]

@@ -114,6 +114,33 @@
         "--gateway-status-inspect",
         "--gateway-status-json"
       ]
+    },
+    {
+      "name": "gateway-service-start",
+      "args": [
+        "--gateway-state-dir",
+        ".tau/ci-smoke/gateway-service",
+        "--gateway-service-start"
+      ]
+    },
+    {
+      "name": "gateway-service-status",
+      "args": [
+        "--gateway-state-dir",
+        ".tau/ci-smoke/gateway-service",
+        "--gateway-service-status",
+        "--gateway-service-status-json"
+      ]
+    },
+    {
+      "name": "gateway-service-stop",
+      "args": [
+        "--gateway-state-dir",
+        ".tau/ci-smoke/gateway-service",
+        "--gateway-service-stop",
+        "--gateway-service-stop-reason",
+        "ci_smoke_complete"
+      ]
     }
   ]
 }

@@ -486,9 +486,23 @@ class DemoScriptsTests(unittest.TestCase):
             trace_rows = step_trace_path.read_text(encoding="utf-8").splitlines()
             labels = [row.split("\t", 1)[0] for row in trace_rows]
 
+            self.assertIn("gateway-service-start", labels)
             self.assertIn("gateway-runner", labels)
             self.assertIn("transport-health-inspect-gateway", labels)
-            self.assertIn("gateway-status-inspect", labels)
+            self.assertIn("gateway-status-inspect-running", labels)
+            self.assertIn("gateway-service-stop", labels)
+            self.assertIn("gateway-service-status-stopped", labels)
+            self.assertIn("gateway-status-inspect-stopped", labels)
+
+            start_index = labels.index("gateway-service-start")
+            runner_index = labels.index("gateway-runner")
+            stop_index = labels.index("gateway-service-stop")
+            stopped_status_index = labels.index("gateway-service-status-stopped")
+            stopped_inspect_index = labels.index("gateway-status-inspect-stopped")
+            self.assertLess(start_index, runner_index)
+            self.assertLess(runner_index, stop_index)
+            self.assertLess(stop_index, stopped_status_index)
+            self.assertLess(stopped_status_index, stopped_inspect_index)
 
     def test_integration_all_script_list_json_reports_canonical_order(self) -> None:
         completed = subprocess.run(

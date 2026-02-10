@@ -44,6 +44,9 @@ class DemoSmokeRunnerTests(unittest.TestCase):
         self.assertIn("gateway-contract-runner", names)
         self.assertIn("gateway-transport-health", names)
         self.assertIn("gateway-status-inspect", names)
+        self.assertIn("gateway-service-start", names)
+        self.assertIn("gateway-service-status", names)
+        self.assertIn("gateway-service-stop", names)
 
     def test_unit_load_manifest_accepts_valid_schema_and_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -26,6 +26,47 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.gateway_service_start || cli.gateway_service_stop || cli.gateway_service_status {
+        validate_gateway_service_cli(cli)?;
+        if cli.gateway_service_start {
+            let report =
+                crate::gateway_runtime::start_gateway_service_mode(&cli.gateway_state_dir)?;
+            println!(
+                "{}",
+                crate::gateway_runtime::render_gateway_service_status_report(&report)
+            );
+            return Ok(true);
+        }
+        if cli.gateway_service_stop {
+            let report = crate::gateway_runtime::stop_gateway_service_mode(
+                &cli.gateway_state_dir,
+                cli.gateway_service_stop_reason.as_deref(),
+            )?;
+            println!(
+                "{}",
+                crate::gateway_runtime::render_gateway_service_status_report(&report)
+            );
+            return Ok(true);
+        }
+        if cli.gateway_service_status {
+            let report =
+                crate::gateway_runtime::inspect_gateway_service_mode(&cli.gateway_state_dir)?;
+            if cli.gateway_service_status_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .context("failed to render gateway service status json")?
+                );
+            } else {
+                println!(
+                    "{}",
+                    crate::gateway_runtime::render_gateway_service_status_report(&report)
+                );
+            }
+            return Ok(true);
+        }
+    }
+
     if cli.multi_channel_live_readiness_preflight {
         execute_multi_channel_live_readiness_preflight_command(cli)?;
         return Ok(true);

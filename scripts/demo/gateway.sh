@@ -23,6 +23,11 @@ tau_demo_common_prepare_binary
 rm -rf "${TAU_DEMO_REPO_ROOT}/${demo_state_dir}"
 
 tau_demo_common_run_step \
+  "gateway-service-start" \
+  --gateway-state-dir "${demo_state_dir}" \
+  --gateway-service-start
+
+tau_demo_common_run_step \
   "gateway-runner" \
   --gateway-contract-runner \
   --gateway-fixture ./crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json \
@@ -35,7 +40,25 @@ tau_demo_common_run_step \
   --transport-health-json
 
 tau_demo_common_run_step \
-  "gateway-status-inspect" \
+  "gateway-status-inspect-running" \
+  --gateway-state-dir "${demo_state_dir}" \
+  --gateway-status-inspect \
+  --gateway-status-json
+
+tau_demo_common_run_step \
+  "gateway-service-stop" \
+  --gateway-state-dir "${demo_state_dir}" \
+  --gateway-service-stop \
+  --gateway-service-stop-reason demo_complete
+
+tau_demo_common_run_step \
+  "gateway-service-status-stopped" \
+  --gateway-state-dir "${demo_state_dir}" \
+  --gateway-service-status \
+  --gateway-service-status-json
+
+tau_demo_common_run_step \
+  "gateway-status-inspect-stopped" \
   --gateway-state-dir "${demo_state_dir}" \
   --gateway-status-inspect \
   --gateway-status-json

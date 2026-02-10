@@ -7,6 +7,10 @@ fn has_prompt_or_command_input(cli: &Cli) -> bool {
         || cli.command_file.is_some()
 }
 
+fn gateway_service_mode_requested(cli: &Cli) -> bool {
+    cli.gateway_service_start || cli.gateway_service_stop || cli.gateway_service_status
+}
+
 pub(crate) fn validate_github_issues_bridge_cli(cli: &Cli) -> Result<()> {
     if !cli.github_issues_bridge {
         return Ok(());
@@ -357,6 +361,62 @@ pub(crate) fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
             "--dashboard-fixture '{}' must point to a file",
             cli.dashboard_fixture.display()
         );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
+    if !gateway_service_mode_requested(cli) {
+        return Ok(());
+    }
+
+    let selected_modes = [
+        cli.gateway_service_start,
+        cli.gateway_service_stop,
+        cli.gateway_service_status,
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    if selected_modes > 1 {
+        bail!(
+            "--gateway-service-start, --gateway-service-stop, and --gateway-service-status are mutually exclusive"
+        );
+    }
+    if has_prompt_or_command_input(cli) {
+        bail!(
+            "--gateway-service-* commands cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+        );
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!(
+            "--gateway-service-* commands cannot be combined with active transport runtime flags"
+        );
+    }
+    if cli.gateway_service_status_json && !cli.gateway_service_status {
+        bail!("--gateway-service-status-json requires --gateway-service-status");
+    }
+    if cli.gateway_service_stop {
+        let stop_reason = cli
+            .gateway_service_stop_reason
+            .as_deref()
+            .unwrap_or_default();
+        if !stop_reason.is_empty() && stop_reason.trim().is_empty() {
+            bail!("--gateway-service-stop-reason cannot be empty or whitespace");
+        }
     }
 
     Ok(())
