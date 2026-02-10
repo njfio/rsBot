@@ -59,6 +59,73 @@ struct MultiChannelStatusStateFile {
     processed_event_keys: Vec<String>,
     #[serde(default)]
     health: TransportHealthSnapshot,
+    #[serde(default)]
+    telemetry: MultiChannelStatusTelemetryState,
+    #[serde(default)]
+    telemetry_policy: MultiChannelStatusTelemetryPolicyState,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct MultiChannelStatusTelemetryState {
+    #[serde(default)]
+    typing_events_emitted: usize,
+    #[serde(default)]
+    presence_events_emitted: usize,
+    #[serde(default)]
+    usage_summary_records: usize,
+    #[serde(default)]
+    usage_response_chars: usize,
+    #[serde(default)]
+    usage_chunks: usize,
+    #[serde(default)]
+    usage_estimated_cost_micros: u64,
+    #[serde(default)]
+    typing_events_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    presence_events_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_summary_records_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_response_chars_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_chunks_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_estimated_cost_micros_by_transport: BTreeMap<String, u64>,
+}
+
+fn multi_channel_telemetry_typing_presence_default() -> bool {
+    true
+}
+
+fn multi_channel_telemetry_usage_summary_default() -> bool {
+    true
+}
+
+fn multi_channel_telemetry_min_response_chars_default() -> usize {
+    120
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MultiChannelStatusTelemetryPolicyState {
+    #[serde(default = "multi_channel_telemetry_typing_presence_default")]
+    typing_presence_enabled: bool,
+    #[serde(default = "multi_channel_telemetry_usage_summary_default")]
+    usage_summary_enabled: bool,
+    #[serde(default)]
+    include_identifiers: bool,
+    #[serde(default = "multi_channel_telemetry_min_response_chars_default")]
+    typing_presence_min_response_chars: usize,
+}
+
+impl Default for MultiChannelStatusTelemetryPolicyState {
+    fn default() -> Self {
+        Self {
+            typing_presence_enabled: true,
+            usage_summary_enabled: true,
+            include_identifiers: false,
+            typing_presence_min_response_chars: 120,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -447,6 +514,31 @@ struct DashboardStatusInspectReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct MultiChannelStatusTelemetryPolicyInspectReport {
+    typing_presence_enabled: bool,
+    usage_summary_enabled: bool,
+    include_identifiers: bool,
+    typing_presence_min_response_chars: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct MultiChannelStatusTelemetryInspectReport {
+    typing_events_emitted: usize,
+    presence_events_emitted: usize,
+    usage_summary_records: usize,
+    usage_response_chars: usize,
+    usage_chunks: usize,
+    usage_estimated_cost_micros: u64,
+    typing_events_by_transport: BTreeMap<String, usize>,
+    presence_events_by_transport: BTreeMap<String, usize>,
+    usage_summary_records_by_transport: BTreeMap<String, usize>,
+    usage_response_chars_by_transport: BTreeMap<String, usize>,
+    usage_chunks_by_transport: BTreeMap<String, usize>,
+    usage_estimated_cost_micros_by_transport: BTreeMap<String, u64>,
+    policy: MultiChannelStatusTelemetryPolicyInspectReport,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct MultiChannelStatusInspectReport {
     state_path: String,
     events_log_path: String,
@@ -461,6 +553,7 @@ struct MultiChannelStatusInspectReport {
     last_reason_codes: Vec<String>,
     reason_code_counts: BTreeMap<String, usize>,
     health: TransportHealthSnapshot,
+    telemetry: MultiChannelStatusTelemetryInspectReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     connectors:
         Option<crate::multi_channel_live_connectors::MultiChannelLiveConnectorsStatusReport>,
@@ -1407,6 +1500,30 @@ fn collect_multi_channel_status_report(cli: &Cli) -> Result<MultiChannelStatusIn
         last_reason_codes: cycle_summary.last_reason_codes,
         reason_code_counts: cycle_summary.reason_code_counts,
         health: state.health,
+        telemetry: MultiChannelStatusTelemetryInspectReport {
+            typing_events_emitted: state.telemetry.typing_events_emitted,
+            presence_events_emitted: state.telemetry.presence_events_emitted,
+            usage_summary_records: state.telemetry.usage_summary_records,
+            usage_response_chars: state.telemetry.usage_response_chars,
+            usage_chunks: state.telemetry.usage_chunks,
+            usage_estimated_cost_micros: state.telemetry.usage_estimated_cost_micros,
+            typing_events_by_transport: state.telemetry.typing_events_by_transport,
+            presence_events_by_transport: state.telemetry.presence_events_by_transport,
+            usage_summary_records_by_transport: state.telemetry.usage_summary_records_by_transport,
+            usage_response_chars_by_transport: state.telemetry.usage_response_chars_by_transport,
+            usage_chunks_by_transport: state.telemetry.usage_chunks_by_transport,
+            usage_estimated_cost_micros_by_transport: state
+                .telemetry
+                .usage_estimated_cost_micros_by_transport,
+            policy: MultiChannelStatusTelemetryPolicyInspectReport {
+                typing_presence_enabled: state.telemetry_policy.typing_presence_enabled,
+                usage_summary_enabled: state.telemetry_policy.usage_summary_enabled,
+                include_identifiers: state.telemetry_policy.include_identifiers,
+                typing_presence_min_response_chars: state
+                    .telemetry_policy
+                    .typing_presence_min_response_chars,
+            },
+        },
         connectors,
     })
 }
@@ -2180,6 +2297,25 @@ fn render_multi_channel_status_report(report: &MultiChannelStatusInspectReport) 
     } else {
         report.last_reason_codes.join(",")
     };
+    let telemetry_summary = format!(
+        "typing_events={} presence_events={} usage_records={} usage_chars={} usage_chunks={} usage_cost_micros={} typing_by_transport={} presence_by_transport={} usage_records_by_transport={} usage_chars_by_transport={} usage_chunks_by_transport={} usage_cost_micros_by_transport={} policy=typing_presence:{}|usage_summary:{}|include_identifiers:{}|min_response_chars:{}",
+        report.telemetry.typing_events_emitted,
+        report.telemetry.presence_events_emitted,
+        report.telemetry.usage_summary_records,
+        report.telemetry.usage_response_chars,
+        report.telemetry.usage_chunks,
+        report.telemetry.usage_estimated_cost_micros,
+        render_counter_map(&report.telemetry.typing_events_by_transport),
+        render_counter_map(&report.telemetry.presence_events_by_transport),
+        render_counter_map(&report.telemetry.usage_summary_records_by_transport),
+        render_counter_map(&report.telemetry.usage_response_chars_by_transport),
+        render_counter_map(&report.telemetry.usage_chunks_by_transport),
+        render_u64_counter_map(&report.telemetry.usage_estimated_cost_micros_by_transport),
+        report.telemetry.policy.typing_presence_enabled,
+        report.telemetry.policy.usage_summary_enabled,
+        report.telemetry.policy.include_identifiers,
+        report.telemetry.policy.typing_presence_min_response_chars,
+    );
     let connector_summary = report
         .connectors
         .as_ref()
@@ -2217,7 +2353,7 @@ fn render_multi_channel_status_report(report: &MultiChannelStatusInspectReport) 
         })
         .unwrap_or_else(|| "none".to_string());
     format!(
-        "multi-channel status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_event_count={} transport_counts={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={} connectors={}",
+        "multi-channel status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_event_count={} transport_counts={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={} telemetry={} connectors={}",
         report.state_path,
         report.events_log_path,
         report.events_log_present,
@@ -2234,6 +2370,7 @@ fn render_multi_channel_status_report(report: &MultiChannelStatusInspectReport) 
         report.health.failure_streak,
         report.health.last_cycle_failed,
         report.health.last_cycle_completed,
+        telemetry_summary,
         connector_summary,
     )
 }
@@ -2426,6 +2563,17 @@ fn render_deployment_status_report(report: &DeploymentStatusInspectReport) -> St
 }
 
 fn render_counter_map(counts: &BTreeMap<String, usize>) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+    counts
+        .iter()
+        .map(|(key, value)| format!("{key}:{value}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn render_u64_counter_map(counts: &BTreeMap<String, u64>) -> String {
     if counts.is_empty() {
         return "none".to_string();
     }
@@ -3409,6 +3557,26 @@ invalid-json-line
     "last_cycle_completed": 4,
     "last_cycle_failed": 0,
     "last_cycle_duplicates": 0
+  },
+  "telemetry": {
+    "typing_events_emitted": 6,
+    "presence_events_emitted": 6,
+    "usage_summary_records": 4,
+    "usage_response_chars": 222,
+    "usage_chunks": 7,
+    "usage_estimated_cost_micros": 1200,
+    "typing_events_by_transport": {"telegram": 4, "discord": 2},
+    "presence_events_by_transport": {"telegram": 4, "discord": 2},
+    "usage_summary_records_by_transport": {"telegram": 2, "discord": 1, "whatsapp": 1},
+    "usage_response_chars_by_transport": {"telegram": 120, "discord": 60, "whatsapp": 42},
+    "usage_chunks_by_transport": {"telegram": 3, "discord": 2, "whatsapp": 2},
+    "usage_estimated_cost_micros_by_transport": {"telegram": 700, "discord": 300, "whatsapp": 200}
+  },
+  "telemetry_policy": {
+    "typing_presence_enabled": true,
+    "usage_summary_enabled": true,
+    "include_identifiers": false,
+    "typing_presence_min_response_chars": 90
   }
 }
 "#,
@@ -3449,12 +3617,41 @@ invalid-json-line
             report.reason_code_counts.get("duplicate_events_skipped"),
             Some(&1)
         );
+        assert_eq!(report.telemetry.typing_events_emitted, 6);
+        assert_eq!(report.telemetry.presence_events_emitted, 6);
+        assert_eq!(report.telemetry.usage_summary_records, 4);
+        assert_eq!(report.telemetry.usage_response_chars, 222);
+        assert_eq!(report.telemetry.usage_chunks, 7);
+        assert_eq!(report.telemetry.usage_estimated_cost_micros, 1200);
+        assert_eq!(
+            report.telemetry.typing_events_by_transport.get("telegram"),
+            Some(&4)
+        );
+        assert_eq!(
+            report
+                .telemetry
+                .usage_estimated_cost_micros_by_transport
+                .get("discord"),
+            Some(&300)
+        );
+        assert!(report.telemetry.policy.typing_presence_enabled);
+        assert!(report.telemetry.policy.usage_summary_enabled);
+        assert!(!report.telemetry.policy.include_identifiers);
+        assert_eq!(
+            report.telemetry.policy.typing_presence_min_response_chars,
+            90
+        );
 
         let rendered = render_multi_channel_status_report(&report);
         assert!(rendered.contains("multi-channel status inspect:"));
         assert!(rendered.contains("rollout_gate=pass"));
         assert!(rendered.contains("processed_event_count=4"));
         assert!(rendered.contains("transport_counts=discord:1,telegram:2,whatsapp:1"));
+        assert!(rendered.contains("typing_events=6"));
+        assert!(rendered.contains("usage_records=4"));
+        assert!(rendered
+            .contains("usage_cost_micros_by_transport=discord:300,telegram:700,whatsapp:200"));
+        assert!(rendered.contains("policy=typing_presence:true|usage_summary:true|include_identifiers:false|min_response_chars:90"));
         assert!(rendered.contains(
             "reason_code_counts=duplicate_events_skipped:1,events_applied:1,healthy_cycle:2"
         ));
@@ -3497,6 +3694,16 @@ invalid-json-line
         assert_eq!(report.invalid_cycle_reports, 0);
         assert!(report.last_reason_codes.is_empty());
         assert!(report.reason_code_counts.is_empty());
+        assert_eq!(report.telemetry.typing_events_emitted, 0);
+        assert_eq!(report.telemetry.presence_events_emitted, 0);
+        assert_eq!(report.telemetry.usage_summary_records, 0);
+        assert!(report.telemetry.policy.typing_presence_enabled);
+        assert!(report.telemetry.policy.usage_summary_enabled);
+        assert!(!report.telemetry.policy.include_identifiers);
+        assert_eq!(
+            report.telemetry.policy.typing_presence_min_response_chars,
+            120
+        );
         assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
         assert_eq!(report.rollout_gate, "hold");
     }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -13,6 +13,7 @@ use crate::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTab
 use crate::multi_channel_contract::{
     event_contract_key, load_multi_channel_contract_fixture, validate_multi_channel_inbound_event,
     MultiChannelContractFixture, MultiChannelEventKind, MultiChannelInboundEvent,
+    MultiChannelTransport,
 };
 use crate::multi_channel_live_ingress::parse_multi_channel_live_inbound_envelope;
 use crate::multi_channel_outbound::{
@@ -43,9 +44,32 @@ const PAIRING_REASON_ALLOW_PERMISSIVE_MODE: &str = "allow_permissive_mode";
 const PAIRING_REASON_DENY_POLICY_EVALUATION_ERROR: &str = "deny_policy_evaluation_error";
 const POLICY_REASON_DENY_CHANNEL_POLICY_LOAD_ERROR: &str = "deny_channel_policy_load_error";
 const POLICY_REASON_DENY_ALLOWLIST_ONLY: &str = "deny_channel_policy_allow_from_allowlist_only";
+const TELEMETRY_STATUS_TYPING_STARTED: &str = "typing_started";
+const TELEMETRY_STATUS_TYPING_STOPPED: &str = "typing_stopped";
+const TELEMETRY_STATUS_PRESENCE_ACTIVE: &str = "presence_active";
+const TELEMETRY_STATUS_PRESENCE_IDLE: &str = "presence_idle";
 
 fn multi_channel_runtime_state_schema_version() -> u32 {
     MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MultiChannelTelemetryConfig {
+    pub(crate) typing_presence_enabled: bool,
+    pub(crate) usage_summary_enabled: bool,
+    pub(crate) include_identifiers: bool,
+    pub(crate) typing_presence_min_response_chars: usize,
+}
+
+impl Default for MultiChannelTelemetryConfig {
+    fn default() -> Self {
+        Self {
+            typing_presence_enabled: true,
+            usage_summary_enabled: true,
+            include_identifiers: false,
+            typing_presence_min_response_chars: 120,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +83,7 @@ pub(crate) struct MultiChannelRuntimeConfig {
     pub(crate) retry_base_delay_ms: u64,
     pub(crate) retry_jitter_ms: u64,
     pub(crate) outbound: MultiChannelOutboundConfig,
+    pub(crate) telemetry: MultiChannelTelemetryConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -72,6 +97,7 @@ pub(crate) struct MultiChannelLiveRuntimeConfig {
     pub(crate) retry_base_delay_ms: u64,
     pub(crate) retry_jitter_ms: u64,
     pub(crate) outbound: MultiChannelOutboundConfig,
+    pub(crate) telemetry: MultiChannelTelemetryConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,6 +113,12 @@ pub(crate) struct MultiChannelRuntimeSummary {
     pub(crate) policy_enforced_events: usize,
     pub(crate) policy_allowed_events: usize,
     pub(crate) policy_denied_events: usize,
+    pub(crate) typing_events_emitted: usize,
+    pub(crate) presence_events_emitted: usize,
+    pub(crate) usage_summary_records: usize,
+    pub(crate) usage_response_chars: usize,
+    pub(crate) usage_chunks: usize,
+    pub(crate) usage_estimated_cost_micros: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,8 +138,78 @@ struct MultiChannelRuntimeCycleReport {
     policy_enforced_events: usize,
     policy_allowed_events: usize,
     policy_denied_events: usize,
+    typing_events_emitted: usize,
+    presence_events_emitted: usize,
+    usage_summary_records: usize,
+    usage_response_chars: usize,
+    usage_chunks: usize,
+    usage_estimated_cost_micros: u64,
     backlog_events: usize,
     failure_streak: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct MultiChannelRuntimeTelemetryCounters {
+    #[serde(default)]
+    typing_events_emitted: usize,
+    #[serde(default)]
+    presence_events_emitted: usize,
+    #[serde(default)]
+    usage_summary_records: usize,
+    #[serde(default)]
+    usage_response_chars: usize,
+    #[serde(default)]
+    usage_chunks: usize,
+    #[serde(default)]
+    usage_estimated_cost_micros: u64,
+    #[serde(default)]
+    typing_events_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    presence_events_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_summary_records_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_response_chars_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_chunks_by_transport: BTreeMap<String, usize>,
+    #[serde(default)]
+    usage_estimated_cost_micros_by_transport: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MultiChannelRuntimeTelemetryPolicyState {
+    #[serde(default = "multi_channel_telemetry_typing_presence_default")]
+    typing_presence_enabled: bool,
+    #[serde(default = "multi_channel_telemetry_usage_summary_default")]
+    usage_summary_enabled: bool,
+    #[serde(default)]
+    include_identifiers: bool,
+    #[serde(default = "multi_channel_telemetry_min_response_chars_default")]
+    typing_presence_min_response_chars: usize,
+}
+
+impl Default for MultiChannelRuntimeTelemetryPolicyState {
+    fn default() -> Self {
+        Self {
+            typing_presence_enabled: multi_channel_telemetry_typing_presence_default(),
+            usage_summary_enabled: multi_channel_telemetry_usage_summary_default(),
+            include_identifiers: false,
+            typing_presence_min_response_chars: multi_channel_telemetry_min_response_chars_default(
+            ),
+        }
+    }
+}
+
+fn multi_channel_telemetry_typing_presence_default() -> bool {
+    true
+}
+
+fn multi_channel_telemetry_usage_summary_default() -> bool {
+    true
+}
+
+fn multi_channel_telemetry_min_response_chars_default() -> usize {
+    120
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +220,10 @@ struct MultiChannelRuntimeState {
     processed_event_keys: Vec<String>,
     #[serde(default)]
     health: TransportHealthSnapshot,
+    #[serde(default)]
+    telemetry: MultiChannelRuntimeTelemetryCounters,
+    #[serde(default)]
+    telemetry_policy: MultiChannelRuntimeTelemetryPolicyState,
 }
 
 impl Default for MultiChannelRuntimeState {
@@ -126,6 +232,8 @@ impl Default for MultiChannelRuntimeState {
             schema_version: MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION,
             processed_event_keys: Vec::new(),
             health: TransportHealthSnapshot::default(),
+            telemetry: MultiChannelRuntimeTelemetryCounters::default(),
+            telemetry_policy: MultiChannelRuntimeTelemetryPolicyState::default(),
         }
     }
 }
@@ -140,6 +248,16 @@ struct MultiChannelAccessDecision {
     policy_enforced: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PersistEventOutcome {
+    typing_events_emitted: usize,
+    presence_events_emitted: usize,
+    usage_summary_records: usize,
+    usage_response_chars: usize,
+    usage_chunks: usize,
+    usage_estimated_cost_micros: u64,
+}
+
 pub(crate) async fn run_multi_channel_contract_runner(
     config: MultiChannelRuntimeConfig,
 ) -> Result<()> {
@@ -149,7 +267,7 @@ pub(crate) async fn run_multi_channel_contract_runner(
     let health = runtime.transport_health().clone();
     let classification = health.classify();
     println!(
-        "multi-channel runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={} policy_checked={} policy_enforced={} policy_allowed={} policy_denied={}",
+        "multi-channel runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={} policy_checked={} policy_enforced={} policy_allowed={} policy_denied={} typing_events={} presence_events={} usage_records={} usage_chars={} usage_chunks={} usage_cost_micros={}",
         summary.discovered_events,
         summary.queued_events,
         summary.completed_events,
@@ -160,7 +278,13 @@ pub(crate) async fn run_multi_channel_contract_runner(
         summary.policy_checked_events,
         summary.policy_enforced_events,
         summary.policy_allowed_events,
-        summary.policy_denied_events
+        summary.policy_denied_events,
+        summary.typing_events_emitted,
+        summary.presence_events_emitted,
+        summary.usage_summary_records,
+        summary.usage_response_chars,
+        summary.usage_chunks,
+        summary.usage_estimated_cost_micros
     );
     println!(
         "multi-channel runner health: state={} failure_streak={} queue_depth={} reason={}",
@@ -186,12 +310,13 @@ pub(crate) async fn run_multi_channel_live_runner(
         retry_base_delay_ms: config.retry_base_delay_ms,
         retry_jitter_ms: config.retry_jitter_ms,
         outbound: config.outbound.clone(),
+        telemetry: config.telemetry.clone(),
     })?;
     let summary = runtime.run_once_events(&live_events).await?;
     let health = runtime.transport_health().clone();
     let classification = health.classify();
     println!(
-        "multi-channel live runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={} policy_checked={} policy_enforced={} policy_allowed={} policy_denied={}",
+        "multi-channel live runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={} policy_checked={} policy_enforced={} policy_allowed={} policy_denied={} typing_events={} presence_events={} usage_records={} usage_chars={} usage_chunks={} usage_cost_micros={}",
         summary.discovered_events,
         summary.queued_events,
         summary.completed_events,
@@ -202,7 +327,13 @@ pub(crate) async fn run_multi_channel_live_runner(
         summary.policy_checked_events,
         summary.policy_enforced_events,
         summary.policy_allowed_events,
-        summary.policy_denied_events
+        summary.policy_denied_events,
+        summary.typing_events_emitted,
+        summary.presence_events_emitted,
+        summary.usage_summary_records,
+        summary.usage_response_chars,
+        summary.usage_chunks,
+        summary.usage_estimated_cost_micros
     );
     println!(
         "multi-channel live runner health: state={} failure_streak={} queue_depth={} reason={}",
@@ -490,9 +621,26 @@ impl MultiChannelRuntime {
                     .persist_event(&event, &event_key, &access_decision, &route_decision)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(outcome) => {
                         self.record_processed_event(&event_key);
                         summary.completed_events = summary.completed_events.saturating_add(1);
+                        summary.typing_events_emitted = summary
+                            .typing_events_emitted
+                            .saturating_add(outcome.typing_events_emitted);
+                        summary.presence_events_emitted = summary
+                            .presence_events_emitted
+                            .saturating_add(outcome.presence_events_emitted);
+                        summary.usage_summary_records = summary
+                            .usage_summary_records
+                            .saturating_add(outcome.usage_summary_records);
+                        summary.usage_response_chars = summary
+                            .usage_response_chars
+                            .saturating_add(outcome.usage_response_chars);
+                        summary.usage_chunks =
+                            summary.usage_chunks.saturating_add(outcome.usage_chunks);
+                        summary.usage_estimated_cost_micros = summary
+                            .usage_estimated_cost_micros
+                            .saturating_add(outcome.usage_estimated_cost_micros);
                         if matches!(
                             access_decision.final_decision,
                             PairingDecision::Allow { .. }
@@ -540,6 +688,15 @@ impl MultiChannelRuntime {
         let classification = health.classify();
         let reason_codes = cycle_reason_codes(&summary);
         self.state.health = health.clone();
+        self.state.telemetry_policy = MultiChannelRuntimeTelemetryPolicyState {
+            typing_presence_enabled: self.config.telemetry.typing_presence_enabled,
+            usage_summary_enabled: self.config.telemetry.usage_summary_enabled,
+            include_identifiers: self.config.telemetry.include_identifiers,
+            typing_presence_min_response_chars: self
+                .config
+                .telemetry
+                .typing_presence_min_response_chars,
+        };
 
         save_multi_channel_runtime_state(&self.state_path(), &self.state)?;
         append_multi_channel_cycle_report(
@@ -683,12 +840,13 @@ impl MultiChannelRuntime {
     }
 
     async fn persist_event(
-        &self,
+        &mut self,
         event: &MultiChannelInboundEvent,
         event_key: &str,
         access_decision: &MultiChannelAccessDecision,
         route_decision: &MultiChannelRouteDecision,
-    ) -> Result<()> {
+    ) -> Result<PersistEventOutcome> {
+        let mut outcome = PersistEventOutcome::default();
         let store = ChannelStore::open(
             &self.config.state_dir.join("channel-store"),
             event.transport.as_str(),
@@ -770,10 +928,64 @@ impl MultiChannelRuntime {
                     }),
                 })?;
             }
-            return Ok(());
+            return Ok(outcome);
         }
 
         let response_text = render_response(event);
+        let response_chars = response_text.chars().count();
+        let emit_lifecycle =
+            should_emit_typing_presence_lifecycle(event, &response_text, &self.config.telemetry);
+        if emit_lifecycle {
+            if !log_contains_outbound_status(
+                &existing_logs,
+                event_key,
+                TELEMETRY_STATUS_TYPING_STARTED,
+            ) {
+                store.append_log_entry(&ChannelLogEntry {
+                    timestamp_unix_ms: current_unix_timestamp_ms(),
+                    direction: "outbound".to_string(),
+                    event_key: Some(event_key.to_string()),
+                    source: "tau-multi-channel-runner".to_string(),
+                    payload: build_telemetry_lifecycle_payload(&TelemetryLifecyclePayloadContext {
+                        status: TELEMETRY_STATUS_TYPING_STARTED,
+                        telemetry_kind: "typing",
+                        telemetry_state: "started",
+                        signal: channel_typing_signal(event.transport),
+                        event,
+                        event_key,
+                        route_decision,
+                        include_identifiers: self.config.telemetry.include_identifiers,
+                    }),
+                })?;
+                self.record_typing_telemetry(event.transport.as_str());
+                outcome.typing_events_emitted = outcome.typing_events_emitted.saturating_add(1);
+            }
+            if !log_contains_outbound_status(
+                &existing_logs,
+                event_key,
+                TELEMETRY_STATUS_PRESENCE_ACTIVE,
+            ) {
+                store.append_log_entry(&ChannelLogEntry {
+                    timestamp_unix_ms: current_unix_timestamp_ms(),
+                    direction: "outbound".to_string(),
+                    event_key: Some(event_key.to_string()),
+                    source: "tau-multi-channel-runner".to_string(),
+                    payload: build_telemetry_lifecycle_payload(&TelemetryLifecyclePayloadContext {
+                        status: TELEMETRY_STATUS_PRESENCE_ACTIVE,
+                        telemetry_kind: "presence",
+                        telemetry_state: "active",
+                        signal: channel_presence_signal(event.transport, true),
+                        event,
+                        event_key,
+                        route_decision,
+                        include_identifiers: self.config.telemetry.include_identifiers,
+                    }),
+                })?;
+                self.record_presence_telemetry(event.transport.as_str());
+                outcome.presence_events_emitted = outcome.presence_events_emitted.saturating_add(1);
+            }
+        }
+
         let delivery_result = match self
             .outbound_dispatcher
             .deliver(event, &response_text)
@@ -801,6 +1013,57 @@ impl MultiChannelRuntime {
                 ));
             }
         };
+
+        if emit_lifecycle {
+            if !log_contains_outbound_status(
+                &existing_logs,
+                event_key,
+                TELEMETRY_STATUS_TYPING_STOPPED,
+            ) {
+                store.append_log_entry(&ChannelLogEntry {
+                    timestamp_unix_ms: current_unix_timestamp_ms(),
+                    direction: "outbound".to_string(),
+                    event_key: Some(event_key.to_string()),
+                    source: "tau-multi-channel-runner".to_string(),
+                    payload: build_telemetry_lifecycle_payload(&TelemetryLifecyclePayloadContext {
+                        status: TELEMETRY_STATUS_TYPING_STOPPED,
+                        telemetry_kind: "typing",
+                        telemetry_state: "stopped",
+                        signal: channel_typing_signal(event.transport),
+                        event,
+                        event_key,
+                        route_decision,
+                        include_identifiers: self.config.telemetry.include_identifiers,
+                    }),
+                })?;
+                self.record_typing_telemetry(event.transport.as_str());
+                outcome.typing_events_emitted = outcome.typing_events_emitted.saturating_add(1);
+            }
+            if !log_contains_outbound_status(
+                &existing_logs,
+                event_key,
+                TELEMETRY_STATUS_PRESENCE_IDLE,
+            ) {
+                store.append_log_entry(&ChannelLogEntry {
+                    timestamp_unix_ms: current_unix_timestamp_ms(),
+                    direction: "outbound".to_string(),
+                    event_key: Some(event_key.to_string()),
+                    source: "tau-multi-channel-runner".to_string(),
+                    payload: build_telemetry_lifecycle_payload(&TelemetryLifecyclePayloadContext {
+                        status: TELEMETRY_STATUS_PRESENCE_IDLE,
+                        telemetry_kind: "presence",
+                        telemetry_state: "idle",
+                        signal: channel_presence_signal(event.transport, false),
+                        event,
+                        event_key,
+                        route_decision,
+                        include_identifiers: self.config.telemetry.include_identifiers,
+                    }),
+                })?;
+                self.record_presence_telemetry(event.transport.as_str());
+                outcome.presence_events_emitted = outcome.presence_events_emitted.saturating_add(1);
+            }
+        }
 
         if !event.text.trim().is_empty()
             && !context_contains_entry(&existing_context, "user", event.text.trim())
@@ -841,7 +1104,98 @@ impl MultiChannelRuntime {
             })?;
         }
 
-        Ok(())
+        if self.config.telemetry.usage_summary_enabled {
+            let usage_cost_micros = extract_usage_estimated_cost_micros(event).unwrap_or(0);
+            self.record_usage_summary_telemetry(
+                event.transport.as_str(),
+                response_chars,
+                delivery_result.chunk_count,
+                usage_cost_micros,
+            );
+            outcome.usage_summary_records = outcome.usage_summary_records.saturating_add(1);
+            outcome.usage_response_chars =
+                outcome.usage_response_chars.saturating_add(response_chars);
+            outcome.usage_chunks = outcome
+                .usage_chunks
+                .saturating_add(delivery_result.chunk_count);
+            outcome.usage_estimated_cost_micros = outcome
+                .usage_estimated_cost_micros
+                .saturating_add(usage_cost_micros);
+        }
+
+        Ok(outcome)
+    }
+
+    fn record_typing_telemetry(&mut self, transport: &str) {
+        self.state.telemetry.typing_events_emitted =
+            self.state.telemetry.typing_events_emitted.saturating_add(1);
+        increment_counter_map(
+            &mut self.state.telemetry.typing_events_by_transport,
+            transport,
+            1,
+        );
+    }
+
+    fn record_presence_telemetry(&mut self, transport: &str) {
+        self.state.telemetry.presence_events_emitted = self
+            .state
+            .telemetry
+            .presence_events_emitted
+            .saturating_add(1);
+        increment_counter_map(
+            &mut self.state.telemetry.presence_events_by_transport,
+            transport,
+            1,
+        );
+    }
+
+    fn record_usage_summary_telemetry(
+        &mut self,
+        transport: &str,
+        response_chars: usize,
+        usage_chunks: usize,
+        usage_cost_micros: u64,
+    ) {
+        self.state.telemetry.usage_summary_records =
+            self.state.telemetry.usage_summary_records.saturating_add(1);
+        self.state.telemetry.usage_response_chars = self
+            .state
+            .telemetry
+            .usage_response_chars
+            .saturating_add(response_chars);
+        self.state.telemetry.usage_chunks = self
+            .state
+            .telemetry
+            .usage_chunks
+            .saturating_add(usage_chunks);
+        self.state.telemetry.usage_estimated_cost_micros = self
+            .state
+            .telemetry
+            .usage_estimated_cost_micros
+            .saturating_add(usage_cost_micros);
+        increment_counter_map(
+            &mut self.state.telemetry.usage_summary_records_by_transport,
+            transport,
+            1,
+        );
+        increment_counter_map(
+            &mut self.state.telemetry.usage_response_chars_by_transport,
+            transport,
+            response_chars,
+        );
+        increment_counter_map(
+            &mut self.state.telemetry.usage_chunks_by_transport,
+            transport,
+            usage_chunks,
+        );
+        increment_counter_u64_map(
+            &mut self
+                .state
+                .telemetry
+                .usage_estimated_cost_micros_by_transport,
+            transport,
+            usage_cost_micros,
+        );
     }
 
     fn record_processed_event(&mut self, event_key: &str) {
@@ -882,6 +1236,142 @@ fn pairing_decision_status(decision: &PairingDecision) -> &'static str {
 
 fn pairing_decision_is_enforced(decision: &PairingDecision) -> bool {
     decision.reason_code() != PAIRING_REASON_ALLOW_PERMISSIVE_MODE
+}
+
+fn should_emit_typing_presence_lifecycle(
+    event: &MultiChannelInboundEvent,
+    response_text: &str,
+    config: &MultiChannelTelemetryConfig,
+) -> bool {
+    if !config.typing_presence_enabled {
+        return false;
+    }
+    if event
+        .metadata
+        .get("telemetry_force_typing_presence")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return true;
+    }
+    response_text.chars().count() >= config.typing_presence_min_response_chars
+}
+
+fn channel_typing_signal(transport: MultiChannelTransport) -> &'static str {
+    match transport {
+        MultiChannelTransport::Telegram => "telegram:typing",
+        MultiChannelTransport::Discord => "discord:typing",
+        MultiChannelTransport::Whatsapp => "whatsapp:typing",
+    }
+}
+
+fn channel_presence_signal(transport: MultiChannelTransport, active: bool) -> &'static str {
+    match (transport, active) {
+        (MultiChannelTransport::Telegram, true) => "telegram:online",
+        (MultiChannelTransport::Telegram, false) => "telegram:idle",
+        (MultiChannelTransport::Discord, true) => "discord:online",
+        (MultiChannelTransport::Discord, false) => "discord:idle",
+        (MultiChannelTransport::Whatsapp, true) => "whatsapp:available",
+        (MultiChannelTransport::Whatsapp, false) => "whatsapp:idle",
+    }
+}
+
+struct TelemetryLifecyclePayloadContext<'a> {
+    status: &'a str,
+    telemetry_kind: &'a str,
+    telemetry_state: &'a str,
+    signal: &'a str,
+    event: &'a MultiChannelInboundEvent,
+    event_key: &'a str,
+    route_decision: &'a MultiChannelRouteDecision,
+    include_identifiers: bool,
+}
+
+fn build_telemetry_lifecycle_payload(context: &TelemetryLifecyclePayloadContext<'_>) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "status".to_string(),
+        Value::String(context.status.to_string()),
+    );
+    payload.insert(
+        "record_type".to_string(),
+        Value::String("multi_channel_telemetry_lifecycle_v1".to_string()),
+    );
+    payload.insert(
+        "reason_code".to_string(),
+        Value::String("telemetry_lifecycle_emitted".to_string()),
+    );
+    payload.insert(
+        "telemetry_kind".to_string(),
+        Value::String(context.telemetry_kind.to_string()),
+    );
+    payload.insert(
+        "telemetry_state".to_string(),
+        Value::String(context.telemetry_state.to_string()),
+    );
+    payload.insert(
+        "signal".to_string(),
+        Value::String(context.signal.to_string()),
+    );
+    payload.insert(
+        "transport".to_string(),
+        Value::String(context.event.transport.as_str().to_string()),
+    );
+    payload.insert(
+        "event_key".to_string(),
+        Value::String(context.event_key.to_string()),
+    );
+    if context.include_identifiers {
+        payload.insert(
+            "conversation_id".to_string(),
+            Value::String(context.event.conversation_id.trim().to_string()),
+        );
+        payload.insert(
+            "actor_id".to_string(),
+            Value::String(context.event.actor_id.trim().to_string()),
+        );
+        payload.insert(
+            "route_session_key".to_string(),
+            Value::String(context.route_decision.session_key.clone()),
+        );
+    }
+    Value::Object(payload)
+}
+
+fn extract_usage_estimated_cost_micros(event: &MultiChannelInboundEvent) -> Option<u64> {
+    if let Some(value) = event
+        .metadata
+        .get("usage_cost_micros")
+        .and_then(serde_json::Value::as_u64)
+    {
+        return Some(value);
+    }
+    let usd = event
+        .metadata
+        .get("usage_cost_usd")
+        .and_then(serde_json::Value::as_f64)?;
+    if !usd.is_finite() || usd.is_sign_negative() {
+        return None;
+    }
+    Some((usd * 1_000_000.0).round() as u64)
+}
+
+fn increment_counter_map(map: &mut BTreeMap<String, usize>, key: &str, delta: usize) {
+    let normalized = key.trim();
+    if normalized.is_empty() || delta == 0 {
+        return;
+    }
+    let entry = map.entry(normalized.to_string()).or_insert(0);
+    *entry = entry.saturating_add(delta);
+}
+
+fn increment_counter_u64_map(map: &mut BTreeMap<String, u64>, key: &str, delta: u64) {
+    let normalized = key.trim();
+    if normalized.is_empty() || delta == 0 {
+        return;
+    }
+    let entry = map.entry(normalized.to_string()).or_insert(0);
+    *entry = entry.saturating_add(delta);
 }
 
 fn log_contains_event_direction(
@@ -1072,6 +1562,12 @@ fn cycle_reason_codes(summary: &MultiChannelRuntimeSummary) -> Vec<String> {
     if summary.policy_denied_events > 0 {
         codes.push("pairing_policy_denied_events".to_string());
     }
+    if summary.typing_events_emitted > 0 || summary.presence_events_emitted > 0 {
+        codes.push("telemetry_lifecycle_emitted".to_string());
+    }
+    if summary.usage_summary_records > 0 {
+        codes.push("telemetry_usage_summary_emitted".to_string());
+    }
     codes
 }
 
@@ -1104,6 +1600,12 @@ fn append_multi_channel_cycle_report(
         policy_enforced_events: summary.policy_enforced_events,
         policy_allowed_events: summary.policy_allowed_events,
         policy_denied_events: summary.policy_denied_events,
+        typing_events_emitted: summary.typing_events_emitted,
+        presence_events_emitted: summary.presence_events_emitted,
+        usage_summary_records: summary.usage_summary_records,
+        usage_response_chars: summary.usage_response_chars,
+        usage_chunks: summary.usage_chunks,
+        usage_estimated_cost_micros: summary.usage_estimated_cost_micros,
         backlog_events: summary
             .discovered_events
             .saturating_sub(summary.queued_events),
@@ -1261,7 +1763,7 @@ mod tests {
     use super::{
         load_multi_channel_live_events, load_multi_channel_runtime_state, retry_delay_ms,
         run_multi_channel_live_runner, MultiChannelLiveRuntimeConfig, MultiChannelRuntime,
-        MultiChannelRuntimeConfig,
+        MultiChannelRuntimeConfig, MultiChannelTelemetryConfig,
     };
     use crate::channel_store::ChannelStore;
     use crate::multi_channel_contract::{
@@ -1296,6 +1798,7 @@ mod tests {
             retry_base_delay_ms: 0,
             retry_jitter_ms: 0,
             outbound: MultiChannelOutboundConfig::default(),
+            telemetry: MultiChannelTelemetryConfig::default(),
         }
     }
 
@@ -1310,6 +1813,7 @@ mod tests {
             retry_base_delay_ms: 0,
             retry_jitter_ms: 0,
             outbound: MultiChannelOutboundConfig::default(),
+            telemetry: MultiChannelTelemetryConfig::default(),
         }
     }
 
@@ -1413,6 +1917,62 @@ mod tests {
             "hello",
         );
         assert_eq!(super::pairing_policy_channel(&event), "discord:ops-room");
+    }
+
+    #[test]
+    fn unit_should_emit_typing_presence_lifecycle_respects_threshold_and_force_flag() {
+        let mut event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-telemetry-1",
+            "chat-telemetry",
+            "telegram-user-1",
+            "hello",
+        );
+        let config = MultiChannelTelemetryConfig {
+            typing_presence_min_response_chars: 200,
+            ..MultiChannelTelemetryConfig::default()
+        };
+        assert!(!super::should_emit_typing_presence_lifecycle(
+            &event,
+            "short response",
+            &config,
+        ));
+
+        event.metadata.insert(
+            "telemetry_force_typing_presence".to_string(),
+            Value::Bool(true),
+        );
+        assert!(super::should_emit_typing_presence_lifecycle(
+            &event,
+            "short response",
+            &config,
+        ));
+    }
+
+    #[test]
+    fn unit_extract_usage_estimated_cost_micros_parses_supported_metadata_fields() {
+        let mut event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-cost-1",
+            "ops-room",
+            "discord-user-1",
+            "cost metadata",
+        );
+        event
+            .metadata
+            .insert("usage_cost_usd".to_string(), Value::from(0.00125_f64));
+        assert_eq!(
+            super::extract_usage_estimated_cost_micros(&event),
+            Some(1250)
+        );
+
+        event
+            .metadata
+            .insert("usage_cost_micros".to_string(), Value::from(777_u64));
+        assert_eq!(
+            super::extract_usage_estimated_cost_micros(&event),
+            Some(777)
+        );
     }
 
     #[tokio::test]
@@ -1769,6 +2329,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn functional_runner_emits_typing_presence_telemetry_for_long_replies_in_dry_run_mode() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.outbound.mode = MultiChannelOutboundMode::DryRun;
+        config.telemetry.typing_presence_min_response_chars = 1;
+
+        let events = vec![
+            sample_event(
+                MultiChannelTransport::Telegram,
+                "tg-typing-1",
+                "chat-typing-telegram",
+                "telegram-user-1",
+                "hello",
+            ),
+            sample_event(
+                MultiChannelTransport::Discord,
+                "dc-typing-1",
+                "chat-typing-discord",
+                "discord-user-1",
+                "hello",
+            ),
+            sample_event(
+                MultiChannelTransport::Whatsapp,
+                "wa-typing-1",
+                "chat-typing-whatsapp",
+                "15550001111",
+                "hello",
+            ),
+        ];
+
+        let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once_events(&events).await.expect("run once");
+        assert_eq!(summary.completed_events, 3);
+        assert_eq!(summary.typing_events_emitted, 6);
+        assert_eq!(summary.presence_events_emitted, 6);
+        assert_eq!(summary.usage_summary_records, 3);
+
+        let state = load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
+            .expect("load state");
+        assert_eq!(state.telemetry.typing_events_emitted, 6);
+        assert_eq!(state.telemetry.presence_events_emitted, 6);
+        assert_eq!(state.telemetry.usage_summary_records, 3);
+        assert_eq!(
+            state.telemetry.typing_events_by_transport.get("telegram"),
+            Some(&2)
+        );
+        assert_eq!(
+            state.telemetry.typing_events_by_transport.get("discord"),
+            Some(&2)
+        );
+        assert_eq!(
+            state.telemetry.typing_events_by_transport.get("whatsapp"),
+            Some(&2)
+        );
+
+        for event in &events {
+            let store = ChannelStore::open(
+                &config.state_dir.join("channel-store"),
+                event.transport.as_str(),
+                event.conversation_id.as_str(),
+            )
+            .expect("open channel store");
+            let logs = store.load_log_entries().expect("load logs");
+            assert!(logs.iter().any(|entry| {
+                entry.payload.get("status").and_then(Value::as_str) == Some("typing_started")
+            }));
+            assert!(logs.iter().any(|entry| {
+                entry.payload.get("status").and_then(Value::as_str) == Some("typing_stopped")
+            }));
+            assert!(logs.iter().any(|entry| {
+                entry.payload.get("status").and_then(Value::as_str) == Some("presence_active")
+            }));
+            assert!(logs.iter().any(|entry| {
+                entry.payload.get("status").and_then(Value::as_str) == Some("presence_idle")
+            }));
+        }
+    }
+
+    #[tokio::test]
     async fn integration_runner_provider_outbound_posts_per_transport_adapter() {
         struct Scenario<'a> {
             transport: MultiChannelTransport,
@@ -1845,6 +2484,7 @@ mod tests {
             let summary = runtime.run_once_events(&[event]).await.expect("run once");
             assert_eq!(summary.completed_events, 1);
             assert_eq!(summary.failed_events, 0);
+            assert_eq!(summary.usage_summary_records, 1);
             sent.assert_calls(1);
 
             let store = ChannelStore::open(
@@ -1856,6 +2496,17 @@ mod tests {
             let logs = store.load_log_entries().expect("load logs");
             assert_eq!(logs[1].payload["delivery"]["mode"], "provider");
             assert_eq!(logs[1].payload["delivery"]["receipts"][0]["status"], "sent");
+
+            let state = load_multi_channel_runtime_state(&config.state_dir.join("state.json"))
+                .expect("load state");
+            assert_eq!(state.telemetry.usage_summary_records, 1);
+            assert_eq!(
+                state
+                    .telemetry
+                    .usage_summary_records_by_transport
+                    .get(scenario.transport.as_str()),
+                Some(&1)
+            );
         }
     }
 
@@ -1874,6 +2525,7 @@ mod tests {
         config.outbound.mode = MultiChannelOutboundMode::Provider;
         config.outbound.telegram_api_base = server.base_url();
         config.outbound.telegram_bot_token = Some("telegram-token".to_string());
+        config.telemetry.typing_presence_min_response_chars = 1;
         let event = sample_event(
             MultiChannelTransport::Telegram,
             "tg-dup-provider-1",
@@ -1893,8 +2545,21 @@ mod tests {
             .expect("second run");
 
         assert_eq!(first.completed_events, 1);
+        assert_eq!(first.typing_events_emitted, 2);
+        assert_eq!(first.presence_events_emitted, 2);
+        assert_eq!(first.usage_summary_records, 1);
         assert_eq!(second.duplicate_skips, 1);
+        assert_eq!(second.typing_events_emitted, 0);
+        assert_eq!(second.presence_events_emitted, 0);
+        assert_eq!(second.usage_summary_records, 0);
         sent.assert_calls(1);
+
+        let state =
+            load_multi_channel_runtime_state(&temp.path().join(".tau/multi-channel/state.json"))
+                .expect("load state");
+        assert_eq!(state.telemetry.typing_events_emitted, 2);
+        assert_eq!(state.telemetry.presence_events_emitted, 2);
+        assert_eq!(state.telemetry.usage_summary_records, 1);
     }
 
     #[tokio::test]

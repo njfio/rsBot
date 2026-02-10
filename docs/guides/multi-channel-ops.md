@@ -40,6 +40,19 @@ Primary state files:
 - `.tau/multi-channel/security/multi-channel-route-bindings.json`
 - `.tau/multi-channel/channel-store/<transport>/<channel>/...`
 
+Telemetry controls (runtime flags, privacy-safe defaults):
+
+- `--multi-channel-telemetry-typing-presence=true|false`
+- `--multi-channel-telemetry-usage-summary=true|false`
+- `--multi-channel-telemetry-include-identifiers=true|false` (default `false`)
+- `--multi-channel-telemetry-min-response-chars=<N>` (default `120`)
+
+`--multi-channel-status-inspect` now includes telemetry counters and policy snapshot:
+
+- lifecycle counters: typing + presence totals/per-transport
+- usage counters: records/chars/chunks/cost totals/per-transport
+- active telemetry policy toggles and threshold
+
 `runtime-events.jsonl` reason codes:
 
 - `healthy_cycle`
@@ -51,6 +64,8 @@ Primary state files:
 - `pairing_policy_permissive`
 - `pairing_policy_enforced`
 - `pairing_policy_denied_events`
+- `telemetry_lifecycle_emitted`
+- `telemetry_usage_summary_emitted`
 
 ## Pairing and allowlist policy
 

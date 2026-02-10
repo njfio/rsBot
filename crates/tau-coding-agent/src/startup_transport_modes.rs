@@ -197,6 +197,7 @@ pub(crate) async fn run_transport_mode_if_requested(
             retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
             retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
             outbound: build_multi_channel_outbound_config(cli),
+            telemetry: build_multi_channel_telemetry_config(cli),
         })
         .await?;
         return Ok(true);
@@ -213,6 +214,7 @@ pub(crate) async fn run_transport_mode_if_requested(
             retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
             retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
             outbound: build_multi_channel_outbound_config(cli),
+            telemetry: build_multi_channel_telemetry_config(cli),
         })
         .await?;
         return Ok(true);
@@ -419,5 +421,16 @@ fn build_multi_channel_outbound_config(
             cli.multi_channel_whatsapp_phone_number_id.as_deref(),
             "whatsapp-phone-number-id",
         ),
+    }
+}
+
+fn build_multi_channel_telemetry_config(
+    cli: &Cli,
+) -> crate::multi_channel_runtime::MultiChannelTelemetryConfig {
+    crate::multi_channel_runtime::MultiChannelTelemetryConfig {
+        typing_presence_enabled: cli.multi_channel_telemetry_typing_presence,
+        usage_summary_enabled: cli.multi_channel_telemetry_usage_summary,
+        include_identifiers: cli.multi_channel_telemetry_include_identifiers,
+        typing_presence_min_response_chars: cli.multi_channel_telemetry_min_response_chars.max(1),
     }
 }
