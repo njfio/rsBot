@@ -2689,6 +2689,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "tau-multi-channel",
+ "tau-session",
 ]
 
 [[package]]
@@ -2723,6 +2724,7 @@ dependencies = [
  "tau-multi-channel",
  "tau-orchestrator",
  "tau-runtime",
+ "tau-session",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2795,6 +2797,17 @@ dependencies = [
  "sha2",
  "tau-ai",
  "tau-core",
+ "tempfile",
+]
+
+[[package]]
+name = "tau-session"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tau-ai",
  "tempfile",
 ]
 

@@ -20,6 +20,7 @@ tau-cli = { path = "../tau-cli" }
 tau-core = { path = "../tau-core" }
 tau-gateway = { path = "../tau-gateway" }
 tau-multi-channel = { path = "../tau-multi-channel" }
+tau-session = { path = "../tau-session" }
 tau-orchestrator = { path = "../tau-orchestrator" }
 tau-runtime = { path = "../tau-runtime" }
 tau-agent-core = { path = "../tau-agent-core" }

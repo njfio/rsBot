@@ -1,7 +1,6 @@
 pub use tau_cli::cli_types::*;
 
 use crate::events::WebhookSignatureAlgorithm;
-use crate::session::SessionImportMode;
 use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
 use crate::ProviderAuthMethod;
 
@@ -21,15 +20,6 @@ impl From<CliOsSandboxMode> for OsSandboxMode {
             CliOsSandboxMode::Off => OsSandboxMode::Off,
             CliOsSandboxMode::Auto => OsSandboxMode::Auto,
             CliOsSandboxMode::Force => OsSandboxMode::Force,
-        }
-    }
-}
-
-impl From<CliSessionImportMode> for SessionImportMode {
-    fn from(value: CliSessionImportMode) -> Self {
-        match value {
-            CliSessionImportMode::Merge => SessionImportMode::Merge,
-            CliSessionImportMode::Replace => SessionImportMode::Replace,
         }
     }
 }

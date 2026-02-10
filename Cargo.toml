@@ -6,6 +6,7 @@ members = [
   "crates/tau-agent-core",
   "crates/tau-gateway",
   "crates/tau-multi-channel",
+  "crates/tau-session",
   "crates/tau-orchestrator",
   "crates/tau-runtime",
   "crates/tau-tui",

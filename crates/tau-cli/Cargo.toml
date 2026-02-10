@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
+tau-session = { path = "../tau-session" }
 
 [dependencies.tau-multi-channel]
 path = "../tau-multi-channel"

@@ -3,6 +3,7 @@ use clap::ValueEnum;
 use tau_multi_channel::multi_channel_contract::MultiChannelTransport;
 use tau_multi_channel::multi_channel_live_connectors::MultiChannelLiveConnectorMode;
 use tau_multi_channel::multi_channel_outbound::MultiChannelOutboundMode;
+use tau_session::SessionImportMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CliBashProfile {
@@ -22,6 +23,15 @@ pub enum CliOsSandboxMode {
 pub enum CliSessionImportMode {
     Merge,
     Replace,
+}
+
+impl From<CliSessionImportMode> for SessionImportMode {
+    fn from(value: CliSessionImportMode) -> Self {
+        match value {
+            CliSessionImportMode::Merge => SessionImportMode::Merge,
+            CliSessionImportMode::Replace => SessionImportMode::Replace,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
