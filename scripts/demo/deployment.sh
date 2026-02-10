@@ -15,12 +15,22 @@ if [[ "${init_rc}" -ne 0 ]]; then
 fi
 
 fixture_path="${TAU_DEMO_REPO_ROOT}/crates/tau-coding-agent/testdata/deployment-contract/rollout-pass.json"
+wasm_fixture_path="${TAU_DEMO_REPO_ROOT}/crates/tau-coding-agent/testdata/deployment-wasm/edge-runtime.wasm"
 demo_state_dir=".tau/demo-deployment"
 
 tau_demo_common_require_file "${fixture_path}"
+tau_demo_common_require_file "${wasm_fixture_path}"
 tau_demo_common_prepare_binary
 
 rm -rf "${TAU_DEMO_REPO_ROOT}/${demo_state_dir}"
+
+tau_demo_common_run_step \
+  "deployment-wasm-package" \
+  --deployment-state-dir "${demo_state_dir}" \
+  --deployment-wasm-package-module ./crates/tau-coding-agent/testdata/deployment-wasm/edge-runtime.wasm \
+  --deployment-wasm-package-blueprint-id edge-wasm \
+  --deployment-wasm-package-output-dir "${demo_state_dir}/wasm-artifacts" \
+  --deployment-wasm-package-json
 
 tau_demo_common_run_step \
   "deployment-runner" \

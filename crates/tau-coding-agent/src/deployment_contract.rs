@@ -7,6 +7,8 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::deployment_wasm::load_deployment_wasm_manifest;
+
 pub(crate) const DEPLOYMENT_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
 pub(crate) const DEPLOYMENT_ERROR_INVALID_BLUEPRINT: &str = "deployment_invalid_blueprint";
@@ -54,6 +56,8 @@ pub(crate) struct DeploymentContractCase {
     pub(crate) container_image: String,
     #[serde(default)]
     pub(crate) wasm_module: String,
+    #[serde(default)]
+    pub(crate) wasm_manifest: String,
     #[serde(default = "default_replicas")]
     pub(crate) replicas: u16,
     #[serde(default)]
@@ -216,9 +220,12 @@ pub(crate) fn validate_deployment_contract_compatibility(
                     case.deploy_target
                 );
             }
-            if target == "wasm" && case.wasm_module.trim().is_empty() {
+            if target == "wasm"
+                && case.wasm_module.trim().is_empty()
+                && case.wasm_manifest.trim().is_empty()
+            {
                 bail!(
-                    "fixture case '{}' deploy_target=wasm requires wasm_module",
+                    "fixture case '{}' deploy_target=wasm requires wasm_module or wasm_manifest",
                     case.case_id
                 );
             }
@@ -330,16 +337,66 @@ pub(crate) fn evaluate_deployment_case(case: &DeploymentContractCase) -> Deploym
         );
     }
 
-    let artifact = if target == "wasm" {
-        let wasm_module = case.wasm_module.trim();
-        if wasm_module.is_empty() {
-            return malformed_result(
-                400,
-                DEPLOYMENT_ERROR_MISSING_ARTIFACT,
-                "missing_wasm_module",
-            );
+    let mut response = json!({
+        "status":"accepted",
+        "blueprint_id": blueprint_id,
+        "deploy_target": target,
+        "runtime_profile": runtime,
+        "environment": environment,
+        "region": region,
+        "replicas": case.replicas,
+        "rollout_strategy": rollout_strategy_for_target(target.as_str()),
+    });
+
+    if target == "wasm" {
+        let wasm_manifest_path = case.wasm_manifest.trim();
+        if !wasm_manifest_path.is_empty() {
+            let manifest = match load_deployment_wasm_manifest(Path::new(wasm_manifest_path)) {
+                Ok(manifest) => manifest,
+                Err(_) => {
+                    return malformed_result(
+                        400,
+                        DEPLOYMENT_ERROR_MISSING_ARTIFACT,
+                        "invalid_wasm_manifest",
+                    );
+                }
+            };
+            if manifest.runtime_profile != runtime {
+                return malformed_result(
+                    422,
+                    DEPLOYMENT_ERROR_UNSUPPORTED_RUNTIME,
+                    "wasm_manifest_runtime_mismatch",
+                );
+            }
+            if let Some(map) = response.as_object_mut() {
+                map.insert("artifact".to_string(), json!(manifest.artifact_path));
+                map.insert(
+                    "artifact_sha256".to_string(),
+                    json!(manifest.artifact_sha256),
+                );
+                map.insert(
+                    "artifact_size_bytes".to_string(),
+                    json!(manifest.artifact_size_bytes),
+                );
+                map.insert("artifact_manifest".to_string(), json!(wasm_manifest_path));
+                map.insert(
+                    "runtime_constraints".to_string(),
+                    json!(manifest.capability_constraints),
+                );
+            }
+        } else {
+            let wasm_module = case.wasm_module.trim();
+            if wasm_module.is_empty() {
+                return malformed_result(
+                    400,
+                    DEPLOYMENT_ERROR_MISSING_ARTIFACT,
+                    "missing_wasm_module",
+                );
+            }
+            if let Some(map) = response.as_object_mut() {
+                map.insert("artifact".to_string(), json!(wasm_module));
+            }
         }
-        wasm_module.to_string()
     } else {
         let container_image = case.container_image.trim();
         if container_image.is_empty() {
@@ -349,25 +406,17 @@ pub(crate) fn evaluate_deployment_case(case: &DeploymentContractCase) -> Deploym
                 "missing_container_image",
             );
         }
-        container_image.to_string()
-    };
+        if let Some(map) = response.as_object_mut() {
+            map.insert("artifact".to_string(), json!(container_image));
+        }
+    }
 
     let status_code = if target == "wasm" { 201 } else { 202 };
     DeploymentReplayResult {
         step: DeploymentReplayStep::Success,
         status_code,
         error_code: None,
-        response_body: json!({
-            "status":"accepted",
-            "blueprint_id": blueprint_id,
-            "deploy_target": target,
-            "runtime_profile": runtime,
-            "environment": environment,
-            "region": region,
-            "artifact": artifact,
-            "replicas": case.replicas,
-            "rollout_strategy": rollout_strategy_for_target(target.as_str()),
-        }),
+        response_body: response,
     }
 }
 
@@ -633,11 +682,16 @@ mod tests {
 
     use anyhow::Result;
     use serde_json::json;
+    use tempfile::tempdir;
 
     use super::{
         evaluate_deployment_case, load_deployment_contract_fixture,
         parse_deployment_contract_fixture, run_deployment_contract_replay, DeploymentContractCase,
         DeploymentContractDriver, DeploymentReplayResult, DEPLOYMENT_ERROR_UNSUPPORTED_RUNTIME,
+    };
+    use crate::deployment_wasm::{
+        load_deployment_wasm_manifest, package_deployment_wasm_artifact,
+        DeploymentWasmPackageConfig,
     };
 
     fn fixture_path(name: &str) -> PathBuf {
@@ -787,5 +841,146 @@ mod tests {
             Some(DEPLOYMENT_ERROR_UNSUPPORTED_RUNTIME)
         );
         assert_eq!(result.status_code, 422);
+    }
+
+    #[test]
+    fn functional_deployment_contract_evaluator_uses_wasm_manifest_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let module_path = temp.path().join("edge.wasm");
+        std::fs::write(
+            &module_path,
+            [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+        )
+        .expect("write wasm");
+        let report = package_deployment_wasm_artifact(&DeploymentWasmPackageConfig {
+            module_path,
+            blueprint_id: "edge-manifest".to_string(),
+            runtime_profile: "wasm_wasi".to_string(),
+            output_dir: temp.path().join("out"),
+            state_dir: temp.path().join(".tau/deployment"),
+        })
+        .expect("package wasm");
+        let manifest = load_deployment_wasm_manifest(std::path::Path::new(&report.manifest_path))
+            .expect("load manifest");
+
+        let case = DeploymentContractCase {
+            schema_version: 1,
+            case_id: "wasm-manifest-case".to_string(),
+            deploy_target: "wasm".to_string(),
+            runtime_profile: "wasm_wasi".to_string(),
+            blueprint_id: "edge-manifest".to_string(),
+            environment: "production".to_string(),
+            region: "iad".to_string(),
+            container_image: String::new(),
+            wasm_module: String::new(),
+            wasm_manifest: report.manifest_path.clone(),
+            replicas: 1,
+            simulate_retryable_failure: false,
+            expected: super::DeploymentCaseExpectation {
+                outcome: super::DeploymentOutcomeKind::Success,
+                status_code: 201,
+                error_code: String::new(),
+                response_body: json!({}),
+            },
+        };
+        let result = evaluate_deployment_case(&case);
+        assert_eq!(result.status_code, 201);
+        assert_eq!(
+            result
+                .response_body
+                .get("artifact")
+                .and_then(serde_json::Value::as_str),
+            Some(manifest.artifact_path.as_str())
+        );
+        assert_eq!(
+            result
+                .response_body
+                .get("artifact_sha256")
+                .and_then(serde_json::Value::as_str),
+            Some(manifest.artifact_sha256.as_str())
+        );
+        assert_eq!(
+            result
+                .response_body
+                .get("artifact_manifest")
+                .and_then(serde_json::Value::as_str),
+            Some(report.manifest_path.as_str())
+        );
+    }
+
+    #[test]
+    fn regression_validate_fixture_requires_wasm_module_or_manifest() {
+        let raw = r#"{
+  "schema_version": 1,
+  "name": "missing-wasm-artifact",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "wasm-missing",
+      "deploy_target": "wasm",
+      "runtime_profile": "wasm_wasi",
+      "blueprint_id": "edge",
+      "environment": "staging",
+      "region": "iad",
+      "replicas": 1,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status":"accepted",
+          "blueprint_id":"edge",
+          "deploy_target":"wasm",
+          "runtime_profile":"wasm_wasi",
+          "environment":"staging",
+          "region":"iad",
+          "artifact":"edge/runtime.wasm",
+          "replicas":1,
+          "rollout_strategy":"canary"
+        }
+      }
+    }
+  ]
+}"#;
+        let error = parse_deployment_contract_fixture(raw).expect_err("missing wasm artifact");
+        assert!(error
+            .to_string()
+            .contains("requires wasm_module or wasm_manifest"));
+    }
+
+    #[test]
+    fn regression_deployment_contract_evaluator_rejects_invalid_wasm_manifest() {
+        let case = DeploymentContractCase {
+            schema_version: 1,
+            case_id: "invalid-manifest".to_string(),
+            deploy_target: "wasm".to_string(),
+            runtime_profile: "wasm_wasi".to_string(),
+            blueprint_id: "edge".to_string(),
+            environment: "staging".to_string(),
+            region: "iad".to_string(),
+            container_image: String::new(),
+            wasm_module: String::new(),
+            wasm_manifest: "/tmp/does-not-exist/manifest.json".to_string(),
+            replicas: 1,
+            simulate_retryable_failure: false,
+            expected: super::DeploymentCaseExpectation {
+                outcome: super::DeploymentOutcomeKind::MalformedInput,
+                status_code: 400,
+                error_code: "deployment_missing_artifact".to_string(),
+                response_body: json!({"status":"rejected","reason":"invalid_wasm_manifest"}),
+            },
+        };
+        let result = evaluate_deployment_case(&case);
+        assert_eq!(result.status_code, 400);
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("deployment_missing_artifact")
+        );
+        assert_eq!(
+            result
+                .response_body
+                .get("reason")
+                .and_then(serde_json::Value::as_str),
+            Some("invalid_wasm_manifest")
+        );
     }
 }

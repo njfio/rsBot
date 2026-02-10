@@ -4,9 +4,9 @@ use clap::{ArgAction, Parser};
 
 use crate::{
     release_channel_commands::RELEASE_LOOKUP_CACHE_TTL_MS, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliMultiChannelOutboundMode,
-    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule,
+    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
+    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -2596,6 +2596,55 @@ pub(crate) struct Cli {
         help = "Directory for deployment runtime state and channel-store outputs"
     )]
     pub(crate) deployment_state_dir: PathBuf,
+
+    #[arg(
+        long = "deployment-wasm-package-module",
+        env = "TAU_DEPLOYMENT_WASM_PACKAGE_MODULE",
+        conflicts_with = "deployment_contract_runner",
+        help = "Package one WASM module into a verifiable deployment manifest/artifact and exit"
+    )]
+    pub(crate) deployment_wasm_package_module: Option<PathBuf>,
+
+    #[arg(
+        long = "deployment-wasm-package-blueprint-id",
+        env = "TAU_DEPLOYMENT_WASM_PACKAGE_BLUEPRINT_ID",
+        requires = "deployment_wasm_package_module",
+        default_value = "edge-wasm",
+        help = "Blueprint id recorded in WASM package manifest metadata"
+    )]
+    pub(crate) deployment_wasm_package_blueprint_id: String,
+
+    #[arg(
+        long = "deployment-wasm-package-runtime-profile",
+        env = "TAU_DEPLOYMENT_WASM_PACKAGE_RUNTIME_PROFILE",
+        value_enum,
+        requires = "deployment_wasm_package_module",
+        default_value_t = CliDeploymentWasmRuntimeProfile::WasmWasi,
+        help = "WASM runtime profile recorded in package manifest metadata"
+    )]
+    pub(crate) deployment_wasm_package_runtime_profile: CliDeploymentWasmRuntimeProfile,
+
+    #[arg(
+        long = "deployment-wasm-package-output-dir",
+        env = "TAU_DEPLOYMENT_WASM_PACKAGE_OUTPUT_DIR",
+        requires = "deployment_wasm_package_module",
+        default_value = ".tau/deployment/wasm-artifacts",
+        help = "Directory where packaged WASM artifacts and manifest files are written"
+    )]
+    pub(crate) deployment_wasm_package_output_dir: PathBuf,
+
+    #[arg(
+        long = "deployment-wasm-package-json",
+        env = "TAU_DEPLOYMENT_WASM_PACKAGE_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "deployment_wasm_package_module",
+        help = "Emit --deployment-wasm-package-module output as pretty JSON"
+    )]
+    pub(crate) deployment_wasm_package_json: bool,
 
     #[arg(
         long = "deployment-queue-limit",

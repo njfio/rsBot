@@ -752,6 +752,69 @@ pub(crate) fn validate_deployment_contract_runner_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_deployment_wasm_package_cli(cli: &Cli) -> Result<()> {
+    if cli.deployment_wasm_package_module.is_none() {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--deployment-wasm-package-module cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if gateway_service_mode_requested(cli)
+        || gateway_openresponses_mode_requested(cli)
+        || cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!(
+            "--deployment-wasm-package-module cannot be combined with active transport/runtime commands"
+        );
+    }
+    if cli.deployment_wasm_package_blueprint_id.trim().is_empty() {
+        bail!("--deployment-wasm-package-blueprint-id cannot be empty");
+    }
+    let module_path = cli
+        .deployment_wasm_package_module
+        .as_ref()
+        .ok_or_else(|| anyhow!("--deployment-wasm-package-module is required"))?;
+    if !module_path.exists() {
+        bail!(
+            "--deployment-wasm-package-module '{}' does not exist",
+            module_path.display()
+        );
+    }
+    if !module_path.is_file() {
+        bail!(
+            "--deployment-wasm-package-module '{}' must point to a file",
+            module_path.display()
+        );
+    }
+    if cli.deployment_wasm_package_output_dir.exists()
+        && !cli.deployment_wasm_package_output_dir.is_dir()
+    {
+        bail!(
+            "--deployment-wasm-package-output-dir '{}' must point to a directory when it exists",
+            cli.deployment_wasm_package_output_dir.display()
+        );
+    }
+    if cli.deployment_state_dir.exists() && !cli.deployment_state_dir.is_dir() {
+        bail!(
+            "--deployment-state-dir '{}' must point to a directory when it exists",
+            cli.deployment_state_dir.display()
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_custom_command_contract_runner_cli(cli: &Cli) -> Result<()> {
     if !cli.custom_command_contract_runner {
         return Ok(());

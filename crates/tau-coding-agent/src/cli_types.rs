@@ -168,3 +168,16 @@ impl From<CliMultiChannelOutboundMode> for MultiChannelOutboundMode {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliDeploymentWasmRuntimeProfile {
+    WasmWasi,
+}
+
+impl CliDeploymentWasmRuntimeProfile {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CliDeploymentWasmRuntimeProfile::WasmWasi => "wasm_wasi",
+        }
+    }
+}

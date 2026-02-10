@@ -21,6 +21,12 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.deployment_wasm_package_module.is_some() {
+        validate_deployment_wasm_package_cli(cli)?;
+        crate::deployment_wasm::execute_deployment_wasm_package_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.session_validate {
         validate_session_file(cli)?;
         return Ok(true);

@@ -81,35 +81,35 @@ use super::{
     tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
     validate_branch_alias_name, validate_custom_command_contract_runner_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
-    validate_event_webhook_ingest_cli, validate_events_runner_cli,
-    validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
-    validate_gateway_service_cli, validate_github_issues_bridge_cli, validate_macro_command_entry,
-    validate_macro_name, validate_memory_contract_runner_cli,
-    validate_multi_agent_contract_runner_cli, validate_multi_channel_channel_lifecycle_cli,
-    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_ingest_cli,
-    validate_multi_channel_live_runner_cli, validate_profile_name, validate_rpc_frame_file,
-    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
-    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliMultiChannelOutboundMode,
-    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
-    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
-    CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult,
-    DoctorCommandArgs, DoctorCommandConfig, DoctorCommandOutputFormat,
-    DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus, DoctorStatus,
-    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
-    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
-    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
-    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
-    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
-    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
-    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
-    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
-    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
-    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
-    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
-    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    validate_deployment_wasm_package_cli, validate_event_webhook_ingest_cli,
+    validate_events_runner_cli, validate_gateway_contract_runner_cli,
+    validate_gateway_openresponses_server_cli, validate_gateway_service_cli,
+    validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
+    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
+    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
+    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
+    validate_profile_name, validate_rpc_frame_file, validate_session_file,
+    validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
+    AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
+    CliEventTemplateSchedule, CliMultiChannelOutboundMode, CliMultiChannelTransport,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
+    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
+    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
+    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
+    DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand,
+    IntegrationCredentialStoreRecord, MacroCommand, MacroFile, MultiAgentRouteTable,
+    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
+    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
+    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
+    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
+    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
+    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
+    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
+    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
+    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -564,6 +564,11 @@ fn test_cli() -> Cli {
             "crates/tau-coding-agent/testdata/deployment-contract/mixed-outcomes.json",
         ),
         deployment_state_dir: PathBuf::from(".tau/deployment"),
+        deployment_wasm_package_module: None,
+        deployment_wasm_package_blueprint_id: "edge-wasm".to_string(),
+        deployment_wasm_package_runtime_profile: CliDeploymentWasmRuntimeProfile::WasmWasi,
+        deployment_wasm_package_output_dir: PathBuf::from(".tau/deployment/wasm-artifacts"),
+        deployment_wasm_package_json: false,
         deployment_queue_limit: 64,
         deployment_processed_case_cap: 10_000,
         deployment_retry_max_attempts: 4,
@@ -692,6 +697,7 @@ fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     cli.dashboard_state_dir = tau_root.join("dashboard");
     cli.gateway_state_dir = tau_root.join("gateway");
     cli.deployment_state_dir = tau_root.join("deployment");
+    cli.deployment_wasm_package_output_dir = tau_root.join("deployment/wasm-artifacts");
     cli.custom_command_state_dir = tau_root.join("custom-command");
     cli.voice_state_dir = tau_root.join("voice");
     cli.github_state_dir = tau_root.join("github-issues");
@@ -2062,6 +2068,20 @@ fn regression_cli_gateway_guardrail_flags_require_gateway_runner_flag() {
 fn unit_cli_deployment_runner_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.deployment_contract_runner);
+    assert!(cli.deployment_wasm_package_module.is_none());
+    assert_eq!(
+        cli.deployment_wasm_package_blueprint_id,
+        "edge-wasm".to_string()
+    );
+    assert_eq!(
+        cli.deployment_wasm_package_runtime_profile,
+        CliDeploymentWasmRuntimeProfile::WasmWasi
+    );
+    assert_eq!(
+        cli.deployment_wasm_package_output_dir,
+        PathBuf::from(".tau/deployment/wasm-artifacts")
+    );
+    assert!(!cli.deployment_wasm_package_json);
     assert_eq!(
         cli.deployment_fixture,
         PathBuf::from("crates/tau-coding-agent/testdata/deployment-contract/mixed-outcomes.json")
@@ -2071,6 +2091,60 @@ fn unit_cli_deployment_runner_flags_default_to_disabled() {
     assert_eq!(cli.deployment_processed_case_cap, 10_000);
     assert_eq!(cli.deployment_retry_max_attempts, 4);
     assert_eq!(cli.deployment_retry_base_delay_ms, 0);
+}
+
+#[test]
+fn functional_cli_deployment_wasm_package_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--deployment-wasm-package-module",
+        "fixtures/edge.wasm",
+        "--deployment-wasm-package-blueprint-id",
+        "edge-staging",
+        "--deployment-wasm-package-runtime-profile",
+        "wasm-wasi",
+        "--deployment-wasm-package-output-dir",
+        ".tau/deployment/build-output",
+        "--deployment-wasm-package-json",
+    ]);
+    assert_eq!(
+        cli.deployment_wasm_package_module,
+        Some(PathBuf::from("fixtures/edge.wasm"))
+    );
+    assert_eq!(
+        cli.deployment_wasm_package_blueprint_id,
+        "edge-staging".to_string()
+    );
+    assert_eq!(
+        cli.deployment_wasm_package_runtime_profile,
+        CliDeploymentWasmRuntimeProfile::WasmWasi
+    );
+    assert_eq!(
+        cli.deployment_wasm_package_output_dir,
+        PathBuf::from(".tau/deployment/build-output")
+    );
+    assert!(cli.deployment_wasm_package_json);
+}
+
+#[test]
+fn regression_cli_deployment_wasm_package_json_requires_module_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--deployment-wasm-package-json"]);
+    let error = parse.expect_err("package json should require package module");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_deployment_wasm_package_conflicts_with_deployment_runner() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--deployment-contract-runner",
+        "--deployment-wasm-package-module",
+        "fixtures/edge.wasm",
+    ]);
+    let error = parse.expect_err("wasm package should conflict with deployment runner");
+    assert!(error.to_string().contains("cannot be used with"));
 }
 
 #[test]
@@ -14960,6 +15034,96 @@ fn regression_validate_deployment_contract_runner_cli_requires_fixture_file() {
 }
 
 #[test]
+fn unit_validate_deployment_wasm_package_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("edge.wasm");
+    std::fs::write(
+        &module_path,
+        [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+    )
+    .expect("write wasm");
+
+    let mut cli = test_cli();
+    cli.deployment_wasm_package_module = Some(module_path);
+    cli.deployment_wasm_package_output_dir = temp.path().join("out");
+    cli.deployment_state_dir = temp.path().join(".tau/deployment");
+
+    validate_deployment_wasm_package_cli(&cli)
+        .expect("deployment wasm package config should validate");
+}
+
+#[test]
+fn functional_validate_deployment_wasm_package_cli_rejects_prompt_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("edge.wasm");
+    std::fs::write(
+        &module_path,
+        [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+    )
+    .expect("write wasm");
+
+    let mut cli = test_cli();
+    cli.deployment_wasm_package_module = Some(module_path);
+    cli.prompt = Some("conflict".to_string());
+    let error =
+        validate_deployment_wasm_package_cli(&cli).expect_err("prompt conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("--deployment-wasm-package-module cannot be combined"));
+}
+
+#[test]
+fn integration_validate_deployment_wasm_package_cli_rejects_runtime_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("edge.wasm");
+    std::fs::write(
+        &module_path,
+        [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+    )
+    .expect("write wasm");
+
+    let mut cli = test_cli();
+    cli.deployment_wasm_package_module = Some(module_path);
+    cli.events_runner = true;
+    let error =
+        validate_deployment_wasm_package_cli(&cli).expect_err("runtime conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("active transport/runtime commands"));
+}
+
+#[test]
+fn regression_validate_deployment_wasm_package_cli_requires_existing_module() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.deployment_wasm_package_module = Some(temp.path().join("missing.wasm"));
+    let error = validate_deployment_wasm_package_cli(&cli).expect_err("missing module should fail");
+    assert!(error.to_string().contains("does not exist"));
+}
+
+#[test]
+fn regression_validate_deployment_wasm_package_cli_rejects_non_directory_output() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("edge.wasm");
+    std::fs::write(
+        &module_path,
+        [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+    )
+    .expect("write wasm");
+    let output_file = temp.path().join("out-file");
+    std::fs::write(&output_file, "{}").expect("write output file");
+
+    let mut cli = test_cli();
+    cli.deployment_wasm_package_module = Some(module_path);
+    cli.deployment_wasm_package_output_dir = output_file;
+    let error =
+        validate_deployment_wasm_package_cli(&cli).expect_err("output file path should fail");
+    assert!(error
+        .to_string()
+        .contains("--deployment-wasm-package-output-dir"));
+}
+
+#[test]
 fn unit_validate_custom_command_contract_runner_cli_accepts_minimum_configuration() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("custom-command-fixture.json");
@@ -19626,6 +19790,97 @@ fn regression_execute_startup_preflight_multi_channel_channel_lifecycle_fails_cl
     assert!(error
         .to_string()
         .contains("failed to parse multi-channel lifecycle state"));
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_deployment_wasm_package_mode() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("edge.wasm");
+    std::fs::write(
+        &module_path,
+        [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+    )
+    .expect("write wasm");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.deployment_wasm_package_module = Some(module_path);
+    cli.deployment_wasm_package_blueprint_id = "edge-wasm-preflight".to_string();
+    cli.deployment_wasm_package_output_dir = temp.path().join("wasm-out");
+    cli.deployment_wasm_package_json = true;
+
+    let handled = execute_startup_preflight(&cli).expect("deployment wasm package preflight");
+    assert!(handled);
+
+    let blueprint_dir = cli
+        .deployment_wasm_package_output_dir
+        .join("edge-wasm-preflight");
+    assert!(
+        blueprint_dir.exists(),
+        "blueprint output directory should exist"
+    );
+    let manifest_files = std::fs::read_dir(&blueprint_dir)
+        .expect("read blueprint output")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().ends_with(".manifest.json"))
+        .collect::<Vec<_>>();
+    assert_eq!(manifest_files.len(), 1);
+}
+
+#[test]
+fn integration_execute_startup_preflight_deployment_wasm_package_updates_state_metadata() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("edge.wasm");
+    std::fs::write(
+        &module_path,
+        [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+    )
+    .expect("write wasm");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.deployment_wasm_package_module = Some(module_path);
+    cli.deployment_wasm_package_blueprint_id = "edge-wasm-state".to_string();
+    cli.deployment_wasm_package_output_dir = temp.path().join("wasm-out");
+    let handled = execute_startup_preflight(&cli).expect("deployment wasm package state preflight");
+    assert!(handled);
+
+    let state_raw = std::fs::read_to_string(cli.deployment_state_dir.join("state.json"))
+        .expect("read deployment state");
+    let state_json: serde_json::Value = serde_json::from_str(&state_raw).expect("parse state");
+    let deliverables = state_json
+        .get("wasm_deliverables")
+        .and_then(serde_json::Value::as_array)
+        .expect("wasm deliverables should be an array");
+    assert_eq!(deliverables.len(), 1);
+    assert_eq!(
+        deliverables[0]
+            .get("blueprint_id")
+            .and_then(serde_json::Value::as_str),
+        Some("edge-wasm-state")
+    );
+    assert!(deliverables[0]
+        .get("artifact_sha256")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value.len() == 64));
+}
+
+#[test]
+fn regression_execute_startup_preflight_deployment_wasm_package_fails_closed() {
+    let temp = tempdir().expect("tempdir");
+    let invalid_module_path = temp.path().join("invalid.bin");
+    std::fs::write(&invalid_module_path, b"not-wasm").expect("write invalid");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.deployment_wasm_package_module = Some(invalid_module_path);
+    cli.deployment_wasm_package_blueprint_id = "edge-invalid".to_string();
+    cli.deployment_wasm_package_output_dir = temp.path().join("wasm-out");
+
+    let error =
+        execute_startup_preflight(&cli).expect_err("invalid wasm package preflight should fail");
+    assert!(error.to_string().contains("invalid wasm module"));
 }
 
 #[test]

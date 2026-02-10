@@ -78,6 +78,14 @@ struct DeploymentPlanRecord {
     environment: String,
     region: String,
     artifact: String,
+    #[serde(default)]
+    artifact_sha256: String,
+    #[serde(default)]
+    artifact_size_bytes: u64,
+    #[serde(default)]
+    artifact_manifest: String,
+    #[serde(default)]
+    runtime_constraints: Vec<String>,
     replicas: u16,
     rollout_strategy: String,
     status_code: u16,
@@ -291,6 +299,35 @@ impl DeploymentRuntime {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let artifact_sha256 = result
+            .response_body
+            .get("artifact_sha256")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let artifact_size_bytes = result
+            .response_body
+            .get("artifact_size_bytes")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let artifact_manifest = result
+            .response_body
+            .get("artifact_manifest")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let runtime_constraints = result
+            .response_body
+            .get("runtime_constraints")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let rollout_strategy = result
             .response_body
             .get("rollout_strategy")
@@ -306,6 +343,10 @@ impl DeploymentRuntime {
             environment,
             region,
             artifact: artifact.clone(),
+            artifact_sha256: artifact_sha256.clone(),
+            artifact_size_bytes,
+            artifact_manifest: artifact_manifest.clone(),
+            runtime_constraints: runtime_constraints.clone(),
             replicas: case.replicas,
             rollout_strategy: rollout_strategy.clone(),
             status_code: result.status_code,
@@ -343,6 +384,10 @@ impl DeploymentRuntime {
                     "blueprint_id": blueprint_id,
                     "status_code": result.status_code,
                     "artifact": artifact,
+                    "artifact_sha256": artifact_sha256,
+                    "artifact_size_bytes": artifact_size_bytes,
+                    "artifact_manifest": artifact_manifest,
+                    "runtime_constraints": runtime_constraints,
                     "rollout_strategy": rollout_strategy,
                 }),
             })?;
@@ -700,6 +745,7 @@ mod tests {
     use crate::deployment_contract::{
         load_deployment_contract_fixture, parse_deployment_contract_fixture,
     };
+    use crate::deployment_wasm::{package_deployment_wasm_artifact, DeploymentWasmPackageConfig};
     use crate::transport_health::TransportHealthState;
 
     fn fixture_path(name: &str) -> PathBuf {
@@ -780,6 +826,112 @@ mod tests {
             .expect("memory should exist");
         assert!(memory.contains("Tau Deployment Snapshot (edge-wasm)"));
         assert!(memory.contains("deployment-success-wasm"));
+    }
+
+    #[tokio::test]
+    async fn integration_runner_consumes_packaged_wasm_manifest_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let module_path = temp.path().join("edge.wasm");
+        std::fs::write(
+            &module_path,
+            [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
+        )
+        .expect("write wasm");
+        let state_dir = temp.path().join(".tau/deployment");
+        let package_report = package_deployment_wasm_artifact(&DeploymentWasmPackageConfig {
+            module_path,
+            blueprint_id: "edge-wasm-packaged".to_string(),
+            runtime_profile: "wasm_wasi".to_string(),
+            output_dir: temp.path().join("wasm-out"),
+            state_dir: state_dir.clone(),
+        })
+        .expect("package wasm");
+
+        let manifest_raw =
+            std::fs::read_to_string(&package_report.manifest_path).expect("read manifest");
+        let manifest: Value = serde_json::from_str(&manifest_raw).expect("parse manifest");
+        let artifact = manifest
+            .get("artifact_path")
+            .and_then(Value::as_str)
+            .expect("artifact path");
+        let artifact_sha = manifest
+            .get("artifact_sha256")
+            .and_then(Value::as_str)
+            .expect("artifact sha");
+        let artifact_size = manifest
+            .get("artifact_size_bytes")
+            .and_then(Value::as_u64)
+            .expect("artifact size");
+        let constraints = manifest
+            .get("capability_constraints")
+            .cloned()
+            .expect("constraints");
+
+        let fixture_json = json!({
+            "schema_version": 1,
+            "name": "wasm-manifest-fixture",
+            "cases": [
+                {
+                    "schema_version": 1,
+                    "case_id": "deployment-wasm-manifest-success",
+                    "deploy_target": "wasm",
+                    "runtime_profile": "wasm_wasi",
+                    "blueprint_id": "edge-wasm-packaged",
+                    "environment": "production",
+                    "region": "iad",
+                    "wasm_manifest": package_report.manifest_path,
+                    "replicas": 1,
+                    "expected": {
+                        "outcome": "success",
+                        "status_code": 201,
+                        "response_body": {
+                            "status": "accepted",
+                            "blueprint_id": "edge-wasm-packaged",
+                            "deploy_target": "wasm",
+                            "runtime_profile": "wasm_wasi",
+                            "environment": "production",
+                            "region": "iad",
+                            "artifact": artifact,
+                            "artifact_sha256": artifact_sha,
+                            "artifact_size_bytes": artifact_size,
+                            "artifact_manifest": package_report.manifest_path,
+                            "runtime_constraints": constraints,
+                            "replicas": 1,
+                            "rollout_strategy": "canary"
+                        }
+                    }
+                }
+            ]
+        });
+        let fixture_path = temp.path().join("wasm-manifest-fixture.json");
+        std::fs::write(
+            &fixture_path,
+            serde_json::to_string_pretty(&fixture_json).expect("serialize fixture"),
+        )
+        .expect("write fixture");
+        let fixture = parse_deployment_contract_fixture(
+            &serde_json::to_string(&fixture_json).expect("raw fixture"),
+        )
+        .expect("parse fixture");
+
+        let mut config = build_config(temp.path());
+        config.fixture_path = fixture_path;
+        config.state_dir = state_dir;
+        let mut runtime = DeploymentRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+        assert_eq!(summary.applied_cases, 1);
+        assert_eq!(summary.wasm_rollouts, 1);
+
+        let state =
+            load_deployment_runtime_state(&config.state_dir.join("state.json")).expect("state");
+        assert_eq!(state.rollouts.len(), 1);
+        assert_eq!(state.rollouts[0].artifact_sha256, artifact_sha);
+        assert_eq!(state.rollouts[0].artifact_size_bytes, artifact_size);
+        assert_eq!(
+            state.rollouts[0].artifact_manifest,
+            package_report.manifest_path
+        );
+        assert!(!state.rollouts[0].runtime_constraints.is_empty());
     }
 
     #[tokio::test]
