@@ -140,12 +140,28 @@ fn build_google_gemini_client(
     Ok(Arc::new(client))
 }
 
+fn api_key_fallback_blocked_by_subscription_strict_mode(
+    cli: &Cli,
+    auth_mode: ProviderAuthMethod,
+) -> bool {
+    cli.provider_subscription_strict && auth_mode != ProviderAuthMethod::ApiKey
+}
+
 fn resolve_api_key_fallback_credential(
     cli: &Cli,
     provider: Provider,
     auth_mode: ProviderAuthMethod,
 ) -> Option<ProviderAuthCredential> {
     if auth_mode == ProviderAuthMethod::ApiKey {
+        return None;
+    }
+    if api_key_fallback_blocked_by_subscription_strict_mode(cli, auth_mode) {
+        tracing::debug!(
+            provider = provider.as_str(),
+            auth_mode = auth_mode.as_str(),
+            fallback_auth_mode = ProviderAuthMethod::ApiKey.as_str(),
+            "primary auth mode unavailable; api-key fallback blocked by strict subscription mode"
+        );
         return None;
     }
     let resolver = CliProviderCredentialResolver { cli };

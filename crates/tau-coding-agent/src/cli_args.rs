@@ -252,6 +252,18 @@ pub(crate) struct Cli {
     pub(crate) google_auth_mode: CliProviderAuthMode,
 
     #[arg(
+        long = "provider-subscription-strict",
+        env = "TAU_PROVIDER_SUBSCRIPTION_STRICT",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Fail closed for non-api-key auth modes by disabling automatic API-key fallback"
+    )]
+    pub(crate) provider_subscription_strict: bool,
+
+    #[arg(
         long = "google-gemini-backend",
         env = "TAU_GOOGLE_GEMINI_BACKEND",
         default_value_t = true,

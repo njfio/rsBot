@@ -322,6 +322,7 @@ fn test_cli() -> Cli {
         anthropic_claude_args: vec![],
         anthropic_claude_timeout_ms: 120_000,
         google_auth_mode: CliProviderAuthMode::ApiKey,
+        provider_subscription_strict: false,
         google_gemini_backend: true,
         google_gemini_cli: "gemini".to_string(),
         google_gcloud_cli: "gcloud".to_string(),
@@ -1216,6 +1217,18 @@ fn functional_cli_provider_auth_mode_flags_accept_overrides() {
     assert_eq!(cli.openai_auth_mode, CliProviderAuthMode::OauthToken);
     assert_eq!(cli.anthropic_auth_mode, CliProviderAuthMode::SessionToken);
     assert_eq!(cli.google_auth_mode, CliProviderAuthMode::Adc);
+}
+
+#[test]
+fn unit_cli_provider_subscription_strict_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.provider_subscription_strict);
+}
+
+#[test]
+fn functional_cli_provider_subscription_strict_accepts_overrides() {
+    let cli = parse_cli_with_stack(["tau-rs", "--provider-subscription-strict=true"]);
+    assert!(cli.provider_subscription_strict);
 }
 
 #[test]
@@ -4407,6 +4420,7 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert_eq!(payload["mode_filter"], "all");
     assert_eq!(payload["source_kind_filter"], "all");
     assert_eq!(payload["revoked_filter"], "all");
+    assert_eq!(payload["subscription_strict"], false);
     assert_eq!(payload["providers"], 3);
     assert_eq!(payload["modes"], 4);
     assert_eq!(payload["rows_total"], 12);
@@ -4528,6 +4542,7 @@ fn functional_execute_auth_command_matrix_reports_provider_mode_inventory() {
     assert!(text_output.contains("mode_filter=all"));
     assert!(text_output.contains("source_kind_filter=all"));
     assert!(text_output.contains("revoked_filter=all"));
+    assert!(text_output.contains("subscription_strict=false"));
     assert!(text_output.contains("source_kind_counts=credential_store:2,env:4,flag:3,none:3"));
     assert!(text_output.contains("source_kind_counts_total=credential_store:2,env:4,flag:3,none:3"));
     assert!(text_output.contains("revoked_counts=not_revoked:12"));
@@ -6190,6 +6205,7 @@ fn integration_execute_auth_command_status_reports_store_backed_state() {
     let payload: serde_json::Value = serde_json::from_str(&output).expect("parse status");
     assert_eq!(payload["provider_filter"], "openai");
     assert_eq!(payload["mode_filter"], "all");
+    assert_eq!(payload["subscription_strict"], false);
     assert_eq!(payload["entries"][0]["provider"], "openai");
     assert_eq!(payload["entries"][0]["mode"], "session_token");
     assert_eq!(payload["entries"][0]["state"], "ready");
@@ -6204,6 +6220,30 @@ fn integration_execute_auth_command_status_reports_store_backed_state() {
     assert_eq!(payload["state_counts_total"]["ready"], 1);
     assert_eq!(payload["source_kind_counts_total"]["credential_store"], 1);
     assert_eq!(payload["source_kind_counts"]["credential_store"], 1);
+}
+
+#[test]
+fn functional_execute_auth_command_status_and_matrix_report_subscription_strict() {
+    let mut config = test_auth_command_config();
+    config.provider_subscription_strict = true;
+
+    let status_json = execute_auth_command(&config, "status --json");
+    let status_payload: serde_json::Value =
+        serde_json::from_str(&status_json).expect("parse strict status payload");
+    assert_eq!(status_payload["command"], "auth.status");
+    assert_eq!(status_payload["subscription_strict"], true);
+
+    let status_text = execute_auth_command(&config, "status");
+    assert!(status_text.contains("subscription_strict=true"));
+
+    let matrix_json = execute_auth_command(&config, "matrix --json");
+    let matrix_payload: serde_json::Value =
+        serde_json::from_str(&matrix_json).expect("parse strict matrix payload");
+    assert_eq!(matrix_payload["command"], "auth.matrix");
+    assert_eq!(matrix_payload["subscription_strict"], true);
+
+    let matrix_text = execute_auth_command(&config, "matrix");
+    assert!(matrix_text.contains("subscription_strict=true"));
 }
 
 #[test]
@@ -8295,6 +8335,31 @@ fn functional_build_provider_client_anthropic_oauth_mode_falls_back_to_api_key_w
 }
 
 #[test]
+fn regression_build_provider_client_anthropic_oauth_mode_strict_blocks_api_key_fallback() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let mut cli = test_cli();
+    cli.anthropic_auth_mode = CliProviderAuthMode::OauthToken;
+    cli.provider_subscription_strict = true;
+    cli.anthropic_claude_backend = false;
+    cli.anthropic_api_key = Some("anthropic-fallback-key".to_string());
+    cli.api_key = None;
+
+    let snapshot = snapshot_env_vars(&["ANTHROPIC_API_KEY", "TAU_API_KEY"]);
+    std::env::remove_var("ANTHROPIC_API_KEY");
+    std::env::remove_var("TAU_API_KEY");
+
+    let error = match build_provider_client(&cli, Provider::Anthropic) {
+        Ok(_) => panic!("strict mode should block api-key fallback"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("requires Claude Code backend"));
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
 fn integration_build_provider_client_google_adc_mode_falls_back_to_api_key_when_backend_unavailable(
 ) {
     let _env_lock = AUTH_ENV_TEST_LOCK
@@ -8315,6 +8380,32 @@ fn integration_build_provider_client_google_adc_mode_falls_back_to_api_key_when_
         build_provider_client(&cli, Provider::Google).expect("build google api-key fallback");
     let ptr = Arc::as_ptr(&client);
     assert!(!ptr.is_null());
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
+fn regression_build_provider_client_google_adc_mode_strict_blocks_api_key_fallback() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let mut cli = test_cli();
+    cli.google_auth_mode = CliProviderAuthMode::Adc;
+    cli.provider_subscription_strict = true;
+    cli.google_gemini_backend = false;
+    cli.google_api_key = Some("google-fallback-key".to_string());
+    cli.api_key = None;
+
+    let snapshot = snapshot_env_vars(&["GEMINI_API_KEY", "GOOGLE_API_KEY", "TAU_API_KEY"]);
+    std::env::remove_var("GEMINI_API_KEY");
+    std::env::remove_var("GOOGLE_API_KEY");
+    std::env::remove_var("TAU_API_KEY");
+
+    let error = match build_provider_client(&cli, Provider::Google) {
+        Ok(_) => panic!("strict mode should block api-key fallback"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("requires Gemini CLI backend"));
 
     restore_env_vars(snapshot);
 }

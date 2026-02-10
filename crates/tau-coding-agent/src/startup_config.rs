@@ -16,6 +16,7 @@ pub(crate) fn build_auth_command_config(cli: &Cli) -> AuthCommandConfig {
         openai_auth_mode: cli.openai_auth_mode.into(),
         anthropic_auth_mode: cli.anthropic_auth_mode.into(),
         google_auth_mode: cli.google_auth_mode.into(),
+        provider_subscription_strict: cli.provider_subscription_strict,
         openai_codex_backend: cli.openai_codex_backend,
         openai_codex_cli: cli.openai_codex_cli.clone(),
         anthropic_claude_backend: cli.anthropic_claude_backend,

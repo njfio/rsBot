@@ -2389,6 +2389,7 @@ pub(crate) fn execute_auth_status_command(
             "state_filter": state_filter.as_deref().unwrap_or("all"),
             "source_kind_filter": source_kind.as_str(),
             "revoked_filter": revoked.as_str(),
+            "subscription_strict": config.provider_subscription_strict,
             "providers": selected_providers.len(),
             "rows_total": total_rows,
             "rows": rows.len(),
@@ -2416,7 +2417,7 @@ pub(crate) fn execute_auth_status_command(
     }
 
     let mut lines = vec![format!(
-        "auth status: providers={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} mode_counts={} mode_counts_total={} provider_counts={} provider_counts_total={} availability_counts={} availability_counts_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
+        "auth status: providers={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} subscription_strict={} rows_total={} mode_supported_total={} mode_unsupported_total={} mode_counts={} mode_counts_total={} provider_counts={} provider_counts_total={} availability_counts={} availability_counts_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
         selected_providers.len(),
         rows.len(),
         mode_supported,
@@ -2430,6 +2431,7 @@ pub(crate) fn execute_auth_status_command(
         state_filter.as_deref().unwrap_or("all"),
         source_kind.as_str(),
         revoked.as_str(),
+        config.provider_subscription_strict,
         total_rows,
         mode_supported_total,
         mode_unsupported_total,
@@ -2615,6 +2617,7 @@ pub(crate) fn execute_auth_matrix_command(
             "state_filter": state_filter.as_deref().unwrap_or("all"),
             "source_kind_filter": source_kind.as_str(),
             "revoked_filter": revoked.as_str(),
+            "subscription_strict": config.provider_subscription_strict,
             "providers": selected_providers.len(),
             "modes": selected_modes.len(),
             "rows_total": total_rows,
@@ -2643,7 +2646,7 @@ pub(crate) fn execute_auth_matrix_command(
     }
 
     let mut lines = vec![format!(
-        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} rows_total={} mode_supported_total={} mode_unsupported_total={} mode_counts={} mode_counts_total={} provider_counts={} provider_counts_total={} availability_counts={} availability_counts_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
+        "auth matrix: providers={} modes={} rows={} mode_supported={} mode_unsupported={} available={} unavailable={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={} subscription_strict={} rows_total={} mode_supported_total={} mode_unsupported_total={} mode_counts={} mode_counts_total={} provider_counts={} provider_counts_total={} availability_counts={} availability_counts_total={} state_counts={} state_counts_total={} source_kind_counts={} source_kind_counts_total={} revoked_counts={} revoked_counts_total={}",
         selected_providers.len(),
         selected_modes.len(),
         rows.len(),
@@ -2658,6 +2661,7 @@ pub(crate) fn execute_auth_matrix_command(
         state_filter.as_deref().unwrap_or("all"),
         source_kind.as_str(),
         revoked.as_str(),
+        config.provider_subscription_strict,
         total_rows,
         mode_supported_total,
         mode_unsupported_total,

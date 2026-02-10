@@ -50,6 +50,15 @@ cat docs/guides/release-channel-ops.md
 | Anthropic | `--anthropic-auth-mode oauth-token` or `session-token` with Claude backend (`--anthropic-claude-backend=true`) | `--anthropic-auth-mode api-key` with `ANTHROPIC_API_KEY` |
 | Google | `--google-auth-mode oauth-token` (Gemini login) or `--google-auth-mode adc` (Vertex/ADC) with Gemini backend (`--google-gemini-backend=true`) | `--google-auth-mode api-key` with `GEMINI_API_KEY` |
 
+Fail-closed subscription mode (disable automatic API-key fallback for non-API-key auth modes):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --openai-auth-mode oauth-token \
+  --provider-subscription-strict=true
+```
+
 ## First run
 
 Interactive prompt loop:
@@ -79,7 +88,7 @@ OpenAI/Codex:
 
 ```bash
 codex --login
-cargo run -p tau-coding-agent -- --model openai/gpt-4o-mini --openai-auth-mode oauth-token
+cargo run -p tau-coding-agent -- --model openai/gpt-4o-mini --openai-auth-mode oauth-token --provider-subscription-strict=true
 ```
 
 Anthropic/Claude Code:
@@ -95,6 +104,13 @@ Google/Gemini:
 ```bash
 gemini
 cargo run -p tau-coding-agent -- --model google/gemini-2.5-pro --google-auth-mode oauth-token
+```
+
+Inspect auth diagnostics (includes `subscription_strict` in JSON/text summaries):
+
+```bash
+cargo run -p tau-coding-agent -- --prompt "/auth status --json"
+cargo run -p tau-coding-agent -- --prompt "/auth matrix --json"
 ```
 
 ## Run the TUI demo

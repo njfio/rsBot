@@ -36,6 +36,11 @@ Current recovery order policy:
 - Anthropic: `oauth_token > session_token > api_key`
 - Google: `oauth_token > adc > api_key`
 
+Strict subscription guard:
+- `--provider-subscription-strict=true` (or `TAU_PROVIDER_SUBSCRIPTION_STRICT=true`) disables automatic API-key fallback when configured mode is non-API-key.
+- In strict mode, runtime auth fails closed if subscription/session backend prerequisites are missing.
+- `/auth status` and `/auth matrix` summaries include `subscription_strict=true|false`.
+
 ## Capability Matrix
 | Provider/Channel | Auth Method | Subscription Login Usable for API Calls | Status | Notes |
 |---|---|---|---|---|
