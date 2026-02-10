@@ -22,6 +22,91 @@ fn multi_channel_channel_lifecycle_mode_requested(cli: &Cli) -> bool {
         || cli.multi_channel_channel_probe.is_some()
 }
 
+fn project_index_mode_requested(cli: &Cli) -> bool {
+    cli.project_index_build || cli.project_index_query.is_some() || cli.project_index_inspect
+}
+
+pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
+    let mode_requested = project_index_mode_requested(cli);
+    if !mode_requested && !cli.project_index_json {
+        return Ok(());
+    }
+    if !mode_requested && cli.project_index_json {
+        bail!("--project-index-json requires one of --project-index-build, --project-index-query, or --project-index-inspect");
+    }
+
+    let action_count = usize::from(cli.project_index_build)
+        + usize::from(cli.project_index_query.is_some())
+        + usize::from(cli.project_index_inspect);
+    if action_count != 1 {
+        bail!(
+            "project index mode requires exactly one action: --project-index-build, --project-index-query, or --project-index-inspect"
+        );
+    }
+    if has_prompt_or_command_input(cli) {
+        bail!(
+            "project index commands cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+        );
+    }
+    if !cli.project_index_root.exists() {
+        bail!(
+            "--project-index-root '{}' does not exist",
+            cli.project_index_root.display()
+        );
+    }
+    if !cli.project_index_root.is_dir() {
+        bail!(
+            "--project-index-root '{}' must point to a directory",
+            cli.project_index_root.display()
+        );
+    }
+    if cli
+        .project_index_query
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(str::is_empty)
+    {
+        bail!("--project-index-query cannot be empty");
+    }
+
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_channel_live_connectors_runner
+        || cli.multi_channel_live_ingest_file.is_some()
+        || cli.multi_channel_live_readiness_preflight
+        || multi_channel_channel_lifecycle_mode_requested(cli)
+        || cli.multi_channel_route_inspect_file.is_some()
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.gateway_openresponses_server
+        || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+        || cli.channel_store_inspect.is_some()
+        || cli.channel_store_repair.is_some()
+        || cli.transport_health_inspect.is_some()
+        || cli.github_status_inspect.is_some()
+        || cli.multi_channel_status_inspect
+        || cli.dashboard_status_inspect
+        || cli.multi_agent_status_inspect
+        || cli.gateway_status_inspect
+        || cli.deployment_status_inspect
+        || cli.custom_command_status_inspect
+        || cli.voice_status_inspect
+        || gateway_service_mode_requested(cli)
+    {
+        bail!("project index commands cannot be combined with active transport/runtime or status preflight commands");
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_github_issues_bridge_cli(cli: &Cli) -> Result<()> {
     if !cli.github_issues_bridge {
         return Ok(());

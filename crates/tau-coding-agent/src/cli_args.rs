@@ -724,6 +724,76 @@ pub(crate) struct Cli {
     pub(crate) doctor_release_cache_ttl_ms: u64,
 
     #[arg(
+        long = "project-index-build",
+        env = "TAU_PROJECT_INDEX_BUILD",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        conflicts_with = "project_index_query",
+        conflicts_with = "project_index_inspect",
+        help = "Build or refresh the local project index under --project-index-state-dir and exit"
+    )]
+    pub(crate) project_index_build: bool,
+
+    #[arg(
+        long = "project-index-query",
+        env = "TAU_PROJECT_INDEX_QUERY",
+        conflicts_with = "project_index_build",
+        conflicts_with = "project_index_inspect",
+        value_name = "query",
+        help = "Query the local project index for symbol/path/token matches and exit"
+    )]
+    pub(crate) project_index_query: Option<String>,
+
+    #[arg(
+        long = "project-index-inspect",
+        env = "TAU_PROJECT_INDEX_INSPECT",
+        conflicts_with = "project_index_build",
+        conflicts_with = "project_index_query",
+        help = "Inspect local project index metadata and exit"
+    )]
+    pub(crate) project_index_inspect: bool,
+
+    #[arg(
+        long = "project-index-json",
+        env = "TAU_PROJECT_INDEX_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Emit project index build/query/inspect output as pretty JSON"
+    )]
+    pub(crate) project_index_json: bool,
+
+    #[arg(
+        long = "project-index-root",
+        env = "TAU_PROJECT_INDEX_ROOT",
+        default_value = ".",
+        help = "Workspace root directory scanned by --project-index-build and resolved by query/inspect operations"
+    )]
+    pub(crate) project_index_root: PathBuf,
+
+    #[arg(
+        long = "project-index-state-dir",
+        env = "TAU_PROJECT_INDEX_STATE_DIR",
+        default_value = ".tau/index",
+        help = "Directory containing project index state artifacts"
+    )]
+    pub(crate) project_index_state_dir: PathBuf,
+
+    #[arg(
+        long = "project-index-limit",
+        env = "TAU_PROJECT_INDEX_LIMIT",
+        default_value_t = 25,
+        value_parser = parse_positive_usize,
+        help = "Maximum number of query results returned by --project-index-query"
+    )]
+    pub(crate) project_index_limit: usize,
+
+    #[arg(
         long = "channel-store-root",
         env = "TAU_CHANNEL_STORE_ROOT",
         default_value = ".tau/channel-store",

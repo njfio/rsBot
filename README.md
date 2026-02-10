@@ -16,6 +16,7 @@ Start with the docs index: [`docs/README.md`](docs/README.md)
 Focused guides:
 
 - Quickstart: [`docs/guides/quickstart.md`](docs/guides/quickstart.md)
+- Project index workflow: [`docs/guides/project-index.md`](docs/guides/project-index.md)
 - Transports (GitHub/Slack/RPC): [`docs/guides/transports.md`](docs/guides/transports.md)
 - Packages and extensions: [`docs/guides/packages.md`](docs/guides/packages.md)
 - Events and scheduler: [`docs/guides/events.md`](docs/guides/events.md)
@@ -116,6 +117,7 @@ Implemented now:
 - OAuth/session login backend routing for Codex, Claude Code, and Gemini CLI flows
 - Interactive prompt mode, one-shot mode, and plan-first orchestration mode
 - Persistent JSONL sessions with branch/resume/repair/export/import tooling
+- Deterministic project index build/query/inspect workflow for local code search
 - Built-in filesystem and shell tools
 - Transport bridges for GitHub Issues and Slack Socket Mode
 - RPC capabilities/dispatch/serve NDJSON protocol surfaces

@@ -32,6 +32,16 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.project_index_build
+        || cli.project_index_query.is_some()
+        || cli.project_index_inspect
+        || cli.project_index_json
+    {
+        validate_project_index_cli(cli)?;
+        execute_project_index_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.channel_store_inspect.is_some()
         || cli.channel_store_repair.is_some()
         || cli.transport_health_inspect.is_some()

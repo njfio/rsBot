@@ -88,10 +88,10 @@ use super::{
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
     validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_ingest_cli,
-    validate_multi_channel_live_runner_cli, validate_profile_name, validate_rpc_frame_file,
-    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
-    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    validate_multi_channel_live_runner_cli, validate_profile_name, validate_project_index_cli,
+    validate_rpc_frame_file, validate_session_file, validate_skills_prune_file_name,
+    validate_slack_bridge_cli, validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig,
+    BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
     CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule,
     CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
     CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
@@ -379,6 +379,13 @@ fn test_cli() -> Cli {
         onboard_release_channel: None,
         doctor_release_cache_file: PathBuf::from(".tau/release-lookup-cache.json"),
         doctor_release_cache_ttl_ms: 900_000,
+        project_index_build: false,
+        project_index_query: None,
+        project_index_inspect: false,
+        project_index_json: false,
+        project_index_root: PathBuf::from("."),
+        project_index_state_dir: PathBuf::from(".tau/index"),
+        project_index_limit: 25,
         channel_store_root: PathBuf::from(".tau/channel-store"),
         channel_store_inspect: None,
         channel_store_repair: None,
@@ -2611,6 +2618,51 @@ fn functional_cli_transport_health_inspect_accepts_voice_state_dir_override() {
         ".tau/voice-alt",
     ]);
     assert_eq!(cli.voice_state_dir, PathBuf::from(".tau/voice-alt"));
+}
+
+#[test]
+fn unit_cli_project_index_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.project_index_build);
+    assert!(cli.project_index_query.is_none());
+    assert!(!cli.project_index_inspect);
+    assert!(!cli.project_index_json);
+    assert_eq!(cli.project_index_root, PathBuf::from("."));
+    assert_eq!(cli.project_index_state_dir, PathBuf::from(".tau/index"));
+    assert_eq!(cli.project_index_limit, 25);
+}
+
+#[test]
+fn functional_cli_project_index_query_accepts_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--project-index-query",
+        "router state",
+        "--project-index-json",
+        "--project-index-root",
+        "workspace",
+        "--project-index-state-dir",
+        ".tau/index-custom",
+        "--project-index-limit",
+        "9",
+    ]);
+    assert_eq!(cli.project_index_query.as_deref(), Some("router state"));
+    assert!(cli.project_index_json);
+    assert_eq!(cli.project_index_root, PathBuf::from("workspace"));
+    assert_eq!(
+        cli.project_index_state_dir,
+        PathBuf::from(".tau/index-custom")
+    );
+    assert_eq!(cli.project_index_limit, 9);
+}
+
+#[test]
+fn regression_validate_project_index_cli_json_requires_action() {
+    let cli = parse_cli_with_stack(["tau-rs", "--project-index-json"]);
+    let error = validate_project_index_cli(&cli).expect_err("json requires index mode");
+    assert!(error
+        .to_string()
+        .contains("--project-index-json requires one of"));
 }
 
 #[test]
@@ -20274,6 +20326,49 @@ fn regression_execute_startup_preflight_deployment_wasm_package_fails_closed() {
     let error =
         execute_startup_preflight(&cli).expect_err("invalid wasm package preflight should fail");
     assert!(error.to_string().contains("invalid wasm module"));
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_project_index_build_mode() {
+    let temp = tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("src")).expect("create workspace");
+    std::fs::write(
+        workspace.join("src").join("lib.rs"),
+        "pub fn project_index_ready() {}\n",
+    )
+    .expect("write source file");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.project_index_build = true;
+    cli.project_index_root = workspace.clone();
+    cli.project_index_state_dir = temp.path().join(".tau").join("index");
+
+    let handled = execute_startup_preflight(&cli).expect("project index preflight");
+    assert!(handled);
+
+    let index_path = cli.project_index_state_dir.join("project-index.json");
+    assert!(index_path.exists(), "project index state should be written");
+    let index_raw = std::fs::read_to_string(index_path).expect("read project index");
+    let index_json: serde_json::Value = serde_json::from_str(&index_raw).expect("parse index");
+    let indexed_files = index_json
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| rows.len())
+        .unwrap_or_default();
+    assert_eq!(indexed_files, 1);
+}
+
+#[test]
+fn regression_execute_startup_preflight_project_index_json_requires_mode() {
+    let mut cli = test_cli();
+    cli.project_index_json = true;
+    let error = execute_startup_preflight(&cli)
+        .expect_err("project index json without mode should fail in preflight");
+    assert!(error
+        .to_string()
+        .contains("--project-index-json requires one of"));
 }
 
 #[test]
