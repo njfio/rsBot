@@ -10,17 +10,12 @@ use crate::multi_channel_contract::{MultiChannelEventKind, MultiChannelInboundEv
 pub(crate) const MULTI_CHANNEL_POLICY_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MULTI_CHANNEL_POLICY_FILE_NAME: &str = "channel-policy.json";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MultiChannelDmPolicy {
+    #[default]
     Allow,
     Deny,
-}
-
-impl Default for MultiChannelDmPolicy {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 impl MultiChannelDmPolicy {
@@ -32,18 +27,13 @@ impl MultiChannelDmPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MultiChannelAllowFrom {
     Any,
+    #[default]
     AllowlistOrPairing,
     AllowlistOnly,
-}
-
-impl Default for MultiChannelAllowFrom {
-    fn default() -> Self {
-        Self::AllowlistOrPairing
-    }
 }
 
 impl MultiChannelAllowFrom {
@@ -56,17 +46,12 @@ impl MultiChannelAllowFrom {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MultiChannelGroupPolicy {
+    #[default]
     Allow,
     Deny,
-}
-
-impl Default for MultiChannelGroupPolicy {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 impl MultiChannelGroupPolicy {
