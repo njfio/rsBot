@@ -707,6 +707,25 @@ pub(crate) struct Cli {
     pub(crate) onboard_release_channel: Option<String>,
 
     #[arg(
+        long = "onboard-install-daemon",
+        env = "TAU_ONBOARD_INSTALL_DAEMON",
+        default_value_t = false,
+        requires = "onboard",
+        help = "Install Tau daemon profile files during onboarding using --daemon-profile and --daemon-state-dir"
+    )]
+    pub(crate) onboard_install_daemon: bool,
+
+    #[arg(
+        long = "onboard-start-daemon",
+        env = "TAU_ONBOARD_START_DAEMON",
+        default_value_t = false,
+        requires = "onboard",
+        requires = "onboard_install_daemon",
+        help = "Start Tau daemon lifecycle state after onboarding daemon install"
+    )]
+    pub(crate) onboard_start_daemon: bool,
+
+    #[arg(
         long = "doctor-release-cache-file",
         env = "TAU_DOCTOR_RELEASE_CACHE_FILE",
         default_value = ".tau/release-lookup-cache.json",

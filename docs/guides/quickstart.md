@@ -18,10 +18,22 @@ Initialize `.tau` directories, profile store, and release-channel metadata:
 cargo run -p tau-coding-agent -- --onboard --onboard-non-interactive
 ```
 
+Initialize onboarding and bootstrap daemon install/start in one pass:
+
+```bash
+cargo run -p tau-coding-agent -- --onboard --onboard-non-interactive --onboard-install-daemon --onboard-start-daemon
+```
+
 Interactive onboarding mode:
 
 ```bash
 cargo run -p tau-coding-agent -- --onboard --onboard-profile default
+```
+
+Interactive onboarding with daemon install only:
+
+```bash
+cargo run -p tau-coding-agent -- --onboard --onboard-profile default --onboard-install-daemon
 ```
 
 Release channel planning/apply workflow runbook:

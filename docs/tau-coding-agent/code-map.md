@@ -26,7 +26,7 @@ If a preflight or transport mode completes, runtime startup exits early.
 
 - `cli_args.rs`: all CLI flags and clap definitions.
 - `cli_types.rs`: clap-facing enums and value types.
-- `onboarding.rs`: first-run onboarding wizard and bootstrap report flow.
+- `onboarding.rs`: first-run onboarding wizard, daemon bootstrap options, and readiness report flow.
 - `runtime_types.rs`: shared runtime/config structs used across modules.
 
 Use this area when adding or changing flags, defaults, and typed CLI input behavior.

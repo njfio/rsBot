@@ -7,6 +7,21 @@ This runbook covers Tau daemon lifecycle operations and profile troubleshooting.
 - Lifecycle commands: install, uninstall, start, stop, status.
 - Profile targets: launchd (macOS) and systemd user-mode (Linux).
 - State root: `--daemon-state-dir` (default `.tau/daemon`).
+- Onboarding bootstrap flags: `--onboard-install-daemon`, `--onboard-start-daemon`.
+
+## Onboarding bootstrap
+
+Non-interactive onboarding with daemon install/start:
+
+```bash
+cargo run -p tau-coding-agent -- --onboard --onboard-non-interactive --onboard-install-daemon --onboard-start-daemon
+```
+
+Interactive onboarding with daemon install only:
+
+```bash
+cargo run -p tau-coding-agent -- --onboard --onboard-profile default --onboard-install-daemon
+```
 
 ## Lifecycle commands
 

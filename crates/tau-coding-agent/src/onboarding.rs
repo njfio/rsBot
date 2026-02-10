@@ -4,12 +4,16 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 
 use crate::cli_executable::is_executable_available;
+use crate::daemon_runtime::{
+    inspect_tau_daemon, install_tau_daemon, start_tau_daemon, TauDaemonConfig,
+    TauDaemonStatusReport,
+};
 use crate::macro_profile_commands::{
     load_profile_store, save_profile_store, validate_profile_name,
 };
 use crate::release_channel_commands::{save_release_channel_store, ReleaseChannel};
 
-const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 1;
+const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 2;
 const ONBOARDING_DEFAULT_PROFILE: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,7 +42,19 @@ pub(crate) struct OnboardingReport {
     pub(crate) files_created: Vec<String>,
     pub(crate) files_existing: Vec<String>,
     pub(crate) executable_checks: Vec<OnboardingExecutableCheck>,
+    pub(crate) daemon_bootstrap: OnboardingDaemonBootstrapReport,
     pub(crate) next_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct OnboardingDaemonBootstrapReport {
+    pub(crate) requested_install: bool,
+    pub(crate) requested_start: bool,
+    pub(crate) install_action: String,
+    pub(crate) start_action: String,
+    pub(crate) ready: bool,
+    pub(crate) readiness_reason_codes: Vec<String>,
+    pub(crate) status: TauDaemonStatusReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +130,7 @@ fn build_onboarding_report(
         &release_channel_path,
         cli.onboard_release_channel.as_deref(),
     )?;
+    let daemon_bootstrap = run_onboarding_daemon_bootstrap(cli)?;
     let mut files_created = Vec::new();
     let mut files_existing = Vec::new();
     if profile_store_action == "created" {
@@ -128,7 +145,7 @@ fn build_onboarding_report(
     }
 
     let executable_checks = collect_executable_checks(cli);
-    let next_steps = build_onboarding_next_steps(cli, &executable_checks);
+    let next_steps = build_onboarding_next_steps(cli, &executable_checks, &daemon_bootstrap);
 
     Ok(OnboardingReport {
         schema_version: ONBOARDING_REPORT_SCHEMA_VERSION,
@@ -147,7 +164,71 @@ fn build_onboarding_report(
         files_created,
         files_existing,
         executable_checks,
+        daemon_bootstrap,
         next_steps,
+    })
+}
+
+fn run_onboarding_daemon_bootstrap(cli: &Cli) -> Result<OnboardingDaemonBootstrapReport> {
+    let config = TauDaemonConfig {
+        state_dir: cli.daemon_state_dir.clone(),
+        profile: cli.daemon_profile,
+    };
+
+    let requested_install = cli.onboard_install_daemon;
+    let requested_start = cli.onboard_start_daemon;
+    let install_action = if requested_install {
+        install_tau_daemon(&config).with_context(|| {
+            format!(
+                "onboarding daemon install failed for '{}'; run --daemon-install to retry",
+                config.state_dir.display()
+            )
+        })?;
+        "installed"
+    } else {
+        "skipped"
+    };
+
+    let start_action = if requested_start {
+        start_tau_daemon(&config).with_context(|| {
+            format!(
+                "onboarding daemon start failed for '{}'; run --daemon-start after resolving diagnostics",
+                config.state_dir.display()
+            )
+        })?;
+        "started"
+    } else {
+        "skipped"
+    };
+
+    let status = inspect_tau_daemon(&config).with_context(|| {
+        format!(
+            "onboarding daemon readiness inspection failed for '{}'",
+            config.state_dir.display()
+        )
+    })?;
+
+    let mut readiness_reason_codes = BTreeSet::new();
+    for diagnostic in &status.diagnostics {
+        readiness_reason_codes.insert(diagnostic.clone());
+    }
+    if requested_install && !status.installed {
+        readiness_reason_codes.insert("daemon_install_expected_installed".to_string());
+    }
+    if requested_start && !status.running {
+        readiness_reason_codes.insert("daemon_start_expected_running".to_string());
+    }
+    let readiness_reason_codes = readiness_reason_codes.into_iter().collect::<Vec<_>>();
+    let ready = readiness_reason_codes.is_empty();
+
+    Ok(OnboardingDaemonBootstrapReport {
+        requested_install,
+        requested_start,
+        install_action: install_action.to_string(),
+        start_action: start_action.to_string(),
+        ready,
+        readiness_reason_codes,
+        status,
     })
 }
 
@@ -368,6 +449,7 @@ fn onboarding_executable_check(
 fn build_onboarding_next_steps(
     cli: &Cli,
     executable_checks: &[OnboardingExecutableCheck],
+    daemon_bootstrap: &OnboardingDaemonBootstrapReport,
 ) -> Vec<String> {
     let mut next_steps = Vec::new();
     for check in executable_checks {
@@ -377,6 +459,24 @@ fn build_onboarding_next_steps(
                 check.executable, check.integration
             ));
         }
+    }
+    if daemon_bootstrap.requested_install && !daemon_bootstrap.status.installed {
+        next_steps.push(format!(
+            "Retry daemon install: cargo run -p tau-coding-agent -- --daemon-install --daemon-state-dir {}",
+            cli.daemon_state_dir.display()
+        ));
+    }
+    if daemon_bootstrap.requested_start && !daemon_bootstrap.status.running {
+        next_steps.push(format!(
+            "Retry daemon start: cargo run -p tau-coding-agent -- --daemon-start --daemon-state-dir {}",
+            cli.daemon_state_dir.display()
+        ));
+    }
+    if !daemon_bootstrap.ready {
+        next_steps.push(format!(
+            "Inspect daemon diagnostics: cargo run -p tau-coding-agent -- --daemon-status --daemon-status-json --daemon-state-dir {}",
+            cli.daemon_state_dir.display()
+        ));
     }
     next_steps.push("/auth status".to_string());
     next_steps.push(format!(
@@ -431,7 +531,25 @@ fn render_onboarding_summary(report: &OnboardingReport, report_path: &Path) -> S
             report.release_channel_action,
             report.release_channel_path
         ),
+        format!(
+            "daemon: install_requested={} start_requested={} install_action={} start_action={} ready={}",
+            report.daemon_bootstrap.requested_install,
+            report.daemon_bootstrap.requested_start,
+            report.daemon_bootstrap.install_action,
+            report.daemon_bootstrap.start_action,
+            report.daemon_bootstrap.ready
+        ),
+        format!(
+            "daemon_status: installed={} running={} profile={} diagnostics={}",
+            report.daemon_bootstrap.status.installed,
+            report.daemon_bootstrap.status.running,
+            report.daemon_bootstrap.status.profile,
+            report.daemon_bootstrap.status.diagnostics.len()
+        ),
     ];
+    for reason in &report.daemon_bootstrap.readiness_reason_codes {
+        lines.push(format!("daemon_reason: {reason}"));
+    }
     for next_step in &report.next_steps {
         lines.push(format!("next: {next_step}"));
     }
@@ -506,6 +624,7 @@ mod tests {
         cli.package_activate_destination = tau_root.join("packages-active");
         cli.extension_list_root = tau_root.join("extensions");
         cli.extension_runtime_root = tau_root.join("extensions");
+        cli.daemon_state_dir = tau_root.join("daemon");
     }
 
     #[test]
@@ -544,6 +663,11 @@ mod tests {
         assert_eq!(report.release_channel, "stable");
         assert_eq!(report.release_channel_source, "default");
         assert_eq!(report.release_channel_action, "created");
+        assert!(!report.daemon_bootstrap.requested_install);
+        assert!(!report.daemon_bootstrap.requested_start);
+        assert_eq!(report.daemon_bootstrap.install_action, "skipped");
+        assert_eq!(report.daemon_bootstrap.start_action, "skipped");
+        assert!(report.daemon_bootstrap.ready);
         assert!(
             PathBuf::from(&report.profile_store_path).exists(),
             "profile store should exist after onboarding"
@@ -571,6 +695,8 @@ mod tests {
         assert_eq!(second.release_channel, "stable");
         assert_eq!(second.release_channel_source, "existing");
         assert_eq!(second.release_channel_action, "unchanged");
+        assert_eq!(second.daemon_bootstrap.install_action, "skipped");
+        assert_eq!(second.daemon_bootstrap.start_action, "skipped");
     }
 
     #[test]
@@ -605,5 +731,51 @@ mod tests {
         let error = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
             .expect_err("invalid release channel should fail");
         assert!(error.to_string().contains("expected stable|beta|dev"));
+    }
+
+    #[test]
+    fn functional_build_onboarding_report_installs_and_starts_daemon_when_requested() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = test_cli();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.onboard_install_daemon = true;
+        cli.onboard_start_daemon = true;
+
+        let report = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
+            .expect("report with daemon bootstrap");
+
+        assert!(report.daemon_bootstrap.requested_install);
+        assert!(report.daemon_bootstrap.requested_start);
+        assert_eq!(report.daemon_bootstrap.install_action, "installed");
+        assert_eq!(report.daemon_bootstrap.start_action, "started");
+        assert!(report.daemon_bootstrap.status.installed);
+        assert!(report.daemon_bootstrap.status.running);
+        assert!(report.daemon_bootstrap.ready);
+        assert!(report.daemon_bootstrap.readiness_reason_codes.is_empty());
+        assert!(
+            PathBuf::from(&report.daemon_bootstrap.status.state_path).exists(),
+            "daemon state file should exist"
+        );
+        assert!(
+            PathBuf::from(&report.daemon_bootstrap.status.pid_file_path).exists(),
+            "daemon pid marker should exist"
+        );
+    }
+
+    #[test]
+    fn regression_build_onboarding_report_fails_closed_when_daemon_state_dir_is_not_directory() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = test_cli();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.onboard_install_daemon = true;
+
+        let invalid_state_dir = temp.path().join("daemon-state-file");
+        std::fs::write(&invalid_state_dir, "not-a-directory").expect("write invalid state path");
+        cli.daemon_state_dir = invalid_state_dir;
+
+        let error = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
+            .expect_err("daemon install should fail closed");
+        let error_text = error.to_string();
+        assert!(error_text.contains("onboarding daemon install failed"));
     }
 }

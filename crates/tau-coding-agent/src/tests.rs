@@ -379,6 +379,8 @@ fn test_cli() -> Cli {
         onboard_non_interactive: false,
         onboard_profile: "default".to_string(),
         onboard_release_channel: None,
+        onboard_install_daemon: false,
+        onboard_start_daemon: false,
         doctor_release_cache_file: PathBuf::from(".tau/release-lookup-cache.json"),
         doctor_release_cache_ttl_ms: 900_000,
         project_index_build: false,
@@ -7869,6 +7871,8 @@ fn unit_cli_onboarding_flags_default_to_disabled() {
     assert!(!cli.onboard_non_interactive);
     assert_eq!(cli.onboard_profile, "default");
     assert_eq!(cli.onboard_release_channel, None);
+    assert!(!cli.onboard_install_daemon);
+    assert!(!cli.onboard_start_daemon);
 }
 
 #[test]
@@ -7881,11 +7885,15 @@ fn functional_cli_onboarding_flags_accept_explicit_overrides() {
         "team_default",
         "--onboard-release-channel",
         "beta",
+        "--onboard-install-daemon",
+        "--onboard-start-daemon",
     ]);
     assert!(cli.onboard);
     assert!(cli.onboard_non_interactive);
     assert_eq!(cli.onboard_profile, "team_default");
     assert_eq!(cli.onboard_release_channel, Some("beta".to_string()));
+    assert!(cli.onboard_install_daemon);
+    assert!(cli.onboard_start_daemon);
 }
 
 #[test]
@@ -7907,6 +7915,20 @@ fn regression_cli_onboarding_release_channel_requires_onboard() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--onboard-release-channel", "beta"]);
     let error = parse.expect_err("onboarding release channel should require --onboard");
     assert!(error.to_string().contains("--onboard"));
+}
+
+#[test]
+fn regression_cli_onboarding_install_daemon_requires_onboard() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--onboard-install-daemon"]);
+    let error = parse.expect_err("onboarding daemon install should require --onboard");
+    assert!(error.to_string().contains("--onboard"));
+}
+
+#[test]
+fn regression_cli_onboarding_start_daemon_requires_onboarding_install_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--onboard", "--onboard-start-daemon"]);
+    let error = parse.expect_err("onboarding daemon start should require daemon install flag");
+    assert!(error.to_string().contains("--onboard-install-daemon"));
 }
 
 #[test]
@@ -20256,6 +20278,8 @@ fn integration_execute_startup_preflight_runs_onboarding_and_generates_report() 
     cli.onboard = true;
     cli.onboard_non_interactive = true;
     cli.onboard_profile = "team_default".to_string();
+    cli.onboard_install_daemon = true;
+    cli.onboard_start_daemon = true;
 
     let handled = execute_startup_preflight(&cli).expect("onboarding preflight");
     assert!(handled);
@@ -20293,6 +20317,23 @@ fn integration_execute_startup_preflight_runs_onboarding_and_generates_report() 
     assert_eq!(report_json["release_channel"], "stable");
     assert_eq!(report_json["release_channel_source"], "default");
     assert_eq!(report_json["release_channel_action"], "created");
+    assert_eq!(report_json["daemon_bootstrap"]["requested_install"], true);
+    assert_eq!(report_json["daemon_bootstrap"]["requested_start"], true);
+    assert_eq!(
+        report_json["daemon_bootstrap"]["install_action"],
+        "installed"
+    );
+    assert_eq!(report_json["daemon_bootstrap"]["start_action"], "started");
+    assert_eq!(report_json["daemon_bootstrap"]["ready"], true);
+    assert_eq!(report_json["daemon_bootstrap"]["status"]["installed"], true);
+    assert_eq!(report_json["daemon_bootstrap"]["status"]["running"], true);
+    let daemon_state_path = report_json["daemon_bootstrap"]["status"]["state_path"]
+        .as_str()
+        .expect("daemon state path string");
+    assert!(
+        PathBuf::from(daemon_state_path).exists(),
+        "daemon state file should exist after onboarding preflight"
+    );
 }
 
 #[test]
