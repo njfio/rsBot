@@ -108,6 +108,7 @@ pub(crate) async fn run_transport_mode_if_requested(
             retry_max_attempts: cli.github_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.github_retry_base_delay_ms.max(1),
             artifact_retention_days: cli.github_artifact_retention_days,
+            auth_command_config: build_auth_command_config(cli),
             demo_index_repo_root: None,
             demo_index_script_path: None,
             demo_index_binary_path: None,

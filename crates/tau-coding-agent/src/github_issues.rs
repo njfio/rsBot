@@ -15,6 +15,9 @@ use tau_agent_core::{Agent, AgentConfig, AgentEvent};
 use tau_ai::LlmClient;
 use tokio::sync::watch;
 
+use crate::auth_commands::{
+    execute_auth_command, parse_auth_command, AuthCommand, AUTH_MATRIX_USAGE, AUTH_STATUS_USAGE,
+};
 use crate::channel_store::{
     ChannelArtifactRecord, ChannelAttachmentRecord, ChannelLogEntry, ChannelStore,
 };
@@ -30,7 +33,7 @@ use crate::github_transport_helpers::{
     is_retryable_github_status, is_retryable_transport_error, parse_retry_after, retry_delay,
     truncate_for_error,
 };
-use crate::runtime_types::DoctorCommandConfig;
+use crate::runtime_types::{AuthCommandConfig, DoctorCommandConfig};
 use crate::session_commands::{parse_session_search_args, search_session_entries};
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
@@ -87,6 +90,7 @@ pub(crate) struct GithubIssuesBridgeRuntimeConfig {
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
     pub artifact_retention_days: u64,
+    pub auth_command_config: AuthCommandConfig,
     pub demo_index_repo_root: Option<PathBuf>,
     pub demo_index_script_path: Option<PathBuf>,
     pub demo_index_binary_path: Option<PathBuf>,
@@ -1009,6 +1013,28 @@ struct DemoIndexRunExecution {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TauIssueAuthCommandKind {
+    Status,
+    Matrix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TauIssueAuthCommand {
+    kind: TauIssueAuthCommandKind,
+    args: String,
+}
+
+#[derive(Debug, Clone)]
+struct IssueAuthExecution {
+    run_id: String,
+    command_name: &'static str,
+    summary_line: String,
+    subscription_strict: bool,
+    report_artifact: ChannelArtifactRecord,
+    json_artifact: ChannelArtifactRecord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IssueDoctorCommand {
     online: bool,
 }
@@ -1062,6 +1088,9 @@ enum TauIssueCommand {
         command: DemoIndexRunCommand,
     },
     DemoIndexReport,
+    Auth {
+        command: TauIssueAuthCommand,
+    },
     Doctor {
         command: IssueDoctorCommand,
     },
@@ -2254,6 +2283,101 @@ impl GithubIssuesBridgeRuntime {
                     "posted_comment_url": posted.html_url,
                     "error": error_text,
                 }))?;
+            }
+            TauIssueCommand::Auth { command } => {
+                match self.execute_issue_auth_command(event.issue_number, &event.key, &command) {
+                    Ok(execution) => {
+                        let posture = self.render_issue_auth_posture_lines();
+                        let mut lines = vec![format!(
+                            "Tau auth diagnostics for issue #{}: command={} run_id={}",
+                            event.issue_number, execution.command_name, execution.run_id
+                        )];
+                        lines.push(execution.summary_line.clone());
+                        lines.push(format!(
+                            "subscription_strict: {}",
+                            execution.subscription_strict
+                        ));
+                        lines.extend(posture);
+                        lines.push(format!(
+                            "report_artifact: id=`{}` path=`{}`",
+                            execution.report_artifact.id, execution.report_artifact.relative_path
+                        ));
+                        lines.push(format!(
+                            "json_artifact: id=`{}` path=`{}`",
+                            execution.json_artifact.id, execution.json_artifact.relative_path
+                        ));
+                        lines.push(
+                            "Use `/tau artifacts show <artifact_id>` to inspect full diagnostics."
+                                .to_string(),
+                        );
+                        let message = lines.join("\n");
+                        let posted = self
+                            .post_issue_command_comment(
+                                event.issue_number,
+                                &event.key,
+                                if matches!(command.kind, TauIssueAuthCommandKind::Status) {
+                                    "auth-status"
+                                } else {
+                                    "auth-matrix"
+                                },
+                                "reported",
+                                &message,
+                            )
+                            .await?;
+                        self.outbound_log.append(&json!({
+                            "timestamp_unix_ms": current_unix_timestamp_ms(),
+                            "repo": self.repo.as_slug(),
+                            "event_key": event.key,
+                            "issue_number": event.issue_number,
+                            "command": execution.command_name,
+                            "status": "reported",
+                            "posted_comment_id": posted.id,
+                            "posted_comment_url": posted.html_url,
+                            "run_id": execution.run_id,
+                            "subscription_strict": execution.subscription_strict,
+                            "summary": execution.summary_line,
+                            "report_artifact": {
+                                "id": execution.report_artifact.id,
+                                "path": execution.report_artifact.relative_path,
+                                "bytes": execution.report_artifact.bytes,
+                                "checksum_sha256": execution.report_artifact.checksum_sha256,
+                            },
+                            "json_artifact": {
+                                "id": execution.json_artifact.id,
+                                "path": execution.json_artifact.relative_path,
+                                "bytes": execution.json_artifact.bytes,
+                                "checksum_sha256": execution.json_artifact.checksum_sha256,
+                            },
+                        }))?;
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "Tau auth diagnostics failed for issue #{}.\n\nError: {}",
+                            event.issue_number,
+                            truncate_for_error(&error.to_string(), 280)
+                        );
+                        let posted = self
+                            .post_issue_command_comment(
+                                event.issue_number,
+                                &event.key,
+                                "auth",
+                                "failed",
+                                &message,
+                            )
+                            .await?;
+                        self.outbound_log.append(&json!({
+                            "timestamp_unix_ms": current_unix_timestamp_ms(),
+                            "repo": self.repo.as_slug(),
+                            "event_key": event.key,
+                            "issue_number": event.issue_number,
+                            "command": "auth",
+                            "status": "failed",
+                            "posted_comment_id": posted.id,
+                            "posted_comment_url": posted.html_url,
+                            "error": error.to_string(),
+                        }))?;
+                    }
+                }
             }
             TauIssueCommand::Doctor { command } => {
                 match self.execute_issue_doctor_command(event.issue_number, &event.key, command) {
@@ -3946,6 +4070,109 @@ impl GithubIssuesBridgeRuntime {
         Ok(lines.join("\n"))
     }
 
+    fn execute_issue_auth_command(
+        &self,
+        issue_number: u64,
+        event_key: &str,
+        command: &TauIssueAuthCommand,
+    ) -> Result<IssueAuthExecution> {
+        let command_name = match command.kind {
+            TauIssueAuthCommandKind::Status => "status",
+            TauIssueAuthCommandKind::Matrix => "matrix",
+        };
+        let command_key = match command.kind {
+            TauIssueAuthCommandKind::Status => "auth-status",
+            TauIssueAuthCommandKind::Matrix => "auth-matrix",
+        };
+        let run_id = format!(
+            "{}-{}-{}-{}",
+            command_key,
+            issue_number,
+            current_unix_timestamp_ms(),
+            short_key_hash(event_key)
+        );
+        let report_payload = execute_auth_command(&self.config.auth_command_config, &command.args);
+        let json_args = ensure_auth_json_flag(&command.args);
+        let report_payload_json =
+            execute_auth_command(&self.config.auth_command_config, &json_args);
+        let summary_line = build_issue_auth_summary_line(command.kind, &report_payload_json);
+        let channel_store = ChannelStore::open(
+            &self.repository_state_dir.join("channel-store"),
+            "github",
+            &format!("issue-{issue_number}"),
+        )?;
+        let retention_days = normalize_artifact_retention_days(self.config.artifact_retention_days);
+        let report_artifact = channel_store.write_text_artifact(
+            &run_id,
+            "github-issue-auth-report",
+            "private",
+            retention_days,
+            "txt",
+            &report_payload,
+        )?;
+        let json_artifact = channel_store.write_text_artifact(
+            &run_id,
+            "github-issue-auth-json",
+            "private",
+            retention_days,
+            "json",
+            &report_payload_json,
+        )?;
+        channel_store.append_log_entry(&ChannelLogEntry {
+            timestamp_unix_ms: current_unix_timestamp_ms(),
+            direction: "outbound".to_string(),
+            event_key: Some(event_key.to_string()),
+            source: "github".to_string(),
+            payload: json!({
+                "command": command_key,
+                "run_id": run_id,
+                "args": command.args,
+                "json_args": json_args,
+                "subscription_strict": self.config.auth_command_config.provider_subscription_strict,
+                "summary": summary_line,
+                "report_artifact": {
+                    "id": report_artifact.id,
+                    "path": report_artifact.relative_path,
+                    "checksum_sha256": report_artifact.checksum_sha256,
+                    "bytes": report_artifact.bytes,
+                    "expires_unix_ms": report_artifact.expires_unix_ms,
+                },
+                "json_artifact": {
+                    "id": json_artifact.id,
+                    "path": json_artifact.relative_path,
+                    "checksum_sha256": json_artifact.checksum_sha256,
+                    "bytes": json_artifact.bytes,
+                    "expires_unix_ms": json_artifact.expires_unix_ms,
+                },
+            }),
+        })?;
+        Ok(IssueAuthExecution {
+            run_id,
+            command_name,
+            summary_line,
+            subscription_strict: self.config.auth_command_config.provider_subscription_strict,
+            report_artifact,
+            json_artifact,
+        })
+    }
+
+    fn render_issue_auth_posture_lines(&self) -> Vec<String> {
+        vec![
+            format!(
+                "provider_mode: openai={} anthropic={} google={}",
+                self.config.auth_command_config.openai_auth_mode.as_str(),
+                self.config.auth_command_config.anthropic_auth_mode.as_str(),
+                self.config.auth_command_config.google_auth_mode.as_str()
+            ),
+            format!(
+                "login_backend_enabled: openai_codex={} anthropic_claude={} google_gemini={}",
+                self.config.auth_command_config.openai_codex_backend,
+                self.config.auth_command_config.anthropic_claude_backend,
+                self.config.auth_command_config.google_gemini_backend
+            ),
+        ]
+    }
+
     fn execute_issue_doctor_command(
         &self,
         issue_number: u64,
@@ -4115,6 +4342,10 @@ fn rbac_action_for_event(action: &EventAction) -> String {
             TauIssueCommand::DemoIndexList => "command:/tau-demo-index".to_string(),
             TauIssueCommand::DemoIndexRun { .. } => "command:/tau-demo-index".to_string(),
             TauIssueCommand::DemoIndexReport => "command:/tau-demo-index".to_string(),
+            TauIssueCommand::Auth { command } => match command.kind {
+                TauIssueAuthCommandKind::Status => "command:/tau-auth-status".to_string(),
+                TauIssueAuthCommandKind::Matrix => "command:/tau-auth-matrix".to_string(),
+            },
             TauIssueCommand::Doctor { .. } => "command:/tau-doctor".to_string(),
             TauIssueCommand::Canvas { .. } => "command:/tau-canvas".to_string(),
             TauIssueCommand::Summarize { .. } => "command:/tau-summarize".to_string(),
@@ -4948,6 +5179,7 @@ fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
                 }
             }
         }
+        "auth" => parse_issue_auth_command(remainder),
         "doctor" => parse_doctor_issue_command(remainder),
         "compact" => {
             if remainder.is_empty() {
@@ -5131,6 +5363,34 @@ fn parse_doctor_issue_command(remainder: &str) -> TauIssueCommand {
     }
 }
 
+fn parse_issue_auth_command(remainder: &str) -> TauIssueCommand {
+    if remainder.trim().is_empty() {
+        return TauIssueCommand::Invalid {
+            message: issue_auth_command_usage(),
+        };
+    }
+    match parse_auth_command(remainder) {
+        Ok(AuthCommand::Status { .. }) => TauIssueCommand::Auth {
+            command: TauIssueAuthCommand {
+                kind: TauIssueAuthCommandKind::Status,
+                args: remainder.trim().to_string(),
+            },
+        },
+        Ok(AuthCommand::Matrix { .. }) => TauIssueCommand::Auth {
+            command: TauIssueAuthCommand {
+                kind: TauIssueAuthCommandKind::Matrix,
+                args: remainder.trim().to_string(),
+            },
+        },
+        Ok(_) => TauIssueCommand::Invalid {
+            message: issue_auth_command_usage(),
+        },
+        Err(error) => TauIssueCommand::Invalid {
+            message: format!("auth error: {error}\n\n{}", issue_auth_command_usage()),
+        },
+    }
+}
+
 fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCommand, String> {
     let usage = demo_index_command_usage();
     let mut timeout_seconds = DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS;
@@ -5212,6 +5472,13 @@ fn doctor_command_usage() -> String {
     "Usage: /tau doctor [--online]".to_string()
 }
 
+fn issue_auth_command_usage() -> String {
+    format!(
+        "Usage: /tau auth <status|matrix> ...\n{}\n{}",
+        AUTH_STATUS_USAGE, AUTH_MATRIX_USAGE
+    )
+}
+
 fn demo_index_command_usage() -> String {
     format!(
         "Usage: /tau demo-index <list|run [scenario[,scenario...]] [--timeout-seconds <n>]|report>\nAllowed scenarios: {}\nDefault run timeout: {} seconds (max {}).",
@@ -5228,6 +5495,7 @@ fn tau_command_usage() -> String {
         "- `/tau stop`",
         "- `/tau status`",
         "- `/tau health`",
+        "- `/tau auth <status|matrix> ...`",
         "- `/tau doctor [--online]`",
         "- `/tau compact`",
         "- `/tau help`",
@@ -5326,6 +5594,111 @@ fn doctor_status_label(status: DoctorStatus) -> &'static str {
         DoctorStatus::Pass => "pass",
         DoctorStatus::Warn => "warn",
         DoctorStatus::Fail => "fail",
+    }
+}
+
+fn ensure_auth_json_flag(args: &str) -> String {
+    let tokens = args
+        .split_whitespace()
+        .filter(|token| !token.trim().is_empty())
+        .collect::<Vec<_>>();
+    if tokens.contains(&"--json") {
+        args.trim().to_string()
+    } else if args.trim().is_empty() {
+        "--json".to_string()
+    } else {
+        format!("{} --json", args.trim())
+    }
+}
+
+fn build_issue_auth_summary_line(kind: TauIssueAuthCommandKind, raw_json: &str) -> String {
+    let Ok(payload) = serde_json::from_str::<Value>(raw_json) else {
+        return "summary: unavailable (auth JSON payload was malformed)".to_string();
+    };
+    let providers = payload
+        .get("providers")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let modes = payload.get("modes").and_then(Value::as_u64).unwrap_or(0);
+    let rows = payload.get("rows").and_then(Value::as_u64).unwrap_or(0);
+    let available = payload
+        .get("available")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let unavailable = payload
+        .get("unavailable")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mode_supported = payload
+        .get("mode_supported")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mode_unsupported = payload
+        .get("mode_unsupported")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let provider_filter = payload
+        .get("provider_filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let mode_filter = payload
+        .get("mode_filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let mode_support_filter = payload
+        .get("mode_support_filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let availability_filter = payload
+        .get("availability_filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let state_filter = payload
+        .get("state_filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let source_kind_filter = payload
+        .get("source_kind_filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    let revoked_filter = payload
+        .get("revoked_filter")
+        .and_then(Value::as_str)
+        .unwrap_or("all");
+    match kind {
+        TauIssueAuthCommandKind::Status => format!(
+            "summary: providers={} rows={} available={} unavailable={} mode_supported={} mode_unsupported={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={}",
+            providers,
+            rows,
+            available,
+            unavailable,
+            mode_supported,
+            mode_unsupported,
+            provider_filter,
+            mode_filter,
+            mode_support_filter,
+            availability_filter,
+            state_filter,
+            source_kind_filter,
+            revoked_filter
+        ),
+        TauIssueAuthCommandKind::Matrix => format!(
+            "summary: providers={} modes={} rows={} available={} unavailable={} mode_supported={} mode_unsupported={} provider_filter={} mode_filter={} mode_support_filter={} availability_filter={} state_filter={} source_kind_filter={} revoked_filter={}",
+            providers,
+            modes,
+            rows,
+            available,
+            unavailable,
+            mode_supported,
+            mode_unsupported,
+            provider_filter,
+            mode_filter,
+            mode_support_filter,
+            availability_filter,
+            state_filter,
+            source_kind_filter,
+            revoked_filter
+        ),
     }
 }
 
@@ -5515,13 +5888,15 @@ mod tests {
         GithubBridgeEventKind, GithubIssue, GithubIssueComment, GithubIssueLabel,
         GithubIssuesBridgeRuntime, GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore,
         GithubUser, IssueDoctorCommand, IssueEventOutcome, PromptRunReport, PromptUsageSummary,
-        RepoRef, RunPromptForEventRequest, SessionStore, TauIssueCommand, CHAT_SHOW_DEFAULT_LIMIT,
+        RepoRef, RunPromptForEventRequest, SessionStore, TauIssueAuthCommand,
+        TauIssueAuthCommandKind, TauIssueCommand, CHAT_SHOW_DEFAULT_LIMIT,
         DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS, DEMO_INDEX_SCENARIOS, EVENT_KEY_MARKER_PREFIX,
     };
     use crate::{
         channel_store::{ChannelArtifactRecord, ChannelStore},
         tools::ToolPolicy,
-        DoctorCommandConfig, DoctorMultiChannelReadinessConfig, PromptRunStatus, RenderOptions,
+        AuthCommandConfig, CredentialStoreEncryptionMode, DoctorCommandConfig,
+        DoctorMultiChannelReadinessConfig, PromptRunStatus, ProviderAuthMethod, RenderOptions,
     };
 
     struct StaticReplyClient;
@@ -5597,6 +5972,26 @@ mod tests {
             retry_max_attempts: 3,
             retry_base_delay_ms: 5,
             artifact_retention_days: 30,
+            auth_command_config: AuthCommandConfig {
+                credential_store: state_dir.join("credentials.json"),
+                credential_store_key: None,
+                credential_store_encryption: CredentialStoreEncryptionMode::None,
+                api_key: Some("integration-key".to_string()),
+                openai_api_key: None,
+                anthropic_api_key: None,
+                google_api_key: None,
+                openai_auth_mode: ProviderAuthMethod::ApiKey,
+                anthropic_auth_mode: ProviderAuthMethod::ApiKey,
+                google_auth_mode: ProviderAuthMethod::ApiKey,
+                provider_subscription_strict: true,
+                openai_codex_backend: true,
+                openai_codex_cli: "codex".to_string(),
+                anthropic_claude_backend: true,
+                anthropic_claude_cli: "claude".to_string(),
+                google_gemini_backend: true,
+                google_gemini_cli: "gemini".to_string(),
+                google_gcloud_cli: "gcloud".to_string(),
+            },
             demo_index_repo_root: None,
             demo_index_script_path: None,
             demo_index_binary_path: None,
@@ -6629,6 +7024,24 @@ printf '%s\n' "${payload}"
             })
         );
         assert_eq!(
+            parse_tau_issue_command("/tau auth status"),
+            Some(TauIssueCommand::Auth {
+                command: TauIssueAuthCommand {
+                    kind: TauIssueAuthCommandKind::Status,
+                    args: "status".to_string(),
+                },
+            })
+        );
+        assert_eq!(
+            parse_tau_issue_command("/tau auth matrix --mode-support unsupported"),
+            Some(TauIssueCommand::Auth {
+                command: TauIssueAuthCommand {
+                    kind: TauIssueAuthCommandKind::Matrix,
+                    args: "matrix --mode-support unsupported".to_string(),
+                },
+            })
+        );
+        assert_eq!(
             parse_tau_issue_command("/tau canvas show architecture --json"),
             Some(TauIssueCommand::Canvas {
                 args: "show architecture --json".to_string()
@@ -6671,6 +7084,12 @@ printf '%s\n' "${payload}"
         let parsed = parse_tau_issue_command("/tau doctor --json").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed = parse_tau_issue_command("/tau doctor --online extra").expect("command parse");
+        assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
+        let parsed = parse_tau_issue_command("/tau auth").expect("command parse");
+        assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
+        let parsed = parse_tau_issue_command("/tau auth login openai").expect("command parse");
+        assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
+        let parsed = parse_tau_issue_command("/tau auth status --invalid").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed = parse_tau_issue_command("/tau canvas").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
@@ -7078,6 +7497,181 @@ printf '%s\n' "${payload}"
         assert_eq!(first.failed_events, 0);
         assert_eq!(second.processed_events, 0);
         doctor_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn functional_bridge_auth_status_command_reports_summary_and_artifact_pointers() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 290,
+                "number": 29,
+                "title": "Auth status",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/29/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 2901,
+                    "body": "/tau auth status",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let auth_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/29/comments")
+                .body_includes("Tau auth diagnostics for issue #29: command=status")
+                .body_includes("subscription_strict:")
+                .body_includes("provider_mode:")
+                .body_includes("report_artifact:")
+                .body_includes("json_artifact:");
+            then.status(201).json_body(json!({
+                "id": 2902,
+                "html_url": "https://example.test/comment/2902"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        auth_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_auth_matrix_command_persists_report_artifacts() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 300,
+                "number": 30,
+                "title": "Auth matrix",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/30/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 3001,
+                    "body": "/tau auth matrix --mode-support supported",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let auth_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/30/comments")
+                .body_includes("Tau auth diagnostics for issue #30: command=matrix");
+            then.status(201).json_body(json!({
+                "id": 3002,
+                "html_url": "https://example.test/comment/3002"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        auth_post.assert_calls(1);
+
+        let store = ChannelStore::open(
+            &temp.path().join("owner__repo").join("channel-store"),
+            "github",
+            "issue-30",
+        )
+        .expect("channel store");
+        let artifacts = store
+            .load_artifact_records_tolerant()
+            .expect("artifact records");
+        let report_count = artifacts
+            .records
+            .iter()
+            .filter(|record| record.artifact_type == "github-issue-auth-report")
+            .count();
+        let json_count = artifacts
+            .records
+            .iter()
+            .filter(|record| record.artifact_type == "github-issue-auth-json")
+            .count();
+        assert_eq!(report_count, 1);
+        assert_eq!(json_count, 1);
+    }
+
+    #[tokio::test]
+    async fn regression_bridge_auth_status_command_replay_guard_prevents_duplicate_execution() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 310,
+                "number": 31,
+                "title": "Auth replay",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/31/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 3101,
+                    "body": "/tau auth status",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let auth_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/31/comments")
+                .body_includes("Tau auth diagnostics for issue #31: command=status");
+            then.status(201).json_body(json!({
+                "id": 3102,
+                "html_url": "https://example.test/comment/3102"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let first = runtime.poll_once().await.expect("first poll");
+        let second = runtime.poll_once().await.expect("second poll");
+        assert_eq!(first.processed_events, 1);
+        assert_eq!(first.failed_events, 0);
+        assert_eq!(second.processed_events, 0);
+        auth_post.assert_calls(1);
     }
 
     #[tokio::test]

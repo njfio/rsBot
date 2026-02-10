@@ -48,11 +48,16 @@ Bridge control commands in issue comments:
 - `/tau help`
 - `/tau status`
 - `/tau health`
+- `/tau auth <status|matrix> ...`
 - `/tau doctor [--online]`
 - `/tau stop`
 - `/tau chat start|resume|reset|status|summary|replay|show|search|export`
 - `/tau artifacts|artifacts run <run_id>|artifacts show <artifact_id>|artifacts purge`
 - `/tau demo-index list|run [scenario[,scenario...]] [--timeout-seconds <n>]|report`
+
+Auth diagnostics commands:
+- `/tau auth status`: report provider auth posture with strict-subscription context.
+- `/tau auth matrix`: report cross-provider mode/availability matrix and filters.
 
 Doctor diagnostics command:
 - `/tau doctor`: run bounded local diagnostics and post summary plus artifact pointers.
