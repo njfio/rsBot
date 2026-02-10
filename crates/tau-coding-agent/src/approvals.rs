@@ -255,7 +255,21 @@ enum ApprovalsCommand {
 pub(crate) fn execute_approvals_command(command_args: &str) -> String {
     let policy_path = default_approval_policy_path();
     let state_path = default_approval_store_path();
-    execute_approvals_command_with_paths(command_args, &policy_path, &state_path)
+    execute_approvals_command_with_paths_internal(command_args, &policy_path, &state_path, None)
+}
+
+pub(crate) fn execute_approvals_command_with_paths_and_actor(
+    command_args: &str,
+    policy_path: &Path,
+    state_path: &Path,
+    decision_actor: Option<&str>,
+) -> String {
+    execute_approvals_command_with_paths_internal(
+        command_args,
+        policy_path,
+        state_path,
+        decision_actor,
+    )
 }
 
 pub(crate) fn evaluate_approval_gate(action: &ApprovalAction) -> Result<ApprovalGateResult> {
@@ -375,10 +389,20 @@ fn evaluate_approval_gate_with_paths(
     })
 }
 
+#[cfg(test)]
 fn execute_approvals_command_with_paths(
     command_args: &str,
     policy_path: &Path,
     state_path: &Path,
+) -> String {
+    execute_approvals_command_with_paths_internal(command_args, policy_path, state_path, None)
+}
+
+fn execute_approvals_command_with_paths_internal(
+    command_args: &str,
+    policy_path: &Path,
+    state_path: &Path,
+    decision_actor: Option<&str>,
 ) -> String {
     let command = match parse_approvals_command(command_args) {
         Ok(command) => command,
@@ -399,6 +423,7 @@ fn execute_approvals_command_with_paths(
                 request_id.as_str(),
                 ApprovalRequestStatus::Approved,
                 reason,
+                decision_actor,
             ) {
                 Ok(output) => output,
                 Err(error) => format!("approvals error: {error}"),
@@ -410,6 +435,7 @@ fn execute_approvals_command_with_paths(
                 request_id.as_str(),
                 ApprovalRequestStatus::Rejected,
                 reason,
+                decision_actor,
             ) {
                 Ok(output) => output,
                 Err(error) => format!("approvals error: {error}"),
@@ -447,6 +473,7 @@ fn update_approval_decision(
     request_id: &str,
     status: ApprovalRequestStatus,
     reason: Option<String>,
+    decision_actor: Option<&str>,
 ) -> Result<String> {
     let _guard = approval_store_guard();
     let mut store = load_approval_store(state_path)?;
@@ -479,20 +506,25 @@ fn update_approval_decision(
         let record = &mut store.requests[record_index];
         record.status = status;
         record.decision_at_ms = Some(now_ms);
-        record.decision_actor = Some("local-command".to_string());
+        record.decision_actor = Some(normalize_decision_actor(decision_actor));
         record.decision_reason = reason.filter(|value| !value.trim().is_empty());
     }
     let decision_reason = store.requests[record_index]
         .decision_reason
         .clone()
         .unwrap_or_else(|| "none".to_string());
+    let decision_actor = store.requests[record_index]
+        .decision_actor
+        .clone()
+        .unwrap_or_else(|| "none".to_string());
     save_approval_store(state_path, &store)?;
 
     Ok(format!(
-        "approvals decision: request_id={} status={} reason={}",
+        "approvals decision: request_id={} status={} reason={} decision_actor={}",
         request_id,
         status.as_str(),
-        decision_reason
+        decision_reason,
+        decision_actor
     ))
 }
 
@@ -587,6 +619,34 @@ fn default_approval_store_path() -> PathBuf {
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".tau/approvals/requests.json"))
+}
+
+pub(crate) fn approval_paths_for_state_dir(state_dir: &Path) -> (PathBuf, PathBuf) {
+    let state_name = state_dir.file_name().and_then(|value| value.to_str());
+    let tau_root = match state_name {
+        Some("github")
+        | Some("slack")
+        | Some("events")
+        | Some("channel-store")
+        | Some("multi-channel") => state_dir
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(state_dir),
+        _ => state_dir,
+    };
+    let approvals_root = tau_root.join("approvals");
+    (
+        approvals_root.join("policy.json"),
+        approvals_root.join("requests.json"),
+    )
+}
+
+fn normalize_decision_actor(decision_actor: Option<&str>) -> String {
+    decision_actor
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local-command")
+        .to_string()
 }
 
 fn approval_store_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -991,6 +1051,82 @@ mod tests {
         let third = evaluate_approval_gate_with_paths(&action, &policy_path, &state_path)
             .expect("third gate eval");
         assert!(matches!(third, ApprovalGateResult::Denied { .. }));
+    }
+
+    #[test]
+    fn functional_execute_approvals_command_with_actor_persists_decision_actor() {
+        let temp = tempdir().expect("tempdir");
+        let policy_path = policy_path(temp.path());
+        let state_path = state_path(temp.path());
+        write_policy(
+            &policy_path,
+            &serde_json::json!({
+                "schema_version": 1,
+                "enabled": true,
+                "strict_mode": true,
+                "timeout_seconds": 3600,
+                "rules": [
+                    {
+                        "id": "command-review",
+                        "action": "command",
+                        "command_names": ["/danger"]
+                    }
+                ]
+            }),
+        );
+
+        let denied = evaluate_approval_gate_with_paths(
+            &ApprovalAction::Command {
+                name: "/danger".to_string(),
+                args: "now".to_string(),
+            },
+            &policy_path,
+            &state_path,
+        )
+        .expect("evaluate gate");
+        let request_id = match denied {
+            ApprovalGateResult::Denied { request_id, .. } => request_id,
+            ApprovalGateResult::Allowed => panic!("expected denied"),
+        };
+
+        let output = execute_approvals_command_with_paths_and_actor(
+            format!("approve {} approved", request_id).as_str(),
+            &policy_path,
+            &state_path,
+            Some("telegram:ops-room:operator-1"),
+        );
+        assert!(output.contains("decision_actor=telegram:ops-room:operator-1"));
+
+        let store = load_approval_store(&state_path).expect("load store");
+        let request = store
+            .requests
+            .iter()
+            .find(|entry| entry.id == request_id)
+            .expect("request");
+        assert_eq!(request.status, ApprovalRequestStatus::Approved);
+        assert_eq!(
+            request.decision_actor.as_deref(),
+            Some("telegram:ops-room:operator-1")
+        );
+    }
+
+    #[test]
+    fn unit_approval_paths_for_state_dir_supports_transport_roots() {
+        let transport_state = PathBuf::from(".tau/multi-channel");
+        let (policy_path, store_path) = approval_paths_for_state_dir(&transport_state);
+        assert_eq!(policy_path, PathBuf::from(".tau/approvals/policy.json"));
+        assert_eq!(store_path, PathBuf::from(".tau/approvals/requests.json"));
+
+        let generic_state = PathBuf::from("runtime-state");
+        let (policy_path, store_path) = approval_paths_for_state_dir(&generic_state);
+        assert_eq!(
+            policy_path,
+            PathBuf::from("runtime-state/approvals/policy.json")
+        );
+        assert_eq!(
+            store_path,
+            PathBuf::from("runtime-state/approvals/requests.json")
+        );
     }
 
     #[test]
