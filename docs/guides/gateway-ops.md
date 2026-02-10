@@ -9,6 +9,7 @@ This runbook covers:
 - fixture-driven gateway runtime (`--gateway-contract-runner`)
 - gateway service lifecycle control (`--gateway-service-start|stop|status`)
 - OpenResponses-compatible HTTP gateway (`--gateway-openresponses-server`)
+- gateway-served webchat/control endpoints (`/webchat`, `/gateway/status`)
 
 ## Service lifecycle commands
 
@@ -85,6 +86,19 @@ Current compatibility notes:
 - Session continuity derives from `metadata.session_id`, then `conversation`, then `previous_response_id`.
 - Unknown request fields are ignored safely and surfaced in `ignored_fields` on the response.
 - `model` in request payload is accepted but ignored; runtime uses CLI-selected model.
+
+Webchat/control surface:
+
+- Open browser at `http://127.0.0.1:8787/webchat`.
+- Paste the same bearer token used for `/v1/responses` (`local-dev-token` in this example).
+- Use the status refresh control to inspect `/gateway/status` from the same page.
+
+Direct status endpoint check:
+
+```bash
+curl -sS http://127.0.0.1:8787/gateway/status \
+  -H "Authorization: Bearer local-dev-token"
+```
 
 ## Health and observability signals
 

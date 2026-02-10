@@ -91,6 +91,7 @@ Use this area for skill packaging, verification, registry support, and lock work
 - `events.rs`: scheduler runner and webhook immediate-event ingestion.
 - `dashboard_contract.rs`: web dashboard/operator control-plane fixture/schema contract definitions and validators.
 - `dashboard_runtime.rs`: dashboard runtime loop (state transitions, retries, dedupe, channel-store writes).
+- `gateway_openresponses.rs`: OpenResponses HTTP server (`/v1/responses`) plus gateway-served webchat/status endpoints.
 - `deployment_contract.rs`: cloud deployment + WASM deliverable fixture/schema contract definitions and validators.
 - `deployment_runtime.rs`: deployment/WASM runtime loop (queueing, retries, dedupe, channel-store writes).
 - `deployment_wasm.rs`: WASM artifact packaging, manifest verification, and deployment state deliverable tracking.
