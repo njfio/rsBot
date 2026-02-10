@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "name": "invalid-duplicate-case-id",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "mode": "snapshot",
+      "scope": {
+        "workspace_id": "tau-core"
+      },
+      "requested_widgets": [
+        {
+          "widget_id": "health-summary",
+          "kind": "health_summary",
+          "title": "Health",
+          "query_key": "runtime.health",
+          "refresh_interval_ms": 3000
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "widgets": [
+          {
+            "widget_id": "health-summary",
+            "kind": "health_summary",
+            "title": "Health",
+            "query_key": "runtime.health",
+            "refresh_interval_ms": 3000
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "duplicate-case",
+      "mode": "snapshot",
+      "scope": {
+        "workspace_id": "tau-core"
+      },
+      "requested_widgets": [
+        {
+          "widget_id": "transport-table",
+          "kind": "transport_table",
+          "title": "Transports",
+          "query_key": "transport.health",
+          "refresh_interval_ms": 5000
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "widgets": [
+          {
+            "widget_id": "transport-table",
+            "kind": "transport_table",
+            "title": "Transports",
+            "query_key": "transport.health",
+            "refresh_interval_ms": 5000
+          }
+        ]
+      }
+    }
+  ]
+}

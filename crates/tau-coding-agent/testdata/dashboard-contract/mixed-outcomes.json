@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "name": "mixed-outcomes",
+  "description": "Covers success, malformed_input, and retryable_failure for dashboard contract replay.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "snapshot-core-overview",
+      "mode": "snapshot",
+      "scope": {
+        "workspace_id": "tau-core",
+        "operator_id": "ops-user-1"
+      },
+      "requested_widgets": [
+        {
+          "widget_id": "transport-table",
+          "kind": "transport_table",
+          "title": "Transport Health",
+          "query_key": "transport.health",
+          "refresh_interval_ms": 5000
+        },
+        {
+          "widget_id": "health-summary",
+          "kind": "health_summary",
+          "title": "Runtime Health",
+          "query_key": "runtime.health",
+          "refresh_interval_ms": 3000
+        },
+        {
+          "widget_id": "run-timeline",
+          "kind": "run_timeline",
+          "title": "Run Timeline",
+          "query_key": "runtime.timeline",
+          "refresh_interval_ms": 10000
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "widgets": [
+          {
+            "widget_id": "health-summary",
+            "kind": "health_summary",
+            "title": "Runtime Health",
+            "query_key": "runtime.health",
+            "refresh_interval_ms": 3000
+          },
+          {
+            "widget_id": "run-timeline",
+            "kind": "run_timeline",
+            "title": "Run Timeline",
+            "query_key": "runtime.timeline",
+            "refresh_interval_ms": 10000
+          },
+          {
+            "widget_id": "transport-table",
+            "kind": "transport_table",
+            "title": "Transport Health",
+            "query_key": "transport.health",
+            "refresh_interval_ms": 5000
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "filter-empty-close-window",
+      "mode": "filter",
+      "scope": {
+        "workspace_id": "tau-core",
+        "operator_id": "ops-user-2"
+      },
+      "filters": [
+        {
+          "filter_id": "close-window",
+          "kind": "time_window",
+          "value": ""
+        }
+      ],
+      "requested_widgets": [
+        {
+          "widget_id": "queue-chart",
+          "kind": "queue_chart",
+          "title": "Queue Depth",
+          "query_key": "runtime.queue_depth",
+          "refresh_interval_ms": 4000
+        }
+      ],
+      "expected": {
+        "outcome": "malformed_input",
+        "error_code": "dashboard_invalid_filter",
+        "widgets": []
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "control-pause-retryable",
+      "mode": "control",
+      "scope": {
+        "workspace_id": "tau-core",
+        "operator_id": "ops-user-3"
+      },
+      "control_action": "pause",
+      "requested_widgets": [
+        {
+          "widget_id": "session-list",
+          "kind": "session_list",
+          "title": "Session Inventory",
+          "query_key": "runtime.sessions",
+          "refresh_interval_ms": 8000
+        }
+      ],
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "error_code": "dashboard_backend_unavailable",
+        "widgets": []
+      }
+    }
+  ]
+}

@@ -13,6 +13,8 @@ mod cli_types;
 mod codex_cli_client;
 mod commands;
 mod credentials;
+#[cfg(test)]
+mod dashboard_contract;
 mod diagnostics_commands;
 mod events;
 mod extension_manifest;

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "name": "snapshot-layout",
+  "description": "Success-only fixture for deterministic dashboard replay and control audit outputs.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "snapshot-release-health",
+      "mode": "snapshot",
+      "scope": {
+        "workspace_id": "tau-release",
+        "operator_id": "ops-release-1"
+      },
+      "requested_widgets": [
+        {
+          "widget_id": "alert-feed",
+          "kind": "alert_feed",
+          "title": "Alert Feed",
+          "query_key": "runtime.alerts",
+          "refresh_interval_ms": 7000
+        },
+        {
+          "widget_id": "health-summary",
+          "kind": "health_summary",
+          "title": "Release Health",
+          "query_key": "release.health",
+          "refresh_interval_ms": 3000
+        },
+        {
+          "widget_id": "transport-table",
+          "kind": "transport_table",
+          "title": "Transport Table",
+          "query_key": "release.transports",
+          "refresh_interval_ms": 6000
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "widgets": [
+          {
+            "widget_id": "alert-feed",
+            "kind": "alert_feed",
+            "title": "Alert Feed",
+            "query_key": "runtime.alerts",
+            "refresh_interval_ms": 7000
+          },
+          {
+            "widget_id": "health-summary",
+            "kind": "health_summary",
+            "title": "Release Health",
+            "query_key": "release.health",
+            "refresh_interval_ms": 3000
+          },
+          {
+            "widget_id": "transport-table",
+            "kind": "transport_table",
+            "title": "Transport Table",
+            "query_key": "release.transports",
+            "refresh_interval_ms": 6000
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "control-resume-streams",
+      "mode": "control",
+      "scope": {
+        "workspace_id": "tau-release",
+        "operator_id": "ops-release-2"
+      },
+      "control_action": "resume",
+      "requested_widgets": [
+        {
+          "widget_id": "queue-chart",
+          "kind": "queue_chart",
+          "title": "Queue Recovery",
+          "query_key": "runtime.queue_depth",
+          "refresh_interval_ms": 4000
+        }
+      ],
+      "expected": {
+        "outcome": "success",
+        "widgets": [
+          {
+            "widget_id": "queue-chart",
+            "kind": "queue_chart",
+            "title": "Queue Recovery",
+            "query_key": "runtime.queue_depth",
+            "refresh_interval_ms": 4000
+          }
+        ],
+        "audit_event_key": "dashboard-control:resume:control-resume-streams"
+      }
+    }
+  ]
+}
