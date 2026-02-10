@@ -122,6 +122,12 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ## Run deterministic local demos
 
 ```bash
+# operator-focused fresh-clone validation path
+./scripts/demo/index.sh
+./scripts/demo/index.sh --list
+./scripts/demo/index.sh --only onboarding,gateway-auth --fail-fast
+./scripts/demo/index.sh --json --report-file .tau/reports/demo-index-summary.json
+
 # all.sh prepares the binary once, then reuses it across selected wrappers.
 ./scripts/demo/all.sh
 ./scripts/demo/all.sh --list
@@ -146,6 +152,7 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ./scripts/demo/memory.sh
 ./scripts/demo/dashboard.sh
 ./scripts/demo/gateway.sh
+./scripts/demo/gateway-auth.sh
 ./scripts/demo/deployment.sh
 ./scripts/demo/custom-command.sh
 ./scripts/demo/voice.sh
