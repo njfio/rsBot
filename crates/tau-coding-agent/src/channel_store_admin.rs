@@ -746,6 +746,102 @@ struct DeploymentStatusInspectReport {
     health: TransportHealthSnapshot,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OperatorControlComponentSummaryRow {
+    component: String,
+    health_state: String,
+    health_reason: String,
+    rollout_gate: String,
+    reason_code: String,
+    recommendation: String,
+    queue_depth: usize,
+    failure_streak: usize,
+    state_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OperatorControlComponentInputs {
+    state_path: String,
+    health_state: String,
+    health_reason: String,
+    rollout_gate: String,
+    reason_code: String,
+    recommendation: String,
+    queue_depth: usize,
+    failure_streak: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OperatorControlDaemonSummary {
+    health_state: String,
+    rollout_gate: String,
+    reason_code: String,
+    recommendation: String,
+    profile: String,
+    installed: bool,
+    running: bool,
+    start_attempts: u64,
+    stop_attempts: u64,
+    diagnostics: usize,
+    state_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OperatorControlReleaseChannelSummary {
+    health_state: String,
+    rollout_gate: String,
+    reason_code: String,
+    recommendation: String,
+    configured: bool,
+    channel: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OperatorControlPolicyPosture {
+    pairing_strict_effective: bool,
+    pairing_config_strict_mode: bool,
+    pairing_allowlist_strict: bool,
+    pairing_rules_configured: bool,
+    pairing_registry_entries: usize,
+    pairing_allowlist_channel_rules: usize,
+    provider_subscription_strict: bool,
+    gateway_auth_mode: String,
+    gateway_remote_profile: String,
+    gateway_remote_posture: String,
+    gateway_remote_gate: String,
+    gateway_remote_risk_level: String,
+    gateway_remote_reason_codes: Vec<String>,
+    gateway_remote_recommendations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OperatorControlSummaryReport {
+    generated_unix_ms: u64,
+    health_state: String,
+    rollout_gate: String,
+    reason_codes: Vec<String>,
+    recommendations: Vec<String>,
+    policy_posture: OperatorControlPolicyPosture,
+    daemon: OperatorControlDaemonSummary,
+    release_channel: OperatorControlReleaseChannelSummary,
+    components: Vec<OperatorControlComponentSummaryRow>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PairingAllowlistSummaryFile {
+    #[serde(default)]
+    strict: bool,
+    #[serde(default)]
+    channels: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct PairingRegistrySummaryFile {
+    #[serde(default)]
+    pairings: Vec<serde_json::Value>,
+}
+
 pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
     if let Some(raw_target) = cli.transport_health_inspect.as_deref() {
         let target = parse_transport_health_inspect_target(raw_target)?;
@@ -772,6 +868,20 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
             );
         } else {
             println!("{}", render_github_status_report(&report));
+        }
+        return Ok(());
+    }
+
+    if cli.operator_control_summary {
+        let report = collect_operator_control_summary_report(cli)?;
+        if cli.operator_control_summary_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render operator control summary json")?
+            );
+        } else {
+            println!("{}", render_operator_control_summary_report(&report));
         }
         return Ok(());
     }
@@ -1916,6 +2026,521 @@ fn collect_deployment_status_report(cli: &Cli) -> Result<DeploymentStatusInspect
     })
 }
 
+fn collect_operator_control_summary_report(cli: &Cli) -> Result<OperatorControlSummaryReport> {
+    let components = vec![
+        collect_operator_dashboard_component(cli),
+        collect_operator_multi_channel_component(cli),
+        collect_operator_multi_agent_component(cli),
+        collect_operator_gateway_component(cli),
+        collect_operator_deployment_component(cli),
+        collect_operator_custom_command_component(cli),
+        collect_operator_voice_component(cli),
+    ];
+    let daemon = collect_operator_daemon_summary(cli);
+    let release_channel = collect_operator_release_channel_summary();
+    let policy_posture = collect_operator_policy_posture(cli);
+
+    let mut rollout_gate = "pass".to_string();
+    let mut health_rank = 0_u8;
+    let mut reason_codes = Vec::new();
+    let mut recommendations = Vec::new();
+
+    for component in &components {
+        health_rank = health_rank.max(operator_health_state_rank(&component.health_state));
+        if component.rollout_gate == "hold" {
+            rollout_gate = "hold".to_string();
+            push_unique_string(
+                &mut reason_codes,
+                format!("{}:{}", component.component, component.reason_code),
+            );
+            push_unique_string(&mut recommendations, component.recommendation.clone());
+        }
+    }
+
+    health_rank = health_rank.max(operator_health_state_rank(&daemon.health_state));
+    if daemon.rollout_gate == "hold" {
+        rollout_gate = "hold".to_string();
+        push_unique_string(&mut reason_codes, format!("daemon:{}", daemon.reason_code));
+        push_unique_string(&mut recommendations, daemon.recommendation.clone());
+    }
+
+    health_rank = health_rank.max(operator_health_state_rank(&release_channel.health_state));
+    if release_channel.rollout_gate == "hold" {
+        rollout_gate = "hold".to_string();
+        push_unique_string(
+            &mut reason_codes,
+            format!("release-channel:{}", release_channel.reason_code),
+        );
+        push_unique_string(&mut recommendations, release_channel.recommendation.clone());
+    }
+
+    if policy_posture.gateway_remote_gate == "hold" {
+        rollout_gate = "hold".to_string();
+        health_rank = health_rank.max(1);
+        let posture_reason = policy_posture
+            .gateway_remote_reason_codes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "remote_profile_hold".to_string());
+        push_unique_string(
+            &mut reason_codes,
+            format!("gateway-remote-profile:{posture_reason}"),
+        );
+        for recommendation in &policy_posture.gateway_remote_recommendations {
+            push_unique_string(&mut recommendations, recommendation.clone());
+        }
+    }
+
+    if reason_codes.is_empty() {
+        reason_codes.push("all_checks_passing".to_string());
+    }
+    if recommendations.is_empty() {
+        recommendations.push("no_immediate_action_required".to_string());
+    }
+
+    Ok(OperatorControlSummaryReport {
+        generated_unix_ms: current_unix_timestamp_ms(),
+        health_state: operator_health_state_label(health_rank).to_string(),
+        rollout_gate,
+        reason_codes,
+        recommendations,
+        policy_posture,
+        daemon,
+        release_channel,
+        components,
+    })
+}
+
+fn collect_operator_dashboard_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
+    let state_path = cli.dashboard_state_dir.join("state.json");
+    match collect_dashboard_status_report(cli) {
+        Ok(report) => build_operator_component_row(
+            "dashboard",
+            OperatorControlComponentInputs {
+                state_path: report.state_path,
+                health_state: report.health_state,
+                health_reason: report.health_reason,
+                rollout_gate: report.rollout_gate,
+                reason_code: latest_reason_code_or_fallback(
+                    &report.last_reason_codes,
+                    "dashboard_status",
+                ),
+                recommendation: report.health.classify().recommendation.to_string(),
+                queue_depth: report.health.queue_depth,
+                failure_streak: report.health.failure_streak,
+            },
+        ),
+        Err(error) => operator_component_unavailable("dashboard", &state_path, &error),
+    }
+}
+
+fn collect_operator_multi_channel_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
+    let state_path = cli.multi_channel_state_dir.join("state.json");
+    match collect_multi_channel_status_report(cli) {
+        Ok(report) => build_operator_component_row(
+            "multi-channel",
+            OperatorControlComponentInputs {
+                state_path: report.state_path,
+                health_state: report.health_state,
+                health_reason: report.health_reason,
+                rollout_gate: report.rollout_gate,
+                reason_code: latest_reason_code_or_fallback(
+                    &report.last_reason_codes,
+                    "multi_channel_status",
+                ),
+                recommendation: report.health.classify().recommendation.to_string(),
+                queue_depth: report.health.queue_depth,
+                failure_streak: report.health.failure_streak,
+            },
+        ),
+        Err(error) => operator_component_unavailable("multi-channel", &state_path, &error),
+    }
+}
+
+fn collect_operator_multi_agent_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
+    let state_path = cli.multi_agent_state_dir.join("state.json");
+    match collect_multi_agent_status_report(cli) {
+        Ok(report) => build_operator_component_row(
+            "multi-agent",
+            OperatorControlComponentInputs {
+                state_path: report.state_path,
+                health_state: report.health_state,
+                health_reason: report.health_reason,
+                rollout_gate: report.rollout_gate,
+                reason_code: latest_reason_code_or_fallback(
+                    &report.last_reason_codes,
+                    "multi_agent_status",
+                ),
+                recommendation: report.health.classify().recommendation.to_string(),
+                queue_depth: report.health.queue_depth,
+                failure_streak: report.health.failure_streak,
+            },
+        ),
+        Err(error) => operator_component_unavailable("multi-agent", &state_path, &error),
+    }
+}
+
+fn collect_operator_gateway_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
+    let state_path = cli.gateway_state_dir.join("state.json");
+    match collect_gateway_status_report(cli) {
+        Ok(report) => {
+            let recommendation = if report.rollout_reason_code == "service_stopped" {
+                "start gateway service mode or clear stop reason before resuming traffic"
+            } else {
+                report.health.classify().recommendation
+            };
+            build_operator_component_row(
+                "gateway",
+                OperatorControlComponentInputs {
+                    state_path: report.state_path,
+                    health_state: report.health_state,
+                    health_reason: report.health_reason,
+                    rollout_gate: report.rollout_gate,
+                    reason_code: report.rollout_reason_code,
+                    recommendation: recommendation.to_string(),
+                    queue_depth: report.health.queue_depth,
+                    failure_streak: report.health.failure_streak,
+                },
+            )
+        }
+        Err(error) => operator_component_unavailable("gateway", &state_path, &error),
+    }
+}
+
+fn collect_operator_deployment_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
+    let state_path = cli.deployment_state_dir.join("state.json");
+    match collect_deployment_status_report(cli) {
+        Ok(report) => build_operator_component_row(
+            "deployment",
+            OperatorControlComponentInputs {
+                state_path: report.state_path,
+                health_state: report.health_state,
+                health_reason: report.health_reason,
+                rollout_gate: report.rollout_gate,
+                reason_code: latest_reason_code_or_fallback(
+                    &report.last_reason_codes,
+                    "deployment_status",
+                ),
+                recommendation: report.health.classify().recommendation.to_string(),
+                queue_depth: report.health.queue_depth,
+                failure_streak: report.health.failure_streak,
+            },
+        ),
+        Err(error) => operator_component_unavailable("deployment", &state_path, &error),
+    }
+}
+
+fn collect_operator_custom_command_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
+    let state_path = cli.custom_command_state_dir.join("state.json");
+    match collect_custom_command_status_report(cli) {
+        Ok(report) => build_operator_component_row(
+            "custom-command",
+            OperatorControlComponentInputs {
+                state_path: report.state_path,
+                health_state: report.health_state,
+                health_reason: report.health_reason,
+                rollout_gate: report.rollout_gate,
+                reason_code: latest_reason_code_or_fallback(
+                    &report.last_reason_codes,
+                    "custom_command_status",
+                ),
+                recommendation: report.health.classify().recommendation.to_string(),
+                queue_depth: report.health.queue_depth,
+                failure_streak: report.health.failure_streak,
+            },
+        ),
+        Err(error) => operator_component_unavailable("custom-command", &state_path, &error),
+    }
+}
+
+fn collect_operator_voice_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
+    let state_path = cli.voice_state_dir.join("state.json");
+    match collect_voice_status_report(cli) {
+        Ok(report) => build_operator_component_row(
+            "voice",
+            OperatorControlComponentInputs {
+                state_path: report.state_path,
+                health_state: report.health_state,
+                health_reason: report.health_reason,
+                rollout_gate: report.rollout_gate,
+                reason_code: latest_reason_code_or_fallback(
+                    &report.last_reason_codes,
+                    "voice_status",
+                ),
+                recommendation: report.health.classify().recommendation.to_string(),
+                queue_depth: report.health.queue_depth,
+                failure_streak: report.health.failure_streak,
+            },
+        ),
+        Err(error) => operator_component_unavailable("voice", &state_path, &error),
+    }
+}
+
+fn collect_operator_daemon_summary(cli: &Cli) -> OperatorControlDaemonSummary {
+    let config = crate::daemon_runtime::TauDaemonConfig {
+        state_dir: cli.daemon_state_dir.clone(),
+        profile: cli.daemon_profile,
+    };
+    match crate::daemon_runtime::inspect_tau_daemon(&config) {
+        Ok(report) => {
+            let (health_state, rollout_gate, reason_code, recommendation) = if report.running {
+                (
+                    "healthy".to_string(),
+                    "pass".to_string(),
+                    "daemon_running".to_string(),
+                    "no immediate action required".to_string(),
+                )
+            } else if report.installed {
+                (
+                    "degraded".to_string(),
+                    "hold".to_string(),
+                    "daemon_not_running".to_string(),
+                    "start daemon with --daemon-start to restore background processing".to_string(),
+                )
+            } else {
+                (
+                    "degraded".to_string(),
+                    "hold".to_string(),
+                    "daemon_not_installed".to_string(),
+                    "install daemon with --daemon-install if background lifecycle management is required".to_string(),
+                )
+            };
+            OperatorControlDaemonSummary {
+                health_state,
+                rollout_gate,
+                reason_code,
+                recommendation,
+                profile: report.profile,
+                installed: report.installed,
+                running: report.running,
+                start_attempts: report.start_attempts,
+                stop_attempts: report.stop_attempts,
+                diagnostics: report.diagnostics.len(),
+                state_path: report.state_path,
+            }
+        }
+        Err(error) => OperatorControlDaemonSummary {
+            health_state: "failing".to_string(),
+            rollout_gate: "hold".to_string(),
+            reason_code: "daemon_status_unavailable".to_string(),
+            recommendation: "inspect --daemon-state-dir permissions and rerun --daemon-status"
+                .to_string(),
+            profile: cli.daemon_profile.as_str().to_string(),
+            installed: false,
+            running: false,
+            start_attempts: 0,
+            stop_attempts: 0,
+            diagnostics: 1,
+            state_path: format!("{} ({error})", cli.daemon_state_dir.display()),
+        },
+    }
+}
+
+fn collect_operator_release_channel_summary() -> OperatorControlReleaseChannelSummary {
+    match default_release_channel_path() {
+        Ok(path) => match load_release_channel_store(&path) {
+            Ok(Some(channel)) => OperatorControlReleaseChannelSummary {
+                health_state: "healthy".to_string(),
+                rollout_gate: "pass".to_string(),
+                reason_code: "release_channel_loaded".to_string(),
+                recommendation: "no immediate action required".to_string(),
+                configured: true,
+                channel: channel.as_str().to_string(),
+                path: path.display().to_string(),
+            },
+            Ok(None) => OperatorControlReleaseChannelSummary {
+                health_state: "degraded".to_string(),
+                rollout_gate: "hold".to_string(),
+                reason_code: "release_channel_missing".to_string(),
+                recommendation:
+                    "set a release channel with '/release-channel set <stable|beta|dev>'"
+                        .to_string(),
+                configured: false,
+                channel: "unknown".to_string(),
+                path: path.display().to_string(),
+            },
+            Err(error) => OperatorControlReleaseChannelSummary {
+                health_state: "failing".to_string(),
+                rollout_gate: "hold".to_string(),
+                reason_code: "release_channel_load_failed".to_string(),
+                recommendation:
+                    "repair .tau/release-channel.json or rerun '/release-channel set ...'"
+                        .to_string(),
+                configured: false,
+                channel: "unknown".to_string(),
+                path: format!("{} ({error})", path.display()),
+            },
+        },
+        Err(error) => OperatorControlReleaseChannelSummary {
+            health_state: "failing".to_string(),
+            rollout_gate: "hold".to_string(),
+            reason_code: "release_channel_path_unavailable".to_string(),
+            recommendation: "run from a writable workspace root to resolve .tau paths".to_string(),
+            configured: false,
+            channel: "unknown".to_string(),
+            path: format!("unknown ({error})"),
+        },
+    }
+}
+
+fn collect_operator_policy_posture(cli: &Cli) -> OperatorControlPolicyPosture {
+    let pairing_policy = pairing_policy_for_state_dir(&cli.channel_store_root);
+    let (pairing_allowlist_strict, pairing_allowlist_channel_rules) =
+        load_pairing_allowlist_posture(&pairing_policy.allowlist_path);
+    let pairing_registry_entries = load_pairing_registry_entry_count(&pairing_policy.registry_path);
+    let pairing_rules_configured =
+        pairing_allowlist_channel_rules > 0 || pairing_registry_entries > 0;
+    let pairing_strict_effective =
+        pairing_policy.strict_mode || pairing_allowlist_strict || pairing_rules_configured;
+
+    let remote_profile = match crate::gateway_remote_profile::evaluate_gateway_remote_profile(cli) {
+        Ok(report) => report,
+        Err(_) => crate::gateway_remote_profile::GatewayRemoteProfileReport {
+            profile: cli.gateway_remote_profile.as_str().to_string(),
+            posture: "unknown".to_string(),
+            gate: "hold".to_string(),
+            risk_level: "high".to_string(),
+            server_enabled: cli.gateway_openresponses_server,
+            bind: cli.gateway_openresponses_bind.clone(),
+            bind_ip: "unknown".to_string(),
+            loopback_bind: false,
+            auth_mode: cli.gateway_openresponses_auth_mode.as_str().to_string(),
+            auth_token_configured: false,
+            auth_password_configured: false,
+            remote_enabled: !matches!(
+                cli.gateway_remote_profile,
+                CliGatewayRemoteProfile::LocalOnly
+            ),
+            reason_codes: vec!["remote_profile_evaluation_failed".to_string()],
+            recommendations: vec![
+                "run --gateway-remote-profile-inspect to inspect posture diagnostics".to_string(),
+            ],
+        },
+    };
+
+    OperatorControlPolicyPosture {
+        pairing_strict_effective,
+        pairing_config_strict_mode: pairing_policy.strict_mode,
+        pairing_allowlist_strict,
+        pairing_rules_configured,
+        pairing_registry_entries,
+        pairing_allowlist_channel_rules,
+        provider_subscription_strict: cli.provider_subscription_strict,
+        gateway_auth_mode: cli.gateway_openresponses_auth_mode.as_str().to_string(),
+        gateway_remote_profile: remote_profile.profile,
+        gateway_remote_posture: remote_profile.posture,
+        gateway_remote_gate: remote_profile.gate,
+        gateway_remote_risk_level: remote_profile.risk_level,
+        gateway_remote_reason_codes: remote_profile.reason_codes,
+        gateway_remote_recommendations: remote_profile.recommendations,
+    }
+}
+
+fn load_pairing_allowlist_posture(path: &Path) -> (bool, usize) {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => return (false, 0),
+    };
+    let parsed = match serde_json::from_str::<PairingAllowlistSummaryFile>(&raw) {
+        Ok(parsed) => parsed,
+        Err(_) => return (false, 0),
+    };
+    let rules = parsed
+        .channels
+        .values()
+        .map(|actors| actors.len())
+        .sum::<usize>();
+    (parsed.strict, rules)
+}
+
+fn load_pairing_registry_entry_count(path: &Path) -> usize {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(_) => return 0,
+    };
+    match serde_json::from_str::<PairingRegistrySummaryFile>(&raw) {
+        Ok(parsed) => parsed.pairings.len(),
+        Err(_) => 0,
+    }
+}
+
+fn operator_component_unavailable(
+    component: &str,
+    state_path: &Path,
+    error: &anyhow::Error,
+) -> OperatorControlComponentSummaryRow {
+    build_operator_component_row(
+        component,
+        OperatorControlComponentInputs {
+            state_path: state_path.display().to_string(),
+            health_state: "failing".to_string(),
+            health_reason: format!("status unavailable: {error}"),
+            rollout_gate: "hold".to_string(),
+            reason_code: "state_unavailable".to_string(),
+            recommendation: "bootstrap or repair component state, then rerun operator summary"
+                .to_string(),
+            queue_depth: 0,
+            failure_streak: 0,
+        },
+    )
+}
+
+fn build_operator_component_row(
+    component: &str,
+    inputs: OperatorControlComponentInputs,
+) -> OperatorControlComponentSummaryRow {
+    OperatorControlComponentSummaryRow {
+        component: component.to_string(),
+        health_state: inputs.health_state,
+        health_reason: inputs.health_reason,
+        rollout_gate: inputs.rollout_gate,
+        reason_code: inputs.reason_code,
+        recommendation: inputs.recommendation,
+        queue_depth: inputs.queue_depth,
+        failure_streak: inputs.failure_streak,
+        state_path: inputs.state_path,
+    }
+}
+
+fn latest_reason_code_or_fallback(reason_codes: &[String], fallback: &str) -> String {
+    reason_codes
+        .iter()
+        .rev()
+        .map(|value| value.trim())
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn operator_health_state_rank(state: &str) -> u8 {
+    if state.eq_ignore_ascii_case("healthy") {
+        return 0;
+    }
+    if state.eq_ignore_ascii_case("degraded") {
+        return 1;
+    }
+    2
+}
+
+fn operator_health_state_label(rank: u8) -> &'static str {
+    match rank {
+        0 => "healthy",
+        1 => "degraded",
+        _ => "failing",
+    }
+}
+
+fn push_unique_string(list: &mut Vec<String>, value: impl Into<String>) {
+    let value = value.into();
+    if value.trim().is_empty() {
+        return;
+    }
+    if list.iter().any(|existing| existing == &value) {
+        return;
+    }
+    list.push(value);
+}
+
 fn load_multi_agent_status_state(path: &Path) -> Result<MultiAgentStatusStateFile> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -2195,6 +2820,77 @@ fn decode_repo_target_from_dir_name(dir_name: &str) -> String {
         return dir_name.to_string();
     }
     format!("{owner}/{repo}")
+}
+
+fn render_operator_control_summary_report(report: &OperatorControlSummaryReport) -> String {
+    let mut lines = vec![
+        format!(
+            "operator control summary: generated_unix_ms={} health_state={} rollout_gate={} reason_codes={} recommendations={}",
+            report.generated_unix_ms,
+            report.health_state,
+            report.rollout_gate,
+            render_string_vec(&report.reason_codes),
+            render_string_vec(&report.recommendations),
+        ),
+        format!(
+            "operator control policy posture: pairing_strict_effective={} pairing_config_strict_mode={} pairing_allowlist_strict={} pairing_rules_configured={} pairing_registry_entries={} pairing_allowlist_channel_rules={} provider_subscription_strict={} gateway_auth_mode={} gateway_remote_profile={} gateway_remote_posture={} gateway_remote_gate={} gateway_remote_risk_level={} gateway_remote_reason_codes={} gateway_remote_recommendations={}",
+            report.policy_posture.pairing_strict_effective,
+            report.policy_posture.pairing_config_strict_mode,
+            report.policy_posture.pairing_allowlist_strict,
+            report.policy_posture.pairing_rules_configured,
+            report.policy_posture.pairing_registry_entries,
+            report.policy_posture.pairing_allowlist_channel_rules,
+            report.policy_posture.provider_subscription_strict,
+            report.policy_posture.gateway_auth_mode,
+            report.policy_posture.gateway_remote_profile,
+            report.policy_posture.gateway_remote_posture,
+            report.policy_posture.gateway_remote_gate,
+            report.policy_posture.gateway_remote_risk_level,
+            render_string_vec(&report.policy_posture.gateway_remote_reason_codes),
+            render_string_vec(&report.policy_posture.gateway_remote_recommendations),
+        ),
+        format!(
+            "operator control daemon: health_state={} rollout_gate={} reason_code={} recommendation={} profile={} installed={} running={} start_attempts={} stop_attempts={} diagnostics={} state_path={}",
+            report.daemon.health_state,
+            report.daemon.rollout_gate,
+            report.daemon.reason_code,
+            report.daemon.recommendation,
+            report.daemon.profile,
+            report.daemon.installed,
+            report.daemon.running,
+            report.daemon.start_attempts,
+            report.daemon.stop_attempts,
+            report.daemon.diagnostics,
+            report.daemon.state_path,
+        ),
+        format!(
+            "operator control release channel: health_state={} rollout_gate={} reason_code={} recommendation={} configured={} channel={} path={}",
+            report.release_channel.health_state,
+            report.release_channel.rollout_gate,
+            report.release_channel.reason_code,
+            report.release_channel.recommendation,
+            report.release_channel.configured,
+            report.release_channel.channel,
+            report.release_channel.path,
+        ),
+    ];
+
+    for component in &report.components {
+        lines.push(format!(
+            "operator control component: component={} health_state={} rollout_gate={} reason_code={} health_reason={} recommendation={} queue_depth={} failure_streak={} state_path={}",
+            component.component,
+            component.health_state,
+            component.rollout_gate,
+            component.reason_code,
+            component.health_reason,
+            component.recommendation,
+            component.queue_depth,
+            component.failure_streak,
+            component.state_path,
+        ));
+    }
+
+    lines.join("\n")
 }
 
 fn render_transport_health_rows(rows: &[TransportHealthInspectRow]) -> String {
@@ -2605,6 +3301,13 @@ fn render_u64_counter_map(counts: &BTreeMap<String, u64>) -> String {
         .join(",")
 }
 
+fn render_string_vec(values: &[String]) -> String {
+    if values.is_empty() {
+        return "none".to_string();
+    }
+    values.join(",")
+}
+
 fn sanitize_for_path(raw: &str) -> String {
     raw.chars()
         .map(|ch| {
@@ -2629,13 +3332,15 @@ mod tests {
         collect_custom_command_status_report, collect_dashboard_status_report,
         collect_deployment_status_report, collect_gateway_status_report,
         collect_github_status_report, collect_multi_agent_status_report,
-        collect_multi_channel_status_report, collect_transport_health_rows,
-        collect_voice_status_report, parse_transport_health_inspect_target,
-        render_custom_command_status_report, render_dashboard_status_report,
-        render_deployment_status_report, render_gateway_status_report, render_github_status_report,
+        collect_multi_channel_status_report, collect_operator_control_summary_report,
+        collect_transport_health_rows, collect_voice_status_report, operator_health_state_rank,
+        parse_transport_health_inspect_target, render_custom_command_status_report,
+        render_dashboard_status_report, render_deployment_status_report,
+        render_gateway_status_report, render_github_status_report,
         render_multi_agent_status_report, render_multi_channel_status_report,
-        render_transport_health_row, render_transport_health_rows, render_voice_status_report,
-        TransportHealthInspectRow, TransportHealthInspectTarget,
+        render_operator_control_summary_report, render_transport_health_row,
+        render_transport_health_rows, render_voice_status_report, TransportHealthInspectRow,
+        TransportHealthInspectTarget,
     };
     use crate::transport_health::TransportHealthState;
     use crate::Cli;
@@ -4619,5 +5324,274 @@ invalid-json-line
         assert!(report.reason_code_counts.is_empty());
         assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
         assert_eq!(report.rollout_gate, "hold");
+    }
+
+    #[test]
+    fn unit_operator_health_state_rank_orders_expected_states() {
+        assert_eq!(operator_health_state_rank("healthy"), 0);
+        assert_eq!(operator_health_state_rank("degraded"), 1);
+        assert_eq!(operator_health_state_rank("failing"), 2);
+        assert_eq!(operator_health_state_rank("unknown"), 2);
+    }
+
+    #[test]
+    fn functional_operator_control_summary_render_includes_expected_sections() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.channel_store_root = temp.path().join("channel-store");
+        cli.dashboard_state_dir = temp.path().join("dashboard");
+        cli.multi_channel_state_dir = temp.path().join("multi-channel");
+        cli.multi_agent_state_dir = temp.path().join("multi-agent");
+        cli.gateway_state_dir = temp.path().join("gateway");
+        cli.deployment_state_dir = temp.path().join("deployment");
+        cli.custom_command_state_dir = temp.path().join("custom-command");
+        cli.voice_state_dir = temp.path().join("voice");
+        cli.daemon_state_dir = temp.path().join("daemon");
+
+        let report = collect_operator_control_summary_report(&cli).expect("collect summary");
+        let rendered = render_operator_control_summary_report(&report);
+
+        assert!(rendered.contains("operator control summary:"));
+        assert!(rendered.contains("operator control policy posture:"));
+        assert!(rendered.contains("operator control daemon:"));
+        assert!(rendered.contains("operator control release channel:"));
+        assert!(rendered.contains("operator control component: component=gateway"));
+    }
+
+    #[test]
+    fn integration_operator_control_summary_reflects_persisted_runtime_state_snapshots() {
+        let temp = tempdir().expect("tempdir");
+        let dashboard_root = temp.path().join("dashboard");
+        let multi_channel_root = temp.path().join("multi-channel");
+        let multi_agent_root = temp.path().join("multi-agent");
+        let gateway_root = temp.path().join("gateway");
+        let deployment_root = temp.path().join("deployment");
+        let custom_command_root = temp.path().join("custom-command");
+        let voice_root = temp.path().join("voice");
+        std::fs::create_dir_all(&dashboard_root).expect("create dashboard dir");
+        std::fs::create_dir_all(&multi_channel_root).expect("create multi-channel dir");
+        std::fs::create_dir_all(&multi_agent_root).expect("create multi-agent dir");
+        std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
+        std::fs::create_dir_all(&deployment_root).expect("create deployment dir");
+        std::fs::create_dir_all(&custom_command_root).expect("create custom-command dir");
+        std::fs::create_dir_all(&voice_root).expect("create voice dir");
+
+        std::fs::write(
+            dashboard_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["dashboard:1"],
+  "widget_views": [],
+  "control_audit": [],
+  "health": {
+    "updated_unix_ms": 100,
+    "cycle_duration_ms": 10,
+    "queue_depth": 1,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write dashboard state");
+        std::fs::write(
+            multi_channel_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_event_keys": ["telegram:1"],
+  "health": {
+    "updated_unix_ms": 101,
+    "cycle_duration_ms": 11,
+    "queue_depth": 2,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-channel state");
+        std::fs::write(
+            multi_agent_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["multi-agent:1"],
+  "routed_cases": [],
+  "health": {
+    "updated_unix_ms": 102,
+    "cycle_duration_ms": 12,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-agent state");
+        std::fs::write(
+            gateway_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["gateway:1"],
+  "requests": [],
+  "health": {
+    "updated_unix_ms": 103,
+    "cycle_duration_ms": 13,
+    "queue_depth": 3,
+    "active_runs": 1,
+    "failure_streak": 1,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 0,
+    "last_cycle_failed": 1,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write gateway state");
+        std::fs::write(
+            deployment_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["deployment:1"],
+  "rollouts": [],
+  "health": {
+    "updated_unix_ms": 104,
+    "cycle_duration_ms": 14,
+    "queue_depth": 4,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write deployment state");
+        std::fs::write(
+            custom_command_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["custom-command:1"],
+  "commands": [],
+  "health": {
+    "updated_unix_ms": 105,
+    "cycle_duration_ms": 15,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write custom-command state");
+        std::fs::write(
+            voice_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["voice:1"],
+  "interactions": [],
+  "health": {
+    "updated_unix_ms": 106,
+    "cycle_duration_ms": 16,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write voice state");
+
+        let daemon_state_dir = temp.path().join("daemon");
+        let daemon_config = crate::daemon_runtime::TauDaemonConfig {
+            state_dir: daemon_state_dir.clone(),
+            profile: crate::CliDaemonProfile::Auto,
+        };
+        crate::daemon_runtime::install_tau_daemon(&daemon_config).expect("install daemon");
+        crate::daemon_runtime::start_tau_daemon(&daemon_config).expect("start daemon");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.channel_store_root = temp.path().join("channel-store");
+        cli.dashboard_state_dir = dashboard_root;
+        cli.multi_channel_state_dir = multi_channel_root;
+        cli.multi_agent_state_dir = multi_agent_root;
+        cli.gateway_state_dir = gateway_root;
+        cli.deployment_state_dir = deployment_root;
+        cli.custom_command_state_dir = custom_command_root;
+        cli.voice_state_dir = voice_root;
+        cli.daemon_state_dir = daemon_state_dir;
+
+        let report = collect_operator_control_summary_report(&cli).expect("collect summary");
+        let gateway_row = report
+            .components
+            .iter()
+            .find(|row| row.component == "gateway")
+            .expect("gateway row");
+        let deployment_row = report
+            .components
+            .iter()
+            .find(|row| row.component == "deployment")
+            .expect("deployment row");
+        assert_eq!(gateway_row.queue_depth, 3);
+        assert_eq!(gateway_row.failure_streak, 1);
+        assert_eq!(deployment_row.queue_depth, 4);
+        assert!(report.daemon.running);
+        assert_eq!(report.daemon.rollout_gate, "pass");
+    }
+
+    #[test]
+    fn regression_operator_control_summary_handles_missing_state_files_with_explicit_defaults() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.channel_store_root = temp.path().join("channel-store");
+        cli.dashboard_state_dir = temp.path().join("dashboard");
+        cli.multi_channel_state_dir = temp.path().join("multi-channel");
+        cli.multi_agent_state_dir = temp.path().join("multi-agent");
+        cli.gateway_state_dir = temp.path().join("gateway");
+        cli.deployment_state_dir = temp.path().join("deployment");
+        cli.custom_command_state_dir = temp.path().join("custom-command");
+        cli.voice_state_dir = temp.path().join("voice");
+        cli.daemon_state_dir = temp.path().join("daemon");
+
+        let report = collect_operator_control_summary_report(&cli).expect("collect summary");
+        assert_eq!(report.rollout_gate, "hold");
+        assert!(report
+            .components
+            .iter()
+            .all(|row| row.reason_code == "state_unavailable"));
+        assert_eq!(report.health_state, "failing");
+
+        let rendered = render_operator_control_summary_report(&report);
+        assert!(rendered.contains("operator control summary:"));
+        assert!(rendered.contains("reason_code=state_unavailable"));
     }
 }

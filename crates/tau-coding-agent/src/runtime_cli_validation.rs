@@ -107,6 +107,7 @@ pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.channel_store_repair.is_some()
         || cli.transport_health_inspect.is_some()
         || cli.github_status_inspect.is_some()
+        || cli.operator_control_summary
         || cli.multi_channel_status_inspect
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
@@ -563,6 +564,7 @@ pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<
         || cli.channel_store_repair.is_some()
         || cli.transport_health_inspect.is_some()
         || cli.github_status_inspect.is_some()
+        || cli.operator_control_summary
         || cli.multi_channel_status_inspect
         || cli.multi_channel_route_inspect_file.is_some()
         || cli.dashboard_status_inspect
@@ -885,6 +887,7 @@ pub(crate) fn validate_daemon_cli(cli: &Cli) -> Result<()> {
         || cli.channel_store_repair.is_some()
         || cli.transport_health_inspect.is_some()
         || cli.github_status_inspect.is_some()
+        || cli.operator_control_summary
         || cli.multi_channel_status_inspect
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
@@ -1012,6 +1015,7 @@ pub(crate) fn validate_gateway_remote_profile_inspect_cli(cli: &Cli) -> Result<(
         || cli.channel_store_repair.is_some()
         || cli.transport_health_inspect.is_some()
         || cli.github_status_inspect.is_some()
+        || cli.operator_control_summary
         || cli.multi_channel_status_inspect
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect

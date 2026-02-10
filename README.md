@@ -18,6 +18,7 @@ Focused guides:
 - Quickstart: [`docs/guides/quickstart.md`](docs/guides/quickstart.md)
 - Project index workflow: [`docs/guides/project-index.md`](docs/guides/project-index.md)
 - Transports (GitHub/Slack/RPC): [`docs/guides/transports.md`](docs/guides/transports.md)
+- Operator control summary: [`docs/guides/operator-control-summary.md`](docs/guides/operator-control-summary.md)
 - Packages and extensions: [`docs/guides/packages.md`](docs/guides/packages.md)
 - Events and scheduler: [`docs/guides/events.md`](docs/guides/events.md)
 

@@ -933,6 +933,47 @@ pub(crate) struct Cli {
     pub(crate) github_status_json: bool,
 
     #[arg(
+        long = "operator-control-summary",
+        env = "TAU_OPERATOR_CONTROL_SUMMARY",
+        conflicts_with = "channel_store_inspect",
+        conflicts_with = "channel_store_repair",
+        conflicts_with = "transport_health_inspect",
+        conflicts_with = "github_status_inspect",
+        conflicts_with = "dashboard_status_inspect",
+        conflicts_with = "multi_channel_status_inspect",
+        conflicts_with = "multi_channel_route_inspect_file",
+        conflicts_with = "multi_agent_status_inspect",
+        conflicts_with = "gateway_status_inspect",
+        conflicts_with = "gateway_remote_profile_inspect",
+        conflicts_with = "deployment_status_inspect",
+        conflicts_with = "custom_command_status_inspect",
+        conflicts_with = "voice_status_inspect",
+        conflicts_with = "gateway_service_start",
+        conflicts_with = "gateway_service_stop",
+        conflicts_with = "gateway_service_status",
+        conflicts_with = "daemon_install",
+        conflicts_with = "daemon_uninstall",
+        conflicts_with = "daemon_start",
+        conflicts_with = "daemon_stop",
+        conflicts_with = "daemon_status",
+        help = "Inspect a unified operator control-plane summary (transports, gateway, daemon, release channel, policy posture) and exit"
+    )]
+    pub(crate) operator_control_summary: bool,
+
+    #[arg(
+        long = "operator-control-summary-json",
+        env = "TAU_OPERATOR_CONTROL_SUMMARY_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "operator_control_summary",
+        help = "Emit --operator-control-summary output as pretty JSON"
+    )]
+    pub(crate) operator_control_summary_json: bool,
+
+    #[arg(
         long = "dashboard-status-inspect",
         env = "TAU_DASHBOARD_STATUS_INSPECT",
         conflicts_with = "channel_store_inspect",

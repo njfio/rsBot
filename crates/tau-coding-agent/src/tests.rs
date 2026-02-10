@@ -398,6 +398,8 @@ fn test_cli() -> Cli {
         transport_health_json: false,
         github_status_inspect: None,
         github_status_json: false,
+        operator_control_summary: false,
+        operator_control_summary_json: false,
         dashboard_status_inspect: false,
         dashboard_status_json: false,
         multi_channel_status_inspect: false,
@@ -2811,6 +2813,33 @@ fn functional_cli_github_status_inspect_accepts_json_and_state_dir_override() {
 fn regression_cli_github_status_json_requires_github_status_inspect() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--github-status-json"]);
     let error = parse.expect_err("json output should require inspect flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_operator_control_summary_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.operator_control_summary);
+    assert!(!cli.operator_control_summary_json);
+}
+
+#[test]
+fn functional_cli_operator_control_summary_accepts_json_mode() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--operator-control-summary",
+        "--operator-control-summary-json",
+    ]);
+    assert!(cli.operator_control_summary);
+    assert!(cli.operator_control_summary_json);
+}
+
+#[test]
+fn regression_cli_operator_control_summary_json_requires_summary_mode() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--operator-control-summary-json"]);
+    let error = parse.expect_err("json output should require summary flag");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -20992,6 +21021,17 @@ fn functional_execute_startup_preflight_runs_github_status_inspect_mode() {
     .expect("write github state");
 
     let handled = execute_startup_preflight(&cli).expect("github status inspect preflight");
+    assert!(handled);
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_operator_control_summary_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.operator_control_summary = true;
+
+    let handled = execute_startup_preflight(&cli).expect("operator control summary preflight");
     assert!(handled);
 }
 

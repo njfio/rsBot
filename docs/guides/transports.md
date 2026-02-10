@@ -2,6 +2,16 @@
 
 Run all commands from repository root.
 
+Unified operator control-plane snapshot (all core transport/runtime surfaces):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --operator-control-summary \
+  --operator-control-summary-json
+```
+
+Troubleshooting map and field details: `docs/guides/operator-control-summary.md`.
+
 ## GitHub Issues bridge
 
 ```bash
