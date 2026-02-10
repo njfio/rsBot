@@ -81,6 +81,7 @@ mod tools;
 mod transport_conformance;
 mod transport_health;
 mod trust_roots;
+mod voice_contract;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

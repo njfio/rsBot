@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "name": "voice-mixed-outcomes",
+  "description": "Deterministic contract fixture covering success, malformed input, and retryable backend failure for voice + wake-word handling.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "voice-success-turn",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "Tau, open dashboard",
+      "locale": "en-US",
+      "speaker_id": "ops-1",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "turn",
+          "wake_word": "tau",
+          "utterance": "open dashboard",
+          "locale": "en-US",
+          "speaker_id": "ops-1"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "voice-malformed-invalid-wake-word",
+      "mode": "wake_word",
+      "wake_word": "jarvis",
+      "transcript": "jarvis open dashboard",
+      "locale": "en-US",
+      "speaker_id": "ops-2",
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 422,
+        "error_code": "voice_invalid_wake_word",
+        "response_body": {
+          "status": "rejected",
+          "reason": "invalid_wake_word"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "voice-retryable-backend",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "tau summarize open orders",
+      "locale": "en-US",
+      "speaker_id": "ops-3",
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "status_code": 503,
+        "error_code": "voice_backend_unavailable",
+        "response_body": {
+          "status": "retryable",
+          "reason": "backend_unavailable"
+        }
+      }
+    }
+  ]
+}

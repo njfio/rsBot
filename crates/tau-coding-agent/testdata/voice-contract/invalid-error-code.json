@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "voice-invalid-error-code",
+  "description": "Regression fixture proving unsupported error_code values are rejected.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "voice-invalid-error-code",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "",
+      "locale": "en-US",
+      "speaker_id": "ops-4",
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 400,
+        "error_code": "voice_unknown_error",
+        "response_body": {
+          "status": "rejected",
+          "reason": "empty_transcript"
+        }
+      }
+    }
+  ]
+}

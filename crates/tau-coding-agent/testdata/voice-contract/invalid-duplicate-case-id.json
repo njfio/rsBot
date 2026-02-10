@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "name": "voice-invalid-duplicate-case-id",
+  "description": "Regression fixture proving duplicate case identifiers are rejected.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "voice-duplicate",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "tau open dashboard",
+      "locale": "en-US",
+      "speaker_id": "ops-1",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "turn",
+          "wake_word": "tau",
+          "utterance": "open dashboard",
+          "locale": "en-US",
+          "speaker_id": "ops-1"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "voice-duplicate",
+      "mode": "wake_word",
+      "wake_word": "tau",
+      "transcript": "tau",
+      "locale": "en-US",
+      "speaker_id": "ops-2",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "wake_word",
+          "wake_word": "tau",
+          "wake_detected": true
+        }
+      }
+    }
+  ]
+}
