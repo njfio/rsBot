@@ -2472,6 +2472,51 @@ pub(crate) struct Cli {
     pub(crate) multi_channel_retry_jitter_ms: u64,
 
     #[arg(
+        long = "multi-channel-telemetry-typing-presence",
+        env = "TAU_MULTI_CHANNEL_TELEMETRY_TYPING_PRESENCE",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Emit typing/presence lifecycle telemetry for long-running multi-channel replies"
+    )]
+    pub(crate) multi_channel_telemetry_typing_presence: bool,
+
+    #[arg(
+        long = "multi-channel-telemetry-usage-summary",
+        env = "TAU_MULTI_CHANNEL_TELEMETRY_USAGE_SUMMARY",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Emit usage summary telemetry records for multi-channel replies"
+    )]
+    pub(crate) multi_channel_telemetry_usage_summary: bool,
+
+    #[arg(
+        long = "multi-channel-telemetry-include-identifiers",
+        env = "TAU_MULTI_CHANNEL_TELEMETRY_INCLUDE_IDENTIFIERS",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Include actor/conversation identifiers in multi-channel telemetry payloads (default is privacy-safe false)"
+    )]
+    pub(crate) multi_channel_telemetry_include_identifiers: bool,
+
+    #[arg(
+        long = "multi-channel-telemetry-min-response-chars",
+        env = "TAU_MULTI_CHANNEL_TELEMETRY_MIN_RESPONSE_CHARS",
+        default_value_t = 120,
+        value_parser = parse_positive_usize,
+        help = "Minimum response length before typing/presence telemetry is emitted"
+    )]
+    pub(crate) multi_channel_telemetry_min_response_chars: usize,
+
+    #[arg(
         long = "multi-channel-outbound-mode",
         env = "TAU_MULTI_CHANNEL_OUTBOUND_MODE",
         value_enum,

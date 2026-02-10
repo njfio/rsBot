@@ -537,6 +537,10 @@ fn test_cli() -> Cli {
         multi_channel_retry_max_attempts: 4,
         multi_channel_retry_base_delay_ms: 0,
         multi_channel_retry_jitter_ms: 0,
+        multi_channel_telemetry_typing_presence: true,
+        multi_channel_telemetry_usage_summary: true,
+        multi_channel_telemetry_include_identifiers: false,
+        multi_channel_telemetry_min_response_chars: 120,
         multi_channel_outbound_mode: CliMultiChannelOutboundMode::ChannelStore,
         multi_channel_outbound_max_chars: 1200,
         multi_channel_outbound_http_timeout_ms: 5000,
@@ -1507,6 +1511,10 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
     assert_eq!(cli.multi_channel_retry_max_attempts, 4);
     assert_eq!(cli.multi_channel_retry_base_delay_ms, 0);
     assert_eq!(cli.multi_channel_retry_jitter_ms, 0);
+    assert!(cli.multi_channel_telemetry_typing_presence);
+    assert!(cli.multi_channel_telemetry_usage_summary);
+    assert!(!cli.multi_channel_telemetry_include_identifiers);
+    assert_eq!(cli.multi_channel_telemetry_min_response_chars, 120);
     assert_eq!(
         cli.multi_channel_outbound_mode,
         CliMultiChannelOutboundMode::ChannelStore
@@ -1619,6 +1627,11 @@ fn functional_cli_multi_channel_runner_flags_accept_explicit_overrides() {
         "25",
         "--multi-channel-retry-jitter-ms",
         "9",
+        "--multi-channel-telemetry-typing-presence=false",
+        "--multi-channel-telemetry-usage-summary=false",
+        "--multi-channel-telemetry-include-identifiers=true",
+        "--multi-channel-telemetry-min-response-chars",
+        "80",
         "--multi-channel-outbound-mode",
         "dry-run",
         "--multi-channel-outbound-max-chars",
@@ -1646,6 +1659,10 @@ fn functional_cli_multi_channel_runner_flags_accept_explicit_overrides() {
     assert_eq!(cli.multi_channel_retry_max_attempts, 7);
     assert_eq!(cli.multi_channel_retry_base_delay_ms, 25);
     assert_eq!(cli.multi_channel_retry_jitter_ms, 9);
+    assert!(!cli.multi_channel_telemetry_typing_presence);
+    assert!(!cli.multi_channel_telemetry_usage_summary);
+    assert!(cli.multi_channel_telemetry_include_identifiers);
+    assert_eq!(cli.multi_channel_telemetry_min_response_chars, 80);
     assert_eq!(
         cli.multi_channel_outbound_mode,
         CliMultiChannelOutboundMode::DryRun
@@ -1695,6 +1712,18 @@ fn functional_cli_multi_channel_live_runner_flags_accept_explicit_overrides() {
     assert_eq!(cli.multi_channel_queue_limit, 40);
     assert_eq!(cli.multi_channel_processed_event_cap, 512);
     assert_eq!(cli.multi_channel_retry_max_attempts, 5);
+}
+
+#[test]
+fn regression_cli_multi_channel_telemetry_min_response_chars_rejects_zero() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--multi-channel-contract-runner",
+        "--multi-channel-telemetry-min-response-chars",
+        "0",
+    ]);
+    let error = parse.expect_err("zero threshold should be rejected");
+    assert!(error.to_string().contains("invalid value"));
 }
 
 #[test]
