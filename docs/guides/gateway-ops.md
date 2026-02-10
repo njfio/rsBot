@@ -41,7 +41,7 @@ cargo run -p tau-coding-agent -- \
 
 ## OpenResponses endpoint (`/v1/responses`)
 
-Start the authenticated OpenResponses endpoint:
+Start the OpenResponses endpoint in `token` auth mode:
 
 ```bash
 cargo run -p tau-coding-agent -- \
@@ -49,11 +49,48 @@ cargo run -p tau-coding-agent -- \
   --gateway-state-dir .tau/gateway \
   --gateway-openresponses-server \
   --gateway-openresponses-bind 127.0.0.1:8787 \
+  --gateway-openresponses-auth-mode token \
   --gateway-openresponses-auth-token local-dev-token \
   --gateway-openresponses-max-input-chars 32000
 ```
 
-Non-stream request:
+Auth mode summary:
+
+- `token` (default): bearer token required on `/v1/responses` and `/gateway/status`.
+- `password-session`: exchange password once at `/gateway/auth/session`, then use returned bearer session token.
+- `localhost-dev`: no bearer required, but bind must be loopback (`127.0.0.1`/`::1`).
+
+Password-session startup example:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --gateway-state-dir .tau/gateway \
+  --gateway-openresponses-server \
+  --gateway-openresponses-bind 127.0.0.1:8787 \
+  --gateway-openresponses-auth-mode password-session \
+  --gateway-openresponses-auth-password "local-password" \
+  --gateway-openresponses-session-ttl-seconds 3600 \
+  --gateway-openresponses-rate-limit-window-seconds 60 \
+  --gateway-openresponses-rate-limit-max-requests 120
+```
+
+Issue a bearer session token (password-session mode only):
+
+```bash
+curl -sS http://127.0.0.1:8787/gateway/auth/session \
+  -H "Content-Type: application/json" \
+  -d '{"password":"local-password"}'
+```
+
+Expected response includes:
+
+- `access_token` (use as bearer token)
+- `token_type` (`bearer`)
+- `expires_unix_ms`
+- `expires_in_seconds`
+
+Non-stream request (token or password-session):
 
 ```bash
 curl -sS http://127.0.0.1:8787/v1/responses \
@@ -90,7 +127,9 @@ Current compatibility notes:
 Webchat/control surface:
 
 - Open browser at `http://127.0.0.1:8787/webchat`.
-- Paste the same bearer token used for `/v1/responses` (`local-dev-token` in this example).
+- Token mode: paste the configured bearer token (`local-dev-token` in this example).
+- Password-session mode: first issue a session token from `/gateway/auth/session`, then paste that token.
+- Localhost-dev mode: token can be left empty.
 - Use the status refresh control to inspect `/gateway/status` from the same page.
 
 Direct status endpoint check:
@@ -99,6 +138,17 @@ Direct status endpoint check:
 curl -sS http://127.0.0.1:8787/gateway/status \
   -H "Authorization: Bearer local-dev-token"
 ```
+
+`/gateway/status` response includes an `auth` block with:
+
+- `mode`
+- `session_ttl_seconds`
+- `active_sessions`
+- `total_sessions_issued`
+- `auth_failures`
+- `rate_limited_requests`
+- `rate_limit_window_seconds`
+- `rate_limit_max_requests`
 
 ## Health and observability signals
 

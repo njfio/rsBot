@@ -123,6 +123,23 @@ impl From<CliProviderAuthMode> for ProviderAuthMethod {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliGatewayOpenResponsesAuthMode {
+    Token,
+    PasswordSession,
+    LocalhostDev,
+}
+
+impl CliGatewayOpenResponsesAuthMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CliGatewayOpenResponsesAuthMode::Token => "token",
+            CliGatewayOpenResponsesAuthMode::PasswordSession => "password-session",
+            CliGatewayOpenResponsesAuthMode::LocalhostDev => "localhost-dev",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CliCredentialStoreEncryptionMode {
     Auto,
     None,

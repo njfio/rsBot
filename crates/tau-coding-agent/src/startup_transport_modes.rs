@@ -28,12 +28,13 @@ pub(crate) async fn run_transport_mode_if_requested(
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                anyhow!(
-                    "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
-                )
-            })?
-            .to_string();
+            .map(str::to_string);
+        let auth_password = cli
+            .gateway_openresponses_auth_password
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         crate::gateway_openresponses::run_gateway_openresponses_server(
             crate::gateway_openresponses::GatewayOpenResponsesServerConfig {
                 client: client.clone(),
@@ -46,7 +47,12 @@ pub(crate) async fn run_transport_mode_if_requested(
                 session_lock_stale_ms: cli.session_lock_stale_ms,
                 state_dir: cli.gateway_state_dir.clone(),
                 bind: cli.gateway_openresponses_bind.clone(),
+                auth_mode: cli.gateway_openresponses_auth_mode,
                 auth_token,
+                auth_password,
+                session_ttl_seconds: cli.gateway_openresponses_session_ttl_seconds,
+                rate_limit_window_seconds: cli.gateway_openresponses_rate_limit_window_seconds,
+                rate_limit_max_requests: cli.gateway_openresponses_rate_limit_max_requests,
                 max_input_chars: cli.gateway_openresponses_max_input_chars,
             },
         )
