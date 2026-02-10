@@ -48,10 +48,15 @@ Bridge control commands in issue comments:
 - `/tau help`
 - `/tau status`
 - `/tau health`
+- `/tau doctor [--online]`
 - `/tau stop`
 - `/tau chat start|resume|reset|status|summary|replay|show|search|export`
 - `/tau artifacts|artifacts run <run_id>|artifacts show <artifact_id>|artifacts purge`
 - `/tau demo-index list|run [scenario[,scenario...]] [--timeout-seconds <n>]|report`
+
+Doctor diagnostics command:
+- `/tau doctor`: run bounded local diagnostics and post summary plus artifact pointers.
+- `/tau doctor --online`: include remote release-update lookup (network dependent).
 
 Demo-index commands for issue-driven demos:
 - `/tau demo-index list`: show allowlisted scenarios and expected markers.

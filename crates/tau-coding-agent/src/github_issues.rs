@@ -18,6 +18,10 @@ use tokio::sync::watch;
 use crate::channel_store::{
     ChannelArtifactRecord, ChannelAttachmentRecord, ChannelLogEntry, ChannelStore,
 };
+use crate::diagnostics_commands::{
+    render_doctor_report, render_doctor_report_json, run_doctor_checks_with_options,
+    DoctorCheckOptions, DoctorStatus,
+};
 use crate::github_issues_helpers::{
     attachment_filename_from_url, chunk_text_by_chars, evaluate_attachment_content_type_policy,
     evaluate_attachment_url_policy, extract_attachment_urls, split_at_char_index,
@@ -26,6 +30,7 @@ use crate::github_transport_helpers::{
     is_retryable_github_status, is_retryable_transport_error, parse_retry_after, retry_delay,
     truncate_for_error,
 };
+use crate::runtime_types::DoctorCommandConfig;
 use crate::session_commands::{parse_session_search_args, search_session_entries};
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
@@ -85,6 +90,7 @@ pub(crate) struct GithubIssuesBridgeRuntimeConfig {
     pub demo_index_repo_root: Option<PathBuf>,
     pub demo_index_script_path: Option<PathBuf>,
     pub demo_index_binary_path: Option<PathBuf>,
+    pub doctor_config: DoctorCommandConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1002,6 +1008,23 @@ struct DemoIndexRunExecution {
     log_artifact: ChannelArtifactRecord,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IssueDoctorCommand {
+    online: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IssueDoctorExecution {
+    run_id: String,
+    checks: usize,
+    pass: usize,
+    warn: usize,
+    fail: usize,
+    highlighted: Vec<String>,
+    report_artifact: ChannelArtifactRecord,
+    json_artifact: ChannelArtifactRecord,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TauIssueCommand {
     Run {
@@ -1039,6 +1062,9 @@ enum TauIssueCommand {
         command: DemoIndexRunCommand,
     },
     DemoIndexReport,
+    Doctor {
+        command: IssueDoctorCommand,
+    },
     Canvas {
         args: String,
     },
@@ -2228,6 +2254,117 @@ impl GithubIssuesBridgeRuntime {
                     "posted_comment_url": posted.html_url,
                     "error": error_text,
                 }))?;
+            }
+            TauIssueCommand::Doctor { command } => {
+                match self.execute_issue_doctor_command(event.issue_number, &event.key, command) {
+                    Ok(execution) => {
+                        let status = if execution.fail > 0 {
+                            "degraded"
+                        } else if execution.warn > 0 {
+                            "warning"
+                        } else {
+                            "healthy"
+                        };
+                        let mut lines = vec![format!(
+                            "Tau doctor diagnostics for issue #{}: status={} run_id={}",
+                            event.issue_number, status, execution.run_id
+                        )];
+                        lines.push(format!(
+                            "summary: checks={} pass={} warn={} fail={} online={}",
+                            execution.checks,
+                            execution.pass,
+                            execution.warn,
+                            execution.fail,
+                            command.online
+                        ));
+                        if !execution.highlighted.is_empty() {
+                            lines.push("highlights:".to_string());
+                            for highlighted in &execution.highlighted {
+                                lines.push(format!("- {highlighted}"));
+                            }
+                        }
+                        lines.push(format!(
+                            "report_artifact: id=`{}` path=`{}`",
+                            execution.report_artifact.id, execution.report_artifact.relative_path
+                        ));
+                        lines.push(format!(
+                            "json_artifact: id=`{}` path=`{}`",
+                            execution.json_artifact.id, execution.json_artifact.relative_path
+                        ));
+                        lines.push(
+                            "Use `/tau artifacts show <artifact_id>` to inspect full diagnostics."
+                                .to_string(),
+                        );
+                        let message = lines.join("\n");
+                        let posted = self
+                            .post_issue_command_comment(
+                                event.issue_number,
+                                &event.key,
+                                "doctor",
+                                status,
+                                &message,
+                            )
+                            .await?;
+                        self.outbound_log.append(&json!({
+                            "timestamp_unix_ms": current_unix_timestamp_ms(),
+                            "repo": self.repo.as_slug(),
+                            "event_key": event.key,
+                            "issue_number": event.issue_number,
+                            "command": "doctor",
+                            "status": status,
+                            "posted_comment_id": posted.id,
+                            "posted_comment_url": posted.html_url,
+                            "run_id": execution.run_id,
+                            "online": command.online,
+                            "summary": {
+                                "checks": execution.checks,
+                                "pass": execution.pass,
+                                "warn": execution.warn,
+                                "fail": execution.fail,
+                            },
+                            "report_artifact": {
+                                "id": execution.report_artifact.id,
+                                "path": execution.report_artifact.relative_path,
+                                "bytes": execution.report_artifact.bytes,
+                                "checksum_sha256": execution.report_artifact.checksum_sha256,
+                            },
+                            "json_artifact": {
+                                "id": execution.json_artifact.id,
+                                "path": execution.json_artifact.relative_path,
+                                "bytes": execution.json_artifact.bytes,
+                                "checksum_sha256": execution.json_artifact.checksum_sha256,
+                            },
+                        }))?;
+                    }
+                    Err(error) => {
+                        let message = format!(
+                            "Tau doctor diagnostics failed for issue #{}.\n\nError: {}",
+                            event.issue_number,
+                            truncate_for_error(&error.to_string(), 280)
+                        );
+                        let posted = self
+                            .post_issue_command_comment(
+                                event.issue_number,
+                                &event.key,
+                                "doctor",
+                                "failed",
+                                &message,
+                            )
+                            .await?;
+                        self.outbound_log.append(&json!({
+                            "timestamp_unix_ms": current_unix_timestamp_ms(),
+                            "repo": self.repo.as_slug(),
+                            "event_key": event.key,
+                            "issue_number": event.issue_number,
+                            "command": "doctor",
+                            "status": "failed",
+                            "posted_comment_id": posted.id,
+                            "posted_comment_url": posted.html_url,
+                            "online": command.online,
+                            "error": error.to_string(),
+                        }))?;
+                    }
+                }
             }
             TauIssueCommand::Canvas { args } => {
                 let session_path =
@@ -3809,6 +3946,116 @@ impl GithubIssuesBridgeRuntime {
         Ok(lines.join("\n"))
     }
 
+    fn execute_issue_doctor_command(
+        &self,
+        issue_number: u64,
+        event_key: &str,
+        command: IssueDoctorCommand,
+    ) -> Result<IssueDoctorExecution> {
+        let run_id = format!(
+            "doctor-{}-{}-{}",
+            issue_number,
+            current_unix_timestamp_ms(),
+            short_key_hash(event_key)
+        );
+        let checks = run_doctor_checks_with_options(
+            &self.config.doctor_config,
+            DoctorCheckOptions {
+                online: command.online,
+            },
+        );
+        let pass = checks
+            .iter()
+            .filter(|check| check.status == DoctorStatus::Pass)
+            .count();
+        let warn = checks
+            .iter()
+            .filter(|check| check.status == DoctorStatus::Warn)
+            .count();
+        let fail = checks
+            .iter()
+            .filter(|check| check.status == DoctorStatus::Fail)
+            .count();
+        let highlighted = checks
+            .iter()
+            .filter(|check| check.status != DoctorStatus::Pass)
+            .take(5)
+            .map(|check| {
+                format!(
+                    "key={} status={} code={}",
+                    check.key,
+                    doctor_status_label(check.status),
+                    check.code
+                )
+            })
+            .collect::<Vec<_>>();
+        let report_payload = render_doctor_report(&checks);
+        let report_payload_json = render_doctor_report_json(&checks);
+        let channel_store = ChannelStore::open(
+            &self.repository_state_dir.join("channel-store"),
+            "github",
+            &format!("issue-{issue_number}"),
+        )?;
+        let retention_days = normalize_artifact_retention_days(self.config.artifact_retention_days);
+        let report_artifact = channel_store.write_text_artifact(
+            &run_id,
+            "github-issue-doctor-report",
+            "private",
+            retention_days,
+            "txt",
+            &report_payload,
+        )?;
+        let json_artifact = channel_store.write_text_artifact(
+            &run_id,
+            "github-issue-doctor-json",
+            "private",
+            retention_days,
+            "json",
+            &report_payload_json,
+        )?;
+        channel_store.append_log_entry(&ChannelLogEntry {
+            timestamp_unix_ms: current_unix_timestamp_ms(),
+            direction: "outbound".to_string(),
+            event_key: Some(event_key.to_string()),
+            source: "github".to_string(),
+            payload: json!({
+                "command": "doctor",
+                "run_id": run_id,
+                "online": command.online,
+                "summary": {
+                    "checks": checks.len(),
+                    "pass": pass,
+                    "warn": warn,
+                    "fail": fail,
+                },
+                "report_artifact": {
+                    "id": report_artifact.id,
+                    "path": report_artifact.relative_path,
+                    "checksum_sha256": report_artifact.checksum_sha256,
+                    "bytes": report_artifact.bytes,
+                    "expires_unix_ms": report_artifact.expires_unix_ms,
+                },
+                "json_artifact": {
+                    "id": json_artifact.id,
+                    "path": json_artifact.relative_path,
+                    "checksum_sha256": json_artifact.checksum_sha256,
+                    "bytes": json_artifact.bytes,
+                    "expires_unix_ms": json_artifact.expires_unix_ms,
+                },
+            }),
+        })?;
+        Ok(IssueDoctorExecution {
+            run_id,
+            checks: checks.len(),
+            pass,
+            warn,
+            fail,
+            highlighted,
+            report_artifact,
+            json_artifact,
+        })
+    }
+
     async fn post_issue_command_comment(
         &self,
         issue_number: u64,
@@ -3868,6 +4115,7 @@ fn rbac_action_for_event(action: &EventAction) -> String {
             TauIssueCommand::DemoIndexList => "command:/tau-demo-index".to_string(),
             TauIssueCommand::DemoIndexRun { .. } => "command:/tau-demo-index".to_string(),
             TauIssueCommand::DemoIndexReport => "command:/tau-demo-index".to_string(),
+            TauIssueCommand::Doctor { .. } => "command:/tau-doctor".to_string(),
             TauIssueCommand::Canvas { .. } => "command:/tau-canvas".to_string(),
             TauIssueCommand::Summarize { .. } => "command:/tau-summarize".to_string(),
             TauIssueCommand::Invalid { .. } => "command:/tau-invalid".to_string(),
@@ -4700,6 +4948,7 @@ fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
                 }
             }
         }
+        "doctor" => parse_doctor_issue_command(remainder),
         "compact" => {
             if remainder.is_empty() {
                 TauIssueCommand::Compact
@@ -4861,6 +5110,27 @@ fn parse_demo_index_command(remainder: &str) -> TauIssueCommand {
     }
 }
 
+fn parse_doctor_issue_command(remainder: &str) -> TauIssueCommand {
+    if remainder.is_empty() {
+        return TauIssueCommand::Doctor {
+            command: IssueDoctorCommand { online: false },
+        };
+    }
+    let tokens = remainder
+        .split_whitespace()
+        .filter(|token| !token.trim().is_empty())
+        .collect::<Vec<_>>();
+    if tokens.len() == 1 && tokens[0] == "--online" {
+        TauIssueCommand::Doctor {
+            command: IssueDoctorCommand { online: true },
+        }
+    } else {
+        TauIssueCommand::Invalid {
+            message: doctor_command_usage(),
+        }
+    }
+}
+
 fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCommand, String> {
     let usage = demo_index_command_usage();
     let mut timeout_seconds = DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS;
@@ -4938,6 +5208,10 @@ fn normalize_demo_index_scenario(raw: &str) -> Option<&'static str> {
     }
 }
 
+fn doctor_command_usage() -> String {
+    "Usage: /tau doctor [--online]".to_string()
+}
+
 fn demo_index_command_usage() -> String {
     format!(
         "Usage: /tau demo-index <list|run [scenario[,scenario...]] [--timeout-seconds <n>]|report>\nAllowed scenarios: {}\nDefault run timeout: {} seconds (max {}).",
@@ -4954,6 +5228,7 @@ fn tau_command_usage() -> String {
         "- `/tau stop`",
         "- `/tau status`",
         "- `/tau health`",
+        "- `/tau doctor [--online]`",
         "- `/tau compact`",
         "- `/tau help`",
         "- `/tau chat <start|resume|reset|export|status|summary|replay|show [limit]|search <query>>`",
@@ -5043,6 +5318,14 @@ fn prompt_status_label(status: PromptRunStatus) -> &'static str {
         PromptRunStatus::Completed => "completed",
         PromptRunStatus::Cancelled => "cancelled",
         PromptRunStatus::TimedOut => "timed_out",
+    }
+}
+
+fn doctor_status_label(status: DoctorStatus) -> &'static str {
+    match status {
+        DoctorStatus::Pass => "pass",
+        DoctorStatus::Warn => "warn",
+        DoctorStatus::Fail => "fail",
     }
 }
 
@@ -5231,14 +5514,14 @@ mod tests {
         DownloadedGithubAttachment, EventAction, GithubApiClient, GithubBridgeEvent,
         GithubBridgeEventKind, GithubIssue, GithubIssueComment, GithubIssueLabel,
         GithubIssuesBridgeRuntime, GithubIssuesBridgeRuntimeConfig, GithubIssuesBridgeStateStore,
-        GithubUser, IssueEventOutcome, PromptRunReport, PromptUsageSummary, RepoRef,
-        RunPromptForEventRequest, SessionStore, TauIssueCommand, CHAT_SHOW_DEFAULT_LIMIT,
+        GithubUser, IssueDoctorCommand, IssueEventOutcome, PromptRunReport, PromptUsageSummary,
+        RepoRef, RunPromptForEventRequest, SessionStore, TauIssueCommand, CHAT_SHOW_DEFAULT_LIMIT,
         DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS, DEMO_INDEX_SCENARIOS, EVENT_KEY_MARKER_PREFIX,
     };
     use crate::{
         channel_store::{ChannelArtifactRecord, ChannelStore},
         tools::ToolPolicy,
-        PromptRunStatus, RenderOptions,
+        DoctorCommandConfig, DoctorMultiChannelReadinessConfig, PromptRunStatus, RenderOptions,
     };
 
     struct StaticReplyClient;
@@ -5317,6 +5600,20 @@ mod tests {
             demo_index_repo_root: None,
             demo_index_script_path: None,
             demo_index_binary_path: None,
+            doctor_config: DoctorCommandConfig {
+                model: "openai/gpt-4o-mini".to_string(),
+                provider_keys: Vec::new(),
+                release_channel_path: state_dir.join("release-channel.json"),
+                release_lookup_cache_path: state_dir.join("release-cache.json"),
+                release_lookup_cache_ttl_ms: 900_000,
+                browser_automation_playwright_cli: "playwright".to_string(),
+                session_enabled: true,
+                session_path: state_dir.join("session.jsonl"),
+                skills_dir: state_dir.join("skills"),
+                skills_lock_path: state_dir.join("skills.lock.json"),
+                trust_root_path: None,
+                multi_channel_live_readiness: DoctorMultiChannelReadinessConfig::default(),
+            },
         }
     }
 
@@ -6320,6 +6617,18 @@ printf '%s\n' "${payload}"
             })
         );
         assert_eq!(
+            parse_tau_issue_command("/tau doctor"),
+            Some(TauIssueCommand::Doctor {
+                command: IssueDoctorCommand { online: false },
+            })
+        );
+        assert_eq!(
+            parse_tau_issue_command("/tau doctor --online"),
+            Some(TauIssueCommand::Doctor {
+                command: IssueDoctorCommand { online: true },
+            })
+        );
+        assert_eq!(
             parse_tau_issue_command("/tau canvas show architecture --json"),
             Some(TauIssueCommand::Canvas {
                 args: "show architecture --json".to_string()
@@ -6358,6 +6667,10 @@ printf '%s\n' "${payload}"
         let parsed =
             parse_tau_issue_command("/tau demo-index run onboarding --timeout-seconds 10000")
                 .expect("command parse");
+        assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
+        let parsed = parse_tau_issue_command("/tau doctor --json").expect("command parse");
+        assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
+        let parsed = parse_tau_issue_command("/tau doctor --online extra").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed = parse_tau_issue_command("/tau canvas").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
@@ -6591,6 +6904,180 @@ printf '%s\n' "${payload}"
         assert_eq!(first.failed_events, 0);
         assert_eq!(second.processed_events, 0);
         run_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn functional_bridge_doctor_command_reports_summary_and_artifact_pointers() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 260,
+                "number": 26,
+                "title": "Doctor summary",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/26/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 2601,
+                    "body": "/tau doctor",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let doctor_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/26/comments")
+                .body_includes("Tau doctor diagnostics for issue #26: status=")
+                .body_includes("summary: checks=")
+                .body_includes("report_artifact:")
+                .body_includes("json_artifact:");
+            then.status(201).json_body(json!({
+                "id": 2602,
+                "html_url": "https://example.test/comment/2602"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        doctor_post.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_bridge_doctor_command_persists_report_artifacts() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 270,
+                "number": 27,
+                "title": "Doctor artifacts",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/27/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 2701,
+                    "body": "/tau doctor",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let doctor_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/27/comments")
+                .body_includes("Tau doctor diagnostics for issue #27: status=");
+            then.status(201).json_body(json!({
+                "id": 2702,
+                "html_url": "https://example.test/comment/2702"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let report = runtime.poll_once().await.expect("poll");
+        assert_eq!(report.processed_events, 1);
+        assert_eq!(report.failed_events, 0);
+        doctor_post.assert_calls(1);
+
+        let store = ChannelStore::open(
+            &temp.path().join("owner__repo").join("channel-store"),
+            "github",
+            "issue-27",
+        )
+        .expect("channel store");
+        let artifacts = store
+            .load_artifact_records_tolerant()
+            .expect("artifact records");
+        let report_count = artifacts
+            .records
+            .iter()
+            .filter(|record| record.artifact_type == "github-issue-doctor-report")
+            .count();
+        let json_count = artifacts
+            .records
+            .iter()
+            .filter(|record| record.artifact_type == "github-issue-doctor-json")
+            .count();
+        assert_eq!(report_count, 1);
+        assert_eq!(json_count, 1);
+    }
+
+    #[tokio::test]
+    async fn regression_bridge_doctor_command_replay_guard_prevents_duplicate_execution() {
+        let server = MockServer::start();
+        let _issues = server.mock(|when, then| {
+            when.method(GET).path("/repos/owner/repo/issues");
+            then.status(200).json_body(json!([{
+                "id": 280,
+                "number": 28,
+                "title": "Doctor replay",
+                "body": "",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:05Z",
+                "user": {"login":"alice"}
+            }]));
+        });
+        let _comments = server.mock(|when, then| {
+            when.method(GET)
+                .path("/repos/owner/repo/issues/28/comments");
+            then.status(200).json_body(json!([
+                {
+                    "id": 2801,
+                    "body": "/tau doctor",
+                    "created_at": "2026-01-01T00:00:01Z",
+                    "updated_at": "2026-01-01T00:00:01Z",
+                    "user": {"login":"alice"}
+                }
+            ]));
+        });
+        let doctor_post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/owner/repo/issues/28/comments")
+                .body_includes("Tau doctor diagnostics for issue #28: status=");
+            then.status(201).json_body(json!({
+                "id": 2802,
+                "html_url": "https://example.test/comment/2802"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let config = test_bridge_config(&server.base_url(), temp.path());
+        let mut runtime = GithubIssuesBridgeRuntime::new(config)
+            .await
+            .expect("runtime");
+        let first = runtime.poll_once().await.expect("first poll");
+        let second = runtime.poll_once().await.expect("second poll");
+        assert_eq!(first.processed_events, 1);
+        assert_eq!(first.failed_events, 0);
+        assert_eq!(second.processed_events, 0);
+        doctor_post.assert_calls(1);
     }
 
     #[tokio::test]

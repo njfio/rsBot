@@ -111,6 +111,19 @@ pub(crate) async fn run_transport_mode_if_requested(
             demo_index_repo_root: None,
             demo_index_script_path: None,
             demo_index_binary_path: None,
+            doctor_config: {
+                let fallback_model_refs = Vec::new();
+                let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
+                let mut config = build_doctor_command_config(
+                    cli,
+                    model_ref,
+                    &fallback_model_refs,
+                    &skills_lock_path,
+                );
+                config.skills_dir = cli.skills_dir.clone();
+                config.skills_lock_path = skills_lock_path;
+                config
+            },
         })
         .await?;
         return Ok(true);
