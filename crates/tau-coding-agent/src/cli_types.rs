@@ -233,14 +233,6 @@ pub(crate) enum CliMultiChannelLiveConnectorMode {
 }
 
 impl CliMultiChannelLiveConnectorMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            CliMultiChannelLiveConnectorMode::Disabled => "disabled",
-            CliMultiChannelLiveConnectorMode::Polling => "polling",
-            CliMultiChannelLiveConnectorMode::Webhook => "webhook",
-        }
-    }
-
     pub(crate) fn is_disabled(self) -> bool {
         matches!(self, CliMultiChannelLiveConnectorMode::Disabled)
     }
