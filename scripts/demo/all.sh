@@ -21,6 +21,7 @@ demo_scripts=(
   "multi-agent.sh"
   "memory.sh"
   "dashboard.sh"
+  "gateway.sh"
 )
 
 declare -A selected_demo_lookup=()
@@ -88,6 +89,10 @@ normalize_demo_name() {
       ;;
     dashboard|dashboard.sh)
       echo "dashboard.sh"
+      return 0
+      ;;
+    gateway|gateway.sh)
+      echo "gateway.sh"
       return 0
       ;;
     *)
@@ -200,14 +205,14 @@ print_usage() {
   cat <<EOF
 Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--report-file PATH] [--fail-fast] [--timeout-seconds N] [--help]
 
-Run checked-in Tau demo wrappers (local/rpc/events/package/multi-channel/multi-agent/memory/dashboard) with deterministic summary output.
+Run checked-in Tau demo wrappers (local/rpc/events/package/multi-channel/multi-agent/memory/dashboard/gateway) with deterministic summary output.
 
 Options:
   --repo-root PATH  Repository root (defaults to caller-derived root)
   --binary PATH     tau-coding-agent binary path (default: <repo-root>/target/debug/tau-coding-agent)
   --skip-build      Skip cargo build and require --binary to exist
   --list            Print selected demos and exit without execution
-  --only DEMOS      Comma-separated subset (names: local,rpc,events,package,multi-channel,multi-agent,memory,dashboard)
+  --only DEMOS      Comma-separated subset (names: local,rpc,events,package,multi-channel,multi-agent,memory,dashboard,gateway)
   --json            Emit deterministic JSON output for list/summary modes
   --report-file     Write deterministic JSON report artifact to path
   --fail-fast       Stop after first failed wrapper

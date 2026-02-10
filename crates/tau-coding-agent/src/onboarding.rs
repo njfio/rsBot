@@ -470,8 +470,18 @@ mod tests {
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
 
+    fn parse_cli_with_stack() -> Cli {
+        std::thread::Builder::new()
+            .name("tau-cli-parse".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::parse_from(["tau-rs", "--onboard", "--onboard-non-interactive"]))
+            .expect("spawn cli parse thread")
+            .join()
+            .expect("join cli parse thread")
+    }
+
     fn test_cli() -> Cli {
-        Cli::parse_from(["tau-rs", "--onboard", "--onboard-non-interactive"])
+        parse_cli_with_stack()
     }
 
     fn apply_workspace_paths(cli: &mut Cli, workspace: &Path) {

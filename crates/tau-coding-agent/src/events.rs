@@ -2001,8 +2001,18 @@ mod tests {
         std::fs::write(path, payload).expect("write event file");
     }
 
+    fn parse_cli_with_stack() -> Cli {
+        std::thread::Builder::new()
+            .name("tau-cli-parse".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::parse_from(["tau-rs"]))
+            .expect("spawn cli parse thread")
+            .join()
+            .expect("join cli parse thread")
+    }
+
     fn template_cli(path: &Path) -> Cli {
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli_with_stack();
         cli.events_template_write = Some(path.to_path_buf());
         cli.events_template_schedule = CliEventTemplateSchedule::Immediate;
         cli.events_template_overwrite = false;

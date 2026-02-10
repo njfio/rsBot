@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "name": "gateway-rollout-pass",
+  "description": "Success-only gateway fixture for rollout demos and guardrail validation.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "gateway-rollout-post-task",
+      "method": "POST",
+      "endpoint": "/v1/tasks",
+      "actor_id": "ops-release-bot",
+      "body": {
+        "task": "reindex"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "method": "POST",
+          "endpoint": "/v1/tasks",
+          "actor_id": "ops-release-bot"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "gateway-rollout-fetch-task",
+      "method": "GET",
+      "endpoint": "/v1/tasks/42",
+      "actor_id": "ops-release-bot",
+      "body": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "accepted",
+          "method": "GET",
+          "endpoint": "/v1/tasks/42",
+          "actor_id": "ops-release-bot"
+        }
+      }
+    }
+  ]
+}

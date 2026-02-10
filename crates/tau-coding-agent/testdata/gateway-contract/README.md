@@ -6,6 +6,7 @@ external API schema.
 ## Files
 
 - `mixed-outcomes.json`: success + malformed_input + retryable_failure matrix.
+- `rollout-pass.json`: success-only fixture for deterministic rollout/demo runs.
 - `invalid-duplicate-case-id.json`: regression fixture for duplicate `case_id`.
 - `invalid-error-code.json`: regression fixture for unsupported `error_code`.
 

@@ -71,6 +71,7 @@ Run deterministic local demos:
 ./scripts/demo/all.sh --report-file .tau/reports/demo-summary.json
 ./scripts/demo/all.sh --only local,rpc --fail-fast
 ./scripts/demo/all.sh --only multi-agent --fail-fast
+./scripts/demo/all.sh --only gateway --fail-fast
 ./scripts/demo/all.sh --only local --timeout-seconds 30 --fail-fast
 ./scripts/demo/local.sh
 ./scripts/demo/rpc.sh
@@ -80,6 +81,7 @@ Run deterministic local demos:
 ./scripts/demo/multi-agent.sh
 ./scripts/demo/memory.sh
 ./scripts/demo/dashboard.sh
+./scripts/demo/gateway.sh
 ```
 
 `all.sh --json` and `--report-file` entries include `duration_ms` per wrapper.

@@ -216,6 +216,45 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/dashboard-ops.md`.
 
+## Gateway contract runner
+
+Use this fixture-driven runtime mode to validate Tau gateway request handling, retry outcomes,
+state persistence, and channel-store snapshots.
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --gateway-contract-runner \
+  --gateway-fixture crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json \
+  --gateway-state-dir .tau/gateway
+```
+
+The runner writes state and observability output under:
+
+- `.tau/gateway/state.json`
+- `.tau/gateway/runtime-events.jsonl`
+- `.tau/gateway/channel-store/gateway/<actor_id>/...`
+
+Inspect gateway transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-state-dir .tau/gateway \
+  --transport-health-inspect gateway \
+  --transport-health-json
+```
+
+Inspect gateway rollout guardrail/status report:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-state-dir .tau/gateway \
+  --gateway-status-inspect \
+  --gateway-status-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/gateway-ops.md`.
+
 ## ChannelStore inspection and repair
 
 Inspect one channel:

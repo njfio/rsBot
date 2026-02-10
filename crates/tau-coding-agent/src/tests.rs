@@ -3,6 +3,7 @@ use std::{
     future::{pending, ready},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -378,6 +379,8 @@ fn test_cli() -> Cli {
         dashboard_status_json: false,
         multi_agent_status_inspect: false,
         multi_agent_status_json: false,
+        gateway_status_inspect: false,
+        gateway_status_json: false,
         extension_exec_manifest: None,
         extension_exec_hook: None,
         extension_exec_payload_file: None,
@@ -562,6 +565,36 @@ fn test_cli() -> Cli {
     }
 }
 
+fn parse_cli_with_stack<I, T>(args: I) -> Cli
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let owned_args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    thread::Builder::new()
+        .name("tau-cli-parse".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || Cli::parse_from(owned_args))
+        .expect("spawn cli parse thread")
+        .join()
+        .expect("join cli parse thread")
+}
+
+fn try_parse_cli_with_stack<I, T>(args: I) -> Result<Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let owned_args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    thread::Builder::new()
+        .name("tau-cli-try-parse".to_string())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || Cli::try_parse_from(owned_args))
+        .expect("spawn cli try-parse thread")
+        .join()
+        .expect("join cli try-parse thread")
+}
+
 fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     let tau_root = workspace.join(".tau");
     cli.session = tau_root.join("sessions/default.jsonl");
@@ -724,7 +757,7 @@ fn resolve_api_key_uses_first_non_empty_candidate() {
 
 #[test]
 fn unit_cli_provider_retry_flags_accept_explicit_baseline_values() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--provider-max-retries",
         "2",
@@ -740,7 +773,7 @@ fn unit_cli_provider_retry_flags_accept_explicit_baseline_values() {
 
 #[test]
 fn functional_cli_provider_retry_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--provider-max-retries",
         "5",
@@ -756,7 +789,7 @@ fn functional_cli_provider_retry_flags_accept_overrides() {
 
 #[test]
 fn unit_cli_model_catalog_flags_default_values_are_stable() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert_eq!(cli.model_catalog_url, None);
     assert_eq!(
         cli.model_catalog_cache,
@@ -768,7 +801,7 @@ fn unit_cli_model_catalog_flags_default_values_are_stable() {
 
 #[test]
 fn functional_cli_model_catalog_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--model-catalog-url",
         "https://example.com/models.json",
@@ -789,7 +822,7 @@ fn functional_cli_model_catalog_flags_accept_overrides() {
 
 #[test]
 fn unit_cli_extension_validate_flag_defaults_to_none() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.extension_exec_manifest.is_none());
     assert!(cli.extension_exec_hook.is_none());
     assert!(cli.extension_exec_payload_file.is_none());
@@ -803,7 +836,7 @@ fn unit_cli_extension_validate_flag_defaults_to_none() {
 
 #[test]
 fn functional_cli_extension_exec_flags_accept_valid_combo() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--extension-exec-manifest",
         "extensions/issue.json",
@@ -825,7 +858,7 @@ fn functional_cli_extension_exec_flags_accept_valid_combo() {
 
 #[test]
 fn functional_cli_extension_validate_flag_accepts_path() {
-    let cli = Cli::parse_from(["tau-rs", "--extension-validate", "extensions/issue.json"]);
+    let cli = parse_cli_with_stack(["tau-rs", "--extension-validate", "extensions/issue.json"]);
     assert_eq!(
         cli.extension_validate,
         Some(PathBuf::from("extensions/issue.json"))
@@ -834,7 +867,7 @@ fn functional_cli_extension_validate_flag_accepts_path() {
 
 #[test]
 fn functional_cli_extension_show_flag_accepts_path() {
-    let cli = Cli::parse_from(["tau-rs", "--extension-show", "extensions/issue.json"]);
+    let cli = parse_cli_with_stack(["tau-rs", "--extension-show", "extensions/issue.json"]);
     assert_eq!(
         cli.extension_show,
         Some(PathBuf::from("extensions/issue.json"))
@@ -843,7 +876,7 @@ fn functional_cli_extension_show_flag_accepts_path() {
 
 #[test]
 fn functional_cli_extension_list_flag_accepts_root_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--extension-list",
         "--extension-list-root",
@@ -855,7 +888,7 @@ fn functional_cli_extension_list_flag_accepts_root_override() {
 
 #[test]
 fn functional_cli_extension_runtime_hook_flags_accept_root_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--extension-runtime-hooks",
         "--extension-runtime-root",
@@ -867,7 +900,7 @@ fn functional_cli_extension_runtime_hook_flags_accept_root_override() {
 
 #[test]
 fn regression_cli_extension_show_and_validate_conflict() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--extension-show",
         "extensions/issue.json",
@@ -880,7 +913,7 @@ fn regression_cli_extension_show_and_validate_conflict() {
 
 #[test]
 fn regression_cli_extension_list_and_show_conflict() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--extension-list",
         "--extension-show",
@@ -892,7 +925,7 @@ fn regression_cli_extension_list_and_show_conflict() {
 
 #[test]
 fn regression_cli_extension_exec_requires_hook_and_payload() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--extension-exec-manifest",
         "extensions/issue.json",
@@ -905,7 +938,7 @@ fn regression_cli_extension_exec_requires_hook_and_payload() {
 
 #[test]
 fn regression_cli_extension_runtime_root_requires_runtime_hooks_flag() {
-    let parse = Cli::try_parse_from(["tau-rs", "--extension-runtime-root", "extensions"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--extension-runtime-root", "extensions"]);
     let error = parse.expect_err("runtime root should require runtime hooks flag");
     assert!(error
         .to_string()
@@ -914,7 +947,7 @@ fn regression_cli_extension_runtime_root_requires_runtime_hooks_flag() {
 
 #[test]
 fn unit_cli_orchestrator_flags_default_values_are_stable() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert_eq!(cli.orchestrator_mode, CliOrchestratorMode::Off);
     assert_eq!(cli.orchestrator_max_plan_steps, 8);
     assert_eq!(cli.orchestrator_max_delegated_steps, 8);
@@ -927,7 +960,7 @@ fn unit_cli_orchestrator_flags_default_values_are_stable() {
 
 #[test]
 fn functional_cli_orchestrator_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--orchestrator-mode",
         "plan-first",
@@ -960,21 +993,22 @@ fn functional_cli_orchestrator_flags_accept_overrides() {
 
 #[test]
 fn regression_cli_orchestrator_executor_response_budget_rejects_zero() {
-    let parse = Cli::try_parse_from(["tau-rs", "--orchestrator-max-executor-response-chars", "0"]);
+    let parse =
+        try_parse_cli_with_stack(["tau-rs", "--orchestrator-max-executor-response-chars", "0"]);
     let error = parse.expect_err("zero executor budget should be rejected");
     assert!(error.to_string().contains("greater than 0"));
 }
 
 #[test]
 fn regression_cli_orchestrator_delegated_step_count_budget_rejects_zero() {
-    let parse = Cli::try_parse_from(["tau-rs", "--orchestrator-max-delegated-steps", "0"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--orchestrator-max-delegated-steps", "0"]);
     let error = parse.expect_err("zero delegated step count budget should be rejected");
     assert!(error.to_string().contains("greater than 0"));
 }
 
 #[test]
 fn regression_cli_orchestrator_delegated_step_response_budget_rejects_zero() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--orchestrator-max-delegated-step-response-chars",
         "0",
@@ -985,7 +1019,7 @@ fn regression_cli_orchestrator_delegated_step_response_budget_rejects_zero() {
 
 #[test]
 fn regression_cli_orchestrator_delegated_total_response_budget_rejects_zero() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--orchestrator-max-delegated-total-response-chars",
         "0",
@@ -996,7 +1030,7 @@ fn regression_cli_orchestrator_delegated_total_response_budget_rejects_zero() {
 
 #[test]
 fn unit_cli_provider_auth_mode_flags_default_to_api_key() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert_eq!(cli.openai_auth_mode, CliProviderAuthMode::ApiKey);
     assert_eq!(cli.anthropic_auth_mode, CliProviderAuthMode::ApiKey);
     assert_eq!(cli.google_auth_mode, CliProviderAuthMode::ApiKey);
@@ -1004,7 +1038,7 @@ fn unit_cli_provider_auth_mode_flags_default_to_api_key() {
 
 #[test]
 fn functional_cli_provider_auth_mode_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--openai-auth-mode",
         "oauth-token",
@@ -1020,7 +1054,7 @@ fn functional_cli_provider_auth_mode_flags_accept_overrides() {
 
 #[test]
 fn unit_cli_openai_codex_backend_flags_default_to_enabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.openai_codex_backend);
     assert_eq!(cli.openai_codex_cli, "codex");
     assert!(cli.openai_codex_args.is_empty());
@@ -1029,7 +1063,7 @@ fn unit_cli_openai_codex_backend_flags_default_to_enabled() {
 
 #[test]
 fn functional_cli_openai_codex_backend_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--openai-codex-backend=false",
         "--openai-codex-cli",
@@ -1053,7 +1087,7 @@ fn functional_cli_openai_codex_backend_flags_accept_overrides() {
 
 #[test]
 fn unit_cli_anthropic_claude_backend_flags_default_to_enabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.anthropic_claude_backend);
     assert_eq!(cli.anthropic_claude_cli, "claude");
     assert!(cli.anthropic_claude_args.is_empty());
@@ -1062,7 +1096,7 @@ fn unit_cli_anthropic_claude_backend_flags_default_to_enabled() {
 
 #[test]
 fn functional_cli_anthropic_claude_backend_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--anthropic-claude-backend=false",
         "--anthropic-claude-cli",
@@ -1082,7 +1116,7 @@ fn functional_cli_anthropic_claude_backend_flags_accept_overrides() {
 
 #[test]
 fn unit_cli_google_gemini_backend_flags_default_to_enabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.google_gemini_backend);
     assert_eq!(cli.google_gemini_cli, "gemini");
     assert_eq!(cli.google_gcloud_cli, "gcloud");
@@ -1092,7 +1126,7 @@ fn unit_cli_google_gemini_backend_flags_default_to_enabled() {
 
 #[test]
 fn functional_cli_google_gemini_backend_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--google-gemini-backend=false",
         "--google-gemini-cli",
@@ -1120,7 +1154,7 @@ fn functional_cli_google_gemini_backend_flags_accept_overrides() {
 
 #[test]
 fn unit_cli_credential_store_flags_default_to_auto_mode_and_default_path() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert_eq!(cli.credential_store, PathBuf::from(".tau/credentials.json"));
     assert!(cli.credential_store_key.is_none());
     assert_eq!(
@@ -1131,7 +1165,7 @@ fn unit_cli_credential_store_flags_default_to_auto_mode_and_default_path() {
 
 #[test]
 fn functional_cli_credential_store_flags_accept_explicit_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--credential-store",
         "custom/credentials.json",
@@ -1156,7 +1190,7 @@ fn functional_cli_credential_store_flags_accept_explicit_overrides() {
 
 #[test]
 fn unit_cli_integration_secret_id_flags_default_to_none() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.event_webhook_secret_id.is_none());
     assert!(cli.github_token_id.is_none());
     assert!(cli.slack_app_token_id.is_none());
@@ -1165,7 +1199,7 @@ fn unit_cli_integration_secret_id_flags_default_to_none() {
 
 #[test]
 fn functional_cli_integration_secret_id_flags_accept_explicit_values() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--event-webhook-ingest-file",
         "payload.json",
@@ -1191,7 +1225,7 @@ fn functional_cli_integration_secret_id_flags_accept_explicit_values() {
 
 #[test]
 fn unit_cli_artifact_retention_flags_default_to_30_days() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.github_poll_once);
     assert_eq!(cli.github_artifact_retention_days, 30);
     assert_eq!(cli.slack_artifact_retention_days, 30);
@@ -1199,7 +1233,7 @@ fn unit_cli_artifact_retention_flags_default_to_30_days() {
 
 #[test]
 fn functional_cli_artifact_retention_flags_accept_explicit_values() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--github-issues-bridge",
         "--slack-bridge",
@@ -1216,7 +1250,7 @@ fn functional_cli_artifact_retention_flags_accept_explicit_values() {
 
 #[test]
 fn regression_cli_github_poll_once_accepts_explicit_false() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--github-issues-bridge",
         "--github-poll-once=false",
@@ -1226,13 +1260,13 @@ fn regression_cli_github_poll_once_accepts_explicit_false() {
 
 #[test]
 fn unit_cli_github_required_label_defaults_empty() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.github_required_label.is_empty());
 }
 
 #[test]
 fn functional_cli_github_required_label_accepts_repeat_and_csv_values() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--github-issues-bridge",
         "--github-required-label",
@@ -1252,13 +1286,13 @@ fn functional_cli_github_required_label_accepts_repeat_and_csv_values() {
 
 #[test]
 fn unit_cli_github_issue_number_defaults_empty() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.github_issue_number.is_empty());
 }
 
 #[test]
 fn functional_cli_github_issue_number_accepts_repeat_and_csv_values() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--github-issues-bridge",
         "--github-issue-number",
@@ -1271,7 +1305,7 @@ fn functional_cli_github_issue_number_accepts_repeat_and_csv_values() {
 
 #[test]
 fn regression_cli_github_issue_number_rejects_zero() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--github-issues-bridge",
         "--github-issue-number",
@@ -1283,7 +1317,7 @@ fn regression_cli_github_issue_number_rejects_zero() {
 
 #[test]
 fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.multi_channel_contract_runner);
     assert_eq!(
         cli.multi_channel_fixture,
@@ -1303,7 +1337,7 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_multi_channel_runner_flags_accept_explicit_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--multi-channel-contract-runner",
         "--multi-channel-fixture",
@@ -1336,7 +1370,7 @@ fn functional_cli_multi_channel_runner_flags_accept_explicit_overrides() {
 
 #[test]
 fn regression_cli_multi_channel_fixture_requires_multi_channel_runner_flag() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--multi-channel-fixture",
         "fixtures/multi-channel.json",
@@ -1349,7 +1383,7 @@ fn regression_cli_multi_channel_fixture_requires_multi_channel_runner_flag() {
 
 #[test]
 fn unit_cli_multi_agent_runner_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.multi_agent_contract_runner);
     assert_eq!(
         cli.multi_agent_fixture,
@@ -1364,7 +1398,7 @@ fn unit_cli_multi_agent_runner_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_multi_agent_runner_flags_accept_explicit_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--multi-agent-contract-runner",
         "--multi-agent-fixture",
@@ -1397,7 +1431,7 @@ fn functional_cli_multi_agent_runner_flags_accept_explicit_overrides() {
 
 #[test]
 fn regression_cli_multi_agent_fixture_requires_multi_agent_runner_flag() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--multi-agent-fixture",
         "fixtures/multi-agent.json",
@@ -1410,7 +1444,7 @@ fn regression_cli_multi_agent_fixture_requires_multi_agent_runner_flag() {
 
 #[test]
 fn unit_cli_memory_runner_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.memory_contract_runner);
     assert_eq!(
         cli.memory_fixture,
@@ -1425,7 +1459,7 @@ fn unit_cli_memory_runner_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_memory_runner_flags_accept_explicit_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--memory-contract-runner",
         "--memory-fixture",
@@ -1452,7 +1486,7 @@ fn functional_cli_memory_runner_flags_accept_explicit_overrides() {
 
 #[test]
 fn regression_cli_memory_fixture_requires_memory_runner_flag() {
-    let parse = Cli::try_parse_from(["tau-rs", "--memory-fixture", "fixtures/memory.json"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--memory-fixture", "fixtures/memory.json"]);
     let error = parse.expect_err("fixture flag should require memory runner mode");
     assert!(error
         .to_string()
@@ -1461,7 +1495,7 @@ fn regression_cli_memory_fixture_requires_memory_runner_flag() {
 
 #[test]
 fn unit_cli_dashboard_runner_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.dashboard_contract_runner);
     assert_eq!(
         cli.dashboard_fixture,
@@ -1476,7 +1510,7 @@ fn unit_cli_dashboard_runner_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_dashboard_runner_flags_accept_explicit_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--dashboard-contract-runner",
         "--dashboard-fixture",
@@ -1509,7 +1543,8 @@ fn functional_cli_dashboard_runner_flags_accept_explicit_overrides() {
 
 #[test]
 fn regression_cli_dashboard_fixture_requires_dashboard_runner_flag() {
-    let parse = Cli::try_parse_from(["tau-rs", "--dashboard-fixture", "fixtures/dashboard.json"]);
+    let parse =
+        try_parse_cli_with_stack(["tau-rs", "--dashboard-fixture", "fixtures/dashboard.json"]);
     let error = parse.expect_err("fixture flag should require dashboard runner mode");
     assert!(error
         .to_string()
@@ -1518,7 +1553,7 @@ fn regression_cli_dashboard_fixture_requires_dashboard_runner_flag() {
 
 #[test]
 fn unit_cli_gateway_runner_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.gateway_contract_runner);
     assert_eq!(
         cli.gateway_fixture,
@@ -1529,7 +1564,7 @@ fn unit_cli_gateway_runner_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_gateway_runner_flags_accept_explicit_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--gateway-contract-runner",
         "--gateway-fixture",
@@ -1544,7 +1579,7 @@ fn functional_cli_gateway_runner_flags_accept_explicit_overrides() {
 
 #[test]
 fn regression_cli_gateway_fixture_requires_gateway_runner_flag() {
-    let parse = Cli::try_parse_from(["tau-rs", "--gateway-fixture", "fixtures/gateway.json"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-fixture", "fixtures/gateway.json"]);
     let error = parse.expect_err("fixture flag should require gateway runner mode");
     assert!(error
         .to_string()
@@ -1553,7 +1588,7 @@ fn regression_cli_gateway_fixture_requires_gateway_runner_flag() {
 
 #[test]
 fn unit_cli_transport_health_inspect_accepts_multi_channel_target() {
-    let cli = Cli::parse_from(["tau-rs", "--transport-health-inspect", "multi-channel"]);
+    let cli = parse_cli_with_stack(["tau-rs", "--transport-health-inspect", "multi-channel"]);
     assert_eq!(
         cli.transport_health_inspect.as_deref(),
         Some("multi-channel")
@@ -1562,7 +1597,7 @@ fn unit_cli_transport_health_inspect_accepts_multi_channel_target() {
 
 #[test]
 fn functional_cli_transport_health_inspect_accepts_multi_channel_state_dir_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--transport-health-inspect",
         "multi-channel",
@@ -1577,13 +1612,13 @@ fn functional_cli_transport_health_inspect_accepts_multi_channel_state_dir_overr
 
 #[test]
 fn unit_cli_transport_health_inspect_accepts_multi_agent_target() {
-    let cli = Cli::parse_from(["tau-rs", "--transport-health-inspect", "multi-agent"]);
+    let cli = parse_cli_with_stack(["tau-rs", "--transport-health-inspect", "multi-agent"]);
     assert_eq!(cli.transport_health_inspect.as_deref(), Some("multi-agent"));
 }
 
 #[test]
 fn functional_cli_transport_health_inspect_accepts_multi_agent_state_dir_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--transport-health-inspect",
         "multi-agent",
@@ -1598,13 +1633,13 @@ fn functional_cli_transport_health_inspect_accepts_multi_agent_state_dir_overrid
 
 #[test]
 fn unit_cli_transport_health_inspect_accepts_memory_target() {
-    let cli = Cli::parse_from(["tau-rs", "--transport-health-inspect", "memory"]);
+    let cli = parse_cli_with_stack(["tau-rs", "--transport-health-inspect", "memory"]);
     assert_eq!(cli.transport_health_inspect.as_deref(), Some("memory"));
 }
 
 #[test]
 fn functional_cli_transport_health_inspect_accepts_memory_state_dir_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--transport-health-inspect",
         "memory",
@@ -1616,13 +1651,13 @@ fn functional_cli_transport_health_inspect_accepts_memory_state_dir_override() {
 
 #[test]
 fn unit_cli_transport_health_inspect_accepts_dashboard_target() {
-    let cli = Cli::parse_from(["tau-rs", "--transport-health-inspect", "dashboard"]);
+    let cli = parse_cli_with_stack(["tau-rs", "--transport-health-inspect", "dashboard"]);
     assert_eq!(cli.transport_health_inspect.as_deref(), Some("dashboard"));
 }
 
 #[test]
 fn functional_cli_transport_health_inspect_accepts_dashboard_state_dir_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--transport-health-inspect",
         "dashboard",
@@ -1633,15 +1668,33 @@ fn functional_cli_transport_health_inspect_accepts_dashboard_state_dir_override(
 }
 
 #[test]
+fn unit_cli_transport_health_inspect_accepts_gateway_target() {
+    let cli = parse_cli_with_stack(["tau-rs", "--transport-health-inspect", "gateway"]);
+    assert_eq!(cli.transport_health_inspect.as_deref(), Some("gateway"));
+}
+
+#[test]
+fn functional_cli_transport_health_inspect_accepts_gateway_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--transport-health-inspect",
+        "gateway",
+        "--gateway-state-dir",
+        ".tau/gateway-alt",
+    ]);
+    assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway-alt"));
+}
+
+#[test]
 fn unit_cli_dashboard_status_inspect_defaults_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.dashboard_status_inspect);
     assert!(!cli.dashboard_status_json);
 }
 
 #[test]
 fn functional_cli_dashboard_status_inspect_accepts_json_and_state_dir_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--dashboard-status-inspect",
         "--dashboard-status-json",
@@ -1658,7 +1711,7 @@ fn functional_cli_dashboard_status_inspect_accepts_json_and_state_dir_override()
 
 #[test]
 fn regression_cli_dashboard_status_json_requires_dashboard_status_inspect() {
-    let parse = Cli::try_parse_from(["tau-rs", "--dashboard-status-json"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--dashboard-status-json"]);
     let error = parse.expect_err("json output should require inspect flag");
     assert!(error
         .to_string()
@@ -1667,14 +1720,14 @@ fn regression_cli_dashboard_status_json_requires_dashboard_status_inspect() {
 
 #[test]
 fn unit_cli_multi_agent_status_inspect_defaults_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.multi_agent_status_inspect);
     assert!(!cli.multi_agent_status_json);
 }
 
 #[test]
 fn functional_cli_multi_agent_status_inspect_accepts_json_and_state_dir_override() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--multi-agent-status-inspect",
         "--multi-agent-status-json",
@@ -1691,7 +1744,37 @@ fn functional_cli_multi_agent_status_inspect_accepts_json_and_state_dir_override
 
 #[test]
 fn regression_cli_multi_agent_status_json_requires_multi_agent_status_inspect() {
-    let parse = Cli::try_parse_from(["tau-rs", "--multi-agent-status-json"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--multi-agent-status-json"]);
+    let error = parse.expect_err("json output should require inspect flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_gateway_status_inspect_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.gateway_status_inspect);
+    assert!(!cli.gateway_status_json);
+}
+
+#[test]
+fn functional_cli_gateway_status_inspect_accepts_json_and_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-status-inspect",
+        "--gateway-status-json",
+        "--gateway-state-dir",
+        ".tau/gateway-observe",
+    ]);
+    assert!(cli.gateway_status_inspect);
+    assert!(cli.gateway_status_json);
+    assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway-observe"));
+}
+
+#[test]
+fn regression_cli_gateway_status_json_requires_gateway_status_inspect() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-status-json"]);
     let error = parse.expect_err("json output should require inspect flag");
     assert!(error
         .to_string()
@@ -1700,7 +1783,7 @@ fn regression_cli_multi_agent_status_json_requires_multi_agent_status_inspect() 
 
 #[test]
 fn unit_cli_qa_loop_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.qa_loop);
     assert!(cli.qa_loop_config.is_none());
     assert!(!cli.qa_loop_json);
@@ -1712,7 +1795,7 @@ fn unit_cli_qa_loop_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_qa_loop_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--qa-loop",
         "--qa-loop-config",
@@ -1738,7 +1821,7 @@ fn functional_cli_qa_loop_flags_accept_overrides() {
 
 #[test]
 fn regression_cli_qa_loop_config_requires_qa_loop() {
-    let parse = Cli::try_parse_from(["tau-rs", "--qa-loop-config", "qa-loop.json"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--qa-loop-config", "qa-loop.json"]);
     let error = parse.expect_err("qa-loop-config should require qa-loop flag");
     assert!(error
         .to_string()
@@ -1747,7 +1830,7 @@ fn regression_cli_qa_loop_config_requires_qa_loop() {
 
 #[test]
 fn unit_cli_rpc_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.mcp_server);
     assert!(cli.mcp_external_server_config.is_none());
     assert!(cli.mcp_context_provider.is_empty());
@@ -1760,7 +1843,7 @@ fn unit_cli_rpc_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_mcp_server_flags_accept_external_config_and_context_providers() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--mcp-server",
         "--mcp-external-server-config",
@@ -1783,14 +1866,14 @@ fn functional_cli_mcp_server_flags_accept_external_config_and_context_providers(
 
 #[test]
 fn regression_cli_mcp_server_conflicts_with_rpc_serve_ndjson() {
-    let parse = Cli::try_parse_from(["tau-rs", "--mcp-server", "--rpc-serve-ndjson"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--mcp-server", "--rpc-serve-ndjson"]);
     let error = parse.expect_err("mcp server and rpc serve ndjson should conflict");
     assert!(error.to_string().contains("cannot be used with"));
 }
 
 #[test]
 fn regression_cli_mcp_context_provider_requires_mcp_server_flag() {
-    let parse = Cli::try_parse_from(["tau-rs", "--mcp-context-provider", "session"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--mcp-context-provider", "session"]);
     let error = parse.expect_err("mcp context provider should require mcp server mode");
     assert!(error
         .to_string()
@@ -1799,20 +1882,20 @@ fn regression_cli_mcp_context_provider_requires_mcp_server_flag() {
 
 #[test]
 fn functional_cli_rpc_serve_ndjson_flag_accepts_enablement() {
-    let cli = Cli::parse_from(["tau-rs", "--rpc-serve-ndjson"]);
+    let cli = parse_cli_with_stack(["tau-rs", "--rpc-serve-ndjson"]);
     assert!(cli.rpc_serve_ndjson);
 }
 
 #[test]
 fn regression_cli_rpc_serve_ndjson_conflicts_with_rpc_capabilities() {
-    let parse = Cli::try_parse_from(["tau-rs", "--rpc-serve-ndjson", "--rpc-capabilities"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--rpc-serve-ndjson", "--rpc-capabilities"]);
     let error = parse.expect_err("rpc serve ndjson and rpc capabilities should conflict");
     assert!(error.to_string().contains("cannot be used with"));
 }
 
 #[test]
 fn regression_cli_rpc_serve_ndjson_conflicts_with_rpc_dispatch_ndjson_file() {
-    let parse = Cli::try_parse_from([
+    let parse = try_parse_cli_with_stack([
         "tau-rs",
         "--rpc-serve-ndjson",
         "--rpc-dispatch-ndjson-file",
@@ -6272,7 +6355,7 @@ fn regression_execute_auth_command_status_google_oauth_reports_backend_unavailab
 
 #[test]
 fn unit_cli_skills_lock_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.skills_lock_write);
     assert!(!cli.skills_sync);
     assert!(cli.skills_lock_file.is_none());
@@ -6280,7 +6363,7 @@ fn unit_cli_skills_lock_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_skills_lock_flags_accept_explicit_values() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--skills-lock-write",
         "--skills-sync",
@@ -6297,14 +6380,14 @@ fn functional_cli_skills_lock_flags_accept_explicit_values() {
 
 #[test]
 fn unit_cli_skills_cache_flags_default_to_online_mode() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.skills_offline);
     assert!(cli.skills_cache_dir.is_none());
 }
 
 #[test]
 fn functional_cli_skills_cache_flags_accept_explicit_values() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--skills-offline",
         "--skills-cache-dir",
@@ -6319,7 +6402,7 @@ fn functional_cli_skills_cache_flags_accept_explicit_values() {
 
 #[test]
 fn unit_cli_command_file_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.command_file.is_none());
     assert_eq!(
         cli.command_file_error_mode,
@@ -6329,7 +6412,7 @@ fn unit_cli_command_file_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_command_file_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--command-file",
         "automation.commands",
@@ -6345,7 +6428,7 @@ fn functional_cli_command_file_flags_accept_overrides() {
 
 #[test]
 fn unit_cli_onboarding_flags_default_to_disabled() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.onboard);
     assert!(!cli.onboard_non_interactive);
     assert_eq!(cli.onboard_profile, "default");
@@ -6354,7 +6437,7 @@ fn unit_cli_onboarding_flags_default_to_disabled() {
 
 #[test]
 fn functional_cli_onboarding_flags_accept_explicit_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--onboard",
         "--onboard-non-interactive",
@@ -6371,28 +6454,28 @@ fn functional_cli_onboarding_flags_accept_explicit_overrides() {
 
 #[test]
 fn regression_cli_onboarding_non_interactive_requires_onboard() {
-    let parse = Cli::try_parse_from(["tau-rs", "--onboard-non-interactive"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--onboard-non-interactive"]);
     let error = parse.expect_err("non-interactive onboarding should require --onboard");
     assert!(error.to_string().contains("--onboard"));
 }
 
 #[test]
 fn regression_cli_onboarding_profile_requires_onboard() {
-    let parse = Cli::try_parse_from(["tau-rs", "--onboard-profile", "team"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--onboard-profile", "team"]);
     let error = parse.expect_err("onboarding profile should require --onboard");
     assert!(error.to_string().contains("--onboard"));
 }
 
 #[test]
 fn regression_cli_onboarding_release_channel_requires_onboard() {
-    let parse = Cli::try_parse_from(["tau-rs", "--onboard-release-channel", "beta"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--onboard-release-channel", "beta"]);
     let error = parse.expect_err("onboarding release channel should require --onboard");
     assert!(error.to_string().contains("--onboard"));
 }
 
 #[test]
 fn unit_cli_doctor_release_cache_flags_default_values_are_stable() {
-    let cli = Cli::parse_from(["tau-rs"]);
+    let cli = parse_cli_with_stack(["tau-rs"]);
     assert_eq!(
         cli.doctor_release_cache_file,
         PathBuf::from(".tau/release-lookup-cache.json")
@@ -6402,7 +6485,7 @@ fn unit_cli_doctor_release_cache_flags_default_values_are_stable() {
 
 #[test]
 fn functional_cli_doctor_release_cache_flags_accept_overrides() {
-    let cli = Cli::parse_from([
+    let cli = parse_cli_with_stack([
         "tau-rs",
         "--doctor-release-cache-file",
         "/tmp/custom-doctor-cache.json",
@@ -6418,7 +6501,7 @@ fn functional_cli_doctor_release_cache_flags_accept_overrides() {
 
 #[test]
 fn regression_cli_doctor_release_cache_ttl_rejects_zero() {
-    let parse = Cli::try_parse_from(["tau-rs", "--doctor-release-cache-ttl-ms", "0"]);
+    let parse = try_parse_cli_with_stack(["tau-rs", "--doctor-release-cache-ttl-ms", "0"]);
     let error = parse.expect_err("zero ttl should be rejected");
     assert!(error.to_string().contains("value must be greater than 0"));
 }
@@ -13278,6 +13361,74 @@ fn regression_execute_channel_store_admin_multi_agent_status_inspect_requires_st
     assert!(error.to_string().contains("state.json"));
 }
 
+#[test]
+fn functional_execute_channel_store_admin_gateway_status_inspect_succeeds() {
+    let temp = tempdir().expect("tempdir");
+    let gateway_state_dir = temp.path().join("gateway");
+    std::fs::create_dir_all(&gateway_state_dir).expect("create gateway state dir");
+    std::fs::write(
+        gateway_state_dir.join("state.json"),
+        r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["POST:/v1/tasks:gateway-success"],
+  "requests": [
+    {
+      "case_key": "POST:/v1/tasks:gateway-success",
+      "case_id": "gateway-success",
+      "method": "POST",
+      "endpoint": "/v1/tasks",
+      "actor_id": "ops-bot",
+      "status_code": 201,
+      "outcome": "success",
+      "error_code": "",
+      "response_body": {"status":"accepted"},
+      "updated_unix_ms": 1
+    }
+  ],
+  "health": {
+    "updated_unix_ms": 705,
+    "cycle_duration_ms": 15,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+    )
+    .expect("write gateway state");
+    std::fs::write(
+        gateway_state_dir.join("runtime-events.jsonl"),
+        r#"{"reason_codes":["healthy_cycle"],"health_reason":"no recent transport failures observed"}
+"#,
+    )
+    .expect("write gateway events");
+
+    let mut cli = test_cli();
+    cli.gateway_status_inspect = true;
+    cli.gateway_status_json = true;
+    cli.gateway_state_dir = gateway_state_dir;
+    execute_channel_store_admin_command(&cli).expect("gateway status inspect should succeed");
+}
+
+#[test]
+fn regression_execute_channel_store_admin_gateway_status_inspect_requires_state_file() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.gateway_status_inspect = true;
+    cli.gateway_state_dir = temp.path().join("gateway");
+    std::fs::create_dir_all(&cli.gateway_state_dir).expect("create gateway dir");
+
+    let error = execute_channel_store_admin_command(&cli)
+        .expect_err("gateway status inspect should fail without state file");
+    assert!(error.to_string().contains("failed to read"));
+    assert!(error.to_string().contains("state.json"));
+}
+
 fn make_script_executable(path: &Path) {
     #[cfg(unix)]
     {
@@ -16774,6 +16925,42 @@ fn integration_execute_startup_preflight_runs_onboarding_and_generates_report() 
     assert_eq!(report_json["release_channel"], "stable");
     assert_eq!(report_json["release_channel_source"], "default");
     assert_eq!(report_json["release_channel_action"], "created");
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_gateway_status_inspect_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.gateway_status_inspect = true;
+    cli.gateway_status_json = true;
+
+    std::fs::create_dir_all(&cli.gateway_state_dir).expect("create gateway state dir");
+    std::fs::write(
+        cli.gateway_state_dir.join("state.json"),
+        r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "requests": [],
+  "health": {
+    "updated_unix_ms": 800,
+    "cycle_duration_ms": 11,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+    )
+    .expect("write gateway state");
+
+    let handled = execute_startup_preflight(&cli).expect("gateway status inspect preflight");
+    assert!(handled);
 }
 
 #[test]

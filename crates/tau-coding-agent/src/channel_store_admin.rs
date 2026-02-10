@@ -10,6 +10,7 @@ enum TransportHealthInspectTarget {
     MultiAgent,
     Memory,
     Dashboard,
+    Gateway,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -49,6 +50,16 @@ struct MultiAgentStatusStateFile {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayStatusStateFile {
+    #[serde(default)]
+    processed_case_keys: Vec<String>,
+    #[serde(default)]
+    requests: Vec<GatewayStatusRequestRecord>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct MultiAgentStatusRoutedCase {
     #[serde(default)]
     phase: String,
@@ -56,6 +67,16 @@ struct MultiAgentStatusRoutedCase {
     selected_role: String,
     #[serde(default)]
     category: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayStatusRequestRecord {
+    #[serde(default)]
+    method: String,
+    #[serde(default)]
+    status_code: u16,
+    #[serde(default)]
+    error_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -74,6 +95,14 @@ struct MultiAgentCycleReportLine {
     health_reason: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayCycleReportLine {
+    #[serde(default)]
+    reason_codes: Vec<String>,
+    #[serde(default)]
+    health_reason: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct DashboardCycleReportSummary {
     events_log_present: bool,
@@ -85,6 +114,16 @@ struct DashboardCycleReportSummary {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct MultiAgentCycleReportSummary {
+    events_log_present: bool,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    last_health_reason: String,
+    reason_code_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GatewayCycleReportSummary {
     events_log_present: bool,
     cycle_reports: usize,
     invalid_cycle_reports: usize,
@@ -123,6 +162,26 @@ struct MultiAgentStatusInspectReport {
     phase_counts: BTreeMap<String, usize>,
     selected_role_counts: BTreeMap<String, usize>,
     category_counts: BTreeMap<String, usize>,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    reason_code_counts: BTreeMap<String, usize>,
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct GatewayStatusInspectReport {
+    state_path: String,
+    events_log_path: String,
+    events_log_present: bool,
+    health_state: String,
+    health_reason: String,
+    rollout_gate: String,
+    processed_case_count: usize,
+    request_count: usize,
+    method_counts: BTreeMap<String, usize>,
+    status_code_counts: BTreeMap<String, usize>,
+    error_code_counts: BTreeMap<String, usize>,
     cycle_reports: usize,
     invalid_cycle_reports: usize,
     last_reason_codes: Vec<String>,
@@ -170,6 +229,20 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
             );
         } else {
             println!("{}", render_multi_agent_status_report(&report));
+        }
+        return Ok(());
+    }
+
+    if cli.gateway_status_inspect {
+        let report = collect_gateway_status_report(cli)?;
+        if cli.gateway_status_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render gateway status json")?
+            );
+        } else {
+            println!("{}", render_gateway_status_report(&report));
         }
         return Ok(());
     }
@@ -238,7 +311,7 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, or dashboard",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, or gateway",
             raw
         );
     }
@@ -261,16 +334,19 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     if trimmed.eq_ignore_ascii_case("dashboard") {
         return Ok(TransportHealthInspectTarget::Dashboard);
     }
+    if trimmed.eq_ignore_ascii_case("gateway") {
+        return Ok(TransportHealthInspectTarget::Gateway);
+    }
 
     let Some((transport, repo_slug)) = trimmed.split_once(':') else {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, or dashboard",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, or gateway",
             raw
         );
     };
     if !transport.eq_ignore_ascii_case("github") {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, or dashboard",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, or gateway",
             raw
         );
     }
@@ -309,6 +385,9 @@ fn collect_transport_health_rows(
         TransportHealthInspectTarget::Memory => Ok(vec![collect_memory_transport_health_row(cli)?]),
         TransportHealthInspectTarget::Dashboard => {
             Ok(vec![collect_dashboard_transport_health_row(cli)?])
+        }
+        TransportHealthInspectTarget::Gateway => {
+            Ok(vec![collect_gateway_transport_health_row(cli)?])
         }
     }
 }
@@ -424,6 +503,17 @@ fn collect_dashboard_transport_health_row(cli: &Cli) -> Result<TransportHealthIn
     Ok(TransportHealthInspectRow {
         transport: "dashboard".to_string(),
         target: "operator-control-plane".to_string(),
+        state_path: state_path.display().to_string(),
+        health,
+    })
+}
+
+fn collect_gateway_transport_health_row(cli: &Cli) -> Result<TransportHealthInspectRow> {
+    let state_path = cli.gateway_state_dir.join("state.json");
+    let health = load_transport_health_snapshot(&state_path)?;
+    Ok(TransportHealthInspectRow {
+        transport: "gateway".to_string(),
+        target: "gateway-service".to_string(),
         state_path: state_path.display().to_string(),
         health,
     })
@@ -554,10 +644,72 @@ fn collect_multi_agent_status_report(cli: &Cli) -> Result<MultiAgentStatusInspec
     })
 }
 
+fn collect_gateway_status_report(cli: &Cli) -> Result<GatewayStatusInspectReport> {
+    let state_path = cli.gateway_state_dir.join("state.json");
+    let events_log_path = cli.gateway_state_dir.join("runtime-events.jsonl");
+    let state = load_gateway_status_state(&state_path)?;
+    let cycle_summary = load_gateway_cycle_report_summary(&events_log_path)?;
+    let classification = state.health.classify();
+    let health_reason = if !cycle_summary.last_health_reason.trim().is_empty() {
+        cycle_summary.last_health_reason.clone()
+    } else {
+        classification.reason
+    };
+    let rollout_gate = if classification.state.as_str() == "healthy" {
+        "pass"
+    } else {
+        "hold"
+    };
+
+    let mut method_counts = BTreeMap::new();
+    let mut status_code_counts = BTreeMap::new();
+    let mut error_code_counts = BTreeMap::new();
+    for request in &state.requests {
+        if !request.method.trim().is_empty() {
+            increment_count(
+                &mut method_counts,
+                &request.method.trim().to_ascii_uppercase(),
+            );
+        }
+        if request.status_code > 0 {
+            increment_count(&mut status_code_counts, &request.status_code.to_string());
+        }
+        if !request.error_code.trim().is_empty() {
+            increment_count(&mut error_code_counts, request.error_code.trim());
+        }
+    }
+
+    Ok(GatewayStatusInspectReport {
+        state_path: state_path.display().to_string(),
+        events_log_path: events_log_path.display().to_string(),
+        events_log_present: cycle_summary.events_log_present,
+        health_state: classification.state.as_str().to_string(),
+        health_reason,
+        rollout_gate: rollout_gate.to_string(),
+        processed_case_count: state.processed_case_keys.len(),
+        request_count: state.requests.len(),
+        method_counts,
+        status_code_counts,
+        error_code_counts,
+        cycle_reports: cycle_summary.cycle_reports,
+        invalid_cycle_reports: cycle_summary.invalid_cycle_reports,
+        last_reason_codes: cycle_summary.last_reason_codes,
+        reason_code_counts: cycle_summary.reason_code_counts,
+        health: state.health,
+    })
+}
+
 fn load_multi_agent_status_state(path: &Path) -> Result<MultiAgentStatusStateFile> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str::<MultiAgentStatusStateFile>(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn load_gateway_status_state(path: &Path) -> Result<GatewayStatusStateFile> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str::<GatewayStatusStateFile>(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))
 }
 
@@ -580,6 +732,41 @@ fn load_multi_agent_cycle_report_summary(path: &Path) -> Result<MultiAgentCycleR
             continue;
         }
         match serde_json::from_str::<MultiAgentCycleReportLine>(trimmed) {
+            Ok(report) => {
+                summary.cycle_reports = summary.cycle_reports.saturating_add(1);
+                summary.last_reason_codes = report.reason_codes.clone();
+                summary.last_health_reason = report.health_reason;
+                for reason_code in report.reason_codes {
+                    increment_count(&mut summary.reason_code_counts, reason_code.trim());
+                }
+            }
+            Err(_) => {
+                summary.invalid_cycle_reports = summary.invalid_cycle_reports.saturating_add(1);
+            }
+        }
+    }
+    Ok(summary)
+}
+
+fn load_gateway_cycle_report_summary(path: &Path) -> Result<GatewayCycleReportSummary> {
+    if !path.exists() {
+        return Ok(GatewayCycleReportSummary {
+            events_log_present: false,
+            ..GatewayCycleReportSummary::default()
+        });
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut summary = GatewayCycleReportSummary {
+        events_log_present: true,
+        ..GatewayCycleReportSummary::default()
+    };
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<GatewayCycleReportLine>(trimmed) {
             Ok(report) => {
                 summary.cycle_reports = summary.cycle_reports.saturating_add(1);
                 summary.last_reason_codes = report.reason_codes.clone();
@@ -706,6 +893,36 @@ fn render_multi_agent_status_report(report: &MultiAgentStatusInspectReport) -> S
     )
 }
 
+fn render_gateway_status_report(report: &GatewayStatusInspectReport) -> String {
+    let reason_codes = if report.last_reason_codes.is_empty() {
+        "none".to_string()
+    } else {
+        report.last_reason_codes.join(",")
+    };
+    format!(
+        "gateway status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_case_count={} request_count={} method_counts={} status_code_counts={} error_code_counts={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        report.state_path,
+        report.events_log_path,
+        report.events_log_present,
+        report.health_state,
+        report.health_reason,
+        report.rollout_gate,
+        report.processed_case_count,
+        report.request_count,
+        render_counter_map(&report.method_counts),
+        render_counter_map(&report.status_code_counts),
+        render_counter_map(&report.error_code_counts),
+        report.cycle_reports,
+        report.invalid_cycle_reports,
+        reason_codes,
+        render_counter_map(&report.reason_code_counts),
+        report.health.queue_depth,
+        report.health.failure_streak,
+        report.health.last_cycle_failed,
+        report.health.last_cycle_completed,
+    )
+}
+
 fn render_counter_map(counts: &BTreeMap<String, usize>) -> String {
     if counts.is_empty() {
         return "none".to_string();
@@ -732,20 +949,33 @@ fn sanitize_for_path(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::thread;
 
     use clap::Parser;
     use tempfile::tempdir;
 
     use super::{
-        collect_dashboard_status_report, collect_multi_agent_status_report,
-        collect_transport_health_rows, parse_transport_health_inspect_target,
-        render_dashboard_status_report, render_multi_agent_status_report,
+        collect_dashboard_status_report, collect_gateway_status_report,
+        collect_multi_agent_status_report, collect_transport_health_rows,
+        parse_transport_health_inspect_target, render_dashboard_status_report,
+        render_gateway_status_report, render_multi_agent_status_report,
         render_transport_health_row, render_transport_health_rows, TransportHealthInspectRow,
         TransportHealthInspectTarget,
     };
     use crate::transport_health::TransportHealthState;
     use crate::Cli;
     use crate::TransportHealthSnapshot;
+
+    fn parse_cli(args: &[&str]) -> Cli {
+        let owned_args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        thread::Builder::new()
+            .name("tau-cli-parse".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || Cli::parse_from(owned_args))
+            .expect("spawn cli parse thread")
+            .join()
+            .expect("join cli parse thread")
+    }
 
     #[test]
     fn unit_parse_transport_health_inspect_target_accepts_supported_values() {
@@ -788,6 +1018,10 @@ mod tests {
             parse_transport_health_inspect_target("dashboard").expect("dashboard"),
             TransportHealthInspectTarget::Dashboard
         );
+        assert_eq!(
+            parse_transport_health_inspect_target("gateway").expect("gateway"),
+            TransportHealthInspectTarget::Gateway
+        );
     }
 
     #[test]
@@ -825,6 +1059,7 @@ mod tests {
         let multi_agent_root = temp.path().join("multi-agent");
         let memory_root = temp.path().join("memory");
         let dashboard_root = temp.path().join("dashboard");
+        let gateway_root = temp.path().join("gateway");
         let github_repo_dir = github_root.join("owner__repo");
         std::fs::create_dir_all(&github_repo_dir).expect("create github repo dir");
         std::fs::create_dir_all(&slack_root).expect("create slack dir");
@@ -832,6 +1067,7 @@ mod tests {
         std::fs::create_dir_all(&multi_agent_root).expect("create multi-agent dir");
         std::fs::create_dir_all(&memory_root).expect("create memory dir");
         std::fs::create_dir_all(&dashboard_root).expect("create dashboard dir");
+        std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
 
         std::fs::write(
             github_repo_dir.join("state.json"),
@@ -971,13 +1207,37 @@ mod tests {
         )
         .expect("write dashboard state");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        std::fs::write(
+            gateway_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "requests": [],
+  "health": {
+    "updated_unix_ms": 550,
+    "cycle_duration_ms": 21,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 2,
+    "last_cycle_processed": 2,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write gateway state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.github_state_dir = github_root;
         cli.slack_state_dir = slack_root;
         cli.multi_channel_state_dir = multi_channel_root;
         cli.multi_agent_state_dir = multi_agent_root;
         cli.memory_state_dir = memory_root;
         cli.dashboard_state_dir = dashboard_root;
+        cli.gateway_state_dir = gateway_root;
 
         let github_rows =
             collect_transport_health_rows(&cli, &TransportHealthInspectTarget::GithubAll)
@@ -1025,6 +1285,14 @@ mod tests {
         assert_eq!(dashboard_rows[0].target, "operator-control-plane");
         assert_eq!(dashboard_rows[0].health.last_cycle_discovered, 2);
 
+        let gateway_rows =
+            collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Gateway)
+                .expect("collect gateway rows");
+        assert_eq!(gateway_rows.len(), 1);
+        assert_eq!(gateway_rows[0].transport, "gateway");
+        assert_eq!(gateway_rows[0].target, "gateway-service");
+        assert_eq!(gateway_rows[0].health.last_cycle_discovered, 2);
+
         let rendered = render_transport_health_rows(&[
             github_rows[0].clone(),
             slack_rows[0].clone(),
@@ -1032,6 +1300,7 @@ mod tests {
             multi_agent_rows[0].clone(),
             memory_rows[0].clone(),
             dashboard_rows[0].clone(),
+            gateway_rows[0].clone(),
         ]);
         assert!(rendered.contains("transport=github"));
         assert!(rendered.contains("transport=slack"));
@@ -1039,6 +1308,7 @@ mod tests {
         assert!(rendered.contains("transport=multi-agent"));
         assert!(rendered.contains("transport=memory"));
         assert!(rendered.contains("transport=dashboard"));
+        assert!(rendered.contains("transport=gateway"));
     }
 
     #[test]
@@ -1059,7 +1329,7 @@ mod tests {
         )
         .expect("write legacy github state");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.github_state_dir = PathBuf::from(&github_root);
 
         let rows = collect_transport_health_rows(
@@ -1089,7 +1359,7 @@ mod tests {
         )
         .expect("write legacy memory state");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.memory_state_dir = PathBuf::from(&memory_root);
 
         let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Memory)
@@ -1113,7 +1383,7 @@ mod tests {
         )
         .expect("write legacy multi-agent state");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.multi_agent_state_dir = PathBuf::from(&multi_agent_root);
 
         let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::MultiAgent)
@@ -1138,11 +1408,35 @@ mod tests {
         )
         .expect("write legacy dashboard state");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.dashboard_state_dir = PathBuf::from(&dashboard_root);
 
         let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Dashboard)
             .expect("collect dashboard row");
+        assert_eq!(rows[0].health, TransportHealthSnapshot::default());
+    }
+
+    #[test]
+    fn regression_collect_transport_health_rows_defaults_missing_health_fields_for_gateway() {
+        let temp = tempdir().expect("tempdir");
+        let gateway_root = temp.path().join("gateway");
+        std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
+        std::fs::write(
+            gateway_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "requests": []
+}
+"#,
+        )
+        .expect("write legacy gateway state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.gateway_state_dir = PathBuf::from(&gateway_root);
+
+        let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Gateway)
+            .expect("collect gateway row");
         assert_eq!(rows[0].health, TransportHealthSnapshot::default());
     }
 
@@ -1183,7 +1477,7 @@ invalid-json-line
         )
         .expect("write runtime events");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.dashboard_state_dir = dashboard_root;
 
         let report = collect_dashboard_status_report(&cli).expect("collect status report");
@@ -1236,7 +1530,7 @@ invalid-json-line
         )
         .expect("write dashboard state");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.dashboard_state_dir = dashboard_root;
 
         let report = collect_dashboard_status_report(&cli).expect("collect status report");
@@ -1303,7 +1597,7 @@ invalid-json-line
         )
         .expect("write multi-agent events");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.multi_agent_state_dir = multi_agent_root;
 
         let report = collect_multi_agent_status_report(&cli).expect("collect status report");
@@ -1363,10 +1657,154 @@ invalid-json-line
         )
         .expect("write multi-agent state");
 
-        let mut cli = Cli::parse_from(["tau-rs"]);
+        let mut cli = parse_cli(&["tau-rs"]);
         cli.multi_agent_state_dir = multi_agent_root;
 
         let report = collect_multi_agent_status_report(&cli).expect("collect status report");
+        assert!(!report.events_log_present);
+        assert_eq!(report.cycle_reports, 0);
+        assert_eq!(report.invalid_cycle_reports, 0);
+        assert!(report.last_reason_codes.is_empty());
+        assert!(report.reason_code_counts.is_empty());
+        assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
+        assert_eq!(report.rollout_gate, "hold");
+    }
+
+    #[test]
+    fn functional_collect_gateway_status_report_reads_state_and_cycle_reports() {
+        let temp = tempdir().expect("tempdir");
+        let gateway_root = temp.path().join("gateway");
+        std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
+        std::fs::write(
+            gateway_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["POST:/v1/tasks:gateway-success", "GET:/v1/tasks/42:gateway-retryable"],
+  "requests": [
+    {
+      "case_key": "POST:/v1/tasks:gateway-success",
+      "case_id": "gateway-success",
+      "method": "POST",
+      "endpoint": "/v1/tasks",
+      "actor_id": "ops-bot",
+      "status_code": 201,
+      "outcome": "success",
+      "error_code": "",
+      "response_body": {"status":"accepted"},
+      "updated_unix_ms": 1
+    },
+    {
+      "case_key": "GET:/v1/tasks/42:gateway-retryable",
+      "case_id": "gateway-retryable",
+      "method": "get",
+      "endpoint": "/v1/tasks/42",
+      "actor_id": "ops-bot",
+      "status_code": 503,
+      "outcome": "retryable_failure",
+      "error_code": "gateway_backend_unavailable",
+      "response_body": {"status":"retryable"},
+      "updated_unix_ms": 2
+    }
+  ],
+  "health": {
+    "updated_unix_ms": 740,
+    "cycle_duration_ms": 18,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 2,
+    "last_cycle_processed": 2,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write gateway state");
+        std::fs::write(
+            gateway_root.join("runtime-events.jsonl"),
+            r#"{"reason_codes":["healthy_cycle","retry_attempted"],"health_reason":"no recent transport failures observed"}
+invalid-json-line
+{"reason_codes":["healthy_cycle","duplicate_cases_skipped"],"health_reason":"no recent transport failures observed"}
+"#,
+        )
+        .expect("write gateway events");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.gateway_state_dir = gateway_root;
+
+        let report = collect_gateway_status_report(&cli).expect("collect gateway status report");
+        assert_eq!(report.health_state, TransportHealthState::Healthy.as_str());
+        assert_eq!(report.rollout_gate, "pass");
+        assert_eq!(report.processed_case_count, 2);
+        assert_eq!(report.request_count, 2);
+        assert_eq!(report.method_counts.get("GET"), Some(&1));
+        assert_eq!(report.method_counts.get("POST"), Some(&1));
+        assert_eq!(report.status_code_counts.get("201"), Some(&1));
+        assert_eq!(report.status_code_counts.get("503"), Some(&1));
+        assert_eq!(
+            report.error_code_counts.get("gateway_backend_unavailable"),
+            Some(&1)
+        );
+        assert_eq!(report.cycle_reports, 2);
+        assert_eq!(report.invalid_cycle_reports, 1);
+        assert_eq!(
+            report.last_reason_codes,
+            vec![
+                "healthy_cycle".to_string(),
+                "duplicate_cases_skipped".to_string()
+            ]
+        );
+        assert_eq!(report.reason_code_counts.get("healthy_cycle"), Some(&2));
+        assert_eq!(report.reason_code_counts.get("retry_attempted"), Some(&1));
+        assert_eq!(
+            report.reason_code_counts.get("duplicate_cases_skipped"),
+            Some(&1)
+        );
+
+        let rendered = render_gateway_status_report(&report);
+        assert!(rendered.contains("gateway status inspect:"));
+        assert!(rendered.contains("rollout_gate=pass"));
+        assert!(rendered.contains("method_counts=GET:1,POST:1"));
+        assert!(rendered.contains("status_code_counts=201:1,503:1"));
+        assert!(rendered.contains(
+            "reason_code_counts=duplicate_cases_skipped:1,healthy_cycle:2,retry_attempted:1"
+        ));
+    }
+
+    #[test]
+    fn regression_collect_gateway_status_report_handles_missing_events_log() {
+        let temp = tempdir().expect("tempdir");
+        let gateway_root = temp.path().join("gateway");
+        std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
+        std::fs::write(
+            gateway_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "requests": [],
+  "health": {
+    "updated_unix_ms": 741,
+    "cycle_duration_ms": 20,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 2,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 0,
+    "last_cycle_failed": 1,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write gateway state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.gateway_state_dir = gateway_root;
+
+        let report = collect_gateway_status_report(&cli).expect("collect gateway status report");
         assert!(!report.events_log_present);
         assert_eq!(report.cycle_reports, 0);
         assert_eq!(report.invalid_cycle_reports, 0);
