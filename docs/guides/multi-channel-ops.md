@@ -72,6 +72,49 @@ When strict policy is active, unknown actors are denied with deterministic reaso
 (`deny_actor_not_paired_or_allowlisted`, `deny_actor_id_missing`). Denied events are recorded in
 channel-store logs and runtime cycle reason codes.
 
+## Channel policy model
+
+Tau supports channel policy controls at:
+
+- `.tau/security/channel-policy.json`
+
+Schema fields (per default policy and per-channel overrides):
+
+- `dmPolicy`: `allow` | `deny`
+- `allowFrom`: `any` | `allowlist_or_pairing` | `allowlist_only`
+- `groupPolicy`: `allow` | `deny`
+- `requireMention`: `true` | `false`
+
+Minimal policy file:
+
+```json
+{
+  "schema_version": 1,
+  "strictMode": false,
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {
+    "discord:ops-room": {
+      "dmPolicy": "allow",
+      "allowFrom": "any",
+      "groupPolicy": "allow",
+      "requireMention": true
+    }
+  }
+}
+```
+
+Secure-default migration notes:
+
+1. Keep `allowFrom` on `allowlist_or_pairing` while onboarding channels.
+2. Set explicit `groupPolicy`/`requireMention` for high-traffic shared channels.
+3. Avoid `dmPolicy=allow` with `allowFrom=any` in production unless intentionally open.
+4. Enable `strictMode=true` to make unsafe open-DM combinations fail readiness preflight.
+
 ## Deterministic demo path
 
 ```bash

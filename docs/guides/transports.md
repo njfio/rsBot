@@ -187,6 +187,11 @@ The live runner writes to the same state and channel-store paths as contract mod
 - `.tau/multi-channel/runtime-events.jsonl`
 - `.tau/multi-channel/channel-store/<transport>/<channel>/...`
 
+Policy controls for DM/group behavior and mention gating:
+
+- `.tau/security/channel-policy.json` (`dmPolicy`, `allowFrom`, `groupPolicy`, `requireMention`)
+- `.tau/security/allowlist.json` and `.tau/security/pairings.json` (actor access controls)
+
 ## Multi-agent contract runner
 
 Use this fixture-driven runtime mode to validate planner/delegated/review route selection,

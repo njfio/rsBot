@@ -9112,7 +9112,7 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
     };
 
     let report = execute_doctor_command(&config, DoctorCommandOutputFormat::Text);
-    assert!(report.contains("doctor summary: checks=16 pass=13 warn=2 fail=1"));
+    assert!(report.contains("doctor summary: checks=18 pass=13 warn=4 fail=1"));
 
     let keys = report
         .lines()
@@ -9143,6 +9143,8 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
             "trust_root".to_string(),
             "multi_channel_live.credential_store".to_string(),
             "multi_channel_live.ingress_dir".to_string(),
+            "multi_channel_live.channel_policy".to_string(),
+            "multi_channel_live.channel_policy.risk".to_string(),
             "multi_channel_live.channel.telegram".to_string(),
             "multi_channel_live.channel.discord".to_string(),
             "multi_channel_live.channel.whatsapp".to_string(),
@@ -9151,9 +9153,9 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
 
     let json_report = execute_doctor_command(&config, DoctorCommandOutputFormat::Json);
     let value = serde_json::from_str::<serde_json::Value>(&json_report).expect("parse json report");
-    assert_eq!(value["summary"]["checks"], 16);
+    assert_eq!(value["summary"]["checks"], 18);
     assert_eq!(value["summary"]["pass"], 13);
-    assert_eq!(value["summary"]["warn"], 2);
+    assert_eq!(value["summary"]["warn"], 4);
     assert_eq!(value["summary"]["fail"], 1);
     assert_eq!(value["checks"][0]["key"], "model");
     assert_eq!(value["checks"][1]["key"], "release_channel");
@@ -9624,9 +9626,9 @@ fn unit_evaluate_multi_channel_live_readiness_reports_missing_prerequisites() {
     };
 
     let report = evaluate_multi_channel_live_readiness(&config);
-    assert_eq!(report.checks.len(), 5);
+    assert_eq!(report.checks.len(), 7);
     assert_eq!(report.pass, 0);
-    assert_eq!(report.warn, 1);
+    assert_eq!(report.warn, 3);
     assert_eq!(report.fail, 4);
     assert_eq!(report.gate, "fail");
     assert!(!report.reason_codes.is_empty());
@@ -9676,6 +9678,21 @@ fn unit_evaluate_multi_channel_live_readiness_reports_missing_prerequisites() {
             .get("multi_channel_live.channel.whatsapp")
             .map(|check| (check.status, check.code.clone())),
         Some((DoctorStatus::Fail, "missing_prerequisites".to_string()))
+    );
+    assert_eq!(
+        by_key
+            .get("multi_channel_live.channel_policy")
+            .map(|check| (check.status, check.code.clone())),
+        Some((DoctorStatus::Warn, "missing".to_string()))
+    );
+    assert_eq!(
+        by_key
+            .get("multi_channel_live.channel_policy.risk")
+            .map(|check| (check.status, check.code.clone())),
+        Some((
+            DoctorStatus::Warn,
+            "unknown_without_policy_file".to_string()
+        ))
     );
 }
 
@@ -9741,12 +9758,175 @@ fn functional_evaluate_multi_channel_live_readiness_uses_store_backed_secrets() 
     };
 
     let report = evaluate_multi_channel_live_readiness(&config);
-    assert_eq!(report.checks.len(), 5);
+    assert_eq!(report.checks.len(), 7);
     assert_eq!(report.pass, 5);
-    assert_eq!(report.warn, 0);
+    assert_eq!(report.warn, 2);
     assert_eq!(report.fail, 0);
     assert_eq!(report.gate, "pass");
     assert!(report.reason_codes.is_empty());
+}
+
+#[test]
+fn integration_evaluate_multi_channel_live_readiness_warns_on_unsafe_open_dm_when_not_strict() {
+    let temp = tempdir().expect("tempdir");
+    let ingress_dir = temp.path().join("live-ingress");
+    let credential_store_path = temp.path().join("credentials.json");
+    std::fs::create_dir_all(&ingress_dir).expect("create ingress dir");
+    std::fs::write(ingress_dir.join("telegram.ndjson"), "").expect("write telegram inbox");
+    std::fs::write(ingress_dir.join("discord.ndjson"), "").expect("write discord inbox");
+    std::fs::write(ingress_dir.join("whatsapp.ndjson"), "").expect("write whatsapp inbox");
+
+    let mut store = CredentialStoreData {
+        encryption: CredentialStoreEncryptionMode::None,
+        providers: BTreeMap::new(),
+        integrations: BTreeMap::new(),
+    };
+    let timestamp = current_unix_timestamp();
+    for (id, secret) in [
+        ("telegram-bot-token", "telegram-token"),
+        ("discord-bot-token", "discord-token"),
+        ("whatsapp-access-token", "whatsapp-token"),
+        ("whatsapp-phone-number-id", "15551234567"),
+    ] {
+        store.integrations.insert(
+            id.to_string(),
+            IntegrationCredentialStoreRecord {
+                secret: Some(secret.to_string()),
+                revoked: false,
+                updated_unix: Some(timestamp),
+            },
+        );
+    }
+    save_credential_store(&credential_store_path, &store, None).expect("save credential store");
+
+    let security_dir = temp.path().join("security");
+    std::fs::create_dir_all(&security_dir).expect("create security dir");
+    std::fs::write(
+        security_dir.join("channel-policy.json"),
+        r#"{
+  "schema_version": 1,
+  "strictMode": false,
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "any",
+    "groupPolicy": "allow",
+    "requireMention": false
+  }
+}
+"#,
+    )
+    .expect("write policy");
+
+    let config = DoctorMultiChannelReadinessConfig {
+        ingress_dir,
+        credential_store_path,
+        credential_store_encryption: CredentialStoreEncryptionMode::None,
+        credential_store_key: None,
+        telegram_bot_token: None,
+        discord_bot_token: None,
+        whatsapp_access_token: None,
+        whatsapp_phone_number_id: None,
+    };
+    let report = evaluate_multi_channel_live_readiness(&config);
+    let by_key = report
+        .checks
+        .iter()
+        .map(|check| (check.key.clone(), check))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        by_key
+            .get("multi_channel_live.channel_policy")
+            .map(|check| (check.status, check.code.clone())),
+        Some((DoctorStatus::Pass, "ready".to_string()))
+    );
+    assert_eq!(
+        by_key
+            .get("multi_channel_live.channel_policy.risk")
+            .map(|check| (check.status, check.code.clone())),
+        Some((DoctorStatus::Warn, "unsafe_open_dm_warn".to_string()))
+    );
+    assert_eq!(report.fail, 0);
+    assert_eq!(report.gate, "pass");
+}
+
+#[test]
+fn regression_evaluate_multi_channel_live_readiness_fails_on_unsafe_open_dm_when_strict() {
+    let temp = tempdir().expect("tempdir");
+    let ingress_dir = temp.path().join("live-ingress");
+    let credential_store_path = temp.path().join("credentials.json");
+    std::fs::create_dir_all(&ingress_dir).expect("create ingress dir");
+    std::fs::write(ingress_dir.join("telegram.ndjson"), "").expect("write telegram inbox");
+    std::fs::write(ingress_dir.join("discord.ndjson"), "").expect("write discord inbox");
+    std::fs::write(ingress_dir.join("whatsapp.ndjson"), "").expect("write whatsapp inbox");
+
+    let mut store = CredentialStoreData {
+        encryption: CredentialStoreEncryptionMode::None,
+        providers: BTreeMap::new(),
+        integrations: BTreeMap::new(),
+    };
+    let timestamp = current_unix_timestamp();
+    for (id, secret) in [
+        ("telegram-bot-token", "telegram-token"),
+        ("discord-bot-token", "discord-token"),
+        ("whatsapp-access-token", "whatsapp-token"),
+        ("whatsapp-phone-number-id", "15551234567"),
+    ] {
+        store.integrations.insert(
+            id.to_string(),
+            IntegrationCredentialStoreRecord {
+                secret: Some(secret.to_string()),
+                revoked: false,
+                updated_unix: Some(timestamp),
+            },
+        );
+    }
+    save_credential_store(&credential_store_path, &store, None).expect("save credential store");
+
+    let security_dir = temp.path().join("security");
+    std::fs::create_dir_all(&security_dir).expect("create security dir");
+    std::fs::write(
+        security_dir.join("channel-policy.json"),
+        r#"{
+  "schema_version": 1,
+  "strictMode": true,
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "any",
+    "groupPolicy": "allow",
+    "requireMention": false
+  }
+}
+"#,
+    )
+    .expect("write policy");
+
+    let config = DoctorMultiChannelReadinessConfig {
+        ingress_dir,
+        credential_store_path,
+        credential_store_encryption: CredentialStoreEncryptionMode::None,
+        credential_store_key: None,
+        telegram_bot_token: None,
+        discord_bot_token: None,
+        whatsapp_access_token: None,
+        whatsapp_phone_number_id: None,
+    };
+    let report = evaluate_multi_channel_live_readiness(&config);
+    let by_key = report
+        .checks
+        .iter()
+        .map(|check| (check.key.clone(), check))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        by_key
+            .get("multi_channel_live.channel_policy.risk")
+            .map(|check| (check.status, check.code.clone())),
+        Some((DoctorStatus::Fail, "unsafe_open_dm_fail".to_string()))
+    );
+    assert_eq!(report.fail, 1);
+    assert_eq!(report.gate, "fail");
+    assert!(report
+        .reason_codes
+        .contains(&"multi_channel_live.channel_policy.risk:unsafe_open_dm_fail".to_string()));
 }
 
 #[test]

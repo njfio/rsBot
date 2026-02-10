@@ -636,6 +636,7 @@ pub(crate) fn evaluate_multi_channel_live_readiness(
             ),
         });
     }
+    append_multi_channel_policy_readiness_checks(&mut checks, &config.ingress_dir);
 
     let telegram_ready = config
         .telegram_bot_token
@@ -728,6 +729,102 @@ pub(crate) fn evaluate_multi_channel_live_readiness(
     );
 
     build_multi_channel_readiness_summary(checks)
+}
+
+fn append_multi_channel_policy_readiness_checks(
+    checks: &mut Vec<DoctorCheckResult>,
+    ingress_dir: &Path,
+) {
+    let state_dir_guess = ingress_dir.parent().unwrap_or(ingress_dir);
+    let policy_path =
+        crate::multi_channel_policy::channel_policy_path_for_state_dir(state_dir_guess);
+    if !policy_path.exists() {
+        checks.push(DoctorCheckResult {
+            key: "multi_channel_live.channel_policy".to_string(),
+            status: DoctorStatus::Warn,
+            code: "missing".to_string(),
+            path: Some(policy_path.display().to_string()),
+            action: Some(
+                "create channel-policy.json to override default dm/group/allowFrom behavior"
+                    .to_string(),
+            ),
+        });
+        checks.push(DoctorCheckResult {
+            key: "multi_channel_live.channel_policy.risk".to_string(),
+            status: DoctorStatus::Warn,
+            code: "unknown_without_policy_file".to_string(),
+            path: Some(policy_path.display().to_string()),
+            action: Some(
+                "add explicit dmPolicy/allowFrom/groupPolicy/requireMention rules before production rollout"
+                    .to_string(),
+            ),
+        });
+        return;
+    }
+
+    let policy = match crate::multi_channel_policy::load_multi_channel_policy_file(&policy_path) {
+        Ok(policy) => {
+            checks.push(DoctorCheckResult {
+                key: "multi_channel_live.channel_policy".to_string(),
+                status: DoctorStatus::Pass,
+                code: "ready".to_string(),
+                path: Some(policy_path.display().to_string()),
+                action: None,
+            });
+            policy
+        }
+        Err(error) => {
+            checks.push(DoctorCheckResult {
+                key: "multi_channel_live.channel_policy".to_string(),
+                status: DoctorStatus::Fail,
+                code: format!("parse_error:{error}"),
+                path: Some(policy_path.display().to_string()),
+                action: Some("repair channel-policy.json schema and values".to_string()),
+            });
+            checks.push(DoctorCheckResult {
+                key: "multi_channel_live.channel_policy.risk".to_string(),
+                status: DoctorStatus::Fail,
+                code: "blocked_by_policy_parse_error".to_string(),
+                path: Some(policy_path.display().to_string()),
+                action: Some("fix policy parse errors before rollout".to_string()),
+            });
+            return;
+        }
+    };
+
+    let open_dm_channels = crate::multi_channel_policy::collect_open_dm_risk_channels(&policy);
+    if open_dm_channels.is_empty() {
+        checks.push(DoctorCheckResult {
+            key: "multi_channel_live.channel_policy.risk".to_string(),
+            status: DoctorStatus::Pass,
+            code: "no_open_dm_risk".to_string(),
+            path: Some(policy_path.display().to_string()),
+            action: None,
+        });
+        return;
+    }
+
+    let status = if policy.strict_mode {
+        DoctorStatus::Fail
+    } else {
+        DoctorStatus::Warn
+    };
+    let code = if policy.strict_mode {
+        "unsafe_open_dm_fail"
+    } else {
+        "unsafe_open_dm_warn"
+    };
+    let channel_list = open_dm_channels.join(",");
+    checks.push(DoctorCheckResult {
+        key: "multi_channel_live.channel_policy.risk".to_string(),
+        status,
+        code: code.to_string(),
+        path: Some(policy_path.display().to_string()),
+        action: Some(format!(
+            "set allowFrom=allowlist_or_pairing or dmPolicy=deny for channels: {}",
+            channel_list
+        )),
+    });
 }
 
 pub(crate) fn render_multi_channel_live_readiness_report(

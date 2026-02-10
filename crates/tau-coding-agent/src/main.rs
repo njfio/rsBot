@@ -38,6 +38,7 @@ mod multi_agent_router;
 mod multi_agent_runtime;
 mod multi_channel_contract;
 mod multi_channel_live_ingress;
+mod multi_channel_policy;
 mod multi_channel_runtime;
 mod observability_loggers;
 mod onboarding;

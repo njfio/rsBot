@@ -1479,7 +1479,7 @@ fn integration_interactive_doctor_command_reports_runtime_diagnostics() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains(
-            "doctor summary: checks=14 pass=13 warn=1 fail=0",
+            "doctor summary: checks=16 pass=13 warn=3 fail=0",
         ))
         .stdout(predicate::str::contains(
             "doctor check: key=release_channel status=pass code=default_stable",
@@ -1504,6 +1504,12 @@ fn integration_interactive_doctor_command_reports_runtime_diagnostics() {
         ))
         .stdout(predicate::str::contains(
             "doctor check: key=multi_channel_live.ingress_dir status=pass code=ready",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=multi_channel_live.channel_policy status=warn code=missing",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=multi_channel_live.channel_policy.risk status=warn code=unknown_without_policy_file",
         ))
         .stdout(predicate::str::contains(
             "doctor check: key=multi_channel_live.channel.telegram status=pass code=ready",

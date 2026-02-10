@@ -13,6 +13,11 @@ use crate::multi_channel_contract::{
     MultiChannelEventKind, MultiChannelInboundEvent,
 };
 use crate::multi_channel_live_ingress::parse_multi_channel_live_inbound_envelope;
+use crate::multi_channel_policy::{
+    evaluate_multi_channel_channel_policy, load_multi_channel_policy_for_state_dir,
+    MultiChannelAllowFrom, MultiChannelPolicyDecision, MultiChannelPolicyEvaluation,
+    MultiChannelPolicyFile,
+};
 use crate::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
 use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
 
@@ -25,6 +30,8 @@ const MULTI_CHANNEL_LIVE_INGRESS_SOURCES: [(&str, &str); 3] = [
 ];
 const PAIRING_REASON_ALLOW_PERMISSIVE_MODE: &str = "allow_permissive_mode";
 const PAIRING_REASON_DENY_POLICY_EVALUATION_ERROR: &str = "deny_policy_evaluation_error";
+const POLICY_REASON_DENY_CHANNEL_POLICY_LOAD_ERROR: &str = "deny_channel_policy_load_error";
+const POLICY_REASON_DENY_ALLOWLIST_ONLY: &str = "deny_channel_policy_allow_from_allowlist_only";
 
 fn multi_channel_runtime_state_schema_version() -> u32 {
     MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION
@@ -104,6 +111,16 @@ impl Default for MultiChannelRuntimeState {
             health: TransportHealthSnapshot::default(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct MultiChannelAccessDecision {
+    policy_channel: String,
+    channel_policy: MultiChannelPolicyEvaluation,
+    pairing_decision: PairingDecision,
+    final_decision: PairingDecision,
+    pairing_checked: bool,
+    policy_enforced: bool,
 }
 
 pub(crate) async fn run_multi_channel_contract_runner(
@@ -231,6 +248,16 @@ impl MultiChannelRuntime {
         });
         queued_events.truncate(self.config.queue_limit);
         summary.queued_events = queued_events.len();
+        let channel_policy = match load_multi_channel_policy_for_state_dir(&self.config.state_dir) {
+            Ok(policy) => Some(policy),
+            Err(error) => {
+                eprintln!(
+                    "multi-channel channel policy load failed: state_dir={} error={error}",
+                    self.config.state_dir.display()
+                );
+                None
+            }
+        };
 
         for event in queued_events {
             let event_key = event_contract_key(&event);
@@ -239,10 +266,10 @@ impl MultiChannelRuntime {
                 continue;
             }
             let now_unix_ms = current_unix_timestamp_ms();
-            let (policy_channel, pairing_decision) =
-                self.evaluate_pairing_decision(&event, now_unix_ms);
+            let access_decision =
+                self.evaluate_access_decision(&event, now_unix_ms, channel_policy.as_ref());
             summary.policy_checked_events = summary.policy_checked_events.saturating_add(1);
-            if pairing_decision_is_enforced(&pairing_decision) {
+            if access_decision.policy_enforced {
                 summary.policy_enforced_events = summary.policy_enforced_events.saturating_add(1);
             }
 
@@ -261,11 +288,14 @@ impl MultiChannelRuntime {
                     continue;
                 }
 
-                match self.persist_event(&event, &event_key, &policy_channel, &pairing_decision) {
+                match self.persist_event(&event, &event_key, &access_decision) {
                     Ok(()) => {
                         self.record_processed_event(&event_key);
                         summary.completed_events = summary.completed_events.saturating_add(1);
-                        if matches!(pairing_decision, PairingDecision::Allow { .. }) {
+                        if matches!(
+                            access_decision.final_decision,
+                            PairingDecision::Allow { .. }
+                        ) {
                             summary.policy_allowed_events =
                                 summary.policy_allowed_events.saturating_add(1);
                         } else {
@@ -318,23 +348,121 @@ impl MultiChannelRuntime {
         Ok(summary)
     }
 
-    fn evaluate_pairing_decision(
+    fn evaluate_access_decision(
         &self,
         event: &MultiChannelInboundEvent,
         now_unix_ms: u64,
-    ) -> (String, PairingDecision) {
+        channel_policy_file: Option<&MultiChannelPolicyFile>,
+    ) -> MultiChannelAccessDecision {
         let policy_channel = pairing_policy_channel(event);
+        let channel_policy = channel_policy_file
+            .map(|policy_file| evaluate_multi_channel_channel_policy(policy_file, event))
+            .unwrap_or_else(|| {
+                let mut fallback = evaluate_multi_channel_channel_policy(
+                    &MultiChannelPolicyFile::default(),
+                    event,
+                );
+                fallback.matched_policy_key = "policy_load_error".to_string();
+                fallback.decision = MultiChannelPolicyDecision::Deny {
+                    reason_code: POLICY_REASON_DENY_CHANNEL_POLICY_LOAD_ERROR.to_string(),
+                };
+                fallback
+            });
+
+        match &channel_policy.decision {
+            MultiChannelPolicyDecision::Deny { reason_code } => {
+                let denied = PairingDecision::Deny {
+                    reason_code: reason_code.clone(),
+                };
+                MultiChannelAccessDecision {
+                    policy_channel,
+                    channel_policy,
+                    pairing_decision: denied.clone(),
+                    final_decision: denied,
+                    pairing_checked: false,
+                    policy_enforced: true,
+                }
+            }
+            MultiChannelPolicyDecision::Allow { reason_code } => {
+                match channel_policy.policy.allow_from {
+                    MultiChannelAllowFrom::Any => {
+                        let policy_enforced = channel_policy.policy.require_mention;
+                        let allow = PairingDecision::Allow {
+                            reason_code: reason_code.clone(),
+                        };
+                        MultiChannelAccessDecision {
+                            policy_channel,
+                            channel_policy,
+                            pairing_decision: allow.clone(),
+                            final_decision: allow,
+                            pairing_checked: false,
+                            policy_enforced,
+                        }
+                    }
+                    MultiChannelAllowFrom::AllowlistOrPairing => {
+                        let pairing_decision =
+                            self.evaluate_pairing_decision(event, &policy_channel, now_unix_ms);
+                        let policy_enforced = channel_policy.policy.require_mention
+                            || pairing_decision_is_enforced(&pairing_decision);
+                        MultiChannelAccessDecision {
+                            policy_channel,
+                            channel_policy,
+                            pairing_decision: pairing_decision.clone(),
+                            final_decision: pairing_decision,
+                            pairing_checked: true,
+                            policy_enforced,
+                        }
+                    }
+                    MultiChannelAllowFrom::AllowlistOnly => {
+                        let pairing_decision =
+                            self.evaluate_pairing_decision(event, &policy_channel, now_unix_ms);
+                        let final_decision = match &pairing_decision {
+                            PairingDecision::Allow { reason_code }
+                                if reason_code == "allow_allowlist"
+                                    || reason_code == "allow_allowlist_and_pairing" =>
+                            {
+                                PairingDecision::Allow {
+                                    reason_code: reason_code.clone(),
+                                }
+                            }
+                            PairingDecision::Allow { .. } => PairingDecision::Deny {
+                                reason_code: POLICY_REASON_DENY_ALLOWLIST_ONLY.to_string(),
+                            },
+                            PairingDecision::Deny { reason_code } => PairingDecision::Deny {
+                                reason_code: reason_code.clone(),
+                            },
+                        };
+                        MultiChannelAccessDecision {
+                            policy_channel,
+                            channel_policy,
+                            pairing_decision,
+                            final_decision,
+                            pairing_checked: true,
+                            policy_enforced: true,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn evaluate_pairing_decision(
+        &self,
+        event: &MultiChannelInboundEvent,
+        policy_channel: &str,
+        now_unix_ms: u64,
+    ) -> PairingDecision {
         let pairing_policy = pairing_policy_for_state_dir(&self.config.state_dir);
-        let pairing_decision = match evaluate_pairing_access(
+        match evaluate_pairing_access(
             &pairing_policy,
-            &policy_channel,
+            policy_channel,
             event.actor_id.as_str(),
             now_unix_ms,
         ) {
             Ok(decision) => decision,
             Err(error) => {
                 eprintln!(
-                    "multi-channel policy evaluation failed: transport={} event_id={} actor_id={} policy_channel={} error={error}",
+                    "multi-channel pairing policy evaluation failed: transport={} event_id={} actor_id={} policy_channel={} error={error}",
                     event.transport.as_str(),
                     event.event_id.trim(),
                     event.actor_id.trim(),
@@ -344,16 +472,14 @@ impl MultiChannelRuntime {
                     reason_code: PAIRING_REASON_DENY_POLICY_EVALUATION_ERROR.to_string(),
                 }
             }
-        };
-        (policy_channel, pairing_decision)
+        }
     }
 
     fn persist_event(
         &self,
         event: &MultiChannelInboundEvent,
         event_key: &str,
-        policy_channel: &str,
-        pairing_decision: &PairingDecision,
+        access_decision: &MultiChannelAccessDecision,
     ) -> Result<()> {
         let store = ChannelStore::open(
             &self.config.state_dir.join("channel-store"),
@@ -361,18 +487,32 @@ impl MultiChannelRuntime {
             &event.conversation_id,
         )?;
         let timestamp_unix_ms = current_unix_timestamp_ms();
-        let pairing_status = pairing_decision_status(pairing_decision);
-        let pairing_reason_code = pairing_decision.reason_code().to_string();
+        let pairing_status = pairing_decision_status(&access_decision.pairing_decision);
+        let pairing_reason_code = access_decision.pairing_decision.reason_code().to_string();
         let pairing_payload = json!({
             "decision": pairing_status,
             "reason_code": pairing_reason_code,
-            "channel": policy_channel,
+            "channel": access_decision.policy_channel,
             "actor_id": event.actor_id.trim(),
+            "checked": access_decision.pairing_checked,
+        });
+        let channel_policy_payload = json!({
+            "decision": access_decision.channel_policy.decision.as_str(),
+            "reason_code": access_decision.channel_policy.decision.reason_code(),
+            "channel": access_decision.channel_policy.policy_channel,
+            "matched_policy_key": access_decision.channel_policy.matched_policy_key,
+            "conversation_kind": access_decision.channel_policy.conversation_kind.as_str(),
+            "dm_policy": access_decision.channel_policy.policy.dm_policy.as_str(),
+            "allow_from": access_decision.channel_policy.policy.allow_from.as_str(),
+            "group_policy": access_decision.channel_policy.policy.group_policy.as_str(),
+            "require_mention": access_decision.channel_policy.policy.require_mention,
+            "mention_present": access_decision.channel_policy.mention_present,
         });
         let mut inbound_payload =
             serde_json::to_value(event).context("serialize inbound event payload")?;
         if let Value::Object(map) = &mut inbound_payload {
             map.insert("pairing".to_string(), pairing_payload.clone());
+            map.insert("channel_policy".to_string(), channel_policy_payload.clone());
         }
 
         store.append_log_entry(&ChannelLogEntry {
@@ -383,7 +523,7 @@ impl MultiChannelRuntime {
             payload: inbound_payload,
         })?;
 
-        if let PairingDecision::Deny { reason_code } = pairing_decision {
+        if let PairingDecision::Deny { reason_code } = &access_decision.final_decision {
             store.append_log_entry(&ChannelLogEntry {
                 timestamp_unix_ms: current_unix_timestamp_ms(),
                 direction: "outbound".to_string(),
@@ -392,10 +532,12 @@ impl MultiChannelRuntime {
                 payload: json!({
                     "status": "denied",
                     "reason_code": reason_code,
-                    "policy_channel": policy_channel,
+                    "policy_channel": access_decision.policy_channel,
                     "actor_id": event.actor_id.trim(),
                     "event_key": event_key,
                     "transport": event.transport.as_str(),
+                    "channel_policy": channel_policy_payload,
+                    "pairing": pairing_payload,
                 }),
             })?;
             return Ok(());
@@ -420,6 +562,7 @@ impl MultiChannelRuntime {
                 "event_key": event_key,
                 "transport": event.transport.as_str(),
                 "pairing": pairing_payload,
+                "channel_policy": channel_policy_payload,
             }),
         })?;
         store.append_context_entry(&ChannelContextEntry {
@@ -807,6 +950,16 @@ mod tests {
         std::fs::write(security_dir.join("pairings.json"), payload).expect("write pairings");
     }
 
+    fn write_channel_policy(root: &Path, payload: &str) {
+        let security_dir = root.join(".tau/security");
+        std::fs::create_dir_all(&security_dir).expect("create security dir");
+        std::fs::write(
+            security_dir.join(crate::multi_channel_policy::MULTI_CHANNEL_POLICY_FILE_NAME),
+            payload,
+        )
+        .expect("write channel policy");
+    }
+
     fn sample_event(
         transport: MultiChannelTransport,
         event_id: &str,
@@ -1021,6 +1174,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_runner_denies_group_message_when_mention_required() {
+        let temp = tempdir().expect("tempdir");
+        write_channel_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strictMode": false,
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {
+    "discord:ops-room": {
+      "dmPolicy": "allow",
+      "allowFrom": "any",
+      "groupPolicy": "allow",
+      "requireMention": true
+    }
+  }
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let mut event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-mention-1",
+            "ops-room",
+            "discord-user-1",
+            "hello team",
+        );
+        event
+            .metadata
+            .insert("guild_id".to_string(), Value::String("guild-1".to_string()));
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_denied_events, 1);
+        assert_eq!(summary.policy_enforced_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "discord",
+            "ops-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        assert_eq!(
+            logs[1].payload["reason_code"].as_str(),
+            Some("deny_channel_policy_mention_required")
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_runner_allows_group_message_when_mention_present_and_allow_from_any() {
+        let temp = tempdir().expect("tempdir");
+        write_channel_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strictMode": false,
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {
+    "discord:ops-room": {
+      "dmPolicy": "allow",
+      "allowFrom": "any",
+      "groupPolicy": "allow",
+      "requireMention": true
+    }
+  }
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let mut event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-mention-2",
+            "ops-room",
+            "discord-user-1",
+            "@tau deploy status",
+        );
+        event
+            .metadata
+            .insert("guild_id".to_string(), Value::String("guild-1".to_string()));
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_allowed_events, 1);
+        assert_eq!(summary.policy_denied_events, 0);
+        assert_eq!(summary.policy_enforced_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "discord",
+            "ops-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        assert_eq!(logs[0].payload["pairing"]["checked"].as_bool(), Some(false));
+        assert_eq!(
+            logs[0].payload["channel_policy"]["reason_code"].as_str(),
+            Some("allow_channel_policy_allow_from_any")
+        );
+    }
+
+    #[tokio::test]
     async fn integration_runner_retries_transient_failure_then_recovers() {
         let temp = tempdir().expect("tempdir");
         let mut config = build_config(temp.path());
@@ -1142,6 +1409,125 @@ mod tests {
         assert_eq!(
             logs[1].payload["reason_code"].as_str(),
             Some("deny_actor_not_paired_or_allowlisted")
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_runner_allowlist_only_denies_pairing_only_actor() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_registry(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "pairings": [
+    {
+      "channel": "telegram:chat-allowlist-only",
+      "actor_id": "telegram-paired-user",
+      "paired_by": "ops",
+      "issued_unix_ms": 1000,
+      "expires_unix_ms": null
+    }
+  ]
+}
+"#,
+        );
+        write_channel_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strictMode": false,
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {
+    "telegram:chat-allowlist-only": {
+      "dmPolicy": "allow",
+      "allowFrom": "allowlist_only",
+      "groupPolicy": "allow",
+      "requireMention": false
+    }
+  }
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-allowlist-only-1",
+            "chat-allowlist-only",
+            "telegram-paired-user",
+            "paired actor should be denied by allowlist_only",
+        );
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_denied_events, 1);
+        assert_eq!(summary.policy_enforced_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "chat-allowlist-only",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        assert_eq!(
+            logs[1].payload["reason_code"].as_str(),
+            Some("deny_channel_policy_allow_from_allowlist_only")
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_runner_explicit_dm_deny_blocks_allow_from_any() {
+        let temp = tempdir().expect("tempdir");
+        write_channel_policy(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strictMode": false,
+  "defaultPolicy": {
+    "dmPolicy": "deny",
+    "allowFrom": "any",
+    "groupPolicy": "allow",
+    "requireMention": false
+  }
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let mut event = sample_event(
+            MultiChannelTransport::Whatsapp,
+            "wa-dm-deny-1",
+            "15551234567:15550001111",
+            "15550001111",
+            "dm should be denied",
+        );
+        event.metadata.insert(
+            "conversation_mode".to_string(),
+            Value::String("dm".to_string()),
+        );
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_denied_events, 1);
+        assert_eq!(summary.policy_allowed_events, 0);
+        assert_eq!(summary.policy_enforced_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "whatsapp",
+            "15551234567:15550001111",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        assert_eq!(
+            logs[1].payload["reason_code"].as_str(),
+            Some("deny_channel_policy_dm")
         );
     }
 
