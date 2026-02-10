@@ -13,6 +13,7 @@ This index maps Tau documentation by audience and task.
 | Package and extension author | [Packages Guide](guides/packages.md) | Extension manifests, package lifecycle, activation, signing |
 | Scheduler / automation operator | [Events Guide](guides/events.md) | Events inspect/validate/simulate, runner, webhook ingest |
 | Contributor to `tau-coding-agent` internals | [Code Map](tau-coding-agent/code-map.md) | Module ownership and architecture navigation |
+| Contributor to `tau-coding-agent` refactor | [Crate Boundary Plan](tau-coding-agent/crate-boundary-plan.md) | Decomposition goals, crate layout, and migration phases |
 | Provider auth implementer / reviewer | [Provider Auth Capability Matrix](provider-auth/provider-auth-capability-matrix.md) | Provider-mode support and implementation gates |
 
 ## Companion references
