@@ -390,6 +390,54 @@ pub(crate) fn validate_custom_command_contract_runner_cli(cli: &Cli) -> Result<(
     Ok(())
 }
 
+pub(crate) fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.voice_contract_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--voice-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--voice-contract-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.custom_command_contract_runner
+    {
+        bail!("--voice-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, or --custom-command-contract-runner");
+    }
+    if cli.voice_queue_limit == 0 {
+        bail!("--voice-queue-limit must be greater than 0");
+    }
+    if cli.voice_processed_case_cap == 0 {
+        bail!("--voice-processed-case-cap must be greater than 0");
+    }
+    if cli.voice_retry_max_attempts == 0 {
+        bail!("--voice-retry-max-attempts must be greater than 0");
+    }
+    if !cli.voice_fixture.exists() {
+        bail!(
+            "--voice-fixture '{}' does not exist",
+            cli.voice_fixture.display()
+        );
+    }
+    if !cli.voice_fixture.is_file() {
+        bail!(
+            "--voice-fixture '{}' must point to a file",
+            cli.voice_fixture.display()
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_event_webhook_ingest_cli(cli: &Cli) -> Result<()> {
     if cli.event_webhook_ingest_file.is_none() {
         return Ok(());
