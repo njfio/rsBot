@@ -3,14 +3,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
+use crate::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTable};
 use crate::multi_channel_contract::{
-    event_contract_key, load_multi_channel_contract_fixture, MultiChannelContractFixture,
-    MultiChannelEventKind, MultiChannelInboundEvent,
+    event_contract_key, load_multi_channel_contract_fixture, validate_multi_channel_inbound_event,
+    MultiChannelContractFixture, MultiChannelEventKind, MultiChannelInboundEvent,
 };
 use crate::multi_channel_live_ingress::parse_multi_channel_live_inbound_envelope;
 use crate::multi_channel_policy::{
@@ -18,11 +19,17 @@ use crate::multi_channel_policy::{
     MultiChannelAllowFrom, MultiChannelPolicyDecision, MultiChannelPolicyEvaluation,
     MultiChannelPolicyFile,
 };
+use crate::multi_channel_routing::{
+    load_multi_channel_route_bindings_for_state_dir, resolve_multi_channel_event_route,
+    route_decision_trace_payload, MultiChannelRouteBindingFile, MultiChannelRouteDecision,
+};
 use crate::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
+use crate::Cli;
 use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
 
 const MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 const MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
+const MULTI_CHANNEL_ROUTE_TRACES_LOG_FILE: &str = "route-traces.jsonl";
 const MULTI_CHANNEL_LIVE_INGRESS_SOURCES: [(&str, &str); 3] = [
     ("telegram", "telegram.ndjson"),
     ("discord", "discord.ndjson"),
@@ -41,6 +48,7 @@ fn multi_channel_runtime_state_schema_version() -> u32 {
 pub(crate) struct MultiChannelRuntimeConfig {
     pub(crate) fixture_path: PathBuf,
     pub(crate) state_dir: PathBuf,
+    pub(crate) orchestrator_route_table_path: Option<PathBuf>,
     pub(crate) queue_limit: usize,
     pub(crate) processed_event_cap: usize,
     pub(crate) retry_max_attempts: usize,
@@ -51,6 +59,7 @@ pub(crate) struct MultiChannelRuntimeConfig {
 pub(crate) struct MultiChannelLiveRuntimeConfig {
     pub(crate) ingress_dir: PathBuf,
     pub(crate) state_dir: PathBuf,
+    pub(crate) orchestrator_route_table_path: Option<PathBuf>,
     pub(crate) queue_limit: usize,
     pub(crate) processed_event_cap: usize,
     pub(crate) retry_max_attempts: usize,
@@ -162,6 +171,7 @@ pub(crate) async fn run_multi_channel_live_runner(
     let mut runtime = MultiChannelRuntime::new(MultiChannelRuntimeConfig {
         fixture_path: config.ingress_dir.join("live-ingress.ndjson"),
         state_dir: config.state_dir.clone(),
+        orchestrator_route_table_path: config.orchestrator_route_table_path.clone(),
         queue_limit: config.queue_limit,
         processed_event_cap: config.processed_event_cap,
         retry_max_attempts: config.retry_max_attempts,
@@ -194,16 +204,180 @@ pub(crate) async fn run_multi_channel_live_runner(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct MultiChannelRouteInspectReport {
+    pub(crate) event_key: String,
+    pub(crate) transport: String,
+    pub(crate) conversation_id: String,
+    pub(crate) actor_id: String,
+    pub(crate) binding_id: String,
+    pub(crate) binding_matched: bool,
+    pub(crate) match_specificity: usize,
+    pub(crate) phase: String,
+    pub(crate) account_id: String,
+    pub(crate) requested_category: Option<String>,
+    pub(crate) selected_category: Option<String>,
+    pub(crate) selected_role: String,
+    pub(crate) fallback_roles: Vec<String>,
+    pub(crate) attempt_roles: Vec<String>,
+    pub(crate) session_key: String,
+}
+
+pub(crate) fn build_multi_channel_route_inspect_report(
+    cli: &Cli,
+) -> Result<MultiChannelRouteInspectReport> {
+    let inspect_file = cli
+        .multi_channel_route_inspect_file
+        .as_ref()
+        .ok_or_else(|| anyhow!("--multi-channel-route-inspect-file is required"))?;
+    let event = load_multi_channel_route_inspect_event(inspect_file)?;
+    let route_table = if let Some(path) = cli.orchestrator_route_table.as_deref() {
+        load_multi_agent_route_table(path)?
+    } else {
+        MultiAgentRouteTable::default()
+    };
+    let route_bindings =
+        load_multi_channel_route_bindings_for_state_dir(&cli.multi_channel_state_dir)?;
+    let decision = resolve_multi_channel_event_route(&route_bindings, &route_table, &event);
+    Ok(MultiChannelRouteInspectReport {
+        event_key: event_contract_key(&event),
+        transport: event.transport.as_str().to_string(),
+        conversation_id: event.conversation_id.trim().to_string(),
+        actor_id: event.actor_id.trim().to_string(),
+        binding_id: decision.binding_id,
+        binding_matched: decision.matched,
+        match_specificity: decision.match_specificity,
+        phase: decision.phase.as_str().to_string(),
+        account_id: decision.account_id,
+        requested_category: decision.requested_category,
+        selected_category: decision.selected_category,
+        selected_role: decision.selected_role,
+        fallback_roles: decision.fallback_roles,
+        attempt_roles: decision.attempt_roles,
+        session_key: decision.session_key,
+    })
+}
+
+pub(crate) fn execute_multi_channel_route_inspect_command(cli: &Cli) -> Result<()> {
+    let report = build_multi_channel_route_inspect_report(cli)?;
+    if cli.multi_channel_route_inspect_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("failed to render multi-channel route inspect json")?
+        );
+    } else {
+        let selected_category = report
+            .selected_category
+            .as_deref()
+            .unwrap_or("none")
+            .to_string();
+        let requested_category = report
+            .requested_category
+            .as_deref()
+            .unwrap_or("none")
+            .to_string();
+        println!(
+            "multi-channel route inspect: event_key={} transport={} conversation_id={} actor_id={} binding_id={} binding_matched={} match_specificity={} phase={} account_id={} requested_category={} selected_category={} selected_role={} fallback_roles={} attempt_roles={} session_key={}",
+            report.event_key,
+            report.transport,
+            report.conversation_id,
+            report.actor_id,
+            report.binding_id,
+            report.binding_matched,
+            report.match_specificity,
+            report.phase,
+            if report.account_id.is_empty() { "none" } else { report.account_id.as_str() },
+            requested_category,
+            selected_category,
+            report.selected_role,
+            if report.fallback_roles.is_empty() {
+                "none".to_string()
+            } else {
+                report.fallback_roles.join(",")
+            },
+            if report.attempt_roles.is_empty() {
+                "none".to_string()
+            } else {
+                report.attempt_roles.join(",")
+            },
+            report.session_key
+        );
+    }
+    Ok(())
+}
+
+fn load_multi_channel_route_inspect_event(path: &Path) -> Result<MultiChannelInboundEvent> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!(
+            "multi-channel route inspect file '{}' is empty",
+            path.display()
+        );
+    }
+
+    if let Ok(event) = serde_json::from_str::<MultiChannelInboundEvent>(trimmed) {
+        validate_multi_channel_inbound_event(&event)
+            .with_context(|| format!("invalid normalized event in {}", path.display()))?;
+        return Ok(event);
+    }
+
+    if let Ok(event) = parse_multi_channel_live_inbound_envelope(trimmed) {
+        return Ok(event);
+    }
+
+    let first_line = raw
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or_default();
+    if let Ok(event) = serde_json::from_str::<MultiChannelInboundEvent>(first_line) {
+        validate_multi_channel_inbound_event(&event)
+            .with_context(|| format!("invalid normalized event in {}", path.display()))?;
+        return Ok(event);
+    }
+    match parse_multi_channel_live_inbound_envelope(first_line) {
+        Ok(event) => Ok(event),
+        Err(error) => {
+            bail!(
+                "failed to parse '{}' as normalized event or live ingress envelope: {}",
+                path.display(),
+                error
+            )
+        }
+    }
+}
+
 struct MultiChannelRuntime {
     config: MultiChannelRuntimeConfig,
     state: MultiChannelRuntimeState,
     processed_event_keys: HashSet<String>,
+    route_table: MultiAgentRouteTable,
+    route_bindings: MultiChannelRouteBindingFile,
 }
 
 impl MultiChannelRuntime {
     fn new(config: MultiChannelRuntimeConfig) -> Result<Self> {
         std::fs::create_dir_all(&config.state_dir)
             .with_context(|| format!("failed to create {}", config.state_dir.display()))?;
+        let route_table = if let Some(path) = config.orchestrator_route_table_path.as_deref() {
+            load_multi_agent_route_table(path)?
+        } else {
+            MultiAgentRouteTable::default()
+        };
+        let route_bindings =
+            match load_multi_channel_route_bindings_for_state_dir(&config.state_dir) {
+                Ok(bindings) => bindings,
+                Err(error) => {
+                    eprintln!(
+                        "multi-channel route bindings load failed: state_dir={} error={error}",
+                        config.state_dir.display()
+                    );
+                    MultiChannelRouteBindingFile::default()
+                }
+            };
         let mut state = load_multi_channel_runtime_state(&config.state_dir.join("state.json"))?;
         state.processed_event_keys =
             normalize_processed_keys(&state.processed_event_keys, config.processed_event_cap);
@@ -212,6 +386,8 @@ impl MultiChannelRuntime {
             config,
             state,
             processed_event_keys,
+            route_table,
+            route_bindings,
         })
     }
 
@@ -266,6 +442,8 @@ impl MultiChannelRuntime {
                 continue;
             }
             let now_unix_ms = current_unix_timestamp_ms();
+            let route_decision =
+                resolve_multi_channel_event_route(&self.route_bindings, &self.route_table, &event);
             let access_decision =
                 self.evaluate_access_decision(&event, now_unix_ms, channel_policy.as_ref());
             summary.policy_checked_events = summary.policy_checked_events.saturating_add(1);
@@ -288,7 +466,7 @@ impl MultiChannelRuntime {
                     continue;
                 }
 
-                match self.persist_event(&event, &event_key, &access_decision) {
+                match self.persist_event(&event, &event_key, &access_decision, &route_decision) {
                     Ok(()) => {
                         self.record_processed_event(&event_key);
                         summary.completed_events = summary.completed_events.saturating_add(1);
@@ -480,15 +658,17 @@ impl MultiChannelRuntime {
         event: &MultiChannelInboundEvent,
         event_key: &str,
         access_decision: &MultiChannelAccessDecision,
+        route_decision: &MultiChannelRouteDecision,
     ) -> Result<()> {
         let store = ChannelStore::open(
             &self.config.state_dir.join("channel-store"),
             event.transport.as_str(),
-            &event.conversation_id,
+            &route_decision.session_key,
         )?;
         let timestamp_unix_ms = current_unix_timestamp_ms();
         let pairing_status = pairing_decision_status(&access_decision.pairing_decision);
         let pairing_reason_code = access_decision.pairing_decision.reason_code().to_string();
+        let route_payload = route_decision_trace_payload(event, event_key, route_decision);
         let pairing_payload = json!({
             "decision": pairing_status,
             "reason_code": pairing_reason_code,
@@ -513,6 +693,11 @@ impl MultiChannelRuntime {
         if let Value::Object(map) = &mut inbound_payload {
             map.insert("pairing".to_string(), pairing_payload.clone());
             map.insert("channel_policy".to_string(), channel_policy_payload.clone());
+            map.insert("route".to_string(), route_payload.clone());
+            map.insert(
+                "route_session_key".to_string(),
+                Value::String(route_decision.session_key.clone()),
+            );
         }
 
         store.append_log_entry(&ChannelLogEntry {
@@ -522,6 +707,13 @@ impl MultiChannelRuntime {
             source: event.transport.as_str().to_string(),
             payload: inbound_payload,
         })?;
+        append_multi_channel_route_trace(
+            &self
+                .config
+                .state_dir
+                .join(MULTI_CHANNEL_ROUTE_TRACES_LOG_FILE),
+            &route_payload,
+        )?;
 
         if let PairingDecision::Deny { reason_code } = &access_decision.final_decision {
             store.append_log_entry(&ChannelLogEntry {
@@ -536,6 +728,9 @@ impl MultiChannelRuntime {
                     "actor_id": event.actor_id.trim(),
                     "event_key": event_key,
                     "transport": event.transport.as_str(),
+                    "conversation_id": event.conversation_id.trim(),
+                    "route_session_key": route_decision.session_key.as_str(),
+                    "route": route_payload.clone(),
                     "channel_policy": channel_policy_payload,
                     "pairing": pairing_payload,
                 }),
@@ -561,6 +756,9 @@ impl MultiChannelRuntime {
                 "response": response_text,
                 "event_key": event_key,
                 "transport": event.transport.as_str(),
+                "conversation_id": event.conversation_id.trim(),
+                "route_session_key": route_decision.session_key.as_str(),
+                "route": route_payload,
                 "pairing": pairing_payload,
                 "channel_policy": channel_policy_payload,
             }),
@@ -774,6 +972,25 @@ fn append_multi_channel_cycle_report(
     Ok(())
 }
 
+fn append_multi_channel_route_trace(path: &Path, payload: &Value) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let line = serde_json::to_string(payload).context("serialize multi-channel route trace")?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("failed to flush {}", path.display()))?;
+    Ok(())
+}
+
 fn render_response(event: &MultiChannelInboundEvent) -> String {
     let transport = event.transport.as_str();
     let event_id = event.event_id.trim();
@@ -909,6 +1126,7 @@ mod tests {
         MultiChannelRuntimeConfig {
             fixture_path: fixture_path("baseline-three-channel.json"),
             state_dir: root.join(".tau/multi-channel"),
+            orchestrator_route_table_path: None,
             queue_limit: 64,
             processed_event_cap: 10_000,
             retry_max_attempts: 3,
@@ -920,6 +1138,7 @@ mod tests {
         MultiChannelLiveRuntimeConfig {
             ingress_dir: root.join(".tau/multi-channel/live-ingress"),
             state_dir: root.join(".tau/multi-channel"),
+            orchestrator_route_table_path: None,
             queue_limit: 64,
             processed_event_cap: 10_000,
             retry_max_attempts: 3,
@@ -958,6 +1177,23 @@ mod tests {
             payload,
         )
         .expect("write channel policy");
+    }
+
+    fn write_multi_channel_route_bindings(root: &Path, payload: &str) {
+        let security_dir = root.join(".tau/multi-channel/security");
+        std::fs::create_dir_all(&security_dir).expect("create multi-channel security dir");
+        std::fs::write(
+            security_dir.join(crate::multi_channel_routing::MULTI_CHANNEL_ROUTE_BINDINGS_FILE_NAME),
+            payload,
+        )
+        .expect("write multi-channel route bindings");
+    }
+
+    fn write_orchestrator_route_table(path: &Path, payload: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create orchestrator route table parent");
+        }
+        std::fs::write(path, payload).expect("write orchestrator route table");
     }
 
     fn sample_event(
@@ -1322,6 +1558,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_runner_routes_event_to_bound_session_and_emits_route_trace() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        let route_table_path = temp.path().join("route-table.json");
+        write_orchestrator_route_table(
+            &route_table_path,
+            r#"{
+  "schema_version": 1,
+  "roles": {
+    "triage": {},
+    "default": {}
+  },
+  "planner": { "role": "default" },
+  "delegated": { "role": "default" },
+  "delegated_categories": {
+    "incident": { "role": "triage" }
+  },
+  "review": { "role": "default" }
+}"#,
+        );
+        config.orchestrator_route_table_path = Some(route_table_path);
+
+        write_multi_channel_route_bindings(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "bindings": [
+    {
+      "binding_id": "discord-ops",
+      "transport": "discord",
+      "account_id": "discord-main",
+      "conversation_id": "ops-room",
+      "actor_id": "*",
+      "phase": "delegated_step",
+      "category_hint": "incident",
+      "session_key_template": "session-{role}"
+    }
+  ]
+}"#,
+        );
+
+        let mut event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-route-1",
+            "ops-room",
+            "discord-user-1",
+            "please check latest incident",
+        );
+        event.metadata.insert(
+            "account_id".to_string(),
+            Value::String("discord-main".to_string()),
+        );
+
+        let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &config.state_dir.join("channel-store"),
+            "discord",
+            "session-triage",
+        )
+        .expect("open routed store");
+        let logs = store.load_log_entries().expect("load routed logs");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].payload["route"]["binding_id"], "discord-ops");
+        assert_eq!(logs[0].payload["route"]["selected_role"], "triage");
+        assert_eq!(logs[0].payload["route_session_key"], "session-triage");
+
+        let route_traces = std::fs::read_to_string(
+            config
+                .state_dir
+                .join(super::MULTI_CHANNEL_ROUTE_TRACES_LOG_FILE),
+        )
+        .expect("read route traces");
+        assert!(route_traces.contains("\"record_type\":\"multi_channel_route_trace_v1\""));
+        assert!(route_traces.contains("\"binding_id\":\"discord-ops\""));
+        assert!(route_traces.contains("\"selected_role\":\"triage\""));
+    }
+
+    #[tokio::test]
     async fn integration_runner_respects_queue_limit_for_backpressure() {
         let temp = tempdir().expect("tempdir");
         let mut config = build_config(temp.path());
@@ -1363,6 +1681,88 @@ mod tests {
         assert_eq!(second_summary.completed_events, 0);
         assert_eq!(second_summary.duplicate_skips, 3);
         assert_eq!(second_summary.policy_checked_events, 0);
+    }
+
+    #[tokio::test]
+    async fn regression_runner_prefers_specific_route_binding_over_wildcard() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        let route_table_path = temp.path().join("route-table.json");
+        write_orchestrator_route_table(
+            &route_table_path,
+            r#"{
+  "schema_version": 1,
+  "roles": {
+    "specific": {},
+    "fallback": {},
+    "default": {}
+  },
+  "planner": { "role": "default" },
+  "delegated": { "role": "fallback" },
+  "delegated_categories": {
+    "incident": { "role": "specific" }
+  },
+  "review": { "role": "default" }
+}"#,
+        );
+        config.orchestrator_route_table_path = Some(route_table_path);
+
+        write_multi_channel_route_bindings(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "bindings": [
+    {
+      "binding_id": "wildcard",
+      "transport": "discord",
+      "account_id": "*",
+      "conversation_id": "*",
+      "actor_id": "*",
+      "phase": "delegated_step",
+      "session_key_template": "wildcard"
+    },
+    {
+      "binding_id": "specific",
+      "transport": "discord",
+      "account_id": "discord-main",
+      "conversation_id": "ops-room",
+      "actor_id": "discord-user-1",
+      "phase": "delegated_step",
+      "category_hint": "incident",
+      "session_key_template": "specific-{role}"
+    }
+  ]
+}"#,
+        );
+
+        let mut event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-specific-1",
+            "ops-room",
+            "discord-user-1",
+            "incident triage please",
+        );
+        event.metadata.insert(
+            "account_id".to_string(),
+            Value::String("discord-main".to_string()),
+        );
+
+        let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+        runtime.run_once_events(&[event]).await.expect("run once");
+
+        let specific_store = ChannelStore::open(
+            &config.state_dir.join("channel-store"),
+            "discord",
+            "specific-specific",
+        )
+        .expect("open specific store");
+        let specific_logs = specific_store.load_log_entries().expect("specific logs");
+        assert_eq!(specific_logs.len(), 2);
+        assert_eq!(specific_logs[0].payload["route"]["binding_id"], "specific");
+        assert_eq!(
+            specific_logs[0].payload["route"]["selected_role"],
+            "specific"
+        );
     }
 
     #[tokio::test]

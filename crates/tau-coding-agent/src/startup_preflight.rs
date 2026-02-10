@@ -6,6 +6,11 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.multi_channel_route_inspect_file.is_some() {
+        execute_multi_channel_route_inspect_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.session_validate {
         validate_session_file(cli)?;
         return Ok(true);

@@ -853,6 +853,37 @@ pub(crate) struct Cli {
     pub(crate) multi_channel_status_json: bool,
 
     #[arg(
+        long = "multi-channel-route-inspect-file",
+        env = "TAU_MULTI_CHANNEL_ROUTE_INSPECT_FILE",
+        conflicts_with = "channel_store_inspect",
+        conflicts_with = "channel_store_repair",
+        conflicts_with = "transport_health_inspect",
+        conflicts_with = "dashboard_status_inspect",
+        conflicts_with = "multi_channel_status_inspect",
+        conflicts_with = "multi_agent_status_inspect",
+        conflicts_with = "gateway_status_inspect",
+        conflicts_with = "deployment_status_inspect",
+        conflicts_with = "custom_command_status_inspect",
+        conflicts_with = "voice_status_inspect",
+        value_name = "path",
+        help = "Evaluate multi-channel route binding and multi-agent route-table selection for one event JSON file and exit"
+    )]
+    pub(crate) multi_channel_route_inspect_file: Option<PathBuf>,
+
+    #[arg(
+        long = "multi-channel-route-inspect-json",
+        env = "TAU_MULTI_CHANNEL_ROUTE_INSPECT_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "multi_channel_route_inspect_file",
+        help = "Emit --multi-channel-route-inspect-file output as pretty JSON"
+    )]
+    pub(crate) multi_channel_route_inspect_json: bool,
+
+    #[arg(
         long = "multi-agent-status-inspect",
         env = "TAU_MULTI_AGENT_STATUS_INSPECT",
         conflicts_with = "channel_store_inspect",

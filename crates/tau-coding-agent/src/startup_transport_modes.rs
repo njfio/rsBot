@@ -182,6 +182,7 @@ pub(crate) async fn run_transport_mode_if_requested(
         run_multi_channel_contract_runner(MultiChannelRuntimeConfig {
             fixture_path: cli.multi_channel_fixture.clone(),
             state_dir: cli.multi_channel_state_dir.clone(),
+            orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
             queue_limit: cli.multi_channel_queue_limit.max(1),
             processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
             retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),
@@ -195,6 +196,7 @@ pub(crate) async fn run_transport_mode_if_requested(
         run_multi_channel_live_runner(MultiChannelLiveRuntimeConfig {
             ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
             state_dir: cli.multi_channel_state_dir.clone(),
+            orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
             queue_limit: cli.multi_channel_queue_limit.max(1),
             processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
             retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),

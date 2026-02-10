@@ -40,6 +40,7 @@ mod multi_agent_runtime;
 mod multi_channel_contract;
 mod multi_channel_live_ingress;
 mod multi_channel_policy;
+mod multi_channel_routing;
 mod multi_channel_runtime;
 mod observability_loggers;
 mod onboarding;
@@ -203,6 +204,9 @@ pub(crate) use crate::multi_agent_router::{
     build_multi_agent_role_prompt, load_multi_agent_route_table, resolve_multi_agent_role_profile,
     select_multi_agent_route, MultiAgentRoutePhase, MultiAgentRouteTable,
 };
+#[cfg(test)]
+pub(crate) use crate::multi_channel_runtime::build_multi_channel_route_inspect_report;
+pub(crate) use crate::multi_channel_runtime::execute_multi_channel_route_inspect_command;
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};

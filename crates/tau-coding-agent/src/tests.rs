@@ -25,26 +25,28 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::{
     apply_trust_root_mutations, branch_alias_path_for_session, build_auth_command_config,
-    build_doctor_command_config, build_profile_defaults, build_provider_client, build_tool_policy,
-    command_file_error_mode_label, compose_startup_system_prompt, compute_session_entry_depths,
-    compute_session_stats, current_unix_timestamp, decrypt_credential_store_secret,
-    default_macro_config_path, default_profile_store_path, default_skills_lock_path,
-    derive_skills_prune_candidates, encrypt_credential_store_secret, ensure_non_empty_text,
-    escape_graph_label, evaluate_multi_channel_live_readiness, execute_auth_command,
-    execute_branch_alias_command, execute_channel_store_admin_command, execute_command_file,
-    execute_doctor_cli_command, execute_doctor_command, execute_doctor_command_with_options,
-    execute_integration_auth_command, execute_macro_command, execute_package_activate_command,
-    execute_package_activate_on_startup, execute_package_conflicts_command,
-    execute_package_install_command, execute_package_list_command, execute_package_remove_command,
-    execute_package_rollback_command, execute_package_show_command, execute_package_update_command,
-    execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
-    execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
-    execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
-    execute_session_bookmark_command, execute_session_diff_command,
-    execute_session_graph_export_command, execute_session_search_command,
-    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
-    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
-    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    build_doctor_command_config, build_multi_channel_route_inspect_report, build_profile_defaults,
+    build_provider_client, build_tool_policy, command_file_error_mode_label,
+    compose_startup_system_prompt, compute_session_entry_depths, compute_session_stats,
+    current_unix_timestamp, decrypt_credential_store_secret, default_macro_config_path,
+    default_profile_store_path, default_skills_lock_path, derive_skills_prune_candidates,
+    encrypt_credential_store_secret, ensure_non_empty_text, escape_graph_label,
+    evaluate_multi_channel_live_readiness, execute_auth_command, execute_branch_alias_command,
+    execute_channel_store_admin_command, execute_command_file, execute_doctor_cli_command,
+    execute_doctor_command, execute_doctor_command_with_options, execute_integration_auth_command,
+    execute_macro_command, execute_multi_channel_route_inspect_command,
+    execute_package_activate_command, execute_package_activate_on_startup,
+    execute_package_conflicts_command, execute_package_install_command,
+    execute_package_list_command, execute_package_remove_command, execute_package_rollback_command,
+    execute_package_show_command, execute_package_update_command, execute_package_validate_command,
+    execute_profile_command, execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
+    execute_rpc_dispatch_ndjson_command, execute_rpc_serve_ndjson_command,
+    execute_rpc_validate_frame_command, execute_session_bookmark_command,
+    execute_session_diff_command, execute_session_graph_export_command,
+    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+    execute_skills_lock_diff_command, execute_skills_lock_write_command,
+    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+    execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, execute_startup_preflight,
     format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
@@ -383,6 +385,8 @@ fn test_cli() -> Cli {
         dashboard_status_json: false,
         multi_channel_status_inspect: false,
         multi_channel_status_json: false,
+        multi_channel_route_inspect_file: None,
+        multi_channel_route_inspect_json: false,
         multi_agent_status_inspect: false,
         multi_agent_status_json: false,
         gateway_status_inspect: false,
@@ -2259,6 +2263,43 @@ fn functional_cli_multi_channel_status_inspect_accepts_json_and_state_dir_overri
 fn regression_cli_multi_channel_status_json_requires_multi_channel_status_inspect() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--multi-channel-status-json"]);
     let error = parse.expect_err("json output should require inspect flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_multi_channel_route_inspect_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(cli.multi_channel_route_inspect_file.is_none());
+    assert!(!cli.multi_channel_route_inspect_json);
+}
+
+#[test]
+fn functional_cli_multi_channel_route_inspect_accepts_json_and_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--multi-channel-route-inspect-file",
+        "fixtures/event.json",
+        "--multi-channel-route-inspect-json",
+        "--multi-channel-state-dir",
+        ".tau/multi-channel-observe",
+    ]);
+    assert_eq!(
+        cli.multi_channel_route_inspect_file.as_deref(),
+        Some(Path::new("fixtures/event.json"))
+    );
+    assert!(cli.multi_channel_route_inspect_json);
+    assert_eq!(
+        cli.multi_channel_state_dir,
+        PathBuf::from(".tau/multi-channel-observe")
+    );
+}
+
+#[test]
+fn regression_cli_multi_channel_route_inspect_json_requires_file_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--multi-channel-route-inspect-json"]);
+    let error = parse.expect_err("json output should require route inspect file flag");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -15150,6 +15191,129 @@ fn regression_execute_channel_store_admin_multi_channel_status_inspect_requires_
         .expect_err("multi-channel status inspect should fail without state file");
     assert!(error.to_string().contains("failed to read"));
     assert!(error.to_string().contains("state.json"));
+}
+
+#[test]
+fn functional_build_multi_channel_route_inspect_report_resolves_binding_and_role() {
+    let temp = tempdir().expect("tempdir");
+    let route_table_path = temp.path().join("route-table.json");
+    let state_dir = temp.path().join("multi-channel");
+    let security_dir = state_dir.join("security");
+    std::fs::create_dir_all(&security_dir).expect("create security dir");
+    std::fs::write(
+        route_table_path.as_path(),
+        r#"{
+  "schema_version": 1,
+  "roles": {
+    "triage": {},
+    "default": {}
+  },
+  "planner": { "role": "default" },
+  "delegated": { "role": "default" },
+  "delegated_categories": {
+    "incident": { "role": "triage" }
+  },
+  "review": { "role": "default" }
+}"#,
+    )
+    .expect("write route table");
+    std::fs::write(
+        security_dir.join("multi-channel-route-bindings.json"),
+        r#"{
+  "schema_version": 1,
+  "bindings": [
+    {
+      "binding_id": "discord-ops",
+      "transport": "discord",
+      "account_id": "discord-main",
+      "conversation_id": "ops-room",
+      "actor_id": "*",
+      "phase": "delegated_step",
+      "category_hint": "incident",
+      "session_key_template": "session-{role}"
+    }
+  ]
+}"#,
+    )
+    .expect("write route bindings");
+    let event_path = temp.path().join("event.json");
+    std::fs::write(
+        &event_path,
+        r#"{
+  "schema_version": 1,
+  "transport": "discord",
+  "event_kind": "message",
+  "event_id": "dc-route-1",
+  "conversation_id": "ops-room",
+  "actor_id": "discord-user-1",
+  "timestamp_ms": 1760200000000,
+  "text": "please triage this incident",
+  "metadata": {
+    "account_id": "discord-main"
+  }
+}"#,
+    )
+    .expect("write event file");
+
+    let mut cli = test_cli();
+    cli.multi_channel_route_inspect_file = Some(event_path);
+    cli.multi_channel_state_dir = state_dir;
+    cli.orchestrator_route_table = Some(route_table_path);
+    let report = build_multi_channel_route_inspect_report(&cli).expect("build report");
+    assert_eq!(report.binding_id, "discord-ops");
+    assert_eq!(report.selected_role, "triage");
+    assert_eq!(report.phase, "delegated-step");
+    assert_eq!(report.session_key, "session-triage");
+}
+
+#[test]
+fn integration_execute_multi_channel_route_inspect_command_accepts_live_envelope_input() {
+    let temp = tempdir().expect("tempdir");
+    let state_dir = temp.path().join("multi-channel");
+    std::fs::create_dir_all(state_dir.join("security")).expect("create security dir");
+    let envelope_path = temp.path().join("telegram-envelope.json");
+    std::fs::write(
+        &envelope_path,
+        r#"{
+  "schema_version": 1,
+  "transport": "telegram",
+  "provider": "telegram-bot-api",
+  "payload": {
+    "update_id": 70001,
+    "message": {
+      "message_id": 501,
+      "date": 1760200100,
+      "text": "/status",
+      "chat": { "id": "chat-100" },
+      "from": { "id": "user-100", "username": "ops-user" }
+    }
+  }
+}"#,
+    )
+    .expect("write envelope file");
+
+    let mut cli = test_cli();
+    cli.multi_channel_route_inspect_file = Some(envelope_path);
+    cli.multi_channel_route_inspect_json = true;
+    cli.multi_channel_state_dir = state_dir;
+    execute_multi_channel_route_inspect_command(&cli)
+        .expect("route inspect command should succeed");
+}
+
+#[test]
+fn regression_build_multi_channel_route_inspect_report_rejects_empty_file() {
+    let temp = tempdir().expect("tempdir");
+    let event_path = temp.path().join("empty.json");
+    std::fs::write(&event_path, "  \n").expect("write empty event file");
+
+    let mut cli = test_cli();
+    cli.multi_channel_route_inspect_file = Some(event_path.clone());
+    let error = build_multi_channel_route_inspect_report(&cli)
+        .expect_err("empty route inspect file should fail");
+    assert!(error.to_string().contains("is empty"));
+    assert!(error
+        .to_string()
+        .contains(event_path.to_string_lossy().as_ref()));
 }
 
 #[test]

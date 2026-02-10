@@ -34,6 +34,8 @@ Primary state files:
 
 - `.tau/multi-channel/state.json`
 - `.tau/multi-channel/runtime-events.jsonl`
+- `.tau/multi-channel/route-traces.jsonl`
+- `.tau/multi-channel/security/multi-channel-route-bindings.json`
 - `.tau/multi-channel/channel-store/<transport>/<channel>/...`
 
 `runtime-events.jsonl` reason codes:
@@ -114,6 +116,58 @@ Secure-default migration notes:
 2. Set explicit `groupPolicy`/`requireMention` for high-traffic shared channels.
 3. Avoid `dmPolicy=allow` with `allowFrom=any` in production unless intentionally open.
 4. Enable `strictMode=true` to make unsafe open-DM combinations fail readiness preflight.
+
+## Route bindings and multi-agent routing
+
+Tau can bind ingress events to deterministic multi-agent route decisions using selectors for:
+
+- `transport`
+- `account_id`
+- `conversation_id`
+- `actor_id`
+
+Binding file path:
+
+- `.tau/multi-channel/security/multi-channel-route-bindings.json`
+
+Minimal example:
+
+```json
+{
+  "schema_version": 1,
+  "bindings": [
+    {
+      "binding_id": "discord-ops",
+      "transport": "discord",
+      "account_id": "discord-main",
+      "conversation_id": "ops-room",
+      "actor_id": "*",
+      "phase": "delegated_step",
+      "category_hint": "incident",
+      "session_key_template": "session-{role}"
+    }
+  ]
+}
+```
+
+Deterministic fallback behavior when no binding matches:
+
+- route selection uses default phase mapping (`command->planner`, `system->review`, others delegated)
+- session key defaults to normalized `conversation_id`
+
+Route trace output:
+
+- every processed event appends one line to `.tau/multi-channel/route-traces.jsonl`
+- channel-store inbound/outbound logs include a `route` payload and `route_session_key`
+
+Inspect route evaluation for one event file:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-state-dir .tau/multi-channel \
+  --multi-channel-route-inspect-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/telegram-valid.json \
+  --multi-channel-route-inspect-json
+```
 
 ## Deterministic demo path
 

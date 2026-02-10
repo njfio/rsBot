@@ -82,6 +82,12 @@ tau_demo_common_run_step \
   --multi-channel-retry-base-delay-ms 0
 
 tau_demo_common_run_step \
+  "multi-channel-route-inspect-telegram" \
+  --multi-channel-state-dir "${demo_state_dir}" \
+  --multi-channel-route-inspect-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/telegram-valid.json \
+  --multi-channel-route-inspect-json
+
+tau_demo_common_run_step \
   "transport-health-inspect-multi-channel-live" \
   --multi-channel-state-dir "${demo_state_dir}" \
   --transport-health-inspect multi-channel \
