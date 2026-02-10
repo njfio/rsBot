@@ -28,6 +28,10 @@ use crate::{current_unix_timestamp_ms, CliMultiChannelLiveConnectorMode};
 
 const LIVE_CONNECTORS_SCHEMA_VERSION: u32 = 1;
 const MAX_POLL_BATCH_SIZE: usize = 50;
+const CONNECTOR_BREAKER_STATE_CLOSED: &str = "closed";
+const CONNECTOR_BREAKER_STATE_OPEN: &str = "open";
+const CONNECTOR_BREAKER_STATE_HALF_OPEN: &str = "half_open";
+const CONNECTOR_BREAKER_STATE_DISABLED: &str = "disabled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -77,6 +81,16 @@ pub(crate) struct MultiChannelLiveConnectorChannelState {
     pub(crate) provider_failures: u64,
     #[serde(default)]
     pub(crate) consecutive_failures: u64,
+    #[serde(default)]
+    pub(crate) retry_budget_remaining: u64,
+    #[serde(default)]
+    pub(crate) breaker_state: String,
+    #[serde(default)]
+    pub(crate) breaker_open_until_unix_ms: u64,
+    #[serde(default)]
+    pub(crate) breaker_last_open_reason: String,
+    #[serde(default)]
+    pub(crate) breaker_open_count: u64,
     #[serde(default)]
     pub(crate) last_error_code: String,
     #[serde(default)]
@@ -337,6 +351,7 @@ async fn handle_telegram_webhook(
         if observed != expected_secret.trim() {
             let mut guard = state.state.lock().await;
             record_channel_error(
+                &state.config,
                 &mut guard,
                 "telegram",
                 MultiChannelLiveConnectorErrorCode::AuthFailed,
@@ -408,6 +423,7 @@ async fn handle_whatsapp_webhook_verify(
 
     let mut guard = state.state.lock().await;
     record_channel_error(
+        &state.config,
         &mut guard,
         "whatsapp",
         MultiChannelLiveConnectorErrorCode::InvalidWebhookVerification,
@@ -444,6 +460,7 @@ async fn handle_whatsapp_webhook(
         if verify_sha256_hmac_signature(body.as_bytes(), signature, app_secret).is_err() {
             let mut guard = state.state.lock().await;
             record_channel_error(
+                &state.config,
                 &mut guard,
                 "whatsapp",
                 MultiChannelLiveConnectorErrorCode::InvalidSignature,
@@ -464,6 +481,7 @@ async fn handle_whatsapp_webhook(
         Err(error) => {
             let mut guard = state.state.lock().await;
             record_channel_error(
+                &state.config,
                 &mut guard,
                 "whatsapp",
                 MultiChannelLiveConnectorErrorCode::ParseFailed,
@@ -496,6 +514,7 @@ async fn handle_whatsapp_webhook(
             Ok(raw) => raw,
             Err(error) => {
                 record_channel_error(
+                    &state.config,
                     &mut guard,
                     "whatsapp",
                     MultiChannelLiveConnectorErrorCode::ParseFailed,
@@ -520,7 +539,14 @@ async fn handle_whatsapp_webhook(
                 }
             }
             Err(error) => {
-                record_channel_error(&mut guard, "whatsapp", error.code, error.message, false);
+                record_channel_error(
+                    &state.config,
+                    &mut guard,
+                    "whatsapp",
+                    error.code,
+                    error.message,
+                    false,
+                );
             }
         }
     }
@@ -537,6 +563,9 @@ async fn poll_telegram_updates(
     state: &mut MultiChannelLiveConnectorStateFile,
     summary: &mut MultiChannelLiveConnectorCycleSummary,
 ) -> Result<()> {
+    if !begin_channel_poll(config, state, "telegram") {
+        return Ok(());
+    }
     let token = config
         .telegram_bot_token
         .as_deref()
@@ -566,6 +595,7 @@ async fn poll_telegram_updates(
         Ok(response) => response,
         Err(error) => {
             record_channel_error(
+                config,
                 state,
                 "telegram",
                 error.code,
@@ -602,7 +632,7 @@ async fn poll_telegram_updates(
                 }
             }
             Err(error) => {
-                record_channel_error(state, "telegram", error.code, error.message, false);
+                record_channel_error(config, state, "telegram", error.code, error.message, false);
                 summary.parse_failures = summary.parse_failures.saturating_add(1);
             }
         }
@@ -610,7 +640,7 @@ async fn poll_telegram_updates(
     if max_update_id > 0 {
         state.telegram_next_update_offset = Some(max_update_id);
     }
-    record_channel_success(state, "telegram");
+    record_channel_success(config, state, "telegram");
     Ok(())
 }
 
@@ -620,6 +650,9 @@ async fn poll_discord_messages(
     state: &mut MultiChannelLiveConnectorStateFile,
     summary: &mut MultiChannelLiveConnectorCycleSummary,
 ) -> Result<()> {
+    if !begin_channel_poll(config, state, "discord") {
+        return Ok(());
+    }
     let token = config
         .discord_bot_token
         .as_deref()
@@ -657,7 +690,14 @@ async fn poll_discord_messages(
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                record_channel_error(state, "discord", error.code, error.message, error.retryable);
+                record_channel_error(
+                    config,
+                    state,
+                    "discord",
+                    error.code,
+                    error.message,
+                    error.retryable,
+                );
                 continue;
             }
         };
@@ -702,7 +742,14 @@ async fn poll_discord_messages(
                     }
                 }
                 Err(error) => {
-                    record_channel_error(state, "discord", error.code, error.message, false);
+                    record_channel_error(
+                        config,
+                        state,
+                        "discord",
+                        error.code,
+                        error.message,
+                        false,
+                    );
                     summary.parse_failures = summary.parse_failures.saturating_add(1);
                 }
             }
@@ -715,7 +762,7 @@ async fn poll_discord_messages(
                 .discord_last_message_ids
                 .insert(channel_id.clone(), latest_seen);
         }
-        record_channel_success(state, "discord");
+        record_channel_success(config, state, "discord");
     }
     Ok(())
 }
@@ -748,7 +795,7 @@ where
                 return Err(ConnectorError::new(
                     MultiChannelLiveConnectorErrorCode::TransportError,
                     format!("{channel} transport error: {error}"),
-                    false,
+                    true,
                 ));
             }
         };
@@ -787,7 +834,11 @@ where
         return Err(ConnectorError::new(
             code,
             format!("{channel} request failed with status {}", status.as_u16()),
-            false,
+            matches!(
+                code,
+                MultiChannelLiveConnectorErrorCode::RateLimited
+                    | MultiChannelLiveConnectorErrorCode::ProviderUnavailable
+            ),
         ));
     }
 }
@@ -811,14 +862,26 @@ fn initialize_channel_modes(
     ] {
         let entry = state.channels.entry(channel.to_string()).or_default();
         entry.mode = mode.as_str().to_string();
+        ensure_channel_resilience_state(config, entry, mode.as_str() == "disabled");
     }
     update_channel_liveness(state);
 }
 
 fn update_channel_liveness(state: &mut MultiChannelLiveConnectorStateFile) {
+    let now_unix_ms = current_unix_timestamp_ms();
     for channel_state in state.channels.values_mut() {
         channel_state.liveness = if channel_state.mode == "disabled" {
             "disabled".to_string()
+        } else if channel_state.breaker_state == CONNECTOR_BREAKER_STATE_OPEN {
+            if channel_state.breaker_open_until_unix_ms > 0
+                && now_unix_ms >= channel_state.breaker_open_until_unix_ms
+            {
+                "recovering".to_string()
+            } else {
+                "open".to_string()
+            }
+        } else if channel_state.breaker_state == CONNECTOR_BREAKER_STATE_HALF_OPEN {
+            "recovering".to_string()
         } else if channel_state.last_success_unix_ms > 0
             && channel_state.last_success_unix_ms >= channel_state.last_error_unix_ms
         {
@@ -831,13 +894,96 @@ fn update_channel_liveness(state: &mut MultiChannelLiveConnectorStateFile) {
     }
 }
 
-fn record_channel_success(state: &mut MultiChannelLiveConnectorStateFile, channel: &str) {
+fn connector_retry_budget_max(config: &MultiChannelLiveConnectorsConfig) -> u64 {
+    u64::try_from(config.retry_max_attempts.max(1)).unwrap_or(u64::MAX)
+}
+
+fn connector_breaker_failure_threshold(config: &MultiChannelLiveConnectorsConfig) -> u64 {
+    connector_retry_budget_max(config).max(2)
+}
+
+fn connector_breaker_cooldown_ms(config: &MultiChannelLiveConnectorsConfig) -> u64 {
+    config.retry_base_delay_ms.saturating_mul(4).max(1_000)
+}
+
+fn ensure_channel_resilience_state(
+    config: &MultiChannelLiveConnectorsConfig,
+    entry: &mut MultiChannelLiveConnectorChannelState,
+    disabled_mode: bool,
+) {
+    let budget_max = connector_retry_budget_max(config);
+    if entry.retry_budget_remaining == 0 || entry.retry_budget_remaining > budget_max {
+        entry.retry_budget_remaining = budget_max;
+    }
+    if disabled_mode {
+        entry.breaker_state = CONNECTOR_BREAKER_STATE_DISABLED.to_string();
+        entry.breaker_open_until_unix_ms = 0;
+        entry.breaker_last_open_reason.clear();
+        return;
+    }
+    if entry.breaker_state.trim().is_empty()
+        || entry.breaker_state == CONNECTOR_BREAKER_STATE_DISABLED
+    {
+        entry.breaker_state = CONNECTOR_BREAKER_STATE_CLOSED.to_string();
+    }
+}
+
+fn begin_channel_poll(
+    config: &MultiChannelLiveConnectorsConfig,
+    state: &mut MultiChannelLiveConnectorStateFile,
+    channel: &str,
+) -> bool {
+    let now_unix_ms = current_unix_timestamp_ms();
     let entry = state.channels.entry(channel.to_string()).or_default();
+    ensure_channel_resilience_state(config, entry, entry.mode == "disabled");
+    if entry.breaker_state != CONNECTOR_BREAKER_STATE_OPEN {
+        return true;
+    }
+    if entry.breaker_open_until_unix_ms > now_unix_ms {
+        entry.last_error_unix_ms = now_unix_ms;
+        entry.last_error_code = "circuit_open".to_string();
+        entry.last_error_message = format!(
+            "circuit breaker open until {}",
+            entry.breaker_open_until_unix_ms
+        );
+        return false;
+    }
+    entry.breaker_state = CONNECTOR_BREAKER_STATE_HALF_OPEN.to_string();
+    entry.retry_budget_remaining = 1;
+    true
+}
+
+fn open_channel_breaker(
+    config: &MultiChannelLiveConnectorsConfig,
+    entry: &mut MultiChannelLiveConnectorChannelState,
+    reason: &str,
+) {
+    let now_unix_ms = current_unix_timestamp_ms();
+    entry.breaker_state = CONNECTOR_BREAKER_STATE_OPEN.to_string();
+    entry.breaker_open_until_unix_ms =
+        now_unix_ms.saturating_add(connector_breaker_cooldown_ms(config));
+    entry.breaker_last_open_reason = reason.to_string();
+    entry.breaker_open_count = entry.breaker_open_count.saturating_add(1);
+}
+
+fn record_channel_success(
+    config: &MultiChannelLiveConnectorsConfig,
+    state: &mut MultiChannelLiveConnectorStateFile,
+    channel: &str,
+) {
+    let entry = state.channels.entry(channel.to_string()).or_default();
+    ensure_channel_resilience_state(config, entry, entry.mode == "disabled");
     entry.last_success_unix_ms = current_unix_timestamp_ms();
     entry.consecutive_failures = 0;
+    entry.retry_budget_remaining = connector_retry_budget_max(config);
+    if entry.breaker_state != CONNECTOR_BREAKER_STATE_DISABLED {
+        entry.breaker_state = CONNECTOR_BREAKER_STATE_CLOSED.to_string();
+    }
+    entry.breaker_open_until_unix_ms = 0;
 }
 
 fn record_channel_error(
+    config: &MultiChannelLiveConnectorsConfig,
     state: &mut MultiChannelLiveConnectorStateFile,
     channel: &str,
     code: MultiChannelLiveConnectorErrorCode,
@@ -845,6 +991,7 @@ fn record_channel_error(
     retryable: bool,
 ) {
     let entry = state.channels.entry(channel.to_string()).or_default();
+    ensure_channel_resilience_state(config, entry, entry.mode == "disabled");
     let message = message.into();
     entry.last_error_unix_ms = current_unix_timestamp_ms();
     entry.last_error_code = code.as_str().to_string();
@@ -852,6 +999,7 @@ fn record_channel_error(
     entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
     if retryable {
         entry.retry_attempts = entry.retry_attempts.saturating_add(1);
+        entry.retry_budget_remaining = entry.retry_budget_remaining.saturating_sub(1);
     }
     match code {
         MultiChannelLiveConnectorErrorCode::AuthFailed
@@ -865,6 +1013,17 @@ fn record_channel_error(
         _ => {
             entry.provider_failures = entry.provider_failures.saturating_add(1);
         }
+    }
+
+    if entry.breaker_state == CONNECTOR_BREAKER_STATE_DISABLED || !retryable {
+        return;
+    }
+    let should_open_from_half_open = entry.breaker_state == CONNECTOR_BREAKER_STATE_HALF_OPEN;
+    let should_open_from_budget = entry.consecutive_failures
+        >= connector_breaker_failure_threshold(config)
+        && entry.retry_budget_remaining == 0;
+    if should_open_from_half_open || should_open_from_budget {
+        open_channel_breaker(config, entry, code.as_str());
     }
 }
 
@@ -1142,6 +1301,175 @@ mod tests {
         assert!(!status.state_present);
         assert_eq!(status.processed_event_count, 0);
         assert!(status.channels.is_empty());
+    }
+
+    #[test]
+    fn unit_breaker_opens_when_retry_budget_is_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_connector_config(temp.path());
+        config.telegram_mode = CliMultiChannelLiveConnectorMode::Polling;
+
+        let mut state = MultiChannelLiveConnectorStateFile::default();
+        initialize_channel_modes(&config, &mut state);
+
+        record_channel_error(
+            &config,
+            &mut state,
+            "telegram",
+            MultiChannelLiveConnectorErrorCode::ProviderUnavailable,
+            "provider unavailable",
+            true,
+        );
+        let telegram = state.channels.get("telegram").expect("telegram channel");
+        assert_eq!(telegram.breaker_state, CONNECTOR_BREAKER_STATE_CLOSED);
+        assert_eq!(telegram.retry_budget_remaining, 1);
+        assert_eq!(telegram.breaker_open_count, 0);
+
+        record_channel_error(
+            &config,
+            &mut state,
+            "telegram",
+            MultiChannelLiveConnectorErrorCode::ProviderUnavailable,
+            "provider unavailable",
+            true,
+        );
+        let telegram = state.channels.get("telegram").expect("telegram channel");
+        assert_eq!(telegram.breaker_state, CONNECTOR_BREAKER_STATE_OPEN);
+        assert_eq!(
+            telegram.breaker_last_open_reason,
+            MultiChannelLiveConnectorErrorCode::ProviderUnavailable.as_str()
+        );
+        assert_eq!(telegram.breaker_open_count, 1);
+        assert_eq!(telegram.retry_budget_remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn functional_status_snapshot_includes_breaker_posture_fields() {
+        let temp = tempdir().expect("tempdir");
+        let server = MockServer::start();
+        let telegram_mock = server.mock(|when, then| {
+            when.method(GET).path("/bottelegram-token/getUpdates");
+            then.status(503).body(r#"{"ok":false}"#);
+        });
+
+        let mut config = build_connector_config(temp.path());
+        config.telegram_mode = CliMultiChannelLiveConnectorMode::Polling;
+        config.telegram_api_base = server.base_url();
+        config.telegram_bot_token = Some("telegram-token".to_string());
+        config.retry_max_attempts = 1;
+        config.retry_base_delay_ms = 1;
+
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("first cycle should run");
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("second cycle should run");
+
+        let status = load_multi_channel_live_connectors_status_report(config.state_path.as_path())
+            .expect("status");
+        let telegram = status.channels.get("telegram").expect("telegram channel");
+        assert_eq!(telegram.breaker_state, CONNECTOR_BREAKER_STATE_OPEN);
+        assert_eq!(telegram.liveness, "open");
+        assert_eq!(telegram.retry_budget_remaining, 0);
+        assert_eq!(
+            telegram.breaker_last_open_reason,
+            MultiChannelLiveConnectorErrorCode::ProviderUnavailable.as_str()
+        );
+        assert!(telegram.breaker_open_until_unix_ms >= current_unix_timestamp_ms());
+        telegram_mock.assert_calls(2);
+    }
+
+    #[tokio::test]
+    async fn integration_breaker_skips_polling_until_cooldown_then_recovers() {
+        let temp = tempdir().expect("tempdir");
+        let failing_server = MockServer::start();
+        let failing_mock = failing_server.mock(|when, then| {
+            when.method(GET).path("/bottelegram-token/getUpdates");
+            then.status(503).body(r#"{"ok":false}"#);
+        });
+
+        let mut config = build_connector_config(temp.path());
+        config.telegram_mode = CliMultiChannelLiveConnectorMode::Polling;
+        config.telegram_api_base = failing_server.base_url();
+        config.telegram_bot_token = Some("telegram-token".to_string());
+        config.retry_max_attempts = 1;
+        config.retry_base_delay_ms = 10_000;
+
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("first cycle should run");
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("second cycle should run");
+
+        let status = load_multi_channel_live_connectors_status_report(config.state_path.as_path())
+            .expect("status");
+        let telegram = status.channels.get("telegram").expect("telegram channel");
+        assert_eq!(telegram.breaker_state, CONNECTOR_BREAKER_STATE_OPEN);
+
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("third cycle should run");
+        failing_mock.assert_calls(2);
+
+        let mut state =
+            load_multi_channel_live_connectors_state(config.state_path.as_path()).expect("state");
+        let telegram = state
+            .channels
+            .get_mut("telegram")
+            .expect("telegram channel state");
+        telegram.breaker_open_until_unix_ms = current_unix_timestamp_ms().saturating_sub(1);
+        save_multi_channel_live_connectors_state(config.state_path.as_path(), &state)
+            .expect("save state");
+
+        let recovery_server = MockServer::start();
+        let recovery_mock = recovery_server.mock(|when, then| {
+            when.method(GET).path("/bottelegram-token/getUpdates");
+            then.status(200)
+                .body(json!({"ok":true,"result":[]}).to_string());
+        });
+        config.telegram_api_base = recovery_server.base_url();
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("recovery cycle should run");
+
+        let status = load_multi_channel_live_connectors_status_report(config.state_path.as_path())
+            .expect("status");
+        let telegram = status.channels.get("telegram").expect("telegram channel");
+        assert_eq!(telegram.breaker_state, CONNECTOR_BREAKER_STATE_CLOSED);
+        assert_eq!(telegram.retry_budget_remaining, 1);
+        assert_eq!(telegram.consecutive_failures, 0);
+        recovery_mock.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn regression_single_retryable_failure_does_not_open_breaker() {
+        let temp = tempdir().expect("tempdir");
+        let server = MockServer::start();
+        let telegram_mock = server.mock(|when, then| {
+            when.method(GET).path("/bottelegram-token/getUpdates");
+            then.status(503).body(r#"{"ok":false}"#);
+        });
+
+        let mut config = build_connector_config(temp.path());
+        config.telegram_mode = CliMultiChannelLiveConnectorMode::Polling;
+        config.telegram_api_base = server.base_url();
+        config.telegram_bot_token = Some("telegram-token".to_string());
+        config.retry_max_attempts = 1;
+        config.retry_base_delay_ms = 0;
+
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("cycle should run");
+
+        let status = load_multi_channel_live_connectors_status_report(config.state_path.as_path())
+            .expect("status");
+        let telegram = status.channels.get("telegram").expect("telegram channel");
+        assert_eq!(telegram.breaker_state, CONNECTOR_BREAKER_STATE_CLOSED);
+        assert_eq!(telegram.consecutive_failures, 1);
+        assert_eq!(telegram.breaker_open_count, 0);
+        telegram_mock.assert_calls(1);
     }
 
     #[tokio::test]

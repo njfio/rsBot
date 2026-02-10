@@ -3352,10 +3352,23 @@ fn render_multi_channel_status_report(report: &MultiChannelStatusInspectReport) 
         .connectors
         .as_ref()
         .map(|connectors| {
+            let now_unix_ms = current_unix_timestamp_ms();
             let mut channel_rows = Vec::new();
             for (channel, state) in &connectors.channels {
+                let operator_guidance = if state.breaker_state == "open"
+                    && state.breaker_open_until_unix_ms > now_unix_ms
+                {
+                    format!(
+                        "wait_for_breaker_recovery_until:{}",
+                        state.breaker_open_until_unix_ms
+                    )
+                } else if state.liveness == "degraded" {
+                    "inspect_provider_errors_and_credentials".to_string()
+                } else {
+                    "none".to_string()
+                };
                 channel_rows.push(format!(
-                    "{}:{}:{}:{}:{}",
+                    "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                     channel,
                     if state.mode.trim().is_empty() {
                         "unknown"
@@ -3367,8 +3380,22 @@ fn render_multi_channel_status_report(report: &MultiChannelStatusInspectReport) 
                     } else {
                         state.liveness.as_str()
                     },
+                    if state.breaker_state.trim().is_empty() {
+                        "unknown"
+                    } else {
+                        state.breaker_state.as_str()
+                    },
                     state.events_ingested,
-                    state.duplicates_skipped
+                    state.duplicates_skipped,
+                    state.retry_budget_remaining,
+                    state.breaker_open_until_unix_ms,
+                    if state.breaker_last_open_reason.trim().is_empty() {
+                        "none"
+                    } else {
+                        state.breaker_last_open_reason.as_str()
+                    },
+                    state.breaker_open_count,
+                    operator_guidance
                 ));
             }
             channel_rows.sort();
@@ -4846,6 +4873,73 @@ invalid-json-line
         assert!(rendered.contains(
             "reason_code_counts=duplicate_events_skipped:1,events_applied:1,healthy_cycle:2"
         ));
+    }
+
+    #[test]
+    fn functional_render_multi_channel_status_report_includes_connector_breaker_guidance() {
+        let temp = tempdir().expect("tempdir");
+        let multi_channel_root = temp.path().join("multi-channel");
+        std::fs::create_dir_all(&multi_channel_root).expect("create multi-channel dir");
+        std::fs::write(
+            multi_channel_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_event_keys": ["telegram:tg-1"],
+  "health": {
+    "updated_unix_ms": 910,
+    "cycle_duration_ms": 9,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-channel state");
+        std::fs::write(
+            multi_channel_root.join("runtime-events.jsonl"),
+            r#"{"reason_codes":["healthy_cycle"],"health_reason":"no recent transport failures observed"}"#,
+        )
+        .expect("write multi-channel events");
+
+        let connectors_state_path = temp.path().join("connectors-state.json");
+        let breaker_open_until_unix_ms = crate::current_unix_timestamp_ms().saturating_add(60_000);
+        let connectors_state = format!(
+            r#"{{
+  "schema_version": 1,
+  "processed_event_keys": ["telegram:tg-1"],
+  "channels": {{
+    "telegram": {{
+      "mode": "polling",
+      "liveness": "open",
+      "events_ingested": 3,
+      "duplicates_skipped": 1,
+      "retry_budget_remaining": 0,
+      "breaker_state": "open",
+      "breaker_open_until_unix_ms": {breaker_open_until_unix_ms},
+      "breaker_last_open_reason": "provider_unavailable",
+      "breaker_open_count": 2
+    }}
+  }}
+}}"#
+        );
+        std::fs::write(&connectors_state_path, connectors_state).expect("write connector state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.multi_channel_state_dir = multi_channel_root;
+        cli.multi_channel_live_connectors_state_path = connectors_state_path;
+
+        let report =
+            collect_multi_channel_status_report(&cli).expect("collect multi-channel status");
+        let rendered = render_multi_channel_status_report(&report);
+        assert!(rendered.contains("connectors=state_present=true processed_event_count=1"));
+        assert!(rendered.contains("channels=telegram:polling:open:open:3:1:0:"));
+        assert!(rendered.contains(":provider_unavailable:2:wait_for_breaker_recovery_until:"));
     }
 
     #[test]

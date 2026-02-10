@@ -234,11 +234,33 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         } else {
             let mut channel_lines = Vec::new();
             for (channel, status) in &report.channels {
+                let operator_guidance = if status.breaker_state == "open" {
+                    format!(
+                        "wait_for_breaker_recovery_until:{}",
+                        status.breaker_open_until_unix_ms
+                    )
+                } else if status.liveness == "degraded" {
+                    "inspect_provider_errors_and_credentials".to_string()
+                } else {
+                    "none".to_string()
+                };
                 channel_lines.push(format!(
-                    "{}:mode={} liveness={} ingested={} duplicates={} retries={} auth_failures={} parse_failures={} provider_failures={} last_error_code={}",
+                    "{}:mode={} liveness={} breaker_state={} retry_budget_remaining={} breaker_open_until_unix_ms={} breaker_last_open_reason={} ingested={} duplicates={} retries={} auth_failures={} parse_failures={} provider_failures={} last_error_code={} guidance={}",
                     channel,
                     if status.mode.is_empty() { "unknown" } else { status.mode.as_str() },
                     if status.liveness.is_empty() { "unknown" } else { status.liveness.as_str() },
+                    if status.breaker_state.is_empty() {
+                        "unknown"
+                    } else {
+                        status.breaker_state.as_str()
+                    },
+                    status.retry_budget_remaining,
+                    status.breaker_open_until_unix_ms,
+                    if status.breaker_last_open_reason.is_empty() {
+                        "none"
+                    } else {
+                        status.breaker_last_open_reason.as_str()
+                    },
                     status.events_ingested,
                     status.duplicates_skipped,
                     status.retry_attempts,
@@ -249,7 +271,8 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
                         "none"
                     } else {
                         status.last_error_code.as_str()
-                    }
+                    },
+                    operator_guidance
                 ));
             }
             channel_lines.sort();
