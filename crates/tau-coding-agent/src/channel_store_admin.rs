@@ -5,6 +5,7 @@ enum TransportHealthInspectTarget {
     Slack,
     GithubAll,
     GithubRepo { owner: String, repo: String },
+    MultiChannel,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -101,7 +102,7 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, or github:owner/repo",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, or multi-channel",
             raw
         );
     }
@@ -111,16 +112,20 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     if trimmed.eq_ignore_ascii_case("github") {
         return Ok(TransportHealthInspectTarget::GithubAll);
     }
+    if trimmed.eq_ignore_ascii_case("multi-channel") || trimmed.eq_ignore_ascii_case("multichannel")
+    {
+        return Ok(TransportHealthInspectTarget::MultiChannel);
+    }
 
     let Some((transport, repo_slug)) = trimmed.split_once(':') else {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, or github:owner/repo",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, or multi-channel",
             raw
         );
     };
     if !transport.eq_ignore_ascii_case("github") {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, or github:owner/repo",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, or multi-channel",
             raw
         );
     }
@@ -149,6 +154,9 @@ fn collect_transport_health_rows(
         TransportHealthInspectTarget::GithubAll => collect_all_github_transport_health_rows(cli),
         TransportHealthInspectTarget::GithubRepo { owner, repo } => {
             Ok(vec![collect_github_transport_health_row(cli, owner, repo)?])
+        }
+        TransportHealthInspectTarget::MultiChannel => {
+            Ok(vec![collect_multi_channel_transport_health_row(cli)?])
         }
     }
 }
@@ -223,6 +231,17 @@ fn collect_all_github_transport_health_rows(cli: &Cli) -> Result<Vec<TransportHe
         );
     }
     Ok(rows)
+}
+
+fn collect_multi_channel_transport_health_row(cli: &Cli) -> Result<TransportHealthInspectRow> {
+    let state_path = cli.multi_channel_state_dir.join("state.json");
+    let health = load_transport_health_snapshot(&state_path)?;
+    Ok(TransportHealthInspectRow {
+        transport: "multi-channel".to_string(),
+        target: "telegram/discord/whatsapp".to_string(),
+        state_path: state_path.display().to_string(),
+        health,
+    })
 }
 
 fn load_transport_health_snapshot(state_path: &Path) -> Result<TransportHealthSnapshot> {
@@ -313,6 +332,14 @@ mod tests {
                 repo: "repo".to_string(),
             }
         );
+        assert_eq!(
+            parse_transport_health_inspect_target("multi-channel").expect("multi-channel"),
+            TransportHealthInspectTarget::MultiChannel
+        );
+        assert_eq!(
+            parse_transport_health_inspect_target("multichannel").expect("multichannel"),
+            TransportHealthInspectTarget::MultiChannel
+        );
     }
 
     #[test]
@@ -346,9 +373,11 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let github_root = temp.path().join("github");
         let slack_root = temp.path().join("slack");
+        let multi_channel_root = temp.path().join("multi-channel");
         let github_repo_dir = github_root.join("owner__repo");
         std::fs::create_dir_all(&github_repo_dir).expect("create github repo dir");
         std::fs::create_dir_all(&slack_root).expect("create slack dir");
+        std::fs::create_dir_all(&multi_channel_root).expect("create multi-channel dir");
 
         std::fs::write(
             github_repo_dir.join("state.json"),
@@ -396,9 +425,32 @@ mod tests {
         )
         .expect("write slack state");
 
+        std::fs::write(
+            multi_channel_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_event_keys": [],
+  "health": {
+    "updated_unix_ms": 300,
+    "cycle_duration_ms": 15,
+    "queue_depth": 1,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 3,
+    "last_cycle_processed": 3,
+    "last_cycle_completed": 3,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-channel state");
+
         let mut cli = Cli::parse_from(["tau-rs"]);
         cli.github_state_dir = github_root;
         cli.slack_state_dir = slack_root;
+        cli.multi_channel_state_dir = multi_channel_root;
 
         let github_rows =
             collect_transport_health_rows(&cli, &TransportHealthInspectTarget::GithubAll)
@@ -414,10 +466,22 @@ mod tests {
         assert_eq!(slack_rows[0].transport, "slack");
         assert_eq!(slack_rows[0].health.queue_depth, 2);
 
-        let rendered =
-            render_transport_health_rows(&[github_rows[0].clone(), slack_rows[0].clone()]);
+        let multi_channel_rows =
+            collect_transport_health_rows(&cli, &TransportHealthInspectTarget::MultiChannel)
+                .expect("collect multi-channel rows");
+        assert_eq!(multi_channel_rows.len(), 1);
+        assert_eq!(multi_channel_rows[0].transport, "multi-channel");
+        assert_eq!(multi_channel_rows[0].target, "telegram/discord/whatsapp");
+        assert_eq!(multi_channel_rows[0].health.last_cycle_discovered, 3);
+
+        let rendered = render_transport_health_rows(&[
+            github_rows[0].clone(),
+            slack_rows[0].clone(),
+            multi_channel_rows[0].clone(),
+        ]);
         assert!(rendered.contains("transport=github"));
         assert!(rendered.contains("transport=slack"));
+        assert!(rendered.contains("transport=multi-channel"));
     }
 
     #[test]

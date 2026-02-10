@@ -1,0 +1,73 @@
+# Multi-channel Operations Runbook
+
+Run all commands from repository root.
+
+## Scope
+
+This runbook covers the fixture-driven Multi-channel runtime for:
+
+- Telegram
+- Discord
+- WhatsApp
+
+## Health and observability signals
+
+Primary status signal:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-state-dir .tau/multi-channel \
+  --transport-health-inspect multi-channel \
+  --transport-health-json
+```
+
+Primary state files:
+
+- `.tau/multi-channel/state.json`
+- `.tau/multi-channel/runtime-events.jsonl`
+- `.tau/multi-channel/channel-store/<transport>/<channel>/...`
+
+`runtime-events.jsonl` reason codes:
+
+- `healthy_cycle`
+- `queue_backpressure_applied`
+- `duplicate_events_skipped`
+- `retry_attempted`
+- `transient_failures_observed`
+- `event_processing_failed`
+
+## Deterministic demo path
+
+```bash
+./scripts/demo/multi-channel.sh
+```
+
+## Rollout plan with guardrails
+
+1. Validate fixture contract and runtime locally:
+   `cargo test -p tau-coding-agent multi_channel -- --nocapture`
+2. Run deterministic demo:
+   `./scripts/demo/multi-channel.sh`
+3. Confirm health snapshot is `healthy` before promotion:
+   `--transport-health-inspect multi-channel --transport-health-json`
+4. Promote by increasing fixture/event complexity incrementally while monitoring:
+   `failure_streak`, `last_cycle_failed`, `queue_depth`.
+
+## Rollback plan
+
+1. Stop invoking `--multi-channel-contract-runner`.
+2. Preserve `.tau/multi-channel/` for incident analysis.
+3. Revert to last known-good revision:
+   `git revert <commit>`
+4. Re-run validation matrix before re-enable.
+
+## Troubleshooting
+
+- Symptom: health state `degraded` with `event_processing_failed`.
+  Action: inspect `runtime-events.jsonl`, then inspect channel-store write paths and filesystem permissions.
+- Symptom: health state `degraded` with `retry_attempted`.
+  Action: inspect per-event metadata for `simulate_transient_failures` and increase retry settings only when needed.
+- Symptom: health state `failing` (`failure_streak >= 3`).
+  Action: treat as rollout gate failure; pause promotion and investigate repeated processing failures.
+- Symptom: non-zero `queue_depth`.
+  Action: increase `--multi-channel-queue-limit` or reduce fixture batch size to avoid backpressure drops.
