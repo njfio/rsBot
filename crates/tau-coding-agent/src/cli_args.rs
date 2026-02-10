@@ -974,6 +974,24 @@ pub(crate) struct Cli {
     pub(crate) operator_control_summary_json: bool,
 
     #[arg(
+        long = "operator-control-summary-snapshot-out",
+        env = "TAU_OPERATOR_CONTROL_SUMMARY_SNAPSHOT_OUT",
+        value_name = "PATH",
+        requires = "operator_control_summary",
+        help = "Write current --operator-control-summary report as JSON snapshot to PATH"
+    )]
+    pub(crate) operator_control_summary_snapshot_out: Option<PathBuf>,
+
+    #[arg(
+        long = "operator-control-summary-compare",
+        env = "TAU_OPERATOR_CONTROL_SUMMARY_COMPARE",
+        value_name = "PATH",
+        requires = "operator_control_summary",
+        help = "Compare current --operator-control-summary report against a baseline snapshot JSON at PATH"
+    )]
+    pub(crate) operator_control_summary_compare: Option<PathBuf>,
+
+    #[arg(
         long = "dashboard-status-inspect",
         env = "TAU_DASHBOARD_STATUS_INSPECT",
         conflicts_with = "channel_store_inspect",

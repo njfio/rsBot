@@ -400,6 +400,8 @@ fn test_cli() -> Cli {
         github_status_json: false,
         operator_control_summary: false,
         operator_control_summary_json: false,
+        operator_control_summary_snapshot_out: None,
+        operator_control_summary_compare: None,
         dashboard_status_inspect: false,
         dashboard_status_json: false,
         multi_channel_status_inspect: false,
@@ -2837,9 +2839,56 @@ fn functional_cli_operator_control_summary_accepts_json_mode() {
 }
 
 #[test]
+fn functional_cli_operator_control_summary_accepts_snapshot_and_compare_paths() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--operator-control-summary",
+        "--operator-control-summary-compare",
+        ".tau/operator-control-baseline.json",
+        "--operator-control-summary-snapshot-out",
+        ".tau/operator-control-current.json",
+    ]);
+    assert!(cli.operator_control_summary);
+    assert_eq!(
+        cli.operator_control_summary_compare,
+        Some(PathBuf::from(".tau/operator-control-baseline.json"))
+    );
+    assert_eq!(
+        cli.operator_control_summary_snapshot_out,
+        Some(PathBuf::from(".tau/operator-control-current.json"))
+    );
+}
+
+#[test]
 fn regression_cli_operator_control_summary_json_requires_summary_mode() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--operator-control-summary-json"]);
     let error = parse.expect_err("json output should require summary flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_operator_control_summary_compare_requires_summary_mode() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--operator-control-summary-compare",
+        ".tau/operator-control-baseline.json",
+    ]);
+    let error = parse.expect_err("compare path should require summary flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_operator_control_summary_snapshot_out_requires_summary_mode() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--operator-control-summary-snapshot-out",
+        ".tau/operator-control-current.json",
+    ]);
+    let error = parse.expect_err("snapshot path should require summary flag");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));

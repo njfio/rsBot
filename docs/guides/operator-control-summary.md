@@ -27,6 +27,31 @@ cargo run -p tau-coding-agent -- \
   --operator-control-summary-json
 ```
 
+Capture baseline snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --operator-control-summary \
+  --operator-control-summary-snapshot-out .tau/reports/operator-control-baseline.json
+```
+
+Compare current state against baseline snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --operator-control-summary \
+  --operator-control-summary-compare .tau/reports/operator-control-baseline.json
+```
+
+Compare in JSON mode:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --operator-control-summary \
+  --operator-control-summary-json \
+  --operator-control-summary-compare .tau/reports/operator-control-baseline.json
+```
+
 ## Output shape
 
 Top-level fields:
@@ -38,6 +63,14 @@ Top-level fields:
 - `daemon`: daemon health and lifecycle posture
 - `release_channel`: release-channel configuration posture
 - `components[]`: per-component health rows with reason/recommendation and queue/failure counters
+
+When `--operator-control-summary-compare` is used:
+- `drift_state`: `stable|changed|improved|regressed`
+- `risk_level`: `low|moderate|high`
+- `reason_codes_added|reason_codes_removed`: aggregate reason-code deltas
+- `recommendations_added|recommendations_removed`: recommendation deltas
+- `changed_components[]`: per-component drift rows (`severity`, before/after state, queue/failure counters)
+- `unchanged_component_count`: stable component count
 
 ## Troubleshooting map
 

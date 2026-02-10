@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TransportHealthInspectTarget {
@@ -746,7 +746,7 @@ struct DeploymentStatusInspectReport {
     health: TransportHealthSnapshot,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct OperatorControlComponentSummaryRow {
     component: String,
     health_state: String,
@@ -771,7 +771,7 @@ struct OperatorControlComponentInputs {
     failure_streak: usize,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct OperatorControlDaemonSummary {
     health_state: String,
     rollout_gate: String,
@@ -786,7 +786,7 @@ struct OperatorControlDaemonSummary {
     state_path: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct OperatorControlReleaseChannelSummary {
     health_state: String,
     rollout_gate: String,
@@ -797,7 +797,7 @@ struct OperatorControlReleaseChannelSummary {
     path: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct OperatorControlPolicyPosture {
     pairing_strict_effective: bool,
     pairing_config_strict_mode: bool,
@@ -815,7 +815,7 @@ struct OperatorControlPolicyPosture {
     gateway_remote_recommendations: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct OperatorControlSummaryReport {
     generated_unix_ms: u64,
     health_state: String,
@@ -826,6 +826,44 @@ struct OperatorControlSummaryReport {
     daemon: OperatorControlDaemonSummary,
     release_channel: OperatorControlReleaseChannelSummary,
     components: Vec<OperatorControlComponentSummaryRow>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OperatorControlSummaryDiffComponentRow {
+    component: String,
+    drift_state: String,
+    severity: String,
+    health_state_before: String,
+    health_state_after: String,
+    rollout_gate_before: String,
+    rollout_gate_after: String,
+    reason_code_before: String,
+    reason_code_after: String,
+    recommendation_before: String,
+    recommendation_after: String,
+    queue_depth_before: usize,
+    queue_depth_after: usize,
+    failure_streak_before: usize,
+    failure_streak_after: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OperatorControlSummaryDiffReport {
+    generated_unix_ms: u64,
+    baseline_generated_unix_ms: u64,
+    current_generated_unix_ms: u64,
+    drift_state: String,
+    risk_level: String,
+    health_state_before: String,
+    health_state_after: String,
+    rollout_gate_before: String,
+    rollout_gate_after: String,
+    reason_codes_added: Vec<String>,
+    reason_codes_removed: Vec<String>,
+    recommendations_added: Vec<String>,
+    recommendations_removed: Vec<String>,
+    changed_components: Vec<OperatorControlSummaryDiffComponentRow>,
+    unchanged_component_count: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -874,7 +912,23 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
 
     if cli.operator_control_summary {
         let report = collect_operator_control_summary_report(cli)?;
-        if cli.operator_control_summary_json {
+        if let Some(snapshot_path) = cli.operator_control_summary_snapshot_out.as_deref() {
+            save_operator_control_summary_snapshot(snapshot_path, &report)?;
+        }
+
+        if let Some(compare_path) = cli.operator_control_summary_compare.as_deref() {
+            let baseline = load_operator_control_summary_snapshot(compare_path)?;
+            let drift = build_operator_control_summary_diff_report(&baseline, &report);
+            if cli.operator_control_summary_json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&drift)
+                        .context("failed to render operator control summary diff json")?
+                );
+            } else {
+                println!("{}", render_operator_control_summary_diff_report(&drift));
+            }
+        } else if cli.operator_control_summary_json {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&report)
@@ -2111,6 +2165,221 @@ fn collect_operator_control_summary_report(cli: &Cli) -> Result<OperatorControlS
     })
 }
 
+fn save_operator_control_summary_snapshot(
+    path: &Path,
+    report: &OperatorControlSummaryReport,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create snapshot directory {}", parent.display())
+            })?;
+        }
+    }
+    let payload = serde_json::to_string_pretty(report)
+        .context("failed to serialize operator control summary snapshot")?;
+    std::fs::write(path, payload).with_context(|| {
+        format!(
+            "failed to write operator control summary snapshot {}",
+            path.display()
+        )
+    })
+}
+
+fn load_operator_control_summary_snapshot(path: &Path) -> Result<OperatorControlSummaryReport> {
+    let payload = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read operator control summary snapshot {}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str::<OperatorControlSummaryReport>(&payload).with_context(|| {
+        format!(
+            "failed to parse operator control summary snapshot {}",
+            path.display()
+        )
+    })
+}
+
+fn component_drift_rank(
+    before: &OperatorControlComponentSummaryRow,
+    after: &OperatorControlComponentSummaryRow,
+) -> i8 {
+    let before_health = operator_health_state_rank(&before.health_state) as i8;
+    let after_health = operator_health_state_rank(&after.health_state) as i8;
+    let health_delta = after_health - before_health;
+    let before_gate = if before.rollout_gate == "hold" { 1 } else { 0 };
+    let after_gate = if after.rollout_gate == "hold" { 1 } else { 0 };
+    let gate_delta = after_gate - before_gate;
+
+    if health_delta > 0 || gate_delta > 0 {
+        1
+    } else if health_delta < 0 || gate_delta < 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+fn classify_component_drift_state(
+    before: &OperatorControlComponentSummaryRow,
+    after: &OperatorControlComponentSummaryRow,
+) -> (&'static str, &'static str) {
+    let changed = before.health_state != after.health_state
+        || before.rollout_gate != after.rollout_gate
+        || before.reason_code != after.reason_code
+        || before.recommendation != after.recommendation
+        || before.queue_depth != after.queue_depth
+        || before.failure_streak != after.failure_streak;
+
+    if !changed {
+        return ("stable", "none");
+    }
+
+    match component_drift_rank(before, after) {
+        1 => ("regressed", "high"),
+        -1 => ("improved", "low"),
+        _ => ("changed", "medium"),
+    }
+}
+
+fn component_snapshot_placeholder(name: &str) -> OperatorControlComponentSummaryRow {
+    OperatorControlComponentSummaryRow {
+        component: name.to_string(),
+        state_path: "snapshot_missing".to_string(),
+        health_state: "failing".to_string(),
+        health_reason: "component snapshot missing".to_string(),
+        rollout_gate: "hold".to_string(),
+        reason_code: "snapshot_missing".to_string(),
+        recommendation: "capture a complete baseline snapshot and rerun compare".to_string(),
+        queue_depth: 0,
+        failure_streak: 0,
+    }
+}
+
+fn vec_delta(before: &[String], after: &[String]) -> (Vec<String>, Vec<String>) {
+    let before_set: BTreeSet<String> = before.iter().cloned().collect();
+    let after_set: BTreeSet<String> = after.iter().cloned().collect();
+    let added = after_set
+        .difference(&before_set)
+        .cloned()
+        .collect::<Vec<String>>();
+    let removed = before_set
+        .difference(&after_set)
+        .cloned()
+        .collect::<Vec<String>>();
+    (added, removed)
+}
+
+fn build_operator_control_summary_diff_report(
+    baseline: &OperatorControlSummaryReport,
+    current: &OperatorControlSummaryReport,
+) -> OperatorControlSummaryDiffReport {
+    let mut baseline_components = BTreeMap::new();
+    for component in &baseline.components {
+        baseline_components.insert(component.component.clone(), component.clone());
+    }
+
+    let mut current_components = BTreeMap::new();
+    for component in &current.components {
+        current_components.insert(component.component.clone(), component.clone());
+    }
+
+    let mut component_names: BTreeSet<String> = BTreeSet::new();
+    component_names.extend(baseline_components.keys().cloned());
+    component_names.extend(current_components.keys().cloned());
+
+    let mut changed_components = Vec::new();
+    let mut unchanged_component_count = 0usize;
+    for name in component_names {
+        let before = baseline_components
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| component_snapshot_placeholder(&name));
+        let after = current_components
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| component_snapshot_placeholder(&name));
+        let (drift_state, severity) = classify_component_drift_state(&before, &after);
+        if drift_state == "stable" {
+            unchanged_component_count = unchanged_component_count.saturating_add(1);
+            continue;
+        }
+        changed_components.push(OperatorControlSummaryDiffComponentRow {
+            component: name,
+            drift_state: drift_state.to_string(),
+            severity: severity.to_string(),
+            health_state_before: before.health_state,
+            health_state_after: after.health_state,
+            rollout_gate_before: before.rollout_gate,
+            rollout_gate_after: after.rollout_gate,
+            reason_code_before: before.reason_code,
+            reason_code_after: after.reason_code,
+            recommendation_before: before.recommendation,
+            recommendation_after: after.recommendation,
+            queue_depth_before: before.queue_depth,
+            queue_depth_after: after.queue_depth,
+            failure_streak_before: before.failure_streak,
+            failure_streak_after: after.failure_streak,
+        });
+    }
+
+    let (reason_codes_added, reason_codes_removed) =
+        vec_delta(&baseline.reason_codes, &current.reason_codes);
+    let (recommendations_added, recommendations_removed) =
+        vec_delta(&baseline.recommendations, &current.recommendations);
+
+    let health_drift = operator_health_state_rank(&current.health_state) as i8
+        - operator_health_state_rank(&baseline.health_state) as i8;
+    let gate_before = if baseline.rollout_gate == "hold" {
+        1
+    } else {
+        0
+    };
+    let gate_after = if current.rollout_gate == "hold" { 1 } else { 0 };
+    let gate_drift = gate_after - gate_before;
+    let drift_state = if health_drift > 0 || gate_drift > 0 {
+        "regressed"
+    } else if health_drift < 0 || gate_drift < 0 {
+        "improved"
+    } else if changed_components.is_empty()
+        && reason_codes_added.is_empty()
+        && reason_codes_removed.is_empty()
+        && recommendations_added.is_empty()
+        && recommendations_removed.is_empty()
+    {
+        "stable"
+    } else {
+        "changed"
+    };
+
+    let risk_level = if drift_state == "regressed" && current.rollout_gate == "hold" {
+        "high"
+    } else if drift_state == "regressed" || current.health_state == "degraded" {
+        "moderate"
+    } else {
+        "low"
+    };
+
+    OperatorControlSummaryDiffReport {
+        generated_unix_ms: current_unix_timestamp_ms(),
+        baseline_generated_unix_ms: baseline.generated_unix_ms,
+        current_generated_unix_ms: current.generated_unix_ms,
+        drift_state: drift_state.to_string(),
+        risk_level: risk_level.to_string(),
+        health_state_before: baseline.health_state.clone(),
+        health_state_after: current.health_state.clone(),
+        rollout_gate_before: baseline.rollout_gate.clone(),
+        rollout_gate_after: current.rollout_gate.clone(),
+        reason_codes_added,
+        reason_codes_removed,
+        recommendations_added,
+        recommendations_removed,
+        changed_components,
+        unchanged_component_count,
+    }
+}
+
 fn collect_operator_dashboard_component(cli: &Cli) -> OperatorControlComponentSummaryRow {
     let state_path = cli.dashboard_state_dir.join("state.json");
     match collect_dashboard_status_report(cli) {
@@ -2893,6 +3162,52 @@ fn render_operator_control_summary_report(report: &OperatorControlSummaryReport)
     lines.join("\n")
 }
 
+fn render_operator_control_summary_diff_report(
+    report: &OperatorControlSummaryDiffReport,
+) -> String {
+    let mut lines = vec![format!(
+        "operator control summary diff: generated_unix_ms={} baseline_generated_unix_ms={} current_generated_unix_ms={} drift_state={} risk_level={} health_state_before={} health_state_after={} rollout_gate_before={} rollout_gate_after={} reason_codes_added={} reason_codes_removed={} recommendations_added={} recommendations_removed={} changed_components={} unchanged_components={}",
+        report.generated_unix_ms,
+        report.baseline_generated_unix_ms,
+        report.current_generated_unix_ms,
+        report.drift_state,
+        report.risk_level,
+        report.health_state_before,
+        report.health_state_after,
+        report.rollout_gate_before,
+        report.rollout_gate_after,
+        render_string_vec(&report.reason_codes_added),
+        render_string_vec(&report.reason_codes_removed),
+        render_string_vec(&report.recommendations_added),
+        render_string_vec(&report.recommendations_removed),
+        report.changed_components.len(),
+        report.unchanged_component_count,
+    )];
+
+    for component in &report.changed_components {
+        lines.push(format!(
+            "operator control summary diff component: component={} drift_state={} severity={} health_state_before={} health_state_after={} rollout_gate_before={} rollout_gate_after={} reason_code_before={} reason_code_after={} recommendation_before={} recommendation_after={} queue_depth_before={} queue_depth_after={} failure_streak_before={} failure_streak_after={}",
+            component.component,
+            component.drift_state,
+            component.severity,
+            component.health_state_before,
+            component.health_state_after,
+            component.rollout_gate_before,
+            component.rollout_gate_after,
+            component.reason_code_before,
+            component.reason_code_after,
+            component.recommendation_before,
+            component.recommendation_after,
+            component.queue_depth_before,
+            component.queue_depth_after,
+            component.failure_streak_before,
+            component.failure_streak_after,
+        ));
+    }
+
+    lines.join("\n")
+}
+
 fn render_transport_health_rows(rows: &[TransportHealthInspectRow]) -> String {
     rows.iter()
         .map(render_transport_health_row)
@@ -3329,18 +3644,22 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        collect_custom_command_status_report, collect_dashboard_status_report,
-        collect_deployment_status_report, collect_gateway_status_report,
-        collect_github_status_report, collect_multi_agent_status_report,
-        collect_multi_channel_status_report, collect_operator_control_summary_report,
-        collect_transport_health_rows, collect_voice_status_report, operator_health_state_rank,
-        parse_transport_health_inspect_target, render_custom_command_status_report,
-        render_dashboard_status_report, render_deployment_status_report,
-        render_gateway_status_report, render_github_status_report,
+        build_operator_control_summary_diff_report, collect_custom_command_status_report,
+        collect_dashboard_status_report, collect_deployment_status_report,
+        collect_gateway_status_report, collect_github_status_report,
+        collect_multi_agent_status_report, collect_multi_channel_status_report,
+        collect_operator_control_summary_report, collect_transport_health_rows,
+        collect_voice_status_report, load_operator_control_summary_snapshot,
+        operator_health_state_rank, parse_transport_health_inspect_target,
+        render_custom_command_status_report, render_dashboard_status_report,
+        render_deployment_status_report, render_gateway_status_report, render_github_status_report,
         render_multi_agent_status_report, render_multi_channel_status_report,
-        render_operator_control_summary_report, render_transport_health_row,
-        render_transport_health_rows, render_voice_status_report, TransportHealthInspectRow,
-        TransportHealthInspectTarget,
+        render_operator_control_summary_diff_report, render_operator_control_summary_report,
+        render_transport_health_row, render_transport_health_rows, render_voice_status_report,
+        save_operator_control_summary_snapshot, OperatorControlComponentSummaryRow,
+        OperatorControlDaemonSummary, OperatorControlPolicyPosture,
+        OperatorControlReleaseChannelSummary, OperatorControlSummaryReport,
+        TransportHealthInspectRow, TransportHealthInspectTarget,
     };
     use crate::transport_health::TransportHealthState;
     use crate::Cli;
@@ -3355,6 +3674,79 @@ mod tests {
             .expect("spawn cli parse thread")
             .join()
             .expect("join cli parse thread")
+    }
+
+    struct OperatorSummaryFixtureInput<'a> {
+        generated_unix_ms: u64,
+        health_state: &'a str,
+        rollout_gate: &'a str,
+        reason_code: &'a str,
+        recommendation: &'a str,
+        component_health_state: &'a str,
+        component_rollout_gate: &'a str,
+        queue_depth: usize,
+        failure_streak: usize,
+    }
+
+    fn operator_summary_fixture(
+        input: OperatorSummaryFixtureInput<'_>,
+    ) -> OperatorControlSummaryReport {
+        OperatorControlSummaryReport {
+            generated_unix_ms: input.generated_unix_ms,
+            health_state: input.health_state.to_string(),
+            rollout_gate: input.rollout_gate.to_string(),
+            reason_codes: vec![input.reason_code.to_string()],
+            recommendations: vec![input.recommendation.to_string()],
+            policy_posture: OperatorControlPolicyPosture {
+                pairing_strict_effective: false,
+                pairing_config_strict_mode: false,
+                pairing_allowlist_strict: false,
+                pairing_rules_configured: false,
+                pairing_registry_entries: 0,
+                pairing_allowlist_channel_rules: 0,
+                provider_subscription_strict: false,
+                gateway_auth_mode: "token".to_string(),
+                gateway_remote_profile: "local-only".to_string(),
+                gateway_remote_posture: "local-only".to_string(),
+                gateway_remote_gate: "pass".to_string(),
+                gateway_remote_risk_level: "low".to_string(),
+                gateway_remote_reason_codes: vec!["local_only_profile".to_string()],
+                gateway_remote_recommendations: vec!["no_immediate_action_required".to_string()],
+            },
+            daemon: OperatorControlDaemonSummary {
+                health_state: "healthy".to_string(),
+                rollout_gate: "pass".to_string(),
+                reason_code: "daemon_running".to_string(),
+                recommendation: "no_immediate_action_required".to_string(),
+                profile: "none".to_string(),
+                installed: false,
+                running: false,
+                start_attempts: 0,
+                stop_attempts: 0,
+                diagnostics: 0,
+                state_path: ".tau/daemon/state.json".to_string(),
+            },
+            release_channel: OperatorControlReleaseChannelSummary {
+                health_state: "healthy".to_string(),
+                rollout_gate: "pass".to_string(),
+                reason_code: "configured".to_string(),
+                recommendation: "no_immediate_action_required".to_string(),
+                configured: true,
+                channel: "stable".to_string(),
+                path: ".tau/release-channel.json".to_string(),
+            },
+            components: vec![OperatorControlComponentSummaryRow {
+                component: "gateway".to_string(),
+                state_path: ".tau/gateway/state.json".to_string(),
+                health_state: input.component_health_state.to_string(),
+                health_reason: "fixture".to_string(),
+                rollout_gate: input.component_rollout_gate.to_string(),
+                reason_code: input.reason_code.to_string(),
+                recommendation: input.recommendation.to_string(),
+                queue_depth: input.queue_depth,
+                failure_streak: input.failure_streak,
+            }],
+        }
     }
 
     #[test]
@@ -5335,6 +5727,82 @@ invalid-json-line
     }
 
     #[test]
+    fn unit_operator_control_summary_diff_classifies_regression() {
+        let baseline = operator_summary_fixture(OperatorSummaryFixtureInput {
+            generated_unix_ms: 1,
+            health_state: "healthy",
+            rollout_gate: "pass",
+            reason_code: "all_checks_passing",
+            recommendation: "no_immediate_action_required",
+            component_health_state: "healthy",
+            component_rollout_gate: "pass",
+            queue_depth: 0,
+            failure_streak: 0,
+        });
+        let current = operator_summary_fixture(OperatorSummaryFixtureInput {
+            generated_unix_ms: 2,
+            health_state: "failing",
+            rollout_gate: "hold",
+            reason_code: "gateway:state_unavailable",
+            recommendation: "initialize gateway state",
+            component_health_state: "failing",
+            component_rollout_gate: "hold",
+            queue_depth: 4,
+            failure_streak: 2,
+        });
+
+        let diff = build_operator_control_summary_diff_report(&baseline, &current);
+        assert_eq!(diff.drift_state, "regressed");
+        assert_eq!(diff.risk_level, "high");
+        assert_eq!(diff.health_state_before, "healthy");
+        assert_eq!(diff.health_state_after, "failing");
+        assert_eq!(diff.rollout_gate_before, "pass");
+        assert_eq!(diff.rollout_gate_after, "hold");
+        assert_eq!(diff.changed_components.len(), 1);
+        let gateway = &diff.changed_components[0];
+        assert_eq!(gateway.component, "gateway");
+        assert_eq!(gateway.drift_state, "regressed");
+        assert_eq!(gateway.severity, "high");
+        assert_eq!(gateway.queue_depth_before, 0);
+        assert_eq!(gateway.queue_depth_after, 4);
+        assert_eq!(gateway.failure_streak_before, 0);
+        assert_eq!(gateway.failure_streak_after, 2);
+    }
+
+    #[test]
+    fn functional_operator_control_summary_diff_render_includes_component_deltas() {
+        let baseline = operator_summary_fixture(OperatorSummaryFixtureInput {
+            generated_unix_ms: 10,
+            health_state: "healthy",
+            rollout_gate: "pass",
+            reason_code: "all_checks_passing",
+            recommendation: "no_immediate_action_required",
+            component_health_state: "healthy",
+            component_rollout_gate: "pass",
+            queue_depth: 0,
+            failure_streak: 0,
+        });
+        let current = operator_summary_fixture(OperatorSummaryFixtureInput {
+            generated_unix_ms: 11,
+            health_state: "degraded",
+            rollout_gate: "hold",
+            reason_code: "gateway:service_stopped",
+            recommendation: "start gateway service mode",
+            component_health_state: "degraded",
+            component_rollout_gate: "hold",
+            queue_depth: 1,
+            failure_streak: 1,
+        });
+        let diff = build_operator_control_summary_diff_report(&baseline, &current);
+        let rendered = render_operator_control_summary_diff_report(&diff);
+
+        assert!(rendered.contains("operator control summary diff:"));
+        assert!(rendered.contains("drift_state=regressed"));
+        assert!(rendered.contains("operator control summary diff component: component=gateway"));
+        assert!(rendered.contains("reason_code_after=gateway:service_stopped"));
+    }
+
+    #[test]
     fn functional_operator_control_summary_render_includes_expected_sections() {
         let temp = tempdir().expect("tempdir");
         let mut cli = parse_cli(&["tau-rs"]);
@@ -5569,6 +6037,41 @@ invalid-json-line
     }
 
     #[test]
+    fn integration_operator_control_summary_snapshot_roundtrip_and_compare() {
+        let temp = tempdir().expect("tempdir");
+        let baseline_path = temp.path().join("operator-control-baseline.json");
+        let baseline = operator_summary_fixture(OperatorSummaryFixtureInput {
+            generated_unix_ms: 100,
+            health_state: "healthy",
+            rollout_gate: "pass",
+            reason_code: "all_checks_passing",
+            recommendation: "no_immediate_action_required",
+            component_health_state: "healthy",
+            component_rollout_gate: "pass",
+            queue_depth: 0,
+            failure_streak: 0,
+        });
+        save_operator_control_summary_snapshot(&baseline_path, &baseline).expect("save snapshot");
+        let loaded = load_operator_control_summary_snapshot(&baseline_path).expect("load snapshot");
+        assert_eq!(loaded, baseline);
+
+        let current = operator_summary_fixture(OperatorSummaryFixtureInput {
+            generated_unix_ms: 101,
+            health_state: "degraded",
+            rollout_gate: "hold",
+            reason_code: "gateway:state_unavailable",
+            recommendation: "initialize gateway state",
+            component_health_state: "degraded",
+            component_rollout_gate: "hold",
+            queue_depth: 2,
+            failure_streak: 1,
+        });
+        let diff = build_operator_control_summary_diff_report(&loaded, &current);
+        assert_eq!(diff.drift_state, "regressed");
+        assert_eq!(diff.changed_components.len(), 1);
+    }
+
+    #[test]
     fn regression_operator_control_summary_handles_missing_state_files_with_explicit_defaults() {
         let temp = tempdir().expect("tempdir");
         let mut cli = parse_cli(&["tau-rs"]);
@@ -5593,5 +6096,16 @@ invalid-json-line
         let rendered = render_operator_control_summary_report(&report);
         assert!(rendered.contains("operator control summary:"));
         assert!(rendered.contains("reason_code=state_unavailable"));
+    }
+
+    #[test]
+    fn regression_operator_control_summary_snapshot_load_fails_closed_for_missing_file() {
+        let temp = tempdir().expect("tempdir");
+        let missing = temp.path().join("missing-summary.json");
+        let error = load_operator_control_summary_snapshot(&missing)
+            .expect_err("missing snapshot must fail");
+        assert!(error
+            .to_string()
+            .contains("failed to read operator control summary snapshot"));
     }
 }
