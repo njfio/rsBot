@@ -353,6 +353,36 @@ Lifecycle reason codes include:
 - `credential_store_unreadable`
 - `logout_requested`
 
+## Native `/tau` commands in channel messages
+
+Multi-channel runtime now intercepts `/tau ...` messages and executes a bounded operator command
+surface directly from inbound Telegram/Discord/WhatsApp events.
+
+Supported commands:
+
+- `/tau help`
+- `/tau status`
+- `/tau auth status [openai|anthropic|google]`
+- `/tau doctor [--online]`
+
+Command responses include a normalized footer:
+
+- `Tau command /tau <command> | status <reported|failed> | reason_code <...>`
+
+Command metadata is persisted in outbound channel-store log payloads under:
+
+- `command.schema` = `multi_channel_tau_command_v1`
+- `command.command`
+- `command.status`
+- `command.reason_code`
+
+Operator scope rule:
+
+- `/tau auth status` and `/tau doctor` require allowlisted operator scope
+  (`allow_allowlist` or `allow_allowlist_and_pairing` pairing outcomes).
+- When scope is insufficient, command execution fails closed with
+  `command_rbac_denied`.
+
 ## Outbound delivery modes
 
 Multi-channel runtime supports outbound modes:

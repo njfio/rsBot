@@ -205,6 +205,8 @@ pub(crate) async fn run_transport_mode_if_requested(
     }
 
     if cli.multi_channel_contract_runner {
+        let fallback_model_refs = Vec::new();
+        let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
         run_multi_channel_contract_runner(MultiChannelRuntimeConfig {
             fixture_path: cli.multi_channel_fixture.clone(),
             state_dir: cli.multi_channel_state_dir.clone(),
@@ -217,12 +219,21 @@ pub(crate) async fn run_transport_mode_if_requested(
             outbound: build_multi_channel_outbound_config(cli),
             telemetry: build_multi_channel_telemetry_config(cli),
             media: build_multi_channel_media_config(cli),
+            auth_command_config: build_auth_command_config(cli),
+            doctor_config: build_doctor_command_config(
+                cli,
+                model_ref,
+                &fallback_model_refs,
+                &skills_lock_path,
+            ),
         })
         .await?;
         return Ok(true);
     }
 
     if cli.multi_channel_live_runner {
+        let fallback_model_refs = Vec::new();
+        let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
         run_multi_channel_live_runner(MultiChannelLiveRuntimeConfig {
             ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
             state_dir: cli.multi_channel_state_dir.clone(),
@@ -235,6 +246,13 @@ pub(crate) async fn run_transport_mode_if_requested(
             outbound: build_multi_channel_outbound_config(cli),
             telemetry: build_multi_channel_telemetry_config(cli),
             media: build_multi_channel_media_config(cli),
+            auth_command_config: build_auth_command_config(cli),
+            doctor_config: build_doctor_command_config(
+                cli,
+                model_ref,
+                &fallback_model_refs,
+                &skills_lock_path,
+            ),
         })
         .await?;
         return Ok(true);

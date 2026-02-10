@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::auth_commands::execute_auth_command;
 use crate::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
+use crate::diagnostics_commands::{
+    execute_doctor_command, execute_doctor_command_with_options, DoctorCheckOptions,
+    DoctorCommandOutputFormat,
+};
 use crate::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTable};
 use crate::multi_channel_contract::{
     event_contract_key, load_multi_channel_contract_fixture, validate_multi_channel_inbound_event,
@@ -32,6 +37,7 @@ use crate::multi_channel_routing::{
     route_decision_trace_payload, MultiChannelRouteBindingFile, MultiChannelRouteDecision,
 };
 use crate::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
+use crate::runtime_types::{AuthCommandConfig, DoctorCommandConfig};
 use crate::Cli;
 use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
 
@@ -51,6 +57,16 @@ const TELEMETRY_STATUS_TYPING_STARTED: &str = "typing_started";
 const TELEMETRY_STATUS_TYPING_STOPPED: &str = "typing_stopped";
 const TELEMETRY_STATUS_PRESENCE_ACTIVE: &str = "presence_active";
 const TELEMETRY_STATUS_PRESENCE_IDLE: &str = "presence_idle";
+const COMMAND_STATUS_REPORTED: &str = "reported";
+const COMMAND_STATUS_FAILED: &str = "failed";
+const COMMAND_REASON_UNKNOWN: &str = "command_unknown";
+const COMMAND_REASON_INVALID_ARGS: &str = "command_invalid_args";
+const COMMAND_REASON_RBAC_DENIED: &str = "command_rbac_denied";
+const COMMAND_REASON_HELP_REPORTED: &str = "command_help_reported";
+const COMMAND_REASON_STATUS_REPORTED: &str = "command_status_reported";
+const COMMAND_REASON_AUTH_STATUS_REPORTED: &str = "command_auth_status_reported";
+const COMMAND_REASON_AUTH_STATUS_FAILED: &str = "command_auth_status_failed";
+const COMMAND_REASON_DOCTOR_REPORTED: &str = "command_doctor_reported";
 
 fn multi_channel_runtime_state_schema_version() -> u32 {
     MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION
@@ -88,6 +104,8 @@ pub(crate) struct MultiChannelRuntimeConfig {
     pub(crate) outbound: MultiChannelOutboundConfig,
     pub(crate) telemetry: MultiChannelTelemetryConfig,
     pub(crate) media: MultiChannelMediaUnderstandingConfig,
+    pub(crate) auth_command_config: AuthCommandConfig,
+    pub(crate) doctor_config: DoctorCommandConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +121,8 @@ pub(crate) struct MultiChannelLiveRuntimeConfig {
     pub(crate) outbound: MultiChannelOutboundConfig,
     pub(crate) telemetry: MultiChannelTelemetryConfig,
     pub(crate) media: MultiChannelMediaUnderstandingConfig,
+    pub(crate) auth_command_config: AuthCommandConfig,
+    pub(crate) doctor_config: DoctorCommandConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -263,6 +283,22 @@ struct PersistEventOutcome {
     usage_estimated_cost_micros: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MultiChannelTauCommand {
+    Help,
+    Status,
+    AuthStatus { provider: Option<String> },
+    Doctor { online: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MultiChannelCommandExecution {
+    command_line: String,
+    status: String,
+    reason_code: String,
+    response_text: String,
+}
+
 pub(crate) async fn run_multi_channel_contract_runner(
     config: MultiChannelRuntimeConfig,
 ) -> Result<()> {
@@ -317,6 +353,8 @@ pub(crate) async fn run_multi_channel_live_runner(
         outbound: config.outbound.clone(),
         telemetry: config.telemetry.clone(),
         media: config.media.clone(),
+        auth_command_config: config.auth_command_config.clone(),
+        doctor_config: config.doctor_config.clone(),
     })?;
     let summary = runtime.run_once_events(&live_events).await?;
     let health = runtime.transport_health().clone();
@@ -845,6 +883,126 @@ impl MultiChannelRuntime {
         }
     }
 
+    fn execute_tau_command_if_requested(
+        &self,
+        event: &MultiChannelInboundEvent,
+        access_decision: &MultiChannelAccessDecision,
+    ) -> Option<MultiChannelCommandExecution> {
+        let parsed = match parse_multi_channel_tau_command(event.text.as_str()) {
+            Ok(parsed) => parsed,
+            Err(reason_code) => {
+                let response = format!(
+                    "invalid `/tau` command.\n\n{}",
+                    render_multi_channel_tau_command_help()
+                );
+                return Some(build_multi_channel_command_execution(
+                    "invalid",
+                    COMMAND_STATUS_FAILED,
+                    reason_code.as_str(),
+                    response.as_str(),
+                ));
+            }
+        };
+        let command = parsed?;
+        if command_requires_operator_scope(&command)
+            && !multi_channel_command_operator_allowed(access_decision)
+        {
+            let response =
+                "command denied: this `/tau` command requires allowlisted operator scope.";
+            let command_line = render_multi_channel_tau_command_line(&command);
+            return Some(build_multi_channel_command_execution(
+                command_line.as_str(),
+                COMMAND_STATUS_FAILED,
+                COMMAND_REASON_RBAC_DENIED,
+                response,
+            ));
+        }
+
+        match command {
+            MultiChannelTauCommand::Help => Some(build_multi_channel_command_execution(
+                "help",
+                COMMAND_STATUS_REPORTED,
+                COMMAND_REASON_HELP_REPORTED,
+                render_multi_channel_tau_command_help().as_str(),
+            )),
+            MultiChannelTauCommand::Status => Some(build_multi_channel_command_execution(
+                "status",
+                COMMAND_STATUS_REPORTED,
+                COMMAND_REASON_STATUS_REPORTED,
+                self.render_multi_channel_status_command_report().as_str(),
+            )),
+            MultiChannelTauCommand::AuthStatus { provider } => {
+                let mut args = String::from("status");
+                if let Some(provider) = provider.as_deref() {
+                    args.push(' ');
+                    args.push_str(provider);
+                }
+                let output = execute_auth_command(&self.config.auth_command_config, &args);
+                let failed = output.trim_start().starts_with("auth error:");
+                let reason_code = if failed {
+                    COMMAND_REASON_AUTH_STATUS_FAILED
+                } else {
+                    COMMAND_REASON_AUTH_STATUS_REPORTED
+                };
+                let status = if failed {
+                    COMMAND_STATUS_FAILED
+                } else {
+                    COMMAND_STATUS_REPORTED
+                };
+                let command_line = if let Some(provider) = provider.as_deref() {
+                    format!("auth status {provider}")
+                } else {
+                    "auth status".to_string()
+                };
+                Some(build_multi_channel_command_execution(
+                    command_line.as_str(),
+                    status,
+                    reason_code,
+                    output.as_str(),
+                ))
+            }
+            MultiChannelTauCommand::Doctor { online } => {
+                let output = if online {
+                    execute_doctor_command_with_options(
+                        &self.config.doctor_config,
+                        DoctorCommandOutputFormat::Text,
+                        DoctorCheckOptions { online: true },
+                    )
+                } else {
+                    execute_doctor_command(
+                        &self.config.doctor_config,
+                        DoctorCommandOutputFormat::Text,
+                    )
+                };
+                let command_line = if online { "doctor --online" } else { "doctor" };
+                Some(build_multi_channel_command_execution(
+                    command_line,
+                    COMMAND_STATUS_REPORTED,
+                    COMMAND_REASON_DOCTOR_REPORTED,
+                    output.as_str(),
+                ))
+            }
+        }
+    }
+
+    fn render_multi_channel_status_command_report(&self) -> String {
+        let classification = self.state.health.classify();
+        format!(
+            "multi-channel status: health_state={} health_reason={} failure_streak={} queue_depth={} processed_event_keys={} typing_events={} presence_events={} usage_records={} usage_chars={} usage_chunks={} usage_cost_micros={}",
+            classification.state.as_str(),
+            classification.reason,
+            self.state.health.failure_streak,
+            self.state.health.queue_depth,
+            self.state.processed_event_keys.len(),
+            self.state.telemetry.typing_events_emitted,
+            self.state.telemetry.presence_events_emitted,
+            self.state.telemetry.usage_summary_records,
+            self.state.telemetry.usage_response_chars,
+            self.state.telemetry.usage_chunks,
+            self.state.telemetry.usage_estimated_cost_micros
+        )
+    }
+
     async fn persist_event(
         &mut self,
         event: &MultiChannelInboundEvent,
@@ -944,7 +1102,14 @@ impl MultiChannelRuntime {
             return Ok(outcome);
         }
 
-        let response_text = render_response(event);
+        let command_execution = self.execute_tau_command_if_requested(event, access_decision);
+        let command_payload = command_execution
+            .as_ref()
+            .map(multi_channel_command_payload);
+        let response_text = command_execution
+            .as_ref()
+            .map(|execution| execution.response_text.clone())
+            .unwrap_or_else(|| render_response(event));
         let response_chars = response_text.chars().count();
         let emit_lifecycle =
             should_emit_typing_presence_lifecycle(event, &response_text, &self.config.telemetry);
@@ -1014,6 +1179,7 @@ impl MultiChannelRuntime {
                     pairing_payload: &pairing_payload,
                     channel_policy_payload: &channel_policy_payload,
                     delivery_mode: self.outbound_dispatcher.mode().as_str(),
+                    command_payload: command_payload.as_ref(),
                 };
                 append_delivery_failure_log(&store, &failure_context, &error)?;
                 return Err(anyhow!(
@@ -1091,23 +1257,29 @@ impl MultiChannelRuntime {
         let delivery_payload =
             serde_json::to_value(&delivery_result).context("serialize delivery payload")?;
         if !log_contains_outbound_response(&existing_logs, event_key, &response_text) {
+            let mut payload = json!({
+                "response": response_text,
+                "event_key": event_key,
+                "transport": event.transport.as_str(),
+                "conversation_id": event.conversation_id.trim(),
+                "route_session_key": route_decision.session_key.as_str(),
+                "route": route_payload,
+                "pairing": pairing_payload,
+                "channel_policy": channel_policy_payload,
+                "media_understanding": media_payload,
+                "delivery": delivery_payload,
+            });
+            if let Some(command_payload) = command_payload.as_ref() {
+                if let Value::Object(map) = &mut payload {
+                    map.insert("command".to_string(), command_payload.clone());
+                }
+            }
             store.append_log_entry(&ChannelLogEntry {
                 timestamp_unix_ms: current_unix_timestamp_ms(),
                 direction: "outbound".to_string(),
                 event_key: Some(event_key.to_string()),
                 source: "tau-multi-channel-runner".to_string(),
-                payload: json!({
-                    "response": response_text,
-                    "event_key": event_key,
-                    "transport": event.transport.as_str(),
-                    "conversation_id": event.conversation_id.trim(),
-                    "route_session_key": route_decision.session_key.as_str(),
-                    "route": route_payload,
-                    "pairing": pairing_payload,
-                    "channel_policy": channel_policy_payload,
-                    "media_understanding": media_payload,
-                    "delivery": delivery_payload,
-                }),
+                payload,
             })?;
         }
         if !context_contains_entry(&existing_context, "assistant", &response_text) {
@@ -1431,6 +1603,7 @@ struct DeliveryFailureLogContext<'a> {
     pairing_payload: &'a Value,
     channel_policy_payload: &'a Value,
     delivery_mode: &'a str,
+    command_payload: Option<&'a Value>,
 }
 
 fn append_delivery_failure_log(
@@ -1438,30 +1611,36 @@ fn append_delivery_failure_log(
     context: &DeliveryFailureLogContext<'_>,
     error: &MultiChannelOutboundDeliveryError,
 ) -> Result<()> {
+    let mut payload = json!({
+        "status": "delivery_failed",
+        "reason_code": error.reason_code,
+        "detail": error.detail,
+        "retryable": error.retryable,
+        "chunk_index": error.chunk_index,
+        "chunk_count": error.chunk_count,
+        "endpoint": error.endpoint,
+        "http_status": error.http_status,
+        "request_body": error.request_body,
+        "delivery_mode": context.delivery_mode,
+        "event_key": context.event_key,
+        "transport": context.event.transport.as_str(),
+        "conversation_id": context.event.conversation_id.trim(),
+        "route_session_key": context.route_decision.session_key.as_str(),
+        "route": context.route_payload,
+        "pairing": context.pairing_payload,
+        "channel_policy": context.channel_policy_payload,
+    });
+    if let Some(command_payload) = context.command_payload {
+        if let Value::Object(map) = &mut payload {
+            map.insert("command".to_string(), command_payload.clone());
+        }
+    }
     store.append_log_entry(&ChannelLogEntry {
         timestamp_unix_ms: current_unix_timestamp_ms(),
         direction: "outbound".to_string(),
         event_key: Some(context.event_key.to_string()),
         source: "tau-multi-channel-runner".to_string(),
-        payload: json!({
-            "status": "delivery_failed",
-            "reason_code": error.reason_code,
-            "detail": error.detail,
-            "retryable": error.retryable,
-            "chunk_index": error.chunk_index,
-            "chunk_count": error.chunk_count,
-            "endpoint": error.endpoint,
-            "http_status": error.http_status,
-            "request_body": error.request_body,
-            "delivery_mode": context.delivery_mode,
-            "event_key": context.event_key,
-            "transport": context.event.transport.as_str(),
-            "conversation_id": context.event.conversation_id.trim(),
-            "route_session_key": context.route_decision.session_key.as_str(),
-            "route": context.route_payload,
-            "pairing": context.pairing_payload,
-            "channel_policy": context.channel_policy_payload,
-        }),
+        payload,
     })
 }
 
@@ -1674,6 +1853,162 @@ fn build_user_context_text(
     Some(format!("{text}\n\n{media}"))
 }
 
+fn parse_multi_channel_tau_command(
+    command_text: &str,
+) -> std::result::Result<Option<MultiChannelTauCommand>, String> {
+    let trimmed = command_text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let mut tokens = trimmed.split_whitespace();
+    let Some(command_prefix) = tokens.next() else {
+        return Ok(None);
+    };
+    let is_tau_prefix = command_prefix == "/tau" || command_prefix.starts_with("/tau@");
+    if !is_tau_prefix {
+        return Ok(None);
+    }
+
+    let Some(subcommand) = tokens.next() else {
+        return Ok(Some(MultiChannelTauCommand::Help));
+    };
+    match subcommand {
+        "help" => {
+            if tokens.next().is_some() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            Ok(Some(MultiChannelTauCommand::Help))
+        }
+        "status" => {
+            if tokens.next().is_some() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            Ok(Some(MultiChannelTauCommand::Status))
+        }
+        "auth" => {
+            let Some(action) = tokens.next() else {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            };
+            if action != "status" {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            let provider = tokens.next().map(|value| value.trim().to_ascii_lowercase());
+            if let Some(provider_token) = provider.as_deref() {
+                if !matches!(provider_token, "openai" | "anthropic" | "google") {
+                    return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+                }
+            }
+            if tokens.next().is_some() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            Ok(Some(MultiChannelTauCommand::AuthStatus { provider }))
+        }
+        "doctor" => {
+            let mut online = false;
+            if let Some(option) = tokens.next() {
+                if option == "--online" {
+                    online = true;
+                } else {
+                    return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+                }
+            }
+            if tokens.next().is_some() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            Ok(Some(MultiChannelTauCommand::Doctor { online }))
+        }
+        _ => Err(COMMAND_REASON_UNKNOWN.to_string()),
+    }
+}
+
+fn render_multi_channel_tau_command_line(command: &MultiChannelTauCommand) -> String {
+    match command {
+        MultiChannelTauCommand::Help => "help".to_string(),
+        MultiChannelTauCommand::Status => "status".to_string(),
+        MultiChannelTauCommand::AuthStatus { provider } => {
+            if let Some(provider) = provider.as_deref() {
+                format!("auth status {provider}")
+            } else {
+                "auth status".to_string()
+            }
+        }
+        MultiChannelTauCommand::Doctor { online } => {
+            if *online {
+                "doctor --online".to_string()
+            } else {
+                "doctor".to_string()
+            }
+        }
+    }
+}
+
+fn render_multi_channel_tau_command_help() -> String {
+    [
+        "supported /tau commands:",
+        "- /tau help",
+        "- /tau status",
+        "- /tau auth status [openai|anthropic|google]",
+        "- /tau doctor [--online]",
+    ]
+    .join("\n")
+}
+
+fn render_multi_channel_command_response(
+    command_line: &str,
+    status: &str,
+    reason_code: &str,
+    content: &str,
+) -> String {
+    let body = if content.trim().is_empty() {
+        "Tau command response."
+    } else {
+        content.trim()
+    };
+    format!(
+        "{body}\n\nTau command `/tau {command_line}` | status `{status}` | reason_code `{reason_code}`"
+    )
+}
+
+fn build_multi_channel_command_execution(
+    command_line: &str,
+    status: &str,
+    reason_code: &str,
+    content: &str,
+) -> MultiChannelCommandExecution {
+    MultiChannelCommandExecution {
+        command_line: command_line.to_string(),
+        status: status.to_string(),
+        reason_code: reason_code.to_string(),
+        response_text: render_multi_channel_command_response(
+            command_line,
+            status,
+            reason_code,
+            content,
+        ),
+    }
+}
+
+fn command_requires_operator_scope(command: &MultiChannelTauCommand) -> bool {
+    matches!(
+        command,
+        MultiChannelTauCommand::AuthStatus { .. } | MultiChannelTauCommand::Doctor { .. }
+    )
+}
+
+fn multi_channel_command_operator_allowed(access_decision: &MultiChannelAccessDecision) -> bool {
+    let reason_code = access_decision.final_decision.reason_code();
+    reason_code == "allow_allowlist" || reason_code == "allow_allowlist_and_pairing"
+}
+
+fn multi_channel_command_payload(execution: &MultiChannelCommandExecution) -> Value {
+    json!({
+        "schema": "multi_channel_tau_command_v1",
+        "command": execution.command_line,
+        "status": execution.status,
+        "reason_code": execution.reason_code,
+    })
+}
+
 fn render_response(event: &MultiChannelInboundEvent) -> String {
     let transport = event.transport.as_str();
     let event_id = event.event_id.trim();
@@ -1804,7 +2139,11 @@ mod tests {
         MultiChannelTransport,
     };
     use crate::multi_channel_outbound::{MultiChannelOutboundConfig, MultiChannelOutboundMode};
+    use crate::runtime_types::{
+        AuthCommandConfig, DoctorCommandConfig, DoctorMultiChannelReadinessConfig,
+    };
     use crate::transport_health::TransportHealthState;
+    use crate::{CredentialStoreEncryptionMode, ProviderAuthMethod};
 
     fn fixture_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1820,6 +2159,55 @@ mod tests {
             .join(name)
     }
 
+    fn test_auth_command_config(root: &Path) -> AuthCommandConfig {
+        AuthCommandConfig {
+            credential_store: root.join(".tau/credentials.json"),
+            credential_store_key: None,
+            credential_store_encryption: CredentialStoreEncryptionMode::None,
+            api_key: None,
+            openai_api_key: None,
+            anthropic_api_key: None,
+            google_api_key: None,
+            openai_auth_mode: ProviderAuthMethod::ApiKey,
+            anthropic_auth_mode: ProviderAuthMethod::ApiKey,
+            google_auth_mode: ProviderAuthMethod::ApiKey,
+            provider_subscription_strict: false,
+            openai_codex_backend: true,
+            openai_codex_cli: "codex".to_string(),
+            anthropic_claude_backend: true,
+            anthropic_claude_cli: "claude".to_string(),
+            google_gemini_backend: true,
+            google_gemini_cli: "gemini".to_string(),
+            google_gcloud_cli: "gcloud".to_string(),
+        }
+    }
+
+    fn test_doctor_command_config(root: &Path) -> DoctorCommandConfig {
+        DoctorCommandConfig {
+            model: "openai/gpt-4o-mini".to_string(),
+            provider_keys: Vec::new(),
+            release_channel_path: root.join(".tau/release-channel.json"),
+            release_lookup_cache_path: root.join(".tau/release-lookup-cache.json"),
+            release_lookup_cache_ttl_ms: 3_600_000,
+            browser_automation_playwright_cli: "playwright".to_string(),
+            session_enabled: true,
+            session_path: root.join(".tau/session.jsonl"),
+            skills_dir: root.join(".tau/skills"),
+            skills_lock_path: root.join(".tau/skills.lock.json"),
+            trust_root_path: None,
+            multi_channel_live_readiness: DoctorMultiChannelReadinessConfig {
+                ingress_dir: root.join(".tau/multi-channel/live-ingress"),
+                credential_store_path: root.join(".tau/credentials.json"),
+                credential_store_encryption: CredentialStoreEncryptionMode::None,
+                credential_store_key: None,
+                telegram_bot_token: None,
+                discord_bot_token: None,
+                whatsapp_access_token: None,
+                whatsapp_phone_number_id: None,
+            },
+        }
+    }
+
     fn build_config(root: &Path) -> MultiChannelRuntimeConfig {
         MultiChannelRuntimeConfig {
             fixture_path: fixture_path("baseline-three-channel.json"),
@@ -1833,6 +2221,8 @@ mod tests {
             outbound: MultiChannelOutboundConfig::default(),
             telemetry: MultiChannelTelemetryConfig::default(),
             media: crate::multi_channel_media::MultiChannelMediaUnderstandingConfig::default(),
+            auth_command_config: test_auth_command_config(root),
+            doctor_config: test_doctor_command_config(root),
         }
     }
 
@@ -1849,6 +2239,8 @@ mod tests {
             outbound: MultiChannelOutboundConfig::default(),
             telemetry: MultiChannelTelemetryConfig::default(),
             media: crate::multi_channel_media::MultiChannelMediaUnderstandingConfig::default(),
+            auth_command_config: test_auth_command_config(root),
+            doctor_config: test_doctor_command_config(root),
         }
     }
 
@@ -2008,6 +2400,262 @@ mod tests {
             super::extract_usage_estimated_cost_micros(&event),
             Some(777)
         );
+    }
+
+    #[test]
+    fn unit_parse_multi_channel_tau_command_supports_initial_command_set() {
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau").expect("parse"),
+            Some(super::MultiChannelTauCommand::Help)
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau help").expect("parse"),
+            Some(super::MultiChannelTauCommand::Help)
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau status").expect("parse"),
+            Some(super::MultiChannelTauCommand::Status)
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau auth status openai").expect("parse"),
+            Some(super::MultiChannelTauCommand::AuthStatus {
+                provider: Some("openai".to_string())
+            })
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau doctor --online").expect("parse"),
+            Some(super::MultiChannelTauCommand::Doctor { online: true })
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("plain text").expect("parse"),
+            None
+        );
+    }
+
+    #[test]
+    fn regression_parse_multi_channel_tau_command_rejects_invalid_forms() {
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau auth").expect_err("invalid args"),
+            "command_invalid_args"
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau auth login").expect_err("invalid args"),
+            "command_invalid_args"
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau auth status mystery")
+                .expect_err("invalid provider"),
+            "command_invalid_args"
+        );
+        assert_eq!(
+            super::parse_multi_channel_tau_command("/tau unknown").expect_err("unknown command"),
+            "command_unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn functional_runner_executes_tau_status_command_and_persists_command_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-command-status-1",
+            "telegram-command-room",
+            "telegram-user-1",
+            "/tau status",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "telegram",
+            "telegram-command-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["schema"].as_str(),
+            Some("multi_channel_tau_command_v1")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("reported")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_status_reported")
+        );
+        let response = command_entry.payload["response"]
+            .as_str()
+            .expect("response string");
+        assert!(response.contains("Tau command `/tau status`"));
+        assert!(response.contains("reason_code `command_status_reported`"));
+    }
+
+    #[tokio::test]
+    async fn integration_runner_tau_doctor_requires_allowlisted_operator_scope() {
+        let temp = tempdir().expect("tempdir");
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-command-doctor-1",
+            "discord-command-room",
+            "discord-user-1",
+            "/tau doctor",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_allowed_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "discord",
+            "discord-command-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("failed")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_rbac_denied")
+        );
+        let response = command_entry.payload["response"]
+            .as_str()
+            .expect("response");
+        assert!(response.contains("command denied"));
+    }
+
+    #[tokio::test]
+    async fn integration_runner_executes_tau_doctor_for_allowlisted_operator() {
+        let temp = tempdir().expect("tempdir");
+        write_pairing_allowlist(
+            temp.path(),
+            r#"{
+  "schema_version": 1,
+  "strict": true,
+  "channels": {
+    "discord:discord-command-room": ["discord-allowed-user"]
+  }
+}
+"#,
+        );
+
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-command-doctor-allow-1",
+            "discord-command-room",
+            "discord-allowed-user",
+            "/tau doctor",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.policy_allowed_events, 1);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "discord",
+            "discord-command-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("reported")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_doctor_reported")
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_runner_reports_unknown_tau_command_with_failure_reason_code() {
+        let temp = tempdir().expect("tempdir");
+        let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+        let event = sample_event(
+            MultiChannelTransport::Whatsapp,
+            "wa-command-unknown-1",
+            "whatsapp-command-room",
+            "whatsapp-user-1",
+            "/tau unknown",
+        );
+
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &temp.path().join(".tau/multi-channel/channel-store"),
+            "whatsapp",
+            "whatsapp-command-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        let command_entry = logs
+            .iter()
+            .find(|entry| {
+                entry.direction == "outbound"
+                    && entry
+                        .payload
+                        .get("command")
+                        .and_then(Value::as_object)
+                        .is_some()
+            })
+            .expect("command outbound log entry");
+        assert_eq!(
+            command_entry.payload["command"]["status"].as_str(),
+            Some("failed")
+        );
+        assert_eq!(
+            command_entry.payload["command"]["reason_code"].as_str(),
+            Some("command_unknown")
+        );
+        let response = command_entry.payload["response"]
+            .as_str()
+            .expect("response");
+        assert!(response.contains("/tau help"));
     }
 
     #[tokio::test]
