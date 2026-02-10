@@ -756,7 +756,7 @@ pub(crate) struct Cli {
         conflicts_with = "channel_store_inspect",
         conflicts_with = "channel_store_repair",
         value_name = "target",
-        help = "Inspect transport health snapshot(s) and exit. Targets: slack, github, github:owner/repo, multi-channel"
+        help = "Inspect transport health snapshot(s) and exit. Targets: slack, github, github:owner/repo, multi-channel, memory"
     )]
     pub(crate) transport_health_inspect: Option<String>,
 

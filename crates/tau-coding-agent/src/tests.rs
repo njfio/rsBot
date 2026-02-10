@@ -1393,6 +1393,24 @@ fn functional_cli_transport_health_inspect_accepts_multi_channel_state_dir_overr
 }
 
 #[test]
+fn unit_cli_transport_health_inspect_accepts_memory_target() {
+    let cli = Cli::parse_from(["tau-rs", "--transport-health-inspect", "memory"]);
+    assert_eq!(cli.transport_health_inspect.as_deref(), Some("memory"));
+}
+
+#[test]
+fn functional_cli_transport_health_inspect_accepts_memory_state_dir_override() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--transport-health-inspect",
+        "memory",
+        "--memory-state-dir",
+        ".tau/memory-alt",
+    ]);
+    assert_eq!(cli.memory_state_dir, PathBuf::from(".tau/memory-alt"));
+}
+
+#[test]
 fn unit_cli_qa_loop_flags_default_to_disabled() {
     let cli = Cli::parse_from(["tau-rs"]);
     assert!(!cli.qa_loop);

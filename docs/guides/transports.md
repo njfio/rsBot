@@ -96,6 +96,40 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/multi-channel-ops.md`.
 
+## Semantic memory contract runner
+
+Use this fixture-driven runtime mode to validate semantic memory extraction/retrieval
+processing, retry handling, and channel-store snapshot writes.
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --memory-contract-runner \
+  --memory-fixture crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json \
+  --memory-state-dir .tau/memory \
+  --memory-queue-limit 64 \
+  --memory-processed-case-cap 10000 \
+  --memory-retry-max-attempts 4 \
+  --memory-retry-base-delay-ms 0
+```
+
+The runner writes state and observability output under:
+
+- `.tau/memory/state.json`
+- `.tau/memory/runtime-events.jsonl`
+- `.tau/memory/channel-store/memory/<channel_id>/...`
+
+Inspect semantic memory health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --memory-state-dir .tau/memory \
+  --transport-health-inspect memory \
+  --transport-health-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/memory-ops.md`.
+
 ## ChannelStore inspection and repair
 
 Inspect one channel:

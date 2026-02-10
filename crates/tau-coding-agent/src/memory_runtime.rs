@@ -1069,4 +1069,38 @@ mod tests {
             .iter()
             .any(|value| value.as_str() == Some("healthy_cycle")));
     }
+
+    #[tokio::test]
+    async fn regression_runner_events_log_emits_degraded_state_for_failed_cycle() {
+        let temp = tempdir().expect("tempdir");
+        let config = build_config(temp.path());
+        let fixture =
+            load_memory_contract_fixture(&config.fixture_path).expect("fixture should load");
+        let mut runtime = MemoryRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+        assert_eq!(summary.failed_cases, 1);
+
+        let events_log =
+            std::fs::read_to_string(config.state_dir.join(MEMORY_RUNTIME_EVENTS_LOG_FILE))
+                .expect("read runtime events");
+        let parsed = events_log
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("valid json line"))
+            .collect::<Vec<_>>();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["health_state"].as_str(), Some("degraded"));
+        assert!(parsed[0]["health_reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("recent transport failures observed"));
+        let reason_codes = parsed[0]["reason_codes"]
+            .as_array()
+            .expect("reason codes array");
+        assert!(reason_codes
+            .iter()
+            .any(|value| value.as_str() == Some("retryable_failures_observed")));
+        assert!(reason_codes
+            .iter()
+            .any(|value| value.as_str() == Some("case_processing_failed")));
+    }
 }

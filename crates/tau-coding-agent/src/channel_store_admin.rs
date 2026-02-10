@@ -6,6 +6,7 @@ enum TransportHealthInspectTarget {
     GithubAll,
     GithubRepo { owner: String, repo: String },
     MultiChannel,
+    Memory,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -102,7 +103,7 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, or multi-channel",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, or memory",
             raw
         );
     }
@@ -116,16 +117,19 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     {
         return Ok(TransportHealthInspectTarget::MultiChannel);
     }
+    if trimmed.eq_ignore_ascii_case("memory") {
+        return Ok(TransportHealthInspectTarget::Memory);
+    }
 
     let Some((transport, repo_slug)) = trimmed.split_once(':') else {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, or multi-channel",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, or memory",
             raw
         );
     };
     if !transport.eq_ignore_ascii_case("github") {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, or multi-channel",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, or memory",
             raw
         );
     }
@@ -158,6 +162,7 @@ fn collect_transport_health_rows(
         TransportHealthInspectTarget::MultiChannel => {
             Ok(vec![collect_multi_channel_transport_health_row(cli)?])
         }
+        TransportHealthInspectTarget::Memory => Ok(vec![collect_memory_transport_health_row(cli)?]),
     }
 }
 
@@ -239,6 +244,17 @@ fn collect_multi_channel_transport_health_row(cli: &Cli) -> Result<TransportHeal
     Ok(TransportHealthInspectRow {
         transport: "multi-channel".to_string(),
         target: "telegram/discord/whatsapp".to_string(),
+        state_path: state_path.display().to_string(),
+        health,
+    })
+}
+
+fn collect_memory_transport_health_row(cli: &Cli) -> Result<TransportHealthInspectRow> {
+    let state_path = cli.memory_state_dir.join("state.json");
+    let health = load_transport_health_snapshot(&state_path)?;
+    Ok(TransportHealthInspectRow {
+        transport: "memory".to_string(),
+        target: "semantic-memory".to_string(),
         state_path: state_path.display().to_string(),
         health,
     })
@@ -340,6 +356,10 @@ mod tests {
             parse_transport_health_inspect_target("multichannel").expect("multichannel"),
             TransportHealthInspectTarget::MultiChannel
         );
+        assert_eq!(
+            parse_transport_health_inspect_target("memory").expect("memory"),
+            TransportHealthInspectTarget::Memory
+        );
     }
 
     #[test]
@@ -374,10 +394,12 @@ mod tests {
         let github_root = temp.path().join("github");
         let slack_root = temp.path().join("slack");
         let multi_channel_root = temp.path().join("multi-channel");
+        let memory_root = temp.path().join("memory");
         let github_repo_dir = github_root.join("owner__repo");
         std::fs::create_dir_all(&github_repo_dir).expect("create github repo dir");
         std::fs::create_dir_all(&slack_root).expect("create slack dir");
         std::fs::create_dir_all(&multi_channel_root).expect("create multi-channel dir");
+        std::fs::create_dir_all(&memory_root).expect("create memory dir");
 
         std::fs::write(
             github_repo_dir.join("state.json"),
@@ -447,10 +469,34 @@ mod tests {
         )
         .expect("write multi-channel state");
 
+        std::fs::write(
+            memory_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "entries": [],
+  "health": {
+    "updated_unix_ms": 400,
+    "cycle_duration_ms": 32,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 5,
+    "last_cycle_processed": 5,
+    "last_cycle_completed": 5,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 1
+  }
+}
+"#,
+        )
+        .expect("write memory state");
+
         let mut cli = Cli::parse_from(["tau-rs"]);
         cli.github_state_dir = github_root;
         cli.slack_state_dir = slack_root;
         cli.multi_channel_state_dir = multi_channel_root;
+        cli.memory_state_dir = memory_root;
 
         let github_rows =
             collect_transport_health_rows(&cli, &TransportHealthInspectTarget::GithubAll)
@@ -474,14 +520,24 @@ mod tests {
         assert_eq!(multi_channel_rows[0].target, "telegram/discord/whatsapp");
         assert_eq!(multi_channel_rows[0].health.last_cycle_discovered, 3);
 
+        let memory_rows =
+            collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Memory)
+                .expect("collect memory rows");
+        assert_eq!(memory_rows.len(), 1);
+        assert_eq!(memory_rows[0].transport, "memory");
+        assert_eq!(memory_rows[0].target, "semantic-memory");
+        assert_eq!(memory_rows[0].health.last_cycle_discovered, 5);
+
         let rendered = render_transport_health_rows(&[
             github_rows[0].clone(),
             slack_rows[0].clone(),
             multi_channel_rows[0].clone(),
+            memory_rows[0].clone(),
         ]);
         assert!(rendered.contains("transport=github"));
         assert!(rendered.contains("transport=slack"));
         assert!(rendered.contains("transport=multi-channel"));
+        assert!(rendered.contains("transport=memory"));
     }
 
     #[test]
@@ -513,6 +569,30 @@ mod tests {
             },
         )
         .expect("collect legacy row");
+        assert_eq!(rows[0].health, TransportHealthSnapshot::default());
+    }
+
+    #[test]
+    fn regression_collect_transport_health_rows_defaults_missing_health_fields_for_memory() {
+        let temp = tempdir().expect("tempdir");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&memory_root).expect("create memory dir");
+        std::fs::write(
+            memory_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "entries": []
+}
+"#,
+        )
+        .expect("write legacy memory state");
+
+        let mut cli = Cli::parse_from(["tau-rs"]);
+        cli.memory_state_dir = PathBuf::from(&memory_root);
+
+        let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Memory)
+            .expect("collect memory row");
         assert_eq!(rows[0].health, TransportHealthSnapshot::default());
     }
 }
