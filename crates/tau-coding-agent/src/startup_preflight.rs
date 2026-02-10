@@ -6,14 +6,52 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
-    if cli.multi_channel_route_inspect_file.is_some() {
-        execute_multi_channel_route_inspect_command(cli)?;
+    if let Some(inspect_file) = cli.multi_channel_route_inspect_file.as_ref() {
+        let report = build_multi_channel_route_inspect_report(
+            &tau_multi_channel::MultiChannelRouteInspectConfig {
+                inspect_file: inspect_file.clone(),
+                state_dir: cli.multi_channel_state_dir.clone(),
+                orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
+            },
+        )?;
+        if cli.multi_channel_route_inspect_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render multi-channel route inspect json")?
+            );
+        } else {
+            println!(
+                "{}",
+                tau_multi_channel::render_multi_channel_route_inspect_report(&report)
+            );
+        }
         return Ok(true);
     }
 
     if cli.multi_channel_incident_timeline {
         validate_multi_channel_incident_timeline_cli(cli)?;
-        execute_multi_channel_incident_timeline_command(cli)?;
+        let report = build_multi_channel_incident_timeline_report(
+            &tau_multi_channel::MultiChannelIncidentTimelineQuery {
+                state_dir: cli.multi_channel_state_dir.clone(),
+                window_start_unix_ms: cli.multi_channel_incident_start_unix_ms,
+                window_end_unix_ms: cli.multi_channel_incident_end_unix_ms,
+                event_limit: cli.multi_channel_incident_event_limit.unwrap_or(200),
+                replay_export_path: cli.multi_channel_incident_replay_export.clone(),
+            },
+        )?;
+        if cli.multi_channel_incident_timeline_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render multi-channel incident timeline json")?
+            );
+        } else {
+            println!(
+                "{}",
+                tau_multi_channel::render_multi_channel_incident_timeline_report(&report)
+            );
+        }
         return Ok(true);
     }
 

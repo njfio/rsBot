@@ -201,7 +201,7 @@ Inspect route evaluation for one event file:
 ```bash
 cargo run -p tau-coding-agent -- \
   --multi-channel-state-dir .tau/multi-channel \
-  --multi-channel-route-inspect-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/telegram-valid.json \
+  --multi-channel-route-inspect-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/telegram-valid.json \
   --multi-channel-route-inspect-json
 ```
 
@@ -226,7 +226,7 @@ One-shot raw provider ingest command (appends normalized envelopes to live-ingre
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/telegram-update.json \
+  --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/telegram-update.json \
   --multi-channel-live-ingest-transport telegram \
   --multi-channel-live-ingest-provider telegram-bot-api \
   --multi-channel-live-ingest-dir .tau/multi-channel/live-ingress
@@ -480,7 +480,7 @@ Recommended deterministic CI mode:
 ```bash
 cargo run -p tau-coding-agent -- \
   --multi-channel-contract-runner \
-  --multi-channel-fixture ./crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json \
+  --multi-channel-fixture ./crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json \
   --multi-channel-state-dir .tau/multi-channel \
   --multi-channel-outbound-mode dry-run \
   --multi-channel-outbound-max-chars 512

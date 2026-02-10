@@ -35,18 +35,18 @@ use super::{
     execute_auth_command, execute_branch_alias_command, execute_channel_store_admin_command,
     execute_command_file, execute_doctor_cli_command, execute_doctor_command,
     execute_doctor_command_with_options, execute_integration_auth_command, execute_macro_command,
-    execute_multi_channel_route_inspect_command, execute_package_activate_command,
-    execute_package_activate_on_startup, execute_package_conflicts_command,
-    execute_package_install_command, execute_package_list_command, execute_package_remove_command,
-    execute_package_rollback_command, execute_package_show_command, execute_package_update_command,
-    execute_package_validate_command, execute_profile_command, execute_rpc_capabilities_command,
-    execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
-    execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
-    execute_session_bookmark_command, execute_session_diff_command,
-    execute_session_graph_export_command, execute_session_search_command,
-    execute_session_stats_command, execute_skills_list_command, execute_skills_lock_diff_command,
-    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
-    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_package_activate_command, execute_package_activate_on_startup,
+    execute_package_conflicts_command, execute_package_install_command,
+    execute_package_list_command, execute_package_remove_command, execute_package_rollback_command,
+    execute_package_show_command, execute_package_update_command, execute_package_validate_command,
+    execute_profile_command, execute_rpc_capabilities_command, execute_rpc_dispatch_frame_command,
+    execute_rpc_dispatch_ndjson_command, execute_rpc_serve_ndjson_command,
+    execute_rpc_validate_frame_command, execute_session_bookmark_command,
+    execute_session_diff_command, execute_session_graph_export_command,
+    execute_session_search_command, execute_session_stats_command, execute_skills_list_command,
+    execute_skills_lock_diff_command, execute_skills_lock_write_command,
+    execute_skills_prune_command, execute_skills_search_command, execute_skills_show_command,
+    execute_skills_sync_command, execute_skills_trust_add_command,
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command, execute_startup_preflight,
     format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
@@ -562,7 +562,7 @@ pub(crate) fn test_cli() -> Cli {
         multi_channel_send_text_file: None,
         multi_channel_send_json: false,
         multi_channel_fixture: PathBuf::from(
-            "crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json",
+            "crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json",
         ),
         multi_channel_live_ingress_dir: PathBuf::from(".tau/multi-channel/live-ingress"),
         multi_channel_state_dir: PathBuf::from(".tau/multi-channel"),
@@ -1571,7 +1571,7 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
     assert_eq!(
         cli.multi_channel_fixture,
         PathBuf::from(
-            "crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json"
+            "crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json"
         )
     );
     assert_eq!(
@@ -17030,10 +17030,17 @@ fn functional_build_multi_channel_route_inspect_report_resolves_binding_and_role
     .expect("write event file");
 
     let mut cli = test_cli();
-    cli.multi_channel_route_inspect_file = Some(event_path);
+    cli.multi_channel_route_inspect_file = Some(event_path.clone());
     cli.multi_channel_state_dir = state_dir;
     cli.orchestrator_route_table = Some(route_table_path);
-    let report = build_multi_channel_route_inspect_report(&cli).expect("build report");
+    let report = build_multi_channel_route_inspect_report(
+        &tau_multi_channel::MultiChannelRouteInspectConfig {
+            inspect_file: event_path.clone(),
+            state_dir: cli.multi_channel_state_dir.clone(),
+            orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
+        },
+    )
+    .expect("build report");
     assert_eq!(report.binding_id, "discord-ops");
     assert_eq!(report.selected_role, "triage");
     assert_eq!(report.phase, "delegated-step");
@@ -17067,11 +17074,18 @@ fn integration_execute_multi_channel_route_inspect_command_accepts_live_envelope
     .expect("write envelope file");
 
     let mut cli = test_cli();
-    cli.multi_channel_route_inspect_file = Some(envelope_path);
+    cli.multi_channel_route_inspect_file = Some(envelope_path.clone());
     cli.multi_channel_route_inspect_json = true;
     cli.multi_channel_state_dir = state_dir;
-    execute_multi_channel_route_inspect_command(&cli)
-        .expect("route inspect command should succeed");
+    let report = build_multi_channel_route_inspect_report(
+        &tau_multi_channel::MultiChannelRouteInspectConfig {
+            inspect_file: envelope_path.clone(),
+            state_dir: cli.multi_channel_state_dir.clone(),
+            orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
+        },
+    )
+    .expect("build report");
+    serde_json::to_string_pretty(&report).expect("render report");
 }
 
 #[test]
@@ -17082,8 +17096,14 @@ fn regression_build_multi_channel_route_inspect_report_rejects_empty_file() {
 
     let mut cli = test_cli();
     cli.multi_channel_route_inspect_file = Some(event_path.clone());
-    let error = build_multi_channel_route_inspect_report(&cli)
-        .expect_err("empty route inspect file should fail");
+    let error = build_multi_channel_route_inspect_report(
+        &tau_multi_channel::MultiChannelRouteInspectConfig {
+            inspect_file: event_path.clone(),
+            state_dir: cli.multi_channel_state_dir.clone(),
+            orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
+        },
+    )
+    .expect_err("empty route inspect file should fail");
     assert!(error.to_string().contains("is empty"));
     assert!(error
         .to_string()
@@ -17116,8 +17136,16 @@ fn unit_build_multi_channel_incident_timeline_report_aggregates_outcomes_and_rea
     )
     .expect("write channel log");
 
-    let report =
-        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    let report = build_multi_channel_incident_timeline_report(
+        &tau_multi_channel::MultiChannelIncidentTimelineQuery {
+            state_dir: cli.multi_channel_state_dir.clone(),
+            window_start_unix_ms: cli.multi_channel_incident_start_unix_ms,
+            window_end_unix_ms: cli.multi_channel_incident_end_unix_ms,
+            event_limit: cli.multi_channel_incident_event_limit.unwrap_or(200),
+            replay_export_path: cli.multi_channel_incident_replay_export.clone(),
+        },
+    )
+    .expect("build incident timeline report");
     assert_eq!(report.timeline.len(), 4);
     assert_eq!(report.outcomes.allowed, 1);
     assert_eq!(report.outcomes.denied, 1);
@@ -17177,8 +17205,16 @@ fn functional_build_multi_channel_incident_timeline_report_writes_replay_export(
     )
     .expect("write channel log");
 
-    let report =
-        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    let report = build_multi_channel_incident_timeline_report(
+        &tau_multi_channel::MultiChannelIncidentTimelineQuery {
+            state_dir: cli.multi_channel_state_dir.clone(),
+            window_start_unix_ms: cli.multi_channel_incident_start_unix_ms,
+            window_end_unix_ms: cli.multi_channel_incident_end_unix_ms,
+            event_limit: cli.multi_channel_incident_event_limit.unwrap_or(200),
+            replay_export_path: cli.multi_channel_incident_replay_export.clone(),
+        },
+    )
+    .expect("build incident timeline report");
     assert_eq!(report.timeline.len(), 1);
     assert_eq!(report.truncated_event_count, 1);
     let replay_export = report.replay_export.expect("replay export summary");
@@ -17237,8 +17273,16 @@ fn integration_build_multi_channel_incident_timeline_report_reads_sample_channel
     )
     .expect("write whatsapp log");
 
-    let report =
-        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    let report = build_multi_channel_incident_timeline_report(
+        &tau_multi_channel::MultiChannelIncidentTimelineQuery {
+            state_dir: cli.multi_channel_state_dir.clone(),
+            window_start_unix_ms: cli.multi_channel_incident_start_unix_ms,
+            window_end_unix_ms: cli.multi_channel_incident_end_unix_ms,
+            event_limit: cli.multi_channel_incident_event_limit.unwrap_or(200),
+            replay_export_path: cli.multi_channel_incident_replay_export.clone(),
+        },
+    )
+    .expect("build incident timeline report");
     assert_eq!(report.timeline.len(), 3);
     assert_eq!(report.scanned_channel_count, 3);
     assert_eq!(report.outcomes.allowed, 1);
@@ -17280,8 +17324,16 @@ fn regression_build_multi_channel_incident_timeline_report_tolerates_malformed_l
     )
     .expect("write channel log");
 
-    let report =
-        build_multi_channel_incident_timeline_report(&cli).expect("build incident timeline report");
+    let report = build_multi_channel_incident_timeline_report(
+        &tau_multi_channel::MultiChannelIncidentTimelineQuery {
+            state_dir: cli.multi_channel_state_dir.clone(),
+            window_start_unix_ms: cli.multi_channel_incident_start_unix_ms,
+            window_end_unix_ms: cli.multi_channel_incident_end_unix_ms,
+            event_limit: cli.multi_channel_incident_event_limit.unwrap_or(200),
+            replay_export_path: cli.multi_channel_incident_replay_export.clone(),
+        },
+    )
+    .expect("build incident timeline report");
     assert_eq!(report.timeline.len(), 1);
     assert_eq!(report.invalid_line_count, 1);
     assert!(

@@ -14,8 +14,8 @@ if [[ "${init_rc}" -ne 0 ]]; then
   exit "${init_rc}"
 fi
 
-fixture_path="${TAU_DEMO_REPO_ROOT}/crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json"
-live_fixture_dir="${TAU_DEMO_REPO_ROOT}/crates/tau-coding-agent/testdata/multi-channel-live-ingress"
+fixture_path="${TAU_DEMO_REPO_ROOT}/crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json"
+live_fixture_dir="${TAU_DEMO_REPO_ROOT}/crates/tau-multi-channel/testdata/multi-channel-live-ingress"
 demo_state_dir=".tau/demo-multi-channel"
 live_ingress_dir="${demo_state_dir}/live-ingress"
 
@@ -80,7 +80,7 @@ tau_demo_common_run_step \
 tau_demo_common_run_step \
   "multi-channel-runner" \
   --multi-channel-contract-runner \
-  --multi-channel-fixture ./crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json \
+  --multi-channel-fixture ./crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json \
   --multi-channel-state-dir "${demo_state_dir}" \
   --multi-channel-queue-limit 64 \
   --multi-channel-processed-event-cap 10000 \
@@ -103,21 +103,21 @@ tau_demo_common_run_step \
 
 tau_demo_common_run_step \
   "multi-channel-live-ingest-telegram" \
-  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/telegram-update.json \
+  --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/telegram-update.json \
   --multi-channel-live-ingest-transport telegram \
   --multi-channel-live-ingest-provider telegram-bot-api \
   --multi-channel-live-ingest-dir "${live_ingress_dir}"
 
 tau_demo_common_run_step \
   "multi-channel-live-ingest-discord" \
-  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/discord-message.json \
+  --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/discord-message.json \
   --multi-channel-live-ingest-transport discord \
   --multi-channel-live-ingest-provider discord-gateway \
   --multi-channel-live-ingest-dir "${live_ingress_dir}"
 
 tau_demo_common_run_step \
   "multi-channel-live-ingest-whatsapp" \
-  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/whatsapp-message.json \
+  --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/whatsapp-message.json \
   --multi-channel-live-ingest-transport whatsapp \
   --multi-channel-live-ingest-provider whatsapp-cloud-api \
   --multi-channel-live-ingest-dir "${live_ingress_dir}"
@@ -137,7 +137,7 @@ tau_demo_common_run_step \
 tau_demo_common_run_step \
   "multi-channel-route-inspect-telegram" \
   --multi-channel-state-dir "${demo_state_dir}" \
-  --multi-channel-route-inspect-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/telegram-valid.json \
+  --multi-channel-route-inspect-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/telegram-valid.json \
   --multi-channel-route-inspect-json
 
 tau_demo_common_run_step \

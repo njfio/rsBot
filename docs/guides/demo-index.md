@@ -58,7 +58,7 @@ Write deterministic JSON summary:
   - `[demo:multi-channel] PASS multi-channel-live-ingest-discord`
   - `[demo:multi-channel] PASS multi-channel-live-ingest-whatsapp`
 - Troubleshooting checkpoint:
-  - verify fixture files in `crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw`.
+  - verify fixture files in `crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw`.
 
 ### deployment-wasm
 - Wrapper: `./scripts/demo/deployment.sh`

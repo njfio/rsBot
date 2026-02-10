@@ -42,6 +42,7 @@ mod model_catalog;
 mod multi_agent_contract;
 mod multi_agent_router;
 mod multi_agent_runtime;
+mod multi_channel_adapters;
 mod multi_channel_contract;
 mod multi_channel_lifecycle;
 mod multi_channel_live_connectors;
@@ -216,13 +217,8 @@ pub(crate) use crate::multi_agent_router::{
     build_multi_agent_role_prompt, load_multi_agent_route_table, resolve_multi_agent_role_profile,
     select_multi_agent_route, MultiAgentRoutePhase, MultiAgentRouteTable,
 };
-#[cfg(test)]
 pub(crate) use crate::multi_channel_runtime::build_multi_channel_incident_timeline_report;
-#[cfg(test)]
 pub(crate) use crate::multi_channel_runtime::build_multi_channel_route_inspect_report;
-pub(crate) use crate::multi_channel_runtime::{
-    execute_multi_channel_incident_timeline_command, execute_multi_channel_route_inspect_command,
-};
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};

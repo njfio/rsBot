@@ -102,10 +102,10 @@ Use this area for skill packaging, verification, registry support, and lock work
 - `browser_automation_runtime.rs`: browser automation runtime loop (queueing, retry, guardrails, dedupe, channel-store writes).
 - `memory_contract.rs`: semantic-memory fixture/schema contract definitions and validators.
 - `memory_runtime.rs`: semantic-memory runtime loop (state transitions, retries, dedupe, channel-store writes).
-- `multi_channel_contract.rs`: multi-channel (Telegram/Discord/WhatsApp) fixture/schema contract.
-- `multi_channel_runtime.rs`: multi-channel runtime loop (queueing, retry, dedupe, channel-store writes).
-- `multi_channel_media.rs`: media understanding envelope normalization, bounded attachment processing, and reason-coded media summary/transcription contracts.
-- `multi_channel_live_connectors.rs`: live provider ingress bridges (Telegram polling/webhook, Discord polling, WhatsApp webhook), connector liveness/error counters, and webhook server.
+- `crates/tau-multi-channel/src/multi_channel_contract.rs`: multi-channel (Telegram/Discord/WhatsApp) fixture/schema contract.
+- `crates/tau-multi-channel/src/multi_channel_runtime.rs`: multi-channel runtime loop (queueing, retry, dedupe, channel-store writes).
+- `crates/tau-multi-channel/src/multi_channel_media.rs`: media understanding envelope normalization, bounded attachment processing, and reason-coded media summary/transcription contracts.
+- `crates/tau-multi-channel/src/multi_channel_live_connectors.rs`: live provider ingress bridges (Telegram polling/webhook, Discord polling, WhatsApp webhook), connector liveness/error counters, and webhook server.
 - `voice_contract.rs`: voice interaction + wake-word fixture/schema contract definitions and validators.
 - `voice_runtime.rs`: voice runtime loop (wake-word/turn replay, retries, dedupe, channel-store writes).
 - `runtime_cli_validation.rs`: validation for integration runtime flags.

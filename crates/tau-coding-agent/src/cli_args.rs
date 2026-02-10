@@ -2759,7 +2759,7 @@ pub(crate) struct Cli {
     #[arg(
         long = "multi-channel-fixture",
         env = "TAU_MULTI_CHANNEL_FIXTURE",
-        default_value = "crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json",
+        default_value = "crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json",
         requires = "multi_channel_contract_runner",
         help = "Path to multi-channel contract fixture JSON"
     )]

@@ -112,7 +112,7 @@ deduplication for supported transports.
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
   --multi-channel-contract-runner \
-  --multi-channel-fixture crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json \
+  --multi-channel-fixture crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json \
   --multi-channel-state-dir .tau/multi-channel \
   --multi-channel-queue-limit 64 \
   --multi-channel-processed-event-cap 10000 \
@@ -204,7 +204,7 @@ One-shot provider payload ingest (raw payload -> live ingress NDJSON):
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/telegram-update.json \
+  --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/telegram-update.json \
   --multi-channel-live-ingest-transport telegram \
   --multi-channel-live-ingest-provider telegram-bot-api \
   --multi-channel-live-ingest-dir .tau/multi-channel/live-ingress
