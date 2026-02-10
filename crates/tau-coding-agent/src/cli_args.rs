@@ -3386,7 +3386,7 @@ pub(crate) struct Cli {
     #[arg(
         long = "gateway-fixture",
         env = "TAU_GATEWAY_FIXTURE",
-        default_value = "crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json",
+        default_value = "crates/tau-gateway/testdata/gateway-contract/mixed-outcomes.json",
         requires = "gateway_contract_runner",
         help = "Path to gateway runtime contract fixture JSON"
     )]

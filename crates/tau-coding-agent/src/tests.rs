@@ -642,7 +642,7 @@ pub(crate) fn test_cli() -> Cli {
         gateway_openresponses_max_input_chars: 32_000,
         gateway_contract_runner: false,
         gateway_fixture: PathBuf::from(
-            "crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json",
+            "crates/tau-gateway/testdata/gateway-contract/mixed-outcomes.json",
         ),
         gateway_state_dir: PathBuf::from(".tau/gateway"),
         gateway_guardrail_failure_streak_threshold: 2,
@@ -2254,7 +2254,7 @@ fn unit_cli_gateway_runner_flags_default_to_disabled() {
     assert!(!cli.gateway_contract_runner);
     assert_eq!(
         cli.gateway_fixture,
-        PathBuf::from("crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json")
+        PathBuf::from("crates/tau-gateway/testdata/gateway-contract/mixed-outcomes.json")
     );
     assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway"));
     assert_eq!(cli.gateway_guardrail_failure_streak_threshold, 2);

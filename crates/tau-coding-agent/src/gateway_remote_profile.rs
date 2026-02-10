@@ -1,21 +1,30 @@
-use super::*;
+use anyhow::{Context, Result};
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct GatewayRemoteProfileReport {
-    pub(crate) profile: String,
-    pub(crate) posture: String,
-    pub(crate) gate: String,
-    pub(crate) risk_level: String,
-    pub(crate) server_enabled: bool,
-    pub(crate) bind: String,
-    pub(crate) bind_ip: String,
-    pub(crate) loopback_bind: bool,
-    pub(crate) auth_mode: String,
-    pub(crate) auth_token_configured: bool,
-    pub(crate) auth_password_configured: bool,
-    pub(crate) remote_enabled: bool,
-    pub(crate) reason_codes: Vec<String>,
-    pub(crate) recommendations: Vec<String>,
+use crate::{Cli, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile};
+
+pub use tau_gateway::remote_profile::{
+    evaluate_gateway_remote_profile_config, GatewayOpenResponsesAuthMode, GatewayRemoteProfile,
+    GatewayRemoteProfileConfig, GatewayRemoteProfileReport,
+};
+
+fn map_auth_mode(mode: CliGatewayOpenResponsesAuthMode) -> GatewayOpenResponsesAuthMode {
+    match mode {
+        CliGatewayOpenResponsesAuthMode::Token => GatewayOpenResponsesAuthMode::Token,
+        CliGatewayOpenResponsesAuthMode::PasswordSession => {
+            GatewayOpenResponsesAuthMode::PasswordSession
+        }
+        CliGatewayOpenResponsesAuthMode::LocalhostDev => GatewayOpenResponsesAuthMode::LocalhostDev,
+    }
+}
+
+fn map_remote_profile(profile: CliGatewayRemoteProfile) -> GatewayRemoteProfile {
+    match profile {
+        CliGatewayRemoteProfile::LocalOnly => GatewayRemoteProfile::LocalOnly,
+        CliGatewayRemoteProfile::PasswordRemote => GatewayRemoteProfile::PasswordRemote,
+        CliGatewayRemoteProfile::ProxyRemote => GatewayRemoteProfile::ProxyRemote,
+        CliGatewayRemoteProfile::TailscaleServe => GatewayRemoteProfile::TailscaleServe,
+        CliGatewayRemoteProfile::TailscaleFunnel => GatewayRemoteProfile::TailscaleFunnel,
+    }
 }
 
 fn has_non_empty(value: Option<&str>) -> bool {
@@ -25,278 +34,16 @@ fn has_non_empty(value: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-fn push_unique(list: &mut Vec<String>, value: &str) {
-    if list.iter().any(|existing| existing == value) {
-        return;
-    }
-    list.push(value.to_string());
-}
-
-fn mark_hold(
-    gate: &mut &'static str,
-    reason_codes: &mut Vec<String>,
-    recommendations: &mut Vec<String>,
-    reason_code: &str,
-    recommendation: &str,
-) {
-    *gate = "hold";
-    push_unique(reason_codes, reason_code);
-    push_unique(recommendations, recommendation);
-}
-
 pub(crate) fn evaluate_gateway_remote_profile(cli: &Cli) -> Result<GatewayRemoteProfileReport> {
-    let bind_addr = crate::gateway_openresponses::validate_gateway_openresponses_bind(
-        &cli.gateway_openresponses_bind,
-    )
-    .with_context(|| {
-        format!(
-            "failed to evaluate gateway remote profile bind '{}'",
-            cli.gateway_openresponses_bind
-        )
-    })?;
-    let loopback_bind = bind_addr.ip().is_loopback();
-    let auth_mode = cli.gateway_openresponses_auth_mode.as_str();
-    let profile = cli.gateway_remote_profile.as_str();
-    let auth_token_configured = has_non_empty(cli.gateway_openresponses_auth_token.as_deref());
-    let auth_password_configured =
-        has_non_empty(cli.gateway_openresponses_auth_password.as_deref());
-
-    let mut gate = "pass";
-    let mut reason_codes = Vec::new();
-    let mut recommendations = Vec::new();
-    let remote_enabled = !matches!(
-        cli.gateway_remote_profile,
-        CliGatewayRemoteProfile::LocalOnly
-    );
-
-    push_unique(
-        &mut reason_codes,
-        &format!("profile_{}", profile.replace('-', "_")),
-    );
-    if cli.gateway_openresponses_server {
-        push_unique(&mut reason_codes, "server_enabled");
-    } else {
-        push_unique(&mut reason_codes, "server_disabled_inspect_only");
-    }
-
-    match cli.gateway_remote_profile {
-        CliGatewayRemoteProfile::LocalOnly => {
-            if loopback_bind {
-                push_unique(&mut reason_codes, "local_only_loopback_bind");
-            } else {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "local_only_non_loopback_bind",
-                    "set --gateway-openresponses-bind to a loopback address for local-only profile",
-                );
-            }
-            push_unique(
-                &mut reason_codes,
-                &format!("local_only_auth_{}", auth_mode.replace('-', "_")),
-            );
-        }
-        CliGatewayRemoteProfile::PasswordRemote => {
-            if cli.gateway_openresponses_auth_mode
-                != CliGatewayOpenResponsesAuthMode::PasswordSession
-            {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "password_remote_auth_mode_mismatch",
-                    "set --gateway-openresponses-auth-mode password-session",
-                );
-            } else {
-                push_unique(&mut reason_codes, "password_remote_password_session_auth");
-            }
-            if auth_password_configured {
-                push_unique(&mut reason_codes, "password_remote_password_configured");
-            } else {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "password_remote_missing_password",
-                    "set --gateway-openresponses-auth-password to a non-empty value",
-                );
-            }
-            if loopback_bind {
-                push_unique(&mut reason_codes, "password_remote_loopback_bind");
-                push_unique(
-                    &mut recommendations,
-                    "publish loopback bind through a trusted tunnel or reverse proxy for remote operators",
-                );
-            } else {
-                push_unique(&mut reason_codes, "password_remote_non_loopback_bind");
-            }
-        }
-        CliGatewayRemoteProfile::ProxyRemote => {
-            if cli.gateway_openresponses_auth_mode != CliGatewayOpenResponsesAuthMode::Token {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "proxy_remote_auth_mode_mismatch",
-                    "set --gateway-openresponses-auth-mode token",
-                );
-            } else {
-                push_unique(&mut reason_codes, "proxy_remote_token_auth");
-            }
-            if auth_token_configured {
-                push_unique(&mut reason_codes, "proxy_remote_token_configured");
-            } else {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "proxy_remote_missing_token",
-                    "set --gateway-openresponses-auth-token to a non-empty bearer token",
-                );
-            }
-            if loopback_bind {
-                push_unique(&mut reason_codes, "proxy_remote_loopback_bind");
-                push_unique(
-                    &mut recommendations,
-                    "keep loopback bind and expose access through a trusted reverse proxy/tunnel",
-                );
-            } else {
-                push_unique(&mut reason_codes, "proxy_remote_non_loopback_bind");
-            }
-        }
-        CliGatewayRemoteProfile::TailscaleServe => {
-            if loopback_bind {
-                push_unique(&mut reason_codes, "tailscale_serve_loopback_bind");
-            } else {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "tailscale_serve_non_loopback_bind",
-                    "set --gateway-openresponses-bind to a loopback address and expose through tailscale serve",
-                );
-            }
-            match cli.gateway_openresponses_auth_mode {
-                CliGatewayOpenResponsesAuthMode::Token => {
-                    push_unique(&mut reason_codes, "tailscale_serve_token_auth");
-                    if auth_token_configured {
-                        push_unique(&mut reason_codes, "tailscale_serve_token_configured");
-                    } else {
-                        mark_hold(
-                            &mut gate,
-                            &mut reason_codes,
-                            &mut recommendations,
-                            "tailscale_serve_missing_token",
-                            "set --gateway-openresponses-auth-token to a non-empty bearer token",
-                        );
-                    }
-                }
-                CliGatewayOpenResponsesAuthMode::PasswordSession => {
-                    push_unique(&mut reason_codes, "tailscale_serve_password_session_auth");
-                    if auth_password_configured {
-                        push_unique(&mut reason_codes, "tailscale_serve_password_configured");
-                    } else {
-                        mark_hold(
-                            &mut gate,
-                            &mut reason_codes,
-                            &mut recommendations,
-                            "tailscale_serve_missing_password",
-                            "set --gateway-openresponses-auth-password to a non-empty value",
-                        );
-                    }
-                }
-                CliGatewayOpenResponsesAuthMode::LocalhostDev => {
-                    mark_hold(
-                        &mut gate,
-                        &mut reason_codes,
-                        &mut recommendations,
-                        "tailscale_serve_localhost_dev_auth_unsupported",
-                        "set --gateway-openresponses-auth-mode token or password-session for tailscale serve",
-                    );
-                }
-            }
-            push_unique(
-                &mut recommendations,
-                "use tailscale serve to publish gateway while keeping loopback bind on host",
-            );
-        }
-        CliGatewayRemoteProfile::TailscaleFunnel => {
-            if loopback_bind {
-                push_unique(&mut reason_codes, "tailscale_funnel_loopback_bind");
-            } else {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "tailscale_funnel_non_loopback_bind",
-                    "set --gateway-openresponses-bind to a loopback address and expose through tailscale funnel",
-                );
-            }
-            if cli.gateway_openresponses_auth_mode
-                != CliGatewayOpenResponsesAuthMode::PasswordSession
-            {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "tailscale_funnel_auth_mode_mismatch",
-                    "set --gateway-openresponses-auth-mode password-session",
-                );
-            } else {
-                push_unique(&mut reason_codes, "tailscale_funnel_password_session_auth");
-            }
-            if auth_password_configured {
-                push_unique(&mut reason_codes, "tailscale_funnel_password_configured");
-            } else {
-                mark_hold(
-                    &mut gate,
-                    &mut reason_codes,
-                    &mut recommendations,
-                    "tailscale_funnel_missing_password",
-                    "set --gateway-openresponses-auth-password to a non-empty value",
-                );
-            }
-            push_unique(
-                &mut recommendations,
-                "require password-session auth before enabling tailscale funnel exposure",
-            );
-        }
-    }
-
-    let posture = if remote_enabled {
-        "remote-enabled"
-    } else {
-        "local-only"
-    }
-    .to_string();
-    let risk_level = if gate == "hold" {
-        "high"
-    } else if remote_enabled && !loopback_bind {
-        "elevated"
-    } else if remote_enabled {
-        "moderate"
-    } else {
-        "low"
-    }
-    .to_string();
-
-    Ok(GatewayRemoteProfileReport {
-        profile: profile.to_string(),
-        posture,
-        gate: gate.to_string(),
-        risk_level,
-        server_enabled: cli.gateway_openresponses_server,
+    let config = GatewayRemoteProfileConfig {
         bind: cli.gateway_openresponses_bind.clone(),
-        bind_ip: bind_addr.ip().to_string(),
-        loopback_bind,
-        auth_mode: auth_mode.to_string(),
-        auth_token_configured,
-        auth_password_configured,
-        remote_enabled,
-        reason_codes,
-        recommendations,
-    })
+        auth_mode: map_auth_mode(cli.gateway_openresponses_auth_mode),
+        profile: map_remote_profile(cli.gateway_remote_profile),
+        auth_token_configured: has_non_empty(cli.gateway_openresponses_auth_token.as_deref()),
+        auth_password_configured: has_non_empty(cli.gateway_openresponses_auth_password.as_deref()),
+        server_enabled: cli.gateway_openresponses_server,
+    };
+    evaluate_gateway_remote_profile_config(&config)
 }
 
 pub(crate) fn render_gateway_remote_profile_report(report: &GatewayRemoteProfileReport) -> String {
@@ -356,7 +103,7 @@ pub(crate) fn validate_gateway_remote_profile_for_openresponses(cli: &Cli) -> Re
     } else {
         report.reason_codes.join(",")
     };
-    bail!(
+    anyhow::bail!(
         "gateway remote profile rejected: profile={} gate={} reason_codes={} (run --gateway-remote-profile-inspect for full posture details)",
         report.profile,
         report.gate,
