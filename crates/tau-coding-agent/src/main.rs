@@ -52,6 +52,7 @@ mod multi_channel_outbound;
 mod multi_channel_policy;
 mod multi_channel_routing;
 mod multi_channel_runtime;
+mod multi_channel_send;
 mod observability_loggers;
 mod onboarding;
 mod orchestrator;
@@ -295,7 +296,8 @@ pub(crate) use crate::runtime_cli_validation::{
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
     validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
-    validate_project_index_cli, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
+    validate_multi_channel_send_cli, validate_project_index_cli, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli,
 };
 pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,

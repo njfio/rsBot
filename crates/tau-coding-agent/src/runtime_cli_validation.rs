@@ -35,6 +35,10 @@ fn multi_channel_channel_lifecycle_mode_requested(cli: &Cli) -> bool {
         || cli.multi_channel_channel_probe_online
 }
 
+fn multi_channel_send_mode_requested(cli: &Cli) -> bool {
+    cli.multi_channel_send.is_some()
+}
+
 fn project_index_mode_requested(cli: &Cli) -> bool {
     cli.project_index_build || cli.project_index_query.is_some() || cli.project_index_inspect
 }
@@ -629,6 +633,117 @@ pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<
         bail!(
             "--multi-channel-live-ingress-dir '{}' must point to a directory when it exists",
             cli.multi_channel_live_ingress_dir.display()
+        );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_multi_channel_send_cli(cli: &Cli) -> Result<()> {
+    if !multi_channel_send_mode_requested(cli) {
+        if cli.multi_channel_send_json
+            || cli.multi_channel_send_target.is_some()
+            || cli.multi_channel_send_text.is_some()
+            || cli.multi_channel_send_text_file.is_some()
+        {
+            bail!("--multi-channel-send-* flags require --multi-channel-send");
+        }
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--multi-channel-send cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.channel_store_inspect.is_some()
+        || cli.channel_store_repair.is_some()
+        || cli.transport_health_inspect.is_some()
+        || cli.github_status_inspect.is_some()
+        || cli.operator_control_summary
+        || cli.multi_channel_status_inspect
+        || cli.multi_channel_route_inspect_file.is_some()
+        || cli.dashboard_status_inspect
+        || cli.multi_agent_status_inspect
+        || cli.gateway_remote_profile_inspect
+        || cli.gateway_status_inspect
+        || cli.deployment_status_inspect
+        || cli.custom_command_status_inspect
+        || cli.voice_status_inspect
+    {
+        bail!("--multi-channel-send cannot be combined with status/inspection preflight commands");
+    }
+    if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
+        || gateway_openresponses_mode_requested(cli)
+        || cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_channel_live_connectors_runner
+        || cli.multi_channel_live_ingest_file.is_some()
+        || cli.multi_channel_live_readiness_preflight
+        || multi_channel_channel_lifecycle_mode_requested(cli)
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.deployment_wasm_inspect_manifest.is_some()
+        || project_index_mode_requested(cli)
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!("--multi-channel-send cannot be combined with active transport/runtime commands");
+    }
+
+    let target = cli
+        .multi_channel_send_target
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("--multi-channel-send-target is required"))?;
+    if target.len() > 256 {
+        bail!("--multi-channel-send-target exceeds 256 characters");
+    }
+
+    let has_text_inline = cli
+        .multi_channel_send_text
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    let has_text_file = cli.multi_channel_send_text_file.is_some();
+    if !has_text_inline && !has_text_file {
+        bail!("multi-channel send requires --multi-channel-send-text or --multi-channel-send-text-file");
+    }
+    if has_text_file {
+        let text_path = cli
+            .multi_channel_send_text_file
+            .as_ref()
+            .ok_or_else(|| anyhow!("--multi-channel-send-text-file is required"))?;
+        if !text_path.exists() {
+            bail!(
+                "--multi-channel-send-text-file '{}' does not exist",
+                text_path.display()
+            );
+        }
+        if !text_path.is_file() {
+            bail!(
+                "--multi-channel-send-text-file '{}' must point to a file",
+                text_path.display()
+            );
+        }
+    }
+
+    if cli.multi_channel_outbound_mode == CliMultiChannelOutboundMode::ChannelStore {
+        bail!("--multi-channel-send requires --multi-channel-outbound-mode=dry-run or provider");
+    }
+    if cli.multi_channel_state_dir.exists() && !cli.multi_channel_state_dir.is_dir() {
+        bail!(
+            "--multi-channel-state-dir '{}' must point to a directory when it exists",
+            cli.multi_channel_state_dir.display()
         );
     }
 

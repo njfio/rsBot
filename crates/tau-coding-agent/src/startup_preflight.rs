@@ -11,6 +11,12 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.multi_channel_send.is_some() {
+        validate_multi_channel_send_cli(cli)?;
+        crate::multi_channel_send::execute_multi_channel_send_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.multi_channel_channel_status.is_some()
         || cli.multi_channel_channel_login.is_some()
         || cli.multi_channel_channel_logout.is_some()

@@ -397,6 +397,41 @@ Lifecycle report output now includes:
 - `online_probe_reason_codes`
 - `remediation_hints`
 
+## One-shot outbound send
+
+Tau supports deterministic one-shot outbound delivery without running live loops.
+
+Requirements:
+
+- `--multi-channel-send <telegram|discord|whatsapp>`
+- `--multi-channel-send-target <target>`
+- payload via `--multi-channel-send-text` or `--multi-channel-send-text-file`
+- `--multi-channel-outbound-mode dry-run` or `provider`
+
+Target forms:
+
+- Telegram: numeric chat id (for example `-1001234567890`) or `chat:-1001234567890`
+- Discord: numeric channel id or `channel:123456789012345678`
+- WhatsApp: E.164 recipient (for example `+15551230000`) or
+  `phone:+15551230000@15551239999` to override phone number id for that send
+
+Example:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-state-dir .tau/multi-channel \
+  --multi-channel-send telegram \
+  --multi-channel-send-target -1001234567890 \
+  --multi-channel-send-text "Tau send smoke" \
+  --multi-channel-outbound-mode dry-run \
+  --multi-channel-send-json
+```
+
+Send audit writes:
+
+- channel-store outbound log entry with schema `multi_channel_send_audit_v1`
+- channel-store artifact record with delivery receipt payload
+
 ## Native `/tau` commands in channel messages
 
 Multi-channel runtime now intercepts `/tau ...` messages and executes a bounded operator command

@@ -2634,6 +2634,62 @@ pub(crate) struct Cli {
     pub(crate) multi_channel_channel_probe_online: bool,
 
     #[arg(
+        long = "multi-channel-send",
+        env = "TAU_MULTI_CHANNEL_SEND",
+        value_enum,
+        conflicts_with = "multi_channel_route_inspect_file",
+        conflicts_with = "multi_channel_contract_runner",
+        conflicts_with = "multi_channel_live_runner",
+        conflicts_with = "multi_channel_live_ingest_file",
+        conflicts_with = "multi_channel_live_readiness_preflight",
+        conflicts_with = "multi_channel_channel_status",
+        conflicts_with = "multi_channel_channel_login",
+        conflicts_with = "multi_channel_channel_logout",
+        conflicts_with = "multi_channel_channel_probe",
+        help = "Send one outbound message for one transport (telegram, discord, whatsapp) and exit"
+    )]
+    pub(crate) multi_channel_send: Option<CliMultiChannelTransport>,
+
+    #[arg(
+        long = "multi-channel-send-target",
+        env = "TAU_MULTI_CHANNEL_SEND_TARGET",
+        requires = "multi_channel_send",
+        help = "Transport target identifier (telegram chat id, discord channel id, or whatsapp recipient)"
+    )]
+    pub(crate) multi_channel_send_target: Option<String>,
+
+    #[arg(
+        long = "multi-channel-send-text",
+        env = "TAU_MULTI_CHANNEL_SEND_TEXT",
+        requires = "multi_channel_send",
+        conflicts_with = "multi_channel_send_text_file",
+        help = "Outbound message text payload for --multi-channel-send"
+    )]
+    pub(crate) multi_channel_send_text: Option<String>,
+
+    #[arg(
+        long = "multi-channel-send-text-file",
+        env = "TAU_MULTI_CHANNEL_SEND_TEXT_FILE",
+        requires = "multi_channel_send",
+        conflicts_with = "multi_channel_send_text",
+        help = "Read outbound message text payload from file path for --multi-channel-send"
+    )]
+    pub(crate) multi_channel_send_text_file: Option<PathBuf>,
+
+    #[arg(
+        long = "multi-channel-send-json",
+        env = "TAU_MULTI_CHANNEL_SEND_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "multi_channel_send",
+        help = "Emit --multi-channel-send output as pretty JSON"
+    )]
+    pub(crate) multi_channel_send_json: bool,
+
+    #[arg(
         long = "multi-channel-fixture",
         env = "TAU_MULTI_CHANNEL_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json",

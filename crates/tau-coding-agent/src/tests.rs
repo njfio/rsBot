@@ -90,30 +90,31 @@ use super::{
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
     validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_ingest_cli,
-    validate_multi_channel_live_runner_cli, validate_profile_name, validate_project_index_cli,
-    validate_rpc_frame_file, validate_session_file, validate_skills_prune_file_name,
-    validate_slack_bridge_cli, validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig,
-    BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
-    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
-    CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
-    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
-    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
-    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
-    DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand,
-    IntegrationCredentialStoreRecord, MacroCommand, MacroFile, MultiAgentRouteTable,
-    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
-    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
-    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
-    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
-    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
-    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
-    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    validate_multi_channel_live_runner_cli, validate_multi_channel_send_cli, validate_profile_name,
+    validate_project_index_cli, validate_rpc_frame_file, validate_session_file,
+    validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
+    AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDaemonProfile,
+    CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
+    CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
+    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
+    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+    CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult,
+    DoctorCommandArgs, DoctorCommandConfig, DoctorCommandOutputFormat,
+    DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus, DoctorStatus,
+    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
+    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
+    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
+    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
+    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
+    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
+    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
+    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
+    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
+    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
+    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -295,7 +296,7 @@ fn test_chat_request() -> ChatRequest {
     }
 }
 
-fn test_cli() -> Cli {
+pub(crate) fn test_cli() -> Cli {
     Cli {
         model: "openai/gpt-4o-mini".to_string(),
         fallback_model: vec![],
@@ -548,6 +549,11 @@ fn test_cli() -> Cli {
         multi_channel_channel_probe: None,
         multi_channel_channel_probe_json: false,
         multi_channel_channel_probe_online: false,
+        multi_channel_send: None,
+        multi_channel_send_target: None,
+        multi_channel_send_text: None,
+        multi_channel_send_text_file: None,
+        multi_channel_send_json: false,
         multi_channel_fixture: PathBuf::from(
             "crates/tau-coding-agent/testdata/multi-channel-contract/baseline-three-channel.json",
         ),
@@ -1550,6 +1556,11 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
     assert!(cli.multi_channel_channel_probe.is_none());
     assert!(!cli.multi_channel_channel_probe_json);
     assert!(!cli.multi_channel_channel_probe_online);
+    assert!(cli.multi_channel_send.is_none());
+    assert!(cli.multi_channel_send_target.is_none());
+    assert!(cli.multi_channel_send_text.is_none());
+    assert!(cli.multi_channel_send_text_file.is_none());
+    assert!(!cli.multi_channel_send_json);
     assert_eq!(
         cli.multi_channel_fixture,
         PathBuf::from(
@@ -1644,6 +1655,27 @@ fn functional_cli_multi_channel_channel_lifecycle_flags_accept_explicit_override
     );
     assert!(probe_cli.multi_channel_channel_probe_json);
     assert!(probe_cli.multi_channel_channel_probe_online);
+
+    let send_cli = parse_cli_with_stack([
+        "tau-rs",
+        "--multi-channel-send",
+        "discord",
+        "--multi-channel-send-target",
+        "123456789012345678",
+        "--multi-channel-send-text",
+        "hello",
+        "--multi-channel-send-json",
+    ]);
+    assert_eq!(
+        send_cli.multi_channel_send,
+        Some(CliMultiChannelTransport::Discord)
+    );
+    assert_eq!(
+        send_cli.multi_channel_send_target.as_deref(),
+        Some("123456789012345678")
+    );
+    assert_eq!(send_cli.multi_channel_send_text.as_deref(), Some("hello"));
+    assert!(send_cli.multi_channel_send_json);
 }
 
 #[test]
@@ -1659,6 +1691,16 @@ fn regression_cli_multi_channel_channel_status_json_requires_status_flag() {
 fn regression_cli_multi_channel_channel_probe_online_requires_probe_flag() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--multi-channel-channel-probe-online"]);
     let error = parse.expect_err("probe online should require probe action");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_multi_channel_send_target_requires_send_flag() {
+    let parse =
+        try_parse_cli_with_stack(["tau-rs", "--multi-channel-send-target", "1234567890123"]);
+    let error = parse.expect_err("send target should require send action");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -15018,6 +15060,57 @@ fn regression_validate_multi_channel_channel_lifecycle_cli_rejects_probe_online_
 }
 
 #[test]
+fn unit_validate_multi_channel_send_cli_accepts_minimum_configuration() {
+    let mut cli = test_cli();
+    cli.multi_channel_send = Some(CliMultiChannelTransport::Telegram);
+    cli.multi_channel_send_target = Some("-100123456".to_string());
+    cli.multi_channel_send_text = Some("hello".to_string());
+    cli.multi_channel_outbound_mode = CliMultiChannelOutboundMode::DryRun;
+    validate_multi_channel_send_cli(&cli).expect("multi-channel send config should validate");
+}
+
+#[test]
+fn functional_validate_multi_channel_send_cli_rejects_prompt_conflicts() {
+    let mut cli = test_cli();
+    cli.multi_channel_send = Some(CliMultiChannelTransport::Discord);
+    cli.multi_channel_send_target = Some("1234567890123".to_string());
+    cli.multi_channel_send_text = Some("hello".to_string());
+    cli.multi_channel_outbound_mode = CliMultiChannelOutboundMode::DryRun;
+    cli.prompt = Some("conflict".to_string());
+    let error = validate_multi_channel_send_cli(&cli).expect_err("prompt conflict expected");
+    assert!(error
+        .to_string()
+        .contains("--multi-channel-send cannot be combined"));
+}
+
+#[test]
+fn integration_validate_multi_channel_send_cli_rejects_runtime_conflicts() {
+    let mut cli = test_cli();
+    cli.multi_channel_send = Some(CliMultiChannelTransport::Whatsapp);
+    cli.multi_channel_send_target = Some("+15551230000".to_string());
+    cli.multi_channel_send_text = Some("hello".to_string());
+    cli.multi_channel_outbound_mode = CliMultiChannelOutboundMode::DryRun;
+    cli.events_runner = true;
+    let error = validate_multi_channel_send_cli(&cli).expect_err("runtime conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("active transport/runtime commands"));
+}
+
+#[test]
+fn regression_validate_multi_channel_send_cli_rejects_channel_store_mode() {
+    let mut cli = test_cli();
+    cli.multi_channel_send = Some(CliMultiChannelTransport::Discord);
+    cli.multi_channel_send_target = Some("1234567890123".to_string());
+    cli.multi_channel_send_text = Some("hello".to_string());
+    cli.multi_channel_outbound_mode = CliMultiChannelOutboundMode::ChannelStore;
+    let error = validate_multi_channel_send_cli(&cli).expect_err("channel-store mode should fail");
+    assert!(error.to_string().contains(
+        "--multi-channel-send requires --multi-channel-outbound-mode=dry-run or provider"
+    ));
+}
+
+#[test]
 fn unit_validate_multi_agent_contract_runner_cli_accepts_minimum_configuration() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("multi-agent-fixture.json");
@@ -20854,6 +20947,31 @@ fn integration_execute_startup_preflight_runs_multi_channel_channel_logout_and_p
         parsed["channels"]["whatsapp"]["last_action"].as_str(),
         Some("probe")
     );
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_multi_channel_send_command() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_send = Some(CliMultiChannelTransport::Discord);
+    cli.multi_channel_send_target = Some("123456789012345678".to_string());
+    cli.multi_channel_send_text = Some("hello from preflight send".to_string());
+    cli.multi_channel_send_json = true;
+    cli.multi_channel_outbound_mode = CliMultiChannelOutboundMode::DryRun;
+
+    let handled = execute_startup_preflight(&cli).expect("multi-channel send preflight");
+    assert!(handled);
+
+    let store = crate::channel_store::ChannelStore::open(
+        &cli.multi_channel_state_dir.join("channel-store"),
+        "discord",
+        "123456789012345678",
+    )
+    .expect("open channel-store");
+    let logs = store.load_log_entries().expect("load channel logs");
+    assert!(!logs.is_empty(), "send preflight should persist audit log");
+    assert_eq!(logs[0].source, "multi_channel_send");
 }
 
 #[test]
