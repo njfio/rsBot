@@ -16,6 +16,7 @@ pub(crate) async fn run_transport_mode_if_requested(
     validate_multi_channel_live_runner_cli(cli)?;
     validate_multi_channel_live_connectors_runner_cli(cli)?;
     validate_multi_agent_contract_runner_cli(cli)?;
+    validate_browser_automation_contract_runner_cli(cli)?;
     validate_memory_contract_runner_cli(cli)?;
     validate_dashboard_contract_runner_cli(cli)?;
     validate_gateway_openresponses_server_cli(cli)?;
@@ -273,6 +274,22 @@ pub(crate) async fn run_transport_mode_if_requested(
             processed_case_cap: cli.multi_agent_processed_case_cap.max(1),
             retry_max_attempts: cli.multi_agent_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.multi_agent_retry_base_delay_ms,
+        })
+        .await?;
+        return Ok(true);
+    }
+
+    if cli.browser_automation_contract_runner {
+        run_browser_automation_contract_runner(BrowserAutomationRuntimeConfig {
+            fixture_path: cli.browser_automation_fixture.clone(),
+            state_dir: cli.browser_automation_state_dir.clone(),
+            queue_limit: cli.browser_automation_queue_limit.max(1),
+            processed_case_cap: cli.browser_automation_processed_case_cap.max(1),
+            retry_max_attempts: cli.browser_automation_retry_max_attempts.max(1),
+            retry_base_delay_ms: cli.browser_automation_retry_base_delay_ms,
+            action_timeout_ms: cli.browser_automation_action_timeout_ms.max(1),
+            max_actions_per_case: cli.browser_automation_max_actions_per_case.max(1),
+            allow_unsafe_actions: cli.browser_automation_allow_unsafe_actions,
         })
         .await?;
         return Ok(true);

@@ -848,7 +848,7 @@ pub(crate) struct Cli {
         conflicts_with = "custom_command_status_inspect",
         conflicts_with = "voice_status_inspect",
         value_name = "target",
-        help = "Inspect transport health snapshot(s) and exit. Targets: slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, deployment, custom-command, voice"
+        help = "Inspect transport health snapshot(s) and exit. Targets: slack, github, github:owner/repo, multi-channel, multi-agent, browser-automation, memory, dashboard, gateway, deployment, custom-command, voice"
     )]
     pub(crate) transport_health_inspect: Option<String>,
 
@@ -2656,6 +2656,129 @@ pub(crate) struct Cli {
         help = "Base backoff delay in milliseconds for multi-agent runtime retries (0 disables delay)"
     )]
     pub(crate) multi_agent_retry_base_delay_ms: u64,
+
+    #[arg(
+        long = "browser-automation-contract-runner",
+        env = "TAU_BROWSER_AUTOMATION_CONTRACT_RUNNER",
+        default_value_t = false,
+        conflicts_with = "browser_automation_preflight",
+        help = "Run fixture-driven browser automation runtime contract scenarios"
+    )]
+    pub(crate) browser_automation_contract_runner: bool,
+
+    #[arg(
+        long = "browser-automation-fixture",
+        env = "TAU_BROWSER_AUTOMATION_FIXTURE",
+        default_value = "crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json",
+        requires = "browser_automation_contract_runner",
+        help = "Path to browser automation runtime contract fixture JSON"
+    )]
+    pub(crate) browser_automation_fixture: PathBuf,
+
+    #[arg(
+        long = "browser-automation-state-dir",
+        env = "TAU_BROWSER_AUTOMATION_STATE_DIR",
+        default_value = ".tau/browser-automation",
+        help = "Directory for browser automation runtime state and channel-store outputs"
+    )]
+    pub(crate) browser_automation_state_dir: PathBuf,
+
+    #[arg(
+        long = "browser-automation-queue-limit",
+        env = "TAU_BROWSER_AUTOMATION_QUEUE_LIMIT",
+        default_value_t = 64,
+        requires = "browser_automation_contract_runner",
+        help = "Maximum browser automation fixture cases processed per runtime cycle"
+    )]
+    pub(crate) browser_automation_queue_limit: usize,
+
+    #[arg(
+        long = "browser-automation-processed-case-cap",
+        env = "TAU_BROWSER_AUTOMATION_PROCESSED_CASE_CAP",
+        default_value_t = 10_000,
+        requires = "browser_automation_contract_runner",
+        help = "Maximum processed-case keys retained for browser automation duplicate suppression"
+    )]
+    pub(crate) browser_automation_processed_case_cap: usize,
+
+    #[arg(
+        long = "browser-automation-retry-max-attempts",
+        env = "TAU_BROWSER_AUTOMATION_RETRY_MAX_ATTEMPTS",
+        default_value_t = 4,
+        requires = "browser_automation_contract_runner",
+        help = "Maximum retry attempts for transient browser automation runtime failures"
+    )]
+    pub(crate) browser_automation_retry_max_attempts: usize,
+
+    #[arg(
+        long = "browser-automation-retry-base-delay-ms",
+        env = "TAU_BROWSER_AUTOMATION_RETRY_BASE_DELAY_MS",
+        default_value_t = 0,
+        requires = "browser_automation_contract_runner",
+        help = "Base backoff delay in milliseconds for browser automation runtime retries (0 disables delay)"
+    )]
+    pub(crate) browser_automation_retry_base_delay_ms: u64,
+
+    #[arg(
+        long = "browser-automation-action-timeout-ms",
+        env = "TAU_BROWSER_AUTOMATION_ACTION_TIMEOUT_MS",
+        default_value_t = 5_000,
+        requires = "browser_automation_contract_runner",
+        help = "Maximum allowed action timeout in milliseconds for one browser automation case"
+    )]
+    pub(crate) browser_automation_action_timeout_ms: u64,
+
+    #[arg(
+        long = "browser-automation-max-actions-per-case",
+        env = "TAU_BROWSER_AUTOMATION_MAX_ACTIONS_PER_CASE",
+        default_value_t = 8,
+        requires = "browser_automation_contract_runner",
+        help = "Maximum allowed repeated action count for one browser automation fixture case"
+    )]
+    pub(crate) browser_automation_max_actions_per_case: usize,
+
+    #[arg(
+        long = "browser-automation-allow-unsafe-actions",
+        env = "TAU_BROWSER_AUTOMATION_ALLOW_UNSAFE_ACTIONS",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "browser_automation_contract_runner",
+        help = "Allow unsafe browser automation fixture operations (default deny)"
+    )]
+    pub(crate) browser_automation_allow_unsafe_actions: bool,
+
+    #[arg(
+        long = "browser-automation-playwright-cli",
+        env = "TAU_BROWSER_AUTOMATION_PLAYWRIGHT_CLI",
+        default_value = "playwright-cli",
+        help = "Playwright CLI executable used for browser automation preflight and doctor checks"
+    )]
+    pub(crate) browser_automation_playwright_cli: String,
+
+    #[arg(
+        long = "browser-automation-preflight",
+        env = "TAU_BROWSER_AUTOMATION_PREFLIGHT",
+        default_value_t = false,
+        conflicts_with = "browser_automation_contract_runner",
+        help = "Run browser automation prerequisite checks and exit"
+    )]
+    pub(crate) browser_automation_preflight: bool,
+
+    #[arg(
+        long = "browser-automation-preflight-json",
+        env = "TAU_BROWSER_AUTOMATION_PREFLIGHT_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "browser_automation_preflight",
+        help = "Emit --browser-automation-preflight output as pretty JSON"
+    )]
+    pub(crate) browser_automation_preflight_json: bool,
 
     #[arg(
         long = "memory-contract-runner",

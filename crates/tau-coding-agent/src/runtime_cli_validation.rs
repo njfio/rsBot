@@ -80,6 +80,7 @@ pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || multi_channel_channel_lifecycle_mode_requested(cli)
         || cli.multi_channel_route_inspect_file.is_some()
         || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
@@ -88,6 +89,7 @@ pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_package_module.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.browser_automation_preflight
         || cli.channel_store_inspect.is_some()
         || cli.channel_store_repair.is_some()
         || cli.transport_health_inspect.is_some()
@@ -555,6 +557,8 @@ pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<
         || cli.multi_channel_live_ingest_file.is_some()
         || cli.multi_channel_live_readiness_preflight
         || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
@@ -635,6 +639,98 @@ pub(crate) fn validate_multi_agent_contract_runner_cli(cli: &Cli) -> Result<()> 
             "--multi-agent-fixture '{}' must point to a file",
             cli.multi_agent_fixture.display()
         );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.browser_automation_contract_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--browser-automation-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--browser-automation-contract-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!("--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
+    }
+    if cli.browser_automation_queue_limit == 0 {
+        bail!("--browser-automation-queue-limit must be greater than 0");
+    }
+    if cli.browser_automation_processed_case_cap == 0 {
+        bail!("--browser-automation-processed-case-cap must be greater than 0");
+    }
+    if cli.browser_automation_retry_max_attempts == 0 {
+        bail!("--browser-automation-retry-max-attempts must be greater than 0");
+    }
+    if cli.browser_automation_action_timeout_ms == 0 {
+        bail!("--browser-automation-action-timeout-ms must be greater than 0");
+    }
+    if cli.browser_automation_max_actions_per_case == 0 {
+        bail!("--browser-automation-max-actions-per-case must be greater than 0");
+    }
+    if !cli.browser_automation_fixture.exists() {
+        bail!(
+            "--browser-automation-fixture '{}' does not exist",
+            cli.browser_automation_fixture.display()
+        );
+    }
+    if !cli.browser_automation_fixture.is_file() {
+        bail!(
+            "--browser-automation-fixture '{}' must point to a file",
+            cli.browser_automation_fixture.display()
+        );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_browser_automation_preflight_cli(cli: &Cli) -> Result<()> {
+    if !cli.browser_automation_preflight {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--browser-automation-preflight cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!(
+            "--browser-automation-preflight cannot be combined with active transport/runtime flags"
+        );
+    }
+    if cli.browser_automation_playwright_cli.trim().is_empty() {
+        bail!("--browser-automation-playwright-cli cannot be empty");
     }
 
     Ok(())
@@ -758,6 +854,8 @@ pub(crate) fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
         || cli.multi_channel_contract_runner
         || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
@@ -805,6 +903,8 @@ pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()>
         || cli.multi_channel_contract_runner
         || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner

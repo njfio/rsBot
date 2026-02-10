@@ -133,6 +133,12 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.browser_automation_preflight {
+        validate_browser_automation_preflight_cli(cli)?;
+        execute_browser_automation_preflight_command(cli)?;
+        return Ok(true);
+    }
+
     if cli.multi_channel_live_connectors_status {
         let report =
             crate::multi_channel_live_connectors::load_multi_channel_live_connectors_status_report(

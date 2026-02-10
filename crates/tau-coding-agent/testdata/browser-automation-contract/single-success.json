@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "name": "single-success",
+  "description": "Single successful snapshot case used by regression and smoke validations.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "snapshot_home",
+      "operation": "snapshot",
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "ok",
+          "operation": "snapshot",
+          "snapshot_id": "snapshot-snapshot_home",
+          "elements": [
+            {
+              "id": "e1",
+              "role": "link",
+              "name": "Docs"
+            },
+            {
+              "id": "e2",
+              "role": "button",
+              "name": "Submit"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

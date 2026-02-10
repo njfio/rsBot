@@ -3,6 +3,8 @@ mod atomic_io;
 mod auth_commands;
 mod auth_types;
 mod bootstrap_helpers;
+mod browser_automation_contract;
+mod browser_automation_runtime;
 mod canvas;
 mod channel_store;
 mod channel_store_admin;
@@ -162,7 +164,8 @@ pub(crate) use crate::credentials::{
     CredentialStoreData, ProviderCredentialStoreRecord,
 };
 pub(crate) use crate::diagnostics_commands::{
-    build_doctor_command_config, execute_audit_summary_command, execute_doctor_cli_command,
+    build_doctor_command_config, execute_audit_summary_command,
+    execute_browser_automation_preflight_command, execute_doctor_cli_command,
     execute_multi_channel_live_readiness_preflight_command, execute_policy_command,
 };
 #[cfg(test)]
@@ -276,6 +279,7 @@ pub(crate) use crate::rpc_protocol::{
 #[cfg(test)]
 pub(crate) use crate::runtime_cli_validation::validate_multi_channel_live_connectors_runner_cli;
 pub(crate) use crate::runtime_cli_validation::{
+    validate_browser_automation_contract_runner_cli, validate_browser_automation_preflight_cli,
     validate_custom_command_contract_runner_cli, validate_dashboard_contract_runner_cli,
     validate_deployment_contract_runner_cli, validate_deployment_wasm_package_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
@@ -393,6 +397,9 @@ pub(crate) use crate::transport_health::TransportHealthSnapshot;
 pub(crate) use crate::trust_roots::{
     apply_trust_root_mutation_specs, apply_trust_root_mutations, load_trust_root_records,
     parse_trust_rotation_spec, parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,
+};
+use browser_automation_runtime::{
+    run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
 };
 use custom_command_runtime::{run_custom_command_contract_runner, CustomCommandRuntimeConfig};
 use dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};

@@ -71,6 +71,7 @@ pub(crate) struct DoctorCommandConfig {
     pub(crate) release_channel_path: PathBuf,
     pub(crate) release_lookup_cache_path: PathBuf,
     pub(crate) release_lookup_cache_ttl_ms: u64,
+    pub(crate) browser_automation_playwright_cli: String,
     pub(crate) session_enabled: bool,
     pub(crate) session_path: PathBuf,
     pub(crate) skills_dir: PathBuf,

@@ -297,6 +297,22 @@ pub(crate) struct MultiChannelLiveReadinessReport {
     pub(crate) reason_codes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BrowserAutomationReadinessOutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowserAutomationReadinessReport {
+    pub(crate) checks: Vec<DoctorCheckResult>,
+    pub(crate) pass: usize,
+    pub(crate) warn: usize,
+    pub(crate) fail: usize,
+    pub(crate) gate: String,
+    pub(crate) reason_codes: Vec<String>,
+}
+
 pub(crate) fn parse_doctor_command_args(command_args: &str) -> Result<DoctorCommandArgs> {
     let tokens = command_args
         .split_whitespace()
@@ -454,6 +470,7 @@ pub(crate) fn build_doctor_command_config(
             .unwrap_or_else(|_| PathBuf::from(".tau/release-channel.json")),
         release_lookup_cache_path: cli.doctor_release_cache_file.clone(),
         release_lookup_cache_ttl_ms: cli.doctor_release_cache_ttl_ms,
+        browser_automation_playwright_cli: cli.browser_automation_playwright_cli.clone(),
         session_enabled: !cli.no_session,
         session_path: cli.session.clone(),
         skills_dir: cli.skills_dir.clone(),
@@ -494,6 +511,41 @@ fn build_multi_channel_readiness_summary(
         .collect::<Vec<_>>();
 
     MultiChannelLiveReadinessReport {
+        checks,
+        pass,
+        warn,
+        fail,
+        gate: if fail == 0 {
+            "pass".to_string()
+        } else {
+            "fail".to_string()
+        },
+        reason_codes,
+    }
+}
+
+fn build_browser_automation_readiness_summary(
+    checks: Vec<DoctorCheckResult>,
+) -> BrowserAutomationReadinessReport {
+    let pass = checks
+        .iter()
+        .filter(|item| item.status == DoctorStatus::Pass)
+        .count();
+    let warn = checks
+        .iter()
+        .filter(|item| item.status == DoctorStatus::Warn)
+        .count();
+    let fail = checks
+        .iter()
+        .filter(|item| item.status == DoctorStatus::Fail)
+        .count();
+    let reason_codes = checks
+        .iter()
+        .filter(|item| item.status == DoctorStatus::Fail)
+        .map(|item| format!("{}:{}", item.key, item.code))
+        .collect::<Vec<_>>();
+
+    BrowserAutomationReadinessReport {
         checks,
         pass,
         warn,
@@ -919,6 +971,157 @@ pub(crate) fn execute_multi_channel_live_readiness_preflight_command(cli: &Cli) 
     Ok(())
 }
 
+pub(crate) fn evaluate_browser_automation_readiness(
+    playwright_cli: &str,
+) -> BrowserAutomationReadinessReport {
+    let mut checks = Vec::new();
+
+    let npx_available = is_executable_available("npx");
+    checks.push(DoctorCheckResult {
+        key: "browser_automation.npx".to_string(),
+        status: if npx_available {
+            DoctorStatus::Pass
+        } else {
+            DoctorStatus::Fail
+        },
+        code: if npx_available {
+            "ready".to_string()
+        } else {
+            "missing".to_string()
+        },
+        path: None,
+        action: if npx_available {
+            None
+        } else {
+            Some("install Node.js/npm so `npx` is available".to_string())
+        },
+    });
+
+    let cli_path = playwright_cli.trim();
+    if cli_path.is_empty() {
+        checks.push(DoctorCheckResult {
+            key: "browser_automation.playwright_cli".to_string(),
+            status: DoctorStatus::Fail,
+            code: "invalid_config".to_string(),
+            path: None,
+            action: Some(
+                "set --browser-automation-playwright-cli to a non-empty executable".to_string(),
+            ),
+        });
+    } else if is_executable_available(cli_path) {
+        checks.push(DoctorCheckResult {
+            key: "browser_automation.playwright_cli".to_string(),
+            status: DoctorStatus::Pass,
+            code: "ready".to_string(),
+            path: Some(cli_path.to_string()),
+            action: None,
+        });
+    } else {
+        checks.push(DoctorCheckResult {
+            key: "browser_automation.playwright_cli".to_string(),
+            status: DoctorStatus::Warn,
+            code: "missing".to_string(),
+            path: Some(cli_path.to_string()),
+            action: Some(
+                "install Playwright CLI (`npm install -g @playwright/mcp`) or point --browser-automation-playwright-cli to a wrapper script".to_string(),
+            ),
+        });
+    }
+
+    build_browser_automation_readiness_summary(checks)
+}
+
+pub(crate) fn render_browser_automation_readiness_report(
+    report: &BrowserAutomationReadinessReport,
+) -> String {
+    let reason_codes = if report.reason_codes.is_empty() {
+        "none".to_string()
+    } else {
+        report.reason_codes.join(",")
+    };
+
+    let mut lines = vec![format!(
+        "browser automation readiness summary: checks={} pass={} warn={} fail={} gate={} reason_codes={}",
+        report.checks.len(),
+        report.pass,
+        report.warn,
+        report.fail,
+        report.gate,
+        reason_codes
+    )];
+    for check in &report.checks {
+        lines.push(format!(
+            "browser automation readiness check: key={} status={} code={} path={} action={}",
+            check.key,
+            check.status.as_str(),
+            check.code,
+            check.path.as_deref().unwrap_or("none"),
+            check.action.as_deref().unwrap_or("none"),
+        ));
+    }
+    lines.join("\n")
+}
+
+pub(crate) fn render_browser_automation_readiness_report_json(
+    report: &BrowserAutomationReadinessReport,
+) -> String {
+    serde_json::json!({
+        "summary": {
+            "checks": report.checks.len(),
+            "pass": report.pass,
+            "warn": report.warn,
+            "fail": report.fail,
+            "gate": report.gate,
+            "reason_codes": report.reason_codes,
+        },
+        "checks": report
+            .checks
+            .iter()
+            .map(|check| {
+                serde_json::json!({
+                    "key": check.key,
+                    "status": check.status.as_str(),
+                    "code": check.code,
+                    "path": check.path,
+                    "action": check.action,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
+pub(crate) fn execute_browser_automation_preflight_command(cli: &Cli) -> Result<()> {
+    let report = evaluate_browser_automation_readiness(&cli.browser_automation_playwright_cli);
+    let output_format = if cli.browser_automation_preflight_json {
+        BrowserAutomationReadinessOutputFormat::Json
+    } else {
+        BrowserAutomationReadinessOutputFormat::Text
+    };
+    let output = match output_format {
+        BrowserAutomationReadinessOutputFormat::Text => {
+            render_browser_automation_readiness_report(&report)
+        }
+        BrowserAutomationReadinessOutputFormat::Json => {
+            render_browser_automation_readiness_report_json(&report)
+        }
+    };
+    println!("{output}");
+    if report.fail > 0 {
+        let reason_codes = if report.reason_codes.is_empty() {
+            "unknown".to_string()
+        } else {
+            report.reason_codes.join(",")
+        };
+        bail!(
+            "browser automation preflight gate: status=fail fail={} reason_codes={}",
+            report.fail,
+            reason_codes
+        );
+    }
+    Ok(())
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn run_doctor_checks(config: &DoctorCommandConfig) -> Vec<DoctorCheckResult> {
     run_doctor_checks_with_options(config, DoctorCheckOptions::default())
@@ -1324,6 +1527,9 @@ where
         }),
     }
 
+    checks.extend(
+        evaluate_browser_automation_readiness(&config.browser_automation_playwright_cli).checks,
+    );
     checks
         .extend(evaluate_multi_channel_live_readiness(&config.multi_channel_live_readiness).checks);
 

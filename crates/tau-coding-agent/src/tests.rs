@@ -560,6 +560,21 @@ fn test_cli() -> Cli {
         multi_agent_processed_case_cap: 10_000,
         multi_agent_retry_max_attempts: 4,
         multi_agent_retry_base_delay_ms: 0,
+        browser_automation_contract_runner: false,
+        browser_automation_fixture: PathBuf::from(
+            "crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json",
+        ),
+        browser_automation_state_dir: PathBuf::from(".tau/browser-automation"),
+        browser_automation_queue_limit: 64,
+        browser_automation_processed_case_cap: 10_000,
+        browser_automation_retry_max_attempts: 4,
+        browser_automation_retry_base_delay_ms: 0,
+        browser_automation_action_timeout_ms: 5_000,
+        browser_automation_max_actions_per_case: 8,
+        browser_automation_allow_unsafe_actions: false,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
+        browser_automation_preflight: false,
+        browser_automation_preflight_json: false,
         memory_contract_runner: false,
         memory_fixture: PathBuf::from(
             "crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json",
@@ -728,6 +743,7 @@ fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     cli.events_state_path = tau_root.join("events/state.json");
     cli.multi_channel_state_dir = tau_root.join("multi-channel");
     cli.multi_agent_state_dir = tau_root.join("multi-agent");
+    cli.browser_automation_state_dir = tau_root.join("browser-automation");
     cli.memory_state_dir = tau_root.join("memory");
     cli.dashboard_state_dir = tau_root.join("dashboard");
     cli.gateway_state_dir = tau_root.join("gateway");
@@ -810,6 +826,7 @@ fn skills_command_config(
             release_channel_path: PathBuf::from(".tau/release-channel.json"),
             release_lookup_cache_path: PathBuf::from(".tau/release-lookup-cache.json"),
             release_lookup_cache_ttl_ms: 900_000,
+            browser_automation_playwright_cli: "playwright-cli".to_string(),
             session_enabled: true,
             session_path: PathBuf::from(".tau/sessions/default.jsonl"),
             skills_dir: skills_dir.to_path_buf(),
@@ -9709,6 +9726,7 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
         release_channel_path: temp.path().join("release-channel.json"),
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: true,
         session_path,
         skills_dir,
@@ -9727,7 +9745,7 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
     };
 
     let report = execute_doctor_command(&config, DoctorCommandOutputFormat::Text);
-    assert!(report.contains("doctor summary: checks=18 pass=13 warn=4 fail=1"));
+    assert!(report.contains("doctor summary: checks=20"));
 
     let keys = report
         .lines()
@@ -9756,6 +9774,8 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
             "skills_dir".to_string(),
             "skills_lock".to_string(),
             "trust_root".to_string(),
+            "browser_automation.npx".to_string(),
+            "browser_automation.playwright_cli".to_string(),
             "multi_channel_live.credential_store".to_string(),
             "multi_channel_live.ingress_dir".to_string(),
             "multi_channel_live.channel_policy".to_string(),
@@ -9768,10 +9788,14 @@ fn functional_execute_doctor_command_supports_text_and_json_modes() {
 
     let json_report = execute_doctor_command(&config, DoctorCommandOutputFormat::Json);
     let value = serde_json::from_str::<serde_json::Value>(&json_report).expect("parse json report");
-    assert_eq!(value["summary"]["checks"], 18);
-    assert_eq!(value["summary"]["pass"], 13);
-    assert_eq!(value["summary"]["warn"], 4);
-    assert_eq!(value["summary"]["fail"], 1);
+    assert_eq!(value["summary"]["checks"], 20);
+    assert_eq!(value["checks"].as_array().map(|rows| rows.len()), Some(20));
+    assert_eq!(
+        value["summary"]["pass"].as_u64().unwrap_or_default()
+            + value["summary"]["warn"].as_u64().unwrap_or_default()
+            + value["summary"]["fail"].as_u64().unwrap_or_default(),
+        20
+    );
     assert_eq!(value["checks"][0]["key"], "model");
     assert_eq!(value["checks"][1]["key"], "release_channel");
     assert_eq!(value["checks"][2]["key"], "release_update");
@@ -9788,6 +9812,7 @@ fn functional_execute_doctor_cli_command_accepts_online_without_network_when_sto
         release_channel_path,
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -9823,6 +9848,7 @@ fn integration_run_doctor_checks_identifies_missing_runtime_prerequisites() {
         release_channel_path: temp.path().join("release-channel.json"),
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: true,
         session_path: temp.path().join("missing-parent").join("session.jsonl"),
         skills_dir: temp.path().join("missing-skills"),
@@ -9904,6 +9930,7 @@ fn integration_run_doctor_checks_reports_google_backend_status_for_oauth_mode() 
         release_channel_path: temp.path().join("release-channel.json"),
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -9951,6 +9978,7 @@ fn integration_run_doctor_checks_reports_anthropic_backend_status_for_oauth_mode
         release_channel_path: temp.path().join("release-channel.json"),
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -9988,6 +10016,7 @@ fn integration_execute_doctor_command_with_online_lookup_reports_update_availabl
         release_channel_path: temp.path().join("release-channel.json"),
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -10105,6 +10134,7 @@ fn regression_run_doctor_checks_reports_type_and_readability_errors() {
         release_channel_path: temp.path().join("release-channel.json"),
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: true,
         session_path,
         skills_dir,
@@ -10168,6 +10198,7 @@ fn regression_run_doctor_checks_reports_invalid_release_channel_store() {
         release_channel_path,
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),
@@ -10202,6 +10233,7 @@ fn regression_run_doctor_checks_with_online_lookup_surfaces_lookup_errors() {
         release_channel_path: temp.path().join("release-channel.json"),
         release_lookup_cache_path: temp.path().join("release-lookup-cache.json"),
         release_lookup_cache_ttl_ms: 900_000,
+        browser_automation_playwright_cli: "playwright-cli".to_string(),
         session_enabled: false,
         session_path: temp.path().join("session.jsonl"),
         skills_dir: temp.path().join("skills"),

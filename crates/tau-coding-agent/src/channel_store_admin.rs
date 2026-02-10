@@ -8,6 +8,7 @@ enum TransportHealthInspectTarget {
     GithubRepo { owner: String, repo: String },
     MultiChannel,
     MultiAgent,
+    BrowserAutomation,
     Memory,
     Dashboard,
     Gateway,
@@ -937,7 +938,7 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, deployment, custom-command, or voice",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, browser-automation, memory, dashboard, gateway, deployment, custom-command, or voice",
             raw
         );
     }
@@ -953,6 +954,12 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     }
     if trimmed.eq_ignore_ascii_case("multi-agent") || trimmed.eq_ignore_ascii_case("multiagent") {
         return Ok(TransportHealthInspectTarget::MultiAgent);
+    }
+    if trimmed.eq_ignore_ascii_case("browser-automation")
+        || trimmed.eq_ignore_ascii_case("browserautomation")
+        || trimmed.eq_ignore_ascii_case("browser")
+    {
+        return Ok(TransportHealthInspectTarget::BrowserAutomation);
     }
     if trimmed.eq_ignore_ascii_case("memory") {
         return Ok(TransportHealthInspectTarget::Memory);
@@ -977,13 +984,13 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
 
     let Some((transport, repo_slug)) = trimmed.split_once(':') else {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, deployment, custom-command, or voice",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, browser-automation, memory, dashboard, gateway, deployment, custom-command, or voice",
             raw
         );
     };
     if !transport.eq_ignore_ascii_case("github") {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, deployment, custom-command, or voice",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, browser-automation, memory, dashboard, gateway, deployment, custom-command, or voice",
             raw
         );
     }
@@ -1037,6 +1044,9 @@ fn collect_transport_health_rows(
         }
         TransportHealthInspectTarget::MultiAgent => {
             Ok(vec![collect_multi_agent_transport_health_row(cli)?])
+        }
+        TransportHealthInspectTarget::BrowserAutomation => {
+            Ok(vec![collect_browser_automation_transport_health_row(cli)?])
         }
         TransportHealthInspectTarget::Memory => Ok(vec![collect_memory_transport_health_row(cli)?]),
         TransportHealthInspectTarget::Dashboard => {
@@ -1308,6 +1318,17 @@ fn collect_multi_agent_transport_health_row(cli: &Cli) -> Result<TransportHealth
     Ok(TransportHealthInspectRow {
         transport: "multi-agent".to_string(),
         target: "orchestrator-router".to_string(),
+        state_path: state_path.display().to_string(),
+        health,
+    })
+}
+
+fn collect_browser_automation_transport_health_row(cli: &Cli) -> Result<TransportHealthInspectRow> {
+    let state_path = cli.browser_automation_state_dir.join("state.json");
+    let health = load_transport_health_snapshot(&state_path)?;
+    Ok(TransportHealthInspectRow {
+        transport: "browser-automation".to_string(),
+        target: "fixture-runtime".to_string(),
         state_path: state_path.display().to_string(),
         health,
     })
@@ -2665,6 +2686,19 @@ mod tests {
             TransportHealthInspectTarget::MultiAgent
         );
         assert_eq!(
+            parse_transport_health_inspect_target("browser-automation")
+                .expect("browser-automation"),
+            TransportHealthInspectTarget::BrowserAutomation
+        );
+        assert_eq!(
+            parse_transport_health_inspect_target("browserautomation").expect("browserautomation"),
+            TransportHealthInspectTarget::BrowserAutomation
+        );
+        assert_eq!(
+            parse_transport_health_inspect_target("browser").expect("browser"),
+            TransportHealthInspectTarget::BrowserAutomation
+        );
+        assert_eq!(
             parse_transport_health_inspect_target("memory").expect("memory"),
             TransportHealthInspectTarget::Memory
         );
@@ -2727,6 +2761,7 @@ mod tests {
         let slack_root = temp.path().join("slack");
         let multi_channel_root = temp.path().join("multi-channel");
         let multi_agent_root = temp.path().join("multi-agent");
+        let browser_automation_root = temp.path().join("browser-automation");
         let memory_root = temp.path().join("memory");
         let dashboard_root = temp.path().join("dashboard");
         let gateway_root = temp.path().join("gateway");
@@ -2738,6 +2773,7 @@ mod tests {
         std::fs::create_dir_all(&slack_root).expect("create slack dir");
         std::fs::create_dir_all(&multi_channel_root).expect("create multi-channel dir");
         std::fs::create_dir_all(&multi_agent_root).expect("create multi-agent dir");
+        std::fs::create_dir_all(&browser_automation_root).expect("create browser-automation dir");
         std::fs::create_dir_all(&memory_root).expect("create memory dir");
         std::fs::create_dir_all(&dashboard_root).expect("create dashboard dir");
         std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
@@ -2835,6 +2871,28 @@ mod tests {
 "#,
         )
         .expect("write multi-agent state");
+
+        std::fs::write(
+            browser_automation_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "health": {
+    "updated_unix_ms": 375,
+    "cycle_duration_ms": 28,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write browser-automation state");
 
         std::fs::write(
             memory_root.join("state.json"),
@@ -2980,6 +3038,7 @@ mod tests {
         cli.slack_state_dir = slack_root;
         cli.multi_channel_state_dir = multi_channel_root;
         cli.multi_agent_state_dir = multi_agent_root;
+        cli.browser_automation_state_dir = browser_automation_root;
         cli.memory_state_dir = memory_root;
         cli.dashboard_state_dir = dashboard_root;
         cli.gateway_state_dir = gateway_root;
@@ -3016,6 +3075,14 @@ mod tests {
         assert_eq!(multi_agent_rows[0].transport, "multi-agent");
         assert_eq!(multi_agent_rows[0].target, "orchestrator-router");
         assert_eq!(multi_agent_rows[0].health.last_cycle_discovered, 2);
+
+        let browser_automation_rows =
+            collect_transport_health_rows(&cli, &TransportHealthInspectTarget::BrowserAutomation)
+                .expect("collect browser-automation rows");
+        assert_eq!(browser_automation_rows.len(), 1);
+        assert_eq!(browser_automation_rows[0].transport, "browser-automation");
+        assert_eq!(browser_automation_rows[0].target, "fixture-runtime");
+        assert_eq!(browser_automation_rows[0].health.last_cycle_discovered, 1);
 
         let memory_rows =
             collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Memory)
@@ -3069,6 +3136,7 @@ mod tests {
             slack_rows[0].clone(),
             multi_channel_rows[0].clone(),
             multi_agent_rows[0].clone(),
+            browser_automation_rows[0].clone(),
             memory_rows[0].clone(),
             dashboard_rows[0].clone(),
             gateway_rows[0].clone(),
@@ -3080,6 +3148,7 @@ mod tests {
         assert!(rendered.contains("transport=slack"));
         assert!(rendered.contains("transport=multi-channel"));
         assert!(rendered.contains("transport=multi-agent"));
+        assert!(rendered.contains("transport=browser-automation"));
         assert!(rendered.contains("transport=memory"));
         assert!(rendered.contains("transport=dashboard"));
         assert!(rendered.contains("transport=gateway"));
@@ -3165,6 +3234,31 @@ mod tests {
 
         let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::MultiAgent)
             .expect("collect multi-agent row");
+        assert_eq!(rows[0].health, TransportHealthSnapshot::default());
+    }
+
+    #[test]
+    fn regression_collect_transport_health_rows_defaults_missing_health_fields_for_browser_automation(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let browser_automation_root = temp.path().join("browser-automation");
+        std::fs::create_dir_all(&browser_automation_root).expect("create browser-automation dir");
+        std::fs::write(
+            browser_automation_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": []
+}
+"#,
+        )
+        .expect("write legacy browser-automation state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.browser_automation_state_dir = PathBuf::from(&browser_automation_root);
+
+        let rows =
+            collect_transport_health_rows(&cli, &TransportHealthInspectTarget::BrowserAutomation)
+                .expect("collect browser-automation row");
         assert_eq!(rows[0].health, TransportHealthSnapshot::default());
     }
 

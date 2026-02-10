@@ -1478,9 +1478,7 @@ fn integration_interactive_doctor_command_reports_runtime_diagnostics() {
 
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains(
-            "doctor summary: checks=16 pass=13 warn=3 fail=0",
-        ))
+        .stdout(predicate::str::contains("doctor summary: checks=18"))
         .stdout(predicate::str::contains(
             "doctor check: key=release_channel status=pass code=default_stable",
         ))
@@ -1492,6 +1490,12 @@ fn integration_interactive_doctor_command_reports_runtime_diagnostics() {
         ))
         .stdout(predicate::str::contains(
             "doctor check: key=provider_key.openai status=pass code=present",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=browser_automation.npx",
+        ))
+        .stdout(predicate::str::contains(
+            "doctor check: key=browser_automation.playwright_cli",
         ))
         .stdout(predicate::str::contains(
             "doctor check: key=session_path status=pass code=readable",

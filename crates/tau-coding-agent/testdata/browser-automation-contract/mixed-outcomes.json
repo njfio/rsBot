@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "name": "mixed-outcomes",
+  "description": "Covers success, malformed input, and retryable timeout outcomes for browser automation fixture replay.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "navigate_home",
+      "operation": "navigate",
+      "url": "https://example.com",
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "ok",
+          "operation": "navigate",
+          "url": "https://example.com",
+          "title": "Fixture page for navigate_home",
+          "dom_nodes": 96
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "action_invalid_selector",
+      "operation": "action",
+      "action": "click",
+      "selector": "",
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 422,
+        "error_code": "browser_automation_invalid_selector",
+        "response_body": {
+          "status": "rejected",
+          "reason": "invalid_selector"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "action_retryable_timeout",
+      "operation": "action",
+      "action": "wait",
+      "selector": "#ready",
+      "timeout_ms": 1500,
+      "simulate_timeout": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "status_code": 504,
+        "error_code": "browser_automation_timeout",
+        "response_body": {
+          "status": "retryable",
+          "reason": "timeout"
+        }
+      }
+    }
+  ]
+}

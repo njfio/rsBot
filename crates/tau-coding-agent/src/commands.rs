@@ -577,6 +577,7 @@ pub(crate) fn handle_command(
             release_channel_path: PathBuf::from(".tau/release-channel.json"),
             release_lookup_cache_path: PathBuf::from(".tau/release-lookup-cache.json"),
             release_lookup_cache_ttl_ms: 900_000,
+            browser_automation_playwright_cli: "playwright-cli".to_string(),
             session_enabled: true,
             session_path: PathBuf::from(".tau/sessions/default.jsonl"),
             skills_dir: PathBuf::from(".tau/skills"),
