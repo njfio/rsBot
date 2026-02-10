@@ -2260,6 +2260,41 @@ pub(crate) struct Cli {
     pub(crate) dashboard_retry_base_delay_ms: u64,
 
     #[arg(
+        long = "gateway-openresponses-server",
+        env = "TAU_GATEWAY_OPENRESPONSES_SERVER",
+        default_value_t = false,
+        help = "Run authenticated OpenResponses subset HTTP endpoint at POST /v1/responses"
+    )]
+    pub(crate) gateway_openresponses_server: bool,
+
+    #[arg(
+        long = "gateway-openresponses-bind",
+        env = "TAU_GATEWAY_OPENRESPONSES_BIND",
+        default_value = "127.0.0.1:8787",
+        requires = "gateway_openresponses_server",
+        help = "Socket address for --gateway-openresponses-server (host:port)"
+    )]
+    pub(crate) gateway_openresponses_bind: String,
+
+    #[arg(
+        long = "gateway-openresponses-auth-token",
+        env = "TAU_GATEWAY_OPENRESPONSES_AUTH_TOKEN",
+        requires = "gateway_openresponses_server",
+        help = "Bearer token required by --gateway-openresponses-server"
+    )]
+    pub(crate) gateway_openresponses_auth_token: Option<String>,
+
+    #[arg(
+        long = "gateway-openresponses-max-input-chars",
+        env = "TAU_GATEWAY_OPENRESPONSES_MAX_INPUT_CHARS",
+        default_value_t = 32_000,
+        value_parser = parse_positive_usize,
+        requires = "gateway_openresponses_server",
+        help = "Maximum translated input size accepted by /v1/responses"
+    )]
+    pub(crate) gateway_openresponses_max_input_chars: usize,
+
+    #[arg(
         long = "gateway-contract-runner",
         env = "TAU_GATEWAY_CONTRACT_RUNNER",
         default_value_t = false,

@@ -11,6 +11,10 @@ fn gateway_service_mode_requested(cli: &Cli) -> bool {
     cli.gateway_service_start || cli.gateway_service_stop || cli.gateway_service_status
 }
 
+fn gateway_openresponses_mode_requested(cli: &Cli) -> bool {
+    cli.gateway_openresponses_server
+}
+
 pub(crate) fn validate_github_issues_bridge_cli(cli: &Cli) -> Result<()> {
     if !cli.github_issues_bridge {
         return Ok(());
@@ -480,6 +484,57 @@ pub(crate) fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()> {
+    if !gateway_openresponses_mode_requested(cli) {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!(
+            "--gateway-openresponses-server cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+        );
+    }
+    if cli.no_session {
+        bail!("--gateway-openresponses-server cannot be used together with --no-session");
+    }
+    if gateway_service_mode_requested(cli)
+        || cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!(
+            "--gateway-openresponses-server cannot be combined with gateway service commands or other active transport runtime flags"
+        );
+    }
+    let auth_token = cli
+        .gateway_openresponses_auth_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if auth_token.is_none() {
+        bail!(
+            "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
+        );
+    }
+    if cli.gateway_openresponses_max_input_chars == 0 {
+        bail!("--gateway-openresponses-max-input-chars must be greater than 0");
+    }
+
+    crate::gateway_openresponses::validate_gateway_openresponses_bind(
+        &cli.gateway_openresponses_bind,
+    )?;
     Ok(())
 }
 

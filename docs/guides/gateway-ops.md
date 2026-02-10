@@ -8,6 +8,7 @@ This runbook covers:
 
 - fixture-driven gateway runtime (`--gateway-contract-runner`)
 - gateway service lifecycle control (`--gateway-service-start|stop|status`)
+- OpenResponses-compatible HTTP gateway (`--gateway-openresponses-server`)
 
 ## Service lifecycle commands
 
@@ -36,6 +37,54 @@ cargo run -p tau-coding-agent -- \
   --gateway-service-status \
   --gateway-service-status-json
 ```
+
+## OpenResponses endpoint (`/v1/responses`)
+
+Start the authenticated OpenResponses endpoint:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --gateway-state-dir .tau/gateway \
+  --gateway-openresponses-server \
+  --gateway-openresponses-bind 127.0.0.1:8787 \
+  --gateway-openresponses-auth-token local-dev-token \
+  --gateway-openresponses-max-input-chars 32000
+```
+
+Non-stream request:
+
+```bash
+curl -sS http://127.0.0.1:8787/v1/responses \
+  -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "instructions": "Be concise",
+    "input": [
+      {"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize this system."}]}
+    ]
+  }'
+```
+
+SSE stream request:
+
+```bash
+curl -N http://127.0.0.1:8787/v1/responses \
+  -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input":"stream this response",
+    "stream": true
+  }'
+```
+
+Current compatibility notes:
+
+- Supported input forms: `input` string, message item arrays, and `function_call_output` items.
+- Session continuity derives from `metadata.session_id`, then `conversation`, then `previous_response_id`.
+- Unknown request fields are ignored safely and surfaced in `ignored_fields` on the response.
+- `model` in request payload is accepted but ignored; runtime uses CLI-selected model.
 
 ## Health and observability signals
 

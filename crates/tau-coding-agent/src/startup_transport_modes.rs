@@ -16,10 +16,43 @@ pub(crate) async fn run_transport_mode_if_requested(
     validate_multi_agent_contract_runner_cli(cli)?;
     validate_memory_contract_runner_cli(cli)?;
     validate_dashboard_contract_runner_cli(cli)?;
+    validate_gateway_openresponses_server_cli(cli)?;
     validate_gateway_contract_runner_cli(cli)?;
     validate_deployment_contract_runner_cli(cli)?;
     validate_custom_command_contract_runner_cli(cli)?;
     validate_voice_contract_runner_cli(cli)?;
+
+    if cli.gateway_openresponses_server {
+        let auth_token = cli
+            .gateway_openresponses_auth_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
+                )
+            })?
+            .to_string();
+        crate::gateway_openresponses::run_gateway_openresponses_server(
+            crate::gateway_openresponses::GatewayOpenResponsesServerConfig {
+                client: client.clone(),
+                model: model_ref.model.clone(),
+                system_prompt: system_prompt.to_string(),
+                max_turns: cli.max_turns,
+                tool_policy: tool_policy.clone(),
+                turn_timeout_ms: cli.turn_timeout_ms,
+                session_lock_wait_ms: cli.session_lock_wait_ms,
+                session_lock_stale_ms: cli.session_lock_stale_ms,
+                state_dir: cli.gateway_state_dir.clone(),
+                bind: cli.gateway_openresponses_bind.clone(),
+                auth_token,
+                max_input_chars: cli.gateway_openresponses_max_input_chars,
+            },
+        )
+        .await?;
+        return Ok(true);
+    }
 
     if cli.github_issues_bridge {
         let repo_slug = cli.github_repo.clone().ok_or_else(|| {

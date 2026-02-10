@@ -80,32 +80,33 @@ use super::{
     validate_branch_alias_name, validate_custom_command_contract_runner_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
-    validate_gateway_contract_runner_cli, validate_gateway_service_cli,
-    validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
-    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_ingest_cli,
-    validate_multi_channel_live_runner_cli, validate_profile_name, validate_rpc_frame_file,
-    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
-    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliMultiChannelTransport,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
-    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
-    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
-    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
-    DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand,
-    IntegrationCredentialStoreRecord, MacroCommand, MacroFile, MultiAgentRouteTable,
-    ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
-    ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
-    SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
-    SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
-    SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry, SkillsVerifyReport,
-    SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary, ToolAuditLogger,
-    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION,
-    MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-    SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
+    validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
+    validate_gateway_service_cli, validate_github_issues_bridge_cli, validate_macro_command_entry,
+    validate_macro_name, validate_memory_contract_runner_cli,
+    validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
+    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
+    validate_profile_name, validate_rpc_frame_file, validate_session_file,
+    validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
+    AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
+    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliEventTemplateSchedule,
+    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
+    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+    CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult,
+    DoctorCommandArgs, DoctorCommandConfig, DoctorCommandOutputFormat,
+    DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus, DoctorStatus,
+    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
+    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
+    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
+    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
+    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
+    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
+    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
+    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
+    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
+    SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
+    SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use crate::auth_commands::{
     auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
@@ -523,6 +524,10 @@ fn test_cli() -> Cli {
         dashboard_processed_case_cap: 10_000,
         dashboard_retry_max_attempts: 4,
         dashboard_retry_base_delay_ms: 0,
+        gateway_openresponses_server: false,
+        gateway_openresponses_bind: "127.0.0.1:8787".to_string(),
+        gateway_openresponses_auth_token: None,
+        gateway_openresponses_max_input_chars: 32_000,
         gateway_contract_runner: false,
         gateway_fixture: PathBuf::from(
             "crates/tau-coding-agent/testdata/gateway-contract/mixed-outcomes.json",
@@ -1757,6 +1762,10 @@ fn regression_cli_dashboard_fixture_requires_dashboard_runner_flag() {
 #[test]
 fn unit_cli_gateway_runner_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.gateway_openresponses_server);
+    assert_eq!(cli.gateway_openresponses_bind, "127.0.0.1:8787");
+    assert!(cli.gateway_openresponses_auth_token.is_none());
+    assert_eq!(cli.gateway_openresponses_max_input_chars, 32_000);
     assert!(!cli.gateway_contract_runner);
     assert_eq!(
         cli.gateway_fixture,
@@ -1765,6 +1774,48 @@ fn unit_cli_gateway_runner_flags_default_to_disabled() {
     assert_eq!(cli.gateway_state_dir, PathBuf::from(".tau/gateway"));
     assert_eq!(cli.gateway_guardrail_failure_streak_threshold, 2);
     assert_eq!(cli.gateway_guardrail_retryable_failures_threshold, 2);
+}
+
+#[test]
+fn functional_cli_gateway_openresponses_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-openresponses-server",
+        "--gateway-openresponses-bind",
+        "127.0.0.1:8899",
+        "--gateway-openresponses-auth-token",
+        "secret-token",
+        "--gateway-openresponses-max-input-chars",
+        "24000",
+    ]);
+    assert!(cli.gateway_openresponses_server);
+    assert_eq!(cli.gateway_openresponses_bind, "127.0.0.1:8899");
+    assert_eq!(
+        cli.gateway_openresponses_auth_token.as_deref(),
+        Some("secret-token")
+    );
+    assert_eq!(cli.gateway_openresponses_max_input_chars, 24_000);
+}
+
+#[test]
+fn regression_cli_gateway_openresponses_bind_requires_server_flag() {
+    let parse =
+        try_parse_cli_with_stack(["tau-rs", "--gateway-openresponses-bind", "127.0.0.1:8899"]);
+    let error = parse.expect_err("bind override should require gateway openresponses server mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_gateway_openresponses_max_input_chars_requires_server_flag() {
+    let parse =
+        try_parse_cli_with_stack(["tau-rs", "--gateway-openresponses-max-input-chars", "24000"]);
+    let error =
+        parse.expect_err("max input override should require gateway openresponses server mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
 }
 
 #[test]
@@ -14228,6 +14279,98 @@ fn regression_validate_gateway_service_cli_rejects_whitespace_stop_reason() {
     assert!(error
         .to_string()
         .contains("--gateway-service-stop-reason cannot be empty or whitespace"));
+}
+
+#[test]
+fn unit_validate_gateway_openresponses_server_cli_accepts_minimum_configuration() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
+
+    validate_gateway_openresponses_server_cli(&cli)
+        .expect("gateway openresponses server config should validate");
+}
+
+#[test]
+fn functional_validate_gateway_openresponses_server_cli_rejects_prompt_conflicts() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
+    cli.prompt = Some("conflict".to_string());
+
+    let error =
+        validate_gateway_openresponses_server_cli(&cli).expect_err("prompt conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("--gateway-openresponses-server cannot be combined"));
+}
+
+#[test]
+fn integration_validate_gateway_openresponses_server_cli_rejects_transport_conflicts() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
+    cli.github_issues_bridge = true;
+
+    let error = validate_gateway_openresponses_server_cli(&cli)
+        .expect_err("transport conflict should fail");
+    assert!(error.to_string().contains(
+        "--gateway-openresponses-server cannot be combined with gateway service commands or other active transport runtime flags"
+    ));
+}
+
+#[test]
+fn regression_validate_gateway_openresponses_server_cli_requires_auth_token() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_token = None;
+
+    let error = validate_gateway_openresponses_server_cli(&cli)
+        .expect_err("missing auth token should fail");
+    assert!(error.to_string().contains(
+        "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
+    ));
+}
+
+#[test]
+fn regression_validate_gateway_openresponses_server_cli_rejects_whitespace_auth_token() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_token = Some("   ".to_string());
+
+    let error = validate_gateway_openresponses_server_cli(&cli)
+        .expect_err("whitespace auth token should fail");
+    assert!(error.to_string().contains(
+        "--gateway-openresponses-auth-token is required when --gateway-openresponses-server is set"
+    ));
+}
+
+#[test]
+fn regression_validate_gateway_openresponses_server_cli_rejects_zero_max_input_chars() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
+    cli.gateway_openresponses_max_input_chars = 0;
+
+    let error = validate_gateway_openresponses_server_cli(&cli)
+        .expect_err("zero max input chars should fail");
+    assert!(error
+        .to_string()
+        .contains("--gateway-openresponses-max-input-chars must be greater than 0"));
+}
+
+#[test]
+fn regression_validate_gateway_openresponses_server_cli_rejects_invalid_bind() {
+    let mut cli = test_cli();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_token = Some("secret-token".to_string());
+    cli.gateway_openresponses_bind = "invalid-bind".to_string();
+
+    let error =
+        validate_gateway_openresponses_server_cli(&cli).expect_err("invalid bind should fail");
+    assert!(error
+        .to_string()
+        .contains("invalid gateway socket address 'invalid-bind'"));
 }
 
 #[test]
