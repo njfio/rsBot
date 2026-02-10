@@ -2517,6 +2517,36 @@ pub(crate) struct Cli {
     pub(crate) multi_channel_telemetry_min_response_chars: usize,
 
     #[arg(
+        long = "multi-channel-media-understanding",
+        env = "TAU_MULTI_CHANNEL_MEDIA_UNDERSTANDING",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Enable deterministic media understanding for inbound attachment prompt/context enrichment"
+    )]
+    pub(crate) multi_channel_media_understanding: bool,
+
+    #[arg(
+        long = "multi-channel-media-max-attachments",
+        env = "TAU_MULTI_CHANNEL_MEDIA_MAX_ATTACHMENTS",
+        default_value_t = 4,
+        value_parser = parse_positive_usize,
+        help = "Maximum unique inbound attachments processed for media understanding per event"
+    )]
+    pub(crate) multi_channel_media_max_attachments: usize,
+
+    #[arg(
+        long = "multi-channel-media-max-summary-chars",
+        env = "TAU_MULTI_CHANNEL_MEDIA_MAX_SUMMARY_CHARS",
+        default_value_t = 280,
+        value_parser = parse_positive_usize,
+        help = "Maximum characters retained for each media understanding summary line"
+    )]
+    pub(crate) multi_channel_media_max_summary_chars: usize,
+
+    #[arg(
         long = "multi-channel-outbound-mode",
         env = "TAU_MULTI_CHANNEL_OUTBOUND_MODE",
         value_enum,

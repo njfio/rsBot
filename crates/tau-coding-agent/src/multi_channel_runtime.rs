@@ -16,6 +16,9 @@ use crate::multi_channel_contract::{
     MultiChannelTransport,
 };
 use crate::multi_channel_live_ingress::parse_multi_channel_live_inbound_envelope;
+use crate::multi_channel_media::{
+    process_media_attachments, render_media_prompt_context, MultiChannelMediaUnderstandingConfig,
+};
 use crate::multi_channel_outbound::{
     MultiChannelOutboundConfig, MultiChannelOutboundDeliveryError, MultiChannelOutboundDispatcher,
 };
@@ -84,6 +87,7 @@ pub(crate) struct MultiChannelRuntimeConfig {
     pub(crate) retry_jitter_ms: u64,
     pub(crate) outbound: MultiChannelOutboundConfig,
     pub(crate) telemetry: MultiChannelTelemetryConfig,
+    pub(crate) media: MultiChannelMediaUnderstandingConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +102,7 @@ pub(crate) struct MultiChannelLiveRuntimeConfig {
     pub(crate) retry_jitter_ms: u64,
     pub(crate) outbound: MultiChannelOutboundConfig,
     pub(crate) telemetry: MultiChannelTelemetryConfig,
+    pub(crate) media: MultiChannelMediaUnderstandingConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -311,6 +316,7 @@ pub(crate) async fn run_multi_channel_live_runner(
         retry_jitter_ms: config.retry_jitter_ms,
         outbound: config.outbound.clone(),
         telemetry: config.telemetry.clone(),
+        media: config.media.clone(),
     })?;
     let summary = runtime.run_once_events(&live_events).await?;
     let health = runtime.transport_health().clone();
@@ -855,6 +861,11 @@ impl MultiChannelRuntime {
         let existing_logs = store.load_log_entries()?;
         let existing_context = store.load_context_entries()?;
         let timestamp_unix_ms = current_unix_timestamp_ms();
+        let media_report = process_media_attachments(event, &self.config.media);
+        let media_prompt_context = render_media_prompt_context(&media_report);
+        let media_payload =
+            serde_json::to_value(&media_report).context("serialize media understanding payload")?;
+        let user_context_text = build_user_context_text(event, media_prompt_context.as_deref());
         let pairing_status = pairing_decision_status(&access_decision.pairing_decision);
         let pairing_reason_code = access_decision.pairing_decision.reason_code().to_string();
         let route_payload = route_decision_trace_payload(event, event_key, route_decision);
@@ -883,6 +894,7 @@ impl MultiChannelRuntime {
             map.insert("pairing".to_string(), pairing_payload.clone());
             map.insert("channel_policy".to_string(), channel_policy_payload.clone());
             map.insert("route".to_string(), route_payload.clone());
+            map.insert("media_understanding".to_string(), media_payload.clone());
             map.insert(
                 "route_session_key".to_string(),
                 Value::String(route_decision.session_key.clone()),
@@ -925,6 +937,7 @@ impl MultiChannelRuntime {
                         "route": route_payload.clone(),
                         "channel_policy": channel_policy_payload,
                         "pairing": pairing_payload,
+                        "media_understanding": media_payload,
                     }),
                 })?;
             }
@@ -1065,14 +1078,14 @@ impl MultiChannelRuntime {
             }
         }
 
-        if !event.text.trim().is_empty()
-            && !context_contains_entry(&existing_context, "user", event.text.trim())
-        {
-            store.append_context_entry(&ChannelContextEntry {
-                timestamp_unix_ms,
-                role: "user".to_string(),
-                text: event.text.trim().to_string(),
-            })?;
+        if let Some(user_context_text) = user_context_text {
+            if !context_contains_entry(&existing_context, "user", &user_context_text) {
+                store.append_context_entry(&ChannelContextEntry {
+                    timestamp_unix_ms,
+                    role: "user".to_string(),
+                    text: user_context_text,
+                })?;
+            }
         }
 
         let delivery_payload =
@@ -1092,6 +1105,7 @@ impl MultiChannelRuntime {
                     "route": route_payload,
                     "pairing": pairing_payload,
                     "channel_policy": channel_policy_payload,
+                    "media_understanding": media_payload,
                     "delivery": delivery_payload,
                 }),
             })?;
@@ -1642,6 +1656,24 @@ fn append_multi_channel_route_trace(path: &Path, payload: &Value) -> Result<()> 
     Ok(())
 }
 
+fn build_user_context_text(
+    event: &MultiChannelInboundEvent,
+    media_prompt_context: Option<&str>,
+) -> Option<String> {
+    let text = event.text.trim();
+    let media = media_prompt_context.map(str::trim).unwrap_or_default();
+    if text.is_empty() && media.is_empty() {
+        return None;
+    }
+    if media.is_empty() {
+        return Some(text.to_string());
+    }
+    if text.is_empty() {
+        return Some(media.to_string());
+    }
+    Some(format!("{text}\n\n{media}"))
+}
+
 fn render_response(event: &MultiChannelInboundEvent) -> String {
     let transport = event.transport.as_str();
     let event_id = event.event_id.trim();
@@ -1768,7 +1800,8 @@ mod tests {
     use crate::channel_store::ChannelStore;
     use crate::multi_channel_contract::{
         load_multi_channel_contract_fixture, parse_multi_channel_contract_fixture,
-        MultiChannelEventKind, MultiChannelInboundEvent, MultiChannelTransport,
+        MultiChannelAttachment, MultiChannelEventKind, MultiChannelInboundEvent,
+        MultiChannelTransport,
     };
     use crate::multi_channel_outbound::{MultiChannelOutboundConfig, MultiChannelOutboundMode};
     use crate::transport_health::TransportHealthState;
@@ -1799,6 +1832,7 @@ mod tests {
             retry_jitter_ms: 0,
             outbound: MultiChannelOutboundConfig::default(),
             telemetry: MultiChannelTelemetryConfig::default(),
+            media: crate::multi_channel_media::MultiChannelMediaUnderstandingConfig::default(),
         }
     }
 
@@ -1814,6 +1848,7 @@ mod tests {
             retry_jitter_ms: 0,
             outbound: MultiChannelOutboundConfig::default(),
             telemetry: MultiChannelTelemetryConfig::default(),
+            media: crate::multi_channel_media::MultiChannelMediaUnderstandingConfig::default(),
         }
     }
 
@@ -2032,6 +2067,136 @@ mod tests {
                 Some("allow_permissive_mode")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn integration_runner_media_understanding_enriches_context_and_logs_reason_codes() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.outbound.mode = MultiChannelOutboundMode::DryRun;
+        config.media.max_attachments_per_event = 3;
+        config.media.max_summary_chars = 96;
+
+        let mut event = sample_event(
+            MultiChannelTransport::Telegram,
+            "tg-media-1",
+            "chat-media",
+            "telegram-user-1",
+            "please inspect media",
+        );
+        event.attachments = vec![
+            MultiChannelAttachment {
+                attachment_id: "img-1".to_string(),
+                url: "https://example.com/image.png".to_string(),
+                content_type: "image/png".to_string(),
+                file_name: "image.png".to_string(),
+                size_bytes: 128,
+            },
+            MultiChannelAttachment {
+                attachment_id: "aud-1".to_string(),
+                url: "https://example.com/voice.wav".to_string(),
+                content_type: "audio/wav".to_string(),
+                file_name: "voice.wav".to_string(),
+                size_bytes: 256,
+            },
+            MultiChannelAttachment {
+                attachment_id: "doc-1".to_string(),
+                url: "https://example.com/readme.txt".to_string(),
+                content_type: "text/plain".to_string(),
+                file_name: "readme.txt".to_string(),
+                size_bytes: 32,
+            },
+        ];
+
+        let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once_events(&[event]).await.expect("run once");
+        assert_eq!(summary.completed_events, 1);
+        assert_eq!(summary.failed_events, 0);
+
+        let store = ChannelStore::open(
+            &config.state_dir.join("channel-store"),
+            "telegram",
+            "chat-media",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].payload["media_understanding"]["processed"], 2);
+        assert_eq!(logs[0].payload["media_understanding"]["skipped"], 1);
+        assert_eq!(
+            logs[0].payload["media_understanding"]["reason_code_counts"]
+                ["media_unsupported_attachment_type"],
+            1
+        );
+
+        let context = store.load_context_entries().expect("load context");
+        assert_eq!(context[0].role, "user");
+        assert!(context[0].text.contains("Media understanding outcomes:"));
+        assert!(context[0].text.contains("attachment_id=img-1"));
+        assert!(context[0]
+            .text
+            .contains("reason_code=media_image_described"));
+    }
+
+    #[tokio::test]
+    async fn regression_runner_media_understanding_is_bounded_and_duplicate_event_idempotent() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.outbound.mode = MultiChannelOutboundMode::DryRun;
+        config.media.max_attachments_per_event = 1;
+
+        let mut event = sample_event(
+            MultiChannelTransport::Discord,
+            "dc-media-bounded-1",
+            "discord-media-room",
+            "discord-user-1",
+            "bounded media processing",
+        );
+        event.attachments = vec![
+            MultiChannelAttachment {
+                attachment_id: "img-1".to_string(),
+                url: "https://example.com/image.png".to_string(),
+                content_type: "image/png".to_string(),
+                file_name: "image.png".to_string(),
+                size_bytes: 128,
+            },
+            MultiChannelAttachment {
+                attachment_id: "vid-1".to_string(),
+                url: "https://example.com/video.mp4".to_string(),
+                content_type: "video/mp4".to_string(),
+                file_name: "video.mp4".to_string(),
+                size_bytes: 2048,
+            },
+        ];
+
+        let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+        let first = runtime
+            .run_once_events(std::slice::from_ref(&event))
+            .await
+            .expect("first run");
+        let second = runtime
+            .run_once_events(std::slice::from_ref(&event))
+            .await
+            .expect("second run");
+
+        assert_eq!(first.completed_events, 1);
+        assert_eq!(second.duplicate_skips, 1);
+
+        let store = ChannelStore::open(
+            &config.state_dir.join("channel-store"),
+            "discord",
+            "discord-media-room",
+        )
+        .expect("open store");
+        let logs = store.load_log_entries().expect("load logs");
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].payload["media_understanding"]["processed"], 1);
+        assert_eq!(logs[0].payload["media_understanding"]["skipped"], 1);
+        assert_eq!(
+            logs[0].payload["media_understanding"]["reason_code_counts"]
+                ["media_attachment_limit_exceeded"],
+            1
+        );
     }
 
     #[tokio::test]

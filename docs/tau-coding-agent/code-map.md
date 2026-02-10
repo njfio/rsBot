@@ -101,6 +101,7 @@ Use this area for skill packaging, verification, registry support, and lock work
 - `memory_runtime.rs`: semantic-memory runtime loop (state transitions, retries, dedupe, channel-store writes).
 - `multi_channel_contract.rs`: multi-channel (Telegram/Discord/WhatsApp) fixture/schema contract.
 - `multi_channel_runtime.rs`: multi-channel runtime loop (queueing, retry, dedupe, channel-store writes).
+- `multi_channel_media.rs`: media understanding envelope normalization, bounded attachment processing, and reason-coded media summary/transcription contracts.
 - `multi_channel_live_connectors.rs`: live provider ingress bridges (Telegram polling/webhook, Discord polling, WhatsApp webhook), connector liveness/error counters, and webhook server.
 - `voice_contract.rs`: voice interaction + wake-word fixture/schema contract definitions and validators.
 - `voice_runtime.rs`: voice runtime loop (wake-word/turn replay, retries, dedupe, channel-store writes).
