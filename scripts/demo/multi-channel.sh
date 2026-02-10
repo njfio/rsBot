@@ -82,6 +82,18 @@ tau_demo_common_run_step \
   --multi-channel-retry-base-delay-ms 0
 
 tau_demo_common_run_step \
+  "transport-health-inspect-multi-channel-live" \
+  --multi-channel-state-dir "${demo_state_dir}" \
+  --transport-health-inspect multi-channel \
+  --transport-health-json
+
+tau_demo_common_run_step \
+  "multi-channel-status-inspect-live" \
+  --multi-channel-state-dir "${demo_state_dir}" \
+  --multi-channel-status-inspect \
+  --multi-channel-status-json
+
+tau_demo_common_run_step \
   "channel-store-inspect-telegram" \
   --channel-store-root "${demo_state_dir}/channel-store" \
   --channel-store-inspect telegram/chat-100

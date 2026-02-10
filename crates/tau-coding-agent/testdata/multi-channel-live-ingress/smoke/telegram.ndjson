@@ -1,0 +1,1 @@
+{"schema_version":1,"transport":"telegram","provider":"telegram-bot-api","payload":{"update_id":9001,"message":{"message_id":42,"chat":{"id":"chat-100"},"from":{"id":"user-7","username":"alice"},"date":1760100000,"text":"hello from telegram","attachments":[{"id":"att-1","url":"https://example.com/image.png","content_type":"image/png","name":"image.png","size_bytes":12}]}}}

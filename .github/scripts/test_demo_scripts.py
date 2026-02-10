@@ -80,10 +80,13 @@ def run_demo_script(
     binary_path: Path,
     trace_path: Path,
     extra_args: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     script_path = SCRIPTS_DIR / script_name
     env = dict(os.environ)
     env["TAU_DEMO_MOCK_TRACE"] = str(trace_path)
+    if extra_env:
+        env.update(extra_env)
     command = [
         str(script_path),
         "--skip-build",
@@ -436,6 +439,56 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertIn("[demo:all] [10] deployment.sh", completed.stdout)
             self.assertIn("[demo:all] [11] custom-command.sh", completed.stdout)
             self.assertIn("[demo:all] [12] voice.sh", completed.stdout)
+
+    def test_integration_multi_channel_demo_includes_live_mode_diagnostics_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            step_trace_path = root / "step.trace"
+            write_mock_binary(binary_path)
+
+            completed = run_demo_script(
+                "multi-channel.sh",
+                binary_path,
+                trace_path,
+                extra_env={"TAU_DEMO_TRACE_LOG": str(step_trace_path)},
+            )
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+            trace_rows = step_trace_path.read_text(encoding="utf-8").splitlines()
+            labels = [row.split("\t", 1)[0] for row in trace_rows]
+
+            self.assertIn("multi-channel-live-runner", labels)
+            self.assertIn("transport-health-inspect-multi-channel-live", labels)
+            self.assertIn("multi-channel-status-inspect-live", labels)
+
+            live_runner_index = labels.index("multi-channel-live-runner")
+            live_health_index = labels.index("transport-health-inspect-multi-channel-live")
+            live_status_index = labels.index("multi-channel-status-inspect-live")
+            self.assertLess(live_runner_index, live_health_index)
+            self.assertLess(live_health_index, live_status_index)
+
+    def test_integration_gateway_demo_includes_diagnostic_inspection_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            step_trace_path = root / "step.trace"
+            write_mock_binary(binary_path)
+
+            completed = run_demo_script(
+                "gateway.sh",
+                binary_path,
+                trace_path,
+                extra_env={"TAU_DEMO_TRACE_LOG": str(step_trace_path)},
+            )
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+            trace_rows = step_trace_path.read_text(encoding="utf-8").splitlines()
+            labels = [row.split("\t", 1)[0] for row in trace_rows]
+
+            self.assertIn("gateway-runner", labels)
+            self.assertIn("transport-health-inspect-gateway", labels)
+            self.assertIn("gateway-status-inspect", labels)
 
     def test_integration_all_script_list_json_reports_canonical_order(self) -> None:
         completed = subprocess.run(

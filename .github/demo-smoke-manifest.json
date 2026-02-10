@@ -56,6 +56,64 @@
       "args": [
         "--rpc-capabilities"
       ]
+    },
+    {
+      "name": "multi-channel-live-runner",
+      "args": [
+        "--multi-channel-live-runner",
+        "--multi-channel-live-ingress-dir",
+        "./crates/tau-coding-agent/testdata/multi-channel-live-ingress/smoke",
+        "--multi-channel-state-dir",
+        ".tau/ci-smoke/multi-channel"
+      ]
+    },
+    {
+      "name": "multi-channel-transport-health",
+      "args": [
+        "--multi-channel-state-dir",
+        ".tau/ci-smoke/multi-channel",
+        "--transport-health-inspect",
+        "multi-channel",
+        "--transport-health-json"
+      ]
+    },
+    {
+      "name": "multi-channel-status-inspect",
+      "args": [
+        "--multi-channel-state-dir",
+        ".tau/ci-smoke/multi-channel",
+        "--multi-channel-status-inspect",
+        "--multi-channel-status-json"
+      ]
+    },
+    {
+      "name": "gateway-contract-runner",
+      "args": [
+        "--gateway-contract-runner",
+        "--gateway-fixture",
+        "./crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json",
+        "--gateway-state-dir",
+        ".tau/ci-smoke/gateway"
+      ]
+    },
+    {
+      "name": "gateway-transport-health",
+      "args": [
+        "--gateway-state-dir",
+        ".tau/ci-smoke/gateway",
+        "--transport-health-inspect",
+        "gateway",
+        "--transport-health-json"
+      ]
+    },
+    {
+      "name": "gateway-status-inspect",
+      "args": [
+        "--gateway-state-dir",
+        ".tau/ci-smoke/gateway",
+        "--gateway-status-inspect",
+        "--gateway-status-json"
+      ]
     }
   ]
 }

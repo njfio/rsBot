@@ -6,6 +6,8 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[1]
+DEFAULT_MANIFEST = REPO_ROOT / ".github" / "demo-smoke-manifest.json"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import demo_smoke_runner  # noqa: E402
@@ -33,6 +35,16 @@ print("mock-ok " + " ".join(sys.argv[1:]))
 
 
 class DemoSmokeRunnerTests(unittest.TestCase):
+    def test_unit_repository_manifest_includes_live_mode_and_gateway_diagnostics(self):
+        commands = demo_smoke_runner.load_manifest(DEFAULT_MANIFEST)
+        names = [command.name for command in commands]
+        self.assertIn("multi-channel-live-runner", names)
+        self.assertIn("multi-channel-transport-health", names)
+        self.assertIn("multi-channel-status-inspect", names)
+        self.assertIn("gateway-contract-runner", names)
+        self.assertIn("gateway-transport-health", names)
+        self.assertIn("gateway-status-inspect", names)
+
     def test_unit_load_manifest_accepts_valid_schema_and_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest_path = Path(temp_dir) / "manifest.json"
@@ -83,6 +95,23 @@ class DemoSmokeRunnerTests(unittest.TestCase):
             self.assertEqual(report.passed, 2)
             self.assertTrue((log_dir / "01-first.stdout.log").exists())
             self.assertTrue((log_dir / "02-second.stdout.log").exists())
+
+    def test_functional_run_commands_executes_repository_manifest_with_mock_binary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            log_dir = root / "logs"
+            write_mock_binary(binary_path)
+            commands = demo_smoke_runner.load_manifest(DEFAULT_MANIFEST)
+            report = demo_smoke_runner.run_commands(
+                commands=commands,
+                binary=binary_path,
+                repo_root=REPO_ROOT,
+                log_dir=log_dir,
+                keep_going=False,
+            )
+            self.assertEqual(report.failed, 0)
+            self.assertGreaterEqual(report.passed, 10)
 
     def test_integration_cli_runs_manifest_and_writes_summary(self):
         script_path = SCRIPT_DIR / "demo_smoke_runner.py"
@@ -166,6 +195,11 @@ class DemoSmokeRunnerTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("[demo-smoke] FAIL failing-command", completed.stdout)
             self.assertTrue((log_dir / "02-failing-command.stderr.log").exists())
+
+    def test_regression_repository_manifest_command_names_are_unique(self):
+        commands = demo_smoke_runner.load_manifest(DEFAULT_MANIFEST)
+        names = [command.name for command in commands]
+        self.assertEqual(len(names), len(set(names)))
 
 
 if __name__ == "__main__":
