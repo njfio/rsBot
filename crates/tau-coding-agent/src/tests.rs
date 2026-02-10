@@ -373,6 +373,8 @@ fn test_cli() -> Cli {
         channel_store_repair: None,
         transport_health_inspect: None,
         transport_health_json: false,
+        dashboard_status_inspect: false,
+        dashboard_status_json: false,
         extension_exec_manifest: None,
         extension_exec_hook: None,
         extension_exec_payload_file: None,
@@ -1494,6 +1496,39 @@ fn functional_cli_transport_health_inspect_accepts_dashboard_state_dir_override(
         ".tau/dashboard-alt",
     ]);
     assert_eq!(cli.dashboard_state_dir, PathBuf::from(".tau/dashboard-alt"));
+}
+
+#[test]
+fn unit_cli_dashboard_status_inspect_defaults_to_disabled() {
+    let cli = Cli::parse_from(["tau-rs"]);
+    assert!(!cli.dashboard_status_inspect);
+    assert!(!cli.dashboard_status_json);
+}
+
+#[test]
+fn functional_cli_dashboard_status_inspect_accepts_json_and_state_dir_override() {
+    let cli = Cli::parse_from([
+        "tau-rs",
+        "--dashboard-status-inspect",
+        "--dashboard-status-json",
+        "--dashboard-state-dir",
+        ".tau/dashboard-observe",
+    ]);
+    assert!(cli.dashboard_status_inspect);
+    assert!(cli.dashboard_status_json);
+    assert_eq!(
+        cli.dashboard_state_dir,
+        PathBuf::from(".tau/dashboard-observe")
+    );
+}
+
+#[test]
+fn regression_cli_dashboard_status_json_requires_dashboard_status_inspect() {
+    let parse = Cli::try_parse_from(["tau-rs", "--dashboard-status-json"]);
+    let error = parse.expect_err("json output should require inspect flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
 }
 
 #[test]
@@ -12723,6 +12758,62 @@ fn regression_execute_channel_store_admin_repair_removes_invalid_lines() {
     assert_eq!(report.expired_artifacts, 0);
     assert_eq!(report.active_artifacts, 0);
     assert!(!store.channel_dir().join(expired.relative_path).exists());
+}
+
+#[test]
+fn functional_execute_channel_store_admin_dashboard_status_inspect_succeeds() {
+    let temp = tempdir().expect("tempdir");
+    let dashboard_state_dir = temp.path().join("dashboard");
+    std::fs::create_dir_all(&dashboard_state_dir).expect("create dashboard state dir");
+    std::fs::write(
+        dashboard_state_dir.join("state.json"),
+        r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["snapshot:s1"],
+  "widget_views": [{"widget_id":"health-summary"}],
+  "control_audit": [{"case_id":"c1"}],
+  "health": {
+    "updated_unix_ms": 700,
+    "cycle_duration_ms": 20,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+    )
+    .expect("write dashboard state");
+    std::fs::write(
+        dashboard_state_dir.join("runtime-events.jsonl"),
+        r#"{"reason_codes":["widget_views_updated"],"health_reason":"no recent transport failures observed"}
+"#,
+    )
+    .expect("write dashboard events");
+
+    let mut cli = test_cli();
+    cli.dashboard_status_inspect = true;
+    cli.dashboard_status_json = true;
+    cli.dashboard_state_dir = dashboard_state_dir;
+    execute_channel_store_admin_command(&cli).expect("dashboard status inspect should succeed");
+}
+
+#[test]
+fn regression_execute_channel_store_admin_dashboard_status_inspect_requires_state_file() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.dashboard_status_inspect = true;
+    cli.dashboard_state_dir = temp.path().join("dashboard");
+    std::fs::create_dir_all(&cli.dashboard_state_dir).expect("create dashboard dir");
+
+    let error = execute_channel_store_admin_command(&cli)
+        .expect_err("dashboard status inspect should fail without state file");
+    assert!(error.to_string().contains("failed to read"));
+    assert!(error.to_string().contains("state.json"));
 }
 
 fn make_script_executable(path: &Path) {

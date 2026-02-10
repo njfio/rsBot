@@ -130,6 +130,49 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/memory-ops.md`.
 
+## Dashboard contract runner
+
+Use this fixture-driven runtime mode to validate dashboard state transitions, control actions,
+retry handling, and channel-store snapshot writes.
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --dashboard-contract-runner \
+  --dashboard-fixture crates/tau-coding-agent/testdata/dashboard-contract/mixed-outcomes.json \
+  --dashboard-state-dir .tau/dashboard \
+  --dashboard-queue-limit 64 \
+  --dashboard-processed-case-cap 10000 \
+  --dashboard-retry-max-attempts 4 \
+  --dashboard-retry-base-delay-ms 0
+```
+
+The runner writes state and observability output under:
+
+- `.tau/dashboard/state.json`
+- `.tau/dashboard/runtime-events.jsonl`
+- `.tau/dashboard/channel-store/dashboard/<channel_id>/...`
+
+Inspect dashboard transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --dashboard-state-dir .tau/dashboard \
+  --transport-health-inspect dashboard \
+  --transport-health-json
+```
+
+Inspect dashboard rollout guardrail/status report:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --dashboard-state-dir .tau/dashboard \
+  --dashboard-status-inspect \
+  --dashboard-status-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/dashboard-ops.md`.
+
 ## ChannelStore inspection and repair
 
 Inspect one channel:

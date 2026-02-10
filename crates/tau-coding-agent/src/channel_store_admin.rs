@@ -24,6 +24,52 @@ struct TransportHealthStateFile {
     health: TransportHealthSnapshot,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+struct DashboardStatusStateFile {
+    #[serde(default)]
+    processed_case_keys: Vec<String>,
+    #[serde(default)]
+    widget_views: Vec<serde_json::Value>,
+    #[serde(default)]
+    control_audit: Vec<serde_json::Value>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct DashboardCycleReportLine {
+    #[serde(default)]
+    reason_codes: Vec<String>,
+    #[serde(default)]
+    health_reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DashboardCycleReportSummary {
+    events_log_present: bool,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    last_health_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DashboardStatusInspectReport {
+    state_path: String,
+    events_log_path: String,
+    events_log_present: bool,
+    health_state: String,
+    health_reason: String,
+    rollout_gate: String,
+    processed_case_count: usize,
+    widget_count: usize,
+    control_audit_count: usize,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    health: TransportHealthSnapshot,
+}
+
 pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
     if let Some(raw_target) = cli.transport_health_inspect.as_deref() {
         let target = parse_transport_health_inspect_target(raw_target)?;
@@ -36,6 +82,20 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
             );
         } else {
             println!("{}", render_transport_health_rows(&rows));
+        }
+        return Ok(());
+    }
+
+    if cli.dashboard_status_inspect {
+        let report = collect_dashboard_status_report(cli)?;
+        if cli.dashboard_status_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render dashboard status json")?
+            );
+        } else {
+            println!("{}", render_dashboard_status_report(&report));
         }
         return Ok(());
     }
@@ -278,6 +338,79 @@ fn collect_dashboard_transport_health_row(cli: &Cli) -> Result<TransportHealthIn
     })
 }
 
+fn collect_dashboard_status_report(cli: &Cli) -> Result<DashboardStatusInspectReport> {
+    let state_path = cli.dashboard_state_dir.join("state.json");
+    let events_log_path = cli.dashboard_state_dir.join("runtime-events.jsonl");
+    let state = load_dashboard_status_state(&state_path)?;
+    let cycle_summary = load_dashboard_cycle_report_summary(&events_log_path)?;
+    let classification = state.health.classify();
+    let health_reason = if !cycle_summary.last_health_reason.trim().is_empty() {
+        cycle_summary.last_health_reason.clone()
+    } else {
+        classification.reason
+    };
+    let rollout_gate = if classification.state.as_str() == "healthy" {
+        "pass"
+    } else {
+        "hold"
+    };
+
+    Ok(DashboardStatusInspectReport {
+        state_path: state_path.display().to_string(),
+        events_log_path: events_log_path.display().to_string(),
+        events_log_present: cycle_summary.events_log_present,
+        health_state: classification.state.as_str().to_string(),
+        health_reason,
+        rollout_gate: rollout_gate.to_string(),
+        processed_case_count: state.processed_case_keys.len(),
+        widget_count: state.widget_views.len(),
+        control_audit_count: state.control_audit.len(),
+        cycle_reports: cycle_summary.cycle_reports,
+        invalid_cycle_reports: cycle_summary.invalid_cycle_reports,
+        last_reason_codes: cycle_summary.last_reason_codes,
+        health: state.health,
+    })
+}
+
+fn load_dashboard_status_state(path: &Path) -> Result<DashboardStatusStateFile> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str::<DashboardStatusStateFile>(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn load_dashboard_cycle_report_summary(path: &Path) -> Result<DashboardCycleReportSummary> {
+    if !path.exists() {
+        return Ok(DashboardCycleReportSummary {
+            events_log_present: false,
+            ..DashboardCycleReportSummary::default()
+        });
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut summary = DashboardCycleReportSummary {
+        events_log_present: true,
+        ..DashboardCycleReportSummary::default()
+    };
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<DashboardCycleReportLine>(trimmed) {
+            Ok(report) => {
+                summary.cycle_reports = summary.cycle_reports.saturating_add(1);
+                summary.last_reason_codes = report.reason_codes;
+                summary.last_health_reason = report.health_reason;
+            }
+            Err(_) => {
+                summary.invalid_cycle_reports = summary.invalid_cycle_reports.saturating_add(1);
+            }
+        }
+    }
+    Ok(summary)
+}
+
 fn load_transport_health_snapshot(state_path: &Path) -> Result<TransportHealthSnapshot> {
     let raw = std::fs::read_to_string(state_path)
         .with_context(|| format!("failed to read state file {}", state_path.display()))?;
@@ -322,6 +455,33 @@ fn render_transport_health_row(row: &TransportHealthInspectRow) -> String {
     )
 }
 
+fn render_dashboard_status_report(report: &DashboardStatusInspectReport) -> String {
+    let reason_codes = if report.last_reason_codes.is_empty() {
+        "none".to_string()
+    } else {
+        report.last_reason_codes.join(",")
+    };
+    format!(
+        "dashboard status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_case_count={} widget_count={} control_audit_count={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        report.state_path,
+        report.events_log_path,
+        report.events_log_present,
+        report.health_state,
+        report.health_reason,
+        report.rollout_gate,
+        report.processed_case_count,
+        report.widget_count,
+        report.control_audit_count,
+        report.cycle_reports,
+        report.invalid_cycle_reports,
+        reason_codes,
+        report.health.queue_depth,
+        report.health.failure_streak,
+        report.health.last_cycle_failed,
+        report.health.last_cycle_completed,
+    )
+}
+
 fn sanitize_for_path(raw: &str) -> String {
     raw.chars()
         .map(|ch| {
@@ -342,10 +502,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        collect_transport_health_rows, parse_transport_health_inspect_target,
+        collect_dashboard_status_report, collect_transport_health_rows,
+        parse_transport_health_inspect_target, render_dashboard_status_report,
         render_transport_health_row, render_transport_health_rows, TransportHealthInspectRow,
         TransportHealthInspectTarget,
     };
+    use crate::transport_health::TransportHealthState;
     use crate::Cli;
     use crate::TransportHealthSnapshot;
 
@@ -678,5 +840,107 @@ mod tests {
         let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Dashboard)
             .expect("collect dashboard row");
         assert_eq!(rows[0].health, TransportHealthSnapshot::default());
+    }
+
+    #[test]
+    fn functional_collect_dashboard_status_report_reads_state_and_cycle_reports() {
+        let temp = tempdir().expect("tempdir");
+        let dashboard_root = temp.path().join("dashboard");
+        std::fs::create_dir_all(&dashboard_root).expect("create dashboard dir");
+        std::fs::write(
+            dashboard_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["snapshot:s1", "control:c1"],
+  "widget_views": [{"widget_id":"health-summary"}],
+  "control_audit": [{"case_id":"c1"}],
+  "health": {
+    "updated_unix_ms": 600,
+    "cycle_duration_ms": 25,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 2,
+    "last_cycle_processed": 2,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write dashboard state");
+        std::fs::write(
+            dashboard_root.join("runtime-events.jsonl"),
+            r#"{"reason_codes":["widget_views_updated"],"health_reason":"no recent transport failures observed"}
+invalid-json-line
+{"reason_codes":["widget_views_updated","control_actions_applied"],"health_reason":"no recent transport failures observed"}
+"#,
+        )
+        .expect("write runtime events");
+
+        let mut cli = Cli::parse_from(["tau-rs"]);
+        cli.dashboard_state_dir = dashboard_root;
+
+        let report = collect_dashboard_status_report(&cli).expect("collect status report");
+        assert_eq!(report.health_state, TransportHealthState::Healthy.as_str());
+        assert_eq!(report.rollout_gate, "pass");
+        assert_eq!(report.processed_case_count, 2);
+        assert_eq!(report.widget_count, 1);
+        assert_eq!(report.control_audit_count, 1);
+        assert_eq!(report.cycle_reports, 2);
+        assert_eq!(report.invalid_cycle_reports, 1);
+        assert_eq!(
+            report.last_reason_codes,
+            vec![
+                "widget_views_updated".to_string(),
+                "control_actions_applied".to_string()
+            ]
+        );
+        let rendered = render_dashboard_status_report(&report);
+        assert!(rendered.contains("dashboard status inspect:"));
+        assert!(rendered.contains("rollout_gate=pass"));
+        assert!(rendered.contains("last_reason_codes=widget_views_updated,control_actions_applied"));
+    }
+
+    #[test]
+    fn regression_collect_dashboard_status_report_handles_missing_events_log() {
+        let temp = tempdir().expect("tempdir");
+        let dashboard_root = temp.path().join("dashboard");
+        std::fs::create_dir_all(&dashboard_root).expect("create dashboard dir");
+        std::fs::write(
+            dashboard_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "widget_views": [],
+  "control_audit": [],
+  "health": {
+    "updated_unix_ms": 700,
+    "cycle_duration_ms": 32,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 1,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 0,
+    "last_cycle_failed": 1,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write dashboard state");
+
+        let mut cli = Cli::parse_from(["tau-rs"]);
+        cli.dashboard_state_dir = dashboard_root;
+
+        let report = collect_dashboard_status_report(&cli).expect("collect status report");
+        assert!(!report.events_log_present);
+        assert_eq!(report.cycle_reports, 0);
+        assert_eq!(report.invalid_cycle_reports, 0);
+        assert!(report.last_reason_codes.is_empty());
+        assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
+        assert_eq!(report.rollout_gate, "hold");
     }
 }

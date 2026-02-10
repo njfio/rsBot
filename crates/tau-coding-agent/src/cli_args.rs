@@ -735,6 +735,7 @@ pub(crate) struct Cli {
         env = "TAU_CHANNEL_STORE_INSPECT",
         conflicts_with = "channel_store_repair",
         conflicts_with = "transport_health_inspect",
+        conflicts_with = "dashboard_status_inspect",
         value_name = "transport/channel_id",
         help = "Inspect ChannelStore state for one channel and exit"
     )]
@@ -745,6 +746,7 @@ pub(crate) struct Cli {
         env = "TAU_CHANNEL_STORE_REPAIR",
         conflicts_with = "channel_store_inspect",
         conflicts_with = "transport_health_inspect",
+        conflicts_with = "dashboard_status_inspect",
         value_name = "transport/channel_id",
         help = "Repair malformed ChannelStore JSONL files for one channel and exit"
     )]
@@ -755,6 +757,7 @@ pub(crate) struct Cli {
         env = "TAU_TRANSPORT_HEALTH_INSPECT",
         conflicts_with = "channel_store_inspect",
         conflicts_with = "channel_store_repair",
+        conflicts_with = "dashboard_status_inspect",
         value_name = "target",
         help = "Inspect transport health snapshot(s) and exit. Targets: slack, github, github:owner/repo, multi-channel, memory, dashboard"
     )]
@@ -772,6 +775,29 @@ pub(crate) struct Cli {
         help = "Emit --transport-health-inspect output as pretty JSON"
     )]
     pub(crate) transport_health_json: bool,
+
+    #[arg(
+        long = "dashboard-status-inspect",
+        env = "TAU_DASHBOARD_STATUS_INSPECT",
+        conflicts_with = "channel_store_inspect",
+        conflicts_with = "channel_store_repair",
+        conflicts_with = "transport_health_inspect",
+        help = "Inspect dashboard runtime status/guardrail report and exit"
+    )]
+    pub(crate) dashboard_status_inspect: bool,
+
+    #[arg(
+        long = "dashboard-status-json",
+        env = "TAU_DASHBOARD_STATUS_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "dashboard_status_inspect",
+        help = "Emit --dashboard-status-inspect output as pretty JSON"
+    )]
+    pub(crate) dashboard_status_json: bool,
 
     #[arg(
         long = "extension-exec-manifest",
