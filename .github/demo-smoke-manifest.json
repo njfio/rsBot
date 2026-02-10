@@ -58,6 +58,13 @@
       ]
     },
     {
+      "name": "onboard-non-interactive",
+      "args": [
+        "--onboard",
+        "--onboard-non-interactive"
+      ]
+    },
+    {
       "name": "multi-channel-live-ingest-telegram",
       "args": [
         "--multi-channel-live-ingest-file",
@@ -155,6 +162,24 @@
       ]
     },
     {
+      "name": "gateway-remote-profile-token-auth",
+      "args": [
+        "--gateway-remote-profile-inspect",
+        "--gateway-remote-profile-json",
+        "--gateway-remote-profile",
+        "proxy-remote",
+        "--gateway-openresponses-server",
+        "--gateway-openresponses-auth-mode",
+        "token",
+        "--gateway-openresponses-auth-token",
+        "ci-smoke-token",
+        "--gateway-openresponses-bind",
+        "127.0.0.1:8787",
+        "--gateway-state-dir",
+        ".tau/ci-smoke/gateway-auth"
+      ]
+    },
+    {
       "name": "gateway-service-start",
       "args": [
         "--gateway-state-dir",
@@ -179,6 +204,29 @@
         "--gateway-service-stop",
         "--gateway-service-stop-reason",
         "ci_smoke_complete"
+      ]
+    },
+    {
+      "name": "deployment-wasm-package",
+      "args": [
+        "--deployment-state-dir",
+        ".tau/ci-smoke/deployment",
+        "--deployment-wasm-package-module",
+        "./crates/tau-coding-agent/testdata/deployment-wasm/edge-runtime.wasm",
+        "--deployment-wasm-package-blueprint-id",
+        "edge-wasm",
+        "--deployment-wasm-package-output-dir",
+        ".tau/ci-smoke/deployment/wasm-artifacts",
+        "--deployment-wasm-package-json"
+      ]
+    },
+    {
+      "name": "deployment-channel-store-inspect-edge-wasm",
+      "args": [
+        "--channel-store-root",
+        ".tau/ci-smoke/deployment/channel-store",
+        "--channel-store-inspect",
+        "deployment/edge-wasm"
       ]
     }
   ]
