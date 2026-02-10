@@ -16,6 +16,7 @@ cron.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
 hmac.workspace = true
+tau-cli = { path = "../tau-cli" }
 tau-core = { path = "../tau-core" }
 tau-gateway = { path = "../tau-gateway" }
 tau-multi-channel = { path = "../tau-multi-channel" }

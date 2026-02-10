@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/tau-cli",
   "crates/tau-core",
   "crates/tau-ai",
   "crates/tau-agent-core",

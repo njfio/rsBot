@@ -139,10 +139,14 @@ pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
 pub(crate) use crate::cli_types::{
     CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDaemonProfile,
-    CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
-    CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
-    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
+    CliMultiChannelOutboundMode, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliWebhookSignatureAlgorithm,
+};
+#[cfg(test)]
+pub(crate) use crate::cli_types::{
+    CliDeploymentWasmRuntimeProfile, CliMultiChannelLiveConnectorMode, CliMultiChannelTransport,
+    CliSessionImportMode, CliToolPolicyPreset,
 };
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
