@@ -147,6 +147,7 @@ class DemoScriptsTests(unittest.TestCase):
                 "events.sh",
                 "package.sh",
                 "multi-channel.sh",
+                "multi-agent.sh",
                 "memory.sh",
                 "dashboard.sh",
             ],
@@ -206,6 +207,7 @@ class DemoScriptsTests(unittest.TestCase):
                 "events.sh",
                 "package.sh",
                 "multi-channel.sh",
+                "multi-agent.sh",
                 "memory.sh",
                 "dashboard.sh",
             ):
@@ -219,7 +221,7 @@ class DemoScriptsTests(unittest.TestCase):
                 self.assertIn("failed=0", completed.stdout)
 
             rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-            self.assertGreaterEqual(len(rows), 22)
+            self.assertGreaterEqual(len(rows), 26)
 
     def test_functional_all_script_builds_once_when_skip_build_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -275,10 +277,10 @@ class DemoScriptsTests(unittest.TestCase):
                 0,
                 msg=f"all.sh failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
             )
-            self.assertIn("[demo:all] summary: total=7 passed=7 failed=0", completed.stdout)
+            self.assertIn("[demo:all] summary: total=8 passed=8 failed=0", completed.stdout)
 
             rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
-            self.assertGreaterEqual(len(rows), 22)
+            self.assertGreaterEqual(len(rows), 26)
 
     def test_functional_all_script_only_runs_selected_demo_wrappers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -327,11 +329,11 @@ class DemoScriptsTests(unittest.TestCase):
 
             completed = run_demo_script("all.sh", binary_path, trace_path, extra_args=["--report-file", str(report_path)])
             self.assertEqual(completed.returncode, 0, msg=completed.stderr)
-            self.assertIn("[demo:all] summary: total=7 passed=7 failed=0", completed.stdout)
+            self.assertIn("[demo:all] summary: total=8 passed=8 failed=0", completed.stdout)
             self.assertTrue(report_path.exists())
 
             payload = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["summary"], {"total": 7, "passed": 7, "failed": 0})
+            self.assertEqual(payload["summary"], {"total": 8, "passed": 8, "failed": 0})
             self.assertEqual(
                 [entry["name"] for entry in payload["demos"]],
                 [
@@ -340,6 +342,7 @@ class DemoScriptsTests(unittest.TestCase):
                     "events.sh",
                     "package.sh",
                     "multi-channel.sh",
+                    "multi-agent.sh",
                     "memory.sh",
                     "dashboard.sh",
                 ],
@@ -414,8 +417,9 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertIn("[demo:all] [3] events.sh", completed.stdout)
             self.assertIn("[demo:all] [4] package.sh", completed.stdout)
             self.assertIn("[demo:all] [5] multi-channel.sh", completed.stdout)
-            self.assertIn("[demo:all] [6] memory.sh", completed.stdout)
-            self.assertIn("[demo:all] [7] dashboard.sh", completed.stdout)
+            self.assertIn("[demo:all] [6] multi-agent.sh", completed.stdout)
+            self.assertIn("[demo:all] [7] memory.sh", completed.stdout)
+            self.assertIn("[demo:all] [8] dashboard.sh", completed.stdout)
 
     def test_integration_all_script_list_json_reports_canonical_order(self) -> None:
         completed = subprocess.run(
@@ -434,6 +438,7 @@ class DemoScriptsTests(unittest.TestCase):
                 "events.sh",
                 "package.sh",
                 "multi-channel.sh",
+                "multi-agent.sh",
                 "memory.sh",
                 "dashboard.sh",
             ],
@@ -582,8 +587,8 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertTrue(report_path.exists())
 
             payload = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["summary"]["total"], 7)
-            self.assertEqual(payload["summary"]["failed"], 7)
+            self.assertEqual(payload["summary"]["total"], 8)
+            self.assertEqual(payload["summary"]["failed"], 8)
             self.assertEqual(payload["summary"]["passed"], 0)
             for entry in payload["demos"]:
                 assert_duration_ms_field(self, entry)

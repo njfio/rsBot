@@ -96,6 +96,49 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/multi-channel-ops.md`.
 
+## Multi-agent contract runner
+
+Use this fixture-driven runtime mode to validate planner/delegated/review route selection,
+retry handling, deduplication, and routed-case snapshot persistence.
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --multi-agent-contract-runner \
+  --multi-agent-fixture crates/tau-coding-agent/testdata/multi-agent-contract/rollout-pass.json \
+  --multi-agent-state-dir .tau/multi-agent \
+  --multi-agent-queue-limit 64 \
+  --multi-agent-processed-case-cap 10000 \
+  --multi-agent-retry-max-attempts 4 \
+  --multi-agent-retry-base-delay-ms 0
+```
+
+The runner writes state and observability output under:
+
+- `.tau/multi-agent/state.json`
+- `.tau/multi-agent/runtime-events.jsonl`
+- `.tau/multi-agent/channel-store/multi-agent/orchestrator-router/...`
+
+Inspect multi-agent transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-agent-state-dir .tau/multi-agent \
+  --transport-health-inspect multi-agent \
+  --transport-health-json
+```
+
+Inspect multi-agent rollout guardrail/status report:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-agent-state-dir .tau/multi-agent \
+  --multi-agent-status-inspect \
+  --multi-agent-status-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/multi-agent-ops.md`.
+
 ## Semantic memory contract runner
 
 Use this fixture-driven runtime mode to validate semantic memory extraction/retrieval

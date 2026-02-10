@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "name": "multi-agent-routing-rollout-pass",
+  "description": "Deterministic success-only fixture for rollout demos and status gate checks.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "planner-success",
+      "phase": "planner",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "planner-fallback": {},
+          "executor": {},
+          "reviewer": {}
+        },
+        "planner": {
+          "role": "planner",
+          "fallback_roles": [
+            "planner-fallback"
+          ]
+        },
+        "delegated": {
+          "role": "executor"
+        },
+        "review": {
+          "role": "reviewer"
+        }
+      },
+      "expected": {
+        "outcome": "success",
+        "selected_role": "planner",
+        "attempted_roles": [
+          "planner",
+          "planner-fallback"
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "review-success",
+      "phase": "review",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "planner-fallback": {},
+          "executor": {},
+          "reviewer": {}
+        },
+        "planner": {
+          "role": "planner",
+          "fallback_roles": [
+            "planner-fallback"
+          ]
+        },
+        "delegated": {
+          "role": "executor"
+        },
+        "review": {
+          "role": "reviewer"
+        }
+      },
+      "expected": {
+        "outcome": "success",
+        "selected_role": "reviewer",
+        "attempted_roles": [
+          "reviewer"
+        ]
+      }
+    }
+  ]
+}

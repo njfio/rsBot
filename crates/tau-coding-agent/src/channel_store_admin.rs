@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TransportHealthInspectTarget {
@@ -6,6 +7,7 @@ enum TransportHealthInspectTarget {
     GithubAll,
     GithubRepo { owner: String, repo: String },
     MultiChannel,
+    MultiAgent,
     Memory,
     Dashboard,
 }
@@ -37,7 +39,35 @@ struct DashboardStatusStateFile {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct MultiAgentStatusStateFile {
+    #[serde(default)]
+    processed_case_keys: Vec<String>,
+    #[serde(default)]
+    routed_cases: Vec<MultiAgentStatusRoutedCase>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct MultiAgentStatusRoutedCase {
+    #[serde(default)]
+    phase: String,
+    #[serde(default)]
+    selected_role: String,
+    #[serde(default)]
+    category: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct DashboardCycleReportLine {
+    #[serde(default)]
+    reason_codes: Vec<String>,
+    #[serde(default)]
+    health_reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct MultiAgentCycleReportLine {
     #[serde(default)]
     reason_codes: Vec<String>,
     #[serde(default)]
@@ -51,6 +81,16 @@ struct DashboardCycleReportSummary {
     invalid_cycle_reports: usize,
     last_reason_codes: Vec<String>,
     last_health_reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MultiAgentCycleReportSummary {
+    events_log_present: bool,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    last_health_reason: String,
+    reason_code_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -67,6 +107,26 @@ struct DashboardStatusInspectReport {
     cycle_reports: usize,
     invalid_cycle_reports: usize,
     last_reason_codes: Vec<String>,
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct MultiAgentStatusInspectReport {
+    state_path: String,
+    events_log_path: String,
+    events_log_present: bool,
+    health_state: String,
+    health_reason: String,
+    rollout_gate: String,
+    processed_case_count: usize,
+    routed_case_count: usize,
+    phase_counts: BTreeMap<String, usize>,
+    selected_role_counts: BTreeMap<String, usize>,
+    category_counts: BTreeMap<String, usize>,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    reason_code_counts: BTreeMap<String, usize>,
     health: TransportHealthSnapshot,
 }
 
@@ -96,6 +156,20 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
             );
         } else {
             println!("{}", render_dashboard_status_report(&report));
+        }
+        return Ok(());
+    }
+
+    if cli.multi_agent_status_inspect {
+        let report = collect_multi_agent_status_report(cli)?;
+        if cli.multi_agent_status_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render multi-agent status json")?
+            );
+        } else {
+            println!("{}", render_multi_agent_status_report(&report));
         }
         return Ok(());
     }
@@ -164,7 +238,7 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, memory, or dashboard",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, or dashboard",
             raw
         );
     }
@@ -178,6 +252,9 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     {
         return Ok(TransportHealthInspectTarget::MultiChannel);
     }
+    if trimmed.eq_ignore_ascii_case("multi-agent") || trimmed.eq_ignore_ascii_case("multiagent") {
+        return Ok(TransportHealthInspectTarget::MultiAgent);
+    }
     if trimmed.eq_ignore_ascii_case("memory") {
         return Ok(TransportHealthInspectTarget::Memory);
     }
@@ -187,13 +264,13 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
 
     let Some((transport, repo_slug)) = trimmed.split_once(':') else {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, memory, or dashboard",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, or dashboard",
             raw
         );
     };
     if !transport.eq_ignore_ascii_case("github") {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, memory, or dashboard",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, or dashboard",
             raw
         );
     }
@@ -225,6 +302,9 @@ fn collect_transport_health_rows(
         }
         TransportHealthInspectTarget::MultiChannel => {
             Ok(vec![collect_multi_channel_transport_health_row(cli)?])
+        }
+        TransportHealthInspectTarget::MultiAgent => {
+            Ok(vec![collect_multi_agent_transport_health_row(cli)?])
         }
         TransportHealthInspectTarget::Memory => Ok(vec![collect_memory_transport_health_row(cli)?]),
         TransportHealthInspectTarget::Dashboard => {
@@ -311,6 +391,17 @@ fn collect_multi_channel_transport_health_row(cli: &Cli) -> Result<TransportHeal
     Ok(TransportHealthInspectRow {
         transport: "multi-channel".to_string(),
         target: "telegram/discord/whatsapp".to_string(),
+        state_path: state_path.display().to_string(),
+        health,
+    })
+}
+
+fn collect_multi_agent_transport_health_row(cli: &Cli) -> Result<TransportHealthInspectRow> {
+    let state_path = cli.multi_agent_state_dir.join("state.json");
+    let health = load_transport_health_snapshot(&state_path)?;
+    Ok(TransportHealthInspectRow {
+        transport: "multi-agent".to_string(),
+        target: "orchestrator-router".to_string(),
         state_path: state_path.display().to_string(),
         health,
     })
@@ -411,6 +502,109 @@ fn load_dashboard_cycle_report_summary(path: &Path) -> Result<DashboardCycleRepo
     Ok(summary)
 }
 
+fn collect_multi_agent_status_report(cli: &Cli) -> Result<MultiAgentStatusInspectReport> {
+    let state_path = cli.multi_agent_state_dir.join("state.json");
+    let events_log_path = cli.multi_agent_state_dir.join("runtime-events.jsonl");
+    let state = load_multi_agent_status_state(&state_path)?;
+    let cycle_summary = load_multi_agent_cycle_report_summary(&events_log_path)?;
+    let classification = state.health.classify();
+    let health_reason = if !cycle_summary.last_health_reason.trim().is_empty() {
+        cycle_summary.last_health_reason.clone()
+    } else {
+        classification.reason
+    };
+    let rollout_gate = if classification.state.as_str() == "healthy" {
+        "pass"
+    } else {
+        "hold"
+    };
+
+    let mut phase_counts = BTreeMap::new();
+    let mut selected_role_counts = BTreeMap::new();
+    let mut category_counts = BTreeMap::new();
+    for routed_case in &state.routed_cases {
+        if !routed_case.phase.trim().is_empty() {
+            increment_count(&mut phase_counts, routed_case.phase.trim());
+        }
+        if !routed_case.selected_role.trim().is_empty() {
+            increment_count(&mut selected_role_counts, routed_case.selected_role.trim());
+        }
+        if !routed_case.category.trim().is_empty() {
+            increment_count(&mut category_counts, routed_case.category.trim());
+        }
+    }
+
+    Ok(MultiAgentStatusInspectReport {
+        state_path: state_path.display().to_string(),
+        events_log_path: events_log_path.display().to_string(),
+        events_log_present: cycle_summary.events_log_present,
+        health_state: classification.state.as_str().to_string(),
+        health_reason,
+        rollout_gate: rollout_gate.to_string(),
+        processed_case_count: state.processed_case_keys.len(),
+        routed_case_count: state.routed_cases.len(),
+        phase_counts,
+        selected_role_counts,
+        category_counts,
+        cycle_reports: cycle_summary.cycle_reports,
+        invalid_cycle_reports: cycle_summary.invalid_cycle_reports,
+        last_reason_codes: cycle_summary.last_reason_codes,
+        reason_code_counts: cycle_summary.reason_code_counts,
+        health: state.health,
+    })
+}
+
+fn load_multi_agent_status_state(path: &Path) -> Result<MultiAgentStatusStateFile> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str::<MultiAgentStatusStateFile>(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn load_multi_agent_cycle_report_summary(path: &Path) -> Result<MultiAgentCycleReportSummary> {
+    if !path.exists() {
+        return Ok(MultiAgentCycleReportSummary {
+            events_log_present: false,
+            ..MultiAgentCycleReportSummary::default()
+        });
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut summary = MultiAgentCycleReportSummary {
+        events_log_present: true,
+        ..MultiAgentCycleReportSummary::default()
+    };
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<MultiAgentCycleReportLine>(trimmed) {
+            Ok(report) => {
+                summary.cycle_reports = summary.cycle_reports.saturating_add(1);
+                summary.last_reason_codes = report.reason_codes.clone();
+                summary.last_health_reason = report.health_reason;
+                for reason_code in report.reason_codes {
+                    increment_count(&mut summary.reason_code_counts, reason_code.trim());
+                }
+            }
+            Err(_) => {
+                summary.invalid_cycle_reports = summary.invalid_cycle_reports.saturating_add(1);
+            }
+        }
+    }
+    Ok(summary)
+}
+
+fn increment_count(map: &mut BTreeMap<String, usize>, raw: &str) {
+    let key = raw.trim();
+    if key.is_empty() {
+        return;
+    }
+    let counter = map.entry(key.to_string()).or_insert(0);
+    *counter = counter.saturating_add(1);
+}
+
 fn load_transport_health_snapshot(state_path: &Path) -> Result<TransportHealthSnapshot> {
     let raw = std::fs::read_to_string(state_path)
         .with_context(|| format!("failed to read state file {}", state_path.display()))?;
@@ -482,6 +676,47 @@ fn render_dashboard_status_report(report: &DashboardStatusInspectReport) -> Stri
     )
 }
 
+fn render_multi_agent_status_report(report: &MultiAgentStatusInspectReport) -> String {
+    let reason_codes = if report.last_reason_codes.is_empty() {
+        "none".to_string()
+    } else {
+        report.last_reason_codes.join(",")
+    };
+    format!(
+        "multi-agent status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_case_count={} routed_case_count={} phase_counts={} selected_role_counts={} category_counts={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        report.state_path,
+        report.events_log_path,
+        report.events_log_present,
+        report.health_state,
+        report.health_reason,
+        report.rollout_gate,
+        report.processed_case_count,
+        report.routed_case_count,
+        render_counter_map(&report.phase_counts),
+        render_counter_map(&report.selected_role_counts),
+        render_counter_map(&report.category_counts),
+        report.cycle_reports,
+        report.invalid_cycle_reports,
+        reason_codes,
+        render_counter_map(&report.reason_code_counts),
+        report.health.queue_depth,
+        report.health.failure_streak,
+        report.health.last_cycle_failed,
+        report.health.last_cycle_completed,
+    )
+}
+
+fn render_counter_map(counts: &BTreeMap<String, usize>) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+    counts
+        .iter()
+        .map(|(key, value)| format!("{key}:{value}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn sanitize_for_path(raw: &str) -> String {
     raw.chars()
         .map(|ch| {
@@ -502,8 +737,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        collect_dashboard_status_report, collect_transport_health_rows,
-        parse_transport_health_inspect_target, render_dashboard_status_report,
+        collect_dashboard_status_report, collect_multi_agent_status_report,
+        collect_transport_health_rows, parse_transport_health_inspect_target,
+        render_dashboard_status_report, render_multi_agent_status_report,
         render_transport_health_row, render_transport_health_rows, TransportHealthInspectRow,
         TransportHealthInspectTarget,
     };
@@ -535,6 +771,14 @@ mod tests {
         assert_eq!(
             parse_transport_health_inspect_target("multichannel").expect("multichannel"),
             TransportHealthInspectTarget::MultiChannel
+        );
+        assert_eq!(
+            parse_transport_health_inspect_target("multi-agent").expect("multi-agent"),
+            TransportHealthInspectTarget::MultiAgent
+        );
+        assert_eq!(
+            parse_transport_health_inspect_target("multiagent").expect("multiagent"),
+            TransportHealthInspectTarget::MultiAgent
         );
         assert_eq!(
             parse_transport_health_inspect_target("memory").expect("memory"),
@@ -578,12 +822,14 @@ mod tests {
         let github_root = temp.path().join("github");
         let slack_root = temp.path().join("slack");
         let multi_channel_root = temp.path().join("multi-channel");
+        let multi_agent_root = temp.path().join("multi-agent");
         let memory_root = temp.path().join("memory");
         let dashboard_root = temp.path().join("dashboard");
         let github_repo_dir = github_root.join("owner__repo");
         std::fs::create_dir_all(&github_repo_dir).expect("create github repo dir");
         std::fs::create_dir_all(&slack_root).expect("create slack dir");
         std::fs::create_dir_all(&multi_channel_root).expect("create multi-channel dir");
+        std::fs::create_dir_all(&multi_agent_root).expect("create multi-agent dir");
         std::fs::create_dir_all(&memory_root).expect("create memory dir");
         std::fs::create_dir_all(&dashboard_root).expect("create dashboard dir");
 
@@ -656,6 +902,29 @@ mod tests {
         .expect("write multi-channel state");
 
         std::fs::write(
+            multi_agent_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "routed_cases": [],
+  "health": {
+    "updated_unix_ms": 350,
+    "cycle_duration_ms": 19,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 2,
+    "last_cycle_processed": 2,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-agent state");
+
+        std::fs::write(
             memory_root.join("state.json"),
             r#"{
   "schema_version": 1,
@@ -706,6 +975,7 @@ mod tests {
         cli.github_state_dir = github_root;
         cli.slack_state_dir = slack_root;
         cli.multi_channel_state_dir = multi_channel_root;
+        cli.multi_agent_state_dir = multi_agent_root;
         cli.memory_state_dir = memory_root;
         cli.dashboard_state_dir = dashboard_root;
 
@@ -731,6 +1001,14 @@ mod tests {
         assert_eq!(multi_channel_rows[0].target, "telegram/discord/whatsapp");
         assert_eq!(multi_channel_rows[0].health.last_cycle_discovered, 3);
 
+        let multi_agent_rows =
+            collect_transport_health_rows(&cli, &TransportHealthInspectTarget::MultiAgent)
+                .expect("collect multi-agent rows");
+        assert_eq!(multi_agent_rows.len(), 1);
+        assert_eq!(multi_agent_rows[0].transport, "multi-agent");
+        assert_eq!(multi_agent_rows[0].target, "orchestrator-router");
+        assert_eq!(multi_agent_rows[0].health.last_cycle_discovered, 2);
+
         let memory_rows =
             collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Memory)
                 .expect("collect memory rows");
@@ -751,12 +1029,14 @@ mod tests {
             github_rows[0].clone(),
             slack_rows[0].clone(),
             multi_channel_rows[0].clone(),
+            multi_agent_rows[0].clone(),
             memory_rows[0].clone(),
             dashboard_rows[0].clone(),
         ]);
         assert!(rendered.contains("transport=github"));
         assert!(rendered.contains("transport=slack"));
         assert!(rendered.contains("transport=multi-channel"));
+        assert!(rendered.contains("transport=multi-agent"));
         assert!(rendered.contains("transport=memory"));
         assert!(rendered.contains("transport=dashboard"));
     }
@@ -814,6 +1094,30 @@ mod tests {
 
         let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Memory)
             .expect("collect memory row");
+        assert_eq!(rows[0].health, TransportHealthSnapshot::default());
+    }
+
+    #[test]
+    fn regression_collect_transport_health_rows_defaults_missing_health_fields_for_multi_agent() {
+        let temp = tempdir().expect("tempdir");
+        let multi_agent_root = temp.path().join("multi-agent");
+        std::fs::create_dir_all(&multi_agent_root).expect("create multi-agent dir");
+        std::fs::write(
+            multi_agent_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "routed_cases": []
+}
+"#,
+        )
+        .expect("write legacy multi-agent state");
+
+        let mut cli = Cli::parse_from(["tau-rs"]);
+        cli.multi_agent_state_dir = PathBuf::from(&multi_agent_root);
+
+        let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::MultiAgent)
+            .expect("collect multi-agent row");
         assert_eq!(rows[0].health, TransportHealthSnapshot::default());
     }
 
@@ -940,6 +1244,134 @@ invalid-json-line
         assert_eq!(report.cycle_reports, 0);
         assert_eq!(report.invalid_cycle_reports, 0);
         assert!(report.last_reason_codes.is_empty());
+        assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
+        assert_eq!(report.rollout_gate, "hold");
+    }
+
+    #[test]
+    fn functional_collect_multi_agent_status_report_reads_state_and_cycle_reports() {
+        let temp = tempdir().expect("tempdir");
+        let multi_agent_root = temp.path().join("multi-agent");
+        std::fs::create_dir_all(&multi_agent_root).expect("create multi-agent dir");
+        std::fs::write(
+            multi_agent_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["planner:planner-success", "review:review-success"],
+  "routed_cases": [
+    {
+      "case_key": "planner:planner-success",
+      "case_id": "planner-success",
+      "phase": "planner",
+      "selected_role": "planner",
+      "attempted_roles": ["planner"],
+      "category": "planning",
+      "updated_unix_ms": 1
+    },
+    {
+      "case_key": "review:review-success",
+      "case_id": "review-success",
+      "phase": "review",
+      "selected_role": "reviewer",
+      "attempted_roles": ["reviewer"],
+      "category": "review",
+      "updated_unix_ms": 2
+    }
+  ],
+  "health": {
+    "updated_unix_ms": 710,
+    "cycle_duration_ms": 17,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 2,
+    "last_cycle_processed": 2,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-agent state");
+        std::fs::write(
+            multi_agent_root.join("runtime-events.jsonl"),
+            r#"{"reason_codes":["routed_cases_updated","retry_attempted"],"health_reason":"no recent transport failures observed"}
+invalid-json-line
+{"reason_codes":["routed_cases_updated"],"health_reason":"no recent transport failures observed"}
+"#,
+        )
+        .expect("write multi-agent events");
+
+        let mut cli = Cli::parse_from(["tau-rs"]);
+        cli.multi_agent_state_dir = multi_agent_root;
+
+        let report = collect_multi_agent_status_report(&cli).expect("collect status report");
+        assert_eq!(report.health_state, TransportHealthState::Healthy.as_str());
+        assert_eq!(report.rollout_gate, "pass");
+        assert_eq!(report.processed_case_count, 2);
+        assert_eq!(report.routed_case_count, 2);
+        assert_eq!(report.phase_counts.get("planner"), Some(&1));
+        assert_eq!(report.phase_counts.get("review"), Some(&1));
+        assert_eq!(report.selected_role_counts.get("planner"), Some(&1));
+        assert_eq!(report.selected_role_counts.get("reviewer"), Some(&1));
+        assert_eq!(report.category_counts.get("planning"), Some(&1));
+        assert_eq!(report.category_counts.get("review"), Some(&1));
+        assert_eq!(report.cycle_reports, 2);
+        assert_eq!(report.invalid_cycle_reports, 1);
+        assert_eq!(
+            report.last_reason_codes,
+            vec!["routed_cases_updated".to_string()]
+        );
+        assert_eq!(
+            report.reason_code_counts.get("routed_cases_updated"),
+            Some(&2)
+        );
+        assert_eq!(report.reason_code_counts.get("retry_attempted"), Some(&1));
+        let rendered = render_multi_agent_status_report(&report);
+        assert!(rendered.contains("multi-agent status inspect:"));
+        assert!(rendered.contains("rollout_gate=pass"));
+        assert!(rendered.contains("phase_counts=planner:1,review:1"));
+        assert!(rendered.contains("reason_code_counts=retry_attempted:1,routed_cases_updated:2"));
+    }
+
+    #[test]
+    fn regression_collect_multi_agent_status_report_handles_missing_events_log() {
+        let temp = tempdir().expect("tempdir");
+        let multi_agent_root = temp.path().join("multi-agent");
+        std::fs::create_dir_all(&multi_agent_root).expect("create multi-agent dir");
+        std::fs::write(
+            multi_agent_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "routed_cases": [],
+  "health": {
+    "updated_unix_ms": 711,
+    "cycle_duration_ms": 22,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 2,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 0,
+    "last_cycle_failed": 1,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-agent state");
+
+        let mut cli = Cli::parse_from(["tau-rs"]);
+        cli.multi_agent_state_dir = multi_agent_root;
+
+        let report = collect_multi_agent_status_report(&cli).expect("collect status report");
+        assert!(!report.events_log_present);
+        assert_eq!(report.cycle_reports, 0);
+        assert_eq!(report.invalid_cycle_reports, 0);
+        assert!(report.last_reason_codes.is_empty());
+        assert!(report.reason_code_counts.is_empty());
         assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
         assert_eq!(report.rollout_gate, "hold");
     }

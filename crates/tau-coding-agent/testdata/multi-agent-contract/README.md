@@ -7,6 +7,8 @@ These fixtures validate the schema and replay compatibility contract for Tau mul
 - `mixed-outcomes.json`
   - Covers success, malformed input, and retryable failure outcomes.
   - Serves as deterministic replay baseline for contract conformance tests.
+- `rollout-pass.json`
+  - Success-only fixture for deterministic demo/rollout status checks (`rollout_gate=pass`).
 - `invalid-error-code.json`
   - Regression fixture ensuring unsupported `expected.error_code` values are rejected.
 - `invalid-duplicate-case-id.json`
