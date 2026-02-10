@@ -123,6 +123,102 @@ struct GatewayAuthStatusReport {
     rate_limit_max_requests: usize,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct GatewayMultiChannelStatusReport {
+    state_present: bool,
+    health_state: String,
+    health_reason: String,
+    rollout_gate: String,
+    processed_event_count: usize,
+    transport_counts: BTreeMap<String, usize>,
+    queue_depth: usize,
+    failure_streak: usize,
+    last_cycle_failed: usize,
+    last_cycle_completed: usize,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    reason_code_counts: BTreeMap<String, usize>,
+    connectors: GatewayMultiChannelConnectorsStatusReport,
+    diagnostics: Vec<String>,
+}
+
+impl Default for GatewayMultiChannelStatusReport {
+    fn default() -> Self {
+        Self {
+            state_present: false,
+            health_state: "unknown".to_string(),
+            health_reason: "multi-channel runtime state is unavailable".to_string(),
+            rollout_gate: "hold".to_string(),
+            processed_event_count: 0,
+            transport_counts: BTreeMap::new(),
+            queue_depth: 0,
+            failure_streak: 0,
+            last_cycle_failed: 0,
+            last_cycle_completed: 0,
+            cycle_reports: 0,
+            invalid_cycle_reports: 0,
+            last_reason_codes: Vec::new(),
+            reason_code_counts: BTreeMap::new(),
+            connectors: GatewayMultiChannelConnectorsStatusReport::default(),
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+struct GatewayMultiChannelConnectorsStatusReport {
+    state_present: bool,
+    processed_event_count: usize,
+    channels: BTreeMap<String, GatewayMultiChannelConnectorChannelSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+struct GatewayMultiChannelConnectorChannelSummary {
+    mode: String,
+    liveness: String,
+    breaker_state: String,
+    events_ingested: u64,
+    duplicates_skipped: u64,
+    retry_attempts: u64,
+    auth_failures: u64,
+    parse_failures: u64,
+    provider_failures: u64,
+    consecutive_failures: u64,
+    retry_budget_remaining: u64,
+    breaker_open_until_unix_ms: u64,
+    breaker_last_open_reason: String,
+    breaker_open_count: u64,
+    last_error_code: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayMultiChannelRuntimeStateFile {
+    #[serde(default)]
+    processed_event_keys: Vec<String>,
+    #[serde(default)]
+    health: crate::transport_health::TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayMultiChannelCycleReportLine {
+    #[serde(default)]
+    reason_codes: Vec<String>,
+    #[serde(default)]
+    health_reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayMultiChannelConnectorsStateFile {
+    #[serde(default)]
+    processed_event_keys: Vec<String>,
+    #[serde(default)]
+    channels: BTreeMap<
+        String,
+        crate::multi_channel_live_connectors::MultiChannelLiveConnectorChannelState,
+    >,
+}
+
 #[derive(Debug)]
 struct OpenResponsesApiError {
     status: StatusCode,
@@ -387,12 +483,14 @@ async fn handle_gateway_status(
                 .into_response();
             }
         };
+    let multi_channel_report = collect_gateway_multi_channel_status_report(&state.config.state_dir);
 
     (
         StatusCode::OK,
         Json(json!({
             "service": service_report,
             "auth": collect_gateway_auth_status_report(&state),
+            "multi_channel": multi_channel_report,
             "gateway": {
                 "responses_endpoint": OPENRESPONSES_ENDPOINT,
                 "webchat_endpoint": WEBCHAT_ENDPOINT,
@@ -684,23 +782,28 @@ fn dispatch_gateway_ws_control_text_frame(
         }
         crate::gateway_ws_protocol::GatewayWsRequestKind::GatewayStatus => {
             match crate::gateway_runtime::inspect_gateway_service_mode(&state.config.state_dir) {
-                Ok(service_report) => crate::gateway_ws_protocol::build_gateway_ws_response_frame(
-                    &request_frame.request_id,
-                    "gateway.status.response",
-                    json!({
-                        "service": service_report,
-                        "auth": collect_gateway_auth_status_report(state),
-                        "gateway": {
-                            "responses_endpoint": OPENRESPONSES_ENDPOINT,
-                            "status_endpoint": GATEWAY_STATUS_ENDPOINT,
-                            "webchat_endpoint": WEBCHAT_ENDPOINT,
-                            "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
-                            "ws_endpoint": GATEWAY_WS_ENDPOINT,
-                            "model": state.config.model,
-                            "state_dir": state.config.state_dir.display().to_string(),
-                        }
-                    }),
-                ),
+                Ok(service_report) => {
+                    let multi_channel_report =
+                        collect_gateway_multi_channel_status_report(&state.config.state_dir);
+                    crate::gateway_ws_protocol::build_gateway_ws_response_frame(
+                        &request_frame.request_id,
+                        "gateway.status.response",
+                        json!({
+                            "service": service_report,
+                            "auth": collect_gateway_auth_status_report(state),
+                            "multi_channel": multi_channel_report,
+                            "gateway": {
+                                "responses_endpoint": OPENRESPONSES_ENDPOINT,
+                                "status_endpoint": GATEWAY_STATUS_ENDPOINT,
+                                "webchat_endpoint": WEBCHAT_ENDPOINT,
+                                "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
+                                "ws_endpoint": GATEWAY_WS_ENDPOINT,
+                                "model": state.config.model,
+                                "state_dir": state.config.state_dir.display().to_string(),
+                            }
+                        }),
+                    )
+                }
                 Err(error) => crate::gateway_ws_protocol::build_gateway_ws_error_frame(
                     &request_frame.request_id,
                     crate::gateway_ws_protocol::GATEWAY_WS_ERROR_CODE_INTERNAL_ERROR,
@@ -1529,7 +1632,7 @@ fn render_gateway_webchat_page() -> String {
       </section>
       <section class="panel">
         <h2 style="margin: 0 0 0.5rem 0; font-size: 1rem;">Gateway status</h2>
-        <pre id="status">Press "Refresh status" to inspect gateway service state.</pre>
+        <pre id="status">Press "Refresh status" to inspect gateway service state, multi-channel lifecycle summary, connector counters, and recent reason codes.</pre>
       </section>
     </div>
     <section class="panel" style="margin-top: 1rem;">
@@ -1653,6 +1756,66 @@ fn render_gateway_webchat_page() -> String {
       }}
     }}
 
+    function renderMultiChannelChannelRows(connectors) {{
+      if (!connectors || !connectors.channels) {{
+        return "none";
+      }}
+      const entries = Object.entries(connectors.channels);
+      if (entries.length === 0) {{
+        return "none";
+      }}
+      entries.sort((left, right) => left[0].localeCompare(right[0]));
+      return entries.map(([channel, status]) => {{
+        return channel +
+          ":liveness=" + (status.liveness || "unknown") +
+          " breaker=" + (status.breaker_state || "unknown") +
+          " ingested=" + String(status.events_ingested || 0) +
+          " dup=" + String(status.duplicates_skipped || 0) +
+          " retry=" + String(status.retry_attempts || 0) +
+          " auth_fail=" + String(status.auth_failures || 0) +
+          " parse_fail=" + String(status.parse_failures || 0) +
+          " provider_fail=" + String(status.provider_failures || 0);
+      }}).join("\n");
+    }}
+
+    function formatGatewayStatusSummary(payload) {{
+      const service = payload && payload.service ? payload.service : {{}};
+      const auth = payload && payload.auth ? payload.auth : {{}};
+      const mc = payload && payload.multi_channel ? payload.multi_channel : {{}};
+      const connectors = mc.connectors || {{}};
+      const reasonCodes = Array.isArray(mc.last_reason_codes) && mc.last_reason_codes.length > 0
+        ? mc.last_reason_codes.join(",")
+        : "none";
+      const diagnostics = Array.isArray(mc.diagnostics) && mc.diagnostics.length > 0
+        ? mc.diagnostics.join(",")
+        : "none";
+      const transportCounts = mc.transport_counts ? JSON.stringify(mc.transport_counts) : "{{}}";
+      return [
+        "gateway_service: status=" + String(service.service_status || "unknown") +
+          " rollout_gate=" + String(service.rollout_gate || "unknown") +
+          " reason_code=" + String(service.rollout_reason_code || "unknown"),
+        "gateway_auth: mode=" + String(auth.mode || "unknown") +
+          " active_sessions=" + String(auth.active_sessions || 0) +
+          " auth_failures=" + String(auth.auth_failures || 0) +
+          " rate_limited=" + String(auth.rate_limited_requests || 0),
+        "multi_channel_lifecycle: state_present=" + String(Boolean(mc.state_present)) +
+          " health=" + String(mc.health_state || "unknown") +
+          " rollout_gate=" + String(mc.rollout_gate || "hold") +
+          " processed=" + String(mc.processed_event_count || 0) +
+          " queue_depth=" + String(mc.queue_depth || 0) +
+          " failure_streak=" + String(mc.failure_streak || 0) +
+          " last_cycle_failed=" + String(mc.last_cycle_failed || 0) +
+          " last_cycle_completed=" + String(mc.last_cycle_completed || 0),
+        "multi_channel_reason_codes_recent: " + reasonCodes,
+        "multi_channel_reason_code_counts: " + JSON.stringify(mc.reason_code_counts || {{}}),
+        "multi_channel_transport_counts: " + transportCounts,
+        "connectors: state_present=" + String(Boolean(connectors.state_present)) +
+          " processed=" + String(connectors.processed_event_count || 0),
+        "connector_channels:\n" + renderMultiChannelChannelRows(connectors),
+        "multi_channel_diagnostics: " + diagnostics,
+      ].join("\n");
+    }}
+
     async function refreshStatus() {{
       statusPre.textContent = "Loading gateway status...";
       try {{
@@ -1665,7 +1828,8 @@ fn render_gateway_webchat_page() -> String {
           return;
         }}
         const payload = JSON.parse(raw);
-        statusPre.textContent = JSON.stringify(payload, null, 2);
+        const summary = formatGatewayStatusSummary(payload);
+        statusPre.textContent = summary + "\n\nraw_payload:\n" + JSON.stringify(payload, null, 2);
       }} catch (error) {{
         statusPre.textContent = "status request failed: " + String(error);
       }}
@@ -1925,6 +2089,199 @@ fn collect_gateway_auth_status_report(
     }
 }
 
+fn collect_gateway_multi_channel_status_report(
+    gateway_state_dir: &Path,
+) -> GatewayMultiChannelStatusReport {
+    let tau_root = gateway_state_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| gateway_state_dir.to_path_buf());
+    let multi_channel_root = tau_root.join("multi-channel");
+    let state_path = multi_channel_root.join("state.json");
+    let events_path = multi_channel_root.join("runtime-events.jsonl");
+    let connectors_path = multi_channel_root.join("live-connectors-state.json");
+
+    let mut report = GatewayMultiChannelStatusReport::default();
+    report.connectors = load_gateway_multi_channel_connectors_status_report(
+        &connectors_path,
+        &mut report.diagnostics,
+    );
+
+    if !state_path.exists() {
+        report
+            .diagnostics
+            .push(format!("state_missing:{}", state_path.display()));
+        return report;
+    }
+    report.state_present = true;
+
+    let raw_state = match std::fs::read_to_string(&state_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            report.diagnostics.push(format!(
+                "state_read_failed:{}:{error}",
+                state_path.display()
+            ));
+            return report;
+        }
+    };
+    let state = match serde_json::from_str::<GatewayMultiChannelRuntimeStateFile>(&raw_state) {
+        Ok(state) => state,
+        Err(error) => {
+            report.diagnostics.push(format!(
+                "state_parse_failed:{}:{error}",
+                state_path.display()
+            ));
+            return report;
+        }
+    };
+
+    report.processed_event_count = state.processed_event_keys.len();
+    for event_key in &state.processed_event_keys {
+        let Some((transport, _)) = event_key.split_once(':') else {
+            continue;
+        };
+        increment_gateway_multi_channel_counter(
+            &mut report.transport_counts,
+            &transport.to_ascii_lowercase(),
+        );
+    }
+
+    let classification = state.health.classify();
+    report.health_state = classification.state.as_str().to_string();
+    report.health_reason = classification.reason;
+    report.rollout_gate = if report.health_state == "healthy" {
+        "pass".to_string()
+    } else {
+        "hold".to_string()
+    };
+    report.queue_depth = state.health.queue_depth;
+    report.failure_streak = state.health.failure_streak;
+    report.last_cycle_failed = state.health.last_cycle_failed;
+    report.last_cycle_completed = state.health.last_cycle_completed;
+
+    if !events_path.exists() {
+        report
+            .diagnostics
+            .push(format!("events_log_missing:{}", events_path.display()));
+        return report;
+    }
+    let raw_events = match std::fs::read_to_string(&events_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            report.diagnostics.push(format!(
+                "events_log_read_failed:{}:{error}",
+                events_path.display()
+            ));
+            return report;
+        }
+    };
+    for line in raw_events.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<GatewayMultiChannelCycleReportLine>(trimmed) {
+            Ok(event) => {
+                report.cycle_reports = report.cycle_reports.saturating_add(1);
+                report.last_reason_codes = event.reason_codes.clone();
+                for reason_code in &event.reason_codes {
+                    increment_gateway_multi_channel_counter(
+                        &mut report.reason_code_counts,
+                        reason_code,
+                    );
+                }
+                if !event.health_reason.trim().is_empty() {
+                    report.health_reason = event.health_reason;
+                }
+            }
+            Err(_) => {
+                report.invalid_cycle_reports = report.invalid_cycle_reports.saturating_add(1);
+            }
+        }
+    }
+
+    report
+}
+
+fn load_gateway_multi_channel_connectors_status_report(
+    path: &Path,
+    diagnostics: &mut Vec<String>,
+) -> GatewayMultiChannelConnectorsStatusReport {
+    let mut report = GatewayMultiChannelConnectorsStatusReport::default();
+    if !path.exists() {
+        diagnostics.push(format!("connectors_state_missing:{}", path.display()));
+        return report;
+    }
+    report.state_present = true;
+
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            diagnostics.push(format!(
+                "connectors_state_read_failed:{}:{error}",
+                path.display()
+            ));
+            return report;
+        }
+    };
+    let parsed = match serde_json::from_str::<GatewayMultiChannelConnectorsStateFile>(&raw) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            diagnostics.push(format!(
+                "connectors_state_parse_failed:{}:{error}",
+                path.display()
+            ));
+            return report;
+        }
+    };
+
+    report.processed_event_count = parsed.processed_event_keys.len();
+    for (channel, state) in parsed.channels {
+        report
+            .channels
+            .insert(channel, normalize_gateway_connector_channel_summary(&state));
+    }
+    report
+}
+
+fn normalize_gateway_connector_channel_summary(
+    state: &crate::multi_channel_live_connectors::MultiChannelLiveConnectorChannelState,
+) -> GatewayMultiChannelConnectorChannelSummary {
+    GatewayMultiChannelConnectorChannelSummary {
+        mode: normalize_non_empty_string(&state.mode, "unknown"),
+        liveness: normalize_non_empty_string(&state.liveness, "unknown"),
+        breaker_state: normalize_non_empty_string(&state.breaker_state, "unknown"),
+        events_ingested: state.events_ingested,
+        duplicates_skipped: state.duplicates_skipped,
+        retry_attempts: state.retry_attempts,
+        auth_failures: state.auth_failures,
+        parse_failures: state.parse_failures,
+        provider_failures: state.provider_failures,
+        consecutive_failures: state.consecutive_failures,
+        retry_budget_remaining: state.retry_budget_remaining,
+        breaker_open_until_unix_ms: state.breaker_open_until_unix_ms,
+        breaker_last_open_reason: normalize_non_empty_string(
+            &state.breaker_last_open_reason,
+            "none",
+        ),
+        breaker_open_count: state.breaker_open_count,
+        last_error_code: normalize_non_empty_string(&state.last_error_code, "none"),
+    }
+}
+
+fn increment_gateway_multi_channel_counter(counts: &mut BTreeMap<String, usize>, key: &str) {
+    *counts.entry(key.to_string()).or_insert(0) += 1;
+}
+
+fn normalize_non_empty_string(raw: &str, fallback: &str) -> String {
+    if raw.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        raw.trim().to_string()
+    }
+}
+
 pub(crate) fn validate_gateway_openresponses_bind(bind: &str) -> Result<SocketAddr> {
     bind.parse::<SocketAddr>()
         .with_context(|| format!("invalid gateway socket address '{bind}'"))
@@ -2046,6 +2403,71 @@ mod tests {
         Ok((addr, handle))
     }
 
+    fn write_multi_channel_runtime_fixture(root: &Path, with_connectors: bool) -> PathBuf {
+        let multi_channel_root = root.join(".tau").join("multi-channel");
+        std::fs::create_dir_all(&multi_channel_root).expect("create multi-channel root");
+        std::fs::write(
+            multi_channel_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_event_keys": ["telegram:tg-1", "discord:dc-1", "telegram:tg-2"],
+  "health": {
+    "updated_unix_ms": 981,
+    "cycle_duration_ms": 14,
+    "queue_depth": 2,
+    "active_runs": 0,
+    "failure_streak": 1,
+    "last_cycle_discovered": 3,
+    "last_cycle_processed": 3,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 1,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write multi-channel state");
+        std::fs::write(
+            multi_channel_root.join("runtime-events.jsonl"),
+            r#"{"reason_codes":["events_applied","connector_retry"],"health_reason":"connector retry in progress"}
+invalid-json-line
+{"reason_codes":["connector_retry"],"health_reason":"connector retry in progress"}
+"#,
+        )
+        .expect("write runtime events");
+        if with_connectors {
+            std::fs::write(
+                multi_channel_root.join("live-connectors-state.json"),
+                r#"{
+  "schema_version": 1,
+  "processed_event_keys": ["telegram:tg-1"],
+  "channels": {
+    "telegram": {
+      "mode": "polling",
+      "liveness": "open",
+      "events_ingested": 6,
+      "duplicates_skipped": 2,
+      "retry_attempts": 3,
+      "auth_failures": 1,
+      "parse_failures": 0,
+      "provider_failures": 2,
+      "consecutive_failures": 2,
+      "retry_budget_remaining": 0,
+      "breaker_state": "open",
+      "breaker_open_until_unix_ms": 4000,
+      "breaker_last_open_reason": "provider_unavailable",
+      "breaker_open_count": 1,
+      "last_error_code": "provider_unavailable"
+    }
+  }
+}
+"#,
+            )
+            .expect("write connectors state");
+        }
+        multi_channel_root
+    }
+
     async fn connect_gateway_ws(
         addr: SocketAddr,
         token: Option<&str>,
@@ -2160,6 +2582,39 @@ mod tests {
     }
 
     #[test]
+    fn unit_collect_gateway_multi_channel_status_report_composes_runtime_and_connector_fields() {
+        let temp = tempdir().expect("tempdir");
+        let gateway_state_dir = temp.path().join(".tau").join("gateway");
+        std::fs::create_dir_all(&gateway_state_dir).expect("create gateway state dir");
+        write_multi_channel_runtime_fixture(temp.path(), true);
+
+        let report = collect_gateway_multi_channel_status_report(&gateway_state_dir);
+        assert!(report.state_present);
+        assert_eq!(report.health_state, "degraded");
+        assert_eq!(report.rollout_gate, "hold");
+        assert_eq!(report.health_reason, "connector retry in progress");
+        assert_eq!(report.processed_event_count, 3);
+        assert_eq!(report.transport_counts.get("telegram"), Some(&2));
+        assert_eq!(report.transport_counts.get("discord"), Some(&1));
+        assert_eq!(report.queue_depth, 2);
+        assert_eq!(report.failure_streak, 1);
+        assert_eq!(report.cycle_reports, 2);
+        assert_eq!(report.invalid_cycle_reports, 1);
+        assert_eq!(report.reason_code_counts.get("events_applied"), Some(&1));
+        assert_eq!(report.reason_code_counts.get("connector_retry"), Some(&2));
+        assert!(report.connectors.state_present);
+        assert_eq!(report.connectors.processed_event_count, 1);
+        let telegram = report
+            .connectors
+            .channels
+            .get("telegram")
+            .expect("telegram connector");
+        assert_eq!(telegram.liveness, "open");
+        assert_eq!(telegram.breaker_state, "open");
+        assert_eq!(telegram.provider_failures, 2);
+    }
+
+    #[test]
     fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
         let html = render_gateway_webchat_page();
         assert!(html.contains("Tau Gateway Webchat"));
@@ -2167,6 +2622,8 @@ mod tests {
         assert!(html.contains(GATEWAY_STATUS_ENDPOINT));
         assert!(html.contains(GATEWAY_WS_ENDPOINT));
         assert!(html.contains(DEFAULT_SESSION_KEY));
+        assert!(html.contains("multi_channel_lifecycle: state_present="));
+        assert!(html.contains("connector_channels:"));
     }
 
     #[tokio::test]
@@ -2195,6 +2652,9 @@ mod tests {
         assert!(body.contains(OPENRESPONSES_ENDPOINT));
         assert!(body.contains(GATEWAY_STATUS_ENDPOINT));
         assert!(body.contains(GATEWAY_WS_ENDPOINT));
+        assert!(body.contains("multi-channel lifecycle summary"));
+        assert!(body.contains("connector counters"));
+        assert!(body.contains("recent reason codes"));
 
         handle.abort();
     }
@@ -2483,6 +2943,10 @@ mod tests {
             status["payload"]["gateway"]["ws_endpoint"],
             GATEWAY_WS_ENDPOINT
         );
+        assert_eq!(
+            status["payload"]["multi_channel"]["state_present"],
+            Value::Bool(false)
+        );
 
         socket.close(None).await.expect("close websocket");
         handle.abort();
@@ -2587,8 +3051,105 @@ mod tests {
             payload["service"]["service_status"].as_str(),
             Some("running")
         );
+        assert_eq!(
+            payload["multi_channel"]["state_present"],
+            Value::Bool(false)
+        );
+        assert_eq!(
+            payload["multi_channel"]["health_state"],
+            Value::String("unknown".to_string())
+        );
+        assert_eq!(
+            payload["multi_channel"]["rollout_gate"],
+            Value::String("hold".to_string())
+        );
+        assert_eq!(
+            payload["multi_channel"]["connectors"]["state_present"],
+            Value::Bool(false)
+        );
+        assert_eq!(
+            payload["multi_channel"]["processed_event_count"],
+            Value::Number(serde_json::Number::from(0))
+        );
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn integration_gateway_status_endpoint_returns_expanded_multi_channel_health_payload() {
+        let temp = tempdir().expect("tempdir");
+        write_multi_channel_runtime_fixture(temp.path(), true);
+        let state = test_state(temp.path(), 10_000, "secret");
+        let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+        let payload = Client::new()
+            .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+            .bearer_auth("secret")
+            .send()
+            .await
+            .expect("send status request")
+            .json::<Value>()
+            .await
+            .expect("parse status response");
+
+        assert_eq!(payload["multi_channel"]["state_present"], Value::Bool(true));
+        assert_eq!(
+            payload["multi_channel"]["health_state"],
+            Value::String("degraded".to_string())
+        );
+        assert_eq!(
+            payload["multi_channel"]["health_reason"],
+            Value::String("connector retry in progress".to_string())
+        );
+        assert_eq!(
+            payload["multi_channel"]["processed_event_count"],
+            Value::Number(serde_json::Number::from(3))
+        );
+        assert_eq!(
+            payload["multi_channel"]["transport_counts"]["telegram"],
+            Value::Number(serde_json::Number::from(2))
+        );
+        assert_eq!(
+            payload["multi_channel"]["transport_counts"]["discord"],
+            Value::Number(serde_json::Number::from(1))
+        );
+        assert_eq!(
+            payload["multi_channel"]["reason_code_counts"]["connector_retry"],
+            Value::Number(serde_json::Number::from(2))
+        );
+        assert_eq!(
+            payload["multi_channel"]["connectors"]["state_present"],
+            Value::Bool(true)
+        );
+        assert_eq!(
+            payload["multi_channel"]["connectors"]["channels"]["telegram"]["breaker_state"],
+            Value::String("open".to_string())
+        );
+        assert_eq!(
+            payload["multi_channel"]["connectors"]["channels"]["telegram"]["provider_failures"],
+            Value::Number(serde_json::Number::from(2))
+        );
+
+        handle.abort();
+    }
+
+    #[test]
+    fn regression_collect_gateway_multi_channel_status_report_defaults_when_state_is_missing() {
+        let temp = tempdir().expect("tempdir");
+        let gateway_state_dir = temp.path().join(".tau").join("gateway");
+        std::fs::create_dir_all(&gateway_state_dir).expect("create gateway state dir");
+
+        let report = collect_gateway_multi_channel_status_report(&gateway_state_dir);
+        assert!(!report.state_present);
+        assert_eq!(report.health_state, "unknown");
+        assert_eq!(report.rollout_gate, "hold");
+        assert_eq!(report.processed_event_count, 0);
+        assert!(report.connectors.channels.is_empty());
+        assert!(!report.connectors.state_present);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|line| line.starts_with("state_missing:")));
     }
 
     #[tokio::test]
