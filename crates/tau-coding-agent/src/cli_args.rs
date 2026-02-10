@@ -1869,9 +1869,19 @@ pub(crate) struct Cli {
         long = "multi-channel-contract-runner",
         env = "TAU_MULTI_CHANNEL_CONTRACT_RUNNER",
         default_value_t = false,
+        conflicts_with = "multi_channel_live_runner",
         help = "Run fixture-driven multi-channel runtime for Telegram/Discord/WhatsApp contracts"
     )]
     pub(crate) multi_channel_contract_runner: bool,
+
+    #[arg(
+        long = "multi-channel-live-runner",
+        env = "TAU_MULTI_CHANNEL_LIVE_RUNNER",
+        default_value_t = false,
+        conflicts_with = "multi_channel_contract_runner",
+        help = "Run live-ingress multi-channel runtime using local adapter inbox files for Telegram/Discord/WhatsApp"
+    )]
+    pub(crate) multi_channel_live_runner: bool,
 
     #[arg(
         long = "multi-channel-fixture",
@@ -1881,6 +1891,15 @@ pub(crate) struct Cli {
         help = "Path to multi-channel contract fixture JSON"
     )]
     pub(crate) multi_channel_fixture: PathBuf,
+
+    #[arg(
+        long = "multi-channel-live-ingress-dir",
+        env = "TAU_MULTI_CHANNEL_LIVE_INGRESS_DIR",
+        default_value = ".tau/multi-channel/live-ingress",
+        requires = "multi_channel_live_runner",
+        help = "Directory containing transport-specific live ingress NDJSON inbox files (telegram.ndjson, discord.ndjson, whatsapp.ndjson)"
+    )]
+    pub(crate) multi_channel_live_ingress_dir: PathBuf,
 
     #[arg(
         long = "multi-channel-state-dir",
@@ -1894,8 +1913,7 @@ pub(crate) struct Cli {
         long = "multi-channel-queue-limit",
         env = "TAU_MULTI_CHANNEL_QUEUE_LIMIT",
         default_value_t = 64,
-        requires = "multi_channel_contract_runner",
-        help = "Maximum fixture events processed per runtime cycle"
+        help = "Maximum inbound events processed per runtime cycle"
     )]
     pub(crate) multi_channel_queue_limit: usize,
 
@@ -1903,7 +1921,6 @@ pub(crate) struct Cli {
         long = "multi-channel-processed-event-cap",
         env = "TAU_MULTI_CHANNEL_PROCESSED_EVENT_CAP",
         default_value_t = 10_000,
-        requires = "multi_channel_contract_runner",
         help = "Maximum processed-event keys retained for duplicate suppression"
     )]
     pub(crate) multi_channel_processed_event_cap: usize,
@@ -1912,7 +1929,6 @@ pub(crate) struct Cli {
         long = "multi-channel-retry-max-attempts",
         env = "TAU_MULTI_CHANNEL_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
-        requires = "multi_channel_contract_runner",
         help = "Maximum retry attempts for transient multi-channel runtime failures"
     )]
     pub(crate) multi_channel_retry_max_attempts: usize,
@@ -1921,7 +1937,6 @@ pub(crate) struct Cli {
         long = "multi-channel-retry-base-delay-ms",
         env = "TAU_MULTI_CHANNEL_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
-        requires = "multi_channel_contract_runner",
         help = "Base backoff delay in milliseconds for multi-channel runtime retries (0 disables delay)"
     )]
     pub(crate) multi_channel_retry_base_delay_ms: u64,

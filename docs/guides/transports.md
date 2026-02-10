@@ -105,6 +105,37 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/multi-channel-ops.md`.
 
+## Multi-channel live runner (Telegram, Discord, WhatsApp)
+
+Use this deterministic live-ingress mode to process local adapter inbox files without external
+provider calls.
+
+Ingress directory layout:
+
+- `.tau/multi-channel/live-ingress/telegram.ndjson`
+- `.tau/multi-channel/live-ingress/discord.ndjson`
+- `.tau/multi-channel/live-ingress/whatsapp.ndjson`
+
+Each line is one normalized provider envelope JSON object.
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --multi-channel-live-runner \
+  --multi-channel-live-ingress-dir .tau/multi-channel/live-ingress \
+  --multi-channel-state-dir .tau/multi-channel \
+  --multi-channel-queue-limit 64 \
+  --multi-channel-processed-event-cap 10000 \
+  --multi-channel-retry-max-attempts 4 \
+  --multi-channel-retry-base-delay-ms 0
+```
+
+The live runner writes to the same state and channel-store paths as contract mode:
+
+- `.tau/multi-channel/state.json`
+- `.tau/multi-channel/runtime-events.jsonl`
+- `.tau/multi-channel/channel-store/<transport>/<channel>/...`
+
 ## Multi-agent contract runner
 
 Use this fixture-driven runtime mode to validate planner/delegated/review route selection,

@@ -142,6 +142,11 @@ pub(crate) fn validate_multi_channel_contract_runner_cli(cli: &Cli) -> Result<()
     if cli.no_session {
         bail!("--multi-channel-contract-runner cannot be used together with --no-session");
     }
+    if cli.multi_channel_live_runner {
+        bail!(
+            "--multi-channel-contract-runner cannot be combined with --multi-channel-live-runner"
+        );
+    }
     if cli.github_issues_bridge
         || cli.slack_bridge
         || cli.events_runner
@@ -174,6 +179,54 @@ pub(crate) fn validate_multi_channel_contract_runner_cli(cli: &Cli) -> Result<()
     Ok(())
 }
 
+pub(crate) fn validate_multi_channel_live_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.multi_channel_live_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--multi-channel-live-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--multi-channel-live-runner cannot be used together with --no-session");
+    }
+    if cli.multi_channel_contract_runner {
+        bail!(
+            "--multi-channel-live-runner cannot be combined with --multi-channel-contract-runner"
+        );
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.memory_contract_runner
+    {
+        bail!("--multi-channel-live-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, or --memory-contract-runner");
+    }
+    if cli.multi_channel_queue_limit == 0 {
+        bail!("--multi-channel-queue-limit must be greater than 0");
+    }
+    if cli.multi_channel_processed_event_cap == 0 {
+        bail!("--multi-channel-processed-event-cap must be greater than 0");
+    }
+    if cli.multi_channel_retry_max_attempts == 0 {
+        bail!("--multi-channel-retry-max-attempts must be greater than 0");
+    }
+    if !cli.multi_channel_live_ingress_dir.exists() {
+        bail!(
+            "--multi-channel-live-ingress-dir '{}' does not exist",
+            cli.multi_channel_live_ingress_dir.display()
+        );
+    }
+    if !cli.multi_channel_live_ingress_dir.is_dir() {
+        bail!(
+            "--multi-channel-live-ingress-dir '{}' must point to a directory",
+            cli.multi_channel_live_ingress_dir.display()
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_multi_agent_contract_runner_cli(cli: &Cli) -> Result<()> {
     if !cli.multi_agent_contract_runner {
         return Ok(());
@@ -189,10 +242,11 @@ pub(crate) fn validate_multi_agent_contract_runner_cli(cli: &Cli) -> Result<()> 
         || cli.slack_bridge
         || cli.events_runner
         || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
     {
-        bail!("--multi-agent-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --memory-contract-runner, or --dashboard-contract-runner");
+        bail!("--multi-agent-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --memory-contract-runner, or --dashboard-contract-runner");
     }
     if cli.multi_agent_queue_limit == 0 {
         bail!("--multi-agent-queue-limit must be greater than 0");
@@ -234,8 +288,9 @@ pub(crate) fn validate_memory_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.slack_bridge
         || cli.events_runner
         || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
     {
-        bail!("--memory-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, or --multi-channel-contract-runner");
+        bail!("--memory-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, or --multi-channel-live-runner");
     }
     if cli.memory_queue_limit == 0 {
         bail!("--memory-queue-limit must be greater than 0");
@@ -277,9 +332,10 @@ pub(crate) fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.slack_bridge
         || cli.events_runner
         || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
         || cli.memory_contract_runner
     {
-        bail!("--dashboard-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, or --memory-contract-runner");
+        bail!("--dashboard-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, or --memory-contract-runner");
     }
     if cli.dashboard_queue_limit == 0 {
         bail!("--dashboard-queue-limit must be greater than 0");
@@ -321,11 +377,12 @@ pub(crate) fn validate_gateway_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.slack_bridge
         || cli.events_runner
         || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
     {
-        bail!("--gateway-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, or --dashboard-contract-runner");
+        bail!("--gateway-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, or --dashboard-contract-runner");
     }
     if !cli.gateway_fixture.exists() {
         bail!(
@@ -358,6 +415,7 @@ pub(crate) fn validate_deployment_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.slack_bridge
         || cli.events_runner
         || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
@@ -365,7 +423,7 @@ pub(crate) fn validate_deployment_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
     {
-        bail!("--deployment-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
+        bail!("--deployment-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
     }
     if cli.deployment_queue_limit == 0 {
         bail!("--deployment-queue-limit must be greater than 0");
@@ -407,12 +465,13 @@ pub(crate) fn validate_custom_command_contract_runner_cli(cli: &Cli) -> Result<(
         || cli.slack_bridge
         || cli.events_runner
         || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
     {
-        bail!("--custom-command-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, or --gateway-contract-runner");
+        bail!("--custom-command-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, or --gateway-contract-runner");
     }
     if cli.custom_command_queue_limit == 0 {
         bail!("--custom-command-queue-limit must be greater than 0");
@@ -454,13 +513,14 @@ pub(crate) fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.slack_bridge
         || cli.events_runner
         || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
         || cli.custom_command_contract_runner
     {
-        bail!("--voice-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, or --custom-command-contract-runner");
+        bail!("--voice-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, or --custom-command-contract-runner");
     }
     if cli.voice_queue_limit == 0 {
         bail!("--voice-queue-limit must be greater than 0");

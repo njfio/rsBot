@@ -4,7 +4,7 @@ Run all commands from repository root.
 
 ## Scope
 
-This runbook covers the fixture-driven Multi-channel runtime for:
+This runbook covers Multi-channel runtime operations for:
 
 - Telegram
 - Discord
@@ -51,11 +51,22 @@ Primary state files:
 ./scripts/demo/multi-channel.sh
 ```
 
+## Live ingress directory contract
+
+`--multi-channel-live-runner` consumes local inbox files:
+
+- `.tau/multi-channel/live-ingress/telegram.ndjson`
+- `.tau/multi-channel/live-ingress/discord.ndjson`
+- `.tau/multi-channel/live-ingress/whatsapp.ndjson`
+
+Each line must be one normalized provider envelope JSON object. Invalid lines are skipped with
+explicit parse diagnostics in stderr; valid lines continue processing.
+
 ## Rollout plan with guardrails
 
-1. Validate fixture contract and runtime locally:
+1. Validate fixture/live runtime locally:
    `cargo test -p tau-coding-agent multi_channel -- --nocapture`
-2. Run deterministic demo:
+2. Run deterministic demo (contract + live ingress path):
    `./scripts/demo/multi-channel.sh`
 3. Confirm health snapshot is `healthy` before promotion:
    `--transport-health-inspect multi-channel --transport-health-json`
@@ -66,7 +77,7 @@ Primary state files:
 
 ## Rollback plan
 
-1. Stop invoking `--multi-channel-contract-runner`.
+1. Stop invoking `--multi-channel-contract-runner` and `--multi-channel-live-runner`.
 2. Preserve `.tau/multi-channel/` for incident analysis.
 3. Revert to last known-good revision:
    `git revert <commit>`

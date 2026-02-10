@@ -118,7 +118,7 @@ pub(crate) fn validate_multi_channel_contract_fixture(
 
     let mut event_keys = HashSet::new();
     for (index, event) in fixture.events.iter().enumerate() {
-        validate_multi_channel_event(event, index)?;
+        validate_multi_channel_event_with_label(event, &format!("fixture event index {}", index))?;
         let key = event_contract_key(event);
         if !event_keys.insert(key.clone()) {
             bail!("fixture contains duplicate transport event key '{key}'");
@@ -128,72 +128,63 @@ pub(crate) fn validate_multi_channel_contract_fixture(
     Ok(())
 }
 
-fn validate_multi_channel_event(event: &MultiChannelInboundEvent, index: usize) -> Result<()> {
+pub(crate) fn validate_multi_channel_inbound_event(event: &MultiChannelInboundEvent) -> Result<()> {
+    validate_multi_channel_event_with_label(event, "live ingress event")
+}
+
+fn validate_multi_channel_event_with_label(
+    event: &MultiChannelInboundEvent,
+    label: &str,
+) -> Result<()> {
     if event.schema_version != MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION {
         bail!(
-            "fixture event index {} has unsupported schema_version {} (expected {})",
-            index,
+            "{label} has unsupported schema_version {} (expected {})",
             event.schema_version,
             MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION
         );
     }
     if event.event_id.trim().is_empty() {
-        bail!("fixture event index {} has empty event_id", index);
+        bail!("{label} has empty event_id");
     }
     if event.conversation_id.trim().is_empty() {
-        bail!("fixture event index {} has empty conversation_id", index);
+        bail!("{label} has empty conversation_id");
     }
     if event.actor_id.trim().is_empty() {
-        bail!("fixture event index {} has empty actor_id", index);
+        bail!("{label} has empty actor_id");
     }
     if event.timestamp_ms == 0 {
-        bail!("fixture event index {} has zero timestamp_ms", index);
+        bail!("{label} has zero timestamp_ms");
     }
     if event.text.trim().is_empty() && event.attachments.is_empty() {
-        bail!(
-            "fixture event index {} must include non-empty text or at least one attachment",
-            index
-        );
+        bail!("{label} must include non-empty text or at least one attachment");
     }
     if event.metadata.keys().any(|key| key.trim().is_empty()) {
-        bail!("fixture event index {} includes empty metadata key", index);
+        bail!("{label} includes empty metadata key");
     }
 
     let mut attachment_ids = HashSet::new();
     for attachment in &event.attachments {
-        validate_attachment(attachment, index)?;
+        validate_attachment(attachment, label)?;
         let trimmed_id = attachment.attachment_id.trim().to_string();
         if !attachment_ids.insert(trimmed_id.clone()) {
-            bail!(
-                "fixture event index {} includes duplicate attachment_id '{}'",
-                index,
-                trimmed_id
-            );
+            bail!("{label} includes duplicate attachment_id '{}'", trimmed_id);
         }
     }
 
     Ok(())
 }
 
-fn validate_attachment(attachment: &MultiChannelAttachment, event_index: usize) -> Result<()> {
+fn validate_attachment(attachment: &MultiChannelAttachment, label: &str) -> Result<()> {
     if attachment.attachment_id.trim().is_empty() {
-        bail!(
-            "fixture event index {} has attachment with empty attachment_id",
-            event_index
-        );
+        bail!("{label} has attachment with empty attachment_id");
     }
     let url = attachment.url.trim();
     if !(url.starts_with("https://") || url.starts_with("http://localhost")) {
-        bail!(
-            "fixture event index {} has invalid attachment url '{}'",
-            event_index,
-            attachment.url
-        );
+        bail!("{label} has invalid attachment url '{}'", attachment.url);
     }
     if !attachment.content_type.trim().is_empty() && !attachment.content_type.contains('/') {
         bail!(
-            "fixture event index {} has invalid content_type '{}'",
-            event_index,
+            "{label} has invalid content_type '{}'",
             attachment.content_type
         );
     }
@@ -206,7 +197,7 @@ pub(crate) fn event_contract_key(event: &MultiChannelInboundEvent) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
     use std::path::{Path, PathBuf};
 
     use super::{
@@ -268,6 +259,34 @@ mod tests {
         assert!(error
             .to_string()
             .contains("fixture event index 0 has empty event_id"));
+    }
+
+    #[test]
+    fn unit_validate_multi_channel_inbound_event_rejects_empty_actor() {
+        use super::{
+            validate_multi_channel_inbound_event, MultiChannelEventKind, MultiChannelInboundEvent,
+        };
+
+        let event = MultiChannelInboundEvent {
+            schema_version: 1,
+            transport: MultiChannelTransport::Telegram,
+            event_kind: MultiChannelEventKind::Message,
+            event_id: "evt-1".to_string(),
+            conversation_id: "chat-1".to_string(),
+            thread_id: String::new(),
+            actor_id: " ".to_string(),
+            actor_display: String::new(),
+            timestamp_ms: 1,
+            text: "hello".to_string(),
+            attachments: Vec::new(),
+            metadata: BTreeMap::new(),
+        };
+
+        let error = validate_multi_channel_inbound_event(&event)
+            .expect_err("empty actor id should be rejected");
+        assert!(error
+            .to_string()
+            .contains("live ingress event has empty actor_id"));
     }
 
     #[test]

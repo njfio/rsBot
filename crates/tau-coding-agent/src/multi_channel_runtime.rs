@@ -12,10 +12,16 @@ use crate::multi_channel_contract::{
     event_contract_key, load_multi_channel_contract_fixture, MultiChannelContractFixture,
     MultiChannelEventKind, MultiChannelInboundEvent,
 };
+use crate::multi_channel_live_ingress::parse_multi_channel_live_inbound_envelope;
 use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
 
 const MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 const MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
+const MULTI_CHANNEL_LIVE_INGRESS_SOURCES: [(&str, &str); 3] = [
+    ("telegram", "telegram.ndjson"),
+    ("discord", "discord.ndjson"),
+    ("whatsapp", "whatsapp.ndjson"),
+];
 
 fn multi_channel_runtime_state_schema_version() -> u32 {
     MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION
@@ -24,6 +30,16 @@ fn multi_channel_runtime_state_schema_version() -> u32 {
 #[derive(Debug, Clone)]
 pub(crate) struct MultiChannelRuntimeConfig {
     pub(crate) fixture_path: PathBuf,
+    pub(crate) state_dir: PathBuf,
+    pub(crate) queue_limit: usize,
+    pub(crate) processed_event_cap: usize,
+    pub(crate) retry_max_attempts: usize,
+    pub(crate) retry_base_delay_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MultiChannelLiveRuntimeConfig {
+    pub(crate) ingress_dir: PathBuf,
     pub(crate) state_dir: PathBuf,
     pub(crate) queue_limit: usize,
     pub(crate) processed_event_cap: usize,
@@ -84,7 +100,7 @@ pub(crate) async fn run_multi_channel_contract_runner(
 ) -> Result<()> {
     let fixture = load_multi_channel_contract_fixture(&config.fixture_path)?;
     let mut runtime = MultiChannelRuntime::new(config)?;
-    let summary = runtime.run_once(&fixture).await?;
+    let summary = runtime.run_once_fixture(&fixture).await?;
     let health = runtime.transport_health().clone();
     let classification = health.classify();
     println!(
@@ -99,6 +115,41 @@ pub(crate) async fn run_multi_channel_contract_runner(
     );
     println!(
         "multi-channel runner health: state={} failure_streak={} queue_depth={} reason={}",
+        classification.state.as_str(),
+        health.failure_streak,
+        health.queue_depth,
+        classification.reason
+    );
+    Ok(())
+}
+
+pub(crate) async fn run_multi_channel_live_runner(
+    config: MultiChannelLiveRuntimeConfig,
+) -> Result<()> {
+    let live_events = load_multi_channel_live_events(&config.ingress_dir)?;
+    let mut runtime = MultiChannelRuntime::new(MultiChannelRuntimeConfig {
+        fixture_path: config.ingress_dir.join("live-ingress.ndjson"),
+        state_dir: config.state_dir.clone(),
+        queue_limit: config.queue_limit,
+        processed_event_cap: config.processed_event_cap,
+        retry_max_attempts: config.retry_max_attempts,
+        retry_base_delay_ms: config.retry_base_delay_ms,
+    })?;
+    let summary = runtime.run_once_events(&live_events).await?;
+    let health = runtime.transport_health().clone();
+    let classification = health.classify();
+    println!(
+        "multi-channel live runner summary: discovered={} queued={} completed={} duplicate_skips={} retries={} transient_failures={} failed={}",
+        summary.discovered_events,
+        summary.queued_events,
+        summary.completed_events,
+        summary.duplicate_skips,
+        summary.retry_attempts,
+        summary.transient_failures,
+        summary.failed_events
+    );
+    println!(
+        "multi-channel live runner health: state={} failure_streak={} queue_depth={} reason={}",
         classification.state.as_str(),
         health.failure_streak,
         health.queue_depth,
@@ -136,17 +187,24 @@ impl MultiChannelRuntime {
         &self.state.health
     }
 
-    async fn run_once(
+    async fn run_once_fixture(
         &mut self,
         fixture: &MultiChannelContractFixture,
     ) -> Result<MultiChannelRuntimeSummary> {
+        self.run_once_events(&fixture.events).await
+    }
+
+    async fn run_once_events(
+        &mut self,
+        source_events: &[MultiChannelInboundEvent],
+    ) -> Result<MultiChannelRuntimeSummary> {
         let cycle_started = Instant::now();
         let mut summary = MultiChannelRuntimeSummary {
-            discovered_events: fixture.events.len(),
+            discovered_events: source_events.len(),
             ..MultiChannelRuntimeSummary::default()
         };
 
-        let mut queued_events = fixture.events.clone();
+        let mut queued_events = source_events.to_vec();
         queued_events.sort_by(|left, right| {
             left.timestamp_ms
                 .cmp(&right.timestamp_ms)
@@ -290,6 +348,51 @@ impl MultiChannelRuntime {
             }
         }
     }
+}
+
+fn load_multi_channel_live_events(ingress_dir: &Path) -> Result<Vec<MultiChannelInboundEvent>> {
+    std::fs::create_dir_all(ingress_dir)
+        .with_context(|| format!("failed to create {}", ingress_dir.display()))?;
+    let mut events = Vec::new();
+    for (transport, file_name) in MULTI_CHANNEL_LIVE_INGRESS_SOURCES {
+        let path = ingress_dir.join(file_name);
+        if !path.exists() {
+            continue;
+        }
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        for (index, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            match parse_multi_channel_live_inbound_envelope(trimmed) {
+                Ok(event) => {
+                    if event.transport.as_str() != transport {
+                        eprintln!(
+                            "multi-channel live ingress skipped event: file={} line={} reason=transport_mismatch expected={} actual={}",
+                            path.display(),
+                            index + 1,
+                            transport,
+                            event.transport.as_str()
+                        );
+                        continue;
+                    }
+                    events.push(event);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "multi-channel live ingress parse failure: file={} line={} reason_code={} detail={}",
+                        path.display(),
+                        index + 1,
+                        error.code.as_str(),
+                        error.message
+                    );
+                }
+            }
+        }
+    }
+    Ok(events)
 }
 
 fn build_transport_health_snapshot(
@@ -492,7 +595,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        load_multi_channel_runtime_state, retry_delay_ms, MultiChannelRuntime,
+        load_multi_channel_live_events, load_multi_channel_runtime_state, retry_delay_ms,
+        run_multi_channel_live_runner, MultiChannelLiveRuntimeConfig, MultiChannelRuntime,
         MultiChannelRuntimeConfig,
     };
     use crate::channel_store::ChannelStore;
@@ -508,6 +612,13 @@ mod tests {
             .join(name)
     }
 
+    fn live_fixture_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("multi-channel-live-ingress")
+            .join(name)
+    }
+
     fn build_config(root: &Path) -> MultiChannelRuntimeConfig {
         MultiChannelRuntimeConfig {
             fixture_path: fixture_path("baseline-three-channel.json"),
@@ -517,6 +628,28 @@ mod tests {
             retry_max_attempts: 3,
             retry_base_delay_ms: 0,
         }
+    }
+
+    fn build_live_config(root: &Path) -> MultiChannelLiveRuntimeConfig {
+        MultiChannelLiveRuntimeConfig {
+            ingress_dir: root.join(".tau/multi-channel/live-ingress"),
+            state_dir: root.join(".tau/multi-channel"),
+            queue_limit: 64,
+            processed_event_cap: 10_000,
+            retry_max_attempts: 3,
+            retry_base_delay_ms: 0,
+        }
+    }
+
+    fn write_live_ingress_file(ingress_dir: &Path, transport: &str, fixture_name: &str) {
+        std::fs::create_dir_all(ingress_dir).expect("create ingress directory");
+        let file_name = format!("{transport}.ndjson");
+        let fixture_raw =
+            std::fs::read_to_string(live_fixture_path(fixture_name)).expect("read live fixture");
+        let fixture_json: Value = serde_json::from_str(&fixture_raw).expect("parse fixture json");
+        let fixture_line = serde_json::to_string(&fixture_json).expect("serialize fixture line");
+        std::fs::write(ingress_dir.join(file_name), format!("{fixture_line}\n"))
+            .expect("write ingress file");
     }
 
     #[test]
@@ -534,7 +667,7 @@ mod tests {
         let fixture =
             load_multi_channel_contract_fixture(&config.fixture_path).expect("fixture should load");
         let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
-        let summary = runtime.run_once(&fixture).await.expect("run once");
+        let summary = runtime.run_once_fixture(&fixture).await.expect("run once");
 
         assert_eq!(summary.discovered_events, 3);
         assert_eq!(summary.queued_events, 3);
@@ -597,7 +730,7 @@ mod tests {
 }"#;
         let fixture = parse_multi_channel_contract_fixture(fixture_raw).expect("parse fixture");
         let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
-        let summary = runtime.run_once(&fixture).await.expect("run once");
+        let summary = runtime.run_once_fixture(&fixture).await.expect("run once");
 
         assert_eq!(summary.completed_events, 1);
         assert_eq!(summary.transient_failures, 1);
@@ -613,7 +746,7 @@ mod tests {
         let fixture =
             load_multi_channel_contract_fixture(&config.fixture_path).expect("fixture should load");
         let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
-        let summary = runtime.run_once(&fixture).await.expect("run once");
+        let summary = runtime.run_once_fixture(&fixture).await.expect("run once");
 
         assert_eq!(summary.discovered_events, 3);
         assert_eq!(summary.queued_events, 2);
@@ -631,11 +764,17 @@ mod tests {
             load_multi_channel_contract_fixture(&config.fixture_path).expect("fixture should load");
 
         let mut first_runtime = MultiChannelRuntime::new(config.clone()).expect("first runtime");
-        let first_summary = first_runtime.run_once(&fixture).await.expect("first run");
+        let first_summary = first_runtime
+            .run_once_fixture(&fixture)
+            .await
+            .expect("first run");
         assert_eq!(first_summary.completed_events, 3);
 
         let mut second_runtime = MultiChannelRuntime::new(config).expect("second runtime");
-        let second_summary = second_runtime.run_once(&fixture).await.expect("second run");
+        let second_summary = second_runtime
+            .run_once_fixture(&fixture)
+            .await
+            .expect("second run");
         assert_eq!(second_summary.completed_events, 0);
         assert_eq!(second_summary.duplicate_skips, 3);
     }
@@ -670,7 +809,7 @@ mod tests {
 
         let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
         let first_failed = runtime
-            .run_once(&failing_fixture)
+            .run_once_fixture(&failing_fixture)
             .await
             .expect("first failed cycle");
         assert_eq!(first_failed.failed_events, 1);
@@ -684,7 +823,7 @@ mod tests {
         );
 
         let second_failed = runtime
-            .run_once(&failing_fixture)
+            .run_once_fixture(&failing_fixture)
             .await
             .expect("second failed cycle");
         assert_eq!(second_failed.failed_events, 1);
@@ -694,7 +833,7 @@ mod tests {
         assert_eq!(state_after_second.health.failure_streak, 2);
 
         let third_failed = runtime
-            .run_once(&failing_fixture)
+            .run_once_fixture(&failing_fixture)
             .await
             .expect("third failed cycle");
         assert_eq!(third_failed.failed_events, 1);
@@ -708,7 +847,7 @@ mod tests {
         );
 
         let success = runtime
-            .run_once(&success_fixture)
+            .run_once_fixture(&success_fixture)
             .await
             .expect("successful cycle");
         assert_eq!(success.failed_events, 0);
@@ -749,7 +888,10 @@ mod tests {
             parse_multi_channel_contract_fixture(failing_fixture_raw).expect("parse fixture");
 
         let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
-        let summary = runtime.run_once(&failing_fixture).await.expect("run once");
+        let summary = runtime
+            .run_once_fixture(&failing_fixture)
+            .await
+            .expect("run once");
         assert_eq!(summary.failed_events, 1);
         assert_eq!(summary.retry_attempts, 1);
 
@@ -772,5 +914,98 @@ mod tests {
         assert!(reason_codes_set.contains("retry_attempted"));
         assert!(reason_codes_set.contains("transient_failures_observed"));
         assert!(reason_codes_set.contains("event_processing_failed"));
+    }
+
+    #[test]
+    fn unit_live_ingress_loader_skips_invalid_rows_without_failing() {
+        let temp = tempdir().expect("tempdir");
+        let ingress_dir = temp.path().join("live");
+        std::fs::create_dir_all(&ingress_dir).expect("create ingress dir");
+        let telegram_raw =
+            std::fs::read_to_string(live_fixture_path("telegram-valid.json")).expect("fixture");
+        let telegram_json: Value = serde_json::from_str(&telegram_raw).expect("parse fixture");
+        let telegram_line = serde_json::to_string(&telegram_json).expect("serialize fixture");
+        std::fs::write(
+            ingress_dir.join("telegram.ndjson"),
+            format!("{telegram_line}\n{{\"transport\":\"slack\"}}\n"),
+        )
+        .expect("write telegram ingress");
+
+        let events = load_multi_channel_live_events(&ingress_dir).expect("load live events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].transport.as_str(), "telegram");
+    }
+
+    #[tokio::test]
+    async fn functional_live_runner_processes_ingress_files_and_persists_state() {
+        let temp = tempdir().expect("tempdir");
+        let config = build_live_config(temp.path());
+        write_live_ingress_file(&config.ingress_dir, "telegram", "telegram-valid.json");
+        write_live_ingress_file(&config.ingress_dir, "discord", "discord-valid.json");
+        write_live_ingress_file(&config.ingress_dir, "whatsapp", "whatsapp-valid.json");
+
+        run_multi_channel_live_runner(config.clone())
+            .await
+            .expect("live runner should succeed");
+
+        let state =
+            load_multi_channel_runtime_state(&config.state_dir.join("state.json")).expect("state");
+        assert_eq!(state.health.last_cycle_discovered, 3);
+        assert_eq!(state.health.last_cycle_completed, 3);
+        assert_eq!(state.health.last_cycle_failed, 0);
+
+        let events_log = std::fs::read_to_string(
+            config
+                .state_dir
+                .join(super::MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE),
+        )
+        .expect("read runtime events log");
+        assert!(events_log.contains("\"health_state\":\"healthy\""));
+    }
+
+    #[tokio::test]
+    async fn integration_live_runner_is_idempotent_across_repeated_cycles() {
+        let temp = tempdir().expect("tempdir");
+        let config = build_live_config(temp.path());
+        write_live_ingress_file(&config.ingress_dir, "telegram", "telegram-valid.json");
+        write_live_ingress_file(&config.ingress_dir, "discord", "discord-valid.json");
+
+        run_multi_channel_live_runner(config.clone())
+            .await
+            .expect("first live run should succeed");
+        run_multi_channel_live_runner(config.clone())
+            .await
+            .expect("second live run should succeed");
+
+        let state =
+            load_multi_channel_runtime_state(&config.state_dir.join("state.json")).expect("state");
+        assert_eq!(state.processed_event_keys.len(), 2);
+
+        let channel_store_root = config.state_dir.join("channel-store");
+        let telegram_store = ChannelStore::open(&channel_store_root, "telegram", "chat-100")
+            .expect("open telegram store");
+        let telegram_logs = telegram_store.load_log_entries().expect("telegram logs");
+        assert_eq!(telegram_logs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn regression_live_runner_handles_invalid_transport_file_contents() {
+        let temp = tempdir().expect("tempdir");
+        let config = build_live_config(temp.path());
+        write_live_ingress_file(&config.ingress_dir, "telegram", "telegram-valid.json");
+        std::fs::write(
+            config.ingress_dir.join("discord.ndjson"),
+            "{\"schema_version\":1,\"transport\":\"telegram\",\"provider\":\"telegram-bot-api\",\"payload\":{}}\n",
+        )
+        .expect("write mismatched ingress");
+
+        run_multi_channel_live_runner(config.clone())
+            .await
+            .expect("live runner should continue despite mismatch");
+
+        let state =
+            load_multi_channel_runtime_state(&config.state_dir.join("state.json")).expect("state");
+        assert_eq!(state.health.last_cycle_discovered, 1);
+        assert_eq!(state.health.last_cycle_completed, 1);
     }
 }
