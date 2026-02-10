@@ -11,8 +11,8 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,6 +26,8 @@ use tokio_stream::StreamExt;
 use crate::{current_unix_timestamp, persist_messages, SessionRuntime, SessionStore};
 
 const OPENRESPONSES_ENDPOINT: &str = "/v1/responses";
+const WEBCHAT_ENDPOINT: &str = "/webchat";
+const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
 const DEFAULT_SESSION_KEY: &str = "default";
 const INPUT_BODY_SIZE_MULTIPLIER: usize = 8;
 
@@ -287,7 +289,48 @@ pub(crate) async fn run_gateway_openresponses_server(
 fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState>) -> Router {
     Router::new()
         .route(OPENRESPONSES_ENDPOINT, post(handle_openresponses))
+        .route(WEBCHAT_ENDPOINT, get(handle_webchat_page))
+        .route(GATEWAY_STATUS_ENDPOINT, get(handle_gateway_status))
         .with_state(state)
+}
+
+async fn handle_webchat_page() -> Html<String> {
+    Html(render_gateway_webchat_page())
+}
+
+async fn handle_gateway_status(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !authorization_is_valid(&headers, &state.config.auth_token) {
+        return OpenResponsesApiError::unauthorized().into_response();
+    }
+
+    let service_report =
+        match crate::gateway_runtime::inspect_gateway_service_mode(&state.config.state_dir) {
+            Ok(report) => report,
+            Err(error) => {
+                return OpenResponsesApiError::internal(format!(
+                    "failed to inspect gateway service state: {error}"
+                ))
+                .into_response();
+            }
+        };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "service": service_report,
+            "gateway": {
+                "responses_endpoint": OPENRESPONSES_ENDPOINT,
+                "webchat_endpoint": WEBCHAT_ENDPOINT,
+                "status_endpoint": GATEWAY_STATUS_ENDPOINT,
+                "state_dir": state.config.state_dir.display().to_string(),
+                "model": state.config.model,
+            }
+        })),
+    )
+        .into_response()
 }
 
 async fn handle_openresponses(
@@ -860,6 +903,360 @@ fn collect_assistant_reply(messages: &[Message]) -> String {
     }
 }
 
+fn render_gateway_webchat_page() -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tau Gateway Webchat</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    }}
+    body {{
+      margin: 0;
+      background: linear-gradient(160deg, #f4f6f8 0%, #eef2f7 100%);
+      color: #13232f;
+    }}
+    .container {{
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 1.5rem;
+    }}
+    h1 {{
+      margin: 0 0 0.5rem 0;
+      font-size: 1.5rem;
+    }}
+    p {{
+      margin: 0.25rem 0 1rem 0;
+      color: #3a4f5f;
+    }}
+    .grid {{
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: 1fr;
+    }}
+    .panel {{
+      background: #ffffff;
+      border: 1px solid #d2dde6;
+      border-radius: 12px;
+      padding: 1rem;
+      box-shadow: 0 8px 20px rgba(12, 25, 38, 0.06);
+    }}
+    label {{
+      display: block;
+      font-size: 0.85rem;
+      margin-bottom: 0.25rem;
+      color: #375062;
+    }}
+    input[type="text"], textarea {{
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid #b8c9d6;
+      border-radius: 8px;
+      padding: 0.55rem 0.7rem;
+      font-size: 0.95rem;
+      background: #fbfdff;
+      color: #13232f;
+    }}
+    textarea {{
+      min-height: 150px;
+      resize: vertical;
+    }}
+    .row {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 0.8rem;
+      margin-bottom: 0.8rem;
+    }}
+    .actions {{
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: 0.8rem;
+    }}
+    button {{
+      border: 0;
+      border-radius: 8px;
+      background: #0f7d5f;
+      color: #ffffff;
+      padding: 0.55rem 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+    }}
+    button.secondary {{
+      background: #3f5f74;
+    }}
+    button:disabled {{
+      cursor: wait;
+      opacity: 0.6;
+    }}
+    .checkbox {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-top: 0.2rem;
+      color: #274355;
+      font-size: 0.9rem;
+    }}
+    pre {{
+      margin: 0;
+      background: #0f1f2b;
+      color: #d9ecf7;
+      border-radius: 10px;
+      padding: 0.8rem;
+      overflow: auto;
+      max-height: 300px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.85rem;
+    }}
+    @media (min-width: 900px) {{
+      .grid {{
+        grid-template-columns: 1.4fr 1fr;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>Tau Gateway Webchat</h1>
+    <p>Operator webchat for the OpenResponses gateway runtime.</p>
+    <div class="grid">
+      <section class="panel">
+        <div class="row">
+          <div>
+            <label for="authToken">Bearer token</label>
+            <input id="authToken" type="text" autocomplete="off" placeholder="gateway auth token" />
+          </div>
+          <div>
+            <label for="sessionKey">Session key</label>
+            <input id="sessionKey" type="text" autocomplete="off" value="{default_session_key}" />
+          </div>
+        </div>
+        <label class="checkbox">
+          <input id="stream" type="checkbox" checked />
+          Stream response (SSE)
+        </label>
+        <div style="margin-top: 0.8rem;">
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt" placeholder="Ask Tau through the gateway..."></textarea>
+        </div>
+        <div class="actions">
+          <button id="send">Send</button>
+          <button id="refreshStatus" class="secondary">Refresh status</button>
+          <button id="clearOutput" class="secondary">Clear output</button>
+        </div>
+      </section>
+      <section class="panel">
+        <h2 style="margin: 0 0 0.5rem 0; font-size: 1rem;">Gateway status</h2>
+        <pre id="status">Press "Refresh status" to inspect gateway service state.</pre>
+      </section>
+    </div>
+    <section class="panel" style="margin-top: 1rem;">
+      <h2 style="margin: 0 0 0.5rem 0; font-size: 1rem;">Response output</h2>
+      <pre id="output">No response yet.</pre>
+    </section>
+  </main>
+  <script>
+    const RESPONSES_ENDPOINT = "{responses_endpoint}";
+    const STATUS_ENDPOINT = "{status_endpoint}";
+    const STORAGE_TOKEN = "tau.gateway.webchat.token";
+    const STORAGE_SESSION = "tau.gateway.webchat.session";
+    const tokenInput = document.getElementById("authToken");
+    const sessionInput = document.getElementById("sessionKey");
+    const streamInput = document.getElementById("stream");
+    const promptInput = document.getElementById("prompt");
+    const outputPre = document.getElementById("output");
+    const statusPre = document.getElementById("status");
+    const sendButton = document.getElementById("send");
+    const refreshButton = document.getElementById("refreshStatus");
+    const clearButton = document.getElementById("clearOutput");
+
+    function loadLocalValues() {{
+      const storedToken = window.localStorage.getItem(STORAGE_TOKEN);
+      const storedSession = window.localStorage.getItem(STORAGE_SESSION);
+      if (storedToken) {{
+        tokenInput.value = storedToken;
+      }}
+      if (storedSession) {{
+        sessionInput.value = storedSession;
+      }}
+    }}
+
+    function saveLocalValues() {{
+      window.localStorage.setItem(STORAGE_TOKEN, tokenInput.value.trim());
+      window.localStorage.setItem(STORAGE_SESSION, sessionInput.value.trim());
+    }}
+
+    function authHeaders() {{
+      const token = tokenInput.value.trim();
+      if (token.length === 0) {{
+        return {{}};
+      }}
+      return {{
+        "Authorization": "Bearer " + token
+      }};
+    }}
+
+    function setOutput(text) {{
+      outputPre.textContent = text;
+    }}
+
+    function appendOutput(text) {{
+      if (outputPre.textContent === "No response yet.") {{
+        outputPre.textContent = "";
+      }}
+      outputPre.textContent += text;
+    }}
+
+    function processSseFrame(frame) {{
+      if (!frame || frame.trim().length === 0) {{
+        return;
+      }}
+      let eventName = "";
+      let data = "";
+      const lines = frame.split(/\r?\n/);
+      for (const line of lines) {{
+        if (line.startsWith("event:")) {{
+          eventName = line.slice("event:".length).trim();
+        }} else if (line.startsWith("data:")) {{
+          data += line.slice("data:".length).trim();
+        }}
+      }}
+      if (data.length === 0 || data === "[DONE]") {{
+        return;
+      }}
+      let payload = null;
+      try {{
+        payload = JSON.parse(data);
+      }} catch (error) {{
+        appendOutput("\n[invalid sse payload] " + data + "\n");
+        return;
+      }}
+      if (eventName === "response.output_text.delta") {{
+        appendOutput(payload.delta || "");
+        return;
+      }}
+      if (eventName === "response.output_text.done") {{
+        appendOutput("\n");
+        return;
+      }}
+      if (eventName === "response.failed") {{
+        const message = payload && payload.error ? payload.error.message : "unknown";
+        appendOutput("\n[gateway error] " + message + "\n");
+      }}
+    }}
+
+    async function readSseBody(response) {{
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {{
+        const result = await reader.read();
+        if (result.done) {{
+          break;
+        }}
+        buffer += decoder.decode(result.value, {{ stream: true }});
+        while (true) {{
+          const splitIndex = buffer.indexOf("\n\n");
+          if (splitIndex < 0) {{
+            break;
+          }}
+          const frame = buffer.slice(0, splitIndex);
+          buffer = buffer.slice(splitIndex + 2);
+          processSseFrame(frame);
+        }}
+      }}
+      if (buffer.trim().length > 0) {{
+        processSseFrame(buffer);
+      }}
+    }}
+
+    async function refreshStatus() {{
+      statusPre.textContent = "Loading gateway status...";
+      try {{
+        const response = await fetch(STATUS_ENDPOINT, {{
+          headers: authHeaders()
+        }});
+        const raw = await response.text();
+        if (!response.ok) {{
+          statusPre.textContent = "status " + response.status + "\n" + raw;
+          return;
+        }}
+        const payload = JSON.parse(raw);
+        statusPre.textContent = JSON.stringify(payload, null, 2);
+      }} catch (error) {{
+        statusPre.textContent = "status request failed: " + String(error);
+      }}
+    }}
+
+    async function sendPrompt() {{
+      const prompt = promptInput.value.trim();
+      const sessionKey = sessionInput.value.trim() || "{default_session_key}";
+      if (prompt.length === 0) {{
+        setOutput("Prompt is required.");
+        return;
+      }}
+      saveLocalValues();
+      sendButton.disabled = true;
+      try {{
+        setOutput("");
+        const payload = {{
+          input: prompt,
+          stream: streamInput.checked,
+          metadata: {{
+            session_id: sessionKey
+          }}
+        }};
+        const response = await fetch(RESPONSES_ENDPOINT, {{
+          method: "POST",
+          headers: Object.assign({{
+            "Content-Type": "application/json"
+          }}, authHeaders()),
+          body: JSON.stringify(payload)
+        }});
+        if (!response.ok) {{
+          setOutput("request failed: status=" + response.status + "\n" + await response.text());
+          return;
+        }}
+        if (streamInput.checked) {{
+          await readSseBody(response);
+        }} else {{
+          const body = await response.json();
+          const outputText = typeof body.output_text === "string"
+            ? body.output_text
+            : JSON.stringify(body, null, 2);
+          setOutput(outputText);
+        }}
+        await refreshStatus();
+      }} catch (error) {{
+        setOutput("request failed: " + String(error));
+      }} finally {{
+        sendButton.disabled = false;
+      }}
+    }}
+
+    sendButton.addEventListener("click", sendPrompt);
+    refreshButton.addEventListener("click", refreshStatus);
+    clearButton.addEventListener("click", () => setOutput("No response yet."));
+    tokenInput.addEventListener("change", saveLocalValues);
+    sessionInput.addEventListener("change", saveLocalValues);
+
+    loadLocalValues();
+  </script>
+</body>
+</html>
+"#,
+        responses_endpoint = OPENRESPONSES_ENDPOINT,
+        status_endpoint = GATEWAY_STATUS_ENDPOINT,
+        default_session_key = DEFAULT_SESSION_KEY,
+    )
+}
+
 fn authorization_is_valid(headers: &HeaderMap, auth_token: &str) -> bool {
     let Some(header) = headers.get(AUTHORIZATION) else {
         return false;
@@ -1016,6 +1413,44 @@ mod tests {
         assert_eq!(error.code, "invalid_input");
     }
 
+    #[test]
+    fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
+        let html = render_gateway_webchat_page();
+        assert!(html.contains("Tau Gateway Webchat"));
+        assert!(html.contains(OPENRESPONSES_ENDPOINT));
+        assert!(html.contains(GATEWAY_STATUS_ENDPOINT));
+        assert!(html.contains(DEFAULT_SESSION_KEY));
+    }
+
+    #[tokio::test]
+    async fn functional_webchat_endpoint_returns_html_shell() {
+        let temp = tempdir().expect("tempdir");
+        let state = test_state(temp.path(), 10_000, "secret");
+        let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+        let client = Client::new();
+        let response = client
+            .get(format!("http://{addr}{WEBCHAT_ENDPOINT}"))
+            .send()
+            .await
+            .expect("send request");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(content_type.contains("text/html"));
+        let body = response.text().await.expect("read webchat body");
+        assert!(body.contains("Tau Gateway Webchat"));
+        assert!(body.contains(OPENRESPONSES_ENDPOINT));
+        assert!(body.contains(GATEWAY_STATUS_ENDPOINT));
+
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn functional_openresponses_endpoint_rejects_unauthorized_requests() {
         let temp = tempdir().expect("tempdir");
@@ -1160,6 +1595,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_gateway_status_endpoint_returns_service_snapshot() {
+        let temp = tempdir().expect("tempdir");
+        let state = test_state(temp.path(), 10_000, "secret");
+        let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+        let client = Client::new();
+        let payload = client
+            .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+            .bearer_auth("secret")
+            .send()
+            .await
+            .expect("send status request")
+            .json::<Value>()
+            .await
+            .expect("parse status response");
+
+        assert_eq!(
+            payload["gateway"]["responses_endpoint"].as_str(),
+            Some(OPENRESPONSES_ENDPOINT)
+        );
+        assert_eq!(
+            payload["gateway"]["webchat_endpoint"].as_str(),
+            Some(WEBCHAT_ENDPOINT)
+        );
+        assert_eq!(
+            payload["gateway"]["status_endpoint"].as_str(),
+            Some(GATEWAY_STATUS_ENDPOINT)
+        );
+        assert_eq!(
+            payload["service"]["service_status"].as_str(),
+            Some("running")
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn regression_openresponses_endpoint_rejects_malformed_json_body() {
         let temp = tempdir().expect("tempdir");
         let state = test_state(temp.path(), 10_000, "secret");
@@ -1195,6 +1667,23 @@ mod tests {
             .expect("send oversized request");
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn regression_gateway_status_endpoint_rejects_unauthorized_request() {
+        let temp = tempdir().expect("tempdir");
+        let state = test_state(temp.path(), 10_000, "secret");
+        let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+        let client = Client::new();
+        let response = client
+            .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+            .send()
+            .await
+            .expect("send request");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         handle.abort();
     }
 
