@@ -17,6 +17,7 @@ pub(crate) async fn run_transport_mode_if_requested(
     validate_dashboard_contract_runner_cli(cli)?;
     validate_gateway_contract_runner_cli(cli)?;
     validate_custom_command_contract_runner_cli(cli)?;
+    validate_voice_contract_runner_cli(cli)?;
 
     if cli.github_issues_bridge {
         let repo_slug = cli.github_repo.clone().ok_or_else(|| {
@@ -215,6 +216,19 @@ pub(crate) async fn run_transport_mode_if_requested(
             processed_case_cap: cli.custom_command_processed_case_cap.max(1),
             retry_max_attempts: cli.custom_command_retry_max_attempts.max(1),
             retry_base_delay_ms: cli.custom_command_retry_base_delay_ms,
+        })
+        .await?;
+        return Ok(true);
+    }
+
+    if cli.voice_contract_runner {
+        run_voice_contract_runner(VoiceRuntimeConfig {
+            fixture_path: cli.voice_fixture.clone(),
+            state_dir: cli.voice_state_dir.clone(),
+            queue_limit: cli.voice_queue_limit.max(1),
+            processed_case_cap: cli.voice_processed_case_cap.max(1),
+            retry_max_attempts: cli.voice_retry_max_attempts.max(1),
+            retry_base_delay_ms: cli.voice_retry_base_delay_ms,
         })
         .await?;
         return Ok(true);

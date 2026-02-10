@@ -83,23 +83,24 @@ use super::{
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_contract_runner_cli, validate_profile_name, validate_rpc_frame_file,
-    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli, AuthCommand,
-    AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
-    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliEventTemplateSchedule,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
-    CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
-    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
-    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus,
-    FallbackRoutingClient, IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand,
-    MacroFile, MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile,
-    PromptRunStatus, PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord,
-    RenderOptions, RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile,
-    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs,
-    SessionStats, SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig,
-    SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary,
-    SkillsVerifyTrustSummary, ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
-    BRANCH_ALIAS_USAGE, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
+    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliOrchestratorMode,
+    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
+    CliWebhookSignatureAlgorithm, ClientRoute, CommandAction, CommandExecutionContext,
+    CommandFileEntry, CommandFileReport, CredentialStoreData, CredentialStoreEncryptionMode,
+    DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs, DoctorCommandConfig,
+    DoctorCommandOutputFormat, DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient,
+    IntegrationAuthCommand, IntegrationCredentialStoreRecord, MacroCommand, MacroFile,
+    MultiAgentRouteTable, ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus,
+    PromptTelemetryLogger, ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions,
+    RuntimeExtensionHooksConfig, SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry,
+    SessionDiffReport, SessionGraphFormat, SessionRuntime, SessionSearchArgs, SessionStats,
+    SessionStatsOutputFormat, SkillsPruneMode, SkillsSyncCommandConfig, SkillsVerifyEntry,
+    SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
+    ToolAuditLogger, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE,
+    MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
     SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SESSION_SEARCH_DEFAULT_RESULTS,
     SESSION_SEARCH_PREVIEW_CHARS, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
     SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
@@ -515,6 +516,15 @@ fn test_cli() -> Cli {
         custom_command_processed_case_cap: 10_000,
         custom_command_retry_max_attempts: 4,
         custom_command_retry_base_delay_ms: 0,
+        voice_contract_runner: false,
+        voice_fixture: PathBuf::from(
+            "crates/tau-coding-agent/testdata/voice-contract/mixed-outcomes.json",
+        ),
+        voice_state_dir: PathBuf::from(".tau/voice"),
+        voice_queue_limit: 64,
+        voice_processed_case_cap: 10_000,
+        voice_retry_max_attempts: 4,
+        voice_retry_base_delay_ms: 0,
         github_issues_bridge: false,
         github_repo: None,
         github_token: None,
@@ -621,6 +631,7 @@ fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     cli.dashboard_state_dir = tau_root.join("dashboard");
     cli.gateway_state_dir = tau_root.join("gateway");
     cli.custom_command_state_dir = tau_root.join("custom-command");
+    cli.voice_state_dir = tau_root.join("voice");
     cli.github_state_dir = tau_root.join("github-issues");
     cli.slack_state_dir = tau_root.join("slack");
     cli.package_install_root = tau_root.join("packages");
@@ -1662,6 +1673,57 @@ fn regression_cli_custom_command_fixture_requires_runner_flag() {
         "fixtures/custom-command.json",
     ]);
     let error = parse.expect_err("fixture flag should require custom command runner mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_voice_runner_flags_default_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.voice_contract_runner);
+    assert_eq!(
+        cli.voice_fixture,
+        PathBuf::from("crates/tau-coding-agent/testdata/voice-contract/mixed-outcomes.json")
+    );
+    assert_eq!(cli.voice_state_dir, PathBuf::from(".tau/voice"));
+    assert_eq!(cli.voice_queue_limit, 64);
+    assert_eq!(cli.voice_processed_case_cap, 10_000);
+    assert_eq!(cli.voice_retry_max_attempts, 4);
+    assert_eq!(cli.voice_retry_base_delay_ms, 0);
+}
+
+#[test]
+fn functional_cli_voice_runner_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--voice-contract-runner",
+        "--voice-fixture",
+        "fixtures/voice.json",
+        "--voice-state-dir",
+        ".tau/voice-custom",
+        "--voice-queue-limit",
+        "71",
+        "--voice-processed-case-cap",
+        "41000",
+        "--voice-retry-max-attempts",
+        "6",
+        "--voice-retry-base-delay-ms",
+        "45",
+    ]);
+    assert!(cli.voice_contract_runner);
+    assert_eq!(cli.voice_fixture, PathBuf::from("fixtures/voice.json"));
+    assert_eq!(cli.voice_state_dir, PathBuf::from(".tau/voice-custom"));
+    assert_eq!(cli.voice_queue_limit, 71);
+    assert_eq!(cli.voice_processed_case_cap, 41_000);
+    assert_eq!(cli.voice_retry_max_attempts, 6);
+    assert_eq!(cli.voice_retry_base_delay_ms, 45);
+}
+
+#[test]
+fn regression_cli_voice_fixture_requires_runner_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--voice-fixture", "fixtures/voice.json"]);
+    let error = parse.expect_err("fixture flag should require voice runner mode");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
@@ -13364,6 +13426,138 @@ fn regression_validate_custom_command_contract_runner_cli_requires_fixture_file(
 
     let error = validate_custom_command_contract_runner_cli(&cli)
         .expect_err("directory fixture should fail");
+    assert!(error.to_string().contains("must point to a file"));
+}
+
+#[test]
+fn unit_validate_voice_contract_runner_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("voice-fixture.json");
+    std::fs::write(
+        &fixture_path,
+        r#"{
+  "schema_version": 1,
+  "name": "single-case",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "voice-success-only",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "tau open dashboard",
+      "locale": "en-US",
+      "speaker_id": "ops",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status":"accepted",
+          "mode":"turn",
+          "wake_word":"tau",
+          "utterance":"open dashboard",
+          "locale":"en-US",
+          "speaker_id":"ops"
+        }
+      }
+    }
+  ]
+}"#,
+    )
+    .expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.voice_contract_runner = true;
+    cli.voice_fixture = fixture_path;
+
+    validate_voice_contract_runner_cli(&cli).expect("voice runner config should validate");
+}
+
+#[test]
+fn functional_validate_voice_contract_runner_cli_rejects_prompt_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.voice_contract_runner = true;
+    cli.voice_fixture = fixture_path;
+    cli.prompt = Some("conflict".to_string());
+
+    let error = validate_voice_contract_runner_cli(&cli).expect_err("prompt conflict");
+    assert!(error
+        .to_string()
+        .contains("--voice-contract-runner cannot be combined"));
+}
+
+#[test]
+fn integration_validate_voice_contract_runner_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.voice_contract_runner = true;
+    cli.voice_fixture = fixture_path;
+    cli.custom_command_contract_runner = true;
+
+    let error = validate_voice_contract_runner_cli(&cli).expect_err("transport conflict");
+    assert!(error.to_string().contains(
+        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, or --custom-command-contract-runner"
+    ));
+}
+
+#[test]
+fn regression_validate_voice_contract_runner_cli_rejects_zero_limits() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.voice_contract_runner = true;
+    cli.voice_fixture = fixture_path.clone();
+    cli.voice_queue_limit = 0;
+    let queue_error = validate_voice_contract_runner_cli(&cli).expect_err("zero queue limit");
+    assert!(queue_error
+        .to_string()
+        .contains("--voice-queue-limit must be greater than 0"));
+
+    cli.voice_queue_limit = 1;
+    cli.voice_processed_case_cap = 0;
+    let processed_error =
+        validate_voice_contract_runner_cli(&cli).expect_err("zero processed case cap");
+    assert!(processed_error
+        .to_string()
+        .contains("--voice-processed-case-cap must be greater than 0"));
+
+    cli.voice_processed_case_cap = 1;
+    cli.voice_retry_max_attempts = 0;
+    let retry_error =
+        validate_voice_contract_runner_cli(&cli).expect_err("zero retry max attempts");
+    assert!(retry_error
+        .to_string()
+        .contains("--voice-retry-max-attempts must be greater than 0"));
+}
+
+#[test]
+fn regression_validate_voice_contract_runner_cli_requires_existing_fixture() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.voice_contract_runner = true;
+    cli.voice_fixture = temp.path().join("missing.json");
+
+    let error = validate_voice_contract_runner_cli(&cli).expect_err("missing fixture should fail");
+    assert!(error.to_string().contains("does not exist"));
+}
+
+#[test]
+fn regression_validate_voice_contract_runner_cli_requires_fixture_file() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.voice_contract_runner = true;
+    cli.voice_fixture = temp.path().to_path_buf();
+
+    let error =
+        validate_voice_contract_runner_cli(&cli).expect_err("directory fixture should fail");
     assert!(error.to_string().contains("must point to a file"));
 }
 

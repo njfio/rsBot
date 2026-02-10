@@ -2088,6 +2088,67 @@ pub(crate) struct Cli {
     pub(crate) custom_command_retry_base_delay_ms: u64,
 
     #[arg(
+        long = "voice-contract-runner",
+        env = "TAU_VOICE_CONTRACT_RUNNER",
+        default_value_t = false,
+        help = "Run fixture-driven voice interaction and wake-word runtime contract scenarios"
+    )]
+    pub(crate) voice_contract_runner: bool,
+
+    #[arg(
+        long = "voice-fixture",
+        env = "TAU_VOICE_FIXTURE",
+        default_value = "crates/tau-coding-agent/testdata/voice-contract/mixed-outcomes.json",
+        requires = "voice_contract_runner",
+        help = "Path to voice interaction and wake-word runtime contract fixture JSON"
+    )]
+    pub(crate) voice_fixture: PathBuf,
+
+    #[arg(
+        long = "voice-state-dir",
+        env = "TAU_VOICE_STATE_DIR",
+        default_value = ".tau/voice",
+        help = "Directory for voice runtime state and channel-store outputs"
+    )]
+    pub(crate) voice_state_dir: PathBuf,
+
+    #[arg(
+        long = "voice-queue-limit",
+        env = "TAU_VOICE_QUEUE_LIMIT",
+        default_value_t = 64,
+        requires = "voice_contract_runner",
+        help = "Maximum voice fixture cases processed per runtime cycle"
+    )]
+    pub(crate) voice_queue_limit: usize,
+
+    #[arg(
+        long = "voice-processed-case-cap",
+        env = "TAU_VOICE_PROCESSED_CASE_CAP",
+        default_value_t = 10_000,
+        requires = "voice_contract_runner",
+        help = "Maximum processed-case keys retained for voice duplicate suppression"
+    )]
+    pub(crate) voice_processed_case_cap: usize,
+
+    #[arg(
+        long = "voice-retry-max-attempts",
+        env = "TAU_VOICE_RETRY_MAX_ATTEMPTS",
+        default_value_t = 4,
+        requires = "voice_contract_runner",
+        help = "Maximum retry attempts for transient voice runtime failures"
+    )]
+    pub(crate) voice_retry_max_attempts: usize,
+
+    #[arg(
+        long = "voice-retry-base-delay-ms",
+        env = "TAU_VOICE_RETRY_BASE_DELAY_MS",
+        default_value_t = 0,
+        requires = "voice_contract_runner",
+        help = "Base backoff delay in milliseconds for voice runtime retries (0 disables delay)"
+    )]
+    pub(crate) voice_retry_base_delay_ms: u64,
+
+    #[arg(
         long = "github-issues-bridge",
         env = "TAU_GITHUB_ISSUES_BRIDGE",
         default_value_t = false,

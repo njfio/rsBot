@@ -82,6 +82,7 @@ mod transport_conformance;
 mod transport_health;
 mod trust_roots;
 mod voice_contract;
+mod voice_runtime;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -261,6 +262,7 @@ pub(crate) use crate::runtime_cli_validation::{
     validate_gateway_contract_runner_cli, validate_github_issues_bridge_cli,
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_contract_runner_cli, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli,
 };
 pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
@@ -377,6 +379,7 @@ use memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
 use multi_agent_runtime::{run_multi_agent_contract_runner, MultiAgentRuntimeConfig};
 use multi_channel_runtime::{run_multi_channel_contract_runner, MultiChannelRuntimeConfig};
 use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
+use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
