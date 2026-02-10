@@ -231,6 +231,67 @@ pub(crate) fn validate_multi_channel_live_runner_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_multi_channel_live_ingest_cli(cli: &Cli) -> Result<()> {
+    if cli.multi_channel_live_ingest_file.is_none() {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--multi-channel-live-ingest-file cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--multi-channel-live-ingest-file cannot be used together with --no-session");
+    }
+    if cli.multi_channel_contract_runner || cli.multi_channel_live_runner {
+        bail!("--multi-channel-live-ingest-file cannot be combined with --multi-channel-contract-runner or --multi-channel-live-runner");
+    }
+    if cli.multi_channel_live_readiness_preflight {
+        bail!(
+            "--multi-channel-live-ingest-file cannot be combined with --multi-channel-live-readiness-preflight"
+        );
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.memory_contract_runner
+    {
+        bail!("--multi-channel-live-ingest-file cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, or --memory-contract-runner");
+    }
+
+    let ingest_file = cli
+        .multi_channel_live_ingest_file
+        .as_ref()
+        .ok_or_else(|| anyhow!("--multi-channel-live-ingest-file is required"))?;
+    if !ingest_file.exists() {
+        bail!(
+            "--multi-channel-live-ingest-file '{}' does not exist",
+            ingest_file.display()
+        );
+    }
+    if !ingest_file.is_file() {
+        bail!(
+            "--multi-channel-live-ingest-file '{}' must point to a file",
+            ingest_file.display()
+        );
+    }
+    if cli.multi_channel_live_ingest_transport.is_none() {
+        bail!(
+            "--multi-channel-live-ingest-transport is required when --multi-channel-live-ingest-file is set"
+        );
+    }
+    if cli.multi_channel_live_ingest_provider.trim().is_empty() {
+        bail!("--multi-channel-live-ingest-provider cannot be empty");
+    }
+    if cli.multi_channel_live_ingest_dir.exists() && !cli.multi_channel_live_ingest_dir.is_dir() {
+        bail!(
+            "--multi-channel-live-ingest-dir '{}' must point to a directory when it exists",
+            cli.multi_channel_live_ingest_dir.display()
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_multi_agent_contract_runner_cli(cli: &Cli) -> Result<()> {
     if !cli.multi_agent_contract_runner {
         return Ok(());

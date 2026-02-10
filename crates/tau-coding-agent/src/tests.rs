@@ -83,11 +83,12 @@ use super::{
     validate_gateway_contract_runner_cli, validate_gateway_service_cli,
     validate_github_issues_bridge_cli, validate_macro_command_entry, validate_macro_name,
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_runner_cli,
-    validate_profile_name, validate_rpc_frame_file, validate_session_file,
-    validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
-    AuthCommand, AuthCommandConfig, BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile,
-    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliEventTemplateSchedule,
+    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_ingest_cli,
+    validate_multi_channel_live_runner_cli, validate_profile_name, validate_rpc_frame_file,
+    validate_session_file, validate_skills_prune_file_name, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig, BranchAliasCommand,
+    BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
+    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliMultiChannelTransport,
     CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
     CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute, CommandAction,
     CommandExecutionContext, CommandFileEntry, CommandFileReport, CredentialStoreData,
@@ -480,6 +481,10 @@ fn test_cli() -> Cli {
         event_webhook_signature_max_skew_seconds: 300,
         multi_channel_contract_runner: false,
         multi_channel_live_runner: false,
+        multi_channel_live_ingest_file: None,
+        multi_channel_live_ingest_transport: None,
+        multi_channel_live_ingest_provider: "native-ingress".to_string(),
+        multi_channel_live_ingest_dir: PathBuf::from(".tau/multi-channel/live-ingress"),
         multi_channel_live_readiness_preflight: false,
         multi_channel_live_readiness_json: false,
         multi_channel_fixture: PathBuf::from(
@@ -1375,6 +1380,13 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.multi_channel_contract_runner);
     assert!(!cli.multi_channel_live_runner);
+    assert!(cli.multi_channel_live_ingest_file.is_none());
+    assert!(cli.multi_channel_live_ingest_transport.is_none());
+    assert_eq!(cli.multi_channel_live_ingest_provider, "native-ingress");
+    assert_eq!(
+        cli.multi_channel_live_ingest_dir,
+        PathBuf::from(".tau/multi-channel/live-ingress")
+    );
     assert!(!cli.multi_channel_live_readiness_preflight);
     assert!(!cli.multi_channel_live_readiness_json);
     assert_eq!(
@@ -1459,6 +1471,47 @@ fn functional_cli_multi_channel_live_runner_flags_accept_explicit_overrides() {
     assert_eq!(cli.multi_channel_queue_limit, 40);
     assert_eq!(cli.multi_channel_processed_event_cap, 512);
     assert_eq!(cli.multi_channel_retry_max_attempts, 5);
+}
+
+#[test]
+fn functional_cli_multi_channel_live_ingest_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--multi-channel-live-ingest-file",
+        "fixtures/telegram-update.json",
+        "--multi-channel-live-ingest-transport",
+        "telegram",
+        "--multi-channel-live-ingest-provider",
+        "telegram-bot-api",
+        "--multi-channel-live-ingest-dir",
+        ".tau/multi-channel/ingress",
+    ]);
+    assert_eq!(
+        cli.multi_channel_live_ingest_file,
+        Some(PathBuf::from("fixtures/telegram-update.json"))
+    );
+    assert_eq!(
+        cli.multi_channel_live_ingest_transport,
+        Some(CliMultiChannelTransport::Telegram)
+    );
+    assert_eq!(
+        cli.multi_channel_live_ingest_provider,
+        "telegram-bot-api".to_string()
+    );
+    assert_eq!(
+        cli.multi_channel_live_ingest_dir,
+        PathBuf::from(".tau/multi-channel/ingress")
+    );
+}
+
+#[test]
+fn regression_cli_multi_channel_live_ingest_transport_requires_ingest_file() {
+    let parse =
+        try_parse_cli_with_stack(["tau-rs", "--multi-channel-live-ingest-transport", "discord"]);
+    let error = parse.expect_err("transport flag should require ingest-file");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
 }
 
 #[test]
@@ -13473,6 +13526,83 @@ fn regression_validate_multi_channel_live_runner_cli_rejects_zero_limits() {
 }
 
 #[test]
+fn unit_validate_multi_channel_live_ingest_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let payload_file = temp.path().join("telegram-update.json");
+    std::fs::write(
+        &payload_file,
+        r#"{"update_id":1,"message":{"message_id":2,"chat":{"id":"chat-1"},"from":{"id":"user-1"},"date":1760100000,"text":"hello"}}"#,
+    )
+    .expect("write payload");
+
+    let mut cli = test_cli();
+    cli.multi_channel_live_ingest_file = Some(payload_file);
+    cli.multi_channel_live_ingest_transport = Some(CliMultiChannelTransport::Telegram);
+    cli.multi_channel_live_ingest_dir = temp.path().join("live-ingress");
+
+    validate_multi_channel_live_ingest_cli(&cli)
+        .expect("multi-channel live ingest config should validate");
+}
+
+#[test]
+fn functional_validate_multi_channel_live_ingest_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let payload_file = temp.path().join("discord-message.json");
+    std::fs::write(
+        &payload_file,
+        r#"{"id":"m1","channel_id":"c1","timestamp":"2026-01-10T00:00:00Z","content":"hello","author":{"id":"u1"}}"#,
+    )
+    .expect("write payload");
+
+    let mut cli = test_cli();
+    cli.multi_channel_live_ingest_file = Some(payload_file);
+    cli.multi_channel_live_ingest_transport = Some(CliMultiChannelTransport::Discord);
+    cli.events_runner = true;
+
+    let error =
+        validate_multi_channel_live_ingest_cli(&cli).expect_err("transport conflict should fail");
+    assert!(error.to_string().contains(
+        "--github-issues-bridge, --slack-bridge, --events-runner, or --memory-contract-runner"
+    ));
+}
+
+#[test]
+fn integration_validate_multi_channel_live_ingest_cli_requires_existing_payload_file() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.multi_channel_live_ingest_file = Some(temp.path().join("missing.json"));
+    cli.multi_channel_live_ingest_transport = Some(CliMultiChannelTransport::Whatsapp);
+    cli.multi_channel_live_ingest_dir = temp.path().join("live-ingress");
+
+    let error =
+        validate_multi_channel_live_ingest_cli(&cli).expect_err("missing payload should fail");
+    assert!(error.to_string().contains("does not exist"));
+}
+
+#[test]
+fn regression_validate_multi_channel_live_ingest_cli_rejects_empty_provider() {
+    let temp = tempdir().expect("tempdir");
+    let payload_file = temp.path().join("whatsapp-message.json");
+    std::fs::write(
+        &payload_file,
+        r#"{"metadata":{"phone_number_id":"p1"},"messages":[{"id":"mid","from":"15550001111","timestamp":"1760300000","text":{"body":"hello"}}]}"#,
+    )
+    .expect("write payload");
+
+    let mut cli = test_cli();
+    cli.multi_channel_live_ingest_file = Some(payload_file);
+    cli.multi_channel_live_ingest_transport = Some(CliMultiChannelTransport::Whatsapp);
+    cli.multi_channel_live_ingest_provider = "   ".to_string();
+    cli.multi_channel_live_ingest_dir = temp.path().join("live-ingress");
+
+    let error = validate_multi_channel_live_ingest_cli(&cli)
+        .expect_err("empty provider should be rejected");
+    assert!(error
+        .to_string()
+        .contains("--multi-channel-live-ingest-provider cannot be empty"));
+}
+
+#[test]
 fn unit_validate_multi_agent_contract_runner_cli_accepts_minimum_configuration() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("multi-agent-fixture.json");
@@ -18543,6 +18673,78 @@ fn regression_execute_startup_preflight_multi_channel_live_readiness_preflight_f
     assert!(error_text.contains("multi_channel_live.channel.whatsapp:missing_prerequisites"));
 
     restore_env_vars(snapshot);
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_multi_channel_live_ingest_mode() {
+    let temp = tempdir().expect("tempdir");
+    let payload_file = temp.path().join("telegram-update.json");
+    std::fs::write(
+        &payload_file,
+        r#"{
+  "update_id": 9001,
+  "message": {
+    "message_id": 42,
+    "chat": { "id": "chat-100" },
+    "from": { "id": "user-7", "username": "alice" },
+    "date": 1760100000,
+    "text": "hello from telegram"
+  }
+}"#,
+    )
+    .expect("write payload");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_live_ingest_file = Some(payload_file);
+    cli.multi_channel_live_ingest_transport = Some(CliMultiChannelTransport::Telegram);
+    cli.multi_channel_live_ingest_provider = "telegram-bot-api".to_string();
+    cli.multi_channel_live_ingest_dir = temp.path().join("live-ingress");
+
+    let handled = execute_startup_preflight(&cli).expect("multi-channel live ingest preflight");
+    assert!(handled);
+
+    let ingress_file = cli.multi_channel_live_ingest_dir.join("telegram.ndjson");
+    assert!(ingress_file.exists(), "ingress file should be created");
+    let lines = std::fs::read_to_string(&ingress_file)
+        .expect("read ingress file")
+        .lines()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&lines[0]).expect("ingress line should be valid json");
+    assert_eq!(parsed["transport"].as_str(), Some("telegram"));
+    assert_eq!(parsed["provider"].as_str(), Some("telegram-bot-api"));
+}
+
+#[test]
+fn regression_execute_startup_preflight_multi_channel_live_ingest_fails_closed() {
+    let temp = tempdir().expect("tempdir");
+    let payload_file = temp.path().join("discord-invalid.json");
+    std::fs::write(
+        &payload_file,
+        r#"{
+  "id": "discord-msg-2",
+  "channel_id": "discord-channel-99",
+  "timestamp": "2026-01-10T13:00:00Z",
+  "content": "hello"
+}"#,
+    )
+    .expect("write payload");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.multi_channel_live_ingest_file = Some(payload_file);
+    cli.multi_channel_live_ingest_transport = Some(CliMultiChannelTransport::Discord);
+    cli.multi_channel_live_ingest_provider = "discord-gateway".to_string();
+    cli.multi_channel_live_ingest_dir = temp.path().join("live-ingress");
+
+    let error =
+        execute_startup_preflight(&cli).expect_err("invalid ingress payload should fail closed");
+    let error_text = error.to_string();
+    assert!(error_text.contains("multi-channel live ingest"));
+    assert!(error_text.contains("reason_code=missing_field"));
 }
 
 #[test]

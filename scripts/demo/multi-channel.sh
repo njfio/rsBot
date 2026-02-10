@@ -20,34 +20,13 @@ demo_state_dir=".tau/demo-multi-channel"
 live_ingress_dir="${demo_state_dir}/live-ingress"
 
 tau_demo_common_require_file "${fixture_path}"
-tau_demo_common_require_file "${live_fixture_dir}/telegram-valid.json"
-tau_demo_common_require_file "${live_fixture_dir}/discord-valid.json"
-tau_demo_common_require_file "${live_fixture_dir}/whatsapp-valid.json"
+tau_demo_common_require_file "${live_fixture_dir}/raw/telegram-update.json"
+tau_demo_common_require_file "${live_fixture_dir}/raw/discord-message.json"
+tau_demo_common_require_file "${live_fixture_dir}/raw/whatsapp-message.json"
 tau_demo_common_prepare_binary
 
 rm -rf "${TAU_DEMO_REPO_ROOT}/${demo_state_dir}"
 mkdir -p "${TAU_DEMO_REPO_ROOT}/${live_ingress_dir}"
-
-tau_demo_write_ndjson() {
-  local source_json="$1"
-  local destination_ndjson="$2"
-  python3 - "$source_json" "$destination_ndjson" <<'PY'
-import json
-import sys
-
-source = sys.argv[1]
-destination = sys.argv[2]
-with open(source, "r", encoding="utf-8") as handle:
-    payload = json.load(handle)
-with open(destination, "w", encoding="utf-8") as handle:
-    handle.write(json.dumps(payload, separators=(",", ":")))
-    handle.write("\n")
-PY
-}
-
-tau_demo_write_ndjson "${live_fixture_dir}/telegram-valid.json" "${TAU_DEMO_REPO_ROOT}/${live_ingress_dir}/telegram.ndjson"
-tau_demo_write_ndjson "${live_fixture_dir}/discord-valid.json" "${TAU_DEMO_REPO_ROOT}/${live_ingress_dir}/discord.ndjson"
-tau_demo_write_ndjson "${live_fixture_dir}/whatsapp-valid.json" "${TAU_DEMO_REPO_ROOT}/${live_ingress_dir}/whatsapp.ndjson"
 
 tau_demo_common_run_step \
   "multi-channel-runner" \
@@ -70,6 +49,27 @@ tau_demo_common_run_step \
   --multi-channel-state-dir "${demo_state_dir}" \
   --multi-channel-status-inspect \
   --multi-channel-status-json
+
+tau_demo_common_run_step \
+  "multi-channel-live-ingest-telegram" \
+  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/telegram-update.json \
+  --multi-channel-live-ingest-transport telegram \
+  --multi-channel-live-ingest-provider telegram-bot-api \
+  --multi-channel-live-ingest-dir "${live_ingress_dir}"
+
+tau_demo_common_run_step \
+  "multi-channel-live-ingest-discord" \
+  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/discord-message.json \
+  --multi-channel-live-ingest-transport discord \
+  --multi-channel-live-ingest-provider discord-gateway \
+  --multi-channel-live-ingest-dir "${live_ingress_dir}"
+
+tau_demo_common_run_step \
+  "multi-channel-live-ingest-whatsapp" \
+  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/whatsapp-message.json \
+  --multi-channel-live-ingest-transport whatsapp \
+  --multi-channel-live-ingest-provider whatsapp-cloud-api \
+  --multi-channel-live-ingest-dir "${live_ingress_dir}"
 
 tau_demo_common_run_step \
   "multi-channel-live-runner" \

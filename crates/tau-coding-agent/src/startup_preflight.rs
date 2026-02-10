@@ -67,6 +67,35 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         }
     }
 
+    if cli.multi_channel_live_ingest_file.is_some() {
+        validate_multi_channel_live_ingest_cli(cli)?;
+        let payload_file = cli
+            .multi_channel_live_ingest_file
+            .clone()
+            .ok_or_else(|| anyhow!("--multi-channel-live-ingest-file is required"))?;
+        let transport: crate::multi_channel_contract::MultiChannelTransport = cli
+            .multi_channel_live_ingest_transport
+            .ok_or_else(|| anyhow!("--multi-channel-live-ingest-transport is required"))?
+            .into();
+        let report = crate::multi_channel_live_ingress::ingest_multi_channel_live_raw_payload(
+            &crate::multi_channel_live_ingress::MultiChannelLivePayloadIngestConfig {
+                ingress_dir: cli.multi_channel_live_ingest_dir.clone(),
+                payload_file,
+                transport,
+                provider: cli.multi_channel_live_ingest_provider.clone(),
+            },
+        )?;
+        println!(
+            "multi-channel live ingest queued: transport={} provider={} event_id={} conversation_id={} ingress_file={}",
+            report.transport.as_str(),
+            report.provider,
+            report.event_id,
+            report.conversation_id,
+            report.ingress_path.display()
+        );
+        return Ok(true);
+    }
+
     if cli.multi_channel_live_readiness_preflight {
         execute_multi_channel_live_readiness_preflight_command(cli)?;
         return Ok(true);

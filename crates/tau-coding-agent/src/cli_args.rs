@@ -4,9 +4,9 @@ use clap::{ArgAction, Parser};
 
 use crate::{
     release_channel_commands::RELEASE_LOOKUP_CACHE_TTL_MS, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliOrchestratorMode,
-    CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset,
-    CliWebhookSignatureAlgorithm,
+    CliCredentialStoreEncryptionMode, CliEventTemplateSchedule, CliMultiChannelTransport,
+    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
+    CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -1960,6 +1960,40 @@ pub(crate) struct Cli {
         help = "Run live-ingress multi-channel runtime using local adapter inbox files for Telegram/Discord/WhatsApp"
     )]
     pub(crate) multi_channel_live_runner: bool,
+
+    #[arg(
+        long = "multi-channel-live-ingest-file",
+        env = "TAU_MULTI_CHANNEL_LIVE_INGEST_FILE",
+        help = "One-shot provider payload ingestion: normalize a Telegram/Discord/WhatsApp payload file into live-ingress NDJSON and exit"
+    )]
+    pub(crate) multi_channel_live_ingest_file: Option<PathBuf>,
+
+    #[arg(
+        long = "multi-channel-live-ingest-transport",
+        env = "TAU_MULTI_CHANNEL_LIVE_INGEST_TRANSPORT",
+        value_enum,
+        requires = "multi_channel_live_ingest_file",
+        help = "Transport for --multi-channel-live-ingest-file (telegram, discord, whatsapp)"
+    )]
+    pub(crate) multi_channel_live_ingest_transport: Option<CliMultiChannelTransport>,
+
+    #[arg(
+        long = "multi-channel-live-ingest-provider",
+        env = "TAU_MULTI_CHANNEL_LIVE_INGEST_PROVIDER",
+        default_value = "native-ingress",
+        requires = "multi_channel_live_ingest_file",
+        help = "Provider identifier recorded in normalized live-ingress envelopes"
+    )]
+    pub(crate) multi_channel_live_ingest_provider: String,
+
+    #[arg(
+        long = "multi-channel-live-ingest-dir",
+        env = "TAU_MULTI_CHANNEL_LIVE_INGEST_DIR",
+        default_value = ".tau/multi-channel/live-ingress",
+        requires = "multi_channel_live_ingest_file",
+        help = "Directory where one-shot live-ingest writes transport-specific NDJSON inbox files"
+    )]
+    pub(crate) multi_channel_live_ingest_dir: PathBuf,
 
     #[arg(
         long = "multi-channel-live-readiness-preflight",

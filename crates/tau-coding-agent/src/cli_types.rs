@@ -1,6 +1,7 @@
 use clap::ValueEnum;
 
 use crate::events::WebhookSignatureAlgorithm;
+use crate::multi_channel_contract::MultiChannelTransport;
 use crate::session::SessionImportMode;
 use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
 use crate::ProviderAuthMethod;
@@ -131,4 +132,21 @@ pub(crate) enum CliCredentialStoreEncryptionMode {
 pub(crate) enum CliOrchestratorMode {
     Off,
     PlanFirst,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliMultiChannelTransport {
+    Telegram,
+    Discord,
+    Whatsapp,
+}
+
+impl From<CliMultiChannelTransport> for MultiChannelTransport {
+    fn from(value: CliMultiChannelTransport) -> Self {
+        match value {
+            CliMultiChannelTransport::Telegram => MultiChannelTransport::Telegram,
+            CliMultiChannelTransport::Discord => MultiChannelTransport::Discord,
+            CliMultiChannelTransport::Whatsapp => MultiChannelTransport::Whatsapp,
+        }
+    }
 }

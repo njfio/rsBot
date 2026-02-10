@@ -58,11 +58,50 @@
       ]
     },
     {
+      "name": "multi-channel-live-ingest-telegram",
+      "args": [
+        "--multi-channel-live-ingest-file",
+        "./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/telegram-update.json",
+        "--multi-channel-live-ingest-transport",
+        "telegram",
+        "--multi-channel-live-ingest-provider",
+        "telegram-bot-api",
+        "--multi-channel-live-ingest-dir",
+        ".tau/ci-smoke/multi-channel/live-ingress"
+      ]
+    },
+    {
+      "name": "multi-channel-live-ingest-discord",
+      "args": [
+        "--multi-channel-live-ingest-file",
+        "./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/discord-message.json",
+        "--multi-channel-live-ingest-transport",
+        "discord",
+        "--multi-channel-live-ingest-provider",
+        "discord-gateway",
+        "--multi-channel-live-ingest-dir",
+        ".tau/ci-smoke/multi-channel/live-ingress"
+      ]
+    },
+    {
+      "name": "multi-channel-live-ingest-whatsapp",
+      "args": [
+        "--multi-channel-live-ingest-file",
+        "./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/whatsapp-message.json",
+        "--multi-channel-live-ingest-transport",
+        "whatsapp",
+        "--multi-channel-live-ingest-provider",
+        "whatsapp-cloud-api",
+        "--multi-channel-live-ingest-dir",
+        ".tau/ci-smoke/multi-channel/live-ingress"
+      ]
+    },
+    {
       "name": "multi-channel-live-runner",
       "args": [
         "--multi-channel-live-runner",
         "--multi-channel-live-ingress-dir",
-        "./crates/tau-coding-agent/testdata/multi-channel-live-ingress/smoke",
+        ".tau/ci-smoke/multi-channel/live-ingress",
         "--multi-channel-state-dir",
         ".tau/ci-smoke/multi-channel"
       ]

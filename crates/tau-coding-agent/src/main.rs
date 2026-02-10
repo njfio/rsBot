@@ -126,8 +126,8 @@ pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
 pub(crate) use crate::cli_types::{
     CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode,
-    CliEventTemplateSchedule, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliEventTemplateSchedule, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
+    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
@@ -265,8 +265,8 @@ pub(crate) use crate::runtime_cli_validation::{
     validate_events_runner_cli, validate_gateway_contract_runner_cli, validate_gateway_service_cli,
     validate_github_issues_bridge_cli, validate_memory_contract_runner_cli,
     validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
-    validate_multi_channel_live_runner_cli, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli,
+    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
+    validate_slack_bridge_cli, validate_voice_contract_runner_cli,
 };
 pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,

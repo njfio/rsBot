@@ -62,6 +62,19 @@ Primary state files:
 Each line must be one normalized provider envelope JSON object. Invalid lines are skipped with
 explicit parse diagnostics in stderr; valid lines continue processing.
 
+One-shot raw provider ingest command (appends normalized envelopes to live-ingress files):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/telegram-update.json \
+  --multi-channel-live-ingest-transport telegram \
+  --multi-channel-live-ingest-provider telegram-bot-api \
+  --multi-channel-live-ingest-dir .tau/multi-channel/live-ingress
+```
+
+Use the same command for `discord` and `whatsapp` payloads by changing
+`--multi-channel-live-ingest-transport` and `--multi-channel-live-ingest-file`.
+
 ## Live readiness preflight
 
 Run this gate before enabling `--multi-channel-live-runner`:

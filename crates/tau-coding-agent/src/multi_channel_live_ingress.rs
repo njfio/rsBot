@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
+use std::fs::OpenOptions;
+use std::io::Write;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 
+use anyhow::{anyhow, Context, Result};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -72,6 +76,127 @@ pub(crate) struct MultiChannelLiveInboundEnvelope {
 
 fn multi_channel_live_ingress_schema_version() -> u32 {
     MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MultiChannelLivePayloadIngestConfig {
+    pub(crate) ingress_dir: PathBuf,
+    pub(crate) payload_file: PathBuf,
+    pub(crate) transport: MultiChannelTransport,
+    pub(crate) provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MultiChannelLivePayloadIngestReport {
+    pub(crate) ingress_path: PathBuf,
+    pub(crate) transport: MultiChannelTransport,
+    pub(crate) provider: String,
+    pub(crate) event_id: String,
+    pub(crate) conversation_id: String,
+}
+
+pub(crate) fn default_multi_channel_live_provider_label(
+    transport: MultiChannelTransport,
+) -> &'static str {
+    match transport {
+        MultiChannelTransport::Telegram => "telegram-bot-api",
+        MultiChannelTransport::Discord => "discord-gateway",
+        MultiChannelTransport::Whatsapp => "whatsapp-cloud-api",
+    }
+}
+
+pub(crate) fn build_multi_channel_live_envelope_from_raw_payload(
+    transport: MultiChannelTransport,
+    provider: &str,
+    raw_payload: &str,
+) -> Result<MultiChannelLiveInboundEnvelope, MultiChannelLiveIngressParseError> {
+    let payload = serde_json::from_str::<Value>(raw_payload).map_err(|error| {
+        parse_error(
+            MultiChannelLiveIngressReasonCode::InvalidJson,
+            error.to_string(),
+        )
+    })?;
+    if !payload.is_object() {
+        return Err(parse_error(
+            MultiChannelLiveIngressReasonCode::InvalidFieldType,
+            "provider payload must be a JSON object",
+        ));
+    }
+
+    let provider = if provider.trim().is_empty() {
+        default_multi_channel_live_provider_label(transport).to_string()
+    } else {
+        provider.trim().to_string()
+    };
+
+    let envelope = MultiChannelLiveInboundEnvelope {
+        schema_version: MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION,
+        transport: transport.as_str().to_string(),
+        provider,
+        payload,
+    };
+    // Validate and normalize before persisting to ingress NDJSON.
+    parse_multi_channel_live_inbound_envelope_value(&envelope)?;
+    Ok(envelope)
+}
+
+pub(crate) fn ingest_multi_channel_live_raw_payload(
+    config: &MultiChannelLivePayloadIngestConfig,
+) -> Result<MultiChannelLivePayloadIngestReport> {
+    let raw_payload = std::fs::read_to_string(&config.payload_file).with_context(|| {
+        format!(
+            "failed to read multi-channel live ingest payload file {}",
+            config.payload_file.display()
+        )
+    })?;
+    let envelope = build_multi_channel_live_envelope_from_raw_payload(
+        config.transport,
+        &config.provider,
+        &raw_payload,
+    )
+    .map_err(|error| {
+        anyhow!(
+            "multi-channel live ingest parse failure: reason_code={} detail={}",
+            error.code.as_str(),
+            error.message
+        )
+    })?;
+    let event = parse_multi_channel_live_inbound_envelope_value(&envelope).map_err(|error| {
+        anyhow!(
+            "multi-channel live ingest validation failure: reason_code={} detail={}",
+            error.code.as_str(),
+            error.message
+        )
+    })?;
+
+    std::fs::create_dir_all(&config.ingress_dir).with_context(|| {
+        format!(
+            "failed to create multi-channel live ingest directory {}",
+            config.ingress_dir.display()
+        )
+    })?;
+    let ingress_path = config
+        .ingress_dir
+        .join(format!("{}.ndjson", config.transport.as_str()));
+    let encoded =
+        serde_json::to_string(&envelope).context("failed to encode live ingress envelope")?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&ingress_path)
+        .with_context(|| format!("failed to open {}", ingress_path.display()))?;
+    file.write_all(encoded.as_bytes())
+        .with_context(|| format!("failed to append {}", ingress_path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("failed to append newline {}", ingress_path.display()))?;
+
+    Ok(MultiChannelLivePayloadIngestReport {
+        ingress_path,
+        transport: config.transport,
+        provider: envelope.provider,
+        event_id: event.event_id,
+        conversation_id: event.conversation_id,
+    })
 }
 
 pub(crate) fn parse_multi_channel_live_inbound_envelope(
@@ -593,11 +718,16 @@ mod tests {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
+    use tempfile::tempdir;
+
     use crate::multi_channel_contract::MultiChannelTransport;
 
     use super::{
+        build_multi_channel_live_envelope_from_raw_payload,
+        default_multi_channel_live_provider_label, ingest_multi_channel_live_raw_payload,
         load_multi_channel_live_inbound_envelope_fixture,
         parse_multi_channel_live_inbound_envelope, MultiChannelLiveIngressReasonCode,
+        MultiChannelLivePayloadIngestConfig,
     };
 
     fn fixture_path(name: &str) -> PathBuf {
@@ -609,6 +739,13 @@ mod tests {
 
     fn fixture_raw(name: &str) -> String {
         std::fs::read_to_string(fixture_path(name)).expect("fixture should load")
+    }
+
+    fn fixture_payload(name: &str) -> String {
+        let value: serde_json::Value =
+            serde_json::from_str(&fixture_raw(name)).expect("fixture json should parse");
+        serde_json::to_string_pretty(value.get("payload").expect("payload field should exist"))
+            .expect("payload json should encode")
     }
 
     #[test]
@@ -697,5 +834,94 @@ mod tests {
         .expect_err("missing discord author should fail");
         assert_eq!(error.code, MultiChannelLiveIngressReasonCode::MissingField);
         assert!(error.message.contains("payload.author"));
+    }
+
+    #[test]
+    fn unit_build_envelope_from_raw_payload_maps_transport_and_defaults_provider() {
+        let raw_payload = fixture_payload("telegram-valid.json");
+        let envelope = build_multi_channel_live_envelope_from_raw_payload(
+            MultiChannelTransport::Telegram,
+            "",
+            &raw_payload,
+        )
+        .expect("raw telegram payload should normalize");
+        assert_eq!(envelope.transport, "telegram");
+        assert_eq!(
+            envelope.provider,
+            default_multi_channel_live_provider_label(MultiChannelTransport::Telegram)
+        );
+        let event = super::parse_multi_channel_live_inbound_envelope_value(&envelope)
+            .expect("normalized envelope should parse");
+        assert_eq!(event.event_id, "42");
+        assert_eq!(event.conversation_id, "chat-100");
+    }
+
+    #[test]
+    fn functional_build_envelope_from_raw_payload_supports_three_transports() {
+        let telegram = build_multi_channel_live_envelope_from_raw_payload(
+            MultiChannelTransport::Telegram,
+            "telegram-bot-api",
+            &fixture_payload("telegram-valid.json"),
+        )
+        .expect("telegram payload should parse");
+        let discord = build_multi_channel_live_envelope_from_raw_payload(
+            MultiChannelTransport::Discord,
+            "discord-gateway",
+            &fixture_payload("discord-valid.json"),
+        )
+        .expect("discord payload should parse");
+        let whatsapp = build_multi_channel_live_envelope_from_raw_payload(
+            MultiChannelTransport::Whatsapp,
+            "whatsapp-cloud-api",
+            &fixture_payload("whatsapp-valid.json"),
+        )
+        .expect("whatsapp payload should parse");
+        assert_eq!(telegram.transport, "telegram");
+        assert_eq!(discord.transport, "discord");
+        assert_eq!(whatsapp.transport, "whatsapp");
+    }
+
+    #[test]
+    fn integration_ingest_multi_channel_live_raw_payload_appends_ndjson_row() {
+        let temp = tempdir().expect("tempdir");
+        let ingress_dir = temp.path().join("ingress");
+        let payload_file = temp.path().join("telegram-raw.json");
+        std::fs::write(&payload_file, fixture_payload("telegram-valid.json")).expect("write raw");
+
+        let report = ingest_multi_channel_live_raw_payload(&MultiChannelLivePayloadIngestConfig {
+            ingress_dir: ingress_dir.clone(),
+            payload_file: payload_file.clone(),
+            transport: MultiChannelTransport::Telegram,
+            provider: "telegram-bot-api".to_string(),
+        })
+        .expect("ingest should succeed");
+        assert_eq!(report.transport, MultiChannelTransport::Telegram);
+        assert_eq!(report.event_id, "42");
+        assert!(report.ingress_path.ends_with("telegram.ndjson"));
+
+        let lines = std::fs::read_to_string(ingress_dir.join("telegram.ndjson"))
+            .expect("read ingress file")
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+        let replay =
+            parse_multi_channel_live_inbound_envelope(lines[0].as_str()).expect("parse line");
+        assert_eq!(replay.event_id, "42");
+    }
+
+    #[test]
+    fn regression_build_envelope_from_raw_payload_rejects_non_object_payload() {
+        let error = build_multi_channel_live_envelope_from_raw_payload(
+            MultiChannelTransport::Discord,
+            "discord-gateway",
+            "\"not-an-object\"",
+        )
+        .expect_err("payload should fail");
+        assert_eq!(
+            error.code,
+            MultiChannelLiveIngressReasonCode::InvalidFieldType
+        );
+        assert!(error.message.contains("provider payload"));
     }
 }

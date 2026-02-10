@@ -38,6 +38,9 @@ class DemoSmokeRunnerTests(unittest.TestCase):
     def test_unit_repository_manifest_includes_live_mode_and_gateway_diagnostics(self):
         commands = demo_smoke_runner.load_manifest(DEFAULT_MANIFEST)
         names = [command.name for command in commands]
+        self.assertIn("multi-channel-live-ingest-telegram", names)
+        self.assertIn("multi-channel-live-ingest-discord", names)
+        self.assertIn("multi-channel-live-ingest-whatsapp", names)
         self.assertIn("multi-channel-live-runner", names)
         self.assertIn("multi-channel-transport-health", names)
         self.assertIn("multi-channel-status-inspect", names)

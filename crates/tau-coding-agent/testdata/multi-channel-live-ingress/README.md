@@ -24,3 +24,8 @@ Files:
 - `whatsapp-valid.json`: valid WhatsApp envelope.
 - `invalid-unsupported-transport.json`: unsupported transport regression sample.
 - `invalid-discord-missing-author.json`: missing required `payload.author` regression sample.
+
+Raw provider payload fixtures (for one-shot ingest command):
+- `raw/telegram-update.json`
+- `raw/discord-message.json`
+- `raw/whatsapp-message.json`

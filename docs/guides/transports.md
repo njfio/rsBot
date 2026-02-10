@@ -147,6 +147,28 @@ Required channel secrets:
 - WhatsApp access token: `TAU_WHATSAPP_ACCESS_TOKEN` or integration id `whatsapp-access-token`
 - WhatsApp phone number id: `TAU_WHATSAPP_PHONE_NUMBER_ID` or integration id `whatsapp-phone-number-id`
 
+One-shot provider payload ingest (raw payload -> live ingress NDJSON):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --multi-channel-live-ingest-file ./crates/tau-coding-agent/testdata/multi-channel-live-ingress/raw/telegram-update.json \
+  --multi-channel-live-ingest-transport telegram \
+  --multi-channel-live-ingest-provider telegram-bot-api \
+  --multi-channel-live-ingest-dir .tau/multi-channel/live-ingress
+```
+
+Supported ingest transports:
+
+- `telegram`
+- `discord`
+- `whatsapp`
+
+The command validates payload shape and appends one normalized envelope line to:
+
+- `<ingest-dir>/telegram.ndjson`
+- `<ingest-dir>/discord.ndjson`
+- `<ingest-dir>/whatsapp.ndjson`
+
 ```bash
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \

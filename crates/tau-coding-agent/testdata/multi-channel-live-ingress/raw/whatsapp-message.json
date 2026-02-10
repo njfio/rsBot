@@ -1,0 +1,15 @@
+{
+  "metadata": {
+    "phone_number_id": "phone-55"
+  },
+  "messages": [
+    {
+      "id": "wamid.HBg123",
+      "from": "15551234567",
+      "timestamp": "1760300000",
+      "text": {
+        "body": "hello from whatsapp"
+      }
+    }
+  ]
+}
