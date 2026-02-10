@@ -23,6 +23,10 @@ fn gateway_openresponses_mode_requested(cli: &Cli) -> bool {
     cli.gateway_openresponses_server
 }
 
+fn gateway_remote_profile_inspect_mode_requested(cli: &Cli) -> bool {
+    cli.gateway_remote_profile_inspect
+}
+
 fn multi_channel_channel_lifecycle_mode_requested(cli: &Cli) -> bool {
     cli.multi_channel_channel_status.is_some()
         || cli.multi_channel_channel_login.is_some()
@@ -106,6 +110,7 @@ pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.multi_channel_status_inspect
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
+        || cli.gateway_remote_profile_inspect
         || cli.gateway_status_inspect
         || cli.deployment_status_inspect
         || cli.custom_command_status_inspect
@@ -562,6 +567,7 @@ pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<
         || cli.multi_channel_route_inspect_file.is_some()
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
+        || cli.gateway_remote_profile_inspect
         || cli.gateway_status_inspect
         || cli.deployment_status_inspect
         || cli.custom_command_status_inspect
@@ -882,6 +888,7 @@ pub(crate) fn validate_daemon_cli(cli: &Cli) -> Result<()> {
         || cli.multi_channel_status_inspect
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
+        || cli.gateway_remote_profile_inspect
         || cli.gateway_status_inspect
         || cli.deployment_status_inspect
         || cli.custom_command_status_inspect
@@ -988,6 +995,70 @@ pub(crate) fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_gateway_remote_profile_inspect_cli(cli: &Cli) -> Result<()> {
+    if !gateway_remote_profile_inspect_mode_requested(cli) {
+        if cli.gateway_remote_profile_json {
+            bail!("--gateway-remote-profile-json requires --gateway-remote-profile-inspect");
+        }
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!(
+            "--gateway-remote-profile-inspect cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+        );
+    }
+    if cli.channel_store_inspect.is_some()
+        || cli.channel_store_repair.is_some()
+        || cli.transport_health_inspect.is_some()
+        || cli.github_status_inspect.is_some()
+        || cli.multi_channel_status_inspect
+        || cli.dashboard_status_inspect
+        || cli.multi_agent_status_inspect
+        || cli.gateway_status_inspect
+        || cli.deployment_status_inspect
+        || cli.custom_command_status_inspect
+        || cli.voice_status_inspect
+    {
+        bail!(
+            "--gateway-remote-profile-inspect cannot be combined with status/inspection preflight commands"
+        );
+    }
+    if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
+        || cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_channel_live_connectors_runner
+        || cli.multi_channel_live_ingest_file.is_some()
+        || cli.multi_channel_live_readiness_preflight
+        || multi_channel_channel_lifecycle_mode_requested(cli)
+        || cli.multi_channel_route_inspect_file.is_some()
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.deployment_wasm_inspect_manifest.is_some()
+        || project_index_mode_requested(cli)
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!(
+            "--gateway-remote-profile-inspect cannot be combined with active transport/runtime commands"
+        );
+    }
+
+    crate::gateway_remote_profile::evaluate_gateway_remote_profile(cli)?;
+    crate::gateway_remote_profile::validate_gateway_remote_profile_for_openresponses(cli)?;
+    Ok(())
+}
+
 pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()> {
     if !gateway_openresponses_mode_requested(cli) {
         return Ok(());
@@ -1071,6 +1142,7 @@ pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()>
             }
         }
     }
+    crate::gateway_remote_profile::validate_gateway_remote_profile_for_openresponses(cli)?;
     Ok(())
 }
 

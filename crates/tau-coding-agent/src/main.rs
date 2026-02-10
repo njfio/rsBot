@@ -28,6 +28,7 @@ mod events;
 mod extension_manifest;
 mod gateway_contract;
 mod gateway_openresponses;
+mod gateway_remote_profile;
 mod gateway_runtime;
 mod gateway_ws_protocol;
 mod gemini_cli_client;
@@ -140,9 +141,9 @@ pub(crate) use crate::cli_args::Cli;
 pub(crate) use crate::cli_types::{
     CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDaemonProfile,
     CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
-    CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
-    CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
-    CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
+    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
+    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
@@ -279,6 +280,8 @@ pub(crate) use crate::rpc_protocol::{
     execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
     execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
 };
+#[cfg(test)]
+pub(crate) use crate::runtime_cli_validation::validate_gateway_remote_profile_inspect_cli;
 #[cfg(test)]
 pub(crate) use crate::runtime_cli_validation::validate_multi_channel_live_connectors_runner_cli;
 pub(crate) use crate::runtime_cli_validation::{

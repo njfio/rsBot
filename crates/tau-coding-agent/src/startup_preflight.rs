@@ -68,6 +68,12 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         return Ok(true);
     }
 
+    if cli.gateway_remote_profile_inspect {
+        crate::runtime_cli_validation::validate_gateway_remote_profile_inspect_cli(cli)?;
+        crate::gateway_remote_profile::execute_gateway_remote_profile_inspect_command(cli)?;
+        return Ok(true);
+    }
+
     if crate::daemon_runtime::tau_daemon_mode_requested(cli) {
         validate_daemon_cli(cli)?;
         let config = crate::daemon_runtime::TauDaemonConfig {

@@ -54,6 +54,26 @@ cargo run -p tau-coding-agent -- \
   --gateway-openresponses-max-input-chars 32000
 ```
 
+Remote-access profile posture:
+
+- `--gateway-remote-profile local-only` (default)
+- `--gateway-remote-profile password-remote`
+- `--gateway-remote-profile proxy-remote`
+
+Inspect remote-access posture without starting the gateway:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-remote-profile-inspect \
+  --gateway-remote-profile-json
+```
+
+Detailed setup and rollback guidance:
+
+```bash
+cat docs/guides/gateway-remote-access.md
+```
+
 Auth mode summary:
 
 - `token` (default): bearer token required on `/v1/responses` and `/gateway/status`.
