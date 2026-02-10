@@ -435,6 +435,62 @@ Compatibility fixtures for protocol replay:
 - `crates/tau-coding-agent/testdata/gateway-ws-protocol/dispatch-unsupported-schema-continues.json`
 - `crates/tau-coding-agent/testdata/gateway-ws-protocol/dispatch-unknown-kind-continues.json`
 
+## Tau daemon lifecycle
+
+Use daemon lifecycle commands to install/start/stop/status/uninstall Tau daemon state and profile files.
+
+Install profile files (auto resolves host profile):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --daemon-install \
+  --daemon-state-dir .tau/daemon \
+  --daemon-profile auto
+```
+
+Start and stop lifecycle state:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --daemon-start \
+  --daemon-state-dir .tau/daemon
+
+cargo run -p tau-coding-agent -- \
+  --daemon-stop \
+  --daemon-stop-reason maintenance_window \
+  --daemon-state-dir .tau/daemon
+```
+
+Inspect status and diagnostics:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --daemon-status \
+  --daemon-status-json \
+  --daemon-state-dir .tau/daemon
+```
+
+Uninstall profile files:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --daemon-uninstall \
+  --daemon-state-dir .tau/daemon
+```
+
+Subcommand alias is also supported:
+
+```bash
+cargo run -p tau-coding-agent -- daemon status --json --state-dir .tau/daemon
+```
+
+Generated profile files:
+
+- launchd: `.tau/daemon/launchd/io.tau.coding-agent.plist`
+- systemd user: `.tau/daemon/systemd/tau-coding-agent.service`
+
+Runbook and troubleshooting commands: `docs/guides/daemon-ops.md`.
+
 ## Gateway contract runner
 
 Use this fixture-driven runtime mode to validate Tau gateway request handling, retry outcomes,

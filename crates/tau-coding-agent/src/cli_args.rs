@@ -4,10 +4,10 @@ use clap::{ArgAction, Parser};
 
 use crate::{
     release_channel_commands::RELEASE_LOOKUP_CACHE_TTL_MS, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule,
-    CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
-    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
+    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode,
+    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
+    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
 };
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -1124,6 +1124,99 @@ pub(crate) struct Cli {
         help = "Emit --gateway-service-status output as pretty JSON"
     )]
     pub(crate) gateway_service_status_json: bool,
+
+    #[arg(
+        long = "daemon-install",
+        env = "TAU_DAEMON_INSTALL",
+        conflicts_with = "daemon_uninstall",
+        conflicts_with = "daemon_start",
+        conflicts_with = "daemon_stop",
+        conflicts_with = "daemon_status",
+        help = "Install Tau daemon service profile files under --daemon-state-dir"
+    )]
+    pub(crate) daemon_install: bool,
+
+    #[arg(
+        long = "daemon-uninstall",
+        env = "TAU_DAEMON_UNINSTALL",
+        conflicts_with = "daemon_install",
+        conflicts_with = "daemon_start",
+        conflicts_with = "daemon_stop",
+        conflicts_with = "daemon_status",
+        help = "Uninstall Tau daemon service profile files from --daemon-state-dir"
+    )]
+    pub(crate) daemon_uninstall: bool,
+
+    #[arg(
+        long = "daemon-start",
+        env = "TAU_DAEMON_START",
+        conflicts_with = "daemon_install",
+        conflicts_with = "daemon_uninstall",
+        conflicts_with = "daemon_stop",
+        conflicts_with = "daemon_status",
+        help = "Start Tau daemon lifecycle state and create pid metadata in --daemon-state-dir"
+    )]
+    pub(crate) daemon_start: bool,
+
+    #[arg(
+        long = "daemon-stop",
+        env = "TAU_DAEMON_STOP",
+        conflicts_with = "daemon_install",
+        conflicts_with = "daemon_uninstall",
+        conflicts_with = "daemon_start",
+        conflicts_with = "daemon_status",
+        help = "Stop Tau daemon lifecycle state and clear pid metadata in --daemon-state-dir"
+    )]
+    pub(crate) daemon_stop: bool,
+
+    #[arg(
+        long = "daemon-stop-reason",
+        env = "TAU_DAEMON_STOP_REASON",
+        requires = "daemon_stop",
+        help = "Optional reason code/message recorded with --daemon-stop"
+    )]
+    pub(crate) daemon_stop_reason: Option<String>,
+
+    #[arg(
+        long = "daemon-status",
+        env = "TAU_DAEMON_STATUS",
+        conflicts_with = "daemon_install",
+        conflicts_with = "daemon_uninstall",
+        conflicts_with = "daemon_start",
+        conflicts_with = "daemon_stop",
+        help = "Inspect Tau daemon lifecycle state and diagnostics"
+    )]
+    pub(crate) daemon_status: bool,
+
+    #[arg(
+        long = "daemon-status-json",
+        env = "TAU_DAEMON_STATUS_JSON",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "daemon_status",
+        help = "Emit --daemon-status output as pretty JSON"
+    )]
+    pub(crate) daemon_status_json: bool,
+
+    #[arg(
+        long = "daemon-profile",
+        env = "TAU_DAEMON_PROFILE",
+        value_enum,
+        default_value_t = CliDaemonProfile::Auto,
+        help = "Daemon profile target: auto, launchd, or systemd-user"
+    )]
+    pub(crate) daemon_profile: CliDaemonProfile,
+
+    #[arg(
+        long = "daemon-state-dir",
+        env = "TAU_DAEMON_STATE_DIR",
+        default_value = ".tau/daemon",
+        help = "Directory used for Tau daemon lifecycle state and generated service files"
+    )]
+    pub(crate) daemon_state_dir: PathBuf,
 
     #[arg(
         long = "deployment-status-inspect",

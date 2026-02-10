@@ -17,6 +17,7 @@ mod commands;
 mod credentials;
 mod custom_command_contract;
 mod custom_command_runtime;
+mod daemon_runtime;
 mod dashboard_contract;
 mod dashboard_runtime;
 mod deployment_contract;
@@ -137,7 +138,7 @@ use crate::channel_store::ChannelStore;
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
 pub(crate) use crate::cli_types::{
-    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode,
+    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDaemonProfile,
     CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
     CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
     CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode, CliSessionImportMode,
@@ -282,15 +283,16 @@ pub(crate) use crate::rpc_protocol::{
 pub(crate) use crate::runtime_cli_validation::validate_multi_channel_live_connectors_runner_cli;
 pub(crate) use crate::runtime_cli_validation::{
     validate_browser_automation_contract_runner_cli, validate_browser_automation_preflight_cli,
-    validate_custom_command_contract_runner_cli, validate_dashboard_contract_runner_cli,
-    validate_deployment_contract_runner_cli, validate_deployment_wasm_package_cli,
-    validate_event_webhook_ingest_cli, validate_events_runner_cli,
-    validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
-    validate_gateway_service_cli, validate_github_issues_bridge_cli,
-    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
-    validate_multi_channel_live_ingest_cli, validate_multi_channel_live_runner_cli,
-    validate_project_index_cli, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
+    validate_custom_command_contract_runner_cli, validate_daemon_cli,
+    validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
+    validate_deployment_wasm_package_cli, validate_event_webhook_ingest_cli,
+    validate_events_runner_cli, validate_gateway_contract_runner_cli,
+    validate_gateway_openresponses_server_cli, validate_gateway_service_cli,
+    validate_github_issues_bridge_cli, validate_memory_contract_runner_cli,
+    validate_multi_agent_contract_runner_cli, validate_multi_channel_channel_lifecycle_cli,
+    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_ingest_cli,
+    validate_multi_channel_live_runner_cli, validate_project_index_cli, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli,
 };
 pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
@@ -417,10 +419,39 @@ use multi_channel_runtime::{
 use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
 use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
+pub(crate) fn normalize_daemon_subcommand_args(args: Vec<String>) -> Vec<String> {
+    if args.len() < 3 || args[1] != "daemon" {
+        return args;
+    }
+
+    let action_flag = match args[2].as_str() {
+        "install" => "--daemon-install",
+        "uninstall" => "--daemon-uninstall",
+        "start" => "--daemon-start",
+        "stop" => "--daemon-stop",
+        "status" => "--daemon-status",
+        _ => return args,
+    };
+
+    let mut normalized = Vec::with_capacity(args.len());
+    normalized.push(args[0].clone());
+    normalized.push(action_flag.to_string());
+    for argument in args.into_iter().skip(3) {
+        match argument.as_str() {
+            "--profile" => normalized.push("--daemon-profile".to_string()),
+            "--state-dir" => normalized.push("--daemon-state-dir".to_string()),
+            "--reason" => normalized.push("--daemon-stop-reason".to_string()),
+            "--json" => normalized.push("--daemon-status-json".to_string()),
+            other => normalized.push(other.to_string()),
+        }
+    }
+    normalized
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing();
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(normalize_daemon_subcommand_args(std::env::args().collect()));
     run_cli(cli).await
 }
 

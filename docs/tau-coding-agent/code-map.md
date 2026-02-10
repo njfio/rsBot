@@ -91,6 +91,7 @@ Use this area for skill packaging, verification, registry support, and lock work
 - `events.rs`: scheduler runner and webhook immediate-event ingestion.
 - `dashboard_contract.rs`: web dashboard/operator control-plane fixture/schema contract definitions and validators.
 - `dashboard_runtime.rs`: dashboard runtime loop (state transitions, retries, dedupe, channel-store writes).
+- `daemon_runtime.rs`: Tau daemon lifecycle install/start/stop/status helpers, profile rendering (launchd/systemd-user), and lifecycle diagnostics.
 - `gateway_openresponses.rs`: OpenResponses HTTP server (`/v1/responses`) plus gateway auth/session (`/gateway/auth/session`), gateway status (`/gateway/status`), websocket control (`/gateway/ws`), and webchat endpoint.
 - `gateway_ws_protocol.rs`: websocket control-plane frame schema, version compatibility, parse/error contracts, and fixture replay compatibility tests.
 - `deployment_contract.rs`: cloud deployment + WASM deliverable fixture/schema contract definitions and validators.
@@ -134,6 +135,7 @@ Use this area for narrow utility behavior reused across startup/runtime modules.
 - `tests.rs`: large integration/regression suite for `tau-coding-agent`.
 - `dashboard_contract.rs`: dashboard contract schema/fixture validation and replay contract tests.
 - `dashboard_runtime.rs`: dashboard runtime tests for queueing, retries, idempotency, and health signals.
+- `daemon_runtime.rs`: daemon lifecycle tests for profile rendering, install/start/stop/status flows, and stale-state recovery behavior.
 - `deployment_contract.rs`: deployment/WASM fixture/schema compatibility and replay contract tests.
 - `deployment_runtime.rs`: deployment/WASM runtime tests for retries, idempotency, and health signals.
 - `deployment_wasm.rs`: deployment WASM package/manifest tests (hash validation, constraints, regression guards).

@@ -140,6 +140,40 @@ impl CliGatewayOpenResponsesAuthMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CliDaemonProfile {
+    Auto,
+    Launchd,
+    SystemdUser,
+}
+
+impl CliDaemonProfile {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CliDaemonProfile::Auto => "auto",
+            CliDaemonProfile::Launchd => "launchd",
+            CliDaemonProfile::SystemdUser => "systemd-user",
+        }
+    }
+
+    pub(crate) fn supported_on_host(self) -> bool {
+        match self {
+            CliDaemonProfile::Auto => true,
+            CliDaemonProfile::Launchd => cfg!(target_os = "macos"),
+            CliDaemonProfile::SystemdUser => cfg!(target_os = "linux"),
+        }
+    }
+
+    pub(crate) fn from_str_label(label: &str) -> Option<Self> {
+        match label.trim() {
+            "auto" => Some(CliDaemonProfile::Auto),
+            "launchd" => Some(CliDaemonProfile::Launchd),
+            "systemd-user" => Some(CliDaemonProfile::SystemdUser),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum CliCredentialStoreEncryptionMode {
     Auto,
     None,

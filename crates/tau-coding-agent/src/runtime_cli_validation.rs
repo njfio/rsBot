@@ -11,6 +11,14 @@ fn gateway_service_mode_requested(cli: &Cli) -> bool {
     cli.gateway_service_start || cli.gateway_service_stop || cli.gateway_service_status
 }
 
+fn daemon_mode_requested(cli: &Cli) -> bool {
+    cli.daemon_install
+        || cli.daemon_uninstall
+        || cli.daemon_start
+        || cli.daemon_stop
+        || cli.daemon_status
+}
+
 fn gateway_openresponses_mode_requested(cli: &Cli) -> bool {
     cli.gateway_openresponses_server
 }
@@ -102,6 +110,7 @@ pub(crate) fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.custom_command_status_inspect
         || cli.voice_status_inspect
         || gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
     {
         bail!("project index commands cannot be combined with active transport/runtime or status preflight commands");
     }
@@ -560,6 +569,7 @@ pub(crate) fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<
         bail!("--multi-channel-channel-* commands cannot be combined with status/inspection preflight commands");
     }
     if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
         || gateway_openresponses_mode_requested(cli)
         || cli.github_issues_bridge
         || cli.slack_bridge
@@ -837,6 +847,84 @@ pub(crate) fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_daemon_cli(cli: &Cli) -> Result<()> {
+    if !daemon_mode_requested(cli) {
+        return Ok(());
+    }
+
+    let selected_modes = [
+        cli.daemon_install,
+        cli.daemon_uninstall,
+        cli.daemon_start,
+        cli.daemon_stop,
+        cli.daemon_status,
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    if selected_modes > 1 {
+        bail!(
+            "--daemon-install, --daemon-uninstall, --daemon-start, --daemon-stop, and --daemon-status are mutually exclusive"
+        );
+    }
+    if has_prompt_or_command_input(cli) {
+        bail!(
+            "--daemon-* commands cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+        );
+    }
+    if cli.channel_store_inspect.is_some()
+        || cli.channel_store_repair.is_some()
+        || cli.transport_health_inspect.is_some()
+        || cli.github_status_inspect.is_some()
+        || cli.multi_channel_status_inspect
+        || cli.dashboard_status_inspect
+        || cli.multi_agent_status_inspect
+        || cli.gateway_status_inspect
+        || cli.deployment_status_inspect
+        || cli.custom_command_status_inspect
+        || cli.voice_status_inspect
+    {
+        bail!("--daemon-* commands cannot be combined with status/inspection preflight commands");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.gateway_openresponses_server
+        || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+        || gateway_service_mode_requested(cli)
+    {
+        bail!("--daemon-* commands cannot be combined with active transport/runtime flags");
+    }
+    if cli.daemon_status_json && !cli.daemon_status {
+        bail!("--daemon-status-json requires --daemon-status");
+    }
+    if cli.daemon_stop {
+        let stop_reason = cli.daemon_stop_reason.as_deref().unwrap_or_default();
+        if !stop_reason.is_empty() && stop_reason.trim().is_empty() {
+            bail!("--daemon-stop-reason cannot be empty or whitespace");
+        }
+    }
+    if cli.daemon_state_dir.exists() && !cli.daemon_state_dir.is_dir() {
+        bail!(
+            "--daemon-state-dir '{}' must point to a directory when it exists",
+            cli.daemon_state_dir.display()
+        );
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
     if !gateway_service_mode_requested(cli) {
         return Ok(());
@@ -874,6 +962,7 @@ pub(crate) fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || daemon_mode_requested(cli)
     {
         bail!(
             "--gateway-service-* commands cannot be combined with active transport runtime flags"
@@ -909,6 +998,7 @@ pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()>
         bail!("--gateway-openresponses-server cannot be used together with --no-session");
     }
     if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
         || cli.github_issues_bridge
         || cli.slack_bridge
         || cli.events_runner
@@ -925,7 +1015,7 @@ pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()>
         || cli.voice_contract_runner
     {
         bail!(
-            "--gateway-openresponses-server cannot be combined with gateway service commands or other active transport runtime flags"
+            "--gateway-openresponses-server cannot be combined with gateway service/daemon commands or other active transport runtime flags"
         );
     }
     let auth_token = cli
@@ -1083,6 +1173,7 @@ pub(crate) fn validate_deployment_wasm_package_cli(cli: &Cli) -> Result<()> {
         bail!("--deployment-wasm-package-module cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
     }
     if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
         || gateway_openresponses_mode_requested(cli)
         || cli.github_issues_bridge
         || cli.slack_bridge

@@ -52,20 +52,21 @@ use super::{
     format_id_list, format_remap_ids, handle_command, handle_command_with_session_import_mode,
     initialize_session, is_retryable_provider_error, load_branch_aliases, load_credential_store,
     load_macro_file, load_multi_agent_route_table, load_profile_store, load_session_bookmarks,
-    load_trust_root_records, parse_auth_command, parse_branch_alias_command, parse_command,
-    parse_command_file, parse_doctor_command_args, parse_integration_auth_command,
-    parse_macro_command, parse_numbered_plan_steps, parse_profile_command,
-    parse_sandbox_command_tokens, parse_session_bookmark_command, parse_session_diff_args,
-    parse_session_search_args, parse_session_stats_args, parse_skills_lock_diff_args,
-    parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-    parse_skills_trust_mutation_args, parse_skills_verify_args, parse_trust_rotation_spec,
-    parse_trusted_root_spec, percentile_duration_ms, provider_auth_capability,
-    refresh_provider_access_token, register_runtime_extension_tool_hook_subscriber,
-    render_audit_summary, render_command_help, render_doctor_report, render_doctor_report_json,
-    render_help_overview, render_macro_list, render_macro_show, render_profile_diffs,
-    render_profile_list, render_profile_show, render_session_diff, render_session_graph_dot,
-    render_session_graph_mermaid, render_session_stats, render_session_stats_json,
-    render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+    load_trust_root_records, normalize_daemon_subcommand_args, parse_auth_command,
+    parse_branch_alias_command, parse_command, parse_command_file, parse_doctor_command_args,
+    parse_integration_auth_command, parse_macro_command, parse_numbered_plan_steps,
+    parse_profile_command, parse_sandbox_command_tokens, parse_session_bookmark_command,
+    parse_session_diff_args, parse_session_search_args, parse_session_stats_args,
+    parse_skills_lock_diff_args, parse_skills_prune_args, parse_skills_search_args,
+    parse_skills_trust_list_args, parse_skills_trust_mutation_args, parse_skills_verify_args,
+    parse_trust_rotation_spec, parse_trusted_root_spec, percentile_duration_ms,
+    provider_auth_capability, refresh_provider_access_token,
+    register_runtime_extension_tool_hook_subscriber, render_audit_summary, render_command_help,
+    render_doctor_report, render_doctor_report_json, render_help_overview, render_macro_list,
+    render_macro_show, render_profile_diffs, render_profile_list, render_profile_show,
+    render_session_diff, render_session_graph_dot, render_session_graph_mermaid,
+    render_session_stats, render_session_stats_json, render_skills_list,
+    render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
     render_skills_lock_write_success, render_skills_search, render_skills_show,
     render_skills_sync_drift_details, render_skills_trust_list, render_skills_verify_report,
     resolve_credential_store_encryption_mode, resolve_fallback_models, resolve_prompt_input,
@@ -79,7 +80,7 @@ use super::{
     save_session_bookmarks, search_session_entries, session_bookmark_path_for_session,
     session_message_preview, shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
     tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-    validate_branch_alias_name, validate_custom_command_contract_runner_cli,
+    validate_branch_alias_name, validate_custom_command_contract_runner_cli, validate_daemon_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
     validate_deployment_wasm_package_cli, validate_event_webhook_ingest_cli,
     validate_events_runner_cli, validate_gateway_contract_runner_cli,
@@ -92,11 +93,11 @@ use super::{
     validate_rpc_frame_file, validate_session_file, validate_skills_prune_file_name,
     validate_slack_bridge_cli, validate_voice_contract_runner_cli, AuthCommand, AuthCommandConfig,
     BranchAliasCommand, BranchAliasFile, Cli, CliBashProfile, CliCommandFileErrorMode,
-    CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule,
-    CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
-    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm, ClientRoute,
-    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+    CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
+    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode,
+    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode,
+    CliProviderAuthMode, CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    ClientRoute, CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
     CredentialStoreData, CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult,
     DoctorCommandArgs, DoctorCommandConfig, DoctorCommandOutputFormat,
     DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus, DoctorStatus,
@@ -408,6 +409,15 @@ fn test_cli() -> Cli {
         gateway_service_stop_reason: None,
         gateway_service_status: false,
         gateway_service_status_json: false,
+        daemon_install: false,
+        daemon_uninstall: false,
+        daemon_start: false,
+        daemon_stop: false,
+        daemon_stop_reason: None,
+        daemon_status: false,
+        daemon_status_json: false,
+        daemon_profile: CliDaemonProfile::Auto,
+        daemon_state_dir: PathBuf::from(".tau/daemon"),
         deployment_status_inspect: false,
         deployment_status_json: false,
         custom_command_status_inspect: false,
@@ -750,6 +760,7 @@ fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     cli.memory_state_dir = tau_root.join("memory");
     cli.dashboard_state_dir = tau_root.join("dashboard");
     cli.gateway_state_dir = tau_root.join("gateway");
+    cli.daemon_state_dir = tau_root.join("daemon");
     cli.deployment_state_dir = tau_root.join("deployment");
     cli.deployment_wasm_package_output_dir = tau_root.join("deployment/wasm-artifacts");
     cli.custom_command_state_dir = tau_root.join("custom-command");
@@ -2984,6 +2995,88 @@ fn regression_cli_gateway_service_start_conflicts_with_gateway_service_stop() {
     ]);
     let error = parse.expect_err("start and stop should conflict");
     assert!(error.to_string().contains("cannot be used with"));
+}
+
+#[test]
+fn unit_cli_daemon_flags_default_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.daemon_install);
+    assert!(!cli.daemon_uninstall);
+    assert!(!cli.daemon_start);
+    assert!(!cli.daemon_stop);
+    assert!(cli.daemon_stop_reason.is_none());
+    assert!(!cli.daemon_status);
+    assert!(!cli.daemon_status_json);
+    assert_eq!(cli.daemon_profile, CliDaemonProfile::Auto);
+    assert_eq!(cli.daemon_state_dir, PathBuf::from(".tau/daemon"));
+}
+
+#[test]
+fn functional_cli_daemon_stop_accepts_reason_profile_and_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--daemon-stop",
+        "--daemon-stop-reason",
+        "operator_maintenance",
+        "--daemon-profile",
+        "systemd-user",
+        "--daemon-state-dir",
+        ".tau/daemon-service",
+    ]);
+    assert!(cli.daemon_stop);
+    assert_eq!(
+        cli.daemon_stop_reason.as_deref(),
+        Some("operator_maintenance")
+    );
+    assert_eq!(cli.daemon_profile, CliDaemonProfile::SystemdUser);
+    assert_eq!(cli.daemon_state_dir, PathBuf::from(".tau/daemon-service"));
+}
+
+#[test]
+fn functional_cli_daemon_status_accepts_json_output() {
+    let cli = parse_cli_with_stack(["tau-rs", "--daemon-status", "--daemon-status-json"]);
+    assert!(cli.daemon_status);
+    assert!(cli.daemon_status_json);
+}
+
+#[test]
+fn regression_cli_daemon_status_json_requires_daemon_status() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--daemon-status-json"]);
+    let error = parse.expect_err("daemon status json should require daemon status flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_daemon_stop_reason_requires_daemon_stop() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--daemon-stop-reason", "ops-window"]);
+    let error = parse.expect_err("daemon stop reason should require daemon stop flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_normalize_daemon_subcommand_args_maps_action_and_alias_flags() {
+    let normalized = normalize_daemon_subcommand_args(vec![
+        "tau-rs".to_string(),
+        "daemon".to_string(),
+        "status".to_string(),
+        "--json".to_string(),
+        "--state-dir".to_string(),
+        ".tau/ops-daemon".to_string(),
+    ]);
+    assert_eq!(
+        normalized,
+        vec![
+            "tau-rs",
+            "--daemon-status",
+            "--daemon-status-json",
+            "--daemon-state-dir",
+            ".tau/ops-daemon",
+        ]
+    );
 }
 
 #[test]
@@ -15067,6 +15160,63 @@ fn regression_validate_gateway_service_cli_rejects_whitespace_stop_reason() {
 }
 
 #[test]
+fn unit_validate_daemon_cli_accepts_status_mode() {
+    let mut cli = test_cli();
+    cli.daemon_status = true;
+    cli.daemon_status_json = true;
+
+    validate_daemon_cli(&cli).expect("daemon status config should validate");
+}
+
+#[test]
+fn functional_validate_daemon_cli_rejects_prompt_conflicts() {
+    let mut cli = test_cli();
+    cli.daemon_install = true;
+    cli.prompt = Some("conflict".to_string());
+
+    let error = validate_daemon_cli(&cli).expect_err("prompt conflict");
+    assert!(error
+        .to_string()
+        .contains("--daemon-* commands cannot be combined"));
+}
+
+#[test]
+fn integration_validate_daemon_cli_rejects_transport_conflicts() {
+    let mut cli = test_cli();
+    cli.daemon_start = true;
+    cli.gateway_contract_runner = true;
+
+    let error = validate_daemon_cli(&cli).expect_err("transport conflict");
+    assert!(error
+        .to_string()
+        .contains("--daemon-* commands cannot be combined with active transport/runtime flags"));
+}
+
+#[test]
+fn integration_validate_daemon_cli_rejects_status_preflight_conflicts() {
+    let mut cli = test_cli();
+    cli.daemon_status = true;
+    cli.gateway_status_inspect = true;
+
+    let error = validate_daemon_cli(&cli).expect_err("status conflict");
+    assert!(error.to_string().contains(
+        "--daemon-* commands cannot be combined with status/inspection preflight commands"
+    ));
+}
+
+#[test]
+fn regression_validate_daemon_cli_rejects_whitespace_stop_reason() {
+    let mut cli = test_cli();
+    cli.daemon_stop = true;
+    cli.daemon_stop_reason = Some("   ".to_string());
+
+    let error = validate_daemon_cli(&cli).expect_err("whitespace stop reason should fail");
+    assert!(error
+        .to_string()
+        .contains("--daemon-stop-reason cannot be empty or whitespace"));
+}
+
+#[test]
 fn unit_validate_gateway_openresponses_server_cli_accepts_minimum_configuration() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
@@ -15103,7 +15253,7 @@ fn integration_validate_gateway_openresponses_server_cli_rejects_transport_confl
     let error = validate_gateway_openresponses_server_cli(&cli)
         .expect_err("transport conflict should fail");
     assert!(error.to_string().contains(
-        "--gateway-openresponses-server cannot be combined with gateway service commands or other active transport runtime flags"
+        "--gateway-openresponses-server cannot be combined with gateway service/daemon commands or other active transport runtime flags"
     ));
 }
 
@@ -20557,6 +20707,88 @@ fn integration_execute_startup_preflight_runs_gateway_service_stop_and_status_mo
     let status_handled =
         execute_startup_preflight(&status_cli).expect("gateway service status preflight");
     assert!(status_handled);
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_daemon_install_and_start_modes() {
+    let temp = tempdir().expect("tempdir");
+    let mut install_cli = test_cli();
+    set_workspace_tau_paths(&mut install_cli, temp.path());
+    install_cli.daemon_install = true;
+    install_cli.daemon_profile = CliDaemonProfile::SystemdUser;
+
+    let install_handled =
+        execute_startup_preflight(&install_cli).expect("daemon install preflight");
+    assert!(install_handled);
+    let service_file = install_cli
+        .daemon_state_dir
+        .join("systemd")
+        .join("tau-coding-agent.service");
+    assert!(service_file.exists());
+
+    let mut start_cli = test_cli();
+    set_workspace_tau_paths(&mut start_cli, temp.path());
+    start_cli.daemon_start = true;
+    start_cli.daemon_profile = CliDaemonProfile::SystemdUser;
+
+    let start_handled = execute_startup_preflight(&start_cli).expect("daemon start preflight");
+    assert!(start_handled);
+    assert!(start_cli.daemon_state_dir.join("daemon.pid").exists());
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_daemon_stop_status_and_uninstall_modes() {
+    let temp = tempdir().expect("tempdir");
+    let mut install_cli = test_cli();
+    set_workspace_tau_paths(&mut install_cli, temp.path());
+    install_cli.daemon_install = true;
+    install_cli.daemon_profile = CliDaemonProfile::SystemdUser;
+    execute_startup_preflight(&install_cli).expect("daemon install preflight");
+
+    let mut start_cli = test_cli();
+    set_workspace_tau_paths(&mut start_cli, temp.path());
+    start_cli.daemon_start = true;
+    start_cli.daemon_profile = CliDaemonProfile::SystemdUser;
+    execute_startup_preflight(&start_cli).expect("daemon start preflight");
+
+    let mut stop_cli = test_cli();
+    set_workspace_tau_paths(&mut stop_cli, temp.path());
+    stop_cli.daemon_stop = true;
+    stop_cli.daemon_profile = CliDaemonProfile::SystemdUser;
+    stop_cli.daemon_stop_reason = Some("maintenance_window".to_string());
+    let stop_handled = execute_startup_preflight(&stop_cli).expect("daemon stop preflight");
+    assert!(stop_handled);
+    assert!(!stop_cli.daemon_state_dir.join("daemon.pid").exists());
+
+    let state_raw =
+        std::fs::read_to_string(stop_cli.daemon_state_dir.join("state.json")).expect("read state");
+    let parsed: serde_json::Value = serde_json::from_str(&state_raw).expect("parse state");
+    assert_eq!(parsed["running"], false);
+    assert_eq!(
+        parsed["last_stop_reason"].as_str(),
+        Some("maintenance_window")
+    );
+
+    let mut status_cli = test_cli();
+    set_workspace_tau_paths(&mut status_cli, temp.path());
+    status_cli.daemon_status = true;
+    status_cli.daemon_status_json = true;
+    status_cli.daemon_profile = CliDaemonProfile::SystemdUser;
+    let status_handled = execute_startup_preflight(&status_cli).expect("daemon status preflight");
+    assert!(status_handled);
+
+    let mut uninstall_cli = test_cli();
+    set_workspace_tau_paths(&mut uninstall_cli, temp.path());
+    uninstall_cli.daemon_uninstall = true;
+    uninstall_cli.daemon_profile = CliDaemonProfile::SystemdUser;
+    let uninstall_handled =
+        execute_startup_preflight(&uninstall_cli).expect("daemon uninstall preflight");
+    assert!(uninstall_handled);
+    let service_file = uninstall_cli
+        .daemon_state_dir
+        .join("systemd")
+        .join("tau-coding-agent.service");
+    assert!(!service_file.exists());
 }
 
 #[test]
