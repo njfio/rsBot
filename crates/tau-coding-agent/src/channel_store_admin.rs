@@ -11,6 +11,7 @@ enum TransportHealthInspectTarget {
     Memory,
     Dashboard,
     Gateway,
+    Deployment,
     CustomCommand,
     Voice,
 }
@@ -82,6 +83,16 @@ struct VoiceStatusStateFile {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct DeploymentStatusStateFile {
+    #[serde(default)]
+    processed_case_keys: Vec<String>,
+    #[serde(default)]
+    rollouts: Vec<DeploymentStatusPlanRecord>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct MultiAgentStatusRoutedCase {
     #[serde(default)]
     phase: String,
@@ -132,6 +143,24 @@ struct VoiceStatusInteractionRecord {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct DeploymentStatusPlanRecord {
+    #[serde(default)]
+    deploy_target: String,
+    #[serde(default)]
+    runtime_profile: String,
+    #[serde(default)]
+    environment: String,
+    #[serde(default)]
+    status_code: u16,
+    #[serde(default)]
+    outcome: String,
+    #[serde(default)]
+    error_code: String,
+    #[serde(default)]
+    replicas: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct DashboardCycleReportLine {
     #[serde(default)]
     reason_codes: Vec<String>,
@@ -165,6 +194,14 @@ struct CustomCommandCycleReportLine {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct VoiceCycleReportLine {
+    #[serde(default)]
+    reason_codes: Vec<String>,
+    #[serde(default)]
+    health_reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct DeploymentCycleReportLine {
     #[serde(default)]
     reason_codes: Vec<String>,
     #[serde(default)]
@@ -212,6 +249,16 @@ struct CustomCommandCycleReportSummary {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct VoiceCycleReportSummary {
+    events_log_present: bool,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    last_health_reason: String,
+    reason_code_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DeploymentCycleReportSummary {
     events_log_present: bool,
     cycle_reports: usize,
     invalid_cycle_reports: usize,
@@ -322,6 +369,32 @@ struct VoiceStatusInspectReport {
     health: TransportHealthSnapshot,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DeploymentStatusInspectReport {
+    state_path: String,
+    events_log_path: String,
+    events_log_present: bool,
+    health_state: String,
+    health_reason: String,
+    rollout_gate: String,
+    processed_case_count: usize,
+    rollout_count: usize,
+    target_counts: BTreeMap<String, usize>,
+    runtime_profile_counts: BTreeMap<String, usize>,
+    environment_counts: BTreeMap<String, usize>,
+    outcome_counts: BTreeMap<String, usize>,
+    status_code_counts: BTreeMap<String, usize>,
+    error_code_counts: BTreeMap<String, usize>,
+    total_replicas: u64,
+    wasm_rollout_count: usize,
+    cloud_rollout_count: usize,
+    cycle_reports: usize,
+    invalid_cycle_reports: usize,
+    last_reason_codes: Vec<String>,
+    reason_code_counts: BTreeMap<String, usize>,
+    health: TransportHealthSnapshot,
+}
+
 pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
     if let Some(raw_target) = cli.transport_health_inspect.as_deref() {
         let target = parse_transport_health_inspect_target(raw_target)?;
@@ -408,6 +481,20 @@ pub(crate) fn execute_channel_store_admin_command(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
+    if cli.deployment_status_inspect {
+        let report = collect_deployment_status_report(cli)?;
+        if cli.deployment_status_json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .context("failed to render deployment status json")?
+            );
+        } else {
+            println!("{}", render_deployment_status_report(&report));
+        }
+        return Ok(());
+    }
+
     if let Some(raw_ref) = cli.channel_store_inspect.as_deref() {
         let channel_ref = ChannelStore::parse_channel_ref(raw_ref)?;
         let store = ChannelStore::open(
@@ -472,7 +559,7 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, custom-command, or voice",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, deployment, custom-command, or voice",
             raw
         );
     }
@@ -498,6 +585,9 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
     if trimmed.eq_ignore_ascii_case("gateway") {
         return Ok(TransportHealthInspectTarget::Gateway);
     }
+    if trimmed.eq_ignore_ascii_case("deployment") {
+        return Ok(TransportHealthInspectTarget::Deployment);
+    }
     if trimmed.eq_ignore_ascii_case("custom-command")
         || trimmed.eq_ignore_ascii_case("customcommand")
     {
@@ -509,13 +599,13 @@ fn parse_transport_health_inspect_target(raw: &str) -> Result<TransportHealthIns
 
     let Some((transport, repo_slug)) = trimmed.split_once(':') else {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, custom-command, or voice",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, deployment, custom-command, or voice",
             raw
         );
     };
     if !transport.eq_ignore_ascii_case("github") {
         bail!(
-            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, custom-command, or voice",
+            "invalid --transport-health-inspect '{}', expected slack, github, github:owner/repo, multi-channel, multi-agent, memory, dashboard, gateway, deployment, custom-command, or voice",
             raw
         );
     }
@@ -557,6 +647,9 @@ fn collect_transport_health_rows(
         }
         TransportHealthInspectTarget::Gateway => {
             Ok(vec![collect_gateway_transport_health_row(cli)?])
+        }
+        TransportHealthInspectTarget::Deployment => {
+            Ok(vec![collect_deployment_transport_health_row(cli)?])
         }
         TransportHealthInspectTarget::CustomCommand => {
             Ok(vec![collect_custom_command_transport_health_row(cli)?])
@@ -687,6 +780,17 @@ fn collect_gateway_transport_health_row(cli: &Cli) -> Result<TransportHealthInsp
     Ok(TransportHealthInspectRow {
         transport: "gateway".to_string(),
         target: "gateway-service".to_string(),
+        state_path: state_path.display().to_string(),
+        health,
+    })
+}
+
+fn collect_deployment_transport_health_row(cli: &Cli) -> Result<TransportHealthInspectRow> {
+    let state_path = cli.deployment_state_dir.join("state.json");
+    let health = load_transport_health_snapshot(&state_path)?;
+    Ok(TransportHealthInspectRow {
+        transport: "deployment".to_string(),
+        target: "cloud-and-wasm-runtime".to_string(),
         state_path: state_path.display().to_string(),
         health,
     })
@@ -1029,6 +1133,92 @@ fn collect_voice_status_report(cli: &Cli) -> Result<VoiceStatusInspectReport> {
     })
 }
 
+fn collect_deployment_status_report(cli: &Cli) -> Result<DeploymentStatusInspectReport> {
+    let state_path = cli.deployment_state_dir.join("state.json");
+    let events_log_path = cli.deployment_state_dir.join("runtime-events.jsonl");
+    let state = load_deployment_status_state(&state_path)?;
+    let cycle_summary = load_deployment_cycle_report_summary(&events_log_path)?;
+    let classification = state.health.classify();
+    let health_reason = if !cycle_summary.last_health_reason.trim().is_empty() {
+        cycle_summary.last_health_reason.clone()
+    } else {
+        classification.reason
+    };
+    let rollout_gate = if classification.state.as_str() == "healthy" {
+        "pass"
+    } else {
+        "hold"
+    };
+
+    let mut target_counts = BTreeMap::new();
+    let mut runtime_profile_counts = BTreeMap::new();
+    let mut environment_counts = BTreeMap::new();
+    let mut outcome_counts = BTreeMap::new();
+    let mut status_code_counts = BTreeMap::new();
+    let mut error_code_counts = BTreeMap::new();
+    let mut total_replicas = 0_u64;
+    let mut wasm_rollout_count = 0usize;
+    let mut cloud_rollout_count = 0usize;
+    for rollout in &state.rollouts {
+        let deploy_target = rollout.deploy_target.trim().to_ascii_lowercase();
+        if !deploy_target.is_empty() {
+            increment_count(&mut target_counts, &deploy_target);
+            if deploy_target == "wasm" {
+                wasm_rollout_count = wasm_rollout_count.saturating_add(1);
+            } else {
+                cloud_rollout_count = cloud_rollout_count.saturating_add(1);
+            }
+        }
+        if !rollout.runtime_profile.trim().is_empty() {
+            increment_count(
+                &mut runtime_profile_counts,
+                &rollout.runtime_profile.trim().to_ascii_lowercase(),
+            );
+        }
+        if !rollout.environment.trim().is_empty() {
+            increment_count(
+                &mut environment_counts,
+                &rollout.environment.trim().to_ascii_lowercase(),
+            );
+        }
+        if !rollout.outcome.trim().is_empty() {
+            increment_count(&mut outcome_counts, rollout.outcome.trim());
+        }
+        if rollout.status_code > 0 {
+            increment_count(&mut status_code_counts, &rollout.status_code.to_string());
+        }
+        if !rollout.error_code.trim().is_empty() {
+            increment_count(&mut error_code_counts, rollout.error_code.trim());
+        }
+        total_replicas = total_replicas.saturating_add(u64::from(rollout.replicas));
+    }
+
+    Ok(DeploymentStatusInspectReport {
+        state_path: state_path.display().to_string(),
+        events_log_path: events_log_path.display().to_string(),
+        events_log_present: cycle_summary.events_log_present,
+        health_state: classification.state.as_str().to_string(),
+        health_reason,
+        rollout_gate: rollout_gate.to_string(),
+        processed_case_count: state.processed_case_keys.len(),
+        rollout_count: state.rollouts.len(),
+        target_counts,
+        runtime_profile_counts,
+        environment_counts,
+        outcome_counts,
+        status_code_counts,
+        error_code_counts,
+        total_replicas,
+        wasm_rollout_count,
+        cloud_rollout_count,
+        cycle_reports: cycle_summary.cycle_reports,
+        invalid_cycle_reports: cycle_summary.invalid_cycle_reports,
+        last_reason_codes: cycle_summary.last_reason_codes,
+        reason_code_counts: cycle_summary.reason_code_counts,
+        health: state.health,
+    })
+}
+
 fn load_multi_agent_status_state(path: &Path) -> Result<MultiAgentStatusStateFile> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -1054,6 +1244,13 @@ fn load_voice_status_state(path: &Path) -> Result<VoiceStatusStateFile> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str::<VoiceStatusStateFile>(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn load_deployment_status_state(path: &Path) -> Result<DeploymentStatusStateFile> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_str::<DeploymentStatusStateFile>(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))
 }
 
@@ -1183,6 +1380,41 @@ fn load_voice_cycle_report_summary(path: &Path) -> Result<VoiceCycleReportSummar
             continue;
         }
         match serde_json::from_str::<VoiceCycleReportLine>(trimmed) {
+            Ok(report) => {
+                summary.cycle_reports = summary.cycle_reports.saturating_add(1);
+                summary.last_reason_codes = report.reason_codes.clone();
+                summary.last_health_reason = report.health_reason;
+                for reason_code in report.reason_codes {
+                    increment_count(&mut summary.reason_code_counts, reason_code.trim());
+                }
+            }
+            Err(_) => {
+                summary.invalid_cycle_reports = summary.invalid_cycle_reports.saturating_add(1);
+            }
+        }
+    }
+    Ok(summary)
+}
+
+fn load_deployment_cycle_report_summary(path: &Path) -> Result<DeploymentCycleReportSummary> {
+    if !path.exists() {
+        return Ok(DeploymentCycleReportSummary {
+            events_log_present: false,
+            ..DeploymentCycleReportSummary::default()
+        });
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut summary = DeploymentCycleReportSummary {
+        events_log_present: true,
+        ..DeploymentCycleReportSummary::default()
+    };
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<DeploymentCycleReportLine>(trimmed) {
             Ok(report) => {
                 summary.cycle_reports = summary.cycle_reports.saturating_add(1);
                 summary.last_reason_codes = report.reason_codes.clone();
@@ -1404,6 +1636,42 @@ fn render_voice_status_report(report: &VoiceStatusInspectReport) -> String {
     )
 }
 
+fn render_deployment_status_report(report: &DeploymentStatusInspectReport) -> String {
+    let reason_codes = if report.last_reason_codes.is_empty() {
+        "none".to_string()
+    } else {
+        report.last_reason_codes.join(",")
+    };
+    format!(
+        "deployment status inspect: state_path={} events_log_path={} events_log_present={} health_state={} health_reason={} rollout_gate={} processed_case_count={} rollout_count={} target_counts={} runtime_profile_counts={} environment_counts={} outcome_counts={} status_code_counts={} error_code_counts={} total_replicas={} wasm_rollout_count={} cloud_rollout_count={} cycle_reports={} invalid_cycle_reports={} last_reason_codes={} reason_code_counts={} queue_depth={} failure_streak={} last_cycle_failed={} last_cycle_completed={}",
+        report.state_path,
+        report.events_log_path,
+        report.events_log_present,
+        report.health_state,
+        report.health_reason,
+        report.rollout_gate,
+        report.processed_case_count,
+        report.rollout_count,
+        render_counter_map(&report.target_counts),
+        render_counter_map(&report.runtime_profile_counts),
+        render_counter_map(&report.environment_counts),
+        render_counter_map(&report.outcome_counts),
+        render_counter_map(&report.status_code_counts),
+        render_counter_map(&report.error_code_counts),
+        report.total_replicas,
+        report.wasm_rollout_count,
+        report.cloud_rollout_count,
+        report.cycle_reports,
+        report.invalid_cycle_reports,
+        reason_codes,
+        render_counter_map(&report.reason_code_counts),
+        report.health.queue_depth,
+        report.health.failure_streak,
+        report.health.last_cycle_failed,
+        report.health.last_cycle_completed,
+    )
+}
+
 fn render_counter_map(counts: &BTreeMap<String, usize>) -> String {
     if counts.is_empty() {
         return "none".to_string();
@@ -1437,10 +1705,11 @@ mod tests {
 
     use super::{
         collect_custom_command_status_report, collect_dashboard_status_report,
-        collect_gateway_status_report, collect_multi_agent_status_report,
-        collect_transport_health_rows, collect_voice_status_report,
-        parse_transport_health_inspect_target, render_custom_command_status_report,
-        render_dashboard_status_report, render_gateway_status_report,
+        collect_deployment_status_report, collect_gateway_status_report,
+        collect_multi_agent_status_report, collect_transport_health_rows,
+        collect_voice_status_report, parse_transport_health_inspect_target,
+        render_custom_command_status_report, render_dashboard_status_report,
+        render_deployment_status_report, render_gateway_status_report,
         render_multi_agent_status_report, render_transport_health_row,
         render_transport_health_rows, render_voice_status_report, TransportHealthInspectRow,
         TransportHealthInspectTarget,
@@ -1506,6 +1775,10 @@ mod tests {
             TransportHealthInspectTarget::Gateway
         );
         assert_eq!(
+            parse_transport_health_inspect_target("deployment").expect("deployment"),
+            TransportHealthInspectTarget::Deployment
+        );
+        assert_eq!(
             parse_transport_health_inspect_target("custom-command").expect("custom-command"),
             TransportHealthInspectTarget::CustomCommand
         );
@@ -1555,6 +1828,7 @@ mod tests {
         let memory_root = temp.path().join("memory");
         let dashboard_root = temp.path().join("dashboard");
         let gateway_root = temp.path().join("gateway");
+        let deployment_root = temp.path().join("deployment");
         let custom_command_root = temp.path().join("custom-command");
         let voice_root = temp.path().join("voice");
         let github_repo_dir = github_root.join("owner__repo");
@@ -1565,6 +1839,7 @@ mod tests {
         std::fs::create_dir_all(&memory_root).expect("create memory dir");
         std::fs::create_dir_all(&dashboard_root).expect("create dashboard dir");
         std::fs::create_dir_all(&gateway_root).expect("create gateway dir");
+        std::fs::create_dir_all(&deployment_root).expect("create deployment dir");
         std::fs::create_dir_all(&custom_command_root).expect("create custom-command dir");
         std::fs::create_dir_all(&voice_root).expect("create voice dir");
 
@@ -1730,6 +2005,29 @@ mod tests {
         .expect("write gateway state");
 
         std::fs::write(
+            deployment_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "rollouts": [],
+  "health": {
+    "updated_unix_ms": 560,
+    "cycle_duration_ms": 17,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 3,
+    "last_cycle_processed": 3,
+    "last_cycle_completed": 3,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write deployment state");
+
+        std::fs::write(
             custom_command_root.join("state.json"),
             r#"{
   "schema_version": 1,
@@ -1783,6 +2081,7 @@ mod tests {
         cli.memory_state_dir = memory_root;
         cli.dashboard_state_dir = dashboard_root;
         cli.gateway_state_dir = gateway_root;
+        cli.deployment_state_dir = deployment_root;
         cli.custom_command_state_dir = custom_command_root;
         cli.voice_state_dir = voice_root;
 
@@ -1840,6 +2139,14 @@ mod tests {
         assert_eq!(gateway_rows[0].target, "gateway-service");
         assert_eq!(gateway_rows[0].health.last_cycle_discovered, 2);
 
+        let deployment_rows =
+            collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Deployment)
+                .expect("collect deployment rows");
+        assert_eq!(deployment_rows.len(), 1);
+        assert_eq!(deployment_rows[0].transport, "deployment");
+        assert_eq!(deployment_rows[0].target, "cloud-and-wasm-runtime");
+        assert_eq!(deployment_rows[0].health.last_cycle_discovered, 3);
+
         let custom_command_rows =
             collect_transport_health_rows(&cli, &TransportHealthInspectTarget::CustomCommand)
                 .expect("collect custom-command rows");
@@ -1863,6 +2170,7 @@ mod tests {
             memory_rows[0].clone(),
             dashboard_rows[0].clone(),
             gateway_rows[0].clone(),
+            deployment_rows[0].clone(),
             custom_command_rows[0].clone(),
             voice_rows[0].clone(),
         ]);
@@ -1873,6 +2181,7 @@ mod tests {
         assert!(rendered.contains("transport=memory"));
         assert!(rendered.contains("transport=dashboard"));
         assert!(rendered.contains("transport=gateway"));
+        assert!(rendered.contains("transport=deployment"));
         assert!(rendered.contains("transport=custom-command"));
         assert!(rendered.contains("transport=voice"));
     }
@@ -2029,6 +2338,30 @@ mod tests {
         let rows =
             collect_transport_health_rows(&cli, &TransportHealthInspectTarget::CustomCommand)
                 .expect("collect custom-command row");
+        assert_eq!(rows[0].health, TransportHealthSnapshot::default());
+    }
+
+    #[test]
+    fn regression_collect_transport_health_rows_defaults_missing_health_fields_for_deployment() {
+        let temp = tempdir().expect("tempdir");
+        let deployment_root = temp.path().join("deployment");
+        std::fs::create_dir_all(&deployment_root).expect("create deployment dir");
+        std::fs::write(
+            deployment_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "rollouts": []
+}
+"#,
+        )
+        .expect("write legacy deployment state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.deployment_state_dir = PathBuf::from(&deployment_root);
+
+        let rows = collect_transport_health_rows(&cli, &TransportHealthInspectTarget::Deployment)
+            .expect("collect deployment row");
         assert_eq!(rows[0].health, TransportHealthSnapshot::default());
     }
 
@@ -2729,6 +3062,148 @@ invalid-json-line
         cli.voice_state_dir = voice_root;
 
         let report = collect_voice_status_report(&cli).expect("collect voice status report");
+        assert!(!report.events_log_present);
+        assert_eq!(report.cycle_reports, 0);
+        assert_eq!(report.invalid_cycle_reports, 0);
+        assert!(report.last_reason_codes.is_empty());
+        assert!(report.reason_code_counts.is_empty());
+        assert_eq!(report.health_state, TransportHealthState::Degraded.as_str());
+        assert_eq!(report.rollout_gate, "hold");
+    }
+
+    #[test]
+    fn functional_collect_deployment_status_report_reads_state_and_cycle_reports() {
+        let temp = tempdir().expect("tempdir");
+        let deployment_root = temp.path().join("deployment");
+        std::fs::create_dir_all(&deployment_root).expect("create deployment dir");
+        std::fs::write(
+            deployment_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["container:staging-container:deployment-container-staging", "wasm:edge-wasm:deployment-wasm-edge"],
+  "rollouts": [
+    {
+      "deploy_target": "container",
+      "runtime_profile": "native",
+      "environment": "staging",
+      "status_code": 202,
+      "outcome": "success",
+      "error_code": "",
+      "replicas": 1
+    },
+    {
+      "deploy_target": "wasm",
+      "runtime_profile": "wasm_wasi",
+      "environment": "production",
+      "status_code": 201,
+      "outcome": "success",
+      "error_code": "",
+      "replicas": 2
+    }
+  ],
+  "health": {
+    "updated_unix_ms": 780,
+    "cycle_duration_ms": 16,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 2,
+    "last_cycle_processed": 2,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write deployment state");
+        std::fs::write(
+            deployment_root.join("runtime-events.jsonl"),
+            r#"{"reason_codes":["cloud_rollout_applied","wasm_rollout_applied"],"health_reason":"no recent transport failures observed"}
+invalid-json-line
+{"reason_codes":["healthy_cycle"],"health_reason":"no recent transport failures observed"}
+"#,
+        )
+        .expect("write deployment events");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.deployment_state_dir = deployment_root;
+
+        let report = collect_deployment_status_report(&cli).expect("collect deployment status");
+        assert_eq!(report.health_state, TransportHealthState::Healthy.as_str());
+        assert_eq!(report.rollout_gate, "pass");
+        assert_eq!(report.processed_case_count, 2);
+        assert_eq!(report.rollout_count, 2);
+        assert_eq!(report.target_counts.get("container"), Some(&1));
+        assert_eq!(report.target_counts.get("wasm"), Some(&1));
+        assert_eq!(report.runtime_profile_counts.get("native"), Some(&1));
+        assert_eq!(report.runtime_profile_counts.get("wasm_wasi"), Some(&1));
+        assert_eq!(report.environment_counts.get("staging"), Some(&1));
+        assert_eq!(report.environment_counts.get("production"), Some(&1));
+        assert_eq!(report.outcome_counts.get("success"), Some(&2));
+        assert_eq!(report.status_code_counts.get("201"), Some(&1));
+        assert_eq!(report.status_code_counts.get("202"), Some(&1));
+        assert_eq!(report.total_replicas, 3);
+        assert_eq!(report.wasm_rollout_count, 1);
+        assert_eq!(report.cloud_rollout_count, 1);
+        assert_eq!(report.cycle_reports, 2);
+        assert_eq!(report.invalid_cycle_reports, 1);
+        assert_eq!(report.last_reason_codes, vec!["healthy_cycle".to_string()]);
+        assert_eq!(report.reason_code_counts.get("healthy_cycle"), Some(&1));
+        assert_eq!(
+            report.reason_code_counts.get("cloud_rollout_applied"),
+            Some(&1)
+        );
+        assert_eq!(
+            report.reason_code_counts.get("wasm_rollout_applied"),
+            Some(&1)
+        );
+
+        let rendered = render_deployment_status_report(&report);
+        assert!(rendered.contains("deployment status inspect:"));
+        assert!(rendered.contains("rollout_gate=pass"));
+        assert!(rendered.contains("target_counts=container:1,wasm:1"));
+        assert!(rendered.contains("runtime_profile_counts=native:1,wasm_wasi:1"));
+        assert!(rendered.contains("total_replicas=3"));
+        assert!(rendered.contains("wasm_rollout_count=1"));
+        assert!(rendered.contains("cloud_rollout_count=1"));
+        assert!(rendered.contains(
+            "reason_code_counts=cloud_rollout_applied:1,healthy_cycle:1,wasm_rollout_applied:1"
+        ));
+    }
+
+    #[test]
+    fn regression_collect_deployment_status_report_handles_missing_events_log() {
+        let temp = tempdir().expect("tempdir");
+        let deployment_root = temp.path().join("deployment");
+        std::fs::create_dir_all(&deployment_root).expect("create deployment dir");
+        std::fs::write(
+            deployment_root.join("state.json"),
+            r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "rollouts": [],
+  "health": {
+    "updated_unix_ms": 781,
+    "cycle_duration_ms": 20,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 2,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 0,
+    "last_cycle_failed": 1,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+        )
+        .expect("write deployment state");
+
+        let mut cli = parse_cli(&["tau-rs"]);
+        cli.deployment_state_dir = deployment_root;
+
+        let report = collect_deployment_status_report(&cli).expect("collect deployment status");
         assert!(!report.events_log_present);
         assert_eq!(report.cycle_reports, 0);
         assert_eq!(report.invalid_cycle_reports, 0);

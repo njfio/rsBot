@@ -382,6 +382,8 @@ fn test_cli() -> Cli {
         multi_agent_status_json: false,
         gateway_status_inspect: false,
         gateway_status_json: false,
+        deployment_status_inspect: false,
+        deployment_status_json: false,
         custom_command_status_inspect: false,
         custom_command_status_json: false,
         voice_status_inspect: false,
@@ -641,6 +643,7 @@ fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     cli.memory_state_dir = tau_root.join("memory");
     cli.dashboard_state_dir = tau_root.join("dashboard");
     cli.gateway_state_dir = tau_root.join("gateway");
+    cli.deployment_state_dir = tau_root.join("deployment");
     cli.custom_command_state_dir = tau_root.join("custom-command");
     cli.voice_state_dir = tau_root.join("voice");
     cli.github_state_dir = tau_root.join("github-issues");
@@ -1898,6 +1901,27 @@ fn functional_cli_transport_health_inspect_accepts_gateway_state_dir_override() 
 }
 
 #[test]
+fn unit_cli_transport_health_inspect_accepts_deployment_target() {
+    let cli = parse_cli_with_stack(["tau-rs", "--transport-health-inspect", "deployment"]);
+    assert_eq!(cli.transport_health_inspect.as_deref(), Some("deployment"));
+}
+
+#[test]
+fn functional_cli_transport_health_inspect_accepts_deployment_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--transport-health-inspect",
+        "deployment",
+        "--deployment-state-dir",
+        ".tau/deployment-alt",
+    ]);
+    assert_eq!(
+        cli.deployment_state_dir,
+        PathBuf::from(".tau/deployment-alt")
+    );
+}
+
+#[test]
 fn unit_cli_transport_health_inspect_accepts_custom_command_target() {
     let cli = parse_cli_with_stack(["tau-rs", "--transport-health-inspect", "custom-command"]);
     assert_eq!(
@@ -2029,6 +2053,39 @@ fn functional_cli_gateway_status_inspect_accepts_json_and_state_dir_override() {
 #[test]
 fn regression_cli_gateway_status_json_requires_gateway_status_inspect() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-status-json"]);
+    let error = parse.expect_err("json output should require inspect flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn unit_cli_deployment_status_inspect_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.deployment_status_inspect);
+    assert!(!cli.deployment_status_json);
+}
+
+#[test]
+fn functional_cli_deployment_status_inspect_accepts_json_and_state_dir_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--deployment-status-inspect",
+        "--deployment-status-json",
+        "--deployment-state-dir",
+        ".tau/deployment-observe",
+    ]);
+    assert!(cli.deployment_status_inspect);
+    assert!(cli.deployment_status_json);
+    assert_eq!(
+        cli.deployment_state_dir,
+        PathBuf::from(".tau/deployment-observe")
+    );
+}
+
+#[test]
+fn regression_cli_deployment_status_json_requires_deployment_status_inspect() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--deployment-status-json"]);
     let error = parse.expect_err("json output should require inspect flag");
     assert!(error
         .to_string()
@@ -17816,6 +17873,42 @@ fn functional_execute_startup_preflight_runs_gateway_status_inspect_mode() {
     .expect("write gateway state");
 
     let handled = execute_startup_preflight(&cli).expect("gateway status inspect preflight");
+    assert!(handled);
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_deployment_status_inspect_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.deployment_status_inspect = true;
+    cli.deployment_status_json = true;
+
+    std::fs::create_dir_all(&cli.deployment_state_dir).expect("create deployment state dir");
+    std::fs::write(
+        cli.deployment_state_dir.join("state.json"),
+        r#"{
+  "schema_version": 1,
+  "processed_case_keys": [],
+  "rollouts": [],
+  "health": {
+    "updated_unix_ms": 803,
+    "cycle_duration_ms": 10,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+    )
+    .expect("write deployment state");
+
+    let handled = execute_startup_preflight(&cli).expect("deployment status inspect preflight");
     assert!(handled);
 }
 

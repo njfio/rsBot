@@ -255,6 +255,49 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/gateway-ops.md`.
 
+## Deployment contract runner (cloud + WASM)
+
+Use this fixture-driven runtime mode to validate cloud deployment and WASM rollout paths,
+retry outcomes, state persistence, and channel-store snapshots.
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --deployment-contract-runner \
+  --deployment-fixture crates/tau-coding-agent/testdata/deployment-contract/rollout-pass.json \
+  --deployment-state-dir .tau/deployment \
+  --deployment-queue-limit 64 \
+  --deployment-processed-case-cap 10000 \
+  --deployment-retry-max-attempts 4 \
+  --deployment-retry-base-delay-ms 0
+```
+
+The runner writes state and observability output under:
+
+- `.tau/deployment/state.json`
+- `.tau/deployment/runtime-events.jsonl`
+- `.tau/deployment/channel-store/deployment/<blueprint_id>/...`
+
+Inspect deployment transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --deployment-state-dir .tau/deployment \
+  --transport-health-inspect deployment \
+  --transport-health-json
+```
+
+Inspect deployment rollout guardrail/status report:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --deployment-state-dir .tau/deployment \
+  --deployment-status-inspect \
+  --deployment-status-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/deployment-ops.md`.
+
 ## No-code custom command contract runner
 
 Use this fixture-driven runtime mode to validate no-code command registry lifecycle behavior,

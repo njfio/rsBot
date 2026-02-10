@@ -72,6 +72,7 @@ Run deterministic local demos:
 ./scripts/demo/all.sh --only local,rpc --fail-fast
 ./scripts/demo/all.sh --only multi-agent --fail-fast
 ./scripts/demo/all.sh --only gateway --fail-fast
+./scripts/demo/all.sh --only deployment --fail-fast
 ./scripts/demo/all.sh --only custom-command --fail-fast
 ./scripts/demo/all.sh --only voice --fail-fast
 ./scripts/demo/all.sh --only local --timeout-seconds 30 --fail-fast
@@ -84,6 +85,7 @@ Run deterministic local demos:
 ./scripts/demo/memory.sh
 ./scripts/demo/dashboard.sh
 ./scripts/demo/gateway.sh
+./scripts/demo/deployment.sh
 ./scripts/demo/custom-command.sh
 ./scripts/demo/voice.sh
 ```

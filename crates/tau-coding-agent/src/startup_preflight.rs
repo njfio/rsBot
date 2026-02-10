@@ -17,6 +17,7 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         || cli.dashboard_status_inspect
         || cli.multi_agent_status_inspect
         || cli.gateway_status_inspect
+        || cli.deployment_status_inspect
         || cli.custom_command_status_inspect
         || cli.voice_status_inspect
     {
