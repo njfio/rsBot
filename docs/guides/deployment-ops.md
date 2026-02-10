@@ -66,6 +66,18 @@ cargo run -p tau-coding-agent -- \
   --deployment-wasm-package-json
 ```
 
+Package channel-automation runtime profile artifact:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --deployment-state-dir .tau/deployment \
+  --deployment-wasm-package-module ./crates/tau-coding-agent/testdata/deployment-wasm/edge-runtime.wasm \
+  --deployment-wasm-package-blueprint-id channel-automation-wasm \
+  --deployment-wasm-package-runtime-profile channel-automation-wasi \
+  --deployment-wasm-package-output-dir .tau/deployment/wasm-artifacts \
+  --deployment-wasm-package-json
+```
+
 Manifest guarantees:
 
 - deterministic SHA-256 hash (`artifact_sha256`)
@@ -79,8 +91,9 @@ Manifest guarantees:
 Compatibility matrix:
 
 - Supported `deploy_target`: `wasm`
-- Supported runtime profile(s): `wasm_wasi`
-- Control-plane profile: `control_plane_gateway_v1`
+- Supported runtime profile(s): `wasm_wasi`, `channel_automation_wasi`
+- Runtime constraint profile (`wasm_wasi`): `control_plane_gateway_v1`
+- Runtime constraint profile (`channel_automation_wasi`): `channel_automation_runtime_v1`
 - Required module format: valid WASM binary magic header (`\\0asm`)
 - Unsupported in this path: native/container image packaging, host capability negotiation, and runtime sandbox policy synthesis
 
@@ -97,6 +110,9 @@ cargo run -p tau-coding-agent -- \
 Inspect report fields include:
 
 - `constraint_profile_id`
+- `constraint_target_role`
+- `required_runtime_profile`
+- `required_abi`
 - `compliant`
 - `reason_codes`
 - `observed_import_modules`

@@ -2427,6 +2427,21 @@ fn functional_cli_deployment_wasm_package_flags_accept_explicit_overrides() {
 }
 
 #[test]
+fn functional_cli_deployment_wasm_package_runtime_profile_accepts_channel_automation_wasi() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--deployment-wasm-package-module",
+        "fixtures/edge.wasm",
+        "--deployment-wasm-package-runtime-profile",
+        "channel-automation-wasi",
+    ]);
+    assert_eq!(
+        cli.deployment_wasm_package_runtime_profile,
+        CliDeploymentWasmRuntimeProfile::ChannelAutomationWasi
+    );
+}
+
+#[test]
 fn regression_cli_deployment_wasm_package_json_requires_module_flag() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--deployment-wasm-package-json"]);
     let error = parse.expect_err("package json should require package module");

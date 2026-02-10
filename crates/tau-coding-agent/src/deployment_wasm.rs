@@ -13,8 +13,13 @@ pub(crate) const DEPLOYMENT_WASM_MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEPLOYMENT_WASM_MANIFEST_KIND: &str = "tau_wasm_deliverable";
 pub(crate) const DEPLOYMENT_WASM_PROFILE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEPLOYMENT_WASM_CONTROL_PLANE_PROFILE_ID: &str = "control_plane_gateway_v1";
+pub(crate) const DEPLOYMENT_WASM_CHANNEL_AUTOMATION_PROFILE_ID: &str =
+    "channel_automation_runtime_v1";
+const DEPLOYMENT_WASM_CONTROL_PLANE_TARGET_ROLE: &str = "control_plane_gateway";
+const DEPLOYMENT_WASM_CHANNEL_AUTOMATION_TARGET_ROLE: &str = "channel_automation_runtime";
 const DEPLOYMENT_WASM_MODULE_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 const DEPLOYMENT_WASM_DEFAULT_MAX_ARTIFACT_SIZE_BYTES: u64 = 2 * 1024 * 1024;
+const DEPLOYMENT_WASM_CHANNEL_AUTOMATION_MAX_ARTIFACT_SIZE_BYTES: u64 = 1024 * 1024;
 
 fn deployment_wasm_manifest_schema_version() -> u32 {
     DEPLOYMENT_WASM_MANIFEST_SCHEMA_VERSION
@@ -33,6 +38,12 @@ fn default_capability_constraints() -> Vec<String> {
     ]
 }
 
+fn default_channel_automation_capability_constraints() -> Vec<String> {
+    let mut constraints = default_capability_constraints();
+    constraints.push("channel_event_dispatch_host_capability".to_string());
+    constraints
+}
+
 fn default_required_feature_gates() -> Vec<String> {
     vec![
         "no_native_process_exec".to_string(),
@@ -40,6 +51,12 @@ fn default_required_feature_gates() -> Vec<String> {
         "network_access_requires_host_capability".to_string(),
         "deterministic_time_requires_host_injection".to_string(),
     ]
+}
+
+fn default_channel_automation_required_feature_gates() -> Vec<String> {
+    let mut gates = default_required_feature_gates();
+    gates.push("channel_event_dispatch_host_capability".to_string());
+    gates
 }
 
 fn default_allowed_import_modules() -> Vec<String> {
@@ -54,13 +71,27 @@ fn default_runtime_constraints() -> DeploymentWasmRuntimeConstraintProfile {
     DeploymentWasmRuntimeConstraintProfile {
         schema_version: DEPLOYMENT_WASM_PROFILE_SCHEMA_VERSION,
         profile_id: DEPLOYMENT_WASM_CONTROL_PLANE_PROFILE_ID.to_string(),
-        target_role: "control_plane_gateway".to_string(),
+        target_role: DEPLOYMENT_WASM_CONTROL_PLANE_TARGET_ROLE.to_string(),
         required_runtime_profile: "wasm_wasi".to_string(),
         required_abi: "wasi_snapshot_preview1".to_string(),
         required_feature_gates: default_required_feature_gates(),
         allowed_import_modules: default_allowed_import_modules(),
         forbidden_import_modules: default_forbidden_import_modules(),
         max_artifact_size_bytes: DEPLOYMENT_WASM_DEFAULT_MAX_ARTIFACT_SIZE_BYTES,
+    }
+}
+
+fn default_channel_automation_runtime_constraints() -> DeploymentWasmRuntimeConstraintProfile {
+    DeploymentWasmRuntimeConstraintProfile {
+        schema_version: DEPLOYMENT_WASM_PROFILE_SCHEMA_VERSION,
+        profile_id: DEPLOYMENT_WASM_CHANNEL_AUTOMATION_PROFILE_ID.to_string(),
+        target_role: DEPLOYMENT_WASM_CHANNEL_AUTOMATION_TARGET_ROLE.to_string(),
+        required_runtime_profile: "channel_automation_wasi".to_string(),
+        required_abi: "wasi_snapshot_preview1".to_string(),
+        required_feature_gates: default_channel_automation_required_feature_gates(),
+        allowed_import_modules: default_allowed_import_modules(),
+        forbidden_import_modules: default_forbidden_import_modules(),
+        max_artifact_size_bytes: DEPLOYMENT_WASM_CHANNEL_AUTOMATION_MAX_ARTIFACT_SIZE_BYTES,
     }
 }
 
@@ -133,6 +164,9 @@ pub(crate) struct DeploymentWasmInspectReport {
     pub(crate) blueprint_id: String,
     pub(crate) runtime_profile: String,
     pub(crate) constraint_profile_id: String,
+    pub(crate) constraint_target_role: String,
+    pub(crate) required_runtime_profile: String,
+    pub(crate) required_abi: String,
     pub(crate) compliant: bool,
     pub(crate) reason_codes: Vec<String>,
     pub(crate) observed_import_modules: Vec<String>,
@@ -312,10 +346,13 @@ pub(crate) fn package_deployment_wasm_artifact(
         .with_context(|| format!("failed to inspect wasm imports {}", module_path.display()))?;
     let artifact_sha256 = sha256_hex(&module_bytes);
     let artifact_size_bytes = u64::try_from(module_bytes.len()).unwrap_or(u64::MAX);
-    let runtime_constraints =
-        resolve_runtime_constraint_profile_for_runtime(config.runtime_profile.trim());
+    let runtime_profile = config.runtime_profile.trim();
+    let runtime_constraints = resolve_runtime_constraint_profile_for_runtime(runtime_profile)
+        .ok_or_else(|| {
+            anyhow::anyhow!("unsupported deployment wasm runtime profile '{runtime_profile}'")
+        })?;
     validate_runtime_constraint_profile(&runtime_constraints, config.runtime_profile.trim())?;
-    let capability_constraints = default_capability_constraints();
+    let capability_constraints = resolve_capability_constraints_for_runtime(runtime_profile);
     let compliance = evaluate_runtime_constraint_compliance(
         &runtime_constraints,
         config.runtime_profile.trim(),
@@ -473,6 +510,9 @@ pub(crate) fn inspect_deployment_wasm_deliverable(
         blueprint_id: manifest.blueprint_id,
         runtime_profile: manifest.runtime_profile,
         constraint_profile_id: manifest.runtime_constraints.profile_id,
+        constraint_target_role: manifest.runtime_constraints.target_role,
+        required_runtime_profile: manifest.runtime_constraints.required_runtime_profile,
+        required_abi: manifest.runtime_constraints.required_abi,
         compliant: compliance.compliant,
         reason_codes: compliance.reason_codes,
         observed_import_modules,
@@ -485,11 +525,14 @@ pub(crate) fn render_deployment_wasm_inspect_report(
     report: &DeploymentWasmInspectReport,
 ) -> String {
     format!(
-        "deployment wasm inspect: manifest_path={} blueprint_id={} runtime_profile={} constraint_profile_id={} compliant={} reason_codes={} observed_import_modules={} required_feature_gates={} max_artifact_size_bytes={}",
+        "deployment wasm inspect: manifest_path={} blueprint_id={} runtime_profile={} constraint_profile_id={} constraint_target_role={} required_runtime_profile={} required_abi={} compliant={} reason_codes={} observed_import_modules={} required_feature_gates={} max_artifact_size_bytes={}",
         report.manifest_path,
         report.blueprint_id,
         report.runtime_profile,
         report.constraint_profile_id,
+        report.constraint_target_role,
+        report.required_runtime_profile,
+        report.required_abi,
         report.compliant,
         if report.reason_codes.is_empty() {
             "none".to_string()
@@ -518,16 +561,33 @@ struct RuntimeConstraintCompliance {
 
 fn resolve_runtime_constraint_profile_for_runtime(
     runtime_profile: &str,
-) -> DeploymentWasmRuntimeConstraintProfile {
-    let mut profile = default_runtime_constraints();
-    profile.required_runtime_profile = runtime_profile.trim().to_string();
-    profile
+) -> Option<DeploymentWasmRuntimeConstraintProfile> {
+    match runtime_profile.trim() {
+        "wasm_wasi" => Some(default_runtime_constraints()),
+        "channel_automation_wasi" => Some(default_channel_automation_runtime_constraints()),
+        _ => None,
+    }
+}
+
+fn resolve_capability_constraints_for_runtime(runtime_profile: &str) -> Vec<String> {
+    match runtime_profile.trim() {
+        "channel_automation_wasi" => default_channel_automation_capability_constraints(),
+        _ => default_capability_constraints(),
+    }
 }
 
 fn validate_runtime_constraint_profile(
     profile: &DeploymentWasmRuntimeConstraintProfile,
     runtime_profile: &str,
 ) -> Result<()> {
+    let expected_profile = resolve_runtime_constraint_profile_for_runtime(runtime_profile)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "unsupported deployment wasm runtime profile '{}'",
+                runtime_profile.trim()
+            )
+        })?;
+
     if profile.schema_version != DEPLOYMENT_WASM_PROFILE_SCHEMA_VERSION {
         bail!(
             "unsupported deployment wasm profile schema {} (expected {})",
@@ -538,9 +598,19 @@ fn validate_runtime_constraint_profile(
     if profile.profile_id.trim().is_empty() {
         bail!("deployment wasm runtime constraint profile_id cannot be empty");
     }
-    if profile.target_role.trim() != "control_plane_gateway" {
+    if profile.profile_id.trim() != expected_profile.profile_id {
         bail!(
-            "deployment wasm runtime constraint target_role must be 'control_plane_gateway' (found '{}')",
+            "deployment wasm runtime constraint profile_id must be '{}' for runtime profile '{}' (found '{}')",
+            expected_profile.profile_id,
+            runtime_profile.trim(),
+            profile.profile_id
+        );
+    }
+    if profile.target_role.trim() != expected_profile.target_role {
+        bail!(
+            "deployment wasm runtime constraint target_role must be '{}' for runtime profile '{}' (found '{}')",
+            expected_profile.target_role,
+            runtime_profile.trim(),
             profile.target_role
         );
     }
@@ -551,8 +621,21 @@ fn validate_runtime_constraint_profile(
             runtime_profile
         );
     }
-    if profile.required_abi.trim().is_empty() {
-        bail!("deployment wasm runtime constraint required_abi cannot be empty");
+    if profile.required_runtime_profile.trim() != expected_profile.required_runtime_profile {
+        bail!(
+            "deployment wasm runtime constraint required_runtime_profile must be '{}' for runtime profile '{}' (found '{}')",
+            expected_profile.required_runtime_profile,
+            runtime_profile.trim(),
+            profile.required_runtime_profile
+        );
+    }
+    if profile.required_abi.trim() != expected_profile.required_abi {
+        bail!(
+            "deployment wasm runtime constraint required_abi must be '{}' for runtime profile '{}' (found '{}')",
+            expected_profile.required_abi,
+            runtime_profile.trim(),
+            profile.required_abi
+        );
     }
     if profile.required_feature_gates.is_empty() {
         bail!("deployment wasm runtime constraint required_feature_gates cannot be empty");
@@ -564,6 +647,32 @@ fn validate_runtime_constraint_profile(
     {
         bail!(
             "deployment wasm runtime constraint required_feature_gates cannot contain empty values"
+        );
+    }
+    if profile.required_feature_gates != expected_profile.required_feature_gates {
+        bail!(
+            "deployment wasm runtime constraint required_feature_gates do not match runtime profile '{}'",
+            runtime_profile.trim()
+        );
+    }
+    if profile.allowed_import_modules != expected_profile.allowed_import_modules {
+        bail!(
+            "deployment wasm runtime constraint allowed_import_modules do not match runtime profile '{}'",
+            runtime_profile.trim()
+        );
+    }
+    if profile.forbidden_import_modules != expected_profile.forbidden_import_modules {
+        bail!(
+            "deployment wasm runtime constraint forbidden_import_modules do not match runtime profile '{}'",
+            runtime_profile.trim()
+        );
+    }
+    if profile.max_artifact_size_bytes != expected_profile.max_artifact_size_bytes {
+        bail!(
+            "deployment wasm runtime constraint max_artifact_size_bytes must be {} for runtime profile '{}' (found {})",
+            expected_profile.max_artifact_size_bytes,
+            runtime_profile.trim(),
+            profile.max_artifact_size_bytes
         );
     }
     if profile.max_artifact_size_bytes == 0 {
@@ -640,7 +749,7 @@ fn collect_wasm_import_modules(bytes: &[u8]) -> Result<Vec<String>> {
 }
 
 fn is_supported_wasm_runtime_profile(profile: &str) -> bool {
-    matches!(profile.trim(), "wasm_wasi")
+    matches!(profile.trim(), "wasm_wasi" | "channel_automation_wasi")
 }
 
 fn validate_wasm_module_bytes(bytes: &[u8]) -> Result<()> {
@@ -860,6 +969,29 @@ mod tests {
     }
 
     #[test]
+    fn functional_package_deployment_wasm_artifact_supports_channel_automation_profile() {
+        let temp = tempdir().expect("tempdir");
+        let module_path = temp.path().join("channel-edge.wasm");
+        write_test_wasm_module(&module_path);
+
+        let report = package_deployment_wasm_artifact(&DeploymentWasmPackageConfig {
+            module_path,
+            blueprint_id: "channel-edge".to_string(),
+            runtime_profile: "channel_automation_wasi".to_string(),
+            output_dir: temp.path().join("out"),
+            state_dir: temp.path().join(".tau/deployment"),
+        })
+        .expect("package wasm");
+        assert_eq!(
+            report.constraint_profile_id,
+            super::DEPLOYMENT_WASM_CHANNEL_AUTOMATION_PROFILE_ID
+        );
+        assert!(report
+            .capability_constraints
+            .contains(&"channel_event_dispatch_host_capability".to_string()));
+    }
+
+    #[test]
     fn unit_validate_deployment_wasm_manifest_rejects_invalid_runtime_constraint_profile() {
         let mut manifest = DeploymentWasmArtifactManifest {
             schema_version: 1,
@@ -887,7 +1019,7 @@ mod tests {
             validate_deployment_wasm_manifest(&manifest).expect_err("invalid profile should fail");
         assert!(error
             .to_string()
-            .contains("max_artifact_size_bytes must be greater than 0"));
+            .contains("max_artifact_size_bytes must be 2097152"));
     }
 
     #[test]
@@ -934,6 +1066,9 @@ mod tests {
             .expect("inspect manifest");
         assert!(inspect.compliant);
         assert_eq!(inspect.constraint_profile_id, "control_plane_gateway_v1");
+        assert_eq!(inspect.constraint_target_role, "control_plane_gateway");
+        assert_eq!(inspect.required_runtime_profile, "wasm_wasi");
+        assert_eq!(inspect.required_abi, "wasi_snapshot_preview1");
         assert!(inspect
             .reason_codes
             .iter()
@@ -941,6 +1076,36 @@ mod tests {
         let rendered = render_deployment_wasm_inspect_report(&inspect);
         assert!(rendered.contains("deployment wasm inspect:"));
         assert!(rendered.contains("constraint_profile_id=control_plane_gateway_v1"));
+        assert!(rendered.contains("constraint_target_role=control_plane_gateway"));
+    }
+
+    #[test]
+    fn integration_inspect_deployment_wasm_deliverable_reports_channel_profile_posture() {
+        let temp = tempdir().expect("tempdir");
+        let module_path = temp.path().join("channel-edge.wasm");
+        write_test_wasm_module(&module_path);
+        let report = package_deployment_wasm_artifact(&DeploymentWasmPackageConfig {
+            module_path,
+            blueprint_id: "channel-edge-inspect".to_string(),
+            runtime_profile: "channel_automation_wasi".to_string(),
+            output_dir: temp.path().join("out"),
+            state_dir: temp.path().join(".tau/deployment"),
+        })
+        .expect("package wasm");
+
+        let inspect = inspect_deployment_wasm_deliverable(Path::new(&report.manifest_path))
+            .expect("inspect manifest");
+        assert!(inspect.compliant);
+        assert_eq!(
+            inspect.constraint_profile_id,
+            super::DEPLOYMENT_WASM_CHANNEL_AUTOMATION_PROFILE_ID
+        );
+        assert_eq!(inspect.constraint_target_role, "channel_automation_runtime");
+        assert_eq!(inspect.required_runtime_profile, "channel_automation_wasi");
+        assert_eq!(inspect.required_abi, "wasi_snapshot_preview1");
+        assert!(inspect
+            .required_feature_gates
+            .contains(&"channel_event_dispatch_host_capability".to_string()));
     }
 
     #[test]
@@ -1015,6 +1180,38 @@ mod tests {
 
         let error = inspect_deployment_wasm_deliverable(Path::new(&report.manifest_path))
             .expect_err("constraint drift should fail");
+        assert!(error
+            .to_string()
+            .contains("invalid deployment wasm manifest"));
+    }
+
+    #[test]
+    fn regression_load_deployment_wasm_manifest_rejects_channel_profile_id_drift() {
+        let temp = tempdir().expect("tempdir");
+        let module_path = temp.path().join("channel-edge.wasm");
+        write_test_wasm_module(&module_path);
+        let report = package_deployment_wasm_artifact(&DeploymentWasmPackageConfig {
+            module_path,
+            blueprint_id: "channel-edge-drift".to_string(),
+            runtime_profile: "channel_automation_wasi".to_string(),
+            output_dir: temp.path().join("out"),
+            state_dir: temp.path().join(".tau/deployment"),
+        })
+        .expect("package wasm");
+
+        let mut manifest_json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&report.manifest_path).expect("read manifest"),
+        )
+        .expect("parse manifest json");
+        manifest_json["runtime_constraints"]["profile_id"] = serde_json::json!("invalid_v0");
+        std::fs::write(
+            &report.manifest_path,
+            serde_json::to_string_pretty(&manifest_json).expect("encode drifted manifest"),
+        )
+        .expect("write drifted manifest");
+
+        let error = load_deployment_wasm_manifest(Path::new(&report.manifest_path))
+            .expect_err("profile drift should fail");
         assert!(error
             .to_string()
             .contains("invalid deployment wasm manifest"));
