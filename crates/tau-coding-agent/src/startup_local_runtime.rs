@@ -5,7 +5,7 @@ use crate::extension_manifest::{
 use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_command_defaults as build_onboarding_local_runtime_command_defaults,
-    build_local_runtime_extension_bootstrap as build_onboarding_local_runtime_extension_bootstrap,
+    build_local_runtime_extension_startup as build_onboarding_local_runtime_extension_startup,
     build_local_runtime_interactive_defaults as build_onboarding_local_runtime_interactive_defaults,
     execute_prompt_or_command_file_entry_mode as execute_onboarding_prompt_or_command_file_entry_mode,
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
@@ -13,8 +13,8 @@ use tau_onboarding::startup_local_runtime::{
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
     resolve_local_runtime_entry_mode_from_cli as resolve_onboarding_local_runtime_entry_mode_from_cli,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
-    LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, PromptEntryRuntimeMode,
-    PromptOrCommandFileEntryOutcome,
+    LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, LocalRuntimeExtensionStartup,
+    PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
     RuntimeExtensionPipelineConfig as OnboardingRuntimeExtensionPipelineConfig,
     SessionBootstrapOutcome,
 };
@@ -94,18 +94,16 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         event_to_json,
         |value| println!("{value}"),
     );
-    let extension_runtime_hooks = RuntimeExtensionHooksConfig {
-        enabled: cli.extension_runtime_hooks,
-        root: cli.extension_runtime_root.clone(),
-    };
-    let LocalRuntimeExtensionBootstrap {
-        orchestrator_route_table,
-        orchestrator_route_trace_log,
-        extension_runtime_registrations,
-    } = build_onboarding_local_runtime_extension_bootstrap(
+    let LocalRuntimeExtensionStartup {
+        extension_hooks,
+        bootstrap:
+            LocalRuntimeExtensionBootstrap {
+                orchestrator_route_table,
+                orchestrator_route_trace_log,
+                extension_runtime_registrations,
+            },
+    } = build_onboarding_local_runtime_extension_startup(
         cli,
-        extension_runtime_hooks.enabled,
-        &extension_runtime_hooks.root,
         load_multi_agent_route_table,
         |root| discover_extension_runtime_registrations(root, crate::commands::COMMAND_NAMES),
         |root| ExtensionRuntimeRegistrationSummary {
@@ -120,12 +118,16 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             diagnostics: Vec::new(),
         },
     )?;
+    let extension_runtime_hooks = RuntimeExtensionHooksConfig {
+        enabled: extension_hooks.enabled,
+        root: extension_hooks.root.clone(),
+    };
     let orchestrator_route_trace_log = orchestrator_route_trace_log.as_deref();
     register_onboarding_runtime_extension_pipeline(
         &mut agent,
         OnboardingRuntimeExtensionPipelineConfig {
-            enabled: extension_runtime_hooks.enabled,
-            root: extension_runtime_hooks.root.clone(),
+            enabled: extension_hooks.enabled,
+            root: extension_hooks.root,
             registered_tools: &extension_runtime_registrations.registered_tools,
             diagnostics: &extension_runtime_registrations.diagnostics,
         },
