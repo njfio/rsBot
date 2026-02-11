@@ -21,14 +21,6 @@ use crate::auth_commands::{
 use crate::channel_store::{
     ChannelArtifactRecord, ChannelAttachmentRecord, ChannelLogEntry, ChannelStore,
 };
-use crate::github_issues_helpers::{
-    attachment_filename_from_url, chunk_text_by_chars, evaluate_attachment_content_type_policy,
-    evaluate_attachment_url_policy, extract_attachment_urls, split_at_char_index,
-};
-use crate::github_transport_helpers::{
-    is_retryable_github_status, is_retryable_transport_error, parse_retry_after, retry_delay,
-    truncate_for_error,
-};
 use crate::runtime_types::{AuthCommandConfig, DoctorCommandConfig};
 use crate::tools::ToolPolicy;
 use crate::{
@@ -42,6 +34,14 @@ use crate::{
 use tau_diagnostics::{
     render_doctor_report, render_doctor_report_json, run_doctor_checks_with_options,
     DoctorCheckOptions, DoctorStatus,
+};
+use tau_github_issues::github_issues_helpers::{
+    attachment_filename_from_url, chunk_text_by_chars, evaluate_attachment_content_type_policy,
+    evaluate_attachment_url_policy, extract_attachment_urls, split_at_char_index,
+};
+use tau_github_issues::github_transport_helpers::{
+    is_retryable_github_status, is_retryable_transport_error, parse_retry_after, retry_delay,
+    truncate_for_error,
 };
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
@@ -6671,9 +6671,7 @@ printf '%s\n' "${payload}"
         let url = "http://127.0.0.1:1234/assets/trace.log";
         let urls = extract_attachment_urls(url);
         assert_eq!(urls, vec![url.to_string()]);
-        assert!(crate::github_issues_helpers::is_supported_attachment_url(
-            url
-        ));
+        assert!(tau_github_issues::github_issues_helpers::is_supported_attachment_url(url));
     }
 
     #[test]

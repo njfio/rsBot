@@ -18,8 +18,6 @@ mod deployment_wasm;
 mod events;
 mod extension_manifest;
 mod github_issues;
-mod github_issues_helpers;
-mod github_transport_helpers;
 mod macro_profile_commands;
 mod mcp_server;
 mod memory_contract;
