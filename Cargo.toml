@@ -26,6 +26,7 @@ members = [
     "crates/tau-custom-command",
     "crates/tau-browser-automation",
     "crates/tau-voice",
+    "crates/tau-tools",
     "crates/tau-memory",
   "crates/tau-coding-agent",
 ]

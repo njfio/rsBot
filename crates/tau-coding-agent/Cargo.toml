@@ -39,6 +39,7 @@ tau-dashboard = { path = "../tau-dashboard" }
 tau-custom-command = { path = "../tau-custom-command" }
 tau-browser-automation = { path = "../tau-browser-automation" }
 tau-voice = { path = "../tau-voice" }
+tau-tools = { path = "../tau-tools" }
 tau-agent-core = { path = "../tau-agent-core" }
 tau-ai = { path = "../tau-ai" }
 reqwest.workspace = true

@@ -91,15 +91,15 @@ pub(crate) use crate::canvas::{
 };
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
-pub(crate) use crate::cli_types::{
-    CliBashProfile, CliCommandFileErrorMode, CliEventTemplateSchedule,
-    CliGatewayOpenResponsesAuthMode, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-};
 #[cfg(test)]
 pub(crate) use crate::cli_types::{
-    CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
-    CliMultiChannelLiveConnectorMode, CliMultiChannelTransport, CliSessionImportMode,
-    CliToolPolicyPreset,
+    CliBashProfile, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
+    CliMultiChannelLiveConnectorMode, CliMultiChannelTransport, CliOsSandboxMode,
+    CliSessionImportMode, CliToolPolicyPreset,
+};
+pub(crate) use crate::cli_types::{
+    CliCommandFileErrorMode, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
+    CliOrchestratorMode, CliProviderAuthMode,
 };
 #[cfg(test)]
 pub(crate) use crate::cli_types::{CliDaemonProfile, CliGatewayRemoteProfile};
@@ -254,7 +254,7 @@ pub(crate) use crate::startup_transport_modes::run_transport_mode_if_requested;
 #[cfg(test)]
 pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
 pub(crate) use crate::tool_policy_config::{build_tool_policy, tool_policy_to_json};
-use crate::tools::{tool_policy_preset_name, ToolPolicy};
+use crate::tools::ToolPolicy;
 pub(crate) use crate::transport_health::TransportHealthSnapshot;
 use browser_automation_runtime::{
     run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
@@ -275,7 +275,6 @@ pub(crate) use tau_access::pairing::{
 };
 pub(crate) use tau_access::rbac::{
     authorize_action_for_principal_with_policy_path, authorize_command_for_principal,
-    authorize_tool_for_principal, authorize_tool_for_principal_with_policy_path,
     execute_rbac_command, github_principal, rbac_policy_path_for_state_dir,
     resolve_local_principal, slack_principal, RbacDecision, RBAC_USAGE,
 };

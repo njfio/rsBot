@@ -2769,6 +2769,7 @@ dependencies = [
  "tau-session",
  "tau-skills",
  "tau-startup",
+ "tau-tools",
  "tau-voice",
  "tempfile",
  "tokio",
@@ -3061,6 +3062,26 @@ dependencies = [
  "tau-gateway",
  "tau-multi-channel",
  "tau-session",
+]
+
+[[package]]
+name = "tau-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "proptest",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "tau-access",
+ "tau-agent-core",
+ "tau-ai",
+ "tau-cli",
+ "tau-extensions",
+ "tau-session",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

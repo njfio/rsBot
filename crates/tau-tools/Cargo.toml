@@ -1,0 +1,23 @@
+[package]
+name = "tau-tools"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["process", "fs", "time"] }
+shell-words = { workspace = true }
+
+tau-access = { path = "../tau-access" }
+tau-agent-core = { path = "../tau-agent-core" }
+tau-ai = { path = "../tau-ai" }
+tau-cli = { path = "../tau-cli" }
+tau-extensions = { path = "../tau-extensions" }
+tau-session = { path = "../tau-session" }
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
