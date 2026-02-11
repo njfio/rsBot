@@ -9,13 +9,13 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::credentials::{load_credential_store, resolve_non_empty_cli_value};
 use crate::multi_channel_contract::MultiChannelTransport;
-use crate::{
-    current_unix_timestamp_ms, resolve_credential_store_encryption_mode, write_text_atomic, Cli,
+use crate::multi_channel_credentials::{
+    resolve_secret, MultiChannelCredentialStoreSnapshot, ResolvedSecret,
 };
+use tau_core::{current_unix_timestamp_ms, write_text_atomic};
 
-pub(crate) const MULTI_CHANNEL_LIFECYCLE_STATE_FILE_NAME: &str = "channel-lifecycle.json";
+pub const MULTI_CHANNEL_LIFECYCLE_STATE_FILE_NAME: &str = "channel-lifecycle.json";
 const MULTI_CHANNEL_LIFECYCLE_STATE_SCHEMA_VERSION: u32 = 1;
 
 const TELEGRAM_TOKEN_INTEGRATION_ID: &str = "telegram-bot-token";
@@ -27,14 +27,14 @@ const ONLINE_PROBE_MAX_ATTEMPTS: usize = 2;
 const ONLINE_PROBE_RETRY_DELAY_MS: u64 = 150;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LifecycleActionKind {
+pub enum MultiChannelLifecycleAction {
     Status,
     Login,
     Logout,
     Probe,
 }
 
-impl LifecycleActionKind {
+impl MultiChannelLifecycleAction {
     fn as_str(self) -> &'static str {
         match self {
             Self::Status => "status",
@@ -46,44 +46,43 @@ impl LifecycleActionKind {
 }
 
 #[derive(Debug, Clone)]
-struct MultiChannelLifecycleCommandConfig {
-    state_dir: PathBuf,
-    ingress_dir: PathBuf,
-    telegram_api_base: String,
-    discord_api_base: String,
-    whatsapp_api_base: String,
-    credential_store_path: PathBuf,
-    credential_store_encryption: crate::CredentialStoreEncryptionMode,
-    credential_store_key: Option<String>,
-    telegram_bot_token: Option<String>,
-    discord_bot_token: Option<String>,
-    whatsapp_access_token: Option<String>,
-    whatsapp_phone_number_id: Option<String>,
-    probe_online: bool,
-    probe_online_timeout_ms: u64,
-    probe_online_max_attempts: usize,
-    probe_online_retry_delay_ms: u64,
+pub struct MultiChannelLifecycleCommandConfig {
+    pub state_dir: PathBuf,
+    pub ingress_dir: PathBuf,
+    pub telegram_api_base: String,
+    pub discord_api_base: String,
+    pub whatsapp_api_base: String,
+    pub credential_store: Option<MultiChannelCredentialStoreSnapshot>,
+    pub credential_store_unreadable: bool,
+    pub telegram_bot_token: Option<String>,
+    pub discord_bot_token: Option<String>,
+    pub whatsapp_access_token: Option<String>,
+    pub whatsapp_phone_number_id: Option<String>,
+    pub probe_online: bool,
+    pub probe_online_timeout_ms: u64,
+    pub probe_online_max_attempts: usize,
+    pub probe_online_retry_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct MultiChannelLifecycleReport {
-    pub(crate) action: String,
-    pub(crate) channel: String,
-    pub(crate) probe_mode: String,
-    pub(crate) lifecycle_status: String,
-    pub(crate) readiness_status: String,
-    pub(crate) reason_codes: Vec<String>,
-    pub(crate) online_probe_status: String,
-    pub(crate) online_probe_reason_codes: Vec<String>,
-    pub(crate) remediation_hints: Vec<String>,
-    pub(crate) ingress_file: String,
-    pub(crate) ingress_exists: bool,
-    pub(crate) ingress_is_file: bool,
-    pub(crate) token_source: String,
-    pub(crate) phone_number_source: String,
-    pub(crate) state_path: String,
-    pub(crate) state_persisted: bool,
-    pub(crate) updated_unix_ms: u64,
+pub struct MultiChannelLifecycleReport {
+    pub action: String,
+    pub channel: String,
+    pub probe_mode: String,
+    pub lifecycle_status: String,
+    pub readiness_status: String,
+    pub reason_codes: Vec<String>,
+    pub online_probe_status: String,
+    pub online_probe_reason_codes: Vec<String>,
+    pub remediation_hints: Vec<String>,
+    pub ingress_file: String,
+    pub ingress_exists: bool,
+    pub ingress_is_file: bool,
+    pub token_source: String,
+    pub phone_number_source: String,
+    pub state_path: String,
+    pub state_persisted: bool,
+    pub updated_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -129,13 +128,6 @@ struct MultiChannelLifecycleChannelState {
     last_probe_unix_ms: u64,
 }
 
-#[derive(Debug, Clone, Default)]
-struct ResolvedSecret {
-    value: Option<String>,
-    source: String,
-    credential_store_unreadable: bool,
-}
-
 #[derive(Debug, Clone)]
 struct ChannelReadiness {
     probe_mode: String,
@@ -167,90 +159,21 @@ fn multi_channel_lifecycle_state_schema_version() -> u32 {
     MULTI_CHANNEL_LIFECYCLE_STATE_SCHEMA_VERSION
 }
 
-pub(crate) fn execute_multi_channel_channel_lifecycle_command(cli: &Cli) -> Result<()> {
-    let Some((action, channel, json_output)) = lifecycle_action_from_cli(cli) else {
-        return Ok(());
-    };
-    let config = build_multi_channel_lifecycle_command_config(cli);
-    let report = execute_multi_channel_lifecycle_action(&config, action, channel)?;
-    if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report)
-                .context("failed to render multi-channel lifecycle json")?
-        );
-    } else {
-        println!("{}", render_multi_channel_lifecycle_report(&report));
-    }
-    Ok(())
+pub fn default_probe_timeout_ms() -> u64 {
+    ONLINE_PROBE_TIMEOUT_MS
 }
 
-fn build_multi_channel_lifecycle_command_config(cli: &Cli) -> MultiChannelLifecycleCommandConfig {
-    MultiChannelLifecycleCommandConfig {
-        state_dir: cli.multi_channel_state_dir.clone(),
-        ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
-        telegram_api_base: cli.multi_channel_telegram_api_base.trim().to_string(),
-        discord_api_base: cli.multi_channel_discord_api_base.trim().to_string(),
-        whatsapp_api_base: cli.multi_channel_whatsapp_api_base.trim().to_string(),
-        credential_store_path: cli.credential_store.clone(),
-        credential_store_encryption: resolve_credential_store_encryption_mode(cli),
-        credential_store_key: cli.credential_store_key.clone(),
-        telegram_bot_token: resolve_non_empty_cli_value(
-            cli.multi_channel_telegram_bot_token.as_deref(),
-        ),
-        discord_bot_token: resolve_non_empty_cli_value(
-            cli.multi_channel_discord_bot_token.as_deref(),
-        ),
-        whatsapp_access_token: resolve_non_empty_cli_value(
-            cli.multi_channel_whatsapp_access_token.as_deref(),
-        ),
-        whatsapp_phone_number_id: resolve_non_empty_cli_value(
-            cli.multi_channel_whatsapp_phone_number_id.as_deref(),
-        ),
-        probe_online: cli.multi_channel_channel_probe_online,
-        probe_online_timeout_ms: ONLINE_PROBE_TIMEOUT_MS,
-        probe_online_max_attempts: ONLINE_PROBE_MAX_ATTEMPTS,
-        probe_online_retry_delay_ms: ONLINE_PROBE_RETRY_DELAY_MS,
-    }
+pub fn default_probe_max_attempts() -> usize {
+    ONLINE_PROBE_MAX_ATTEMPTS
 }
 
-fn lifecycle_action_from_cli(
-    cli: &Cli,
-) -> Option<(LifecycleActionKind, MultiChannelTransport, bool)> {
-    if let Some(channel) = cli.multi_channel_channel_status {
-        return Some((
-            LifecycleActionKind::Status,
-            channel.into(),
-            cli.multi_channel_channel_status_json,
-        ));
-    }
-    if let Some(channel) = cli.multi_channel_channel_login {
-        return Some((
-            LifecycleActionKind::Login,
-            channel.into(),
-            cli.multi_channel_channel_login_json,
-        ));
-    }
-    if let Some(channel) = cli.multi_channel_channel_logout {
-        return Some((
-            LifecycleActionKind::Logout,
-            channel.into(),
-            cli.multi_channel_channel_logout_json,
-        ));
-    }
-    if let Some(channel) = cli.multi_channel_channel_probe {
-        return Some((
-            LifecycleActionKind::Probe,
-            channel.into(),
-            cli.multi_channel_channel_probe_json,
-        ));
-    }
-    None
+pub fn default_probe_retry_delay_ms() -> u64 {
+    ONLINE_PROBE_RETRY_DELAY_MS
 }
 
-fn execute_multi_channel_lifecycle_action(
+pub fn execute_multi_channel_lifecycle_action(
     config: &MultiChannelLifecycleCommandConfig,
-    action: LifecycleActionKind,
+    action: MultiChannelLifecycleAction,
     channel: MultiChannelTransport,
 ) -> Result<MultiChannelLifecycleReport> {
     let state_path = lifecycle_state_path_for_dir(&config.state_dir);
@@ -261,11 +184,11 @@ fn execute_multi_channel_lifecycle_action(
         .get(&channel_key)
         .cloned()
         .unwrap_or_default();
-    let online_probe = matches!(action, LifecycleActionKind::Probe) && config.probe_online;
+    let online_probe = matches!(action, MultiChannelLifecycleAction::Probe) && config.probe_online;
     let mut readiness = probe_channel_readiness(
         config,
         channel,
-        !matches!(action, LifecycleActionKind::Login),
+        !matches!(action, MultiChannelLifecycleAction::Login),
         online_probe,
     );
 
@@ -279,8 +202,8 @@ fn execute_multi_channel_lifecycle_action(
     let mut state_persisted = false;
 
     match action {
-        LifecycleActionKind::Status => {}
-        LifecycleActionKind::Login => {
+        MultiChannelLifecycleAction::Status => {}
+        MultiChannelLifecycleAction::Login => {
             if readiness.readiness_status == "pass" {
                 ensure_ingress_file_exists(&readiness.ingress_file)?;
                 readiness.ingress_exists = true;
@@ -301,7 +224,7 @@ fn execute_multi_channel_lifecycle_action(
             save_multi_channel_lifecycle_state(&state_path, &state)?;
             state_persisted = true;
         }
-        LifecycleActionKind::Logout => {
+        MultiChannelLifecycleAction::Logout => {
             lifecycle_status = "logged_out".to_string();
             reason_codes = vec!["logout_requested".to_string()];
             let entry = state.channels.entry(channel_key).or_default();
@@ -313,7 +236,7 @@ fn execute_multi_channel_lifecycle_action(
             save_multi_channel_lifecycle_state(&state_path, &state)?;
             state_persisted = true;
         }
-        LifecycleActionKind::Probe => {
+        MultiChannelLifecycleAction::Probe => {
             lifecycle_status = if readiness.readiness_status == "pass" {
                 "ready".to_string()
             } else {
@@ -969,68 +892,15 @@ fn resolve_lifecycle_secret(
     direct_secret: Option<&str>,
     integration_id: &str,
 ) -> ResolvedSecret {
-    if let Some(secret) = resolve_non_empty_cli_value(direct_secret) {
-        return ResolvedSecret {
-            value: Some(secret),
-            source: "cli_or_env".to_string(),
-            credential_store_unreadable: false,
-        };
-    }
-    if !config.credential_store_path.exists() {
-        return ResolvedSecret {
-            value: None,
-            source: "missing".to_string(),
-            credential_store_unreadable: false,
-        };
-    }
-
-    let store = match load_credential_store(
-        &config.credential_store_path,
-        config.credential_store_encryption,
-        config.credential_store_key.as_deref(),
-    ) {
-        Ok(store) => store,
-        Err(_) => {
-            return ResolvedSecret {
-                value: None,
-                source: "credential_store_error".to_string(),
-                credential_store_unreadable: true,
-            }
-        }
-    };
-    let Some(record) = store.integrations.get(integration_id) else {
-        return ResolvedSecret {
-            value: None,
-            source: "missing".to_string(),
-            credential_store_unreadable: false,
-        };
-    };
-    if record.revoked {
-        return ResolvedSecret {
-            value: None,
-            source: "credential_store_revoked".to_string(),
-            credential_store_unreadable: false,
-        };
-    }
-    let value = record
-        .secret
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let source = if value.is_some() {
-        "credential_store".to_string()
-    } else {
-        "missing".to_string()
-    };
-    ResolvedSecret {
-        value,
-        source,
-        credential_store_unreadable: false,
-    }
+    resolve_secret(
+        direct_secret,
+        integration_id,
+        config.credential_store.as_ref(),
+        config.credential_store_unreadable,
+    )
 }
 
-fn render_multi_channel_lifecycle_report(report: &MultiChannelLifecycleReport) -> String {
+pub fn render_multi_channel_lifecycle_report(report: &MultiChannelLifecycleReport) -> String {
     let reason_codes = if report.reason_codes.is_empty() {
         "none".to_string()
     } else {
@@ -1077,12 +947,14 @@ mod tests {
     use super::{
         execute_multi_channel_lifecycle_action, lifecycle_state_path_for_dir,
         load_multi_channel_lifecycle_state, probe_channel_readiness,
-        save_multi_channel_lifecycle_state, LifecycleActionKind, MultiChannelLifecycleChannelState,
-        MultiChannelLifecycleCommandConfig, MultiChannelLifecycleStateFile,
+        save_multi_channel_lifecycle_state, MultiChannelLifecycleAction,
+        MultiChannelLifecycleChannelState, MultiChannelLifecycleCommandConfig,
+        MultiChannelLifecycleStateFile,
     };
-    use crate::credentials::{CredentialStoreData, IntegrationCredentialStoreRecord};
     use crate::multi_channel_contract::MultiChannelTransport;
-    use crate::{save_credential_store, CredentialStoreEncryptionMode};
+    use crate::multi_channel_credentials::{
+        MultiChannelCredentialRecord, MultiChannelCredentialStoreSnapshot,
+    };
     use std::collections::BTreeMap;
     use std::path::Path;
     use tempfile::tempdir;
@@ -1094,9 +966,8 @@ mod tests {
             telegram_api_base: "https://api.telegram.org".to_string(),
             discord_api_base: "https://discord.com/api/v10".to_string(),
             whatsapp_api_base: "https://graph.facebook.com/v20.0".to_string(),
-            credential_store_path: root.join(".tau/credentials.json"),
-            credential_store_encryption: CredentialStoreEncryptionMode::None,
-            credential_store_key: None,
+            credential_store: None,
+            credential_store_unreadable: false,
             telegram_bot_token: None,
             discord_bot_token: None,
             whatsapp_access_token: None,
@@ -1158,7 +1029,7 @@ mod tests {
 
         let report = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Probe,
+            MultiChannelLifecycleAction::Probe,
             MultiChannelTransport::Telegram,
         )
         .expect("online probe");
@@ -1189,7 +1060,7 @@ mod tests {
 
         let report = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Probe,
+            MultiChannelLifecycleAction::Probe,
             MultiChannelTransport::Telegram,
         )
         .expect("online probe");
@@ -1225,7 +1096,7 @@ mod tests {
 
         let report = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Probe,
+            MultiChannelLifecycleAction::Probe,
             MultiChannelTransport::Telegram,
         )
         .expect("probe should fail closed without crashing");
@@ -1254,7 +1125,7 @@ mod tests {
 
         let report = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Login,
+            MultiChannelLifecycleAction::Login,
             MultiChannelTransport::Telegram,
         )
         .expect("login should succeed");
@@ -1278,7 +1149,7 @@ mod tests {
 
         let login = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Login,
+            MultiChannelLifecycleAction::Login,
             MultiChannelTransport::Discord,
         )
         .expect("login");
@@ -1286,7 +1157,7 @@ mod tests {
 
         let status = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Status,
+            MultiChannelLifecycleAction::Status,
             MultiChannelTransport::Discord,
         )
         .expect("status");
@@ -1295,7 +1166,7 @@ mod tests {
 
         let logout = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Logout,
+            MultiChannelLifecycleAction::Logout,
             MultiChannelTransport::Discord,
         )
         .expect("logout");
@@ -1304,7 +1175,7 @@ mod tests {
 
         let probe = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Probe,
+            MultiChannelLifecycleAction::Probe,
             MultiChannelTransport::Discord,
         )
         .expect("probe");
@@ -1315,30 +1186,20 @@ mod tests {
     #[test]
     fn integration_login_action_resolves_store_backed_secret_when_cli_secret_missing() {
         let temp = tempdir().expect("tempdir");
-        let config = test_config(temp.path());
+        let mut config = test_config(temp.path());
         let mut integrations = BTreeMap::new();
         integrations.insert(
             "telegram-bot-token".to_string(),
-            IntegrationCredentialStoreRecord {
+            MultiChannelCredentialRecord {
                 secret: Some("store-telegram-secret".to_string()),
                 revoked: false,
-                updated_unix: Some(1),
             },
         );
-        save_credential_store(
-            &config.credential_store_path,
-            &CredentialStoreData {
-                encryption: CredentialStoreEncryptionMode::None,
-                providers: BTreeMap::new(),
-                integrations,
-            },
-            config.credential_store_key.as_deref(),
-        )
-        .expect("save store");
+        config.credential_store = Some(MultiChannelCredentialStoreSnapshot { integrations });
 
         let report = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Login,
+            MultiChannelLifecycleAction::Login,
             MultiChannelTransport::Telegram,
         )
         .expect("login");
@@ -1356,7 +1217,7 @@ mod tests {
 
         let error = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Status,
+            MultiChannelLifecycleAction::Status,
             MultiChannelTransport::Telegram,
         )
         .expect_err("corrupted state should fail");
@@ -1373,7 +1234,7 @@ mod tests {
 
         let report = execute_multi_channel_lifecycle_action(
             &config,
-            LifecycleActionKind::Probe,
+            MultiChannelLifecycleAction::Probe,
             MultiChannelTransport::Whatsapp,
         )
         .expect("probe");

@@ -556,8 +556,7 @@ struct MultiChannelStatusInspectReport {
     health: TransportHealthSnapshot,
     telemetry: MultiChannelStatusTelemetryInspectReport,
     #[serde(skip_serializing_if = "Option::is_none")]
-    connectors:
-        Option<crate::multi_channel_live_connectors::MultiChannelLiveConnectorsStatusReport>,
+    connectors: Option<tau_multi_channel::MultiChannelLiveConnectorsStatusReport>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1662,14 +1661,13 @@ fn collect_multi_channel_status_report(cli: &Cli) -> Result<MultiChannelStatusIn
         increment_count(&mut transport_counts, &transport.to_ascii_lowercase());
     }
 
-    let connectors =
-        match crate::multi_channel_live_connectors::load_multi_channel_live_connectors_status_report(
-            &cli.multi_channel_live_connectors_state_path,
-        ) {
-            Ok(report) if report.state_present => Some(report),
-            Ok(_) => None,
-            Err(_) => None,
-        };
+    let connectors = match tau_multi_channel::load_multi_channel_live_connectors_status_report(
+        &cli.multi_channel_live_connectors_state_path,
+    ) {
+        Ok(report) if report.state_present => Some(report),
+        Ok(_) => None,
+        Err(_) => None,
+    };
 
     Ok(MultiChannelStatusInspectReport {
         state_path: state_path.display().to_string(),

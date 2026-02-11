@@ -1,5 +1,5 @@
 use super::*;
-use crate::multi_channel_adapters::{
+use crate::channel_adapters::{
     build_multi_channel_command_handlers, build_multi_channel_pairing_evaluator,
 };
 use crate::runtime_cli_validation::validate_multi_channel_live_connectors_runner_cli;
@@ -283,8 +283,8 @@ pub(crate) async fn run_transport_mode_if_requested(
     }
 
     if cli.multi_channel_live_connectors_runner {
-        crate::multi_channel_live_connectors::run_multi_channel_live_connectors_runner(
-            crate::multi_channel_live_connectors::MultiChannelLiveConnectorsConfig {
+        tau_multi_channel::run_multi_channel_live_connectors_runner(
+            tau_multi_channel::MultiChannelLiveConnectorsConfig {
                 state_path: cli.multi_channel_live_connectors_state_path.clone(),
                 ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
                 processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
@@ -469,10 +469,8 @@ fn resolve_multi_channel_outbound_secret(
         .map(str::to_string)
 }
 
-fn build_multi_channel_outbound_config(
-    cli: &Cli,
-) -> crate::multi_channel_outbound::MultiChannelOutboundConfig {
-    crate::multi_channel_outbound::MultiChannelOutboundConfig {
+fn build_multi_channel_outbound_config(cli: &Cli) -> tau_multi_channel::MultiChannelOutboundConfig {
+    tau_multi_channel::MultiChannelOutboundConfig {
         mode: cli.multi_channel_outbound_mode.into(),
         max_chars: cli.multi_channel_outbound_max_chars.max(1),
         http_timeout_ms: cli.multi_channel_outbound_http_timeout_ms.max(1),
@@ -504,8 +502,8 @@ fn build_multi_channel_outbound_config(
 
 fn build_multi_channel_telemetry_config(
     cli: &Cli,
-) -> crate::multi_channel_runtime::MultiChannelTelemetryConfig {
-    crate::multi_channel_runtime::MultiChannelTelemetryConfig {
+) -> tau_multi_channel::MultiChannelTelemetryConfig {
+    tau_multi_channel::MultiChannelTelemetryConfig {
         typing_presence_enabled: cli.multi_channel_telemetry_typing_presence,
         usage_summary_enabled: cli.multi_channel_telemetry_usage_summary,
         include_identifiers: cli.multi_channel_telemetry_include_identifiers,
@@ -515,8 +513,8 @@ fn build_multi_channel_telemetry_config(
 
 fn build_multi_channel_media_config(
     cli: &Cli,
-) -> crate::multi_channel_media::MultiChannelMediaUnderstandingConfig {
-    crate::multi_channel_media::MultiChannelMediaUnderstandingConfig {
+) -> tau_multi_channel::MultiChannelMediaUnderstandingConfig {
+    tau_multi_channel::MultiChannelMediaUnderstandingConfig {
         enabled: cli.multi_channel_media_understanding,
         max_attachments_per_event: cli.multi_channel_media_max_attachments.max(1),
         max_summary_chars: cli.multi_channel_media_max_summary_chars.max(16),

@@ -788,8 +788,7 @@ fn append_multi_channel_policy_readiness_checks(
     ingress_dir: &Path,
 ) {
     let state_dir_guess = ingress_dir.parent().unwrap_or(ingress_dir);
-    let policy_path =
-        crate::multi_channel_policy::channel_policy_path_for_state_dir(state_dir_guess);
+    let policy_path = tau_multi_channel::channel_policy_path_for_state_dir(state_dir_guess);
     if !policy_path.exists() {
         checks.push(DoctorCheckResult {
             key: "multi_channel_live.channel_policy".to_string(),
@@ -814,7 +813,7 @@ fn append_multi_channel_policy_readiness_checks(
         return;
     }
 
-    let policy = match crate::multi_channel_policy::load_multi_channel_policy_file(&policy_path) {
+    let policy = match tau_multi_channel::load_multi_channel_policy_file(&policy_path) {
         Ok(policy) => {
             checks.push(DoctorCheckResult {
                 key: "multi_channel_live.channel_policy".to_string(),
@@ -844,7 +843,7 @@ fn append_multi_channel_policy_readiness_checks(
         }
     };
 
-    let open_dm_channels = crate::multi_channel_policy::collect_open_dm_risk_channels(&policy);
+    let open_dm_channels = tau_multi_channel::collect_open_dm_risk_channels(&policy);
     if open_dm_channels.is_empty() {
         checks.push(DoctorCheckResult {
             key: "multi_channel_live.channel_policy.risk".to_string(),

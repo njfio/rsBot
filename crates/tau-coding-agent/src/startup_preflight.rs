@@ -57,7 +57,7 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
 
     if cli.multi_channel_send.is_some() {
         validate_multi_channel_send_cli(cli)?;
-        crate::multi_channel_send::execute_multi_channel_send_command(cli)?;
+        crate::channel_send::execute_multi_channel_send_command(cli)?;
         return Ok(true);
     }
 
@@ -67,7 +67,7 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         || cli.multi_channel_channel_probe.is_some()
     {
         validate_multi_channel_channel_lifecycle_cli(cli)?;
-        crate::multi_channel_lifecycle::execute_multi_channel_channel_lifecycle_command(cli)?;
+        crate::channel_lifecycle::execute_multi_channel_channel_lifecycle_command(cli)?;
         return Ok(true);
     }
 
@@ -228,12 +228,12 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
             .multi_channel_live_ingest_file
             .clone()
             .ok_or_else(|| anyhow!("--multi-channel-live-ingest-file is required"))?;
-        let transport: crate::multi_channel_contract::MultiChannelTransport = cli
+        let transport: tau_multi_channel::MultiChannelTransport = cli
             .multi_channel_live_ingest_transport
             .ok_or_else(|| anyhow!("--multi-channel-live-ingest-transport is required"))?
             .into();
-        let report = crate::multi_channel_live_ingress::ingest_multi_channel_live_raw_payload(
-            &crate::multi_channel_live_ingress::MultiChannelLivePayloadIngestConfig {
+        let report = tau_multi_channel::ingest_multi_channel_live_raw_payload(
+            &tau_multi_channel::MultiChannelLivePayloadIngestConfig {
                 ingress_dir: cli.multi_channel_live_ingest_dir.clone(),
                 payload_file,
                 transport,
@@ -263,10 +263,9 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
     }
 
     if cli.multi_channel_live_connectors_status {
-        let report =
-            crate::multi_channel_live_connectors::load_multi_channel_live_connectors_status_report(
-                &cli.multi_channel_live_connectors_state_path,
-            )?;
+        let report = tau_multi_channel::load_multi_channel_live_connectors_status_report(
+            &cli.multi_channel_live_connectors_state_path,
+        )?;
         if cli.multi_channel_live_connectors_status_json {
             println!(
                 "{}",

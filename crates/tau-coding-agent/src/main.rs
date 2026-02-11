@@ -4,6 +4,9 @@ mod bootstrap_helpers;
 mod browser_automation_contract;
 mod browser_automation_runtime;
 mod canvas;
+mod channel_adapters;
+mod channel_lifecycle;
+mod channel_send;
 mod channel_store;
 mod channel_store_admin;
 mod claude_cli_client;
@@ -34,17 +37,6 @@ mod memory_contract;
 mod memory_runtime;
 mod model_catalog;
 mod multi_agent_router;
-mod multi_channel_adapters;
-mod multi_channel_contract;
-mod multi_channel_lifecycle;
-mod multi_channel_live_connectors;
-mod multi_channel_live_ingress;
-mod multi_channel_media;
-mod multi_channel_outbound;
-mod multi_channel_policy;
-mod multi_channel_routing;
-mod multi_channel_runtime;
-mod multi_channel_send;
 mod observability_loggers;
 mod onboarding;
 mod orchestrator_bridge;
@@ -198,8 +190,6 @@ pub(crate) use crate::model_catalog::{
     MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
 };
 pub(crate) use crate::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTable};
-pub(crate) use crate::multi_channel_runtime::build_multi_channel_incident_timeline_report;
-pub(crate) use crate::multi_channel_runtime::build_multi_channel_route_inspect_report;
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
@@ -343,10 +333,6 @@ use dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
 use deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
 use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
 use memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
-use multi_channel_runtime::{
-    run_multi_channel_contract_runner, run_multi_channel_live_runner,
-    MultiChannelLiveRuntimeConfig, MultiChannelRuntimeConfig,
-};
 use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
 pub(crate) use tau_access::approvals::{
     evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
@@ -369,6 +355,12 @@ pub(crate) use tau_access::trust_roots::{
 pub(crate) use tau_core::write_text_atomic;
 pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
 use tau_gateway::{run_gateway_contract_runner, GatewayRuntimeConfig};
+pub(crate) use tau_multi_channel::build_multi_channel_incident_timeline_report;
+pub(crate) use tau_multi_channel::build_multi_channel_route_inspect_report;
+use tau_multi_channel::{
+    run_multi_channel_contract_runner, run_multi_channel_live_runner,
+    MultiChannelLiveRuntimeConfig, MultiChannelRuntimeConfig,
+};
 use tau_orchestrator::multi_agent_runtime::{
     run_multi_agent_contract_runner, MultiAgentRuntimeConfig,
 };
