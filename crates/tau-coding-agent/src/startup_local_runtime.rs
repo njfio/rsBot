@@ -2,7 +2,7 @@ use super::*;
 use crate::extension_manifest::{
     discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
 };
-use tau_onboarding::startup_local_runtime::extension_tool_hook_dispatch;
+use tau_onboarding::startup_local_runtime::register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber;
 
 pub(crate) struct LocalRuntimeConfig<'a> {
     pub(crate) cli: &'a Cli,
@@ -211,19 +211,10 @@ pub(crate) fn register_runtime_extension_tool_hook_subscriber(
     agent: &mut Agent,
     extension_runtime_hooks: &RuntimeExtensionHooksConfig,
 ) {
-    if !extension_runtime_hooks.enabled {
-        return;
-    }
-
-    let root = extension_runtime_hooks.root.clone();
-    agent.subscribe(move |event| {
-        let dispatch = extension_tool_hook_dispatch(event);
-        let Some((hook, payload)) = dispatch else {
-            return;
-        };
-        let summary = dispatch_extension_runtime_hook(&root, hook, &payload);
-        for diagnostic in summary.diagnostics {
-            eprintln!("{diagnostic}");
-        }
-    });
+    register_onboarding_runtime_extension_tool_hook_subscriber(
+        agent,
+        extension_runtime_hooks.enabled,
+        extension_runtime_hooks.root.clone(),
+        |root, hook, payload| dispatch_extension_runtime_hook(root, hook, payload).diagnostics,
+    );
 }
