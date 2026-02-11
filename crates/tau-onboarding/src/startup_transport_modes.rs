@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -570,6 +571,19 @@ pub fn build_events_runner_cli_config(cli: &Cli) -> EventsRunnerCliConfig {
     }
 }
 
+pub async fn run_events_runner_if_requested<FRun, Fut>(cli: &Cli, run_events: FRun) -> Result<bool>
+where
+    FRun: FnOnce(EventsRunnerCliConfig) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    if !cli.events_runner {
+        return Ok(false);
+    }
+    let config = build_events_runner_cli_config(cli);
+    run_events(config).await?;
+    Ok(true)
+}
+
 pub fn build_slack_bridge_cli_config(
     cli: &Cli,
     app_token: String,
@@ -590,6 +604,25 @@ pub fn build_slack_bridge_cli_config(
         retry_base_delay_ms: cli.slack_retry_base_delay_ms.max(1),
         artifact_retention_days: cli.slack_artifact_retention_days,
     }
+}
+
+pub async fn run_slack_bridge_if_requested<FResolveTokens, FRunBridge, Fut>(
+    cli: &Cli,
+    resolve_tokens: FResolveTokens,
+    run_bridge: FRunBridge,
+) -> Result<bool>
+where
+    FResolveTokens: FnOnce() -> Result<(String, String)>,
+    FRunBridge: FnOnce(SlackBridgeCliConfig) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    if !cli.slack_bridge {
+        return Ok(false);
+    }
+    let (app_token, bot_token) = resolve_tokens()?;
+    let config = build_slack_bridge_cli_config(cli, app_token, bot_token);
+    run_bridge(config).await?;
+    Ok(true)
 }
 
 pub fn build_github_issues_bridge_cli_config(
@@ -618,6 +651,25 @@ pub fn build_github_issues_bridge_cli_config(
         retry_base_delay_ms: cli.github_retry_base_delay_ms.max(1),
         artifact_retention_days: cli.github_artifact_retention_days,
     }
+}
+
+pub async fn run_github_issues_bridge_if_requested<FResolveRepoAndToken, FRunBridge, Fut>(
+    cli: &Cli,
+    resolve_repo_and_token: FResolveRepoAndToken,
+    run_bridge: FRunBridge,
+) -> Result<bool>
+where
+    FResolveRepoAndToken: FnOnce() -> Result<(String, String)>,
+    FRunBridge: FnOnce(GithubIssuesBridgeCliConfig) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    if !cli.github_issues_bridge {
+        return Ok(false);
+    }
+    let (repo_slug, token) = resolve_repo_and_token()?;
+    let config = build_github_issues_bridge_cli_config(cli, repo_slug, token);
+    run_bridge(config).await?;
+    Ok(true)
 }
 
 pub fn build_multi_channel_contract_runner_config(
@@ -838,14 +890,16 @@ mod tests {
         resolve_bridge_transport_mode, resolve_contract_transport_mode,
         resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
         resolve_multi_channel_transport_mode, resolve_transport_runtime_mode,
-        validate_transport_mode_cli, BridgeTransportMode, ContractTransportMode,
-        MultiChannelTransportMode, TransportRuntimeMode,
+        run_events_runner_if_requested, run_github_issues_bridge_if_requested,
+        run_slack_bridge_if_requested, validate_transport_mode_cli, BridgeTransportMode,
+        ContractTransportMode, EventsRunnerCliConfig, MultiChannelTransportMode,
+        SlackBridgeCliConfig, TransportRuntimeMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, ModelRef, TauAiError};
     use tau_cli::{Cli, CliGatewayOpenResponsesAuthMode};
     use tau_gateway::GatewayOpenResponsesAuthMode;
@@ -2064,5 +2118,115 @@ mod tests {
 
         let config = build_multi_channel_live_connectors_config(&cli);
         assert!(config.discord_bot_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn unit_run_github_issues_bridge_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+        let resolver_called = Arc::new(Mutex::new(false));
+        let resolver_called_sink = Arc::clone(&resolver_called);
+
+        let ran = run_github_issues_bridge_if_requested(
+            &cli,
+            move || {
+                *resolver_called_sink.lock().expect("resolver lock") = true;
+                Ok(("owner/repo".to_string(), "token".to_string()))
+            },
+            |_config| async { Ok(()) },
+        )
+        .await
+        .expect("github helper succeeds");
+
+        assert!(!ran);
+        assert!(!*resolver_called.lock().expect("resolver lock"));
+    }
+
+    #[tokio::test]
+    async fn functional_run_slack_bridge_if_requested_builds_config_with_resolved_tokens() {
+        let mut cli = parse_cli_with_stack();
+        cli.slack_bridge = true;
+        cli.slack_thread_detail_threshold_chars = 0;
+        cli.slack_processed_event_cap = 0;
+        cli.slack_reconnect_delay_ms = 0;
+        cli.slack_retry_max_attempts = 0;
+        cli.slack_retry_base_delay_ms = 0;
+        let captured = Arc::new(Mutex::new(None::<SlackBridgeCliConfig>));
+        let captured_sink = Arc::clone(&captured);
+
+        let ran = run_slack_bridge_if_requested(
+            &cli,
+            || Ok(("app-token".to_string(), "bot-token".to_string())),
+            move |config| {
+                let sink = Arc::clone(&captured_sink);
+                async move {
+                    *sink.lock().expect("capture lock") = Some(config);
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("slack helper succeeds");
+
+        assert!(ran);
+        let config = captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("captured config");
+        assert_eq!(config.app_token, "app-token");
+        assert_eq!(config.bot_token, "bot-token");
+        assert_eq!(config.detail_thread_threshold_chars, 1);
+        assert_eq!(config.processed_event_cap, 1);
+        assert_eq!(config.reconnect_delay_ms, 1);
+        assert_eq!(config.retry_max_attempts, 1);
+        assert_eq!(config.retry_base_delay_ms, 1);
+    }
+
+    #[tokio::test]
+    async fn integration_run_events_runner_if_requested_passes_normalized_config() {
+        let mut cli = parse_cli_with_stack();
+        cli.events_runner = true;
+        cli.events_poll_interval_ms = 0;
+        cli.events_queue_limit = 0;
+        let captured = Arc::new(Mutex::new(None::<EventsRunnerCliConfig>));
+        let captured_sink = Arc::clone(&captured);
+
+        let ran = run_events_runner_if_requested(&cli, move |config| {
+            let sink = Arc::clone(&captured_sink);
+            async move {
+                *sink.lock().expect("capture lock") = Some(config);
+                Ok(())
+            }
+        })
+        .await
+        .expect("events helper succeeds");
+
+        assert!(ran);
+        let config = captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("captured config");
+        assert_eq!(config.poll_interval_ms, 1);
+        assert_eq!(config.queue_limit, 1);
+    }
+
+    #[tokio::test]
+    async fn regression_run_github_issues_bridge_if_requested_propagates_resolver_errors() {
+        let mut cli = parse_cli_with_stack();
+        cli.github_issues_bridge = true;
+
+        let error = run_github_issues_bridge_if_requested(
+            &cli,
+            || Err(anyhow::anyhow!("missing bridge credentials")),
+            |_config| async { Ok(()) },
+        )
+        .await
+        .expect_err("resolver failures should propagate");
+
+        assert!(
+            error.to_string().contains("missing bridge credentials"),
+            "unexpected error: {error}"
+        );
     }
 }
