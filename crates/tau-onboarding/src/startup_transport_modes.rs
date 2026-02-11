@@ -46,6 +46,19 @@ pub enum MultiChannelTransportMode {
     LiveConnectorsRunner,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractTransportMode {
+    None,
+    MultiAgent,
+    BrowserAutomation,
+    Memory,
+    Dashboard,
+    Gateway,
+    Deployment,
+    CustomCommand,
+    Voice,
+}
+
 pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_github_issues_bridge_cli(cli)?;
     validate_slack_bridge_cli(cli)?;
@@ -74,6 +87,28 @@ pub fn resolve_multi_channel_transport_mode(cli: &Cli) -> MultiChannelTransportM
         MultiChannelTransportMode::LiveConnectorsRunner
     } else {
         MultiChannelTransportMode::None
+    }
+}
+
+pub fn resolve_contract_transport_mode(cli: &Cli) -> ContractTransportMode {
+    if cli.multi_agent_contract_runner {
+        ContractTransportMode::MultiAgent
+    } else if cli.browser_automation_contract_runner {
+        ContractTransportMode::BrowserAutomation
+    } else if cli.memory_contract_runner {
+        ContractTransportMode::Memory
+    } else if cli.dashboard_contract_runner {
+        ContractTransportMode::Dashboard
+    } else if cli.gateway_contract_runner {
+        ContractTransportMode::Gateway
+    } else if cli.deployment_contract_runner {
+        ContractTransportMode::Deployment
+    } else if cli.custom_command_contract_runner {
+        ContractTransportMode::CustomCommand
+    } else if cli.voice_contract_runner {
+        ContractTransportMode::Voice
+    } else {
+        ContractTransportMode::None
     }
 }
 
@@ -714,9 +749,9 @@ mod tests {
         build_multi_channel_media_config, build_multi_channel_outbound_config,
         build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
         build_voice_contract_runner_config, map_gateway_openresponses_auth_mode,
-        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
-        resolve_multi_channel_transport_mode, validate_transport_mode_cli,
-        MultiChannelTransportMode,
+        resolve_contract_transport_mode, resolve_gateway_openresponses_auth,
+        resolve_multi_channel_outbound_secret, resolve_multi_channel_transport_mode,
+        validate_transport_mode_cli, ContractTransportMode, MultiChannelTransportMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -877,6 +912,52 @@ mod tests {
         assert_eq!(
             resolve_multi_channel_transport_mode(&cli),
             MultiChannelTransportMode::LiveConnectorsRunner
+        );
+    }
+
+    #[test]
+    fn unit_resolve_contract_transport_mode_defaults_to_none() {
+        let cli = parse_cli_with_stack();
+        assert_eq!(
+            resolve_contract_transport_mode(&cli),
+            ContractTransportMode::None
+        );
+    }
+
+    #[test]
+    fn functional_resolve_contract_transport_mode_prefers_multi_agent() {
+        let mut cli = parse_cli_with_stack();
+        cli.multi_agent_contract_runner = true;
+        cli.browser_automation_contract_runner = true;
+        cli.memory_contract_runner = true;
+        cli.dashboard_contract_runner = true;
+        cli.gateway_contract_runner = true;
+        cli.deployment_contract_runner = true;
+        cli.custom_command_contract_runner = true;
+        cli.voice_contract_runner = true;
+        assert_eq!(
+            resolve_contract_transport_mode(&cli),
+            ContractTransportMode::MultiAgent
+        );
+    }
+
+    #[test]
+    fn integration_resolve_contract_transport_mode_selects_memory() {
+        let mut cli = parse_cli_with_stack();
+        cli.memory_contract_runner = true;
+        assert_eq!(
+            resolve_contract_transport_mode(&cli),
+            ContractTransportMode::Memory
+        );
+    }
+
+    #[test]
+    fn regression_resolve_contract_transport_mode_selects_voice() {
+        let mut cli = parse_cli_with_stack();
+        cli.voice_contract_runner = true;
+        assert_eq!(
+            resolve_contract_transport_mode(&cli),
+            ContractTransportMode::Voice
         );
     }
 
