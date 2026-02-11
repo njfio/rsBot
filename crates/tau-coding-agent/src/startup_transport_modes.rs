@@ -2,9 +2,11 @@ use super::*;
 use crate::channel_adapters::{
     build_multi_channel_command_handlers, build_multi_channel_pairing_evaluator,
 };
+use async_trait::async_trait;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
-    resolve_transport_runtime_mode, run_browser_automation_contract_runner_if_requested,
+    execute_transport_runtime_mode, resolve_transport_runtime_mode,
+    run_browser_automation_contract_runner_if_requested,
     run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
     run_deployment_contract_runner_if_requested,
     run_events_runner_if_requested as run_onboarding_events_runner_if_requested,
@@ -14,7 +16,7 @@ use tau_onboarding::startup_transport_modes::{
     run_multi_channel_contract_runner_if_requested, run_multi_channel_live_connectors_if_requested,
     run_multi_channel_live_runner_if_requested,
     run_slack_bridge_if_requested as run_onboarding_slack_bridge_if_requested,
-    run_voice_contract_runner_if_requested, validate_transport_mode_cli, TransportRuntimeMode,
+    run_voice_contract_runner_if_requested, validate_transport_mode_cli, TransportRuntimeExecutor,
 };
 
 fn build_multi_channel_runtime_dependencies(
@@ -212,6 +214,134 @@ async fn run_events_runner_if_requested(
     .await
 }
 
+struct CodingAgentTransportRuntimeExecutor<'a> {
+    cli: &'a Cli,
+    client: &'a Arc<dyn LlmClient>,
+    model_ref: &'a ModelRef,
+    system_prompt: &'a str,
+    tool_policy: &'a ToolPolicy,
+    render_options: RenderOptions,
+}
+
+#[async_trait]
+impl TransportRuntimeExecutor for CodingAgentTransportRuntimeExecutor<'_> {
+    async fn run_gateway_openresponses_server(&self) -> Result<()> {
+        run_gateway_openresponses_server_if_requested(
+            self.cli,
+            self.client.clone(),
+            self.model_ref,
+            self.system_prompt,
+            self.tool_policy,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn run_github_issues_bridge(&self) -> Result<()> {
+        self::run_github_issues_bridge_if_requested(
+            self.cli,
+            self.client,
+            self.model_ref,
+            self.system_prompt,
+            self.tool_policy,
+            self.render_options,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn run_slack_bridge(&self) -> Result<()> {
+        self::run_slack_bridge_if_requested(
+            self.cli,
+            self.client,
+            self.model_ref,
+            self.system_prompt,
+            self.tool_policy,
+            self.render_options,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn run_events_runner(&self) -> Result<()> {
+        self::run_events_runner_if_requested(
+            self.cli,
+            self.client,
+            self.model_ref,
+            self.system_prompt,
+            self.tool_policy,
+            self.render_options,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn run_multi_channel_contract_runner(&self) -> Result<()> {
+        let (command_handlers, pairing_evaluator) =
+            build_multi_channel_runtime_dependencies(self.cli, self.model_ref);
+        run_multi_channel_contract_runner_if_requested(
+            self.cli,
+            command_handlers,
+            pairing_evaluator,
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn run_multi_channel_live_runner(&self) -> Result<()> {
+        let (command_handlers, pairing_evaluator) =
+            build_multi_channel_runtime_dependencies(self.cli, self.model_ref);
+        run_multi_channel_live_runner_if_requested(self.cli, command_handlers, pairing_evaluator)
+            .await?;
+        Ok(())
+    }
+
+    async fn run_multi_channel_live_connectors_runner(&self) -> Result<()> {
+        run_multi_channel_live_connectors_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_multi_agent_contract_runner(&self) -> Result<()> {
+        run_multi_agent_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_browser_automation_contract_runner(&self) -> Result<()> {
+        run_browser_automation_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_memory_contract_runner(&self) -> Result<()> {
+        run_memory_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_dashboard_contract_runner(&self) -> Result<()> {
+        run_dashboard_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_gateway_contract_runner(&self) -> Result<()> {
+        run_gateway_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_deployment_contract_runner(&self) -> Result<()> {
+        run_deployment_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_custom_command_contract_runner(&self) -> Result<()> {
+        run_custom_command_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_voice_contract_runner(&self) -> Result<()> {
+        run_voice_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+}
+
 pub(crate) async fn run_transport_mode_if_requested(
     cli: &Cli,
     client: &Arc<dyn LlmClient>,
@@ -222,110 +352,13 @@ pub(crate) async fn run_transport_mode_if_requested(
 ) -> Result<bool> {
     validate_transport_mode_cli(cli)?;
 
-    match resolve_transport_runtime_mode(cli) {
-        TransportRuntimeMode::GatewayOpenResponsesServer => {
-            run_gateway_openresponses_server_if_requested(
-                cli,
-                client.clone(),
-                model_ref,
-                system_prompt,
-                tool_policy,
-            )
-            .await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::GithubIssuesBridge => {
-            run_github_issues_bridge_if_requested(
-                cli,
-                client,
-                model_ref,
-                system_prompt,
-                tool_policy,
-                render_options,
-            )
-            .await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::SlackBridge => {
-            run_slack_bridge_if_requested(
-                cli,
-                client,
-                model_ref,
-                system_prompt,
-                tool_policy,
-                render_options,
-            )
-            .await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::EventsRunner => {
-            run_events_runner_if_requested(
-                cli,
-                client,
-                model_ref,
-                system_prompt,
-                tool_policy,
-                render_options,
-            )
-            .await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::MultiChannelContractRunner => {
-            let (command_handlers, pairing_evaluator) =
-                build_multi_channel_runtime_dependencies(cli, model_ref);
-            run_multi_channel_contract_runner_if_requested(
-                cli,
-                command_handlers,
-                pairing_evaluator,
-            )
-            .await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::MultiChannelLiveRunner => {
-            let (command_handlers, pairing_evaluator) =
-                build_multi_channel_runtime_dependencies(cli, model_ref);
-            run_multi_channel_live_runner_if_requested(cli, command_handlers, pairing_evaluator)
-                .await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::MultiChannelLiveConnectorsRunner => {
-            run_multi_channel_live_connectors_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::MultiAgentContractRunner => {
-            run_multi_agent_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::BrowserAutomationContractRunner => {
-            run_browser_automation_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::MemoryContractRunner => {
-            run_memory_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::DashboardContractRunner => {
-            run_dashboard_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::GatewayContractRunner => {
-            run_gateway_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::DeploymentContractRunner => {
-            run_deployment_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::CustomCommandContractRunner => {
-            run_custom_command_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::VoiceContractRunner => {
-            run_voice_contract_runner_if_requested(cli).await?;
-            return Ok(true);
-        }
-        TransportRuntimeMode::None => {}
-    }
-
-    Ok(false)
+    let executor = CodingAgentTransportRuntimeExecutor {
+        cli,
+        client,
+        model_ref,
+        system_prompt,
+        tool_policy,
+        render_options,
+    };
+    execute_transport_runtime_mode(resolve_transport_runtime_mode(cli), &executor).await
 }

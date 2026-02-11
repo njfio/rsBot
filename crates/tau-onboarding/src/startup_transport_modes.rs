@@ -88,6 +88,97 @@ pub enum TransportRuntimeMode {
     VoiceContractRunner,
 }
 
+#[async_trait::async_trait]
+pub trait TransportRuntimeExecutor {
+    async fn run_gateway_openresponses_server(&self) -> Result<()>;
+    async fn run_github_issues_bridge(&self) -> Result<()>;
+    async fn run_slack_bridge(&self) -> Result<()>;
+    async fn run_events_runner(&self) -> Result<()>;
+    async fn run_multi_channel_contract_runner(&self) -> Result<()>;
+    async fn run_multi_channel_live_runner(&self) -> Result<()>;
+    async fn run_multi_channel_live_connectors_runner(&self) -> Result<()>;
+    async fn run_multi_agent_contract_runner(&self) -> Result<()>;
+    async fn run_browser_automation_contract_runner(&self) -> Result<()>;
+    async fn run_memory_contract_runner(&self) -> Result<()>;
+    async fn run_dashboard_contract_runner(&self) -> Result<()>;
+    async fn run_gateway_contract_runner(&self) -> Result<()>;
+    async fn run_deployment_contract_runner(&self) -> Result<()>;
+    async fn run_custom_command_contract_runner(&self) -> Result<()>;
+    async fn run_voice_contract_runner(&self) -> Result<()>;
+}
+
+pub async fn execute_transport_runtime_mode<E>(
+    mode: TransportRuntimeMode,
+    executor: &E,
+) -> Result<bool>
+where
+    E: TransportRuntimeExecutor + Sync,
+{
+    match mode {
+        TransportRuntimeMode::GatewayOpenResponsesServer => {
+            executor.run_gateway_openresponses_server().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::GithubIssuesBridge => {
+            executor.run_github_issues_bridge().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::SlackBridge => {
+            executor.run_slack_bridge().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::EventsRunner => {
+            executor.run_events_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::MultiChannelContractRunner => {
+            executor.run_multi_channel_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::MultiChannelLiveRunner => {
+            executor.run_multi_channel_live_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::MultiChannelLiveConnectorsRunner => {
+            executor.run_multi_channel_live_connectors_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::MultiAgentContractRunner => {
+            executor.run_multi_agent_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::BrowserAutomationContractRunner => {
+            executor.run_browser_automation_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::MemoryContractRunner => {
+            executor.run_memory_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::DashboardContractRunner => {
+            executor.run_dashboard_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::GatewayContractRunner => {
+            executor.run_gateway_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::DeploymentContractRunner => {
+            executor.run_deployment_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::CustomCommandContractRunner => {
+            executor.run_custom_command_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::VoiceContractRunner => {
+            executor.run_voice_contract_runner().await?;
+            Ok(true)
+        }
+        TransportRuntimeMode::None => Ok(false),
+    }
+}
+
 pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_github_issues_bridge_cli(cli)?;
     validate_slack_bridge_cli(cli)?;
@@ -886,14 +977,15 @@ mod tests {
         build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
         build_multi_channel_media_config, build_multi_channel_outbound_config,
         build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
-        build_voice_contract_runner_config, map_gateway_openresponses_auth_mode,
-        resolve_bridge_transport_mode, resolve_contract_transport_mode,
-        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
-        resolve_multi_channel_transport_mode, resolve_transport_runtime_mode,
-        run_events_runner_if_requested, run_github_issues_bridge_if_requested,
-        run_slack_bridge_if_requested, validate_transport_mode_cli, BridgeTransportMode,
-        ContractTransportMode, EventsRunnerCliConfig, MultiChannelTransportMode,
-        SlackBridgeCliConfig, TransportRuntimeMode,
+        build_voice_contract_runner_config, execute_transport_runtime_mode,
+        map_gateway_openresponses_auth_mode, resolve_bridge_transport_mode,
+        resolve_contract_transport_mode, resolve_gateway_openresponses_auth,
+        resolve_multi_channel_outbound_secret, resolve_multi_channel_transport_mode,
+        resolve_transport_runtime_mode, run_events_runner_if_requested,
+        run_github_issues_bridge_if_requested, run_slack_bridge_if_requested,
+        validate_transport_mode_cli, BridgeTransportMode, ContractTransportMode,
+        EventsRunnerCliConfig, MultiChannelTransportMode, SlackBridgeCliConfig,
+        TransportRuntimeExecutor, TransportRuntimeMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -949,6 +1041,128 @@ mod tests {
             Ok(MultiChannelPairingDecision::Allow {
                 reason_code: "allowed_for_test".to_string(),
             })
+        }
+    }
+
+    struct RecordingTransportRuntimeExecutor {
+        calls: Arc<Mutex<Vec<&'static str>>>,
+        fail_mode: Option<TransportRuntimeMode>,
+    }
+
+    impl RecordingTransportRuntimeExecutor {
+        fn new(fail_mode: Option<TransportRuntimeMode>) -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                fail_mode,
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().expect("calls lock").clone()
+        }
+
+        fn record(&self, mode: TransportRuntimeMode, marker: &'static str) -> anyhow::Result<()> {
+            self.calls.lock().expect("calls lock").push(marker);
+            if self.fail_mode == Some(mode) {
+                return Err(anyhow::anyhow!("forced failure for {marker}"));
+            }
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
+        async fn run_gateway_openresponses_server(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::GatewayOpenResponsesServer,
+                "gateway-openresponses",
+            )
+        }
+
+        async fn run_github_issues_bridge(&self) -> anyhow::Result<()> {
+            self.record(TransportRuntimeMode::GithubIssuesBridge, "github-issues")
+        }
+
+        async fn run_slack_bridge(&self) -> anyhow::Result<()> {
+            self.record(TransportRuntimeMode::SlackBridge, "slack")
+        }
+
+        async fn run_events_runner(&self) -> anyhow::Result<()> {
+            self.record(TransportRuntimeMode::EventsRunner, "events")
+        }
+
+        async fn run_multi_channel_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::MultiChannelContractRunner,
+                "multi-channel-contract",
+            )
+        }
+
+        async fn run_multi_channel_live_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::MultiChannelLiveRunner,
+                "multi-channel-live",
+            )
+        }
+
+        async fn run_multi_channel_live_connectors_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::MultiChannelLiveConnectorsRunner,
+                "multi-channel-live-connectors",
+            )
+        }
+
+        async fn run_multi_agent_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::MultiAgentContractRunner,
+                "multi-agent-contract",
+            )
+        }
+
+        async fn run_browser_automation_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::BrowserAutomationContractRunner,
+                "browser-automation-contract",
+            )
+        }
+
+        async fn run_memory_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::MemoryContractRunner,
+                "memory-contract",
+            )
+        }
+
+        async fn run_dashboard_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::DashboardContractRunner,
+                "dashboard-contract",
+            )
+        }
+
+        async fn run_gateway_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::GatewayContractRunner,
+                "gateway-contract",
+            )
+        }
+
+        async fn run_deployment_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::DeploymentContractRunner,
+                "deployment-contract",
+            )
+        }
+
+        async fn run_custom_command_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(
+                TransportRuntimeMode::CustomCommandContractRunner,
+                "custom-command-contract",
+            )
+        }
+
+        async fn run_voice_contract_runner(&self) -> anyhow::Result<()> {
+            self.record(TransportRuntimeMode::VoiceContractRunner, "voice-contract")
         }
     }
 
@@ -1163,6 +1377,57 @@ mod tests {
             resolve_transport_runtime_mode(&cli),
             TransportRuntimeMode::VoiceContractRunner
         );
+    }
+
+    #[tokio::test]
+    async fn unit_execute_transport_runtime_mode_returns_false_for_none() {
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let handled = execute_transport_runtime_mode(TransportRuntimeMode::None, &executor)
+            .await
+            .expect("dispatch succeeds");
+        assert!(!handled);
+        assert!(executor.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn functional_execute_transport_runtime_mode_dispatches_gateway_openresponses() {
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let handled = execute_transport_runtime_mode(
+            TransportRuntimeMode::GatewayOpenResponsesServer,
+            &executor,
+        )
+        .await
+        .expect("dispatch succeeds");
+        assert!(handled);
+        assert_eq!(executor.calls(), vec!["gateway-openresponses"]);
+    }
+
+    #[tokio::test]
+    async fn integration_execute_transport_runtime_mode_dispatches_multi_channel_live_runner() {
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let handled =
+            execute_transport_runtime_mode(TransportRuntimeMode::MultiChannelLiveRunner, &executor)
+                .await
+                .expect("dispatch succeeds");
+        assert!(handled);
+        assert_eq!(executor.calls(), vec!["multi-channel-live"]);
+    }
+
+    #[tokio::test]
+    async fn regression_execute_transport_runtime_mode_propagates_executor_errors() {
+        let executor =
+            RecordingTransportRuntimeExecutor::new(Some(TransportRuntimeMode::VoiceContractRunner));
+        let error =
+            execute_transport_runtime_mode(TransportRuntimeMode::VoiceContractRunner, &executor)
+                .await
+                .expect_err("errors should propagate");
+        assert!(
+            error
+                .to_string()
+                .contains("forced failure for voice-contract"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(executor.calls(), vec!["voice-contract"]);
     }
 
     #[test]
