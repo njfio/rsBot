@@ -208,6 +208,33 @@ pub fn build_transport_doctor_config(cli: &Cli, model_ref: &ModelRef) -> DoctorC
     build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportRuntimeDefaults {
+    pub model: String,
+    pub system_prompt: String,
+    pub max_turns: usize,
+    pub turn_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub session_lock_wait_ms: u64,
+    pub session_lock_stale_ms: u64,
+}
+
+pub fn build_transport_runtime_defaults(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    system_prompt: &str,
+) -> TransportRuntimeDefaults {
+    TransportRuntimeDefaults {
+        model: model_ref.model.clone(),
+        system_prompt: system_prompt.to_string(),
+        max_turns: cli.max_turns,
+        turn_timeout_ms: cli.turn_timeout_ms,
+        request_timeout_ms: cli.request_timeout_ms,
+        session_lock_wait_ms: cli.session_lock_wait_ms,
+        session_lock_stale_ms: cli.session_lock_stale_ms,
+    }
+}
+
 pub fn build_multi_channel_runtime_dependencies<
     THandlers,
     TPairingEvaluator,
@@ -1011,15 +1038,16 @@ mod tests {
         build_multi_channel_media_config, build_multi_channel_outbound_config,
         build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
         build_slack_bridge_cli_config, build_transport_doctor_config,
-        build_voice_contract_runner_config, execute_transport_runtime_mode,
-        map_gateway_openresponses_auth_mode, resolve_bridge_transport_mode,
-        resolve_contract_transport_mode, resolve_gateway_openresponses_auth,
-        resolve_multi_channel_outbound_secret, resolve_multi_channel_transport_mode,
-        resolve_transport_runtime_mode, run_events_runner_if_requested,
-        run_github_issues_bridge_if_requested, run_slack_bridge_if_requested,
-        validate_transport_mode_cli, BridgeTransportMode, ContractTransportMode,
-        EventsRunnerCliConfig, MultiChannelTransportMode, SlackBridgeCliConfig,
-        TransportRuntimeExecutor, TransportRuntimeMode,
+        build_transport_runtime_defaults, build_voice_contract_runner_config,
+        execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
+        resolve_bridge_transport_mode, resolve_contract_transport_mode,
+        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
+        resolve_multi_channel_transport_mode, resolve_transport_runtime_mode,
+        run_events_runner_if_requested, run_github_issues_bridge_if_requested,
+        run_slack_bridge_if_requested, validate_transport_mode_cli, BridgeTransportMode,
+        ContractTransportMode, EventsRunnerCliConfig, MultiChannelTransportMode,
+        SlackBridgeCliConfig, TransportRuntimeDefaults, TransportRuntimeExecutor,
+        TransportRuntimeMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1264,6 +1292,65 @@ mod tests {
         assert_eq!(
             config.skills_lock_path,
             default_skills_lock_path(&cli.skills_dir)
+        );
+    }
+
+    #[test]
+    fn unit_build_transport_runtime_defaults_preserves_model_and_prompt() {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let defaults = build_transport_runtime_defaults(&cli, &model_ref, "system prompt");
+
+        assert_eq!(defaults.model, "gpt-4o-mini");
+        assert_eq!(defaults.system_prompt, "system prompt");
+    }
+
+    #[test]
+    fn functional_build_transport_runtime_defaults_carries_timeout_defaults() {
+        let mut cli = parse_cli_with_stack();
+        cli.turn_timeout_ms = 42_000;
+        cli.request_timeout_ms = 7_000;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let defaults = build_transport_runtime_defaults(&cli, &model_ref, "system prompt");
+
+        assert_eq!(defaults.turn_timeout_ms, 42_000);
+        assert_eq!(defaults.request_timeout_ms, 7_000);
+    }
+
+    #[test]
+    fn integration_build_transport_runtime_defaults_preserves_session_lock_values() {
+        let mut cli = parse_cli_with_stack();
+        cli.session_lock_wait_ms = 12_345;
+        cli.session_lock_stale_ms = 98_765;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let defaults = build_transport_runtime_defaults(&cli, &model_ref, "system prompt");
+
+        assert_eq!(defaults.session_lock_wait_ms, 12_345);
+        assert_eq!(defaults.session_lock_stale_ms, 98_765);
+    }
+
+    #[test]
+    fn regression_build_transport_runtime_defaults_preserves_max_turns() {
+        let mut cli = parse_cli_with_stack();
+        cli.max_turns = 77;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let defaults = build_transport_runtime_defaults(&cli, &model_ref, "system prompt");
+
+        assert_eq!(
+            defaults,
+            TransportRuntimeDefaults {
+                model: "gpt-4o-mini".to_string(),
+                system_prompt: "system prompt".to_string(),
+                max_turns: 77,
+                turn_timeout_ms: cli.turn_timeout_ms,
+                request_timeout_ms: cli.request_timeout_ms,
+                session_lock_wait_ms: cli.session_lock_wait_ms,
+                session_lock_stale_ms: cli.session_lock_stale_ms,
+            }
         );
     }
 

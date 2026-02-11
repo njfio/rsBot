@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
     build_multi_channel_runtime_dependencies as build_onboarding_multi_channel_runtime_dependencies,
     build_transport_doctor_config as build_onboarding_transport_doctor_config,
+    build_transport_runtime_defaults as build_onboarding_transport_runtime_defaults,
     execute_transport_runtime_mode, resolve_transport_runtime_mode,
     run_browser_automation_contract_runner_if_requested,
     run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
@@ -29,6 +30,8 @@ async fn run_github_issues_bridge_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
+    let runtime_defaults =
+        build_onboarding_transport_runtime_defaults(cli, model_ref, system_prompt);
     run_onboarding_github_issues_bridge_if_requested(
         cli,
         || {
@@ -51,15 +54,15 @@ async fn run_github_issues_bridge_if_requested(
         |config| async move {
             run_github_issues_bridge(GithubIssuesBridgeRuntimeConfig {
                 client: client.clone(),
-                model: model_ref.model.clone(),
-                system_prompt: system_prompt.to_string(),
-                max_turns: cli.max_turns,
+                model: runtime_defaults.model.clone(),
+                system_prompt: runtime_defaults.system_prompt.clone(),
+                max_turns: runtime_defaults.max_turns,
                 tool_policy: tool_policy.clone(),
-                turn_timeout_ms: cli.turn_timeout_ms,
-                request_timeout_ms: cli.request_timeout_ms,
+                turn_timeout_ms: runtime_defaults.turn_timeout_ms,
+                request_timeout_ms: runtime_defaults.request_timeout_ms,
                 render_options,
-                session_lock_wait_ms: cli.session_lock_wait_ms,
-                session_lock_stale_ms: cli.session_lock_stale_ms,
+                session_lock_wait_ms: runtime_defaults.session_lock_wait_ms,
+                session_lock_stale_ms: runtime_defaults.session_lock_stale_ms,
                 state_dir: config.state_dir,
                 repo_slug: config.repo_slug,
                 api_base: config.api_base,
@@ -95,6 +98,8 @@ async fn run_slack_bridge_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
+    let runtime_defaults =
+        build_onboarding_transport_runtime_defaults(cli, model_ref, system_prompt);
     run_onboarding_slack_bridge_if_requested(
         cli,
         || {
@@ -125,15 +130,15 @@ async fn run_slack_bridge_if_requested(
         |config| async move {
             run_slack_bridge(SlackBridgeRuntimeConfig {
                 client: client.clone(),
-                model: model_ref.model.clone(),
-                system_prompt: system_prompt.to_string(),
-                max_turns: cli.max_turns,
+                model: runtime_defaults.model.clone(),
+                system_prompt: runtime_defaults.system_prompt.clone(),
+                max_turns: runtime_defaults.max_turns,
                 tool_policy: tool_policy.clone(),
-                turn_timeout_ms: cli.turn_timeout_ms,
-                request_timeout_ms: cli.request_timeout_ms,
+                turn_timeout_ms: runtime_defaults.turn_timeout_ms,
+                request_timeout_ms: runtime_defaults.request_timeout_ms,
                 render_options,
-                session_lock_wait_ms: cli.session_lock_wait_ms,
-                session_lock_stale_ms: cli.session_lock_stale_ms,
+                session_lock_wait_ms: runtime_defaults.session_lock_wait_ms,
+                session_lock_stale_ms: runtime_defaults.session_lock_stale_ms,
                 state_dir: config.state_dir,
                 api_base: config.api_base,
                 app_token: config.app_token,
@@ -162,17 +167,19 @@ async fn run_events_runner_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
+    let runtime_defaults =
+        build_onboarding_transport_runtime_defaults(cli, model_ref, system_prompt);
     run_onboarding_events_runner_if_requested(cli, |config| async move {
         run_event_scheduler(EventSchedulerConfig {
             client: client.clone(),
-            model: model_ref.model.clone(),
-            system_prompt: system_prompt.to_string(),
-            max_turns: cli.max_turns,
+            model: runtime_defaults.model.clone(),
+            system_prompt: runtime_defaults.system_prompt.clone(),
+            max_turns: runtime_defaults.max_turns,
             tool_policy: tool_policy.clone(),
-            turn_timeout_ms: cli.turn_timeout_ms,
+            turn_timeout_ms: runtime_defaults.turn_timeout_ms,
             render_options,
-            session_lock_wait_ms: cli.session_lock_wait_ms,
-            session_lock_stale_ms: cli.session_lock_stale_ms,
+            session_lock_wait_ms: runtime_defaults.session_lock_wait_ms,
+            session_lock_stale_ms: runtime_defaults.session_lock_stale_ms,
             channel_store_root: config.channel_store_root,
             events_dir: config.events_dir,
             state_path: config.state_path,
