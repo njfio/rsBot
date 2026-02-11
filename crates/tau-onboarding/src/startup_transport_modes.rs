@@ -3,12 +3,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tau_ai::{LlmClient, ModelRef};
+use tau_browser_automation::browser_automation_runtime::{
+    run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
+};
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
+use tau_custom_command::custom_command_runtime::{
+    run_custom_command_contract_runner, CustomCommandRuntimeConfig,
+};
+use tau_dashboard::dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
+use tau_deployment::deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
 use tau_gateway::{
     GatewayOpenResponsesAuthMode, GatewayOpenResponsesServerConfig, GatewayRuntimeConfig,
     GatewayToolRegistrarFn,
 };
+use tau_memory::memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
 use tau_multi_channel::{
     MultiChannelCommandHandlers, MultiChannelLiveConnectorsConfig, MultiChannelLiveRuntimeConfig,
     MultiChannelMediaUnderstandingConfig, MultiChannelOutboundConfig, MultiChannelPairingEvaluator,
@@ -17,6 +26,7 @@ use tau_multi_channel::{
 use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
 use tau_provider::{load_credential_store, resolve_credential_store_encryption_mode};
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
+use tau_voice::voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
 pub fn map_gateway_openresponses_auth_mode(
     mode: CliGatewayOpenResponsesAuthMode,
@@ -219,6 +229,26 @@ pub fn build_browser_automation_contract_runner_config(
     }
 }
 
+pub async fn run_browser_automation_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.browser_automation_contract_runner {
+        return Ok(false);
+    }
+    let config = build_browser_automation_contract_runner_config(cli);
+    run_browser_automation_contract_runner(BrowserAutomationRuntimeConfig {
+        fixture_path: config.fixture_path,
+        state_dir: config.state_dir,
+        queue_limit: config.queue_limit,
+        processed_case_cap: config.processed_case_cap,
+        retry_max_attempts: config.retry_max_attempts,
+        retry_base_delay_ms: config.retry_base_delay_ms,
+        action_timeout_ms: config.action_timeout_ms,
+        max_actions_per_case: config.max_actions_per_case,
+        allow_unsafe_actions: config.allow_unsafe_actions,
+    })
+    .await?;
+    Ok(true)
+}
+
 pub fn build_memory_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
     StandardContractRunnerConfig {
         fixture_path: cli.memory_fixture.clone(),
@@ -228,6 +258,23 @@ pub fn build_memory_contract_runner_config(cli: &Cli) -> StandardContractRunnerC
         retry_max_attempts: cli.memory_retry_max_attempts.max(1),
         retry_base_delay_ms: cli.memory_retry_base_delay_ms,
     }
+}
+
+pub async fn run_memory_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.memory_contract_runner {
+        return Ok(false);
+    }
+    let config = build_memory_contract_runner_config(cli);
+    run_memory_contract_runner(MemoryRuntimeConfig {
+        fixture_path: config.fixture_path,
+        state_dir: config.state_dir,
+        queue_limit: config.queue_limit,
+        processed_case_cap: config.processed_case_cap,
+        retry_max_attempts: config.retry_max_attempts,
+        retry_base_delay_ms: config.retry_base_delay_ms,
+    })
+    .await?;
+    Ok(true)
 }
 
 pub fn build_dashboard_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
@@ -241,6 +288,23 @@ pub fn build_dashboard_contract_runner_config(cli: &Cli) -> StandardContractRunn
     }
 }
 
+pub async fn run_dashboard_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.dashboard_contract_runner {
+        return Ok(false);
+    }
+    let config = build_dashboard_contract_runner_config(cli);
+    run_dashboard_contract_runner(DashboardRuntimeConfig {
+        fixture_path: config.fixture_path,
+        state_dir: config.state_dir,
+        queue_limit: config.queue_limit,
+        processed_case_cap: config.processed_case_cap,
+        retry_max_attempts: config.retry_max_attempts,
+        retry_base_delay_ms: config.retry_base_delay_ms,
+    })
+    .await?;
+    Ok(true)
+}
+
 pub fn build_deployment_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
     StandardContractRunnerConfig {
         fixture_path: cli.deployment_fixture.clone(),
@@ -250,6 +314,23 @@ pub fn build_deployment_contract_runner_config(cli: &Cli) -> StandardContractRun
         retry_max_attempts: cli.deployment_retry_max_attempts.max(1),
         retry_base_delay_ms: cli.deployment_retry_base_delay_ms,
     }
+}
+
+pub async fn run_deployment_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.deployment_contract_runner {
+        return Ok(false);
+    }
+    let config = build_deployment_contract_runner_config(cli);
+    run_deployment_contract_runner(DeploymentRuntimeConfig {
+        fixture_path: config.fixture_path,
+        state_dir: config.state_dir,
+        queue_limit: config.queue_limit,
+        processed_case_cap: config.processed_case_cap,
+        retry_max_attempts: config.retry_max_attempts,
+        retry_base_delay_ms: config.retry_base_delay_ms,
+    })
+    .await?;
+    Ok(true)
 }
 
 pub fn build_custom_command_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
@@ -263,6 +344,23 @@ pub fn build_custom_command_contract_runner_config(cli: &Cli) -> StandardContrac
     }
 }
 
+pub async fn run_custom_command_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.custom_command_contract_runner {
+        return Ok(false);
+    }
+    let config = build_custom_command_contract_runner_config(cli);
+    run_custom_command_contract_runner(CustomCommandRuntimeConfig {
+        fixture_path: config.fixture_path,
+        state_dir: config.state_dir,
+        queue_limit: config.queue_limit,
+        processed_case_cap: config.processed_case_cap,
+        retry_max_attempts: config.retry_max_attempts,
+        retry_base_delay_ms: config.retry_base_delay_ms,
+    })
+    .await?;
+    Ok(true)
+}
+
 pub fn build_voice_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
     StandardContractRunnerConfig {
         fixture_path: cli.voice_fixture.clone(),
@@ -272,6 +370,23 @@ pub fn build_voice_contract_runner_config(cli: &Cli) -> StandardContractRunnerCo
         retry_max_attempts: cli.voice_retry_max_attempts.max(1),
         retry_base_delay_ms: cli.voice_retry_base_delay_ms,
     }
+}
+
+pub async fn run_voice_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.voice_contract_runner {
+        return Ok(false);
+    }
+    let config = build_voice_contract_runner_config(cli);
+    run_voice_contract_runner(VoiceRuntimeConfig {
+        fixture_path: config.fixture_path,
+        state_dir: config.state_dir,
+        queue_limit: config.queue_limit,
+        processed_case_cap: config.processed_case_cap,
+        retry_max_attempts: config.retry_max_attempts,
+        retry_base_delay_ms: config.retry_base_delay_ms,
+    })
+    .await?;
+    Ok(true)
 }
 
 pub fn build_events_runner_cli_config(cli: &Cli) -> EventsRunnerCliConfig {
@@ -958,6 +1073,73 @@ mod tests {
         )
         .await
         .expect("multi-channel live helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_browser_automation_contract_runner_if_requested_returns_false_when_disabled()
+    {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_browser_automation_contract_runner_if_requested(&cli)
+            .await
+            .expect("browser automation helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_memory_contract_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_memory_contract_runner_if_requested(&cli)
+            .await
+            .expect("memory helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_dashboard_contract_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_dashboard_contract_runner_if_requested(&cli)
+            .await
+            .expect("dashboard helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_deployment_contract_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_deployment_contract_runner_if_requested(&cli)
+            .await
+            .expect("deployment helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_custom_command_contract_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_custom_command_contract_runner_if_requested(&cli)
+            .await
+            .expect("custom command helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_voice_contract_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_voice_contract_runner_if_requested(&cli)
+            .await
+            .expect("voice helper");
 
         assert!(!handled);
     }

@@ -11,14 +11,20 @@ serde_json = { workspace = true }
 tau-access = { path = "../tau-access" }
 tau-ai = { path = "../tau-ai" }
 tau-agent-core = { path = "../tau-agent-core" }
+tau-browser-automation = { path = "../tau-browser-automation" }
 tau-cli = { path = "../tau-cli" }
 tau-core = { path = "../tau-core" }
+tau-custom-command = { path = "../tau-custom-command" }
+tau-dashboard = { path = "../tau-dashboard" }
+tau-deployment = { path = "../tau-deployment" }
 tau-gateway = { path = "../tau-gateway" }
+tau-memory = { path = "../tau-memory" }
 tau-multi-channel = { path = "../tau-multi-channel" }
 tau-provider = { path = "../tau-provider" }
 tau-release-channel = { path = "../tau-release-channel" }
 tau-skills = { path = "../tau-skills" }
 tau-tools = { path = "../tau-tools" }
+tau-voice = { path = "../tau-voice" }
 tau-ops = { path = "../tau-ops" }
 tau-orchestrator = { path = "../tau-orchestrator" }
 

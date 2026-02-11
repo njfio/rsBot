@@ -5,14 +5,14 @@ use crate::channel_adapters::{
 use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
-    build_browser_automation_contract_runner_config, build_custom_command_contract_runner_config,
-    build_dashboard_contract_runner_config, build_deployment_contract_runner_config,
     build_events_runner_cli_config, build_github_issues_bridge_cli_config,
-    build_memory_contract_runner_config, build_slack_bridge_cli_config,
-    build_voice_contract_runner_config, run_gateway_contract_runner_if_requested,
-    run_gateway_openresponses_server_if_requested, run_multi_agent_contract_runner_if_requested,
-    run_multi_channel_contract_runner_if_requested, run_multi_channel_live_connectors_if_requested,
-    run_multi_channel_live_runner_if_requested,
+    build_slack_bridge_cli_config, run_browser_automation_contract_runner_if_requested,
+    run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
+    run_deployment_contract_runner_if_requested, run_gateway_contract_runner_if_requested,
+    run_gateway_openresponses_server_if_requested, run_memory_contract_runner_if_requested,
+    run_multi_agent_contract_runner_if_requested, run_multi_channel_contract_runner_if_requested,
+    run_multi_channel_live_connectors_if_requested, run_multi_channel_live_runner_if_requested,
+    run_voice_contract_runner_if_requested,
 };
 
 pub(crate) async fn run_transport_mode_if_requested(
@@ -229,48 +229,15 @@ pub(crate) async fn run_transport_mode_if_requested(
         return Ok(true);
     }
 
-    if cli.browser_automation_contract_runner {
-        let config = build_browser_automation_contract_runner_config(cli);
-        run_browser_automation_contract_runner(BrowserAutomationRuntimeConfig {
-            fixture_path: config.fixture_path,
-            state_dir: config.state_dir,
-            queue_limit: config.queue_limit,
-            processed_case_cap: config.processed_case_cap,
-            retry_max_attempts: config.retry_max_attempts,
-            retry_base_delay_ms: config.retry_base_delay_ms,
-            action_timeout_ms: config.action_timeout_ms,
-            max_actions_per_case: config.max_actions_per_case,
-            allow_unsafe_actions: config.allow_unsafe_actions,
-        })
-        .await?;
+    if run_browser_automation_contract_runner_if_requested(cli).await? {
         return Ok(true);
     }
 
-    if cli.memory_contract_runner {
-        let config = build_memory_contract_runner_config(cli);
-        run_memory_contract_runner(MemoryRuntimeConfig {
-            fixture_path: config.fixture_path,
-            state_dir: config.state_dir,
-            queue_limit: config.queue_limit,
-            processed_case_cap: config.processed_case_cap,
-            retry_max_attempts: config.retry_max_attempts,
-            retry_base_delay_ms: config.retry_base_delay_ms,
-        })
-        .await?;
+    if run_memory_contract_runner_if_requested(cli).await? {
         return Ok(true);
     }
 
-    if cli.dashboard_contract_runner {
-        let config = build_dashboard_contract_runner_config(cli);
-        run_dashboard_contract_runner(DashboardRuntimeConfig {
-            fixture_path: config.fixture_path,
-            state_dir: config.state_dir,
-            queue_limit: config.queue_limit,
-            processed_case_cap: config.processed_case_cap,
-            retry_max_attempts: config.retry_max_attempts,
-            retry_base_delay_ms: config.retry_base_delay_ms,
-        })
-        .await?;
+    if run_dashboard_contract_runner_if_requested(cli).await? {
         return Ok(true);
     }
 
@@ -278,45 +245,15 @@ pub(crate) async fn run_transport_mode_if_requested(
         return Ok(true);
     }
 
-    if cli.deployment_contract_runner {
-        let config = build_deployment_contract_runner_config(cli);
-        run_deployment_contract_runner(DeploymentRuntimeConfig {
-            fixture_path: config.fixture_path,
-            state_dir: config.state_dir,
-            queue_limit: config.queue_limit,
-            processed_case_cap: config.processed_case_cap,
-            retry_max_attempts: config.retry_max_attempts,
-            retry_base_delay_ms: config.retry_base_delay_ms,
-        })
-        .await?;
+    if run_deployment_contract_runner_if_requested(cli).await? {
         return Ok(true);
     }
 
-    if cli.custom_command_contract_runner {
-        let config = build_custom_command_contract_runner_config(cli);
-        run_custom_command_contract_runner(CustomCommandRuntimeConfig {
-            fixture_path: config.fixture_path,
-            state_dir: config.state_dir,
-            queue_limit: config.queue_limit,
-            processed_case_cap: config.processed_case_cap,
-            retry_max_attempts: config.retry_max_attempts,
-            retry_base_delay_ms: config.retry_base_delay_ms,
-        })
-        .await?;
+    if run_custom_command_contract_runner_if_requested(cli).await? {
         return Ok(true);
     }
 
-    if cli.voice_contract_runner {
-        let config = build_voice_contract_runner_config(cli);
-        run_voice_contract_runner(VoiceRuntimeConfig {
-            fixture_path: config.fixture_path,
-            state_dir: config.state_dir,
-            queue_limit: config.queue_limit,
-            processed_case_cap: config.processed_case_cap,
-            retry_max_attempts: config.retry_max_attempts,
-            retry_base_delay_ms: config.retry_base_delay_ms,
-        })
-        .await?;
+    if run_voice_contract_runner_if_requested(cli).await? {
         return Ok(true);
     }
 

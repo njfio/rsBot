@@ -1,7 +1,6 @@
 mod auth_commands;
 mod bootstrap_helpers;
 mod browser_automation_contract;
-mod browser_automation_runtime;
 mod canvas;
 mod channel_adapters;
 mod channel_lifecycle;
@@ -14,10 +13,7 @@ mod cli_types;
 mod commands;
 mod credentials;
 mod custom_command_contract;
-mod custom_command_runtime;
 mod dashboard_contract;
-mod dashboard_runtime;
-mod deployment_runtime;
 mod deployment_wasm;
 mod events;
 mod extension_manifest;
@@ -27,7 +23,6 @@ mod github_transport_helpers;
 mod macro_profile_commands;
 mod mcp_server;
 mod memory_contract;
-mod memory_runtime;
 mod model_catalog;
 mod multi_agent_router;
 mod observability_loggers;
@@ -63,7 +58,6 @@ mod tools;
 mod transport_conformance;
 mod transport_health;
 mod voice_contract;
-mod voice_runtime;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -262,14 +256,7 @@ pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
 pub(crate) use crate::tool_policy_config::tool_policy_to_json;
 use crate::tools::ToolPolicy;
 pub(crate) use crate::transport_health::TransportHealthSnapshot;
-use browser_automation_runtime::{
-    run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
-};
-use custom_command_runtime::{run_custom_command_contract_runner, CustomCommandRuntimeConfig};
-use dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
-use deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
 use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
-use memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
 use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
 pub(crate) use tau_access::approvals::{
     evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
@@ -394,7 +381,6 @@ pub(crate) use tau_session::{
     format_id_list, format_remap_ids, initialize_session, session_lineage_messages, SessionRuntime,
 };
 pub(crate) use tau_session::{session_message_preview, session_message_role};
-use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
 pub(crate) fn normalize_daemon_subcommand_args(args: Vec<String>) -> Vec<String> {
     if args.len() < 3 || args[1] != "daemon" {
