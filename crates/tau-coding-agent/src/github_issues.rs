@@ -50,6 +50,7 @@ use tau_github_issues::issue_comment::{
     IssueCommentArtifactView, IssueCommentAttachmentView, IssueCommentRunView,
     IssueCommentUsageView,
 };
+use tau_github_issues::issue_demo_index::parse_demo_index_run_command as parse_shared_demo_index_run_command;
 use tau_github_issues::issue_filter::{
     build_required_issue_labels, issue_matches_required_labels, issue_matches_required_numbers,
 };
@@ -5385,79 +5386,17 @@ fn parse_issue_auth_command(remainder: &str) -> TauIssueCommand {
 
 fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCommand, String> {
     let usage = demo_index_command_usage();
-    let mut timeout_seconds = DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS;
-    let mut scenarios = Vec::new();
-
-    let tokens = raw
-        .split_whitespace()
-        .filter(|token| !token.trim().is_empty())
-        .collect::<Vec<_>>();
-    let mut cursor = 0;
-    if let Some(first) = tokens.first() {
-        if !first.starts_with("--") {
-            cursor = 1;
-            let mut seen = HashSet::new();
-            for raw_scenario in first.split(',') {
-                let normalized =
-                    normalize_demo_index_scenario(raw_scenario).ok_or_else(|| usage.clone())?;
-                if seen.insert(normalized) {
-                    scenarios.push(normalized.to_string());
-                }
-            }
-            if scenarios.is_empty() {
-                return Err(usage);
-            }
-        }
-    }
-
-    while cursor < tokens.len() {
-        let token = tokens[cursor];
-        match token {
-            "--timeout-seconds" => {
-                cursor += 1;
-                let Some(raw_timeout) = tokens.get(cursor) else {
-                    return Err(usage);
-                };
-                let parsed = raw_timeout.parse::<u64>().map_err(|_| usage.clone())?;
-                if parsed == 0 || parsed > DEMO_INDEX_MAX_TIMEOUT_SECONDS {
-                    return Err(usage);
-                }
-                timeout_seconds = parsed;
-            }
-            _ => return Err(usage),
-        }
-        cursor += 1;
-    }
-
-    if scenarios.is_empty() {
-        scenarios = DEMO_INDEX_SCENARIOS
-            .iter()
-            .map(|scenario| scenario.to_string())
-            .collect();
-    }
+    let parsed = parse_shared_demo_index_run_command(
+        raw,
+        &DEMO_INDEX_SCENARIOS,
+        DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
+        DEMO_INDEX_MAX_TIMEOUT_SECONDS,
+        &usage,
+    )?;
     Ok(DemoIndexRunCommand {
-        scenarios,
-        timeout_seconds,
+        scenarios: parsed.scenarios,
+        timeout_seconds: parsed.timeout_seconds,
     })
-}
-
-fn normalize_demo_index_scenario(raw: &str) -> Option<&'static str> {
-    let normalized = raw.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "onboarding" | "local" | "onboarding.sh" | "local.sh" => Some("onboarding"),
-        "gateway-auth" | "gatewayauth" | "gateway-auth.sh" | "gatewayauth.sh" => {
-            Some("gateway-auth")
-        }
-        "multi-channel-live"
-        | "multichannel-live"
-        | "multi-channel"
-        | "multi-channel-live.sh"
-        | "multi-channel.sh" => Some("multi-channel-live"),
-        "deployment-wasm" | "deploymentwasm" | "deployment" | "deployment.sh" => {
-            Some("deployment-wasm")
-        }
-        _ => None,
-    }
 }
 
 fn doctor_command_usage() -> String {
