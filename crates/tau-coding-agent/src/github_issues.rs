@@ -61,6 +61,9 @@ use tau_github_issues::issue_comment::{
     IssueCommentUsageView,
 };
 use tau_github_issues::issue_demo_index::parse_demo_index_run_command as parse_shared_demo_index_run_command;
+use tau_github_issues::issue_doctor_command::{
+    parse_issue_doctor_command as parse_shared_issue_doctor_command, IssueDoctorCommand,
+};
 use tau_github_issues::issue_event_collection::{
     collect_issue_events as collect_shared_issue_events, GithubBridgeEvent, GithubIssue,
     GithubIssueComment,
@@ -1022,11 +1025,6 @@ struct IssueAuthExecution {
     subscription_strict: bool,
     report_artifact: ChannelArtifactRecord,
     json_artifact: ChannelArtifactRecord,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct IssueDoctorCommand {
-    online: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -5289,23 +5287,9 @@ fn parse_demo_index_command(remainder: &str) -> TauIssueCommand {
 }
 
 fn parse_doctor_issue_command(remainder: &str) -> TauIssueCommand {
-    if remainder.is_empty() {
-        return TauIssueCommand::Doctor {
-            command: IssueDoctorCommand { online: false },
-        };
-    }
-    let tokens = remainder
-        .split_whitespace()
-        .filter(|token| !token.trim().is_empty())
-        .collect::<Vec<_>>();
-    if tokens.len() == 1 && tokens[0] == "--online" {
-        TauIssueCommand::Doctor {
-            command: IssueDoctorCommand { online: true },
-        }
-    } else {
-        TauIssueCommand::Invalid {
-            message: doctor_command_usage(),
-        }
+    match parse_shared_issue_doctor_command(remainder, &doctor_command_usage()) {
+        Ok(command) => TauIssueCommand::Doctor { command },
+        Err(message) => TauIssueCommand::Invalid { message },
     }
 }
 

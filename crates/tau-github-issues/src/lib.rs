@@ -8,6 +8,7 @@ pub mod issue_auth_helpers;
 pub mod issue_command_usage;
 pub mod issue_comment;
 pub mod issue_demo_index;
+pub mod issue_doctor_command;
 pub mod issue_event_collection;
 pub mod issue_filter;
 pub mod issue_prompt_helpers;
