@@ -1791,7 +1791,7 @@ mod tests {
 
     fn scheduler_config(root: &Path) -> EventSchedulerConfig {
         EventSchedulerConfig {
-            runner: Arc::new(DummyRunner::default()),
+            runner: Arc::new(DummyRunner),
             channel_store_root: root.join("channel-store"),
             events_dir: root.join("events"),
             state_path: root.join("events/state.json"),
