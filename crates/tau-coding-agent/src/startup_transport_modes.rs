@@ -5,13 +5,14 @@ use crate::channel_adapters::{
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
     build_events_runner_cli_config, build_github_issues_bridge_cli_config,
-    build_slack_bridge_cli_config, run_browser_automation_contract_runner_if_requested,
+    build_slack_bridge_cli_config, resolve_multi_channel_transport_mode,
+    run_browser_automation_contract_runner_if_requested,
     run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
     run_deployment_contract_runner_if_requested, run_gateway_contract_runner_if_requested,
     run_gateway_openresponses_server_if_requested, run_memory_contract_runner_if_requested,
     run_multi_agent_contract_runner_if_requested, run_multi_channel_contract_runner_if_requested,
     run_multi_channel_live_connectors_if_requested, run_multi_channel_live_runner_if_requested,
-    run_voice_contract_runner_if_requested, validate_transport_mode_cli,
+    run_voice_contract_runner_if_requested, validate_transport_mode_cli, MultiChannelTransportMode,
 };
 
 fn build_multi_channel_runtime_dependencies(
@@ -273,24 +274,30 @@ pub(crate) async fn run_transport_mode_if_requested(
         return Ok(true);
     }
 
-    if cli.multi_channel_contract_runner {
-        let (command_handlers, pairing_evaluator) =
-            build_multi_channel_runtime_dependencies(cli, model_ref);
-        run_multi_channel_contract_runner_if_requested(cli, command_handlers, pairing_evaluator)
+    match resolve_multi_channel_transport_mode(cli) {
+        MultiChannelTransportMode::ContractRunner => {
+            let (command_handlers, pairing_evaluator) =
+                build_multi_channel_runtime_dependencies(cli, model_ref);
+            run_multi_channel_contract_runner_if_requested(
+                cli,
+                command_handlers,
+                pairing_evaluator,
+            )
             .await?;
-        return Ok(true);
-    }
-
-    if cli.multi_channel_live_runner {
-        let (command_handlers, pairing_evaluator) =
-            build_multi_channel_runtime_dependencies(cli, model_ref);
-        run_multi_channel_live_runner_if_requested(cli, command_handlers, pairing_evaluator)
-            .await?;
-        return Ok(true);
-    }
-
-    if run_multi_channel_live_connectors_if_requested(cli).await? {
-        return Ok(true);
+            return Ok(true);
+        }
+        MultiChannelTransportMode::LiveRunner => {
+            let (command_handlers, pairing_evaluator) =
+                build_multi_channel_runtime_dependencies(cli, model_ref);
+            run_multi_channel_live_runner_if_requested(cli, command_handlers, pairing_evaluator)
+                .await?;
+            return Ok(true);
+        }
+        MultiChannelTransportMode::LiveConnectorsRunner => {
+            run_multi_channel_live_connectors_if_requested(cli).await?;
+            return Ok(true);
+        }
+        MultiChannelTransportMode::None => {}
     }
 
     if run_multi_agent_contract_runner_if_requested(cli).await? {

@@ -38,6 +38,14 @@ use tau_provider::{load_credential_store, resolve_credential_store_encryption_mo
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
 use tau_voice::voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiChannelTransportMode {
+    None,
+    ContractRunner,
+    LiveRunner,
+    LiveConnectorsRunner,
+}
+
 pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_github_issues_bridge_cli(cli)?;
     validate_slack_bridge_cli(cli)?;
@@ -55,6 +63,18 @@ pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_custom_command_contract_runner_cli(cli)?;
     validate_voice_contract_runner_cli(cli)?;
     Ok(())
+}
+
+pub fn resolve_multi_channel_transport_mode(cli: &Cli) -> MultiChannelTransportMode {
+    if cli.multi_channel_contract_runner {
+        MultiChannelTransportMode::ContractRunner
+    } else if cli.multi_channel_live_runner {
+        MultiChannelTransportMode::LiveRunner
+    } else if cli.multi_channel_live_connectors_runner {
+        MultiChannelTransportMode::LiveConnectorsRunner
+    } else {
+        MultiChannelTransportMode::None
+    }
 }
 
 pub fn map_gateway_openresponses_auth_mode(
@@ -695,7 +715,8 @@ mod tests {
         build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
         build_voice_contract_runner_config, map_gateway_openresponses_auth_mode,
         resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
-        validate_transport_mode_cli,
+        resolve_multi_channel_transport_mode, validate_transport_mode_cli,
+        MultiChannelTransportMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -816,6 +837,47 @@ mod tests {
 
         validate_transport_mode_cli(&cli)
             .expect("github bridge minimum configuration should validate");
+    }
+
+    #[test]
+    fn unit_resolve_multi_channel_transport_mode_defaults_to_none() {
+        let cli = parse_cli_with_stack();
+        assert_eq!(
+            resolve_multi_channel_transport_mode(&cli),
+            MultiChannelTransportMode::None
+        );
+    }
+
+    #[test]
+    fn functional_resolve_multi_channel_transport_mode_prefers_contract_runner() {
+        let mut cli = parse_cli_with_stack();
+        cli.multi_channel_contract_runner = true;
+        cli.multi_channel_live_runner = true;
+        cli.multi_channel_live_connectors_runner = true;
+        assert_eq!(
+            resolve_multi_channel_transport_mode(&cli),
+            MultiChannelTransportMode::ContractRunner
+        );
+    }
+
+    #[test]
+    fn integration_resolve_multi_channel_transport_mode_selects_live_runner() {
+        let mut cli = parse_cli_with_stack();
+        cli.multi_channel_live_runner = true;
+        assert_eq!(
+            resolve_multi_channel_transport_mode(&cli),
+            MultiChannelTransportMode::LiveRunner
+        );
+    }
+
+    #[test]
+    fn regression_resolve_multi_channel_transport_mode_selects_connectors_runner() {
+        let mut cli = parse_cli_with_stack();
+        cli.multi_channel_live_connectors_runner = true;
+        assert_eq!(
+            resolve_multi_channel_transport_mode(&cli),
+            MultiChannelTransportMode::LiveConnectorsRunner
+        );
     }
 
     #[test]
