@@ -194,9 +194,11 @@ pub(crate) use crate::runtime_types::{
 pub(crate) use crate::runtime_types::{
     DoctorCommandConfig, DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
 };
+#[cfg(test)]
+pub(crate) use crate::skills::default_skills_lock_path;
 use crate::skills::{
-    default_skills_lock_path, load_catalog, load_skills_lockfile, sync_skills_with_lockfile,
-    write_skills_lockfile, TrustedKey,
+    load_catalog, load_skills_lockfile, sync_skills_with_lockfile, write_skills_lockfile,
+    TrustedKey,
 };
 #[cfg(test)]
 pub(crate) use crate::skills_commands::{

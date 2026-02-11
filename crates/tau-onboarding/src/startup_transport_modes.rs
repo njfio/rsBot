@@ -24,6 +24,7 @@ use tau_custom_command::custom_command_runtime::{
 };
 use tau_dashboard::dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
 use tau_deployment::deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
+use tau_diagnostics::{build_doctor_command_config, DoctorCommandConfig};
 use tau_gateway::{
     GatewayOpenResponsesAuthMode, GatewayOpenResponsesServerConfig, GatewayRuntimeConfig,
     GatewayToolRegistrarFn,
@@ -35,7 +36,10 @@ use tau_multi_channel::{
     MultiChannelRuntimeConfig, MultiChannelTelemetryConfig,
 };
 use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
-use tau_provider::{load_credential_store, resolve_credential_store_encryption_mode};
+use tau_provider::{
+    load_credential_store, resolve_credential_store_encryption_mode, AuthCommandConfig,
+};
+use tau_skills::default_skills_lock_path;
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
 use tau_voice::voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
@@ -196,6 +200,35 @@ pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_custom_command_contract_runner_cli(cli)?;
     validate_voice_contract_runner_cli(cli)?;
     Ok(())
+}
+
+pub fn build_transport_doctor_config(cli: &Cli, model_ref: &ModelRef) -> DoctorCommandConfig {
+    let fallback_model_refs = Vec::new();
+    let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
+    build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path)
+}
+
+pub fn build_multi_channel_runtime_dependencies<
+    THandlers,
+    TPairingEvaluator,
+    FBuildHandlers,
+    FBuildPairing,
+>(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    build_command_handlers: FBuildHandlers,
+    build_pairing_evaluator: FBuildPairing,
+) -> (THandlers, TPairingEvaluator)
+where
+    FBuildHandlers: FnOnce(AuthCommandConfig, DoctorCommandConfig) -> THandlers,
+    FBuildPairing: FnOnce() -> TPairingEvaluator,
+{
+    let auth_config = crate::startup_config::build_auth_command_config(cli);
+    let doctor_config = build_transport_doctor_config(cli, model_ref);
+    (
+        build_command_handlers(auth_config, doctor_config),
+        build_pairing_evaluator(),
+    )
 }
 
 pub fn resolve_multi_channel_transport_mode(cli: &Cli) -> MultiChannelTransportMode {
@@ -976,7 +1009,8 @@ mod tests {
         build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
         build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
         build_multi_channel_media_config, build_multi_channel_outbound_config,
-        build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
+        build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
+        build_slack_bridge_cli_config, build_transport_doctor_config,
         build_voice_contract_runner_config, execute_transport_runtime_mode,
         map_gateway_openresponses_auth_mode, resolve_bridge_transport_mode,
         resolve_contract_transport_mode, resolve_gateway_openresponses_auth,
@@ -1002,6 +1036,7 @@ mod tests {
         load_credential_store, save_credential_store, CredentialStoreData,
         CredentialStoreEncryptionMode, IntegrationCredentialStoreRecord,
     };
+    use tau_skills::default_skills_lock_path;
     use tau_tools::tools::ToolPolicy;
     use tempfile::tempdir;
 
@@ -1217,6 +1252,74 @@ mod tests {
     fn unit_validate_transport_mode_cli_accepts_default_cli() {
         let cli = parse_cli_with_stack();
         validate_transport_mode_cli(&cli).expect("default transport validation should succeed");
+    }
+
+    #[test]
+    fn unit_build_transport_doctor_config_uses_default_skills_lock_path() {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let config = build_transport_doctor_config(&cli, &model_ref);
+        assert_eq!(config.skills_dir, cli.skills_dir);
+        assert_eq!(
+            config.skills_lock_path,
+            default_skills_lock_path(&cli.skills_dir)
+        );
+    }
+
+    #[test]
+    fn functional_build_multi_channel_runtime_dependencies_uses_auth_and_doctor_config_defaults() {
+        let mut cli = parse_cli_with_stack();
+        cli.openai_api_key = Some("test-openai-key".to_string());
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let ((auth_key, doctor_lock_path), _pairing_marker) =
+            build_multi_channel_runtime_dependencies(
+                &cli,
+                &model_ref,
+                |auth_config, doctor_config| {
+                    (
+                        auth_config.openai_api_key.unwrap_or_default(),
+                        doctor_config.skills_lock_path,
+                    )
+                },
+                || (),
+            );
+
+        assert_eq!(auth_key, "test-openai-key");
+        assert_eq!(doctor_lock_path, default_skills_lock_path(&cli.skills_dir));
+    }
+
+    #[test]
+    fn integration_build_multi_channel_runtime_dependencies_propagates_model_identity_to_doctor_config(
+    ) {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let (doctor_model, _pairing_marker) = build_multi_channel_runtime_dependencies(
+            &cli,
+            &model_ref,
+            |_auth_config, doctor_config| doctor_config.model,
+            || "pairing",
+        );
+
+        assert_eq!(doctor_model, "openai/gpt-4o-mini");
+    }
+
+    #[test]
+    fn regression_build_multi_channel_runtime_dependencies_preserves_no_session_setting() {
+        let mut cli = parse_cli_with_stack();
+        cli.no_session = true;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let (session_enabled, _pairing_marker) = build_multi_channel_runtime_dependencies(
+            &cli,
+            &model_ref,
+            |_auth_config, doctor_config| doctor_config.session_enabled,
+            || "pairing",
+        );
+
+        assert!(!session_enabled);
     }
 
     #[test]

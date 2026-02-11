@@ -5,6 +5,8 @@ use crate::channel_adapters::{
 use async_trait::async_trait;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
+    build_multi_channel_runtime_dependencies as build_onboarding_multi_channel_runtime_dependencies,
+    build_transport_doctor_config as build_onboarding_transport_doctor_config,
     execute_transport_runtime_mode, resolve_transport_runtime_mode,
     run_browser_automation_contract_runner_if_requested,
     run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
@@ -18,37 +20,6 @@ use tau_onboarding::startup_transport_modes::{
     run_slack_bridge_if_requested as run_onboarding_slack_bridge_if_requested,
     run_voice_contract_runner_if_requested, validate_transport_mode_cli, TransportRuntimeExecutor,
 };
-
-fn build_multi_channel_runtime_dependencies(
-    cli: &Cli,
-    model_ref: &ModelRef,
-) -> (
-    tau_multi_channel::MultiChannelCommandHandlers,
-    Arc<dyn tau_multi_channel::MultiChannelPairingEvaluator>,
-) {
-    let fallback_model_refs = Vec::new();
-    let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
-    let auth_config = build_auth_command_config(cli);
-    let doctor_config =
-        build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path);
-    (
-        build_multi_channel_command_handlers(auth_config, doctor_config),
-        build_multi_channel_pairing_evaluator(),
-    )
-}
-
-fn build_transport_doctor_config(
-    cli: &Cli,
-    model_ref: &ModelRef,
-) -> tau_diagnostics::DoctorCommandConfig {
-    let fallback_model_refs = Vec::new();
-    let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
-    let mut config =
-        build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path);
-    config.skills_dir = cli.skills_dir.clone();
-    config.skills_lock_path = skills_lock_path;
-    config
-}
 
 async fn run_github_issues_bridge_if_requested(
     cli: &Cli,
@@ -108,7 +79,7 @@ async fn run_github_issues_bridge_if_requested(
                 demo_index_repo_root: None,
                 demo_index_script_path: None,
                 demo_index_binary_path: None,
-                doctor_config: build_transport_doctor_config(cli, model_ref),
+                doctor_config: build_onboarding_transport_doctor_config(cli, model_ref),
             })
             .await
         },
@@ -278,7 +249,12 @@ impl TransportRuntimeExecutor for CodingAgentTransportRuntimeExecutor<'_> {
 
     async fn run_multi_channel_contract_runner(&self) -> Result<()> {
         let (command_handlers, pairing_evaluator) =
-            build_multi_channel_runtime_dependencies(self.cli, self.model_ref);
+            build_onboarding_multi_channel_runtime_dependencies(
+                self.cli,
+                self.model_ref,
+                build_multi_channel_command_handlers,
+                build_multi_channel_pairing_evaluator,
+            );
         run_multi_channel_contract_runner_if_requested(
             self.cli,
             command_handlers,
@@ -290,7 +266,12 @@ impl TransportRuntimeExecutor for CodingAgentTransportRuntimeExecutor<'_> {
 
     async fn run_multi_channel_live_runner(&self) -> Result<()> {
         let (command_handlers, pairing_evaluator) =
-            build_multi_channel_runtime_dependencies(self.cli, self.model_ref);
+            build_onboarding_multi_channel_runtime_dependencies(
+                self.cli,
+                self.model_ref,
+                build_multi_channel_command_handlers,
+                build_multi_channel_pairing_evaluator,
+            );
         run_multi_channel_live_runner_if_requested(self.cli, command_handlers, pairing_evaluator)
             .await?;
         Ok(())
