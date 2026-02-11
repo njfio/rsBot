@@ -47,6 +47,12 @@ use tau_github_issues::issue_auth_helpers::{
     build_issue_auth_summary_line as build_shared_issue_auth_summary_line,
     ensure_auth_json_flag as ensure_shared_auth_json_flag, IssueAuthSummaryKind,
 };
+use tau_github_issues::issue_command_usage::{
+    demo_index_command_usage as demo_index_shared_command_usage,
+    doctor_command_usage as doctor_shared_command_usage,
+    issue_auth_command_usage as issue_auth_shared_command_usage,
+    tau_command_usage as tau_shared_command_usage,
+};
 use tau_github_issues::issue_comment::{
     extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
     render_issue_command_comment, render_issue_comment_chunks_with_footer,
@@ -5404,43 +5410,24 @@ fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCo
 }
 
 fn doctor_command_usage() -> String {
-    "Usage: /tau doctor [--online]".to_string()
+    doctor_shared_command_usage("/tau")
 }
 
 fn issue_auth_command_usage() -> String {
-    format!(
-        "Usage: /tau auth <status|matrix> ...\n{}\n{}",
-        AUTH_STATUS_USAGE, AUTH_MATRIX_USAGE
-    )
+    issue_auth_shared_command_usage("/tau", AUTH_STATUS_USAGE, AUTH_MATRIX_USAGE)
 }
 
 fn demo_index_command_usage() -> String {
-    format!(
-        "Usage: /tau demo-index <list|run [scenario[,scenario...]] [--timeout-seconds <n>]|report>\nAllowed scenarios: {}\nDefault run timeout: {} seconds (max {}).",
-        DEMO_INDEX_SCENARIOS.join(","),
+    demo_index_shared_command_usage(
+        "/tau",
+        &DEMO_INDEX_SCENARIOS,
         DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
-        DEMO_INDEX_MAX_TIMEOUT_SECONDS
+        DEMO_INDEX_MAX_TIMEOUT_SECONDS,
     )
 }
 
 fn tau_command_usage() -> String {
-    [
-        "Supported `/tau` commands:",
-        "- `/tau run <prompt>`",
-        "- `/tau stop`",
-        "- `/tau status`",
-        "- `/tau health`",
-        "- `/tau auth <status|matrix> ...`",
-        "- `/tau doctor [--online]`",
-        "- `/tau compact`",
-        "- `/tau help`",
-        "- `/tau chat <start|resume|reset|export|status|summary|replay|show [limit]|search <query>>`",
-        "- `/tau artifacts [purge|run <run_id>|show <artifact_id>]`",
-        "- `/tau demo-index <list|run [scenario[,scenario...]] [--timeout-seconds <n>]|report>`",
-        "- `/tau canvas <create|update|show|export|import> ...`",
-        "- `/tau summarize [focus]`",
-    ]
-    .join("\n")
+    tau_shared_command_usage("/tau")
 }
 
 fn build_summarize_prompt(
