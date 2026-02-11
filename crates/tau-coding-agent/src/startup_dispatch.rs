@@ -1,6 +1,6 @@
 use super::*;
 use tau_onboarding::startup_dispatch::{
-    build_startup_runtime_dispatch_context, resolve_startup_model_runtime_from_cli,
+    resolve_startup_model_runtime_from_cli, resolve_startup_runtime_dispatch_context_from_cli,
     StartupModelRuntimeResolution, StartupRuntimeDispatchContext,
 };
 
@@ -32,18 +32,18 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         },
     )
     .await?;
-    let skills_bootstrap = run_startup_skills_bootstrap(&cli).await?;
-    let startup_package_activation = execute_package_activate_on_startup(&cli)?;
     let StartupRuntimeDispatchContext {
         effective_skills_dir,
         skills_lock_path,
         system_prompt,
         startup_policy,
-    } = build_startup_runtime_dispatch_context(
+    } = resolve_startup_runtime_dispatch_context_from_cli(
         &cli,
-        &skills_bootstrap.skills_lock_path,
-        startup_package_activation.is_some(),
-    )?;
+        |cli| Box::pin(run_startup_skills_bootstrap(cli)),
+        execute_package_activate_on_startup,
+        |skills_bootstrap| skills_bootstrap.skills_lock_path.clone(),
+    )
+    .await?;
     let StartupPolicyBundle {
         tool_policy,
         tool_policy_json,

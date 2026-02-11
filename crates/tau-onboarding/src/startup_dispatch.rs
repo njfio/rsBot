@@ -59,6 +59,30 @@ where
     })
 }
 
+pub async fn resolve_startup_runtime_dispatch_context_from_cli<
+    TSkillsBootstrap,
+    TPackageActivation,
+    FRunSkillsBootstrap,
+    FExecutePackageActivateOnStartup,
+    FResolveBootstrapLockPath,
+>(
+    cli: &Cli,
+    run_skills_bootstrap: FRunSkillsBootstrap,
+    execute_package_activate_on_startup: FExecutePackageActivateOnStartup,
+    resolve_bootstrap_lock_path: FResolveBootstrapLockPath,
+) -> Result<StartupRuntimeDispatchContext>
+where
+    FRunSkillsBootstrap:
+        for<'a> FnOnce(&'a Cli) -> Pin<Box<dyn Future<Output = Result<TSkillsBootstrap>> + 'a>>,
+    FExecutePackageActivateOnStartup: FnOnce(&Cli) -> Result<Option<TPackageActivation>>,
+    FResolveBootstrapLockPath: FnOnce(&TSkillsBootstrap) -> PathBuf,
+{
+    let skills_bootstrap = run_skills_bootstrap(cli).await?;
+    let activation_applied = execute_package_activate_on_startup(cli)?.is_some();
+    let bootstrap_lock_path = resolve_bootstrap_lock_path(&skills_bootstrap);
+    build_startup_runtime_dispatch_context(cli, &bootstrap_lock_path, activation_applied)
+}
+
 pub fn build_startup_runtime_dispatch_context(
     cli: &Cli,
     bootstrap_lock_path: &Path,
@@ -105,10 +129,11 @@ mod tests {
     use super::{
         build_startup_runtime_dispatch_context, resolve_runtime_skills_dir,
         resolve_runtime_skills_lock_path, resolve_startup_model_runtime_from_cli,
-        StartupModelRuntimeResolution,
+        resolve_startup_runtime_dispatch_context_from_cli, StartupModelRuntimeResolution,
     };
     use anyhow::{anyhow, Result};
     use clap::Parser;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tau_cli::Cli;
     use tau_skills::default_skills_lock_path;
@@ -122,6 +147,11 @@ mod tests {
             .expect("spawn cli parse thread")
             .join()
             .expect("join cli parse thread")
+    }
+
+    #[derive(Debug, Clone)]
+    struct MockSkillsBootstrap {
+        skills_lock_path: PathBuf,
     }
 
     #[test]
@@ -234,6 +264,126 @@ mod tests {
         assert_eq!(context.effective_skills_dir, cli.skills_dir);
         assert_eq!(context.skills_lock_path, bootstrap_lock_path);
         assert!(context.system_prompt.contains("Tau system prompt"));
+    }
+
+    #[tokio::test]
+    async fn unit_resolve_startup_runtime_dispatch_context_from_cli_uses_bootstrap_lock_without_activation(
+    ) {
+        let mut cli = parse_cli_with_stack();
+        let workspace = tempdir().expect("tempdir");
+        cli.system_prompt = "Tau system prompt".to_string();
+        cli.skills_dir = workspace.path().join(".tau/skills");
+        std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+        let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
+        let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
+
+        let context = resolve_startup_runtime_dispatch_context_from_cli(
+            &cli,
+            |_cli| {
+                Box::pin(async move {
+                    Ok(MockSkillsBootstrap {
+                        skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
+                    })
+                })
+            },
+            |_cli| Ok(None::<()>),
+            |bootstrap| bootstrap.skills_lock_path.clone(),
+        )
+        .await
+        .expect("context");
+
+        assert_eq!(context.effective_skills_dir, cli.skills_dir);
+        assert_eq!(context.skills_lock_path, bootstrap_lock_path);
+    }
+
+    #[tokio::test]
+    async fn functional_resolve_startup_runtime_dispatch_context_from_cli_uses_activated_runtime_paths(
+    ) {
+        let mut cli = parse_cli_with_stack();
+        let workspace = tempdir().expect("tempdir");
+        cli.system_prompt = "Tau system prompt".to_string();
+        cli.skills_dir = workspace.path().join(".tau/skills");
+        cli.package_activate_destination = workspace.path().join("packages-active");
+        std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+        let activated_skills_dir = cli.package_activate_destination.join("skills");
+        std::fs::create_dir_all(&activated_skills_dir).expect("create activated skills dir");
+        let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
+        let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
+
+        let context = resolve_startup_runtime_dispatch_context_from_cli(
+            &cli,
+            |_cli| {
+                Box::pin(async move {
+                    Ok(MockSkillsBootstrap {
+                        skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
+                    })
+                })
+            },
+            |_cli| Ok(Some("activated".to_string())),
+            |bootstrap| bootstrap.skills_lock_path.clone(),
+        )
+        .await
+        .expect("context");
+
+        assert_eq!(context.effective_skills_dir, activated_skills_dir);
+        assert_eq!(
+            context.skills_lock_path,
+            default_skills_lock_path(&context.effective_skills_dir)
+        );
+        assert_ne!(context.skills_lock_path, bootstrap_lock_path);
+    }
+
+    #[tokio::test]
+    async fn integration_resolve_startup_runtime_dispatch_context_from_cli_propagates_skills_bootstrap_errors(
+    ) {
+        let cli = parse_cli_with_stack();
+        let result = resolve_startup_runtime_dispatch_context_from_cli(
+            &cli,
+            |_cli| Box::pin(async move { Err(anyhow!("skills bootstrap failed")) }),
+            |_cli| -> Result<Option<()>> {
+                panic!("activation callback should not run when skills bootstrap fails");
+            },
+            |_bootstrap: &MockSkillsBootstrap| PathBuf::from("unused"),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("skills bootstrap errors should propagate"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("skills bootstrap failed"));
+    }
+
+    #[tokio::test]
+    async fn regression_resolve_startup_runtime_dispatch_context_from_cli_propagates_package_activation_errors(
+    ) {
+        let mut cli = parse_cli_with_stack();
+        let workspace = tempdir().expect("tempdir");
+        cli.system_prompt = "Tau system prompt".to_string();
+        cli.skills_dir = workspace.path().join(".tau/skills");
+        std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+        let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
+        let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
+
+        let result = resolve_startup_runtime_dispatch_context_from_cli(
+            &cli,
+            |_cli| {
+                Box::pin(async move {
+                    Ok(MockSkillsBootstrap {
+                        skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
+                    })
+                })
+            },
+            |_cli| -> Result<Option<()>> { Err(anyhow!("package activation failed")) },
+            |bootstrap| bootstrap.skills_lock_path.clone(),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("package activation errors should propagate"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("package activation failed"));
     }
 
     #[tokio::test]
