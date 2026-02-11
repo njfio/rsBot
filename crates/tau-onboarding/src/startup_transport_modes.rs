@@ -5,7 +5,8 @@ use tau_ai::{LlmClient, ModelRef};
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
 use tau_gateway::{
-    GatewayOpenResponsesAuthMode, GatewayOpenResponsesServerConfig, GatewayToolRegistrarFn,
+    GatewayOpenResponsesAuthMode, GatewayOpenResponsesServerConfig, GatewayRuntimeConfig,
+    GatewayToolRegistrarFn,
 };
 use tau_multi_channel::{
     MultiChannelLiveConnectorsConfig, MultiChannelMediaUnderstandingConfig,
@@ -83,6 +84,30 @@ pub async fn run_gateway_openresponses_server_if_requested(
         tool_policy,
     );
     tau_gateway::run_gateway_openresponses_server(config).await?;
+    Ok(true)
+}
+
+pub fn build_gateway_contract_runner_config(cli: &Cli) -> GatewayRuntimeConfig {
+    GatewayRuntimeConfig {
+        fixture_path: cli.gateway_fixture.clone(),
+        state_dir: cli.gateway_state_dir.clone(),
+        queue_limit: 64,
+        processed_case_cap: 10_000,
+        retry_max_attempts: 4,
+        retry_base_delay_ms: 0,
+        guardrail_failure_streak_threshold: cli.gateway_guardrail_failure_streak_threshold.max(1),
+        guardrail_retryable_failures_threshold: cli
+            .gateway_guardrail_retryable_failures_threshold
+            .max(1),
+    }
+}
+
+pub async fn run_gateway_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.gateway_contract_runner {
+        return Ok(false);
+    }
+    let config = build_gateway_contract_runner_config(cli);
+    tau_gateway::run_gateway_contract_runner(config).await?;
     Ok(true)
 }
 
@@ -220,10 +245,11 @@ fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_gateway_openresponses_server_config, build_multi_channel_live_connectors_config,
-        build_multi_channel_media_config, build_multi_channel_outbound_config,
-        build_multi_channel_telemetry_config, map_gateway_openresponses_auth_mode,
-        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
+        build_gateway_contract_runner_config, build_gateway_openresponses_server_config,
+        build_multi_channel_live_connectors_config, build_multi_channel_media_config,
+        build_multi_channel_outbound_config, build_multi_channel_telemetry_config,
+        map_gateway_openresponses_auth_mode, resolve_gateway_openresponses_auth,
+        resolve_multi_channel_outbound_secret,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -334,6 +360,17 @@ mod tests {
     }
 
     #[test]
+    fn regression_build_gateway_contract_runner_config_enforces_guardrail_minimums() {
+        let mut cli = parse_cli_with_stack();
+        cli.gateway_guardrail_failure_streak_threshold = 0;
+        cli.gateway_guardrail_retryable_failures_threshold = 0;
+
+        let config = build_gateway_contract_runner_config(&cli);
+        assert_eq!(config.guardrail_failure_streak_threshold, 1);
+        assert_eq!(config.guardrail_retryable_failures_threshold, 1);
+    }
+
+    #[test]
     fn integration_build_gateway_openresponses_server_config_preserves_runtime_fields() {
         let mut cli = parse_cli_with_stack();
         cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
@@ -393,6 +430,37 @@ mod tests {
         .expect("gateway helper");
 
         assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_gateway_contract_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_gateway_contract_runner_if_requested(&cli)
+            .await
+            .expect("gateway contract helper");
+
+        assert!(!handled);
+    }
+
+    #[test]
+    fn integration_build_gateway_contract_runner_config_preserves_runtime_fields() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.gateway_fixture = temp.path().join("gateway-fixture.json");
+        cli.gateway_state_dir = temp.path().join("gateway-state");
+        cli.gateway_guardrail_failure_streak_threshold = 7;
+        cli.gateway_guardrail_retryable_failures_threshold = 9;
+
+        let config = build_gateway_contract_runner_config(&cli);
+        assert_eq!(config.fixture_path, cli.gateway_fixture);
+        assert_eq!(config.state_dir, cli.gateway_state_dir);
+        assert_eq!(config.queue_limit, 64);
+        assert_eq!(config.processed_case_cap, 10_000);
+        assert_eq!(config.retry_max_attempts, 4);
+        assert_eq!(config.retry_base_delay_ms, 0);
+        assert_eq!(config.guardrail_failure_streak_threshold, 7);
+        assert_eq!(config.guardrail_retryable_failures_threshold, 9);
     }
 
     #[tokio::test]

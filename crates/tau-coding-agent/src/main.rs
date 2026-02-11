@@ -324,7 +324,6 @@ pub(crate) use tau_diagnostics::{
 };
 #[cfg(test)]
 pub(crate) use tau_diagnostics::{execute_doctor_command, execute_doctor_command_with_options};
-use tau_gateway::{run_gateway_contract_runner, GatewayRuntimeConfig};
 #[cfg(test)]
 pub(crate) use tau_multi_channel::build_multi_channel_incident_timeline_report;
 #[cfg(test)]

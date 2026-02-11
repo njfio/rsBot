@@ -6,8 +6,8 @@ use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
     build_multi_channel_media_config, build_multi_channel_outbound_config,
-    build_multi_channel_telemetry_config, run_gateway_openresponses_server_if_requested,
-    run_multi_channel_live_connectors_if_requested,
+    build_multi_channel_telemetry_config, run_gateway_contract_runner_if_requested,
+    run_gateway_openresponses_server_if_requested, run_multi_channel_live_connectors_if_requested,
 };
 
 pub(crate) async fn run_transport_mode_if_requested(
@@ -296,22 +296,7 @@ pub(crate) async fn run_transport_mode_if_requested(
         return Ok(true);
     }
 
-    if cli.gateway_contract_runner {
-        run_gateway_contract_runner(GatewayRuntimeConfig {
-            fixture_path: cli.gateway_fixture.clone(),
-            state_dir: cli.gateway_state_dir.clone(),
-            queue_limit: 64,
-            processed_case_cap: 10_000,
-            retry_max_attempts: 4,
-            retry_base_delay_ms: 0,
-            guardrail_failure_streak_threshold: cli
-                .gateway_guardrail_failure_streak_threshold
-                .max(1),
-            guardrail_retryable_failures_threshold: cli
-                .gateway_guardrail_retryable_failures_threshold
-                .max(1),
-        })
-        .await?;
+    if run_gateway_contract_runner_if_requested(cli).await? {
         return Ok(true);
     }
 
