@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "invalid-error-code",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "filter-invalid-error-code",
+      "mode": "filter",
+      "scope": {
+        "workspace_id": "tau-core"
+      },
+      "filters": [
+        {
+          "filter_id": "severity",
+          "kind": "severity",
+          "value": ""
+        }
+      ],
+      "requested_widgets": [
+        {
+          "widget_id": "alert-feed",
+          "kind": "alert_feed",
+          "title": "Alerts",
+          "query_key": "runtime.alerts",
+          "refresh_interval_ms": 5000
+        }
+      ],
+      "expected": {
+        "outcome": "malformed_input",
+        "error_code": "dashboard_unsupported_error_code",
+        "widgets": []
+      }
+    }
+  ]
+}

@@ -22,6 +22,7 @@ members = [
     "crates/tau-ops",
     "crates/tau-memory",
     "crates/tau-github-issues",
+    "crates/tau-dashboard",
     "crates/tau-memory",
   "crates/tau-coding-agent",
 ]
