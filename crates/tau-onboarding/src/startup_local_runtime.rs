@@ -8,6 +8,9 @@ use tau_ai::ModelRef;
 use tau_cli::Cli;
 use tau_core::current_unix_timestamp_ms;
 use tau_diagnostics::{build_doctor_command_config, DoctorCommandConfig};
+use tau_provider::AuthCommandConfig;
+
+use crate::startup_config::{build_auth_command_config, build_profile_defaults, ProfileDefaults};
 
 const EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
@@ -23,6 +26,33 @@ pub fn build_local_runtime_doctor_config(
     doctor_config.skills_dir = skills_dir.to_path_buf();
     doctor_config.skills_lock_path = skills_lock_path.to_path_buf();
     doctor_config
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalRuntimeCommandDefaults {
+    pub profile_defaults: ProfileDefaults,
+    pub auth_command_config: AuthCommandConfig,
+    pub doctor_config: DoctorCommandConfig,
+}
+
+pub fn build_local_runtime_command_defaults(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    fallback_model_refs: &[ModelRef],
+    skills_dir: &Path,
+    skills_lock_path: &Path,
+) -> LocalRuntimeCommandDefaults {
+    LocalRuntimeCommandDefaults {
+        profile_defaults: build_profile_defaults(cli),
+        auth_command_config: build_auth_command_config(cli),
+        doctor_config: build_local_runtime_doctor_config(
+            cli,
+            model_ref,
+            fallback_model_refs,
+            skills_dir,
+            skills_lock_path,
+        ),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,11 +460,11 @@ fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_local_runtime_doctor_config, build_local_runtime_extension_bootstrap,
-        execute_command_file_entry_mode, execute_prompt_entry_mode,
-        execute_prompt_or_command_file_entry_mode, extension_tool_hook_diagnostics,
-        extension_tool_hook_dispatch, register_runtime_event_reporter_if_configured,
-        register_runtime_event_reporter_subscriber,
+        build_local_runtime_command_defaults, build_local_runtime_doctor_config,
+        build_local_runtime_extension_bootstrap, execute_command_file_entry_mode,
+        execute_prompt_entry_mode, execute_prompt_or_command_file_entry_mode,
+        extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
+        register_runtime_event_reporter_if_configured, register_runtime_event_reporter_subscriber,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
         register_runtime_json_event_subscriber, resolve_command_file_entry_path,
         resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
@@ -1045,6 +1075,90 @@ mod tests {
         );
 
         assert!(!doctor_config.session_enabled);
+    }
+
+    #[test]
+    fn unit_build_local_runtime_command_defaults_keeps_runtime_skills_paths() {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let defaults = build_local_runtime_command_defaults(
+            &cli,
+            &model_ref,
+            &[],
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+        );
+
+        assert_eq!(
+            defaults.doctor_config.skills_dir,
+            PathBuf::from("runtime-skills")
+        );
+        assert_eq!(
+            defaults.doctor_config.skills_lock_path,
+            PathBuf::from("runtime-skills.lock.json")
+        );
+    }
+
+    #[test]
+    fn functional_build_local_runtime_command_defaults_builds_profile_defaults() {
+        let mut cli = parse_cli_with_stack();
+        cli.no_session = true;
+        cli.model = "openai/gpt-5-mini".to_string();
+        cli.fallback_model = vec!["anthropic/claude-sonnet-4".to_string()];
+        let model_ref = ModelRef::parse("openai/gpt-5-mini").expect("model ref");
+
+        let defaults = build_local_runtime_command_defaults(
+            &cli,
+            &model_ref,
+            &[],
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+        );
+
+        assert_eq!(defaults.profile_defaults.model, "openai/gpt-5-mini");
+        assert_eq!(
+            defaults.profile_defaults.fallback_models,
+            vec!["anthropic/claude-sonnet-4".to_string()]
+        );
+        assert!(!defaults.profile_defaults.session.enabled);
+    }
+
+    #[test]
+    fn integration_build_local_runtime_command_defaults_builds_auth_config() {
+        let mut cli = parse_cli_with_stack();
+        cli.provider_subscription_strict = true;
+        cli.openai_codex_backend = false;
+        cli.openai_codex_cli = "tau-codex".to_string();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let defaults = build_local_runtime_command_defaults(
+            &cli,
+            &model_ref,
+            &[],
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+        );
+
+        assert!(defaults.auth_command_config.provider_subscription_strict);
+        assert!(!defaults.auth_command_config.openai_codex_backend);
+        assert_eq!(defaults.auth_command_config.openai_codex_cli, "tau-codex");
+    }
+
+    #[test]
+    fn regression_build_local_runtime_command_defaults_respects_no_session_for_doctor() {
+        let mut cli = parse_cli_with_stack();
+        cli.no_session = true;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let defaults = build_local_runtime_command_defaults(
+            &cli,
+            &model_ref,
+            &[],
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+        );
+
+        assert!(!defaults.doctor_config.session_enabled);
     }
 
     #[test]

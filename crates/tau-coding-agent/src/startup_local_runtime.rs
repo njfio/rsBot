@@ -3,15 +3,16 @@ use crate::extension_manifest::{
     discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
 };
 use tau_onboarding::startup_local_runtime::{
-    build_local_runtime_doctor_config as build_onboarding_local_runtime_doctor_config,
+    build_local_runtime_command_defaults as build_onboarding_local_runtime_command_defaults,
     build_local_runtime_extension_bootstrap as build_onboarding_local_runtime_extension_bootstrap,
     execute_prompt_or_command_file_entry_mode as execute_onboarding_prompt_or_command_file_entry_mode,
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
-    resolve_local_runtime_entry_mode, resolve_session_runtime, LocalRuntimeExtensionBootstrap,
-    PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome, SessionBootstrapOutcome,
+    resolve_local_runtime_entry_mode, resolve_session_runtime, LocalRuntimeCommandDefaults,
+    LocalRuntimeExtensionBootstrap, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
+    SessionBootstrapOutcome,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -133,20 +134,23 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         cli.orchestrator_mode == CliOrchestratorMode::PlanFirst,
         cli.command_file.as_deref(),
     );
+    let LocalRuntimeCommandDefaults {
+        profile_defaults,
+        auth_command_config,
+        doctor_config,
+    } = build_onboarding_local_runtime_command_defaults(
+        cli,
+        model_ref,
+        fallback_model_refs,
+        skills_dir,
+        skills_lock_path,
+    );
     let skills_sync_command_config = SkillsSyncCommandConfig {
         skills_dir: skills_dir.to_path_buf(),
         default_lock_path: skills_lock_path.to_path_buf(),
         default_trust_root_path: cli.skill_trust_root_file.clone(),
-        doctor_config: build_onboarding_local_runtime_doctor_config(
-            cli,
-            model_ref,
-            fallback_model_refs,
-            skills_dir,
-            skills_lock_path,
-        ),
+        doctor_config,
     };
-    let profile_defaults = build_profile_defaults(cli);
-    let auth_command_config = build_auth_command_config(cli);
     let command_context = CommandExecutionContext {
         tool_policy_json,
         session_import_mode: cli.session_import_mode.into(),

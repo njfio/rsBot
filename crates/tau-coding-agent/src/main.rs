@@ -223,7 +223,9 @@ pub(crate) use crate::skills_commands::{
 pub(crate) use crate::skills_commands::{
     render_skills_lock_write_success, render_skills_sync_drift_details,
 };
-pub(crate) use crate::startup_config::{build_auth_command_config, build_profile_defaults};
+pub(crate) use crate::startup_config::build_auth_command_config;
+#[cfg(test)]
+pub(crate) use crate::startup_config::build_profile_defaults;
 use crate::startup_dispatch::run_cli;
 #[cfg(test)]
 pub(crate) use crate::startup_local_runtime::register_runtime_extension_tool_hook_subscriber;
