@@ -3,10 +3,8 @@ use super::*;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
 
-use crate::cli_executable::is_executable_available;
 use crate::daemon_runtime::{
     inspect_tau_daemon, install_tau_daemon, start_tau_daemon, TauDaemonConfig,
-    TauDaemonStatusReport,
 };
 use tau_onboarding::onboarding_paths::{
     collect_bootstrap_directories, parse_yes_no_response, resolve_tau_root,
@@ -15,49 +13,13 @@ use tau_onboarding::onboarding_profile_bootstrap::{
     ensure_directory, ensure_profile_store_entry, resolve_onboarding_profile_name,
 };
 use tau_onboarding::onboarding_release_channel::ensure_onboarding_release_channel;
+use tau_onboarding::onboarding_report::{
+    build_onboarding_next_steps, collect_executable_checks, render_onboarding_summary,
+    resolve_onboarding_report_path, write_onboarding_report, OnboardingDaemonBootstrapReport,
+    OnboardingReport,
+};
 
 const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 2;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct OnboardingExecutableCheck {
-    pub(crate) integration: String,
-    pub(crate) executable: String,
-    pub(crate) available: bool,
-    pub(crate) required: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct OnboardingReport {
-    pub(crate) schema_version: u32,
-    pub(crate) generated_at_ms: u64,
-    pub(crate) mode: String,
-    pub(crate) tau_root: String,
-    pub(crate) profile_name: String,
-    pub(crate) profile_store_path: String,
-    pub(crate) profile_store_action: String,
-    pub(crate) release_channel_path: String,
-    pub(crate) release_channel: String,
-    pub(crate) release_channel_source: String,
-    pub(crate) release_channel_action: String,
-    pub(crate) directories_created: Vec<String>,
-    pub(crate) directories_existing: Vec<String>,
-    pub(crate) files_created: Vec<String>,
-    pub(crate) files_existing: Vec<String>,
-    pub(crate) executable_checks: Vec<OnboardingExecutableCheck>,
-    pub(crate) daemon_bootstrap: OnboardingDaemonBootstrapReport,
-    pub(crate) next_steps: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct OnboardingDaemonBootstrapReport {
-    pub(crate) requested_install: bool,
-    pub(crate) requested_start: bool,
-    pub(crate) install_action: String,
-    pub(crate) start_action: String,
-    pub(crate) ready: bool,
-    pub(crate) readiness_reason_codes: Vec<String>,
-    pub(crate) status: TauDaemonStatusReport,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardingMode {
@@ -221,159 +183,6 @@ fn onboarding_mode_label(mode: OnboardingMode) -> &'static str {
         OnboardingMode::Interactive => "interactive",
         OnboardingMode::NonInteractive => "non-interactive",
     }
-}
-
-fn collect_executable_checks(cli: &Cli) -> Vec<OnboardingExecutableCheck> {
-    let openai_required = cli.openai_codex_backend
-        && matches!(
-            cli.openai_auth_mode,
-            CliProviderAuthMode::OauthToken | CliProviderAuthMode::SessionToken
-        );
-    let anthropic_required = cli.anthropic_claude_backend
-        && matches!(
-            cli.anthropic_auth_mode,
-            CliProviderAuthMode::OauthToken | CliProviderAuthMode::SessionToken
-        );
-    let google_required = cli.google_gemini_backend
-        && matches!(
-            cli.google_auth_mode,
-            CliProviderAuthMode::OauthToken | CliProviderAuthMode::Adc
-        );
-    let gcloud_required = matches!(cli.google_auth_mode, CliProviderAuthMode::Adc);
-
-    vec![
-        onboarding_executable_check("openai-codex", &cli.openai_codex_cli, openai_required),
-        onboarding_executable_check(
-            "anthropic-claude",
-            &cli.anthropic_claude_cli,
-            anthropic_required,
-        ),
-        onboarding_executable_check("google-gemini", &cli.google_gemini_cli, google_required),
-        onboarding_executable_check("google-gcloud", &cli.google_gcloud_cli, gcloud_required),
-    ]
-}
-
-fn onboarding_executable_check(
-    integration: &str,
-    executable: &str,
-    required: bool,
-) -> OnboardingExecutableCheck {
-    OnboardingExecutableCheck {
-        integration: integration.to_string(),
-        executable: executable.to_string(),
-        available: is_executable_available(executable),
-        required,
-    }
-}
-
-fn build_onboarding_next_steps(
-    cli: &Cli,
-    executable_checks: &[OnboardingExecutableCheck],
-    daemon_bootstrap: &OnboardingDaemonBootstrapReport,
-) -> Vec<String> {
-    let mut next_steps = Vec::new();
-    for check in executable_checks {
-        if check.required && !check.available {
-            next_steps.push(format!(
-                "Install or configure '{}' for {} auth workflows.",
-                check.executable, check.integration
-            ));
-        }
-    }
-    if daemon_bootstrap.requested_install && !daemon_bootstrap.status.installed {
-        next_steps.push(format!(
-            "Retry daemon install: cargo run -p tau-coding-agent -- --daemon-install --daemon-state-dir {}",
-            cli.daemon_state_dir.display()
-        ));
-    }
-    if daemon_bootstrap.requested_start && !daemon_bootstrap.status.running {
-        next_steps.push(format!(
-            "Retry daemon start: cargo run -p tau-coding-agent -- --daemon-start --daemon-state-dir {}",
-            cli.daemon_state_dir.display()
-        ));
-    }
-    if !daemon_bootstrap.ready {
-        next_steps.push(format!(
-            "Inspect daemon diagnostics: cargo run -p tau-coding-agent -- --daemon-status --daemon-status-json --daemon-state-dir {}",
-            cli.daemon_state_dir.display()
-        ));
-    }
-    next_steps.push("/auth status".to_string());
-    next_steps.push(format!(
-        "cargo run -p tau-coding-agent -- --model {}",
-        cli.model
-    ));
-    next_steps
-}
-
-fn resolve_onboarding_report_path(cli: &Cli) -> Result<PathBuf> {
-    let tau_root = resolve_tau_root(cli);
-    let reports_dir = tau_root.join("reports");
-    let report_name = format!("onboarding-{}.json", current_unix_timestamp_ms());
-    Ok(reports_dir.join(report_name))
-}
-
-fn write_onboarding_report(report: &OnboardingReport, report_path: PathBuf) -> Result<PathBuf> {
-    let mut payload = serde_json::to_string_pretty(report).context("failed to encode report")?;
-    payload.push('\n');
-    write_text_atomic(&report_path, &payload).with_context(|| {
-        format!(
-            "failed to write onboarding report {}",
-            report_path.display()
-        )
-    })?;
-    Ok(report_path)
-}
-
-fn render_onboarding_summary(report: &OnboardingReport, report_path: &Path) -> String {
-    let mut lines = vec![
-        format!(
-            "onboarding complete: mode={} profile={} report={}",
-            report.mode,
-            report.profile_name,
-            report_path.display()
-        ),
-        format!(
-            "directories: created={} existing={}",
-            report.directories_created.len(),
-            report.directories_existing.len()
-        ),
-        format!(
-            "files: created={} existing={} profile_store_action={}",
-            report.files_created.len(),
-            report.files_existing.len(),
-            report.profile_store_action
-        ),
-        format!(
-            "release_channel: value={} source={} action={} path={}",
-            report.release_channel,
-            report.release_channel_source,
-            report.release_channel_action,
-            report.release_channel_path
-        ),
-        format!(
-            "daemon: install_requested={} start_requested={} install_action={} start_action={} ready={}",
-            report.daemon_bootstrap.requested_install,
-            report.daemon_bootstrap.requested_start,
-            report.daemon_bootstrap.install_action,
-            report.daemon_bootstrap.start_action,
-            report.daemon_bootstrap.ready
-        ),
-        format!(
-            "daemon_status: installed={} running={} profile={} diagnostics={}",
-            report.daemon_bootstrap.status.installed,
-            report.daemon_bootstrap.status.running,
-            report.daemon_bootstrap.status.profile,
-            report.daemon_bootstrap.status.diagnostics.len()
-        ),
-    ];
-    for reason in &report.daemon_bootstrap.readiness_reason_codes {
-        lines.push(format!("daemon_reason: {reason}"));
-    }
-    for next_step in &report.next_steps {
-        lines.push(format!("next: {next_step}"));
-    }
-    lines.join("\n")
 }
 
 fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {

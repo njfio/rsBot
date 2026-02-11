@@ -16,6 +16,7 @@ tau-provider = { path = "../tau-provider" }
 tau-release-channel = { path = "../tau-release-channel" }
 tau-skills = { path = "../tau-skills" }
 tau-tools = { path = "../tau-tools" }
+tau-ops = { path = "../tau-ops" }
 
 [dev-dependencies]
 clap = { workspace = true }
