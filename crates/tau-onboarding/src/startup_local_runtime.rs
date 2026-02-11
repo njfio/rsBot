@@ -291,6 +291,32 @@ pub fn register_runtime_event_reporter_subscriber<FReport, FEmit, E>(
     });
 }
 
+pub fn register_runtime_event_reporter_if_configured<TReporter, FOpen, FReport, FEmit, E>(
+    agent: &mut Agent,
+    path: Option<PathBuf>,
+    open_reporter: FOpen,
+    report_event: FReport,
+    emit_error: FEmit,
+) -> Result<bool>
+where
+    TReporter: Send + Sync + 'static,
+    FOpen: FnOnce(PathBuf) -> Result<TReporter>,
+    FReport: Fn(&TReporter, &AgentEvent) -> std::result::Result<(), E> + Send + Sync + 'static,
+    FEmit: Fn(&str) + Send + Sync + 'static,
+    E: std::fmt::Display,
+{
+    let Some(path) = path else {
+        return Ok(false);
+    };
+    let reporter = open_reporter(path)?;
+    register_runtime_event_reporter_subscriber(
+        agent,
+        move |event| report_event(&reporter, event),
+        emit_error,
+    );
+    Ok(true)
+}
+
 fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -319,7 +345,7 @@ mod tests {
     use super::{
         execute_command_file_entry_mode, execute_prompt_entry_mode,
         extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
-        register_runtime_event_reporter_subscriber,
+        register_runtime_event_reporter_if_configured, register_runtime_event_reporter_subscriber,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
         register_runtime_json_event_subscriber, resolve_command_file_entry_path,
         resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
@@ -989,6 +1015,99 @@ mod tests {
         let events = captured.lock().expect("capture lock").clone();
         assert!(events.iter().any(|kind| kind == "start"));
         assert!(events.iter().any(|kind| kind == "end"));
+    }
+
+    #[test]
+    fn unit_register_runtime_event_reporter_if_configured_returns_false_when_path_missing() {
+        let mut agent = build_tool_loop_agent();
+        let open_called = Arc::new(AtomicBool::new(false));
+        let open_called_sink = Arc::clone(&open_called);
+
+        let registered = register_runtime_event_reporter_if_configured(
+            &mut agent,
+            None,
+            move |_path| {
+                open_called_sink.store(true, Ordering::Relaxed);
+                Ok(())
+            },
+            |_reporter: &(), _event| Ok::<(), &'static str>(()),
+            |_error| {},
+        )
+        .expect("optional reporter registration should succeed");
+
+        assert!(!registered);
+        assert!(!open_called.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn functional_register_runtime_event_reporter_if_configured_registers_and_reports_events()
+    {
+        let mut agent = build_tool_loop_agent();
+        let observed_start_events = Arc::new(Mutex::new(0usize));
+        let observed_start_events_sink = Arc::clone(&observed_start_events);
+
+        let registered = register_runtime_event_reporter_if_configured(
+            &mut agent,
+            Some(PathBuf::from("telemetry.log")),
+            move |_path| Ok(Arc::clone(&observed_start_events_sink)),
+            |reporter, event| {
+                if matches!(event, AgentEvent::ToolExecutionStart { .. }) {
+                    let mut guard = reporter.lock().expect("reporter lock");
+                    *guard += 1;
+                }
+                Ok::<(), &'static str>(())
+            },
+            |_error| {},
+        )
+        .expect("optional reporter registration should succeed");
+
+        assert!(registered);
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(*observed_start_events.lock().expect("reporter lock") > 0);
+    }
+
+    #[test]
+    fn integration_register_runtime_event_reporter_if_configured_propagates_open_errors() {
+        let mut agent = build_tool_loop_agent();
+
+        let error = register_runtime_event_reporter_if_configured(
+            &mut agent,
+            Some(PathBuf::from("telemetry.log")),
+            |_path| Err(anyhow::anyhow!("failed to open reporter")),
+            |_reporter: &(), _event| Ok::<(), &'static str>(()),
+            |_error| {},
+        )
+        .expect_err("open errors should propagate");
+
+        assert!(
+            error.to_string().contains("failed to open reporter"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_register_runtime_event_reporter_if_configured_emits_report_errors() {
+        let mut agent = build_tool_loop_agent();
+        let captured_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let errors_sink = Arc::clone(&captured_errors);
+
+        let registered = register_runtime_event_reporter_if_configured(
+            &mut agent,
+            Some(PathBuf::from("telemetry.log")),
+            |_path| Ok(()),
+            |_reporter: &(), _event| Err("forced configured reporter failure"),
+            move |error| {
+                errors_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(error.to_string())
+            },
+        )
+        .expect("optional reporter registration should succeed");
+
+        assert!(registered);
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(!captured_errors.lock().expect("capture lock").is_empty());
     }
 
     #[tokio::test]

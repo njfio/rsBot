@@ -5,7 +5,7 @@ use crate::extension_manifest::{
 use tau_onboarding::startup_local_runtime::{
     execute_command_file_entry_mode as execute_onboarding_command_file_entry_mode,
     execute_prompt_entry_mode as execute_onboarding_prompt_entry_mode,
-    register_runtime_event_reporter_subscriber as register_onboarding_runtime_event_reporter_subscriber,
+    register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
@@ -54,23 +54,20 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         },
     );
     tools::register_builtin_tools(&mut agent, tool_policy);
-    if let Some(path) = cli.tool_audit_log.clone() {
-        let logger = ToolAuditLogger::open(path)?;
-        register_onboarding_runtime_event_reporter_subscriber(
-            &mut agent,
-            move |event| logger.log_event(event),
-            |error| eprintln!("tool audit logger error: {error}"),
-        );
-    }
-    if let Some(path) = cli.telemetry_log.clone() {
-        let logger =
-            PromptTelemetryLogger::open(path, model_ref.provider.as_str(), &model_ref.model)?;
-        register_onboarding_runtime_event_reporter_subscriber(
-            &mut agent,
-            move |event| logger.log_event(event),
-            |error| eprintln!("telemetry logger error: {error}"),
-        );
-    }
+    register_onboarding_runtime_event_reporter_if_configured(
+        &mut agent,
+        cli.tool_audit_log.clone(),
+        ToolAuditLogger::open,
+        |logger, event| logger.log_event(event),
+        |error| eprintln!("tool audit logger error: {error}"),
+    )?;
+    register_onboarding_runtime_event_reporter_if_configured(
+        &mut agent,
+        cli.telemetry_log.clone(),
+        |path| PromptTelemetryLogger::open(path, model_ref.provider.as_str(), &model_ref.model),
+        |logger, event| logger.log_event(event),
+        |error| eprintln!("telemetry logger error: {error}"),
+    )?;
     let mut session_runtime = resolve_session_runtime(
         cli.no_session,
         || {
