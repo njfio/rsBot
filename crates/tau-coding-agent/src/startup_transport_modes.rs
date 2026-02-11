@@ -8,7 +8,6 @@ use tau_onboarding::startup_transport_modes::{
     build_multi_channel_runtime_dependencies as build_onboarding_multi_channel_runtime_dependencies,
     build_transport_doctor_config as build_onboarding_transport_doctor_config,
     build_transport_runtime_defaults as build_onboarding_transport_runtime_defaults,
-    execute_transport_runtime_mode, resolve_transport_runtime_mode,
     run_browser_automation_contract_runner_if_requested,
     run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
     run_deployment_contract_runner_if_requested,
@@ -19,7 +18,8 @@ use tau_onboarding::startup_transport_modes::{
     run_multi_channel_contract_runner_if_requested, run_multi_channel_live_connectors_if_requested,
     run_multi_channel_live_runner_if_requested,
     run_slack_bridge_if_requested as run_onboarding_slack_bridge_if_requested,
-    run_voice_contract_runner_if_requested, validate_transport_mode_cli, TransportRuntimeExecutor,
+    run_transport_mode_if_requested as run_onboarding_transport_mode_if_requested,
+    run_voice_contract_runner_if_requested, TransportRuntimeExecutor,
 };
 
 async fn run_github_issues_bridge_if_requested(
@@ -338,8 +338,6 @@ pub(crate) async fn run_transport_mode_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
-    validate_transport_mode_cli(cli)?;
-
     let executor = CodingAgentTransportRuntimeExecutor {
         cli,
         client,
@@ -348,5 +346,5 @@ pub(crate) async fn run_transport_mode_if_requested(
         tool_policy,
         render_options,
     };
-    execute_transport_runtime_mode(resolve_transport_runtime_mode(cli), &executor).await
+    run_onboarding_transport_mode_if_requested(cli, &executor).await
 }

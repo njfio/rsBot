@@ -183,6 +183,14 @@ where
     }
 }
 
+pub async fn run_transport_mode_if_requested<E>(cli: &Cli, executor: &E) -> Result<bool>
+where
+    E: TransportRuntimeExecutor + Sync,
+{
+    validate_transport_mode_cli(cli)?;
+    execute_transport_runtime_mode(resolve_transport_runtime_mode(cli), executor).await
+}
+
 pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_github_issues_bridge_cli(cli)?;
     validate_slack_bridge_cli(cli)?;
@@ -1044,10 +1052,10 @@ mod tests {
         resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
         resolve_multi_channel_transport_mode, resolve_transport_runtime_mode,
         run_events_runner_if_requested, run_github_issues_bridge_if_requested,
-        run_slack_bridge_if_requested, validate_transport_mode_cli, BridgeTransportMode,
-        ContractTransportMode, EventsRunnerCliConfig, MultiChannelTransportMode,
-        SlackBridgeCliConfig, TransportRuntimeDefaults, TransportRuntimeExecutor,
-        TransportRuntimeMode,
+        run_slack_bridge_if_requested, run_transport_mode_if_requested,
+        validate_transport_mode_cli, BridgeTransportMode, ContractTransportMode,
+        EventsRunnerCliConfig, MultiChannelTransportMode, SlackBridgeCliConfig,
+        TransportRuntimeDefaults, TransportRuntimeExecutor, TransportRuntimeMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1618,6 +1626,59 @@ mod tests {
             "unexpected error: {error}"
         );
         assert_eq!(executor.calls(), vec!["voice-contract"]);
+    }
+
+    #[tokio::test]
+    async fn unit_run_transport_mode_if_requested_returns_false_for_none() {
+        let cli = parse_cli_with_stack();
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let handled = run_transport_mode_if_requested(&cli, &executor)
+            .await
+            .expect("dispatch succeeds");
+        assert!(!handled);
+        assert!(executor.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn functional_run_transport_mode_if_requested_dispatches_selected_mode() {
+        let mut cli = parse_cli_with_stack();
+        cli.gateway_openresponses_server = true;
+        cli.gateway_openresponses_auth_token = Some("test-token".to_string());
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let handled = run_transport_mode_if_requested(&cli, &executor)
+            .await
+            .expect("dispatch succeeds");
+        assert!(handled);
+        assert_eq!(executor.calls(), vec!["gateway-openresponses"]);
+    }
+
+    #[tokio::test]
+    async fn integration_run_transport_mode_if_requested_dispatches_bridge_mode() {
+        let mut cli = parse_cli_with_stack();
+        cli.github_issues_bridge = true;
+        cli.github_repo = Some("owner/repo".to_string());
+        cli.github_token = Some("ghp_test".to_string());
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let handled = run_transport_mode_if_requested(&cli, &executor)
+            .await
+            .expect("dispatch succeeds");
+        assert!(handled);
+        assert_eq!(executor.calls(), vec!["github-issues"]);
+    }
+
+    #[tokio::test]
+    async fn regression_run_transport_mode_if_requested_propagates_validation_errors() {
+        let mut cli = parse_cli_with_stack();
+        cli.slack_bridge = true;
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let error = run_transport_mode_if_requested(&cli, &executor)
+            .await
+            .expect_err("validation should fail");
+        assert!(
+            error.to_string().contains("slack-app-token"),
+            "unexpected error: {error}"
+        );
+        assert!(executor.calls().is_empty());
     }
 
     #[test]
