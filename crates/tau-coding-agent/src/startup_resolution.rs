@@ -1,4 +1,5 @@
 use super::*;
+use tau_access::trust_roots::TrustMutationReport;
 
 pub(crate) fn resolve_system_prompt(cli: &Cli) -> Result<String> {
     let Some(path) = cli.system_prompt_file.as_ref() else {
@@ -58,4 +59,16 @@ pub(crate) fn resolve_skill_trust_roots(cli: &Cli) -> Result<Vec<TrustedKey>> {
     }
 
     Ok(roots)
+}
+
+pub(crate) fn apply_trust_root_mutations(
+    records: &mut Vec<TrustedRootRecord>,
+    cli: &Cli,
+) -> Result<TrustMutationReport> {
+    apply_trust_root_mutation_specs(
+        records,
+        &cli.skill_trust_add,
+        &cli.skill_trust_revoke,
+        &cli.skill_trust_rotate,
+    )
 }

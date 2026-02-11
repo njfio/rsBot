@@ -3,16 +3,16 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::approvals::{
-    approval_paths_for_state_dir, execute_approvals_command_with_paths_and_actor,
-};
 use crate::auth_commands::execute_auth_command;
 use crate::diagnostics_commands::{
     execute_doctor_command, execute_doctor_command_with_options, DoctorCheckOptions,
     DoctorCommandOutputFormat,
 };
-use crate::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
 use crate::runtime_types::{AuthCommandConfig, DoctorCommandConfig};
+use tau_access::approvals::{
+    approval_paths_for_state_dir, execute_approvals_command_with_paths_and_actor,
+};
+use tau_access::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
 use tau_multi_channel::{
     MultiChannelApprovalsCommandExecutor, MultiChannelAuthCommandExecutor,
     MultiChannelCommandHandlers, MultiChannelDoctorCommandExecutor, MultiChannelPairingDecision,

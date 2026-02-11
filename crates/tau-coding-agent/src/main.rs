@@ -1,4 +1,3 @@
-mod approvals;
 mod auth_commands;
 mod auth_types;
 mod bootstrap_helpers;
@@ -56,14 +55,12 @@ mod observability_loggers;
 mod onboarding;
 mod orchestrator;
 mod package_manifest;
-mod pairing;
 mod project_index;
 mod provider_auth;
 mod provider_client;
 mod provider_credentials;
 mod provider_fallback;
 mod qa_loop_commands;
-mod rbac;
 mod release_channel_commands;
 mod rpc_capabilities;
 mod rpc_protocol;
@@ -96,7 +93,6 @@ mod tools;
 #[cfg(test)]
 mod transport_conformance;
 mod transport_health;
-mod trust_roots;
 mod voice_contract;
 mod voice_runtime;
 
@@ -120,10 +116,6 @@ use tau_ai::{
     Provider, StreamDeltaHandler, TauAiError,
 };
 
-pub(crate) use crate::approvals::{
-    evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
-    APPROVALS_USAGE,
-};
 pub(crate) use crate::auth_commands::execute_auth_command;
 #[cfg(test)]
 pub(crate) use crate::auth_commands::{parse_auth_command, AuthCommand};
@@ -237,10 +229,6 @@ pub(crate) use crate::package_manifest::{
     execute_package_list_command, execute_package_remove_command, execute_package_rollback_command,
     execute_package_show_command, execute_package_update_command, execute_package_validate_command,
 };
-pub(crate) use crate::pairing::{
-    evaluate_pairing_access, execute_pair_command, execute_unpair_command,
-    pairing_policy_for_state_dir, PairingDecision,
-};
 pub(crate) use crate::project_index::execute_project_index_command;
 pub(crate) use crate::provider_auth::{
     configured_provider_auth_method, configured_provider_auth_method_from_config,
@@ -261,12 +249,6 @@ pub(crate) use crate::provider_fallback::{
 };
 pub(crate) use crate::qa_loop_commands::{
     execute_qa_loop_cli_command, execute_qa_loop_preflight_command, QA_LOOP_USAGE,
-};
-pub(crate) use crate::rbac::{
-    authorize_action_for_principal_with_policy_path, authorize_command_for_principal,
-    authorize_tool_for_principal, authorize_tool_for_principal_with_policy_path,
-    execute_rbac_command, github_principal, rbac_policy_path_for_state_dir,
-    resolve_local_principal, slack_principal, RbacDecision, RBAC_USAGE,
 };
 pub(crate) use crate::release_channel_commands::{
     default_release_channel_path, execute_release_channel_command, load_release_channel_store,
@@ -393,6 +375,8 @@ pub(crate) use crate::startup_prompt_composition::compose_startup_system_prompt;
 pub(crate) use crate::startup_resolution::{
     ensure_non_empty_text, resolve_skill_trust_roots, resolve_system_prompt,
 };
+#[cfg(test)]
+pub(crate) use crate::startup_resolution::apply_trust_root_mutations;
 pub(crate) use crate::startup_skills_bootstrap::run_startup_skills_bootstrap;
 pub(crate) use crate::startup_transport_modes::run_transport_mode_if_requested;
 #[cfg(test)]
@@ -400,10 +384,6 @@ pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
 pub(crate) use crate::tool_policy_config::{build_tool_policy, tool_policy_to_json};
 use crate::tools::{tool_policy_preset_name, ToolPolicy};
 pub(crate) use crate::transport_health::TransportHealthSnapshot;
-pub(crate) use crate::trust_roots::{
-    apply_trust_root_mutation_specs, apply_trust_root_mutations, load_trust_root_records,
-    parse_trust_rotation_spec, parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,
-};
 use browser_automation_runtime::{
     run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
 };
@@ -419,6 +399,24 @@ use multi_channel_runtime::{
     MultiChannelLiveRuntimeConfig, MultiChannelRuntimeConfig,
 };
 use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
+pub(crate) use tau_access::approvals::{
+    evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
+    APPROVALS_USAGE,
+};
+pub(crate) use tau_access::pairing::{
+    evaluate_pairing_access, execute_pair_command, execute_unpair_command,
+    pairing_policy_for_state_dir, PairingDecision,
+};
+pub(crate) use tau_access::rbac::{
+    authorize_action_for_principal_with_policy_path, authorize_command_for_principal,
+    authorize_tool_for_principal, authorize_tool_for_principal_with_policy_path,
+    execute_rbac_command, github_principal, rbac_policy_path_for_state_dir,
+    resolve_local_principal, slack_principal, RbacDecision, RBAC_USAGE,
+};
+pub(crate) use tau_access::trust_roots::{
+    apply_trust_root_mutation_specs, load_trust_root_records, parse_trust_rotation_spec,
+    parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,
+};
 pub(crate) use tau_core::write_text_atomic;
 pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
 use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
