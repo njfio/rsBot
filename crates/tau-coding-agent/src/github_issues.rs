@@ -43,6 +43,9 @@ use tau_github_issues::github_transport_helpers::{
     is_retryable_github_status, is_retryable_transport_error, parse_retry_after, retry_delay,
     truncate_for_error,
 };
+use tau_github_issues::issue_comment::{
+    issue_command_reason_code, normalize_issue_command_status, render_issue_command_comment,
+};
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
 
@@ -5025,80 +5028,10 @@ fn render_issue_comment_response_parts(
     (content, footer)
 }
 
-fn normalize_issue_command_status(status: &str) -> &'static str {
-    let normalized = status.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "acknowledged" | "accepted" => "acknowledged",
-        "failed" | "error" => "failed",
-        "reported" | "completed" | "healthy" | "warning" | "degraded" => "reported",
-        _ => "reported",
-    }
-}
-
-fn sanitize_reason_token(raw: &str) -> String {
-    let mut normalized = String::new();
-    let mut last_was_sep = false;
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            normalized.push(ch.to_ascii_lowercase());
-            last_was_sep = false;
-        } else if !last_was_sep {
-            normalized.push('_');
-            last_was_sep = true;
-        }
-    }
-    let trimmed = normalized.trim_matches('_');
-    if trimmed.is_empty() {
-        "unknown".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn issue_command_reason_code(command: &str, status: &str) -> String {
-    format!(
-        "issue_command_{}_{}",
-        sanitize_reason_token(command),
-        sanitize_reason_token(status)
-    )
-}
-
 fn render_issue_artifact_pointer_line(label: &str, artifact: &ChannelArtifactRecord) -> String {
     format!(
         "{label}: id=`{}` path=`{}` bytes=`{}`",
         artifact.id, artifact.relative_path, artifact.bytes
-    )
-}
-
-fn render_issue_command_comment(
-    event_key: &str,
-    command: &str,
-    status: &str,
-    reason_code: &str,
-    message: &str,
-) -> String {
-    let content = if message.trim().is_empty() {
-        "Tau command response.".to_string()
-    } else {
-        message.trim().to_string()
-    };
-    let command = if command.trim().is_empty() {
-        "unknown"
-    } else {
-        command.trim()
-    };
-    let status = if status.trim().is_empty() {
-        "reported"
-    } else {
-        status.trim()
-    };
-    let reason_code = if reason_code.trim().is_empty() {
-        "issue_command_unknown_reported"
-    } else {
-        reason_code.trim()
-    };
-    format!(
-        "{content}\n\n---\n{EVENT_KEY_MARKER_PREFIX}{event_key}{EVENT_KEY_MARKER_SUFFIX}\n_Tau command `{command}` | status `{status}` | reason_code `{reason_code}`_"
     )
 }
 
