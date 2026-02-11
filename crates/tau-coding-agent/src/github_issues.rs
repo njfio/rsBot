@@ -46,6 +46,9 @@ use tau_github_issues::github_transport_helpers::{
 use tau_github_issues::issue_comment::{
     extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
     render_issue_command_comment, render_issue_comment_chunks_with_footer,
+    render_issue_comment_response_parts as render_shared_issue_comment_response_parts,
+    IssueCommentArtifactView, IssueCommentAttachmentView, IssueCommentRunView,
+    IssueCommentUsageView,
 };
 use tau_github_issues::issue_filter::{
     build_required_issue_labels, issue_matches_required_labels, issue_matches_required_numbers,
@@ -4971,59 +4974,39 @@ fn render_event_prompt(
     )
 }
 
-fn increment_count(map: &mut BTreeMap<String, usize>, raw: &str) {
-    let key = raw.trim();
-    if key.is_empty() {
-        return;
-    }
-    let counter = map.entry(key.to_string()).or_insert(0);
-    *counter = counter.saturating_add(1);
-}
-
 fn render_issue_comment_response_parts(
     event: &GithubBridgeEvent,
     run: &PromptRunReport,
 ) -> (String, String) {
-    let mut content = run.assistant_reply.trim().to_string();
-    if content.is_empty() {
-        content = "I couldn't generate a textual response for this event.".to_string();
-    }
     let usage = &run.usage;
     let status = format!("{:?}", run.status).to_lowercase();
-    let mut footer = format!(
-        "{EVENT_KEY_MARKER_PREFIX}{}{EVENT_KEY_MARKER_SUFFIX}\n_Tau run `{}` | status `{}` | model `{}` | tokens in/out/total `{}/{}/{}` | cost `unavailable`_\n_artifact `{}` | sha256 `{}` | bytes `{}`_",
-        event.key,
-        run.run_id,
-        status,
-        run.model,
-        usage.input_tokens,
-        usage.output_tokens,
-        usage.total_tokens,
-        run.artifact.relative_path,
-        run.artifact.checksum_sha256,
-        run.artifact.bytes
-    );
-    if !run.downloaded_attachments.is_empty() {
-        let mut reason_counts = BTreeMap::new();
-        for attachment in &run.downloaded_attachments {
-            increment_count(&mut reason_counts, attachment.policy_reason_code.as_str());
-        }
-        let reason_summary = if reason_counts.is_empty() {
-            "none".to_string()
-        } else {
-            reason_counts
-                .iter()
-                .map(|(reason, count)| format!("{}:{}", reason, count))
-                .collect::<Vec<_>>()
-                .join(",")
-        };
-        footer.push_str(&format!(
-            "\n_attachments downloaded `{}` | policy_reason_counts `{}`_",
-            run.downloaded_attachments.len(),
-            reason_summary
-        ));
-    }
-    (content, footer)
+    let usage_view = IssueCommentUsageView {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+    };
+    let artifact_view = IssueCommentArtifactView {
+        relative_path: &run.artifact.relative_path,
+        checksum_sha256: &run.artifact.checksum_sha256,
+        bytes: run.artifact.bytes,
+    };
+    let attachment_views = run
+        .downloaded_attachments
+        .iter()
+        .map(|attachment| IssueCommentAttachmentView {
+            policy_reason_code: &attachment.policy_reason_code,
+        })
+        .collect::<Vec<_>>();
+    let run_view = IssueCommentRunView {
+        event_key: &event.key,
+        run_id: &run.run_id,
+        status: &status,
+        model: &run.model,
+        assistant_reply: &run.assistant_reply,
+        usage: usage_view,
+        artifact: artifact_view,
+    };
+    render_shared_issue_comment_response_parts(run_view, &attachment_views)
 }
 
 fn render_issue_artifact_pointer_line(label: &str, artifact: &ChannelArtifactRecord) -> String {

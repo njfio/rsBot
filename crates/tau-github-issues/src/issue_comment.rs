@@ -1,4 +1,5 @@
 use crate::github_issues_helpers::{chunk_text_by_chars, split_at_char_index};
+use std::collections::BTreeMap;
 
 pub const EVENT_KEY_MARKER_PREFIX: &str = "<!-- tau-event-key:";
 pub const LEGACY_EVENT_KEY_MARKER_PREFIX: &str = "<!-- rsbot-event-key:";
@@ -40,6 +41,90 @@ pub fn issue_command_reason_code(command: &str, status: &str) -> String {
         sanitize_reason_token(command),
         sanitize_reason_token(status)
     )
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IssueCommentUsageView {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IssueCommentArtifactView<'a> {
+    pub relative_path: &'a str,
+    pub checksum_sha256: &'a str,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IssueCommentRunView<'a> {
+    pub event_key: &'a str,
+    pub run_id: &'a str,
+    pub status: &'a str,
+    pub model: &'a str,
+    pub assistant_reply: &'a str,
+    pub usage: IssueCommentUsageView,
+    pub artifact: IssueCommentArtifactView<'a>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IssueCommentAttachmentView<'a> {
+    pub policy_reason_code: &'a str,
+}
+
+fn increment_count(map: &mut BTreeMap<String, usize>, raw: &str) {
+    let key = raw.trim();
+    if key.is_empty() {
+        return;
+    }
+    let counter = map.entry(key.to_string()).or_insert(0);
+    *counter = counter.saturating_add(1);
+}
+
+pub fn render_issue_comment_response_parts(
+    run: IssueCommentRunView<'_>,
+    downloaded_attachments: &[IssueCommentAttachmentView<'_>],
+) -> (String, String) {
+    let mut content = run.assistant_reply.trim().to_string();
+    if content.is_empty() {
+        content = "I couldn't generate a textual response for this event.".to_string();
+    }
+
+    let mut footer = format!(
+        "{EVENT_KEY_MARKER_PREFIX}{}{EVENT_KEY_MARKER_SUFFIX}\n_Tau run `{}` | status `{}` | model `{}` | tokens in/out/total `{}/{}/{}` | cost `unavailable`_\n_artifact `{}` | sha256 `{}` | bytes `{}`_",
+        run.event_key,
+        run.run_id,
+        run.status,
+        run.model,
+        run.usage.input_tokens,
+        run.usage.output_tokens,
+        run.usage.total_tokens,
+        run.artifact.relative_path,
+        run.artifact.checksum_sha256,
+        run.artifact.bytes
+    );
+    if !downloaded_attachments.is_empty() {
+        let mut reason_counts = BTreeMap::new();
+        for attachment in downloaded_attachments {
+            increment_count(&mut reason_counts, attachment.policy_reason_code);
+        }
+        let reason_summary = if reason_counts.is_empty() {
+            "none".to_string()
+        } else {
+            reason_counts
+                .iter()
+                .map(|(reason, count)| format!("{reason}:{count}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        footer.push_str(&format!(
+            "\n_attachments downloaded `{}` | policy_reason_counts `{reason_summary}`_",
+            downloaded_attachments.len()
+        ));
+    }
+
+    (content, footer)
 }
 
 pub fn render_issue_command_comment(
@@ -134,7 +219,9 @@ mod tests {
     use super::{
         extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
         render_issue_command_comment, render_issue_comment_chunks_with_footer,
-        EVENT_KEY_MARKER_PREFIX, EVENT_KEY_MARKER_SUFFIX, LEGACY_EVENT_KEY_MARKER_PREFIX,
+        render_issue_comment_response_parts, IssueCommentArtifactView, IssueCommentAttachmentView,
+        IssueCommentRunView, IssueCommentUsageView, EVENT_KEY_MARKER_PREFIX,
+        EVENT_KEY_MARKER_SUFFIX, LEGACY_EVENT_KEY_MARKER_PREFIX,
     };
 
     #[test]
@@ -231,5 +318,135 @@ mod tests {
     fn regression_render_issue_comment_chunks_with_footer_handles_footer_longer_than_limit() {
         let chunks = render_issue_comment_chunks_with_footer("hello", "very-long-footer", 3);
         assert_eq!(chunks, vec!["\n\n---\nvery-long-footer".to_string()]);
+    }
+
+    #[test]
+    fn unit_render_issue_comment_response_parts_defaults_empty_assistant_reply() {
+        let usage = IssueCommentUsageView {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+        };
+        let artifact = IssueCommentArtifactView {
+            relative_path: "artifacts/run.md",
+            checksum_sha256: "abc123",
+            bytes: 99,
+        };
+        let run = IssueCommentRunView {
+            event_key: "event-1",
+            run_id: "run-1",
+            status: "completed",
+            model: "openai/gpt-4o-mini",
+            assistant_reply: "  ",
+            usage,
+            artifact,
+        };
+        let (content, footer) = render_issue_comment_response_parts(run, &[]);
+        assert_eq!(
+            content,
+            "I couldn't generate a textual response for this event."
+        );
+        assert!(footer.contains("Tau run `run-1`"));
+        assert!(footer.contains("tokens in/out/total `10/5/15`"));
+    }
+
+    #[test]
+    fn functional_render_issue_comment_response_parts_includes_attachment_reason_counts() {
+        let usage = IssueCommentUsageView {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+        };
+        let artifact = IssueCommentArtifactView {
+            relative_path: "artifacts/run.md",
+            checksum_sha256: "abc123",
+            bytes: 99,
+        };
+        let attachments = vec![
+            IssueCommentAttachmentView {
+                policy_reason_code: "allow_extension_allowlist",
+            },
+            IssueCommentAttachmentView {
+                policy_reason_code: "allow_extension_allowlist",
+            },
+            IssueCommentAttachmentView {
+                policy_reason_code: "allow_content_type_default",
+            },
+        ];
+        let run = IssueCommentRunView {
+            event_key: "event-1",
+            run_id: "run-1",
+            status: "completed",
+            model: "openai/gpt-4o-mini",
+            assistant_reply: "ok",
+            usage,
+            artifact,
+        };
+        let (_content, footer) = render_issue_comment_response_parts(run, &attachments);
+        assert!(footer.contains("_attachments downloaded `3`"));
+        assert!(footer.contains("allow_extension_allowlist:2"));
+        assert!(footer.contains("allow_content_type_default:1"));
+    }
+
+    #[test]
+    fn integration_render_issue_comment_response_parts_preserves_event_marker_and_model() {
+        let usage = IssueCommentUsageView {
+            input_tokens: 3,
+            output_tokens: 2,
+            total_tokens: 5,
+        };
+        let artifact = IssueCommentArtifactView {
+            relative_path: "artifacts/run.md",
+            checksum_sha256: "deadbeef",
+            bytes: 123,
+        };
+        let run = IssueCommentRunView {
+            event_key: "issue-comment-created:42",
+            run_id: "run-99",
+            status: "completed",
+            model: "openai/gpt-4o-mini",
+            assistant_reply: "result",
+            usage,
+            artifact,
+        };
+        let (_content, footer) = render_issue_comment_response_parts(run, &[]);
+        assert!(footer.contains(EVENT_KEY_MARKER_PREFIX));
+        assert!(footer.contains(EVENT_KEY_MARKER_SUFFIX));
+        assert!(footer.contains("issue-comment-created:42"));
+        assert!(footer.contains("model `openai/gpt-4o-mini`"));
+    }
+
+    #[test]
+    fn regression_render_issue_comment_response_parts_ignores_blank_reason_codes() {
+        let usage = IssueCommentUsageView {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2,
+        };
+        let artifact = IssueCommentArtifactView {
+            relative_path: "artifacts/run.md",
+            checksum_sha256: "deadbeef",
+            bytes: 10,
+        };
+        let attachments = vec![
+            IssueCommentAttachmentView {
+                policy_reason_code: "  ",
+            },
+            IssueCommentAttachmentView {
+                policy_reason_code: "\t",
+            },
+        ];
+        let run = IssueCommentRunView {
+            event_key: "event-2",
+            run_id: "run-2",
+            status: "completed",
+            model: "model-x",
+            assistant_reply: "ok",
+            usage,
+            artifact,
+        };
+        let (_content, footer) = render_issue_comment_response_parts(run, &attachments);
+        assert!(footer.contains("_attachments downloaded `2`"));
+        assert!(footer.contains("policy_reason_counts `none`"));
     }
 }
