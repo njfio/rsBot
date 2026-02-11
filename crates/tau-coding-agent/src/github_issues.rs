@@ -59,10 +59,12 @@ use tau_github_issues::issue_render::{
     IssueArtifactAttachmentView, IssueEventPromptAttachmentView,
 };
 use tau_github_issues::issue_runtime_helpers::{
-    issue_session_id as issue_shared_session_id,
+    is_expired_at as is_shared_expired_at, issue_session_id as issue_shared_session_id,
     normalize_artifact_retention_days as normalize_shared_artifact_retention_days,
     normalize_relative_channel_path as normalize_shared_relative_channel_path,
+    parse_rfc3339_to_unix_ms as parse_shared_rfc3339_to_unix_ms,
     render_issue_artifact_pointer_line as render_shared_issue_artifact_pointer_line,
+    sanitize_for_path as shared_sanitize_for_path,
     session_path_for_issue as shared_session_path_for_issue,
 };
 use tau_session::SessionStore;
@@ -5773,27 +5775,15 @@ fn issue_session_id(issue_number: u64) -> String {
 }
 
 fn parse_rfc3339_to_unix_ms(raw: &str) -> Option<u64> {
-    let parsed = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
-    u64::try_from(parsed.timestamp_millis()).ok()
+    parse_shared_rfc3339_to_unix_ms(raw)
 }
 
 fn sanitize_for_path(raw: &str) -> String {
-    raw.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    shared_sanitize_for_path(raw)
 }
 
 fn is_artifact_record_expired(record: &ChannelArtifactRecord, now_unix_ms: u64) -> bool {
-    record
-        .expires_unix_ms
-        .map(|value| value <= now_unix_ms)
-        .unwrap_or(false)
+    is_shared_expired_at(record.expires_unix_ms, now_unix_ms)
 }
 
 fn sha256_hex(payload: &[u8]) -> String {

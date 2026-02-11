@@ -48,11 +48,35 @@ pub fn issue_session_id(issue_number: u64) -> String {
     format!("issue-{issue_number}")
 }
 
+pub fn parse_rfc3339_to_unix_ms(raw: &str) -> Option<u64> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+    u64::try_from(parsed.timestamp_millis()).ok()
+}
+
+pub fn sanitize_for_path(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub fn is_expired_at(expires_unix_ms: Option<u64>, now_unix_ms: u64) -> bool {
+    expires_unix_ms
+        .map(|value| value <= now_unix_ms)
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        issue_session_id, normalize_artifact_retention_days, normalize_relative_channel_path,
-        render_issue_artifact_pointer_line, session_path_for_issue,
+        is_expired_at, issue_session_id, normalize_artifact_retention_days,
+        normalize_relative_channel_path, parse_rfc3339_to_unix_ms,
+        render_issue_artifact_pointer_line, sanitize_for_path, session_path_for_issue,
     };
     use std::path::Path;
 
@@ -104,5 +128,27 @@ mod tests {
         let root = Path::new("/tmp/repo");
         let path = session_path_for_issue(root, 9);
         assert_eq!(path, Path::new("/tmp/repo/sessions/issue-9.jsonl"));
+    }
+
+    #[test]
+    fn unit_parse_rfc3339_to_unix_ms_handles_valid_and_invalid_values() {
+        assert!(parse_rfc3339_to_unix_ms("2026-01-01T00:00:01Z").is_some());
+        assert_eq!(parse_rfc3339_to_unix_ms("invalid"), None);
+    }
+
+    #[test]
+    fn functional_sanitize_for_path_replaces_unsafe_characters() {
+        assert_eq!(sanitize_for_path("owner/repo"), "owner_repo");
+        assert_eq!(
+            sanitize_for_path("issue-comment-created:1200"),
+            "issue-comment-created_1200"
+        );
+    }
+
+    #[test]
+    fn regression_is_expired_at_handles_none_and_boundary_values() {
+        assert!(!is_expired_at(None, 100));
+        assert!(!is_expired_at(Some(101), 100));
+        assert!(is_expired_at(Some(100), 100));
     }
 }
