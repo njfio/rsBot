@@ -3,8 +3,10 @@ use crate::extension_manifest::{
     discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
 };
 use tau_onboarding::startup_local_runtime::{
+    register_runtime_event_reporter_subscriber as register_onboarding_runtime_event_reporter_subscriber,
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
+    register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
     resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
     resolve_orchestrator_route_table, resolve_session_runtime, LocalRuntimeEntryMode,
     SessionBootstrapOutcome,
@@ -52,20 +54,20 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     tools::register_builtin_tools(&mut agent, tool_policy);
     if let Some(path) = cli.tool_audit_log.clone() {
         let logger = ToolAuditLogger::open(path)?;
-        agent.subscribe(move |event| {
-            if let Err(error) = logger.log_event(event) {
-                eprintln!("tool audit logger error: {error}");
-            }
-        });
+        register_onboarding_runtime_event_reporter_subscriber(
+            &mut agent,
+            move |event| logger.log_event(event),
+            |error| eprintln!("tool audit logger error: {error}"),
+        );
     }
     if let Some(path) = cli.telemetry_log.clone() {
         let logger =
             PromptTelemetryLogger::open(path, model_ref.provider.as_str(), &model_ref.model)?;
-        agent.subscribe(move |event| {
-            if let Err(error) = logger.log_event(event) {
-                eprintln!("telemetry logger error: {error}");
-            }
-        });
+        register_onboarding_runtime_event_reporter_subscriber(
+            &mut agent,
+            move |event| logger.log_event(event),
+            |error| eprintln!("telemetry logger error: {error}"),
+        );
     }
     let mut session_runtime = resolve_session_runtime(
         cli.no_session,
@@ -85,12 +87,12 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         |lineage| agent.replace_messages(lineage),
     )?;
 
-    if cli.json_events {
-        agent.subscribe(|event| {
-            let value = event_to_json(event);
-            println!("{value}");
-        });
-    }
+    register_onboarding_runtime_json_event_subscriber(
+        &mut agent,
+        cli.json_events,
+        event_to_json,
+        |value| println!("{value}"),
+    );
     let extension_runtime_hooks = RuntimeExtensionHooksConfig {
         enabled: cli.extension_runtime_hooks,
         root: cli.extension_runtime_root.clone(),

@@ -196,6 +196,42 @@ pub fn register_runtime_extension_tools<T, FRegister, FReport>(
     }
 }
 
+pub fn register_runtime_json_event_subscriber<FRender, FEmit>(
+    agent: &mut Agent,
+    enabled: bool,
+    render_event: FRender,
+    emit_json: FEmit,
+) where
+    FRender: Fn(&AgentEvent) -> Value + Send + Sync + 'static,
+    FEmit: Fn(&Value) + Send + Sync + 'static,
+{
+    if !enabled {
+        return;
+    }
+
+    agent.subscribe(move |event| {
+        let value = render_event(event);
+        emit_json(&value);
+    });
+}
+
+pub fn register_runtime_event_reporter_subscriber<FReport, FEmit, E>(
+    agent: &mut Agent,
+    report_event: FReport,
+    emit_error: FEmit,
+) where
+    FReport: Fn(&AgentEvent) -> std::result::Result<(), E> + Send + Sync + 'static,
+    FEmit: Fn(&str) + Send + Sync + 'static,
+    E: std::fmt::Display,
+{
+    agent.subscribe(move |event| {
+        if let Err(error) = report_event(event) {
+            let message = error.to_string();
+            emit_error(&message);
+        }
+    });
+}
+
 fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -223,10 +259,12 @@ fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
 mod tests {
     use super::{
         extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
+        register_runtime_event_reporter_subscriber,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
-        resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
-        resolve_orchestrator_route_table, resolve_prompt_runtime_mode, resolve_session_runtime,
-        LocalRuntimeEntryMode, PromptRuntimeMode, SessionBootstrapOutcome,
+        register_runtime_json_event_subscriber, resolve_extension_runtime_registrations,
+        resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
+        resolve_prompt_runtime_mode, resolve_session_runtime, LocalRuntimeEntryMode,
+        PromptRuntimeMode, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -727,5 +765,102 @@ mod tests {
         );
 
         assert_eq!(*diagnostics_count.lock().expect("capture lock"), 0);
+    }
+
+    #[tokio::test]
+    async fn unit_register_runtime_json_event_subscriber_disabled_noops() {
+        let mut agent = build_tool_loop_agent();
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&captured);
+
+        register_runtime_json_event_subscriber(
+            &mut agent,
+            false,
+            |_event| serde_json::json!({"kind": "ignored"}),
+            move |value| {
+                sink.lock()
+                    .expect("capture lock")
+                    .push(value["kind"].as_str().unwrap_or("missing").to_string());
+            },
+        );
+
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(captured.lock().expect("capture lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn functional_register_runtime_json_event_subscriber_emits_rendered_values() {
+        let mut agent = build_tool_loop_agent();
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&captured);
+
+        register_runtime_json_event_subscriber(
+            &mut agent,
+            true,
+            |event| match event {
+                AgentEvent::ToolExecutionStart { .. } => serde_json::json!({"kind":"start"}),
+                AgentEvent::ToolExecutionEnd { .. } => serde_json::json!({"kind":"end"}),
+                _ => serde_json::json!({"kind":"other"}),
+            },
+            move |value| {
+                sink.lock()
+                    .expect("capture lock")
+                    .push(value["kind"].as_str().unwrap_or("missing").to_string());
+            },
+        );
+
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        let events = captured.lock().expect("capture lock").clone();
+        assert!(events.iter().any(|kind| kind == "start"));
+        assert!(events.iter().any(|kind| kind == "end"));
+    }
+
+    #[tokio::test]
+    async fn integration_register_runtime_event_reporter_subscriber_captures_report_errors() {
+        let mut agent = build_tool_loop_agent();
+        let captured_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let errors_sink = Arc::clone(&captured_errors);
+
+        register_runtime_event_reporter_subscriber(
+            &mut agent,
+            |event| match event {
+                AgentEvent::ToolExecutionStart { .. } => Err("start failed"),
+                _ => Ok(()),
+            },
+            move |error| {
+                errors_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(error.to_string())
+            },
+        );
+
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(captured_errors
+            .lock()
+            .expect("capture lock")
+            .iter()
+            .any(|message| message == "start failed"));
+    }
+
+    #[tokio::test]
+    async fn regression_register_runtime_event_reporter_subscriber_does_not_interrupt_prompt() {
+        let mut agent = build_tool_loop_agent();
+        let captured_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let errors_sink = Arc::clone(&captured_errors);
+
+        register_runtime_event_reporter_subscriber(
+            &mut agent,
+            |_event| Err("forced reporter failure"),
+            move |error| {
+                errors_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(error.to_string())
+            },
+        );
+
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(!captured_errors.lock().expect("capture lock").is_empty());
     }
 }
