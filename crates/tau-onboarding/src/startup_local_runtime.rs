@@ -240,6 +240,40 @@ where
     ))
 }
 
+#[derive(Debug, Clone)]
+pub struct LocalRuntimeStartupResolution {
+    pub interactive_defaults: LocalRuntimeInteractiveDefaults,
+    pub entry_mode: LocalRuntimeEntryMode,
+    pub command_defaults: LocalRuntimeCommandDefaults,
+}
+
+pub fn resolve_local_runtime_startup_from_cli<FResolvePromptInput>(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    fallback_model_refs: &[ModelRef],
+    skills_dir: &Path,
+    skills_lock_path: &Path,
+    resolve_prompt_input: FResolvePromptInput,
+) -> Result<LocalRuntimeStartupResolution>
+where
+    FResolvePromptInput: FnOnce(&Cli) -> Result<Option<String>>,
+{
+    let interactive_defaults = build_local_runtime_interactive_defaults(cli);
+    let entry_mode = resolve_local_runtime_entry_mode_from_cli(cli, resolve_prompt_input)?;
+    let command_defaults = build_local_runtime_command_defaults(
+        cli,
+        model_ref,
+        fallback_model_refs,
+        skills_dir,
+        skills_lock_path,
+    );
+    Ok(LocalRuntimeStartupResolution {
+        interactive_defaults,
+        entry_mode,
+        command_defaults,
+    })
+}
+
 pub fn resolve_prompt_entry_runtime_mode(
     entry_mode: &LocalRuntimeEntryMode,
 ) -> Option<PromptEntryRuntimeMode> {
@@ -649,12 +683,13 @@ mod tests {
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
         register_runtime_json_event_subscriber, resolve_command_file_entry_path,
         resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
-        resolve_local_runtime_entry_mode_from_cli, resolve_orchestrator_route_table,
-        resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
-        resolve_session_runtime_from_cli, LocalRuntimeEntryMode,
-        LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
-        LocalRuntimeInteractiveDefaults, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
-        PromptRuntimeMode, RuntimeExtensionPipelineConfig, SessionBootstrapOutcome,
+        resolve_local_runtime_entry_mode_from_cli, resolve_local_runtime_startup_from_cli,
+        resolve_orchestrator_route_table, resolve_prompt_entry_runtime_mode,
+        resolve_prompt_runtime_mode, resolve_session_runtime, resolve_session_runtime_from_cli,
+        LocalRuntimeEntryMode, LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
+        LocalRuntimeInteractiveDefaults, LocalRuntimeStartupResolution, PromptEntryRuntimeMode,
+        PromptOrCommandFileEntryOutcome, PromptRuntimeMode, RuntimeExtensionPipelineConfig,
+        SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1257,6 +1292,121 @@ mod tests {
         let error = resolve_local_runtime_entry_mode_from_cli(&cli, |_cli| {
             Err(anyhow::anyhow!("prompt resolution failed"))
         })
+        .expect_err("prompt resolver errors should propagate");
+
+        assert!(error.to_string().contains("prompt resolution failed"));
+    }
+
+    #[test]
+    fn unit_resolve_local_runtime_startup_from_cli_returns_composed_outputs() {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let LocalRuntimeStartupResolution {
+            interactive_defaults,
+            entry_mode,
+            command_defaults,
+        } = resolve_local_runtime_startup_from_cli(
+            &cli,
+            &model_ref,
+            &[],
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+            |_cli| Ok(None),
+        )
+        .expect("startup resolution should succeed");
+
+        assert_eq!(interactive_defaults.turn_timeout_ms, cli.turn_timeout_ms);
+        assert_eq!(entry_mode, LocalRuntimeEntryMode::Interactive);
+        assert_eq!(
+            command_defaults.doctor_config.skills_dir,
+            PathBuf::from("runtime-skills")
+        );
+        assert_eq!(
+            command_defaults.doctor_config.skills_lock_path,
+            PathBuf::from("runtime-skills.lock.json")
+        );
+    }
+
+    #[test]
+    fn functional_resolve_local_runtime_startup_from_cli_uses_plan_first_prompt_entry_mode() {
+        let mut cli = parse_cli_with_stack();
+        cli.orchestrator_mode = CliOrchestratorMode::PlanFirst;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let resolution = resolve_local_runtime_startup_from_cli(
+            &cli,
+            &model_ref,
+            &[],
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+            |_cli| Ok(Some("plan this task".to_string())),
+        )
+        .expect("startup resolution should succeed");
+
+        assert_eq!(
+            resolution.entry_mode,
+            LocalRuntimeEntryMode::PlanFirstPrompt("plan this task".to_string())
+        );
+        assert_eq!(
+            resolution.interactive_defaults.orchestrator_mode,
+            CliOrchestratorMode::PlanFirst
+        );
+    }
+
+    #[test]
+    fn integration_resolve_local_runtime_startup_from_cli_builds_command_defaults_from_runtime_inputs(
+    ) {
+        let mut cli = parse_cli_with_stack();
+        cli.no_session = true;
+        cli.provider_subscription_strict = true;
+        cli.model = "openai/gpt-5-mini".to_string();
+        cli.fallback_model = vec!["anthropic/claude-sonnet-4".to_string()];
+        let model_ref = ModelRef::parse("openai/gpt-5-mini").expect("model ref");
+        let fallback_model_refs =
+            vec![ModelRef::parse("anthropic/claude-sonnet-4").expect("fallback model ref")];
+
+        let resolution = resolve_local_runtime_startup_from_cli(
+            &cli,
+            &model_ref,
+            &fallback_model_refs,
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+            |_cli| Ok(None),
+        )
+        .expect("startup resolution should succeed");
+
+        assert_eq!(
+            resolution.command_defaults.profile_defaults.model,
+            cli.model
+        );
+        assert!(
+            resolution
+                .command_defaults
+                .auth_command_config
+                .provider_subscription_strict
+        );
+        assert!(!resolution.command_defaults.doctor_config.session_enabled);
+        assert_eq!(
+            resolution.command_defaults.doctor_config.skills_dir,
+            PathBuf::from("runtime-skills")
+        );
+        assert_eq!(
+            resolution.command_defaults.doctor_config.skills_lock_path,
+            PathBuf::from("runtime-skills.lock.json")
+        );
+    }
+
+    #[test]
+    fn regression_resolve_local_runtime_startup_from_cli_propagates_prompt_resolver_errors() {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let error = resolve_local_runtime_startup_from_cli(
+            &cli,
+            &model_ref,
+            &[],
+            Path::new("runtime-skills"),
+            Path::new("runtime-skills.lock.json"),
+            |_cli| Err(anyhow::anyhow!("prompt resolution failed")),
+        )
         .expect_err("prompt resolver errors should propagate");
 
         assert!(error.to_string().contains("prompt resolution failed"));

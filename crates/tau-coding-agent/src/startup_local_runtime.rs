@@ -4,17 +4,15 @@ use crate::extension_manifest::{
 };
 use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
-    build_local_runtime_command_defaults as build_onboarding_local_runtime_command_defaults,
     build_local_runtime_extension_startup as build_onboarding_local_runtime_extension_startup,
-    build_local_runtime_interactive_defaults as build_onboarding_local_runtime_interactive_defaults,
     execute_prompt_or_command_file_entry_mode as execute_onboarding_prompt_or_command_file_entry_mode,
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
     register_runtime_extension_pipeline as register_onboarding_runtime_extension_pipeline,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
-    resolve_local_runtime_entry_mode_from_cli as resolve_onboarding_local_runtime_entry_mode_from_cli,
+    resolve_local_runtime_startup_from_cli as resolve_onboarding_local_runtime_startup_from_cli,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
     LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, LocalRuntimeExtensionStartup,
-    PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
+    LocalRuntimeStartupResolution, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
     RuntimeExtensionPipelineConfig as OnboardingRuntimeExtensionPipelineConfig,
     SessionBootstrapOutcome,
 };
@@ -136,20 +134,23 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         |root, hook, payload| dispatch_extension_runtime_hook(root, hook, payload).diagnostics,
     );
 
-    let interactive_defaults = build_onboarding_local_runtime_interactive_defaults(cli);
-    let entry_mode =
-        resolve_onboarding_local_runtime_entry_mode_from_cli(cli, resolve_prompt_input)?;
-    let LocalRuntimeCommandDefaults {
-        profile_defaults,
-        auth_command_config,
-        doctor_config,
-    } = build_onboarding_local_runtime_command_defaults(
+    let LocalRuntimeStartupResolution {
+        interactive_defaults,
+        entry_mode,
+        command_defaults,
+    } = resolve_onboarding_local_runtime_startup_from_cli(
         cli,
         model_ref,
         fallback_model_refs,
         skills_dir,
         skills_lock_path,
-    );
+        resolve_prompt_input,
+    )?;
+    let LocalRuntimeCommandDefaults {
+        profile_defaults,
+        auth_command_config,
+        doctor_config,
+    } = command_defaults;
     let skills_sync_command_config = SkillsSyncCommandConfig {
         skills_dir: skills_dir.to_path_buf(),
         default_lock_path: skills_lock_path.to_path_buf(),
