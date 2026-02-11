@@ -5,10 +5,9 @@ use crate::channel_adapters::{
 use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
-    build_multi_channel_media_config, build_multi_channel_outbound_config,
-    build_multi_channel_telemetry_config, run_gateway_contract_runner_if_requested,
-    run_gateway_openresponses_server_if_requested, run_multi_agent_contract_runner_if_requested,
-    run_multi_channel_live_connectors_if_requested,
+    run_gateway_contract_runner_if_requested, run_gateway_openresponses_server_if_requested,
+    run_multi_agent_contract_runner_if_requested, run_multi_channel_contract_runner_if_requested,
+    run_multi_channel_live_connectors_if_requested, run_multi_channel_live_runner_if_requested,
 };
 
 pub(crate) async fn run_transport_mode_if_requested(
@@ -194,21 +193,11 @@ pub(crate) async fn run_transport_mode_if_requested(
         let auth_config = build_auth_command_config(cli);
         let doctor_config =
             build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path);
-        run_multi_channel_contract_runner(MultiChannelRuntimeConfig {
-            fixture_path: cli.multi_channel_fixture.clone(),
-            state_dir: cli.multi_channel_state_dir.clone(),
-            orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
-            queue_limit: cli.multi_channel_queue_limit.max(1),
-            processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
-            retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),
-            retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
-            retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
-            outbound: build_multi_channel_outbound_config(cli),
-            telemetry: build_multi_channel_telemetry_config(cli),
-            media: build_multi_channel_media_config(cli),
-            command_handlers: build_multi_channel_command_handlers(auth_config, doctor_config),
-            pairing_evaluator: build_multi_channel_pairing_evaluator(),
-        })
+        run_multi_channel_contract_runner_if_requested(
+            cli,
+            build_multi_channel_command_handlers(auth_config, doctor_config),
+            build_multi_channel_pairing_evaluator(),
+        )
         .await?;
         return Ok(true);
     }
@@ -219,21 +208,11 @@ pub(crate) async fn run_transport_mode_if_requested(
         let auth_config = build_auth_command_config(cli);
         let doctor_config =
             build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path);
-        run_multi_channel_live_runner(MultiChannelLiveRuntimeConfig {
-            ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
-            state_dir: cli.multi_channel_state_dir.clone(),
-            orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
-            queue_limit: cli.multi_channel_queue_limit.max(1),
-            processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
-            retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),
-            retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
-            retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
-            outbound: build_multi_channel_outbound_config(cli),
-            telemetry: build_multi_channel_telemetry_config(cli),
-            media: build_multi_channel_media_config(cli),
-            command_handlers: build_multi_channel_command_handlers(auth_config, doctor_config),
-            pairing_evaluator: build_multi_channel_pairing_evaluator(),
-        })
+        run_multi_channel_live_runner_if_requested(
+            cli,
+            build_multi_channel_command_handlers(auth_config, doctor_config),
+            build_multi_channel_pairing_evaluator(),
+        )
         .await?;
         return Ok(true);
     }

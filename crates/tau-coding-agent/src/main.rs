@@ -328,10 +328,6 @@ pub(crate) use tau_diagnostics::{execute_doctor_command, execute_doctor_command_
 pub(crate) use tau_multi_channel::build_multi_channel_incident_timeline_report;
 #[cfg(test)]
 pub(crate) use tau_multi_channel::build_multi_channel_route_inspect_report;
-use tau_multi_channel::{
-    run_multi_channel_contract_runner, run_multi_channel_live_runner,
-    MultiChannelLiveRuntimeConfig, MultiChannelRuntimeConfig,
-};
 #[cfg(test)]
 pub(crate) use tau_orchestrator::parse_numbered_plan_steps;
 #[cfg(test)]

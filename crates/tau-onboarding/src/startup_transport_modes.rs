@@ -9,8 +9,9 @@ use tau_gateway::{
     GatewayToolRegistrarFn,
 };
 use tau_multi_channel::{
-    MultiChannelLiveConnectorsConfig, MultiChannelMediaUnderstandingConfig,
-    MultiChannelOutboundConfig, MultiChannelTelemetryConfig,
+    MultiChannelCommandHandlers, MultiChannelLiveConnectorsConfig, MultiChannelLiveRuntimeConfig,
+    MultiChannelMediaUnderstandingConfig, MultiChannelOutboundConfig, MultiChannelPairingEvaluator,
+    MultiChannelRuntimeConfig, MultiChannelTelemetryConfig,
 };
 use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
 use tau_provider::{load_credential_store, resolve_credential_store_encryption_mode};
@@ -129,6 +130,77 @@ pub async fn run_multi_agent_contract_runner_if_requested(cli: &Cli) -> Result<b
     }
     let config = build_multi_agent_contract_runner_config(cli);
     tau_orchestrator::multi_agent_runtime::run_multi_agent_contract_runner(config).await?;
+    Ok(true)
+}
+
+pub fn build_multi_channel_contract_runner_config(
+    cli: &Cli,
+    command_handlers: MultiChannelCommandHandlers,
+    pairing_evaluator: std::sync::Arc<dyn MultiChannelPairingEvaluator>,
+) -> MultiChannelRuntimeConfig {
+    MultiChannelRuntimeConfig {
+        fixture_path: cli.multi_channel_fixture.clone(),
+        state_dir: cli.multi_channel_state_dir.clone(),
+        orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
+        queue_limit: cli.multi_channel_queue_limit.max(1),
+        processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
+        retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
+        retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
+        outbound: build_multi_channel_outbound_config(cli),
+        telemetry: build_multi_channel_telemetry_config(cli),
+        media: build_multi_channel_media_config(cli),
+        command_handlers,
+        pairing_evaluator,
+    }
+}
+
+pub async fn run_multi_channel_contract_runner_if_requested(
+    cli: &Cli,
+    command_handlers: MultiChannelCommandHandlers,
+    pairing_evaluator: std::sync::Arc<dyn MultiChannelPairingEvaluator>,
+) -> Result<bool> {
+    if !cli.multi_channel_contract_runner {
+        return Ok(false);
+    }
+    let config =
+        build_multi_channel_contract_runner_config(cli, command_handlers, pairing_evaluator);
+    tau_multi_channel::run_multi_channel_contract_runner(config).await?;
+    Ok(true)
+}
+
+pub fn build_multi_channel_live_runner_config(
+    cli: &Cli,
+    command_handlers: MultiChannelCommandHandlers,
+    pairing_evaluator: std::sync::Arc<dyn MultiChannelPairingEvaluator>,
+) -> MultiChannelLiveRuntimeConfig {
+    MultiChannelLiveRuntimeConfig {
+        ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
+        state_dir: cli.multi_channel_state_dir.clone(),
+        orchestrator_route_table_path: cli.orchestrator_route_table.clone(),
+        queue_limit: cli.multi_channel_queue_limit.max(1),
+        processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
+        retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
+        retry_jitter_ms: cli.multi_channel_retry_jitter_ms,
+        outbound: build_multi_channel_outbound_config(cli),
+        telemetry: build_multi_channel_telemetry_config(cli),
+        media: build_multi_channel_media_config(cli),
+        command_handlers,
+        pairing_evaluator,
+    }
+}
+
+pub async fn run_multi_channel_live_runner_if_requested(
+    cli: &Cli,
+    command_handlers: MultiChannelCommandHandlers,
+    pairing_evaluator: std::sync::Arc<dyn MultiChannelPairingEvaluator>,
+) -> Result<bool> {
+    if !cli.multi_channel_live_runner {
+        return Ok(false);
+    }
+    let config = build_multi_channel_live_runner_config(cli, command_handlers, pairing_evaluator);
+    tau_multi_channel::run_multi_channel_live_runner(config).await?;
     Ok(true)
 }
 
@@ -267,7 +339,8 @@ fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::{
         build_gateway_contract_runner_config, build_gateway_openresponses_server_config,
-        build_multi_agent_contract_runner_config, build_multi_channel_live_connectors_config,
+        build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
+        build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
         build_multi_channel_media_config, build_multi_channel_outbound_config,
         build_multi_channel_telemetry_config, map_gateway_openresponses_auth_mode,
         resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
@@ -280,7 +353,9 @@ mod tests {
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, ModelRef, TauAiError};
     use tau_cli::{Cli, CliGatewayOpenResponsesAuthMode};
     use tau_gateway::GatewayOpenResponsesAuthMode;
-    use tau_multi_channel::MultiChannelLiveConnectorMode;
+    use tau_multi_channel::{
+        MultiChannelLiveConnectorMode, MultiChannelPairingDecision, MultiChannelPairingEvaluator,
+    };
     use tau_provider::{
         load_credential_store, save_credential_store, CredentialStoreData,
         CredentialStoreEncryptionMode, IntegrationCredentialStoreRecord,
@@ -307,6 +382,22 @@ mod tests {
                 message: Message::assistant_text("ok"),
                 finish_reason: Some("stop".to_string()),
                 usage: ChatUsage::default(),
+            })
+        }
+    }
+
+    struct AllowAllPairingEvaluator;
+
+    impl MultiChannelPairingEvaluator for AllowAllPairingEvaluator {
+        fn evaluate_pairing(
+            &self,
+            _state_dir: &Path,
+            _policy_channel: &str,
+            _actor_id: &str,
+            _now_unix_ms: u64,
+        ) -> anyhow::Result<MultiChannelPairingDecision> {
+            Ok(MultiChannelPairingDecision::Allow {
+                reason_code: "allowed_for_test".to_string(),
             })
         }
     }
@@ -405,6 +496,23 @@ mod tests {
     }
 
     #[test]
+    fn regression_build_multi_channel_contract_runner_config_enforces_minimums() {
+        let mut cli = parse_cli_with_stack();
+        cli.multi_channel_queue_limit = 0;
+        cli.multi_channel_processed_event_cap = 0;
+        cli.multi_channel_retry_max_attempts = 0;
+
+        let config = build_multi_channel_contract_runner_config(
+            &cli,
+            tau_multi_channel::MultiChannelCommandHandlers::default(),
+            Arc::new(AllowAllPairingEvaluator),
+        );
+        assert_eq!(config.queue_limit, 1);
+        assert_eq!(config.processed_event_cap, 1);
+        assert_eq!(config.retry_max_attempts, 1);
+    }
+
+    #[test]
     fn integration_build_gateway_openresponses_server_config_preserves_runtime_fields() {
         let mut cli = parse_cli_with_stack();
         cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
@@ -488,6 +596,36 @@ mod tests {
         assert!(!handled);
     }
 
+    #[tokio::test]
+    async fn unit_run_multi_channel_contract_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_multi_channel_contract_runner_if_requested(
+            &cli,
+            tau_multi_channel::MultiChannelCommandHandlers::default(),
+            Arc::new(AllowAllPairingEvaluator),
+        )
+        .await
+        .expect("multi-channel contract helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn unit_run_multi_channel_live_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_multi_channel_live_runner_if_requested(
+            &cli,
+            tau_multi_channel::MultiChannelCommandHandlers::default(),
+            Arc::new(AllowAllPairingEvaluator),
+        )
+        .await
+        .expect("multi-channel live helper");
+
+        assert!(!handled);
+    }
+
     #[test]
     fn integration_build_gateway_contract_runner_config_preserves_runtime_fields() {
         let temp = tempdir().expect("tempdir");
@@ -526,6 +664,68 @@ mod tests {
         assert_eq!(config.processed_case_cap, 3_200);
         assert_eq!(config.retry_max_attempts, 8);
         assert_eq!(config.retry_base_delay_ms, 250);
+    }
+
+    #[test]
+    fn integration_build_multi_channel_contract_runner_config_preserves_runtime_fields() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.multi_channel_fixture = temp.path().join("multi-channel-fixture.json");
+        cli.multi_channel_state_dir = temp.path().join("multi-channel-state");
+        cli.orchestrator_route_table = Some(temp.path().join("route-table.json"));
+        cli.multi_channel_queue_limit = 24;
+        cli.multi_channel_processed_event_cap = 8_000;
+        cli.multi_channel_retry_max_attempts = 5;
+        cli.multi_channel_retry_base_delay_ms = 17;
+        cli.multi_channel_retry_jitter_ms = 33;
+
+        let config = build_multi_channel_contract_runner_config(
+            &cli,
+            tau_multi_channel::MultiChannelCommandHandlers::default(),
+            Arc::new(AllowAllPairingEvaluator),
+        );
+        assert_eq!(config.fixture_path, cli.multi_channel_fixture);
+        assert_eq!(config.state_dir, cli.multi_channel_state_dir);
+        assert_eq!(
+            config.orchestrator_route_table_path,
+            cli.orchestrator_route_table
+        );
+        assert_eq!(config.queue_limit, 24);
+        assert_eq!(config.processed_event_cap, 8_000);
+        assert_eq!(config.retry_max_attempts, 5);
+        assert_eq!(config.retry_base_delay_ms, 17);
+        assert_eq!(config.retry_jitter_ms, 33);
+    }
+
+    #[test]
+    fn integration_build_multi_channel_live_runner_config_preserves_runtime_fields() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.multi_channel_live_ingress_dir = temp.path().join("live-ingress");
+        cli.multi_channel_state_dir = temp.path().join("multi-channel-state");
+        cli.orchestrator_route_table = Some(temp.path().join("route-table.json"));
+        cli.multi_channel_queue_limit = 19;
+        cli.multi_channel_processed_event_cap = 4_500;
+        cli.multi_channel_retry_max_attempts = 6;
+        cli.multi_channel_retry_base_delay_ms = 21;
+        cli.multi_channel_retry_jitter_ms = 34;
+
+        let config = build_multi_channel_live_runner_config(
+            &cli,
+            tau_multi_channel::MultiChannelCommandHandlers::default(),
+            Arc::new(AllowAllPairingEvaluator),
+        );
+        assert_eq!(config.ingress_dir, cli.multi_channel_live_ingress_dir);
+        assert_eq!(config.state_dir, cli.multi_channel_state_dir);
+        assert_eq!(
+            config.orchestrator_route_table_path,
+            cli.orchestrator_route_table
+        );
+        assert_eq!(config.queue_limit, 19);
+        assert_eq!(config.processed_event_cap, 4_500);
+        assert_eq!(config.retry_max_attempts, 6);
+        assert_eq!(config.retry_base_delay_ms, 21);
+        assert_eq!(config.retry_jitter_ms, 34);
     }
 
     #[tokio::test]
