@@ -13,11 +13,12 @@ use tau_events::{
     EventsTemplateConfig, EventsValidateConfig,
 };
 
+use crate::tools::ToolPolicy;
 use crate::{
     channel_store::ChannelLogEntry, current_unix_timestamp_ms, run_prompt_with_cancellation, Cli,
     CliEventTemplateSchedule, PromptRunStatus, RenderOptions, SessionRuntime,
 };
-use crate::{session::SessionStore, tools::ToolPolicy};
+use tau_session::SessionStore;
 
 pub(crate) use tau_events::{
     EventDefinition, EventWebhookIngestConfig, EventsDryRunReport, EventsInspectReport,

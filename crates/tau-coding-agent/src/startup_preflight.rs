@@ -84,7 +84,7 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
     }
 
     if cli.session_validate {
-        validate_session_file(cli)?;
+        validate_session_file(&cli.session, cli.no_session)?;
         return Ok(true);
     }
 

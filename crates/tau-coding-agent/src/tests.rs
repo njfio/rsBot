@@ -78,9 +78,10 @@ use super::{
     run_plan_first_prompt_with_policy_context_and_routing, run_prompt_with_cancellation,
     save_branch_aliases, save_credential_store, save_macro_file, save_profile_store,
     save_session_bookmarks, search_session_entries, session_bookmark_path_for_session,
-    session_message_preview, shared_lineage_prefix_depth, stream_text_chunks, summarize_audit_file,
-    tool_audit_event_json, tool_policy_to_json, trust_record_status, unknown_command_message,
-    validate_branch_alias_name, validate_custom_command_contract_runner_cli, validate_daemon_cli,
+    session_lineage_messages, session_message_preview, shared_lineage_prefix_depth,
+    stream_text_chunks, summarize_audit_file, tool_audit_event_json, tool_policy_to_json,
+    trust_record_status, unknown_command_message, validate_branch_alias_name,
+    validate_custom_command_contract_runner_cli, validate_daemon_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
     validate_deployment_wasm_inspect_cli, validate_deployment_wasm_package_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
@@ -127,13 +128,13 @@ use crate::extension_manifest::discover_extension_runtime_registrations;
 use crate::provider_api_key_candidates_with_inputs;
 use crate::provider_credentials::provider_auth_snapshot_for_status;
 use crate::resolve_api_key;
-use crate::session::{SessionImportMode, SessionStore};
 use crate::tools::{register_extension_tools, BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
 use crate::{default_model_catalog_cache_path, ModelCatalog, MODELS_LIST_USAGE, MODEL_SHOW_USAGE};
 use crate::{
     execute_extension_exec_command, execute_extension_list_command, execute_extension_show_command,
     execute_extension_validate_command,
 };
+use tau_session::{SessionImportMode, SessionStore};
 
 static AUTH_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -9420,12 +9421,12 @@ fn unit_session_message_preview_normalizes_whitespace_and_truncates() {
 #[test]
 fn unit_search_session_entries_matches_role_and_text_case_insensitively() {
     let entries = vec![
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 2,
             parent_id: Some(1),
             message: Message::assistant_text("Budget stabilized"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 1,
             parent_id: None,
             message: Message::user("Root question"),
@@ -9475,7 +9476,7 @@ fn functional_execute_session_search_command_renders_result_rows() {
 #[test]
 fn regression_search_session_entries_caps_huge_result_sets() {
     let entries = (1..=200)
-        .map(|id| crate::session::SessionEntry {
+        .map(|id| tau_session::SessionEntry {
             id,
             parent_id: if id == 1 { None } else { Some(id - 1) },
             message: Message::user(format!("needle-{id}")),
@@ -9583,34 +9584,34 @@ fn regression_parse_session_diff_args_rejects_invalid_shapes() {
 #[test]
 fn unit_shared_lineage_prefix_depth_returns_common_ancestor_depth() {
     let left = vec![
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 1,
             parent_id: None,
             message: Message::system("root"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 2,
             parent_id: Some(1),
             message: Message::user("shared"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 4,
             parent_id: Some(2),
             message: Message::assistant_text("left"),
         },
     ];
     let right = vec![
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 1,
             parent_id: None,
             message: Message::system("root"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 2,
             parent_id: Some(1),
             message: Message::user("shared"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 5,
             parent_id: Some(2),
             message: Message::assistant_text("right"),
@@ -9773,17 +9774,17 @@ fn regression_execute_session_diff_command_reports_malformed_graph() {
 #[test]
 fn unit_compute_session_entry_depths_calculates_branch_depths() {
     let entries = vec![
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 3,
             parent_id: Some(2),
             message: Message::assistant_text("leaf"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 1,
             parent_id: None,
             message: Message::system("root"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 2,
             parent_id: Some(1),
             message: Message::user("middle"),
@@ -11117,12 +11118,12 @@ fn unit_resolve_session_graph_format_and_escape_label_behaviors() {
 #[test]
 fn unit_render_session_graph_mermaid_and_dot_include_deterministic_edges() {
     let entries = vec![
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 2,
             parent_id: Some(1),
             message: Message::user("child"),
         },
-        crate::session::SessionEntry {
+        tau_session::SessionEntry {
             id: 1,
             parent_id: None,
             message: Message::system("root"),
@@ -12239,20 +12240,24 @@ fn integration_execute_branch_alias_command_supports_set_use_and_list_flow() {
         .expect("lineage");
     agent.replace_messages(lineage);
 
-    let set_output =
-        execute_branch_alias_command(&format!("set hotfix {stable}"), &mut agent, &mut runtime);
-    assert!(set_output.contains("branch alias set: path="));
-    assert!(set_output.contains("name=hotfix"));
+    let set_outcome = execute_branch_alias_command(&format!("set hotfix {stable}"), &mut runtime);
+    assert!(set_outcome.message.contains("branch alias set: path="));
+    assert!(set_outcome.message.contains("name=hotfix"));
     assert_eq!(runtime.active_head, Some(hot));
 
-    let list_output = execute_branch_alias_command("list", &mut agent, &mut runtime);
-    assert!(list_output.contains("branch alias list: path="));
-    assert!(list_output.contains("count=1"));
-    assert!(list_output.contains(&format!("alias: name=hotfix id={} status=ok", stable)));
+    let list_outcome = execute_branch_alias_command("list", &mut runtime);
+    assert!(list_outcome.message.contains("branch alias list: path="));
+    assert!(list_outcome.message.contains("count=1"));
+    assert!(list_outcome
+        .message
+        .contains(&format!("alias: name=hotfix id={} status=ok", stable)));
 
-    let use_output = execute_branch_alias_command("use hotfix", &mut agent, &mut runtime);
-    assert!(use_output.contains("branch alias use: path="));
-    assert!(use_output.contains(&format!("id={stable}")));
+    let use_outcome = execute_branch_alias_command("use hotfix", &mut runtime);
+    if use_outcome.reload_active_head {
+        agent.replace_messages(session_lineage_messages(&runtime).expect("lineage"));
+    }
+    assert!(use_outcome.message.contains("branch alias use: path="));
+    assert!(use_outcome.message.contains(&format!("id={stable}")));
     assert_eq!(runtime.active_head, Some(stable));
 
     let alias_path = branch_alias_path_for_session(&session_path);
@@ -12273,18 +12278,21 @@ fn regression_execute_branch_alias_command_reports_stale_alias_ids() {
         store,
         active_head: Some(root),
     };
-    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
     let alias_path = branch_alias_path_for_session(&session_path);
     let aliases = BTreeMap::from([("legacy".to_string(), 999_u64)]);
     save_branch_aliases(&alias_path, &aliases).expect("save stale alias");
 
-    let list_output = execute_branch_alias_command("list", &mut agent, &mut runtime);
-    assert!(list_output.contains("count=1"));
-    assert!(list_output.contains("alias: name=legacy id=999 status=stale"));
+    let list_outcome = execute_branch_alias_command("list", &mut runtime);
+    assert!(list_outcome.message.contains("count=1"));
+    assert!(list_outcome
+        .message
+        .contains("alias: name=legacy id=999 status=stale"));
 
-    let use_output = execute_branch_alias_command("use legacy", &mut agent, &mut runtime);
-    assert!(use_output.contains("branch alias error: path="));
-    assert!(use_output.contains("alias points to unknown session id 999"));
+    let use_outcome = execute_branch_alias_command("use legacy", &mut runtime);
+    assert!(use_outcome.message.contains("branch alias error: path="));
+    assert!(use_outcome
+        .message
+        .contains("alias points to unknown session id 999"));
 }
 
 #[test]
@@ -12300,13 +12308,12 @@ fn regression_execute_branch_alias_command_reports_corrupt_alias_file() {
         store,
         active_head: Some(root),
     };
-    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
     let alias_path = branch_alias_path_for_session(&session_path);
     std::fs::write(&alias_path, "{invalid-json").expect("write malformed alias file");
 
-    let output = execute_branch_alias_command("list", &mut agent, &mut runtime);
-    assert!(output.contains("branch alias error: path="));
-    assert!(output.contains("failed to parse alias file"));
+    let outcome = execute_branch_alias_command("list", &mut runtime);
+    assert!(outcome.message.contains("branch alias error: path="));
+    assert!(outcome.message.contains("failed to parse alias file"));
 }
 
 #[test]
@@ -12391,34 +12398,39 @@ fn integration_execute_session_bookmark_command_supports_set_use_list_delete_flo
         .expect("initial lineage");
     agent.replace_messages(initial_lineage);
 
-    let set_output = execute_session_bookmark_command(
-        &format!("set checkpoint {stable}"),
-        &mut agent,
-        &mut runtime,
-    );
-    assert!(set_output.contains("session bookmark set: path="));
-    assert!(set_output.contains("name=checkpoint"));
-    assert!(set_output.contains(&format!("id={stable}")));
+    let set_outcome =
+        execute_session_bookmark_command(&format!("set checkpoint {stable}"), &mut runtime);
+    assert!(set_outcome.message.contains("session bookmark set: path="));
+    assert!(set_outcome.message.contains("name=checkpoint"));
+    assert!(set_outcome.message.contains(&format!("id={stable}")));
 
-    let list_output = execute_session_bookmark_command("list", &mut agent, &mut runtime);
-    assert!(list_output.contains("session bookmark list: path="));
-    assert!(list_output.contains("count=1"));
-    assert!(list_output.contains(&format!("bookmark: name=checkpoint id={stable} status=ok")));
+    let list_outcome = execute_session_bookmark_command("list", &mut runtime);
+    assert!(list_outcome
+        .message
+        .contains("session bookmark list: path="));
+    assert!(list_outcome.message.contains("count=1"));
+    assert!(list_outcome
+        .message
+        .contains(&format!("bookmark: name=checkpoint id={stable} status=ok")));
 
-    let use_output = execute_session_bookmark_command("use checkpoint", &mut agent, &mut runtime);
-    assert!(use_output.contains("session bookmark use: path="));
-    assert!(use_output.contains(&format!("id={stable}")));
+    let use_outcome = execute_session_bookmark_command("use checkpoint", &mut runtime);
+    if use_outcome.reload_active_head {
+        agent.replace_messages(session_lineage_messages(&runtime).expect("lineage"));
+    }
+    assert!(use_outcome.message.contains("session bookmark use: path="));
+    assert!(use_outcome.message.contains(&format!("id={stable}")));
     assert_eq!(runtime.active_head, Some(stable));
 
-    let delete_output =
-        execute_session_bookmark_command("delete checkpoint", &mut agent, &mut runtime);
-    assert!(delete_output.contains("session bookmark delete: path="));
-    assert!(delete_output.contains("status=deleted"));
-    assert!(delete_output.contains("remaining=0"));
+    let delete_outcome = execute_session_bookmark_command("delete checkpoint", &mut runtime);
+    assert!(delete_outcome
+        .message
+        .contains("session bookmark delete: path="));
+    assert!(delete_outcome.message.contains("status=deleted"));
+    assert!(delete_outcome.message.contains("remaining=0"));
 
-    let final_list = execute_session_bookmark_command("list", &mut agent, &mut runtime);
-    assert!(final_list.contains("count=0"));
-    assert!(final_list.contains("bookmarks: none"));
+    let final_list = execute_session_bookmark_command("list", &mut runtime);
+    assert!(final_list.message.contains("count=0"));
+    assert!(final_list.message.contains("bookmarks: none"));
 }
 
 #[test]
@@ -12434,18 +12446,23 @@ fn regression_execute_session_bookmark_command_reports_stale_ids() {
         store,
         active_head: Some(root),
     };
-    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
     let bookmark_path = session_bookmark_path_for_session(&session_path);
     let bookmarks = BTreeMap::from([("legacy".to_string(), 999_u64)]);
     save_session_bookmarks(&bookmark_path, &bookmarks).expect("save stale bookmark");
 
-    let list_output = execute_session_bookmark_command("list", &mut agent, &mut runtime);
-    assert!(list_output.contains("count=1"));
-    assert!(list_output.contains("bookmark: name=legacy id=999 status=stale"));
+    let list_outcome = execute_session_bookmark_command("list", &mut runtime);
+    assert!(list_outcome.message.contains("count=1"));
+    assert!(list_outcome
+        .message
+        .contains("bookmark: name=legacy id=999 status=stale"));
 
-    let use_output = execute_session_bookmark_command("use legacy", &mut agent, &mut runtime);
-    assert!(use_output.contains("session bookmark error: path="));
-    assert!(use_output.contains("bookmark points to unknown session id 999"));
+    let use_outcome = execute_session_bookmark_command("use legacy", &mut runtime);
+    assert!(use_outcome
+        .message
+        .contains("session bookmark error: path="));
+    assert!(use_outcome
+        .message
+        .contains("bookmark points to unknown session id 999"));
 }
 
 #[test]
@@ -12461,13 +12478,14 @@ fn regression_execute_session_bookmark_command_reports_corrupt_bookmark_file() {
         store,
         active_head: Some(root),
     };
-    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
     let bookmark_path = session_bookmark_path_for_session(&session_path);
     std::fs::write(&bookmark_path, "{invalid-json").expect("write malformed bookmark file");
 
-    let output = execute_session_bookmark_command("list", &mut agent, &mut runtime);
-    assert!(output.contains("session bookmark error: path="));
-    assert!(output.contains("failed to parse session bookmark file"));
+    let outcome = execute_session_bookmark_command("list", &mut runtime);
+    assert!(outcome.message.contains("session bookmark error: path="));
+    assert!(outcome
+        .message
+        .contains("failed to parse session bookmark file"));
 }
 
 #[test]
@@ -21028,7 +21046,7 @@ fn functional_validate_session_file_succeeds_for_valid_session() {
     cli.session = session_path;
     cli.session_validate = true;
 
-    validate_session_file(&cli).expect("session validation should pass");
+    validate_session_file(&cli.session, cli.no_session).expect("session validation should pass");
 }
 
 #[test]
@@ -21048,7 +21066,8 @@ fn regression_validate_session_file_fails_for_invalid_session_graph() {
     cli.session = session_path;
     cli.session_validate = true;
 
-    let error = validate_session_file(&cli).expect_err("session validation should fail for cycle");
+    let error = validate_session_file(&cli.session, cli.no_session)
+        .expect_err("session validation should fail for cycle");
     assert!(error.to_string().contains("session validation failed"));
     assert!(error.to_string().contains("cycles=2"));
 }
@@ -21059,8 +21078,8 @@ fn regression_validate_session_file_rejects_no_session_flag() {
     cli.no_session = true;
     cli.session_validate = true;
 
-    let error =
-        validate_session_file(&cli).expect_err("validation with no-session flag should fail fast");
+    let error = validate_session_file(&cli.session, cli.no_session)
+        .expect_err("validation with no-session flag should fail fast");
     assert!(error
         .to_string()
         .contains("--session-validate cannot be used together with --no-session"));
@@ -22429,11 +22448,16 @@ fn integration_initialize_session_applies_lock_timeout_policy() {
     cli.session = session_path;
     cli.session_lock_wait_ms = 120;
     cli.session_lock_stale_ms = 0;
-    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
     let start = Instant::now();
 
-    let error = initialize_session(&mut agent, &cli, "sys")
-        .expect_err("initialization should fail when lock persists");
+    let error = initialize_session(
+        &cli.session,
+        cli.session_lock_wait_ms,
+        cli.session_lock_stale_ms,
+        cli.branch_from,
+        "sys",
+    )
+    .expect_err("initialization should fail when lock persists");
     assert!(error.to_string().contains("timed out acquiring lock"));
     assert!(start.elapsed() < Duration::from_secs(2));
 
@@ -22452,11 +22476,15 @@ fn functional_initialize_session_reclaims_stale_lock_when_enabled() {
     cli.session = session_path;
     cli.session_lock_wait_ms = 1_000;
     cli.session_lock_stale_ms = 10;
-    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
-
-    let runtime = initialize_session(&mut agent, &cli, "sys")
-        .expect("initialization should reclaim stale lock");
-    assert_eq!(runtime.store.entries().len(), 1);
+    let outcome = initialize_session(
+        &cli.session,
+        cli.session_lock_wait_ms,
+        cli.session_lock_stale_ms,
+        cli.branch_from,
+        "sys",
+    )
+    .expect("initialization should reclaim stale lock");
+    assert_eq!(outcome.runtime.store.entries().len(), 1);
     assert!(!lock_path.exists());
 }
 

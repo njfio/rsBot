@@ -4,17 +4,11 @@ use serde::{Deserialize, Serialize};
 use tau_ai::Provider;
 
 use crate::extension_manifest::ExtensionRegisteredCommand;
-use crate::session::{SessionImportMode, SessionStore};
 use crate::{
     default_provider_auth_method, Cli, CredentialStoreEncryptionMode, ModelCatalog,
     ProviderAuthMethod,
 };
-
-#[derive(Debug)]
-pub(crate) struct SessionRuntime {
-    pub(crate) store: SessionStore,
-    pub(crate) active_head: Option<u64>,
-}
+use tau_session::SessionImportMode;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SkillsSyncCommandConfig {

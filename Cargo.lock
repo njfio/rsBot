@@ -2888,6 +2888,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tau-ai",
+ "tau-core",
  "tempfile",
 ]
 

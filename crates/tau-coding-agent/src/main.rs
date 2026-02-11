@@ -62,11 +62,6 @@ mod runtime_cli_validation;
 mod runtime_loop;
 mod runtime_output;
 mod runtime_types;
-mod session;
-mod session_commands;
-mod session_graph_commands;
-mod session_navigation_commands;
-mod session_runtime_helpers;
 mod skills;
 mod skills_commands;
 mod slack;
@@ -284,40 +279,7 @@ pub(crate) use crate::runtime_types::{
     AuthCommandConfig, CommandExecutionContext, DoctorCommandConfig,
     DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus, ProfileAuthDefaults,
     ProfileDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
-    RenderOptions, SessionRuntime, SkillsSyncCommandConfig,
-};
-use crate::session::{SessionImportMode, SessionStore};
-#[cfg(test)]
-pub(crate) use crate::session_commands::{
-    compute_session_entry_depths, compute_session_stats, execute_session_diff_command,
-    execute_session_search_command, execute_session_stats_command, parse_session_diff_args,
-    parse_session_search_args, parse_session_stats_args, render_session_diff, render_session_stats,
-    render_session_stats_json, search_session_entries, shared_lineage_prefix_depth,
-    SessionDiffEntry, SessionDiffReport, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
-    SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
-};
-pub(crate) use crate::session_commands::{session_message_preview, session_message_role};
-pub(crate) use crate::session_graph_commands::execute_session_graph_export_command;
-#[cfg(test)]
-pub(crate) use crate::session_graph_commands::{
-    escape_graph_label, render_session_graph_dot, render_session_graph_mermaid,
-    resolve_session_graph_format, SessionGraphFormat,
-};
-#[cfg(test)]
-pub(crate) use crate::session_navigation_commands::{
-    branch_alias_path_for_session, load_branch_aliases, load_session_bookmarks,
-    parse_branch_alias_command, parse_session_bookmark_command, save_branch_aliases,
-    save_session_bookmarks, session_bookmark_path_for_session, validate_branch_alias_name,
-    BranchAliasCommand, BranchAliasFile, SessionBookmarkCommand, SessionBookmarkFile,
-    BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE,
-};
-pub(crate) use crate::session_navigation_commands::{
-    execute_branch_alias_command, execute_session_bookmark_command,
-};
-pub(crate) use crate::session_runtime_helpers::{
-    format_id_list, format_remap_ids, initialize_session, reload_agent_from_active_head,
-    validate_session_file,
+    RenderOptions, SkillsSyncCommandConfig,
 };
 use crate::skills::{
     augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
@@ -412,6 +374,37 @@ use tau_orchestrator::multi_agent_runtime::{
 };
 #[cfg(test)]
 pub(crate) use tau_orchestrator::parse_numbered_plan_steps;
+pub(crate) use tau_session::execute_session_graph_export_command;
+use tau_session::SessionImportMode;
+#[cfg(test)]
+pub(crate) use tau_session::{
+    branch_alias_path_for_session, load_branch_aliases, load_session_bookmarks,
+    parse_branch_alias_command, parse_session_bookmark_command, save_branch_aliases,
+    save_session_bookmarks, session_bookmark_path_for_session, validate_branch_alias_name,
+    BranchAliasCommand, BranchAliasFile, SessionBookmarkCommand, SessionBookmarkFile,
+    BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
+    SESSION_BOOKMARK_USAGE,
+};
+#[cfg(test)]
+pub(crate) use tau_session::{
+    compute_session_entry_depths, compute_session_stats, execute_session_diff_command,
+    execute_session_search_command, execute_session_stats_command, parse_session_diff_args,
+    parse_session_search_args, parse_session_stats_args, render_session_diff, render_session_stats,
+    render_session_stats_json, search_session_entries, shared_lineage_prefix_depth,
+    SessionDiffEntry, SessionDiffReport, SessionSearchArgs, SessionStats, SessionStatsOutputFormat,
+    SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+};
+#[cfg(test)]
+pub(crate) use tau_session::{
+    escape_graph_label, render_session_graph_dot, render_session_graph_mermaid,
+    resolve_session_graph_format, SessionGraphFormat,
+};
+pub(crate) use tau_session::{execute_branch_alias_command, execute_session_bookmark_command};
+pub(crate) use tau_session::{
+    format_id_list, format_remap_ids, initialize_session, session_lineage_messages,
+    validate_session_file, SessionRuntime,
+};
+pub(crate) use tau_session::{session_message_preview, session_message_role};
 use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
 pub(crate) fn normalize_daemon_subcommand_args(args: Vec<String>) -> Vec<String> {

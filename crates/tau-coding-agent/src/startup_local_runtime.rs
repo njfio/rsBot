@@ -65,7 +65,17 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     let mut session_runtime = if cli.no_session {
         None
     } else {
-        Some(initialize_session(&mut agent, cli, system_prompt)?)
+        let outcome = initialize_session(
+            &cli.session,
+            cli.session_lock_wait_ms,
+            cli.session_lock_stale_ms,
+            cli.branch_from,
+            system_prompt,
+        )?;
+        if !outcome.lineage.is_empty() {
+            agent.replace_messages(outcome.lineage);
+        }
+        Some(outcome.runtime)
     };
 
     if cli.json_events {

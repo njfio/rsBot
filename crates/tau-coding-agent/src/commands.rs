@@ -2,7 +2,7 @@ use super::*;
 use crate::extension_manifest::{
     dispatch_extension_registered_command, ExtensionRegisteredCommandAction,
 };
-use crate::session_commands::{
+use tau_session::{
     execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
     parse_session_diff_args, parse_session_stats_args,
 };
@@ -921,7 +921,7 @@ pub(crate) fn handle_command_with_session_import_mode(
             .store
             .import_snapshot(&source, session_import_mode)?;
         runtime.active_head = report.active_head;
-        reload_agent_from_active_head(agent, runtime)?;
+        agent.replace_messages(session_lineage_messages(runtime)?);
         println!(
             "session import complete: path={} mode={} imported_entries={} remapped_entries={} remapped_ids={} replaced_entries={} total_entries={} head={}",
             source.display(),
@@ -1096,7 +1096,7 @@ pub(crate) fn handle_command_with_session_import_mode(
         };
 
         runtime.active_head = runtime.store.head_id();
-        reload_agent_from_active_head(agent, runtime)?;
+        agent.replace_messages(session_lineage_messages(runtime)?);
         println!(
             "resumed at head {}",
             runtime
@@ -1227,10 +1227,12 @@ pub(crate) fn handle_command_with_session_import_mode(
             return Ok(CommandAction::Continue);
         };
 
-        println!(
-            "{}",
-            execute_branch_alias_command(command_args, agent, runtime)
-        );
+        let outcome = execute_branch_alias_command(command_args, runtime);
+        if outcome.reload_active_head {
+            let lineage = session_lineage_messages(runtime)?;
+            agent.replace_messages(lineage);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -1240,10 +1242,12 @@ pub(crate) fn handle_command_with_session_import_mode(
             return Ok(CommandAction::Continue);
         };
 
-        println!(
-            "{}",
-            execute_session_bookmark_command(command_args, agent, runtime)
-        );
+        let outcome = execute_session_bookmark_command(command_args, runtime);
+        if outcome.reload_active_head {
+            let lineage = session_lineage_messages(runtime)?;
+            agent.replace_messages(lineage);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -1262,7 +1266,7 @@ pub(crate) fn handle_command_with_session_import_mode(
             .active_head
             .filter(|head| runtime.store.contains(*head))
             .or_else(|| runtime.store.head_id());
-        reload_agent_from_active_head(agent, runtime)?;
+        agent.replace_messages(session_lineage_messages(runtime)?);
 
         println!(
             "repair complete: removed_duplicates={} duplicate_ids={} removed_invalid_parent={} invalid_parent_ids={} removed_cycles={} cycle_ids={}",
@@ -1291,7 +1295,7 @@ pub(crate) fn handle_command_with_session_import_mode(
             .head_id
             .filter(|head| runtime.store.contains(*head))
             .or_else(|| runtime.store.head_id());
-        reload_agent_from_active_head(agent, runtime)?;
+        agent.replace_messages(session_lineage_messages(runtime)?);
 
         println!(
             "compact complete: removed_entries={} retained_entries={} head={}",
@@ -1324,7 +1328,7 @@ pub(crate) fn handle_command_with_session_import_mode(
         }
 
         runtime.active_head = Some(target);
-        reload_agent_from_active_head(agent, runtime)?;
+        agent.replace_messages(session_lineage_messages(runtime)?);
         println!("switched to branch id {target}");
         return Ok(CommandAction::Continue);
     }

@@ -11,6 +11,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tau_ai::Message;
 
+mod session_commands;
+mod session_graph_commands;
+mod session_navigation_commands;
+mod session_runtime_helpers;
+
 const SESSION_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_LOCK_WAIT_MS: u64 = 5_000;
 const DEFAULT_LOCK_STALE_MS: u64 = 30_000;
@@ -88,6 +93,12 @@ pub struct SessionStore {
     next_id: u64,
     lock_wait_ms: u64,
     lock_stale_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct SessionRuntime {
+    pub store: SessionStore,
+    pub active_head: Option<u64>,
 }
 
 impl SessionStore {
@@ -468,6 +479,11 @@ impl SessionStore {
         self.path.with_extension("lock")
     }
 }
+
+pub use session_commands::*;
+pub use session_graph_commands::*;
+pub use session_navigation_commands::*;
+pub use session_runtime_helpers::*;
 
 fn has_cycle(start_id: u64, entries: &HashMap<u64, SessionEntry>) -> bool {
     let mut visited = HashSet::new();

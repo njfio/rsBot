@@ -1,7 +1,11 @@
-use super::*;
+use std::path::{Path, PathBuf};
+
+use tau_core::write_text_atomic;
+
+use crate::{session_message_preview, session_message_role, SessionEntry, SessionRuntime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionGraphFormat {
+pub enum SessionGraphFormat {
     Mermaid,
     Dot,
 }
@@ -15,7 +19,7 @@ impl SessionGraphFormat {
     }
 }
 
-pub(crate) fn resolve_session_graph_format(path: &Path) -> SessionGraphFormat {
+pub fn resolve_session_graph_format(path: &Path) -> SessionGraphFormat {
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -27,11 +31,11 @@ pub(crate) fn resolve_session_graph_format(path: &Path) -> SessionGraphFormat {
     }
 }
 
-pub(crate) fn escape_graph_label(raw: &str) -> String {
+pub fn escape_graph_label(raw: &str) -> String {
     raw.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn session_graph_node_label(entry: &crate::session::SessionEntry) -> String {
+fn session_graph_node_label(entry: &SessionEntry) -> String {
     format!(
         "{}: {} | {}",
         entry.id,
@@ -40,7 +44,7 @@ fn session_graph_node_label(entry: &crate::session::SessionEntry) -> String {
     )
 }
 
-pub(crate) fn render_session_graph_mermaid(entries: &[crate::session::SessionEntry]) -> String {
+pub fn render_session_graph_mermaid(entries: &[SessionEntry]) -> String {
     let mut ordered = entries.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|entry| entry.id);
 
@@ -65,7 +69,7 @@ pub(crate) fn render_session_graph_mermaid(entries: &[crate::session::SessionEnt
     lines.join("\n")
 }
 
-pub(crate) fn render_session_graph_dot(entries: &[crate::session::SessionEntry]) -> String {
+pub fn render_session_graph_dot(entries: &[SessionEntry]) -> String {
     let mut ordered = entries.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|entry| entry.id);
 
@@ -90,17 +94,14 @@ pub(crate) fn render_session_graph_dot(entries: &[crate::session::SessionEntry])
     lines.join("\n")
 }
 
-fn render_session_graph(
-    format: SessionGraphFormat,
-    entries: &[crate::session::SessionEntry],
-) -> String {
+fn render_session_graph(format: SessionGraphFormat, entries: &[SessionEntry]) -> String {
     match format {
         SessionGraphFormat::Mermaid => render_session_graph_mermaid(entries),
         SessionGraphFormat::Dot => render_session_graph_dot(entries),
     }
 }
 
-pub(crate) fn execute_session_graph_export_command(
+pub fn execute_session_graph_export_command(
     runtime: &SessionRuntime,
     command_args: &str,
 ) -> String {

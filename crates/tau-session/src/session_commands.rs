@@ -1,22 +1,27 @@
-use super::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub(crate) const SESSION_SEARCH_DEFAULT_RESULTS: usize = 50;
+use anyhow::{anyhow, bail, Context, Result};
+use tau_ai::Message;
+
+use crate::{SessionEntry, SessionRuntime};
+
+pub const SESSION_SEARCH_DEFAULT_RESULTS: usize = 50;
 const SESSION_SEARCH_MAX_RESULTS: usize = 200;
-pub(crate) const SESSION_SEARCH_PREVIEW_CHARS: usize = 80;
+pub const SESSION_SEARCH_PREVIEW_CHARS: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionSearchMatch {
-    pub(crate) id: u64,
-    pub(crate) parent_id: Option<u64>,
-    pub(crate) role: String,
-    pub(crate) preview: String,
+pub struct SessionSearchMatch {
+    pub id: u64,
+    pub parent_id: Option<u64>,
+    pub role: String,
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionSearchArgs {
-    pub(crate) query: String,
-    pub(crate) role: Option<String>,
-    pub(crate) limit: usize,
+pub struct SessionSearchArgs {
+    pub query: String,
+    pub role: Option<String>,
+    pub limit: usize,
 }
 
 fn parse_session_search_role(raw: &str) -> Result<String> {
@@ -48,7 +53,7 @@ fn parse_session_search_limit(raw: &str) -> Result<usize> {
     Ok(value)
 }
 
-pub(crate) fn parse_session_search_args(command_args: &str) -> Result<SessionSearchArgs> {
+pub fn parse_session_search_args(command_args: &str) -> Result<SessionSearchArgs> {
     let mut query_parts = Vec::new();
     let mut role = None;
     let mut limit = SESSION_SEARCH_DEFAULT_RESULTS;
@@ -106,7 +111,7 @@ fn normalize_preview_text(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(crate) fn session_message_preview(message: &Message) -> String {
+pub fn session_message_preview(message: &Message) -> String {
     let normalized = normalize_preview_text(&message.text_content());
     let preview = if normalized.is_empty() {
         "(no text)".to_string()
@@ -124,12 +129,12 @@ pub(crate) fn session_message_preview(message: &Message) -> String {
     format!("{truncated}...")
 }
 
-pub(crate) fn session_message_role(message: &Message) -> String {
+pub fn session_message_role(message: &Message) -> String {
     format!("{:?}", message.role).to_lowercase()
 }
 
-pub(crate) fn search_session_entries(
-    entries: &[crate::session::SessionEntry],
+pub fn search_session_entries(
+    entries: &[SessionEntry],
     query: &str,
     role_filter: Option<&str>,
     max_results: usize,
@@ -206,10 +211,7 @@ fn render_session_search(
     lines.join("\n")
 }
 
-pub(crate) fn execute_session_search_command(
-    runtime: &SessionRuntime,
-    command_args: &str,
-) -> String {
+pub fn execute_session_search_command(runtime: &SessionRuntime, command_args: &str) -> String {
     let args = match parse_session_search_args(command_args) {
         Ok(args) => args,
         Err(error) => return format!("session search error: error={error}"),
@@ -232,27 +234,27 @@ pub(crate) fn execute_session_search_command(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionDiffEntry {
-    pub(crate) id: u64,
-    pub(crate) parent_id: Option<u64>,
-    pub(crate) role: String,
-    pub(crate) preview: String,
+pub struct SessionDiffEntry {
+    pub id: u64,
+    pub parent_id: Option<u64>,
+    pub role: String,
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionDiffReport {
-    pub(crate) source: &'static str,
-    pub(crate) left_id: u64,
-    pub(crate) right_id: u64,
-    pub(crate) shared_depth: usize,
-    pub(crate) left_depth: usize,
-    pub(crate) right_depth: usize,
-    pub(crate) shared_entries: Vec<SessionDiffEntry>,
-    pub(crate) left_only_entries: Vec<SessionDiffEntry>,
-    pub(crate) right_only_entries: Vec<SessionDiffEntry>,
+pub struct SessionDiffReport {
+    pub source: &'static str,
+    pub left_id: u64,
+    pub right_id: u64,
+    pub shared_depth: usize,
+    pub left_depth: usize,
+    pub right_depth: usize,
+    pub shared_entries: Vec<SessionDiffEntry>,
+    pub left_only_entries: Vec<SessionDiffEntry>,
+    pub right_only_entries: Vec<SessionDiffEntry>,
 }
 
-pub(crate) fn parse_session_diff_args(command_args: &str) -> Result<Option<(u64, u64)>> {
+pub fn parse_session_diff_args(command_args: &str) -> Result<Option<(u64, u64)>> {
     let tokens = command_args
         .split_whitespace()
         .filter(|token| !token.is_empty())
@@ -278,7 +280,7 @@ pub(crate) fn parse_session_diff_args(command_args: &str) -> Result<Option<(u64,
     Ok(Some((left, right)))
 }
 
-fn session_diff_entry(entry: &crate::session::SessionEntry) -> SessionDiffEntry {
+fn session_diff_entry(entry: &SessionEntry) -> SessionDiffEntry {
     SessionDiffEntry {
         id: entry.id,
         parent_id: entry.parent_id,
@@ -287,10 +289,7 @@ fn session_diff_entry(entry: &crate::session::SessionEntry) -> SessionDiffEntry 
     }
 }
 
-pub(crate) fn shared_lineage_prefix_depth(
-    left: &[crate::session::SessionEntry],
-    right: &[crate::session::SessionEntry],
-) -> usize {
+pub fn shared_lineage_prefix_depth(left: &[SessionEntry], right: &[SessionEntry]) -> usize {
     let mut depth = 0usize;
     for (left_entry, right_entry) in left.iter().zip(right.iter()) {
         if left_entry.id != right_entry.id {
@@ -378,7 +377,7 @@ fn render_session_diff_entry(prefix: &str, entry: &SessionDiffEntry) -> String {
     )
 }
 
-pub(crate) fn render_session_diff(report: &SessionDiffReport) -> String {
+pub fn render_session_diff(report: &SessionDiffReport) -> String {
     let mut lines = vec![
         format!(
             "session diff: source={} left={} right={}",
@@ -421,10 +420,7 @@ pub(crate) fn render_session_diff(report: &SessionDiffReport) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn execute_session_diff_command(
-    runtime: &SessionRuntime,
-    heads: Option<(u64, u64)>,
-) -> String {
+pub fn execute_session_diff_command(runtime: &SessionRuntime, heads: Option<(u64, u64)>) -> String {
     match compute_session_diff(runtime, heads) {
         Ok(report) => render_session_diff(&report),
         Err(error) => format!("session diff error: {error}"),
@@ -432,26 +428,26 @@ pub(crate) fn execute_session_diff_command(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SessionStats {
-    pub(crate) entries: usize,
-    pub(crate) branch_tips: usize,
-    pub(crate) roots: usize,
-    pub(crate) max_depth: usize,
-    pub(crate) active_depth: Option<usize>,
-    pub(crate) latest_depth: Option<usize>,
-    pub(crate) active_head: Option<u64>,
-    pub(crate) latest_head: Option<u64>,
-    pub(crate) active_is_latest: bool,
-    pub(crate) role_counts: BTreeMap<String, usize>,
+pub struct SessionStats {
+    pub entries: usize,
+    pub branch_tips: usize,
+    pub roots: usize,
+    pub max_depth: usize,
+    pub active_depth: Option<usize>,
+    pub latest_depth: Option<usize>,
+    pub active_head: Option<u64>,
+    pub latest_head: Option<u64>,
+    pub active_is_latest: bool,
+    pub role_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionStatsOutputFormat {
+pub enum SessionStatsOutputFormat {
     Text,
     Json,
 }
 
-pub(crate) fn parse_session_stats_args(command_args: &str) -> Result<SessionStatsOutputFormat> {
+pub fn parse_session_stats_args(command_args: &str) -> Result<SessionStatsOutputFormat> {
     let tokens = command_args
         .split_whitespace()
         .filter(|token| !token.is_empty())
@@ -465,9 +461,7 @@ pub(crate) fn parse_session_stats_args(command_args: &str) -> Result<SessionStat
     bail!("usage: /session-stats [--json]");
 }
 
-pub(crate) fn compute_session_entry_depths(
-    entries: &[crate::session::SessionEntry],
-) -> Result<HashMap<u64, usize>> {
+pub fn compute_session_entry_depths(entries: &[SessionEntry]) -> Result<HashMap<u64, usize>> {
     let mut parent_by_id = HashMap::new();
     for entry in entries {
         if parent_by_id.insert(entry.id, entry.parent_id).is_some() {
@@ -513,7 +507,7 @@ pub(crate) fn compute_session_entry_depths(
     Ok(memo)
 }
 
-pub(crate) fn compute_session_stats(runtime: &SessionRuntime) -> Result<SessionStats> {
+pub fn compute_session_stats(runtime: &SessionRuntime) -> Result<SessionStats> {
     let entries = runtime.store.entries();
     let depths = compute_session_entry_depths(entries)?;
     let mut role_counts = BTreeMap::new();
@@ -550,7 +544,7 @@ pub(crate) fn compute_session_stats(runtime: &SessionRuntime) -> Result<SessionS
     })
 }
 
-pub(crate) fn render_session_stats(stats: &SessionStats) -> String {
+pub fn render_session_stats(stats: &SessionStats) -> String {
     let mut lines = vec![format!(
         "session stats: entries={} branch_tips={} roots={} max_depth={}",
         stats.entries, stats.branch_tips, stats.roots, stats.max_depth
@@ -590,7 +584,7 @@ pub(crate) fn render_session_stats(stats: &SessionStats) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn render_session_stats_json(stats: &SessionStats) -> String {
+pub fn render_session_stats_json(stats: &SessionStats) -> String {
     serde_json::json!({
         "entries": stats.entries,
         "branch_tips": stats.branch_tips,
@@ -606,7 +600,7 @@ pub(crate) fn render_session_stats_json(stats: &SessionStats) -> String {
     .to_string()
 }
 
-pub(crate) fn execute_session_stats_command(
+pub fn execute_session_stats_command(
     runtime: &SessionRuntime,
     format: SessionStatsOutputFormat,
 ) -> String {

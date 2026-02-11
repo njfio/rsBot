@@ -21,6 +21,7 @@ use crate::slack_helpers::{
     is_retryable_slack_status, is_retryable_transport_error, parse_retry_after, retry_delay,
     sanitize_for_path, truncate_for_error, truncate_for_slack,
 };
+use crate::tools::ToolPolicy;
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
     evaluate_pairing_access, execute_canvas_command, pairing_policy_for_state_dir,
@@ -29,7 +30,7 @@ use crate::{
     PairingDecision, PromptRunStatus, RbacDecision, RenderOptions, SessionRuntime,
     TransportHealthSnapshot,
 };
-use crate::{session::SessionStore, tools::ToolPolicy};
+use tau_session::SessionStore;
 
 const SLACK_STATE_SCHEMA_VERSION: u32 = 1;
 const SLACK_METADATA_MARKER_PREFIX: &str = "<!-- tau-slack-event:";

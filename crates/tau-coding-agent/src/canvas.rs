@@ -1423,7 +1423,7 @@ fn resolve_safe_canvas_path(canvas_dir: &Path, relative_path: &str) -> Result<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::SessionStore;
+    use tau_session::SessionStore;
     use tempfile::tempdir;
 
     fn test_config(root: &Path) -> CanvasCommandConfig {

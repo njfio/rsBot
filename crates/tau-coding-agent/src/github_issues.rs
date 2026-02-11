@@ -34,7 +34,7 @@ use crate::github_transport_helpers::{
     truncate_for_error,
 };
 use crate::runtime_types::{AuthCommandConfig, DoctorCommandConfig};
-use crate::session_commands::{parse_session_search_args, search_session_entries};
+use crate::tools::ToolPolicy;
 use crate::{
     authorize_action_for_principal_with_policy_path, current_unix_timestamp_ms,
     evaluate_pairing_access, execute_canvas_command, github_principal,
@@ -43,7 +43,8 @@ use crate::{
     CanvasEventOrigin, CanvasSessionLinkContext, PairingDecision, PromptRunStatus, RbacDecision,
     RenderOptions, SessionRuntime, TransportHealthSnapshot,
 };
-use crate::{session::SessionStore, tools::ToolPolicy};
+use tau_session::SessionStore;
+use tau_session::{parse_session_search_args, search_session_entries};
 
 const GITHUB_STATE_SCHEMA_VERSION: u32 = 1;
 const GITHUB_COMMENT_MAX_CHARS: usize = 65_000;
@@ -3281,7 +3282,7 @@ impl GithubIssuesBridgeRuntime {
                         }
                         lines.push(format!(
                             "Note: previews truncated to {} chars.",
-                            crate::session_commands::SESSION_SEARCH_PREVIEW_CHARS
+                            tau_session::SESSION_SEARCH_PREVIEW_CHARS
                         ));
                     }
                     lines.join("\n")
@@ -5665,7 +5666,7 @@ fn compact_issue_session(
     session_path: &Path,
     lock_wait_ms: u64,
     lock_stale_ms: u64,
-) -> Result<crate::session::CompactReport> {
+) -> Result<tau_session::CompactReport> {
     if let Some(parent) = session_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
@@ -7177,7 +7178,7 @@ printf '%s\n' "${payload}"
             Some(TauIssueCommand::ChatSearch {
                 query: "alpha".to_string(),
                 role: None,
-                limit: crate::session_commands::SESSION_SEARCH_DEFAULT_RESULTS,
+                limit: tau_session::SESSION_SEARCH_DEFAULT_RESULTS,
             })
         );
         assert_eq!(

@@ -18,13 +18,12 @@ use crate::extension_manifest::{
 };
 use crate::{
     authorize_tool_for_principal, authorize_tool_for_principal_with_policy_path,
-    evaluate_approval_gate, resolve_local_principal,
-    session::SessionStore,
-    session_commands::{
-        compute_session_entry_depths, search_session_entries, session_message_preview,
-        session_message_role,
-    },
-    ApprovalAction, ApprovalGateResult, RbacDecision,
+    evaluate_approval_gate, resolve_local_principal, ApprovalAction, ApprovalGateResult,
+    RbacDecision,
+};
+use tau_session::{
+    compute_session_entry_depths, search_session_entries, session_message_preview,
+    session_message_role, SessionStore,
 };
 
 const SAFE_BASH_ENV_VARS: &[&str] = &[
@@ -2587,9 +2586,9 @@ mod tests {
         SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolExecutionResult, ToolPolicy,
         ToolPolicyPreset, WriteTool,
     };
-    use crate::session::SessionStore;
     use crate::ApprovalAction;
     use tau_ai::Message;
+    use tau_session::{session_message_preview, session_message_role, SessionStore};
 
     fn test_policy(path: &Path) -> Arc<ToolPolicy> {
         Arc::new(ToolPolicy::new(vec![path.to_path_buf()]))
@@ -3228,11 +3227,11 @@ mod tests {
         let persisted = SessionStore::load(&session_path).expect("reload session");
         assert_eq!(persisted.entries().len(), 2);
         assert_eq!(
-            crate::session_commands::session_message_role(&persisted.entries()[1].message),
+            session_message_role(&persisted.entries()[1].message),
             "user"
         );
         assert_eq!(
-            crate::session_commands::session_message_preview(&persisted.entries()[1].message),
+            session_message_preview(&persisted.entries()[1].message),
             "delegate this follow-up"
         );
     }

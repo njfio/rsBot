@@ -1,26 +1,33 @@
-use super::*;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-pub(crate) const BRANCH_ALIAS_SCHEMA_VERSION: u32 = 1;
-pub(crate) const BRANCH_ALIAS_USAGE: &str = "usage: /branch-alias <set|list|use> ...";
+use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use tau_core::write_text_atomic;
+
+use crate::{session_lineage_messages, SessionRuntime};
+
+pub const BRANCH_ALIAS_SCHEMA_VERSION: u32 = 1;
+pub const BRANCH_ALIAS_USAGE: &str = "usage: /branch-alias <set|list|use> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum BranchAliasCommand {
+pub enum BranchAliasCommand {
     List,
     Set { name: String, id: u64 },
     Use { name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct BranchAliasFile {
-    pub(crate) schema_version: u32,
-    pub(crate) aliases: BTreeMap<String, u64>,
+pub struct BranchAliasFile {
+    pub schema_version: u32,
+    pub aliases: BTreeMap<String, u64>,
 }
 
-pub(crate) fn branch_alias_path_for_session(session_path: &Path) -> PathBuf {
+pub fn branch_alias_path_for_session(session_path: &Path) -> PathBuf {
     session_path.with_extension("aliases.json")
 }
 
-pub(crate) fn validate_branch_alias_name(name: &str) -> Result<()> {
+pub fn validate_branch_alias_name(name: &str) -> Result<()> {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         bail!("alias name must not be empty");
@@ -37,7 +44,7 @@ pub(crate) fn validate_branch_alias_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn parse_branch_alias_command(command_args: &str) -> Result<BranchAliasCommand> {
+pub fn parse_branch_alias_command(command_args: &str) -> Result<BranchAliasCommand> {
     const USAGE_LIST: &str = "usage: /branch-alias list";
     const USAGE_SET: &str = "usage: /branch-alias set <name> <id>";
     const USAGE_USE: &str = "usage: /branch-alias use <name>";
@@ -83,7 +90,7 @@ pub(crate) fn parse_branch_alias_command(command_args: &str) -> Result<BranchAli
     }
 }
 
-pub(crate) fn load_branch_aliases(path: &Path) -> Result<BTreeMap<String, u64>> {
+pub fn load_branch_aliases(path: &Path) -> Result<BTreeMap<String, u64>> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
@@ -103,7 +110,7 @@ pub(crate) fn load_branch_aliases(path: &Path) -> Result<BTreeMap<String, u64>> 
     Ok(parsed.aliases)
 }
 
-pub(crate) fn save_branch_aliases(path: &Path, aliases: &BTreeMap<String, u64>) -> Result<()> {
+pub fn save_branch_aliases(path: &Path, aliases: &BTreeMap<String, u64>) -> Result<()> {
     let payload = BranchAliasFile {
         schema_version: BRANCH_ALIAS_SCHEMA_VERSION,
         aliases: aliases.clone(),
@@ -139,99 +146,142 @@ fn render_branch_alias_list(
     lines.join("\n")
 }
 
-pub(crate) fn execute_branch_alias_command(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionNavigationOutcome {
+    pub message: String,
+    pub reload_active_head: bool,
+}
+
+impl SessionNavigationOutcome {
+    fn new(message: String, reload_active_head: bool) -> Self {
+        Self {
+            message,
+            reload_active_head,
+        }
+    }
+}
+
+pub fn execute_branch_alias_command(
     command_args: &str,
-    agent: &mut Agent,
     runtime: &mut SessionRuntime,
-) -> String {
+) -> SessionNavigationOutcome {
     let alias_path = branch_alias_path_for_session(runtime.store.path());
     let command = match parse_branch_alias_command(command_args) {
         Ok(command) => command,
         Err(error) => {
-            return format!(
-                "branch alias error: path={} error={error}",
-                alias_path.display()
-            )
+            return SessionNavigationOutcome::new(
+                format!(
+                    "branch alias error: path={} error={error}",
+                    alias_path.display()
+                ),
+                false,
+            );
         }
     };
 
     let mut aliases = match load_branch_aliases(&alias_path) {
         Ok(aliases) => aliases,
         Err(error) => {
-            return format!(
-                "branch alias error: path={} error={error}",
-                alias_path.display()
-            )
+            return SessionNavigationOutcome::new(
+                format!(
+                    "branch alias error: path={} error={error}",
+                    alias_path.display()
+                ),
+                false,
+            );
         }
     };
 
     match command {
-        BranchAliasCommand::List => render_branch_alias_list(&alias_path, &aliases, runtime),
+        BranchAliasCommand::List => SessionNavigationOutcome::new(
+            render_branch_alias_list(&alias_path, &aliases, runtime),
+            false,
+        ),
         BranchAliasCommand::Set { name, id } => {
             if !runtime.store.contains(id) {
-                return format!(
-                    "branch alias error: path={} name={} error=unknown session id {}",
-                    alias_path.display(),
-                    name,
-                    id
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias error: path={} name={} error=unknown session id {}",
+                        alias_path.display(),
+                        name,
+                        id
+                    ),
+                    false,
                 );
             }
             aliases.insert(name.clone(), id);
             match save_branch_aliases(&alias_path, &aliases) {
-                Ok(()) => format!(
-                    "branch alias set: path={} name={} id={}",
-                    alias_path.display(),
-                    name,
-                    id
+                Ok(()) => SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias set: path={} name={} id={}",
+                        alias_path.display(),
+                        name,
+                        id
+                    ),
+                    false,
                 ),
-                Err(error) => format!(
-                    "branch alias error: path={} name={} error={error}",
-                    alias_path.display(),
-                    name
+                Err(error) => SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias error: path={} name={} error={error}",
+                        alias_path.display(),
+                        name
+                    ),
+                    false,
                 ),
             }
         }
         BranchAliasCommand::Use { name } => {
             let Some(id) = aliases.get(&name).copied() else {
-                return format!(
-                    "branch alias error: path={} name={} error=unknown alias '{}'",
-                    alias_path.display(),
-                    name,
-                    name
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias error: path={} name={} error=unknown alias '{}'",
+                        alias_path.display(),
+                        name,
+                        name
+                    ),
+                    false,
                 );
             };
             if !runtime.store.contains(id) {
-                return format!(
-                    "branch alias error: path={} name={} error=alias points to unknown session id {}",
-                    alias_path.display(),
-                    name,
-                    id
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias error: path={} name={} error=alias points to unknown session id {}",
+                        alias_path.display(),
+                        name,
+                        id
+                    ),
+                    false,
                 );
             }
             runtime.active_head = Some(id);
-            match reload_agent_from_active_head(agent, runtime) {
-                Ok(()) => format!(
-                    "branch alias use: path={} name={} id={}",
-                    alias_path.display(),
-                    name,
-                    id
+            match session_lineage_messages(runtime) {
+                Ok(_) => SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias use: path={} name={} id={}",
+                        alias_path.display(),
+                        name,
+                        id
+                    ),
+                    true,
                 ),
-                Err(error) => format!(
-                    "branch alias error: path={} name={} error={error}",
-                    alias_path.display(),
-                    name
+                Err(error) => SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias error: path={} name={} error={error}",
+                        alias_path.display(),
+                        name
+                    ),
+                    false,
                 ),
             }
         }
     }
 }
 
-pub(crate) const SESSION_BOOKMARK_SCHEMA_VERSION: u32 = 1;
-pub(crate) const SESSION_BOOKMARK_USAGE: &str =
-    "usage: /session-bookmark <set|list|use|delete> ...";
+pub const SESSION_BOOKMARK_SCHEMA_VERSION: u32 = 1;
+pub const SESSION_BOOKMARK_USAGE: &str = "usage: /session-bookmark <set|list|use|delete> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SessionBookmarkCommand {
+pub enum SessionBookmarkCommand {
     List,
     Set { name: String, id: u64 },
     Use { name: String },
@@ -239,16 +289,16 @@ pub(crate) enum SessionBookmarkCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct SessionBookmarkFile {
-    pub(crate) schema_version: u32,
-    pub(crate) bookmarks: BTreeMap<String, u64>,
+pub struct SessionBookmarkFile {
+    pub schema_version: u32,
+    pub bookmarks: BTreeMap<String, u64>,
 }
 
-pub(crate) fn session_bookmark_path_for_session(session_path: &Path) -> PathBuf {
+pub fn session_bookmark_path_for_session(session_path: &Path) -> PathBuf {
     session_path.with_extension("bookmarks.json")
 }
 
-pub(crate) fn parse_session_bookmark_command(command_args: &str) -> Result<SessionBookmarkCommand> {
+pub fn parse_session_bookmark_command(command_args: &str) -> Result<SessionBookmarkCommand> {
     const USAGE_LIST: &str = "usage: /session-bookmark list";
     const USAGE_SET: &str = "usage: /session-bookmark set <name> <id>";
     const USAGE_USE: &str = "usage: /session-bookmark use <name>";
@@ -304,7 +354,7 @@ pub(crate) fn parse_session_bookmark_command(command_args: &str) -> Result<Sessi
     }
 }
 
-pub(crate) fn load_session_bookmarks(path: &Path) -> Result<BTreeMap<String, u64>> {
+pub fn load_session_bookmarks(path: &Path) -> Result<BTreeMap<String, u64>> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
@@ -324,7 +374,7 @@ pub(crate) fn load_session_bookmarks(path: &Path) -> Result<BTreeMap<String, u64
     Ok(parsed.bookmarks)
 }
 
-pub(crate) fn save_session_bookmarks(path: &Path, bookmarks: &BTreeMap<String, u64>) -> Result<()> {
+pub fn save_session_bookmarks(path: &Path, bookmarks: &BTreeMap<String, u64>) -> Result<()> {
     let payload = SessionBookmarkFile {
         schema_version: SESSION_BOOKMARK_SCHEMA_VERSION,
         bookmarks: bookmarks.clone(),
@@ -363,18 +413,20 @@ fn render_session_bookmark_list(
     lines.join("\n")
 }
 
-pub(crate) fn execute_session_bookmark_command(
+pub fn execute_session_bookmark_command(
     command_args: &str,
-    agent: &mut Agent,
     runtime: &mut SessionRuntime,
-) -> String {
+) -> SessionNavigationOutcome {
     let bookmark_path = session_bookmark_path_for_session(runtime.store.path());
     let command = match parse_session_bookmark_command(command_args) {
         Ok(command) => command,
         Err(error) => {
-            return format!(
-                "session bookmark error: path={} error={error}",
-                bookmark_path.display()
+            return SessionNavigationOutcome::new(
+                format!(
+                    "session bookmark error: path={} error={error}",
+                    bookmark_path.display()
+                ),
+                false,
             );
         }
     };
@@ -382,93 +434,127 @@ pub(crate) fn execute_session_bookmark_command(
     let mut bookmarks = match load_session_bookmarks(&bookmark_path) {
         Ok(bookmarks) => bookmarks,
         Err(error) => {
-            return format!(
-                "session bookmark error: path={} error={error}",
-                bookmark_path.display()
+            return SessionNavigationOutcome::new(
+                format!(
+                    "session bookmark error: path={} error={error}",
+                    bookmark_path.display()
+                ),
+                false,
             );
         }
     };
 
     match command {
-        SessionBookmarkCommand::List => {
-            render_session_bookmark_list(&bookmark_path, &bookmarks, runtime)
-        }
+        SessionBookmarkCommand::List => SessionNavigationOutcome::new(
+            render_session_bookmark_list(&bookmark_path, &bookmarks, runtime),
+            false,
+        ),
         SessionBookmarkCommand::Set { name, id } => {
             if !runtime.store.contains(id) {
-                return format!(
-                    "session bookmark error: path={} name={} error=unknown session id {}",
-                    bookmark_path.display(),
-                    name,
-                    id
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error=unknown session id {}",
+                        bookmark_path.display(),
+                        name,
+                        id
+                    ),
+                    false,
                 );
             }
             bookmarks.insert(name.clone(), id);
             match save_session_bookmarks(&bookmark_path, &bookmarks) {
-                Ok(()) => format!(
-                    "session bookmark set: path={} name={} id={}",
-                    bookmark_path.display(),
-                    name,
-                    id
+                Ok(()) => SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark set: path={} name={} id={}",
+                        bookmark_path.display(),
+                        name,
+                        id
+                    ),
+                    false,
                 ),
-                Err(error) => format!(
-                    "session bookmark error: path={} name={} error={error}",
-                    bookmark_path.display(),
-                    name
+                Err(error) => SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error={error}",
+                        bookmark_path.display(),
+                        name
+                    ),
+                    false,
                 ),
             }
         }
         SessionBookmarkCommand::Use { name } => {
             let Some(id) = bookmarks.get(&name).copied() else {
-                return format!(
-                    "session bookmark error: path={} name={} error=unknown bookmark '{}'",
-                    bookmark_path.display(),
-                    name,
-                    name
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error=unknown bookmark '{}'",
+                        bookmark_path.display(),
+                        name,
+                        name
+                    ),
+                    false,
                 );
             };
             if !runtime.store.contains(id) {
-                return format!(
-                    "session bookmark error: path={} name={} error=bookmark points to unknown session id {}",
-                    bookmark_path.display(),
-                    name,
-                    id
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error=bookmark points to unknown session id {}",
+                        bookmark_path.display(),
+                        name,
+                        id
+                    ),
+                    false,
                 );
             }
             runtime.active_head = Some(id);
-            match reload_agent_from_active_head(agent, runtime) {
-                Ok(()) => format!(
-                    "session bookmark use: path={} name={} id={}",
-                    bookmark_path.display(),
-                    name,
-                    id
+            match session_lineage_messages(runtime) {
+                Ok(_) => SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark use: path={} name={} id={}",
+                        bookmark_path.display(),
+                        name,
+                        id
+                    ),
+                    true,
                 ),
-                Err(error) => format!(
-                    "session bookmark error: path={} name={} error={error}",
-                    bookmark_path.display(),
-                    name
+                Err(error) => SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error={error}",
+                        bookmark_path.display(),
+                        name
+                    ),
+                    false,
                 ),
             }
         }
         SessionBookmarkCommand::Delete { name } => {
             if bookmarks.remove(&name).is_none() {
-                return format!(
-                    "session bookmark error: path={} name={} error=unknown bookmark '{}'",
-                    bookmark_path.display(),
-                    name,
-                    name
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error=unknown bookmark '{}'",
+                        bookmark_path.display(),
+                        name,
+                        name
+                    ),
+                    false,
                 );
             }
             match save_session_bookmarks(&bookmark_path, &bookmarks) {
-                Ok(()) => format!(
-                    "session bookmark delete: path={} name={} status=deleted remaining={}",
-                    bookmark_path.display(),
-                    name,
-                    bookmarks.len()
+                Ok(()) => SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark delete: path={} name={} status=deleted remaining={}",
+                        bookmark_path.display(),
+                        name,
+                        bookmarks.len()
+                    ),
+                    false,
                 ),
-                Err(error) => format!(
-                    "session bookmark error: path={} name={} error={error}",
-                    bookmark_path.display(),
-                    name
+                Err(error) => SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error={error}",
+                        bookmark_path.display(),
+                        name
+                    ),
+                    false,
                 ),
             }
         }
