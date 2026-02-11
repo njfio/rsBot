@@ -58,6 +58,11 @@ use tau_github_issues::issue_render::{
     render_issue_artifact_markdown as render_shared_issue_artifact_markdown,
     IssueArtifactAttachmentView, IssueEventPromptAttachmentView,
 };
+use tau_github_issues::issue_runtime_helpers::{
+    normalize_artifact_retention_days as normalize_shared_artifact_retention_days,
+    normalize_relative_channel_path as normalize_shared_relative_channel_path,
+    render_issue_artifact_pointer_line as render_shared_issue_artifact_pointer_line,
+};
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
 
@@ -4890,20 +4895,8 @@ fn normalize_relative_channel_path(
     channel_root: &Path,
     label: &str,
 ) -> Result<String> {
-    let relative = path.strip_prefix(channel_root).with_context(|| {
-        format!(
-            "failed to derive relative path for {label}: {}",
-            path.display()
-        )
-    })?;
-    let normalized = relative.to_string_lossy().replace('\\', "/");
-    if normalized.trim().is_empty() {
-        bail!(
-            "derived empty relative path for {label}: {}",
-            path.display()
-        );
-    }
-    Ok(normalized)
+    normalize_shared_relative_channel_path(path, channel_root, label)
+        .map_err(|error| anyhow!(error))
 }
 
 fn initialize_issue_session_runtime(
@@ -5010,9 +5003,11 @@ fn render_issue_comment_response_parts(
 }
 
 fn render_issue_artifact_pointer_line(label: &str, artifact: &ChannelArtifactRecord) -> String {
-    format!(
-        "{label}: id=`{}` path=`{}` bytes=`{}`",
-        artifact.id, artifact.relative_path, artifact.bytes
+    render_shared_issue_artifact_pointer_line(
+        label,
+        &artifact.id,
+        &artifact.relative_path,
+        artifact.bytes,
     )
 }
 
@@ -5065,11 +5060,7 @@ fn render_issue_artifact_markdown(
 }
 
 fn normalize_artifact_retention_days(days: u64) -> Option<u64> {
-    if days == 0 {
-        None
-    } else {
-        Some(days)
-    }
+    normalize_shared_artifact_retention_days(days)
 }
 
 fn default_demo_index_repo_root() -> PathBuf {
