@@ -4,10 +4,11 @@ use crate::channel_adapters::{
 };
 use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
-use tau_gateway::{GatewayOpenResponsesAuthMode, GatewayToolRegistrar};
+use tau_gateway::GatewayToolRegistrar;
 use tau_onboarding::startup_transport_modes::{
     build_multi_channel_media_config, build_multi_channel_outbound_config,
-    build_multi_channel_telemetry_config, resolve_multi_channel_outbound_secret,
+    build_multi_channel_telemetry_config, map_gateway_openresponses_auth_mode,
+    resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
 };
 
 #[derive(Clone)]
@@ -18,16 +19,6 @@ struct GatewayToolPolicyRegistrar {
 impl GatewayToolRegistrar for GatewayToolPolicyRegistrar {
     fn register(&self, agent: &mut tau_agent_core::Agent) {
         crate::tools::register_builtin_tools(agent, self.policy.clone());
-    }
-}
-
-fn map_gateway_auth_mode(mode: CliGatewayOpenResponsesAuthMode) -> GatewayOpenResponsesAuthMode {
-    match mode {
-        CliGatewayOpenResponsesAuthMode::Token => GatewayOpenResponsesAuthMode::Token,
-        CliGatewayOpenResponsesAuthMode::PasswordSession => {
-            GatewayOpenResponsesAuthMode::PasswordSession
-        }
-        CliGatewayOpenResponsesAuthMode::LocalhostDev => GatewayOpenResponsesAuthMode::LocalhostDev,
     }
 }
 
@@ -56,18 +47,7 @@ pub(crate) async fn run_transport_mode_if_requested(
     validate_voice_contract_runner_cli(cli)?;
 
     if cli.gateway_openresponses_server {
-        let auth_token = cli
-            .gateway_openresponses_auth_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        let auth_password = cli
-            .gateway_openresponses_auth_password
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+        let (auth_token, auth_password) = resolve_gateway_openresponses_auth(cli);
         tau_gateway::run_gateway_openresponses_server(
             tau_gateway::GatewayOpenResponsesServerConfig {
                 client: client.clone(),
@@ -82,7 +62,7 @@ pub(crate) async fn run_transport_mode_if_requested(
                 session_lock_stale_ms: cli.session_lock_stale_ms,
                 state_dir: cli.gateway_state_dir.clone(),
                 bind: cli.gateway_openresponses_bind.clone(),
-                auth_mode: map_gateway_auth_mode(cli.gateway_openresponses_auth_mode),
+                auth_mode: map_gateway_openresponses_auth_mode(cli.gateway_openresponses_auth_mode),
                 auth_token,
                 auth_password,
                 session_ttl_seconds: cli.gateway_openresponses_session_ttl_seconds,

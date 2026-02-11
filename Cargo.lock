@@ -2958,6 +2958,7 @@ dependencies = [
  "tau-ai",
  "tau-cli",
  "tau-core",
+ "tau-gateway",
  "tau-multi-channel",
  "tau-ops",
  "tau-provider",

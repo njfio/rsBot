@@ -1,8 +1,29 @@
 use tau_cli::Cli;
+use tau_cli::CliGatewayOpenResponsesAuthMode;
+use tau_gateway::GatewayOpenResponsesAuthMode;
 use tau_multi_channel::{
     MultiChannelMediaUnderstandingConfig, MultiChannelOutboundConfig, MultiChannelTelemetryConfig,
 };
 use tau_provider::{load_credential_store, resolve_credential_store_encryption_mode};
+
+pub fn map_gateway_openresponses_auth_mode(
+    mode: CliGatewayOpenResponsesAuthMode,
+) -> GatewayOpenResponsesAuthMode {
+    match mode {
+        CliGatewayOpenResponsesAuthMode::Token => GatewayOpenResponsesAuthMode::Token,
+        CliGatewayOpenResponsesAuthMode::PasswordSession => {
+            GatewayOpenResponsesAuthMode::PasswordSession
+        }
+        CliGatewayOpenResponsesAuthMode::LocalhostDev => GatewayOpenResponsesAuthMode::LocalhostDev,
+    }
+}
+
+pub fn resolve_gateway_openresponses_auth(cli: &Cli) -> (Option<String>, Option<String>) {
+    let auth_token = resolve_non_empty_cli_value(cli.gateway_openresponses_auth_token.as_deref());
+    let auth_password =
+        resolve_non_empty_cli_value(cli.gateway_openresponses_auth_password.as_deref());
+    (auth_token, auth_password)
+}
 
 pub fn resolve_multi_channel_outbound_secret(
     cli: &Cli,
@@ -89,12 +110,14 @@ fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::{
         build_multi_channel_media_config, build_multi_channel_outbound_config,
-        build_multi_channel_telemetry_config, resolve_multi_channel_outbound_secret,
+        build_multi_channel_telemetry_config, map_gateway_openresponses_auth_mode,
+        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
     };
     use clap::Parser;
     use std::collections::BTreeMap;
     use std::path::Path;
-    use tau_cli::Cli;
+    use tau_cli::{Cli, CliGatewayOpenResponsesAuthMode};
+    use tau_gateway::GatewayOpenResponsesAuthMode;
     use tau_provider::{
         load_credential_store, save_credential_store, CredentialStoreData,
         CredentialStoreEncryptionMode, IntegrationCredentialStoreRecord,
@@ -140,6 +163,44 @@ mod tests {
         let resolved =
             resolve_multi_channel_outbound_secret(&cli, Some("  direct-secret  "), "unused");
         assert_eq!(resolved.as_deref(), Some("direct-secret"));
+    }
+
+    #[test]
+    fn unit_map_gateway_openresponses_auth_mode_matches_cli_variants() {
+        assert_eq!(
+            map_gateway_openresponses_auth_mode(CliGatewayOpenResponsesAuthMode::Token),
+            GatewayOpenResponsesAuthMode::Token
+        );
+        assert_eq!(
+            map_gateway_openresponses_auth_mode(CliGatewayOpenResponsesAuthMode::PasswordSession),
+            GatewayOpenResponsesAuthMode::PasswordSession
+        );
+        assert_eq!(
+            map_gateway_openresponses_auth_mode(CliGatewayOpenResponsesAuthMode::LocalhostDev),
+            GatewayOpenResponsesAuthMode::LocalhostDev
+        );
+    }
+
+    #[test]
+    fn functional_resolve_gateway_openresponses_auth_trims_non_empty_values() {
+        let mut cli = parse_cli_with_stack();
+        cli.gateway_openresponses_auth_token = Some(" token-value ".to_string());
+        cli.gateway_openresponses_auth_password = Some(" password-value ".to_string());
+
+        let (token, password) = resolve_gateway_openresponses_auth(&cli);
+        assert_eq!(token.as_deref(), Some("token-value"));
+        assert_eq!(password.as_deref(), Some("password-value"));
+    }
+
+    #[test]
+    fn regression_resolve_gateway_openresponses_auth_ignores_empty_values() {
+        let mut cli = parse_cli_with_stack();
+        cli.gateway_openresponses_auth_token = Some("   ".to_string());
+        cli.gateway_openresponses_auth_password = Some(String::new());
+
+        let (token, password) = resolve_gateway_openresponses_auth(&cli);
+        assert!(token.is_none());
+        assert!(password.is_none());
     }
 
     #[test]

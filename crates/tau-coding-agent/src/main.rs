@@ -95,12 +95,11 @@ pub(crate) use crate::cli_types::CliProviderAuthMode;
 #[cfg(test)]
 pub(crate) use crate::cli_types::{
     CliBashProfile, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
-    CliMultiChannelLiveConnectorMode, CliMultiChannelTransport, CliOsSandboxMode,
-    CliSessionImportMode, CliToolPolicyPreset,
+    CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelTransport,
+    CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
 };
 pub(crate) use crate::cli_types::{
-    CliCommandFileErrorMode, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
-    CliOrchestratorMode,
+    CliCommandFileErrorMode, CliEventTemplateSchedule, CliOrchestratorMode,
 };
 #[cfg(test)]
 pub(crate) use crate::cli_types::{CliDaemonProfile, CliGatewayRemoteProfile};
