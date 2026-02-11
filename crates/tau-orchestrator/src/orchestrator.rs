@@ -1,6 +1,43 @@
-use super::*;
+use std::io::Write;
+use std::path::Path;
+
+use anyhow::{anyhow, bail, Context, Result};
+use async_trait::async_trait;
+
+use crate::multi_agent_router::{
+    build_multi_agent_role_prompt, resolve_multi_agent_role_profile, select_multi_agent_route,
+    MultiAgentRoutePhase, MultiAgentRouteTable,
+};
+use tau_core::time_utils::current_unix_timestamp_ms;
 
 const ORCHESTRATOR_ROUTE_TRACE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrchestratorPromptRunStatus {
+    Completed,
+    Cancelled,
+    TimedOut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrchestratorRenderOptions {
+    pub stream_output: bool,
+    pub stream_delay_ms: u64,
+}
+
+#[async_trait(?Send)]
+pub trait OrchestratorRuntime {
+    async fn run_prompt_with_cancellation(
+        &mut self,
+        prompt: &str,
+        turn_timeout_ms: u64,
+        render_options: OrchestratorRenderOptions,
+    ) -> Result<OrchestratorPromptRunStatus>;
+
+    fn latest_assistant_text(&self) -> Option<String>;
+
+    fn report_prompt_status(&self, status: OrchestratorPromptRunStatus);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoutedPromptRunState {
@@ -9,12 +46,11 @@ enum RoutedPromptRunState {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_plan_first_prompt(
-    agent: &mut Agent,
-    session_runtime: &mut Option<SessionRuntime>,
+pub async fn run_plan_first_prompt<R: OrchestratorRuntime>(
+    runtime: &mut R,
     user_prompt: &str,
     turn_timeout_ms: u64,
-    render_options: RenderOptions,
+    render_options: OrchestratorRenderOptions,
     max_plan_steps: usize,
     max_delegated_steps: usize,
     max_executor_response_chars: usize,
@@ -24,8 +60,7 @@ pub(crate) async fn run_plan_first_prompt(
 ) -> Result<()> {
     let fallback_policy_context = delegate_steps.then_some("legacy_policy_context=implicit");
     run_plan_first_prompt_with_policy_context(
-        agent,
-        session_runtime,
+        runtime,
         user_prompt,
         turn_timeout_ms,
         render_options,
@@ -41,12 +76,11 @@ pub(crate) async fn run_plan_first_prompt(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_plan_first_prompt_with_policy_context(
-    agent: &mut Agent,
-    session_runtime: &mut Option<SessionRuntime>,
+pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
+    runtime: &mut R,
     user_prompt: &str,
     turn_timeout_ms: u64,
-    render_options: RenderOptions,
+    render_options: OrchestratorRenderOptions,
     max_plan_steps: usize,
     max_delegated_steps: usize,
     max_executor_response_chars: usize,
@@ -57,8 +91,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
 ) -> Result<()> {
     let default_route_table = MultiAgentRouteTable::default();
     run_plan_first_prompt_with_policy_context_and_routing(
-        agent,
-        session_runtime,
+        runtime,
         user_prompt,
         turn_timeout_ms,
         render_options,
@@ -76,12 +109,11 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
-    agent: &mut Agent,
-    session_runtime: &mut Option<SessionRuntime>,
+pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: OrchestratorRuntime>(
+    runtime: &mut R,
     user_prompt: &str,
     turn_timeout_ms: u64,
-    render_options: RenderOptions,
+    render_options: OrchestratorRenderOptions,
     max_plan_steps: usize,
     max_delegated_steps: usize,
     max_executor_response_chars: usize,
@@ -93,13 +125,12 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
     route_trace_log_path: Option<&Path>,
 ) -> Result<()> {
     let planner_prompt = build_plan_first_planner_prompt(user_prompt, max_plan_steps);
-    let planner_render_options = RenderOptions {
+    let planner_render_options = OrchestratorRenderOptions {
         stream_output: false,
         stream_delay_ms: 0,
     };
     let planner_state = run_routed_prompt_with_fallback(
-        agent,
-        session_runtime,
+        runtime,
         route_table,
         MultiAgentRoutePhase::Planner,
         None,
@@ -114,7 +145,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
     if planner_state == RoutedPromptRunState::Interrupted {
         return Ok(());
     }
-    let plan_text = latest_assistant_text(agent).ok_or_else(|| {
+    let plan_text = runtime.latest_assistant_text().ok_or_else(|| {
         anyhow!("plan-first orchestrator failed: planner produced no text output")
     })?;
     let plan_steps = parse_numbered_plan_steps(&plan_text);
@@ -186,8 +217,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
                 policy_context,
             );
             let delegated_state = run_routed_prompt_with_fallback(
-                agent,
-                session_runtime,
+                runtime,
                 route_table,
                 MultiAgentRoutePhase::DelegatedStep,
                 Some(step.as_str()),
@@ -202,7 +232,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
             if delegated_state == RoutedPromptRunState::Interrupted {
                 return Ok(());
             }
-            let delegated_text = latest_assistant_text(agent).ok_or_else(|| {
+            let delegated_text = runtime.latest_assistant_text().ok_or_else(|| {
                 anyhow!(
                     "plan-first orchestrator failed: delegated step {} produced no text output",
                     index + 1
@@ -271,8 +301,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
     };
 
     let execution_state = run_routed_prompt_with_fallback(
-        agent,
-        session_runtime,
+        runtime,
         route_table,
         MultiAgentRoutePhase::Review,
         None,
@@ -297,7 +326,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
     } else {
         "executor"
     };
-    let execution_text = latest_assistant_text(agent).ok_or_else(|| {
+    let execution_text = runtime.latest_assistant_text().ok_or_else(|| {
         anyhow!(
             "plan-first orchestrator failed: {} produced no text output",
             execution_phase_label
@@ -337,9 +366,8 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_routed_prompt_with_fallback(
-    agent: &mut Agent,
-    session_runtime: &mut Option<SessionRuntime>,
+async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
+    runtime: &mut R,
     route_table: &MultiAgentRouteTable,
     phase: MultiAgentRoutePhase,
     step_text: Option<&str>,
@@ -347,7 +375,7 @@ async fn run_routed_prompt_with_fallback(
     base_prompt: &str,
     empty_output_reason: &str,
     turn_timeout_ms: u64,
-    render_options: RenderOptions,
+    render_options: OrchestratorRenderOptions,
     route_trace_log_path: Option<&Path>,
 ) -> Result<RoutedPromptRunState> {
     let selection = select_multi_agent_route(route_table, phase, step_text);
@@ -387,15 +415,9 @@ async fn run_routed_prompt_with_fallback(
         );
 
         let attempt_prompt = build_multi_agent_role_prompt(base_prompt, phase, role, &profile);
-        let attempt_status = match run_prompt_with_cancellation(
-            agent,
-            session_runtime,
-            &attempt_prompt,
-            turn_timeout_ms,
-            tokio::signal::ctrl_c(),
-            render_options,
-        )
-        .await
+        let attempt_status = match runtime
+            .run_prompt_with_cancellation(&attempt_prompt, turn_timeout_ms, render_options)
+            .await
         {
             Ok(status) => status,
             Err(error) => {
@@ -437,11 +459,11 @@ async fn run_routed_prompt_with_fallback(
                 ));
             }
         };
-        report_prompt_status_internal(attempt_status);
-        if attempt_status != PromptRunStatus::Completed {
+        runtime.report_prompt_status(attempt_status);
+        if attempt_status != OrchestratorPromptRunStatus::Completed {
             return Ok(RoutedPromptRunState::Interrupted);
         }
-        let Some(assistant_text) = latest_assistant_text(agent) else {
+        let Some(assistant_text) = runtime.latest_assistant_text() else {
             emit_route_trace(
                 route_trace_log_path,
                 phase,
@@ -594,7 +616,7 @@ fn emit_route_trace(
     }
 }
 
-pub(crate) fn parse_numbered_plan_steps(plan: &str) -> Vec<String> {
+pub fn parse_numbered_plan_steps(plan: &str) -> Vec<String> {
     let mut steps = Vec::new();
     for line in plan.lines() {
         let trimmed = line.trim();
@@ -622,15 +644,6 @@ pub(crate) fn parse_numbered_plan_steps(plan: &str) -> Vec<String> {
         steps.push(step.to_string());
     }
     steps
-}
-
-fn latest_assistant_text(agent: &Agent) -> Option<String> {
-    agent
-        .messages()
-        .iter()
-        .rev()
-        .find(|message| message.role == MessageRole::Assistant)
-        .map(|message| message.text_content())
 }
 
 fn build_plan_first_planner_prompt(user_prompt: &str, max_plan_steps: usize) -> String {
@@ -724,14 +737,6 @@ fn executor_response_within_budget(response_chars: usize, max_response_chars: us
 
 fn flatten_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn report_prompt_status_internal(status: PromptRunStatus) {
-    if status == PromptRunStatus::Cancelled {
-        println!("\nrequest cancelled\n");
-    } else if status == PromptRunStatus::TimedOut {
-        println!("\nrequest timed out\n");
-    }
 }
 
 #[cfg(test)]

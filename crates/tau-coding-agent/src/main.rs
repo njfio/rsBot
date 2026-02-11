@@ -49,7 +49,7 @@ mod multi_channel_runtime;
 mod multi_channel_send;
 mod observability_loggers;
 mod onboarding;
-mod orchestrator;
+mod orchestrator_bridge;
 mod package_manifest;
 mod project_index;
 mod provider_auth;
@@ -205,8 +205,7 @@ pub(crate) use crate::model_catalog::{
     MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
 };
 pub(crate) use crate::multi_agent_router::{
-    build_multi_agent_role_prompt, load_multi_agent_route_table, resolve_multi_agent_role_profile,
-    select_multi_agent_route, MultiAgentRoutePhase, MultiAgentRouteTable,
+    load_multi_agent_route_table, MultiAgentRoutePhase, MultiAgentRouteTable,
 };
 pub(crate) use crate::multi_channel_runtime::build_multi_channel_incident_timeline_report;
 pub(crate) use crate::multi_channel_runtime::build_multi_channel_route_inspect_report;
@@ -214,11 +213,11 @@ pub(crate) use crate::multi_channel_runtime::build_multi_channel_route_inspect_r
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
 pub(crate) use crate::onboarding::execute_onboarding_command;
+pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt;
+pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt_with_policy_context;
+pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt_with_policy_context_and_routing;
 #[cfg(test)]
-pub(crate) use crate::orchestrator::parse_numbered_plan_steps;
-pub(crate) use crate::orchestrator::run_plan_first_prompt;
-pub(crate) use crate::orchestrator::run_plan_first_prompt_with_policy_context;
-pub(crate) use crate::orchestrator::run_plan_first_prompt_with_policy_context_and_routing;
+pub(crate) use tau_orchestrator::parse_numbered_plan_steps;
 pub(crate) use crate::package_manifest::{
     execute_package_activate_command, execute_package_activate_on_startup,
     execute_package_conflicts_command, execute_package_install_command,
