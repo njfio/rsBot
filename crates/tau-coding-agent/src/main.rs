@@ -372,11 +372,11 @@ pub(crate) use crate::startup_model_resolution::{resolve_startup_models, Startup
 pub(crate) use crate::startup_policy::{resolve_startup_policy, StartupPolicyBundle};
 pub(crate) use crate::startup_preflight::execute_startup_preflight;
 pub(crate) use crate::startup_prompt_composition::compose_startup_system_prompt;
+#[cfg(test)]
+pub(crate) use crate::startup_resolution::apply_trust_root_mutations;
 pub(crate) use crate::startup_resolution::{
     ensure_non_empty_text, resolve_skill_trust_roots, resolve_system_prompt,
 };
-#[cfg(test)]
-pub(crate) use crate::startup_resolution::apply_trust_root_mutations;
 pub(crate) use crate::startup_skills_bootstrap::run_startup_skills_bootstrap;
 pub(crate) use crate::startup_transport_modes::run_transport_mode_if_requested;
 #[cfg(test)]
