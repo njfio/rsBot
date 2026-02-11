@@ -2862,7 +2862,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tau-core",
+ "tau-runtime",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

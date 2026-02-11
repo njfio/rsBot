@@ -34,7 +34,6 @@ mod memory_contract;
 mod memory_runtime;
 mod model_catalog;
 mod multi_agent_router;
-mod multi_agent_runtime;
 mod multi_channel_adapters;
 mod multi_channel_contract;
 mod multi_channel_lifecycle;
@@ -382,7 +381,6 @@ use dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
 use deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
 use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
 use memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
-use multi_agent_runtime::{run_multi_agent_contract_runner, MultiAgentRuntimeConfig};
 use multi_channel_runtime::{
     run_multi_channel_contract_runner, run_multi_channel_live_runner,
     MultiChannelLiveRuntimeConfig, MultiChannelRuntimeConfig,
@@ -409,6 +407,9 @@ pub(crate) use tau_access::trust_roots::{
 pub(crate) use tau_core::write_text_atomic;
 pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
 use tau_gateway::{run_gateway_contract_runner, GatewayRuntimeConfig};
+use tau_orchestrator::multi_agent_runtime::{
+    run_multi_agent_contract_runner, MultiAgentRuntimeConfig,
+};
 #[cfg(test)]
 pub(crate) use tau_orchestrator::parse_numbered_plan_steps;
 use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};

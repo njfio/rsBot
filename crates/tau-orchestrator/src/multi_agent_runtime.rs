@@ -7,13 +7,15 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
-use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
-use tau_orchestrator::multi_agent_contract::{
+use crate::multi_agent_contract::{
     evaluate_multi_agent_case, load_multi_agent_contract_fixture,
     validate_multi_agent_case_result_against_contract, MultiAgentContractCase,
     MultiAgentContractFixture, MultiAgentReplayStep,
 };
+use tau_core::atomic_io::write_text_atomic;
+use tau_core::time_utils::current_unix_timestamp_ms;
+use tau_runtime::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
+use tau_runtime::transport_health::TransportHealthSnapshot;
 
 const MULTI_AGENT_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 const MULTI_AGENT_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
@@ -23,26 +25,26 @@ fn multi_agent_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MultiAgentRuntimeConfig {
-    pub(crate) fixture_path: PathBuf,
-    pub(crate) state_dir: PathBuf,
-    pub(crate) queue_limit: usize,
-    pub(crate) processed_case_cap: usize,
-    pub(crate) retry_max_attempts: usize,
-    pub(crate) retry_base_delay_ms: u64,
+pub struct MultiAgentRuntimeConfig {
+    pub fixture_path: PathBuf,
+    pub state_dir: PathBuf,
+    pub queue_limit: usize,
+    pub processed_case_cap: usize,
+    pub retry_max_attempts: usize,
+    pub retry_base_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct MultiAgentRuntimeSummary {
-    pub(crate) discovered_cases: usize,
-    pub(crate) queued_cases: usize,
-    pub(crate) applied_cases: usize,
-    pub(crate) duplicate_skips: usize,
-    pub(crate) malformed_cases: usize,
-    pub(crate) retryable_failures: usize,
-    pub(crate) retry_attempts: usize,
-    pub(crate) failed_cases: usize,
-    pub(crate) routed_cases_upserted: usize,
+pub struct MultiAgentRuntimeSummary {
+    pub discovered_cases: usize,
+    pub queued_cases: usize,
+    pub applied_cases: usize,
+    pub duplicate_skips: usize,
+    pub malformed_cases: usize,
+    pub retryable_failures: usize,
+    pub retry_attempts: usize,
+    pub failed_cases: usize,
+    pub routed_cases_upserted: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,7 +100,7 @@ impl Default for MultiAgentRuntimeState {
     }
 }
 
-pub(crate) async fn run_multi_agent_contract_runner(config: MultiAgentRuntimeConfig) -> Result<()> {
+pub async fn run_multi_agent_contract_runner(config: MultiAgentRuntimeConfig) -> Result<()> {
     let fixture = load_multi_agent_contract_fixture(&config.fixture_path)?;
     let mut runtime = MultiAgentRuntime::new(config)?;
     let summary = runtime.run_once(&fixture).await?;
@@ -251,7 +253,7 @@ impl MultiAgentRuntime {
         &mut self,
         case: &MultiAgentContractCase,
         case_key: &str,
-        result: &tau_orchestrator::multi_agent_contract::MultiAgentReplayResult,
+        result: &crate::multi_agent_contract::MultiAgentReplayResult,
     ) -> Result<usize> {
         let routed_case = MultiAgentRoutedCase {
             case_key: case_key.to_string(),
@@ -311,7 +313,7 @@ impl MultiAgentRuntime {
         &self,
         case: &MultiAgentContractCase,
         case_key: &str,
-        result: &tau_orchestrator::multi_agent_contract::MultiAgentReplayResult,
+        result: &crate::multi_agent_contract::MultiAgentReplayResult,
     ) -> Result<()> {
         let store = self.channel_store()?;
         let timestamp_unix_ms = current_unix_timestamp_ms();
@@ -579,11 +581,11 @@ mod tests {
         load_multi_agent_runtime_state, retry_delay_ms, MultiAgentRuntime, MultiAgentRuntimeConfig,
         MULTI_AGENT_RUNTIME_EVENTS_LOG_FILE,
     };
-    use crate::channel_store::ChannelStore;
-    use crate::transport_health::TransportHealthState;
-    use tau_orchestrator::multi_agent_contract::{
+    use crate::multi_agent_contract::{
         load_multi_agent_contract_fixture, parse_multi_agent_contract_fixture,
     };
+    use tau_runtime::channel_store::ChannelStore;
+    use tau_runtime::transport_health::TransportHealthState;
 
     fn fixture_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
