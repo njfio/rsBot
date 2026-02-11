@@ -2658,6 +2658,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-access"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tau-core",
+ "tau-skills",
+ "tempfile",
+]
+
+[[package]]
 name = "tau-agent-core"
 version = "0.1.0"
 dependencies = [
@@ -2716,6 +2729,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shell-words",
+ "tau-access",
  "tau-agent-core",
  "tau-ai",
  "tau-cli",

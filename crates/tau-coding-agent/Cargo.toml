@@ -23,6 +23,7 @@ tau-multi-channel = { path = "../tau-multi-channel" }
 tau-session = { path = "../tau-session" }
 tau-skills = { path = "../tau-skills" }
 tau-extensions = { path = "../tau-extensions" }
+tau-access = { path = "../tau-access" }
 tau-orchestrator = { path = "../tau-orchestrator" }
 tau-runtime = { path = "../tau-runtime" }
 tau-agent-core = { path = "../tau-agent-core" }

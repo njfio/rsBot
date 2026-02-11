@@ -1,0 +1,15 @@
+[package]
+name = "tau-access"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tau-core = { path = "../tau-core" }
+tau-skills = { path = "../tau-skills" }
+
+[dev-dependencies]
+tempfile = "3"
