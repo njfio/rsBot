@@ -64,6 +64,10 @@ use tau_github_issues::issue_demo_index::parse_demo_index_run_command as parse_s
 use tau_github_issues::issue_filter::{
     build_required_issue_labels, issue_matches_required_labels, issue_matches_required_numbers,
 };
+use tau_github_issues::issue_prompt_helpers::{
+    build_summarize_prompt as build_shared_summarize_prompt,
+    collect_assistant_reply as collect_shared_assistant_reply,
+};
 use tau_github_issues::issue_render::{
     render_event_prompt as render_shared_event_prompt,
     render_issue_artifact_markdown as render_shared_issue_artifact_markdown,
@@ -4944,18 +4948,7 @@ fn initialize_issue_session_runtime(
 }
 
 fn collect_assistant_reply(messages: &[tau_ai::Message]) -> String {
-    let content = messages
-        .iter()
-        .filter(|message| message.role == tau_ai::MessageRole::Assistant)
-        .map(|message| message.text_content())
-        .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if content.trim().is_empty() {
-        "I couldn't generate a textual response for this event.".to_string()
-    } else {
-        content
-    }
+    collect_shared_assistant_reply(messages)
 }
 
 fn render_event_prompt(
@@ -5440,19 +5433,7 @@ fn build_summarize_prompt(
     event: &GithubBridgeEvent,
     focus: Option<&str>,
 ) -> String {
-    match focus {
-        Some(focus) => format!(
-            "Summarize the current GitHub issue thread for {} issue #{} with focus on: {}.\nInclude decisions, open questions, blockers, and immediate next steps.",
-            repo.as_slug(),
-            event.issue_number,
-            focus
-        ),
-        None => format!(
-            "Summarize the current GitHub issue thread for {} issue #{}.\nInclude decisions, open questions, blockers, and immediate next steps.",
-            repo.as_slug(),
-            event.issue_number
-        ),
-    }
+    build_shared_summarize_prompt(&repo.as_slug(), event.issue_number, focus)
 }
 
 fn compact_issue_session(
