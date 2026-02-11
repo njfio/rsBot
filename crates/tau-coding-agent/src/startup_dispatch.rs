@@ -1,6 +1,6 @@
 use super::*;
 use tau_onboarding::startup_dispatch::{
-    resolve_startup_runtime_from_cli, StartupRuntimeDispatchContext, StartupRuntimeResolution,
+    execute_startup_runtime_modes, resolve_startup_runtime_from_cli,
 };
 
 pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
@@ -8,19 +8,7 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    let StartupRuntimeResolution {
-        model_ref,
-        fallback_model_refs,
-        model_catalog,
-        client,
-        runtime_dispatch_context:
-            StartupRuntimeDispatchContext {
-                effective_skills_dir,
-                skills_lock_path,
-                system_prompt,
-                startup_policy,
-            },
-    } = resolve_startup_runtime_from_cli(
+    let runtime = resolve_startup_runtime_from_cli(
         &cli,
         |cli| -> Result<(ModelRef, Vec<ModelRef>)> {
             let StartupModelResolution {
@@ -41,36 +29,49 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         |skills_bootstrap| skills_bootstrap.skills_lock_path.clone(),
     )
     .await?;
-    let StartupPolicyBundle {
-        tool_policy,
-        tool_policy_json,
-    } = startup_policy;
     let render_options = RenderOptions::from_cli(&cli);
-    if run_transport_mode_if_requested(
+    execute_startup_runtime_modes(
         &cli,
-        &client,
-        &model_ref,
-        &system_prompt,
-        &tool_policy,
+        runtime,
         render_options,
+        |cli, client, model_ref, system_prompt, tool_policy, render_options| {
+            Box::pin(run_transport_mode_if_requested(
+                cli,
+                client,
+                model_ref,
+                system_prompt,
+                tool_policy,
+                render_options,
+            ))
+        },
+        |cli,
+         client,
+         model_ref,
+         fallback_model_refs,
+         model_catalog,
+         system_prompt,
+         tool_policy,
+         tool_policy_json,
+         render_options,
+         effective_skills_dir,
+         skills_lock_path| {
+            Box::pin(async move {
+                run_local_runtime(LocalRuntimeConfig {
+                    cli,
+                    client,
+                    model_ref: &model_ref,
+                    fallback_model_refs: &fallback_model_refs,
+                    model_catalog: &model_catalog,
+                    system_prompt: &system_prompt,
+                    tool_policy,
+                    tool_policy_json: &tool_policy_json,
+                    render_options,
+                    skills_dir: &effective_skills_dir,
+                    skills_lock_path: &skills_lock_path,
+                })
+                .await
+            })
+        },
     )
-    .await?
-    {
-        return Ok(());
-    }
-
-    run_local_runtime(LocalRuntimeConfig {
-        cli: &cli,
-        client,
-        model_ref: &model_ref,
-        fallback_model_refs: &fallback_model_refs,
-        model_catalog: &model_catalog,
-        system_prompt: &system_prompt,
-        tool_policy,
-        tool_policy_json: &tool_policy_json,
-        render_options,
-        skills_dir: &effective_skills_dir,
-        skills_lock_path: &skills_lock_path,
-    })
     .await
 }

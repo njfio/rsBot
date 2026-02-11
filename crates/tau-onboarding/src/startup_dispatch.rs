@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use anyhow::Result;
+use serde_json::Value;
 use tau_cli::Cli;
 use tau_skills::default_skills_lock_path;
+use tau_tools::tools::ToolPolicy;
 
 use crate::startup_policy::{resolve_startup_policy, StartupPolicyBundle};
 use crate::startup_prompt_composition::compose_startup_system_prompt;
@@ -22,6 +24,91 @@ pub struct StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog
     pub model_catalog: TModelCatalog,
     pub client: TClient,
     pub runtime_dispatch_context: StartupRuntimeDispatchContext,
+}
+
+pub async fn execute_startup_runtime_modes<
+    TModelRef,
+    TFallbackModelRefs,
+    TModelCatalog,
+    TClient,
+    TRenderOptions,
+    FRunTransportModeIfRequested,
+    FRunLocalRuntime,
+>(
+    cli: &Cli,
+    runtime: StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient>,
+    render_options: TRenderOptions,
+    run_transport_mode_if_requested: FRunTransportModeIfRequested,
+    run_local_runtime: FRunLocalRuntime,
+) -> Result<()>
+where
+    TRenderOptions: Clone,
+    FRunTransportModeIfRequested:
+        for<'a> FnOnce(
+            &'a Cli,
+            &'a TClient,
+            &'a TModelRef,
+            &'a str,
+            &'a ToolPolicy,
+            TRenderOptions,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
+    FRunLocalRuntime: for<'a> FnOnce(
+        &'a Cli,
+        TClient,
+        TModelRef,
+        TFallbackModelRefs,
+        TModelCatalog,
+        String,
+        ToolPolicy,
+        Value,
+        TRenderOptions,
+        PathBuf,
+        PathBuf,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
+{
+    let StartupRuntimeResolution {
+        model_ref,
+        fallback_model_refs,
+        model_catalog,
+        client,
+        runtime_dispatch_context:
+            StartupRuntimeDispatchContext {
+                effective_skills_dir,
+                skills_lock_path,
+                system_prompt,
+                startup_policy,
+            },
+    } = runtime;
+    let StartupPolicyBundle {
+        tool_policy,
+        tool_policy_json,
+    } = startup_policy;
+    if run_transport_mode_if_requested(
+        cli,
+        &client,
+        &model_ref,
+        &system_prompt,
+        &tool_policy,
+        render_options.clone(),
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    run_local_runtime(
+        cli,
+        client,
+        model_ref,
+        fallback_model_refs,
+        model_catalog,
+        system_prompt,
+        tool_policy,
+        tool_policy_json,
+        render_options,
+        effective_skills_dir,
+        skills_lock_path,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,14 +287,14 @@ pub fn resolve_runtime_skills_lock_path(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_startup_runtime_dispatch_context, resolve_runtime_skills_dir,
-        resolve_runtime_skills_lock_path, resolve_startup_model_runtime_from_cli,
-        resolve_startup_runtime_dispatch_context_from_cli, resolve_startup_runtime_from_cli,
-        StartupModelRuntimeResolution, StartupRuntimeResolution,
+        build_startup_runtime_dispatch_context, execute_startup_runtime_modes,
+        resolve_runtime_skills_dir, resolve_runtime_skills_lock_path,
+        resolve_startup_model_runtime_from_cli, resolve_startup_runtime_dispatch_context_from_cli,
+        resolve_startup_runtime_from_cli, StartupModelRuntimeResolution, StartupRuntimeResolution,
     };
     use anyhow::{anyhow, Result};
     use clap::Parser;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tau_cli::Cli;
     use tau_skills::default_skills_lock_path;
@@ -728,5 +815,223 @@ mod tests {
         };
 
         assert!(error.to_string().contains("skills bootstrap failed"));
+    }
+
+    #[tokio::test]
+    async fn unit_execute_startup_runtime_modes_runs_local_when_transport_not_requested() {
+        let mut cli = parse_cli_with_stack();
+        let workspace = tempdir().expect("tempdir");
+        cli.system_prompt = "Tau system prompt".to_string();
+        cli.skills_dir = workspace.path().join(".tau/skills");
+        std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+        let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
+        let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
+        let runtime = resolve_startup_runtime_from_cli(
+            &cli,
+            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
+            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
+            |_catalog, _model, _fallback| Ok(()),
+            |_cli, model, _fallback| Ok(format!("client:{model}")),
+            |_cli| {
+                Box::pin(async move {
+                    Ok(MockSkillsBootstrap {
+                        skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
+                    })
+                })
+            },
+            |_cli| Ok(None::<()>),
+            |bootstrap| bootstrap.skills_lock_path.clone(),
+        )
+        .await
+        .expect("runtime");
+        let expected_skills_dir = cli.skills_dir.clone();
+        let transport_calls = AtomicUsize::new(0);
+        let local_calls = AtomicUsize::new(0);
+        execute_startup_runtime_modes(
+            &cli,
+            runtime,
+            "render-v1".to_string(),
+            |_cli, _client, _model_ref, _system_prompt, _tool_policy, render_options| {
+                transport_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move {
+                    assert_eq!(render_options, "render-v1");
+                    Ok(false)
+                })
+            },
+            |_cli,
+             client,
+             model_ref,
+             fallback_model_refs,
+             model_catalog,
+             system_prompt,
+             _tool_policy,
+             tool_policy_json,
+             render_options,
+             effective_skills_dir,
+             skills_lock_path| {
+                local_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move {
+                    assert_eq!(client, "client:primary");
+                    assert_eq!(model_ref, "primary");
+                    assert_eq!(fallback_model_refs, vec!["fallback".to_string()]);
+                    assert_eq!(model_catalog, "catalog");
+                    assert!(system_prompt.contains("Tau system prompt"));
+                    assert_eq!(render_options, "render-v1");
+                    assert!(tool_policy_json.is_object());
+                    assert_eq!(effective_skills_dir, expected_skills_dir);
+                    assert_eq!(skills_lock_path, bootstrap_lock_path);
+                    Ok(())
+                })
+            },
+        )
+        .await
+        .expect("dispatch");
+
+        assert_eq!(transport_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(local_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn functional_execute_startup_runtime_modes_short_circuits_local_when_transport_handles()
+    {
+        let cli = parse_cli_with_stack();
+        let runtime = StartupRuntimeResolution {
+            model_ref: "primary".to_string(),
+            fallback_model_refs: vec!["fallback".to_string()],
+            model_catalog: "catalog".to_string(),
+            client: "client".to_string(),
+            runtime_dispatch_context: build_startup_runtime_dispatch_context(
+                &cli,
+                Path::new(".tau/skills.lock.json"),
+                false,
+            )
+            .expect("runtime context"),
+        };
+        let local_calls = AtomicUsize::new(0);
+        execute_startup_runtime_modes(
+            &cli,
+            runtime,
+            "render-v1".to_string(),
+            |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
+                Box::pin(async { Ok(true) })
+            },
+            |_cli,
+             _client,
+             _model_ref,
+             _fallback_model_refs,
+             _model_catalog,
+             _system_prompt,
+             _tool_policy,
+             _tool_policy_json,
+             _render_options,
+             _effective_skills_dir,
+             _skills_lock_path| {
+                local_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move { Ok(()) })
+            },
+        )
+        .await
+        .expect("dispatch");
+
+        assert_eq!(local_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn integration_execute_startup_runtime_modes_propagates_transport_errors() {
+        let cli = parse_cli_with_stack();
+        let runtime = StartupRuntimeResolution {
+            model_ref: "primary".to_string(),
+            fallback_model_refs: vec!["fallback".to_string()],
+            model_catalog: "catalog".to_string(),
+            client: "client".to_string(),
+            runtime_dispatch_context: build_startup_runtime_dispatch_context(
+                &cli,
+                Path::new(".tau/skills.lock.json"),
+                false,
+            )
+            .expect("runtime context"),
+        };
+        let local_calls = AtomicUsize::new(0);
+        let result = execute_startup_runtime_modes(
+            &cli,
+            runtime,
+            "render-v1".to_string(),
+            |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
+                Box::pin(async { Err(anyhow!("transport failed")) })
+            },
+            |_cli,
+             _client,
+             _model_ref,
+             _fallback_model_refs,
+             _model_catalog,
+             _system_prompt,
+             _tool_policy,
+             _tool_policy_json,
+             _render_options,
+             _effective_skills_dir,
+             _skills_lock_path| {
+                local_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move { Ok(()) })
+            },
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("transport errors should propagate"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("transport failed"));
+        assert_eq!(local_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn regression_execute_startup_runtime_modes_propagates_local_runtime_errors() {
+        let cli = parse_cli_with_stack();
+        let runtime = StartupRuntimeResolution {
+            model_ref: "primary".to_string(),
+            fallback_model_refs: vec!["fallback".to_string()],
+            model_catalog: "catalog".to_string(),
+            client: "client".to_string(),
+            runtime_dispatch_context: build_startup_runtime_dispatch_context(
+                &cli,
+                Path::new(".tau/skills.lock.json"),
+                false,
+            )
+            .expect("runtime context"),
+        };
+        let transport_calls = AtomicUsize::new(0);
+        let local_calls = AtomicUsize::new(0);
+        let result = execute_startup_runtime_modes(
+            &cli,
+            runtime,
+            "render-v1".to_string(),
+            |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
+                transport_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move { Ok(false) })
+            },
+            |_cli,
+             _client,
+             _model_ref,
+             _fallback_model_refs,
+             _model_catalog,
+             _system_prompt,
+             _tool_policy,
+             _tool_policy_json,
+             _render_options,
+             _effective_skills_dir,
+             _skills_lock_path| {
+                local_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move { Err(anyhow!("local runtime failed")) })
+            },
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("local runtime errors should propagate"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("local runtime failed"));
+        assert_eq!(transport_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(local_calls.load(Ordering::Relaxed), 1);
     }
 }

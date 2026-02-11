@@ -234,7 +234,6 @@ pub(crate) use crate::startup_model_catalog::{
     resolve_startup_model_catalog, validate_startup_model_catalog,
 };
 pub(crate) use crate::startup_model_resolution::{resolve_startup_models, StartupModelResolution};
-pub(crate) use crate::startup_policy::StartupPolicyBundle;
 pub(crate) use crate::startup_preflight::execute_startup_preflight;
 #[cfg(test)]
 pub(crate) use crate::startup_prompt_composition::compose_startup_system_prompt;
