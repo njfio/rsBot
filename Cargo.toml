@@ -12,6 +12,7 @@ members = [
   "crates/tau-access",
   "crates/tau-orchestrator",
   "crates/tau-runtime",
+  "crates/tau-events",
   "crates/tau-tui",
   "crates/tau-coding-agent",
 ]

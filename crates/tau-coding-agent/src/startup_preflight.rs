@@ -509,7 +509,9 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
             signature: cli.event_webhook_signature.clone(),
             timestamp: cli.event_webhook_timestamp.clone(),
             secret: event_webhook_secret,
-            signature_algorithm: cli.event_webhook_signature_algorithm.map(Into::into),
+            signature_algorithm: cli
+                .event_webhook_signature_algorithm
+                .map(crate::cli_types::map_webhook_signature_algorithm),
             signature_max_skew_seconds: cli.event_webhook_signature_max_skew_seconds,
         })?;
         return Ok(true);

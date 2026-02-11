@@ -2734,6 +2734,7 @@ dependencies = [
  "tau-ai",
  "tau-cli",
  "tau-core",
+ "tau-events",
  "tau-extensions",
  "tau-gateway",
  "tau-multi-channel",
@@ -2758,6 +2759,27 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "tempfile",
+]
+
+[[package]]
+name = "tau-events"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "cron",
+ "hmac",
+ "httpmock",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tau-ai",
+ "tau-core",
+ "tau-runtime",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

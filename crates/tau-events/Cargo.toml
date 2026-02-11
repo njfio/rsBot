@@ -1,0 +1,24 @@
+[package]
+name = "tau-events"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+cron.workspace = true
+hmac.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tau-core = { path = "../tau-core" }
+tau-runtime = { path = "../tau-runtime" }
+tokio.workspace = true
+
+[dev-dependencies]
+httpmock = "0.8"
+tempfile = "3"
+tokio.workspace = true
+tau-ai = { path = "../tau-ai" }

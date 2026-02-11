@@ -26,6 +26,7 @@ tau-extensions = { path = "../tau-extensions" }
 tau-access = { path = "../tau-access" }
 tau-orchestrator = { path = "../tau-orchestrator" }
 tau-runtime = { path = "../tau-runtime" }
+tau-events = { path = "../tau-events" }
 tau-agent-core = { path = "../tau-agent-core" }
 tau-ai = { path = "../tau-ai" }
 reqwest.workspace = true

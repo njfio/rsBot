@@ -1,8 +1,6 @@
-pub use tau_cli::cli_types::*;
-
-use crate::events::WebhookSignatureAlgorithm;
 use crate::tools::{BashCommandProfile, OsSandboxMode, ToolPolicyPreset};
 use crate::ProviderAuthMethod;
+pub use tau_cli::cli_types::*;
 
 impl From<CliBashProfile> for BashCommandProfile {
     fn from(value: CliBashProfile) -> Self {
@@ -24,12 +22,14 @@ impl From<CliOsSandboxMode> for OsSandboxMode {
     }
 }
 
-impl From<CliWebhookSignatureAlgorithm> for WebhookSignatureAlgorithm {
-    fn from(value: CliWebhookSignatureAlgorithm) -> Self {
-        match value {
-            CliWebhookSignatureAlgorithm::GithubSha256 => WebhookSignatureAlgorithm::GithubSha256,
-            CliWebhookSignatureAlgorithm::SlackV0 => WebhookSignatureAlgorithm::SlackV0,
+pub(crate) fn map_webhook_signature_algorithm(
+    value: CliWebhookSignatureAlgorithm,
+) -> crate::events::WebhookSignatureAlgorithm {
+    match value {
+        CliWebhookSignatureAlgorithm::GithubSha256 => {
+            crate::events::WebhookSignatureAlgorithm::GithubSha256
         }
+        CliWebhookSignatureAlgorithm::SlackV0 => crate::events::WebhookSignatureAlgorithm::SlackV0,
     }
 }
 
