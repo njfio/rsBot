@@ -12,6 +12,9 @@ use crate::macro_profile_commands::{
     load_profile_store, save_profile_store, validate_profile_name,
 };
 use crate::release_channel_commands::{save_release_channel_store, ReleaseChannel};
+use tau_onboarding::onboarding_paths::{
+    collect_bootstrap_directories, parse_yes_no_response, resolve_tau_root,
+};
 
 const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 2;
 const ONBOARDING_DEFAULT_PROFILE: &str = "default";
@@ -237,69 +240,6 @@ fn onboarding_mode_label(mode: OnboardingMode) -> &'static str {
         OnboardingMode::Interactive => "interactive",
         OnboardingMode::NonInteractive => "non-interactive",
     }
-}
-
-fn resolve_tau_root(cli: &Cli) -> PathBuf {
-    if let Some(session_parent) = cli
-        .session
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-    {
-        if session_parent
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "sessions")
-        {
-            if let Some(root) = session_parent
-                .parent()
-                .filter(|path| !path.as_os_str().is_empty())
-            {
-                return root.to_path_buf();
-            }
-        }
-    }
-
-    cli.credential_store
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from(".tau"))
-}
-
-fn collect_bootstrap_directories(cli: &Cli, tau_root: &Path) -> Vec<PathBuf> {
-    let mut directories = BTreeSet::new();
-    maybe_insert_directory(&mut directories, Some(tau_root));
-    maybe_insert_directory(&mut directories, Some(&tau_root.join("reports")));
-    maybe_insert_directory(&mut directories, cli.session.parent());
-    maybe_insert_directory(&mut directories, cli.credential_store.parent());
-    maybe_insert_directory(&mut directories, Some(&cli.skills_dir));
-    maybe_insert_directory(&mut directories, cli.model_catalog_cache.parent());
-    maybe_insert_directory(&mut directories, Some(&cli.channel_store_root));
-    maybe_insert_directory(&mut directories, Some(&cli.events_dir));
-    maybe_insert_directory(&mut directories, cli.events_state_path.parent());
-    maybe_insert_directory(&mut directories, Some(&cli.github_state_dir));
-    maybe_insert_directory(&mut directories, Some(&cli.slack_state_dir));
-    maybe_insert_directory(&mut directories, Some(&cli.package_install_root));
-    maybe_insert_directory(&mut directories, Some(&cli.package_update_root));
-    maybe_insert_directory(&mut directories, Some(&cli.package_list_root));
-    maybe_insert_directory(&mut directories, Some(&cli.package_remove_root));
-    maybe_insert_directory(&mut directories, Some(&cli.package_rollback_root));
-    maybe_insert_directory(&mut directories, Some(&cli.package_conflicts_root));
-    maybe_insert_directory(&mut directories, Some(&cli.package_activate_root));
-    maybe_insert_directory(&mut directories, Some(&cli.package_activate_destination));
-    maybe_insert_directory(&mut directories, Some(&cli.extension_list_root));
-    maybe_insert_directory(&mut directories, Some(&cli.extension_runtime_root));
-    directories.into_iter().collect()
-}
-
-fn maybe_insert_directory(directories: &mut BTreeSet<PathBuf>, path: Option<&Path>) {
-    let Some(path) = path else {
-        return;
-    };
-    if path.as_os_str().is_empty() {
-        return;
-    }
-    directories.insert(path.to_path_buf());
 }
 
 fn ensure_directory(
@@ -566,15 +506,6 @@ fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
         .read_line(&mut buffer)
         .context("failed to read onboarding prompt response")?;
     Ok(parse_yes_no_response(&buffer, default_yes))
-}
-
-fn parse_yes_no_response(raw: &str, default_yes: bool) -> bool {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" => default_yes,
-        "y" | "yes" => true,
-        "n" | "no" => false,
-        _ => default_yes,
-    }
 }
 
 #[cfg(test)]

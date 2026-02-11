@@ -1,3 +1,4 @@
+pub mod onboarding_paths;
 pub mod startup_config;
 pub mod startup_dispatch;
 pub mod startup_model_resolution;
