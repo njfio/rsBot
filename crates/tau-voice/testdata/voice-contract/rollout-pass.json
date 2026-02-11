@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "name": "voice-rollout-pass",
+  "description": "Deterministic all-success fixture for voice observability rollout and demo validation.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "voice-wake-word-detected",
+      "mode": "wake_word",
+      "wake_word": "tau",
+      "transcript": "Tau are you online",
+      "locale": "en-US",
+      "speaker_id": "ops-1",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "wake_word",
+          "wake_word": "tau",
+          "wake_detected": true
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "voice-turn-open-dashboard",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "tau open dashboard status",
+      "locale": "en-US",
+      "speaker_id": "ops-1",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "turn",
+          "wake_word": "tau",
+          "utterance": "open dashboard status",
+          "locale": "en-US",
+          "speaker_id": "ops-1"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "voice-turn-open-orders",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "tau summarize open orders",
+      "locale": "en-US",
+      "speaker_id": "ops-2",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "turn",
+          "wake_word": "tau",
+          "utterance": "summarize open orders",
+          "locale": "en-US",
+          "speaker_id": "ops-2"
+        }
+      }
+    }
+  ]
+}
