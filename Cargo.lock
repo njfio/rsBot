@@ -2954,6 +2954,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tau-access",
+ "tau-agent-core",
  "tau-ai",
  "tau-cli",
  "tau-core",

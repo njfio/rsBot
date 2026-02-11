@@ -8,6 +8,7 @@ pub mod profile_store;
 pub mod startup_config;
 pub mod startup_daemon_preflight;
 pub mod startup_dispatch;
+pub mod startup_local_runtime;
 pub mod startup_model_resolution;
 pub mod startup_policy;
 pub mod startup_prompt_composition;

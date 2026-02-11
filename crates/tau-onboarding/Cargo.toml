@@ -10,6 +10,7 @@ serde_json = { workspace = true }
 
 tau-access = { path = "../tau-access" }
 tau-ai = { path = "../tau-ai" }
+tau-agent-core = { path = "../tau-agent-core" }
 tau-cli = { path = "../tau-cli" }
 tau-core = { path = "../tau-core" }
 tau-multi-channel = { path = "../tau-multi-channel" }
