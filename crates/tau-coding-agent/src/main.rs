@@ -92,6 +92,8 @@ pub(crate) use crate::canvas::{
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
 #[cfg(test)]
+pub(crate) use crate::cli_types::CliProviderAuthMode;
+#[cfg(test)]
 pub(crate) use crate::cli_types::{
     CliBashProfile, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
     CliMultiChannelLiveConnectorMode, CliMultiChannelTransport, CliOsSandboxMode,
@@ -99,7 +101,7 @@ pub(crate) use crate::cli_types::{
 };
 pub(crate) use crate::cli_types::{
     CliCommandFileErrorMode, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
-    CliOrchestratorMode, CliProviderAuthMode,
+    CliOrchestratorMode,
 };
 #[cfg(test)]
 pub(crate) use crate::cli_types::{CliDaemonProfile, CliGatewayRemoteProfile};
