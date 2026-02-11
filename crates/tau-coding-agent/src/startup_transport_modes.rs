@@ -14,6 +14,24 @@ use tau_onboarding::startup_transport_modes::{
     run_voice_contract_runner_if_requested, validate_transport_mode_cli,
 };
 
+fn build_multi_channel_runtime_dependencies(
+    cli: &Cli,
+    model_ref: &ModelRef,
+) -> (
+    tau_multi_channel::MultiChannelCommandHandlers,
+    Arc<dyn tau_multi_channel::MultiChannelPairingEvaluator>,
+) {
+    let fallback_model_refs = Vec::new();
+    let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
+    let auth_config = build_auth_command_config(cli);
+    let doctor_config =
+        build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path);
+    (
+        build_multi_channel_command_handlers(auth_config, doctor_config),
+        build_multi_channel_pairing_evaluator(),
+    )
+}
+
 pub(crate) async fn run_transport_mode_if_requested(
     cli: &Cli,
     client: &Arc<dyn LlmClient>,
@@ -177,32 +195,18 @@ pub(crate) async fn run_transport_mode_if_requested(
     }
 
     if cli.multi_channel_contract_runner {
-        let fallback_model_refs = Vec::new();
-        let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
-        let auth_config = build_auth_command_config(cli);
-        let doctor_config =
-            build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path);
-        run_multi_channel_contract_runner_if_requested(
-            cli,
-            build_multi_channel_command_handlers(auth_config, doctor_config),
-            build_multi_channel_pairing_evaluator(),
-        )
-        .await?;
+        let (command_handlers, pairing_evaluator) =
+            build_multi_channel_runtime_dependencies(cli, model_ref);
+        run_multi_channel_contract_runner_if_requested(cli, command_handlers, pairing_evaluator)
+            .await?;
         return Ok(true);
     }
 
     if cli.multi_channel_live_runner {
-        let fallback_model_refs = Vec::new();
-        let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
-        let auth_config = build_auth_command_config(cli);
-        let doctor_config =
-            build_doctor_command_config(cli, model_ref, &fallback_model_refs, &skills_lock_path);
-        run_multi_channel_live_runner_if_requested(
-            cli,
-            build_multi_channel_command_handlers(auth_config, doctor_config),
-            build_multi_channel_pairing_evaluator(),
-        )
-        .await?;
+        let (command_handlers, pairing_evaluator) =
+            build_multi_channel_runtime_dependencies(cli, model_ref);
+        run_multi_channel_live_runner_if_requested(cli, command_handlers, pairing_evaluator)
+            .await?;
         return Ok(true);
     }
 
