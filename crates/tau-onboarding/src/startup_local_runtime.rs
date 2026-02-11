@@ -14,6 +14,14 @@ pub enum PromptRuntimeMode {
     PlanFirstPrompt(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalRuntimeEntryMode {
+    Interactive,
+    CommandFile(PathBuf),
+    Prompt(String),
+    PlanFirstPrompt(String),
+}
+
 pub fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str, Value)> {
     match event {
         AgentEvent::ToolExecutionStart {
@@ -61,6 +69,22 @@ pub fn resolve_prompt_runtime_mode(
         Some(prompt) if plan_first_mode => PromptRuntimeMode::PlanFirstPrompt(prompt),
         Some(prompt) => PromptRuntimeMode::Prompt(prompt),
         None => PromptRuntimeMode::None,
+    }
+}
+
+pub fn resolve_local_runtime_entry_mode(
+    prompt: Option<String>,
+    plan_first_mode: bool,
+    command_file: Option<&Path>,
+) -> LocalRuntimeEntryMode {
+    match resolve_prompt_runtime_mode(prompt, plan_first_mode) {
+        PromptRuntimeMode::PlanFirstPrompt(prompt) => {
+            LocalRuntimeEntryMode::PlanFirstPrompt(prompt)
+        }
+        PromptRuntimeMode::Prompt(prompt) => LocalRuntimeEntryMode::Prompt(prompt),
+        PromptRuntimeMode::None => command_file
+            .map(|path| LocalRuntimeEntryMode::CommandFile(path.to_path_buf()))
+            .unwrap_or(LocalRuntimeEntryMode::Interactive),
     }
 }
 
@@ -158,7 +182,8 @@ mod tests {
     use super::{
         extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
         register_runtime_extension_tool_hook_subscriber, resolve_extension_runtime_registrations,
-        resolve_orchestrator_route_table, resolve_prompt_runtime_mode, PromptRuntimeMode,
+        resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
+        resolve_prompt_runtime_mode, LocalRuntimeEntryMode, PromptRuntimeMode,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -360,6 +385,42 @@ mod tests {
         assert_eq!(
             resolve_prompt_runtime_mode(Some("  keep me  ".to_string()), true),
             PromptRuntimeMode::PlanFirstPrompt("  keep me  ".to_string())
+        );
+    }
+
+    #[test]
+    fn unit_resolve_local_runtime_entry_mode_defaults_to_interactive() {
+        assert_eq!(
+            resolve_local_runtime_entry_mode(None, false, None),
+            LocalRuntimeEntryMode::Interactive
+        );
+    }
+
+    #[test]
+    fn functional_resolve_local_runtime_entry_mode_prefers_prompt_over_command_file() {
+        assert_eq!(
+            resolve_local_runtime_entry_mode(
+                Some("prompt text".to_string()),
+                false,
+                Some(Path::new("commands.txt")),
+            ),
+            LocalRuntimeEntryMode::Prompt("prompt text".to_string())
+        );
+    }
+
+    #[test]
+    fn integration_resolve_local_runtime_entry_mode_selects_command_file_without_prompt() {
+        assert_eq!(
+            resolve_local_runtime_entry_mode(None, false, Some(Path::new("commands.txt"))),
+            LocalRuntimeEntryMode::CommandFile(PathBuf::from("commands.txt"))
+        );
+    }
+
+    #[test]
+    fn regression_resolve_local_runtime_entry_mode_selects_plan_first_prompt() {
+        assert_eq!(
+            resolve_local_runtime_entry_mode(Some("plan text".to_string()), true, None),
+            LocalRuntimeEntryMode::PlanFirstPrompt("plan text".to_string())
         );
     }
 

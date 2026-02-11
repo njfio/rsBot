@@ -4,8 +4,8 @@ use crate::extension_manifest::{
 };
 use tau_onboarding::startup_local_runtime::{
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
-    resolve_extension_runtime_registrations, resolve_orchestrator_route_table,
-    resolve_prompt_runtime_mode, PromptRuntimeMode,
+    resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
+    resolve_orchestrator_route_table, LocalRuntimeEntryMode,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -121,15 +121,18 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     }
     register_runtime_extension_tool_hook_subscriber(&mut agent, &extension_runtime_hooks);
 
-    match resolve_prompt_runtime_mode(
+    let entry_mode = resolve_local_runtime_entry_mode(
         resolve_prompt_input(cli)?,
         cli.orchestrator_mode == CliOrchestratorMode::PlanFirst,
-    ) {
-        PromptRuntimeMode::PlanFirstPrompt(prompt) => {
+        cli.command_file.as_deref(),
+    );
+
+    match &entry_mode {
+        LocalRuntimeEntryMode::PlanFirstPrompt(prompt) => {
             run_plan_first_prompt_with_runtime_hooks(
                 &mut agent,
                 &mut session_runtime,
-                &prompt,
+                prompt,
                 cli.turn_timeout_ms,
                 render_options,
                 cli.orchestrator_max_plan_steps,
@@ -146,11 +149,11 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             .await?;
             return Ok(());
         }
-        PromptRuntimeMode::Prompt(prompt) => {
+        LocalRuntimeEntryMode::Prompt(prompt) => {
             run_prompt(
                 &mut agent,
                 &mut session_runtime,
-                &prompt,
+                prompt,
                 cli.turn_timeout_ms,
                 render_options,
                 &extension_runtime_hooks,
@@ -158,7 +161,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             .await?;
             return Ok(());
         }
-        PromptRuntimeMode::None => {}
+        LocalRuntimeEntryMode::CommandFile(_) | LocalRuntimeEntryMode::Interactive => {}
     }
 
     let skills_sync_command_config = SkillsSyncCommandConfig {
@@ -201,9 +204,10 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         orchestrator_route_trace_log,
         command_context,
     };
-    if let Some(command_file_path) = cli.command_file.as_deref() {
+
+    if let LocalRuntimeEntryMode::CommandFile(command_file_path) = entry_mode {
         execute_command_file(
-            command_file_path,
+            &command_file_path,
             cli.command_file_error_mode,
             &mut agent,
             &mut session_runtime,
@@ -211,6 +215,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         )?;
         return Ok(());
     }
+
     run_interactive(agent, session_runtime, interactive_config).await
 }
 
