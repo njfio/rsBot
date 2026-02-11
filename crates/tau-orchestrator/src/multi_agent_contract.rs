@@ -587,7 +587,6 @@ pub fn validate_multi_agent_case_result_against_contract(
 }
 
 #[cfg(test)]
-#[cfg(test)]
 pub(crate) fn run_multi_agent_contract_replay<D: MultiAgentContractDriver>(
     fixture: &MultiAgentContractFixture,
     driver: &mut D,
