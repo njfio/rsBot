@@ -170,9 +170,10 @@ pub(crate) use crate::project_index::execute_project_index_command;
 pub(crate) use crate::qa_loop_commands::{
     execute_qa_loop_cli_command, execute_qa_loop_preflight_command, QA_LOOP_USAGE,
 };
+#[cfg(test)]
+pub(crate) use crate::release_channel_commands::load_release_channel_store;
 pub(crate) use crate::release_channel_commands::{
-    default_release_channel_path, execute_release_channel_command, load_release_channel_store,
-    RELEASE_CHANNEL_USAGE,
+    default_release_channel_path, execute_release_channel_command, RELEASE_CHANNEL_USAGE,
 };
 pub(crate) use crate::rpc_capabilities::execute_rpc_capabilities_command;
 #[cfg(test)]

@@ -30,10 +30,11 @@ pub(crate) const RELEASE_CHANNEL_USAGE: &str =
 pub(crate) const RELEASE_UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
 pub(crate) use tau_release_channel::default_release_channel_path;
 pub(crate) use tau_release_channel::ReleaseChannel;
+#[cfg(test)]
+pub(crate) use tau_release_channel::{load_release_channel_store, save_release_channel_store};
 pub(crate) use tau_release_channel::{
-    load_release_channel_store, load_release_channel_store_file, save_release_channel_store,
-    save_release_channel_store_file, ReleaseChannelRollbackMetadata, ReleaseChannelStoreFile,
-    RELEASE_CHANNEL_SCHEMA_VERSION,
+    load_release_channel_store_file, save_release_channel_store_file,
+    ReleaseChannelRollbackMetadata, ReleaseChannelStoreFile, RELEASE_CHANNEL_SCHEMA_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

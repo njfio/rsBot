@@ -11,10 +11,10 @@ use crate::daemon_runtime::{
 use crate::macro_profile_commands::{
     load_profile_store, save_profile_store, validate_profile_name,
 };
-use crate::release_channel_commands::{save_release_channel_store, ReleaseChannel};
 use tau_onboarding::onboarding_paths::{
     collect_bootstrap_directories, parse_yes_no_response, resolve_tau_root,
 };
+use tau_onboarding::onboarding_release_channel::ensure_onboarding_release_channel;
 
 const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 2;
 const ONBOARDING_DEFAULT_PROFILE: &str = "default";
@@ -64,13 +64,6 @@ pub(crate) struct OnboardingDaemonBootstrapReport {
 enum OnboardingMode {
     Interactive,
     NonInteractive,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OnboardingReleaseChannelState {
-    channel: ReleaseChannel,
-    source: &'static str,
-    action: &'static str,
 }
 
 pub(crate) fn execute_onboarding_command(cli: &Cli) -> Result<()> {
@@ -280,66 +273,6 @@ fn ensure_profile_store_entry(
         Ok("updated")
     } else {
         Ok("created")
-    }
-}
-
-fn resolve_onboarding_release_channel_override(
-    raw: Option<&str>,
-) -> Result<Option<ReleaseChannel>> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(trimmed.parse::<ReleaseChannel>()?))
-}
-
-fn ensure_onboarding_release_channel(
-    release_channel_path: &Path,
-    override_channel_raw: Option<&str>,
-) -> Result<OnboardingReleaseChannelState> {
-    let override_channel = resolve_onboarding_release_channel_override(override_channel_raw)?;
-    let existing = load_release_channel_store(release_channel_path)?;
-
-    match (override_channel, existing) {
-        (Some(channel), Some(existing_channel)) if channel == existing_channel => {
-            Ok(OnboardingReleaseChannelState {
-                channel,
-                source: "override",
-                action: "unchanged",
-            })
-        }
-        (Some(channel), Some(_)) => {
-            save_release_channel_store(release_channel_path, channel)?;
-            Ok(OnboardingReleaseChannelState {
-                channel,
-                source: "override",
-                action: "updated",
-            })
-        }
-        (Some(channel), None) => {
-            save_release_channel_store(release_channel_path, channel)?;
-            Ok(OnboardingReleaseChannelState {
-                channel,
-                source: "override",
-                action: "created",
-            })
-        }
-        (None, Some(channel)) => Ok(OnboardingReleaseChannelState {
-            channel,
-            source: "existing",
-            action: "unchanged",
-        }),
-        (None, None) => {
-            save_release_channel_store(release_channel_path, ReleaseChannel::Stable)?;
-            Ok(OnboardingReleaseChannelState {
-                channel: ReleaseChannel::Stable,
-                source: "default",
-                action: "created",
-            })
-        }
     }
 }
 
