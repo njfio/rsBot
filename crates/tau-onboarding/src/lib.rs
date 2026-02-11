@@ -1,3 +1,4 @@
+pub mod onboarding_daemon;
 pub mod onboarding_paths;
 pub mod onboarding_profile_bootstrap;
 pub mod onboarding_release_channel;
