@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "name": "mixed-outcomes",
+  "description": "Covers success, malformed_input, and retryable_failure contract outcomes.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "extract-user-preference",
+      "mode": "extract",
+      "scope": {
+        "workspace_id": "tau-core",
+        "channel_id": "discord:agents",
+        "actor_id": "user-42"
+      },
+      "input_text": "Remember user prefers concise release notes with rollback steps.",
+      "expected": {
+        "outcome": "success",
+        "entries": [
+          {
+            "memory_id": "mem-extract-user-preference",
+            "summary": "Remember user prefers concise release notes with rollback steps.",
+            "tags": [
+              "remember",
+              "user",
+              "prefers"
+            ],
+            "facts": [
+              "scope=tau-core"
+            ],
+            "source_event_key": "tau-core:extract:extract-user-preference",
+            "recency_weight_bps": 9000,
+            "confidence_bps": 8200
+          }
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "retrieve-missing-query",
+      "mode": "retrieve",
+      "scope": {
+        "workspace_id": "tau-core",
+        "channel_id": "telegram:ops",
+        "actor_id": "user-77"
+      },
+      "query_text": "",
+      "prior_entries": [
+        {
+          "memory_id": "mem-release-checklist",
+          "summary": "Release checklist includes rollback and canary verification.",
+          "tags": [
+            "release",
+            "rollback"
+          ],
+          "facts": [
+            "owner=sre"
+          ],
+          "source_event_key": "tau-core:extract:release-checklist",
+          "recency_weight_bps": 9400,
+          "confidence_bps": 9000
+        }
+      ],
+      "expected": {
+        "outcome": "malformed_input",
+        "error_code": "memory_empty_input",
+        "entries": []
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "extract-backend-retryable",
+      "mode": "extract",
+      "scope": {
+        "workspace_id": "tau-core",
+        "channel_id": "whatsapp:alerts",
+        "actor_id": "user-88"
+      },
+      "input_text": "Persist incident summary for follow-up reminders.",
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "error_code": "memory_backend_unavailable",
+        "entries": []
+      }
+    }
+  ]
+}

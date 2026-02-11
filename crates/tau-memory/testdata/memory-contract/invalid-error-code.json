@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "invalid-error-code",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "malformed-with-unsupported-error-code",
+      "mode": "retrieve",
+      "scope": {
+        "workspace_id": "tau-core"
+      },
+      "query_text": "",
+      "expected": {
+        "outcome": "malformed_input",
+        "error_code": "memory_unknown_error",
+        "entries": []
+      }
+    }
+  ]
+}
