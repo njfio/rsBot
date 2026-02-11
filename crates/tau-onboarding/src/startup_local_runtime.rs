@@ -426,6 +426,40 @@ pub fn register_runtime_extension_tools<T, FRegister, FReport>(
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RuntimeExtensionPipelineConfig<'a, T> {
+    pub enabled: bool,
+    pub root: PathBuf,
+    pub registered_tools: &'a [T],
+    pub diagnostics: &'a [String],
+}
+
+pub fn register_runtime_extension_pipeline<T, FRegister, FReport, FDispatch>(
+    agent: &mut Agent,
+    config: RuntimeExtensionPipelineConfig<'_, T>,
+    register_tools: FRegister,
+    report_diagnostic: FReport,
+    dispatch_hook: FDispatch,
+) where
+    FRegister: FnOnce(&mut Agent, &[T]),
+    FReport: FnMut(&str),
+    FDispatch: Fn(&Path, &'static str, &Value) -> Vec<String> + Send + Sync + 'static,
+{
+    register_runtime_extension_tools(
+        agent,
+        config.registered_tools,
+        config.diagnostics,
+        register_tools,
+        report_diagnostic,
+    );
+    register_runtime_extension_tool_hook_subscriber(
+        agent,
+        config.enabled,
+        config.root,
+        dispatch_hook,
+    );
+}
+
 pub fn register_runtime_json_event_subscriber<FRender, FEmit>(
     agent: &mut Agent,
     enabled: bool,
@@ -519,14 +553,14 @@ mod tests {
         execute_command_file_entry_mode, execute_prompt_entry_mode,
         execute_prompt_or_command_file_entry_mode, extension_tool_hook_diagnostics,
         extension_tool_hook_dispatch, register_runtime_event_reporter_if_configured,
-        register_runtime_event_reporter_subscriber,
+        register_runtime_event_reporter_subscriber, register_runtime_extension_pipeline,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
         register_runtime_json_event_subscriber, resolve_command_file_entry_path,
         resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
         resolve_orchestrator_route_table, resolve_prompt_entry_runtime_mode,
         resolve_prompt_runtime_mode, resolve_session_runtime, resolve_session_runtime_from_cli,
         LocalRuntimeEntryMode, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
-        PromptRuntimeMode, SessionBootstrapOutcome,
+        PromptRuntimeMode, RuntimeExtensionPipelineConfig, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1679,6 +1713,165 @@ mod tests {
         );
 
         assert_eq!(*diagnostics_count.lock().expect("capture lock"), 0);
+    }
+
+    #[tokio::test]
+    async fn unit_register_runtime_extension_pipeline_disabled_still_registers_and_reports() {
+        let mut agent = build_tool_loop_agent();
+        let captured_diagnostics = Arc::new(Mutex::new(Vec::<String>::new()));
+        let diagnostics_sink = Arc::clone(&captured_diagnostics);
+        let captured_hooks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hooks_sink = Arc::clone(&captured_hooks);
+
+        register_runtime_extension_pipeline(
+            &mut agent,
+            RuntimeExtensionPipelineConfig {
+                enabled: false,
+                root: PathBuf::from("/tmp/extensions"),
+                registered_tools: &["tool-a".to_string()],
+                diagnostics: &["diag-a".to_string(), "diag-b".to_string()],
+            },
+            |_agent, _registered_tools| {},
+            move |diagnostic| {
+                diagnostics_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(diagnostic.to_string());
+            },
+            move |_root, hook, _payload| {
+                hooks_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(hook.to_string());
+                Vec::new()
+            },
+        );
+
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert_eq!(
+            captured_diagnostics
+                .lock()
+                .expect("capture lock")
+                .as_slice(),
+            ["diag-a", "diag-b"]
+        );
+        assert!(captured_hooks.lock().expect("capture lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn functional_register_runtime_extension_pipeline_enabled_dispatches_hooks() {
+        let mut agent = build_tool_loop_agent();
+        let captured_hooks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hooks_sink = Arc::clone(&captured_hooks);
+
+        register_runtime_extension_pipeline(
+            &mut agent,
+            RuntimeExtensionPipelineConfig {
+                enabled: true,
+                root: PathBuf::from("/tmp/extensions"),
+                registered_tools: &[],
+                diagnostics: &[],
+            },
+            |_agent, _registered_tools: &[String]| {},
+            |_diagnostic| {},
+            move |_root, hook, _payload| {
+                hooks_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(hook.to_string());
+                Vec::new()
+            },
+        );
+
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert_eq!(
+            captured_hooks.lock().expect("capture lock").as_slice(),
+            ["pre-tool-call", "post-tool-call"]
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_register_runtime_extension_pipeline_reports_hook_diagnostics() {
+        let mut agent = build_tool_loop_agent();
+        let captured_diagnostics = Arc::new(Mutex::new(Vec::<String>::new()));
+        let diagnostics_sink = Arc::clone(&captured_diagnostics);
+        let captured_hooks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hooks_sink = Arc::clone(&captured_hooks);
+
+        register_runtime_extension_pipeline(
+            &mut agent,
+            RuntimeExtensionPipelineConfig {
+                enabled: true,
+                root: PathBuf::from("/tmp/extensions"),
+                registered_tools: &[],
+                diagnostics: &["manifest-diag".to_string()],
+            },
+            |_agent, _registered_tools: &[String]| {},
+            move |diagnostic| {
+                diagnostics_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(diagnostic.to_string());
+            },
+            move |_root, hook, _payload| {
+                hooks_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(hook.to_string());
+                vec![format!("hook-{hook}")]
+            },
+        );
+
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert_eq!(
+            captured_diagnostics
+                .lock()
+                .expect("capture lock")
+                .as_slice(),
+            ["manifest-diag"]
+        );
+        assert_eq!(
+            captured_hooks.lock().expect("capture lock").as_slice(),
+            ["pre-tool-call", "post-tool-call"]
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_register_runtime_extension_pipeline_ignores_non_tool_events_for_hooks() {
+        let mut agent = Agent::new(
+            Arc::new(QueueClient {
+                responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                    message: Message::assistant_text("done"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }])),
+            }),
+            AgentConfig::default(),
+        );
+        let captured_hooks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let hooks_sink = Arc::clone(&captured_hooks);
+
+        register_runtime_extension_pipeline(
+            &mut agent,
+            RuntimeExtensionPipelineConfig {
+                enabled: true,
+                root: PathBuf::from("/tmp/extensions"),
+                registered_tools: &[] as &[String],
+                diagnostics: &[],
+            },
+            |_agent, _registered_tools| {},
+            |_diagnostic| {},
+            move |_root, hook, _payload| {
+                hooks_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(hook.to_string());
+                Vec::new()
+            },
+        );
+
+        let _ = agent.prompt("plain prompt").await.expect("prompt succeeds");
+        assert!(captured_hooks.lock().expect("capture lock").is_empty());
     }
 
     #[tokio::test]

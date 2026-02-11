@@ -8,13 +8,14 @@ use tau_onboarding::startup_local_runtime::{
     build_local_runtime_extension_bootstrap as build_onboarding_local_runtime_extension_bootstrap,
     execute_prompt_or_command_file_entry_mode as execute_onboarding_prompt_or_command_file_entry_mode,
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
-    register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
-    register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
+    register_runtime_extension_pipeline as register_onboarding_runtime_extension_pipeline,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
     resolve_local_runtime_entry_mode,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
     LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, PromptEntryRuntimeMode,
-    PromptOrCommandFileEntryOutcome, SessionBootstrapOutcome,
+    PromptOrCommandFileEntryOutcome,
+    RuntimeExtensionPipelineConfig as OnboardingRuntimeExtensionPipelineConfig,
+    SessionBootstrapOutcome,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -119,14 +120,18 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         },
     )?;
     let orchestrator_route_trace_log = orchestrator_route_trace_log.as_deref();
-    register_onboarding_runtime_extension_tools(
+    register_onboarding_runtime_extension_pipeline(
         &mut agent,
-        &extension_runtime_registrations.registered_tools,
-        &extension_runtime_registrations.diagnostics,
+        OnboardingRuntimeExtensionPipelineConfig {
+            enabled: extension_runtime_hooks.enabled,
+            root: extension_runtime_hooks.root.clone(),
+            registered_tools: &extension_runtime_registrations.registered_tools,
+            diagnostics: &extension_runtime_registrations.diagnostics,
+        },
         tools::register_extension_tools,
         |diagnostic| eprintln!("{diagnostic}"),
+        |root, hook, payload| dispatch_extension_runtime_hook(root, hook, payload).diagnostics,
     );
-    register_runtime_extension_tool_hook_subscriber(&mut agent, &extension_runtime_hooks);
 
     let entry_mode = resolve_local_runtime_entry_mode(
         resolve_prompt_input(cli)?,
@@ -232,11 +237,12 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     run_interactive(agent, session_runtime, interactive_config).await
 }
 
+#[cfg(test)]
 pub(crate) fn register_runtime_extension_tool_hook_subscriber(
     agent: &mut Agent,
     extension_runtime_hooks: &RuntimeExtensionHooksConfig,
 ) {
-    register_onboarding_runtime_extension_tool_hook_subscriber(
+    tau_onboarding::startup_local_runtime::register_runtime_extension_tool_hook_subscriber(
         agent,
         extension_runtime_hooks.enabled,
         extension_runtime_hooks.root.clone(),
