@@ -44,16 +44,16 @@ use tau_github_issues::github_transport_helpers::{
     truncate_for_error,
 };
 use tau_github_issues::issue_comment::{
-    issue_command_reason_code, normalize_issue_command_status, render_issue_command_comment,
+    extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
+    render_issue_command_comment,
 };
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
 
 const GITHUB_STATE_SCHEMA_VERSION: u32 = 1;
 const GITHUB_COMMENT_MAX_CHARS: usize = 65_000;
-const EVENT_KEY_MARKER_PREFIX: &str = "<!-- tau-event-key:";
-const LEGACY_EVENT_KEY_MARKER_PREFIX: &str = "<!-- rsbot-event-key:";
-const EVENT_KEY_MARKER_SUFFIX: &str = " -->";
+const EVENT_KEY_MARKER_PREFIX: &str = tau_github_issues::issue_comment::EVENT_KEY_MARKER_PREFIX;
+const EVENT_KEY_MARKER_SUFFIX: &str = tau_github_issues::issue_comment::EVENT_KEY_MARKER_SUFFIX;
 const CHAT_SHOW_DEFAULT_LIMIT: usize = 10;
 const CHAT_SHOW_MAX_LIMIT: usize = 50;
 const CHAT_SEARCH_MAX_LIMIT: usize = 50;
@@ -5867,34 +5867,6 @@ fn sanitize_for_path(raw: &str) -> String {
             }
         })
         .collect()
-}
-
-fn extract_footer_event_keys(text: &str) -> Vec<String> {
-    let mut keys = Vec::new();
-    let mut cursor = text;
-    loop {
-        let tau = cursor.find(EVENT_KEY_MARKER_PREFIX);
-        let legacy = cursor.find(LEGACY_EVENT_KEY_MARKER_PREFIX);
-        let (start, marker_prefix) = match (tau, legacy) {
-            (Some(tau_start), Some(legacy_start)) if tau_start <= legacy_start => {
-                (tau_start, EVENT_KEY_MARKER_PREFIX)
-            }
-            (Some(_), Some(legacy_start)) => (legacy_start, LEGACY_EVENT_KEY_MARKER_PREFIX),
-            (Some(tau_start), None) => (tau_start, EVENT_KEY_MARKER_PREFIX),
-            (None, Some(legacy_start)) => (legacy_start, LEGACY_EVENT_KEY_MARKER_PREFIX),
-            (None, None) => break,
-        };
-        let after_start = &cursor[start + marker_prefix.len()..];
-        let Some(end) = after_start.find(EVENT_KEY_MARKER_SUFFIX) else {
-            break;
-        };
-        let key = after_start[..end].trim();
-        if !key.is_empty() {
-            keys.push(key.to_string());
-        }
-        cursor = &after_start[end + EVENT_KEY_MARKER_SUFFIX.len()..];
-    }
-    keys
 }
 
 fn is_artifact_record_expired(record: &ChannelArtifactRecord, now_unix_ms: u64) -> bool {

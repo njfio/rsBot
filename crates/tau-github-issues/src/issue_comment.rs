@@ -1,4 +1,5 @@
 pub const EVENT_KEY_MARKER_PREFIX: &str = "<!-- tau-event-key:";
+pub const LEGACY_EVENT_KEY_MARKER_PREFIX: &str = "<!-- rsbot-event-key:";
 pub const EVENT_KEY_MARKER_SUFFIX: &str = " -->";
 
 pub fn normalize_issue_command_status(status: &str) -> &'static str {
@@ -71,11 +72,40 @@ pub fn render_issue_command_comment(
     )
 }
 
+pub fn extract_footer_event_keys(text: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut cursor = text;
+    loop {
+        let tau = cursor.find(EVENT_KEY_MARKER_PREFIX);
+        let legacy = cursor.find(LEGACY_EVENT_KEY_MARKER_PREFIX);
+        let (start, marker_prefix) = match (tau, legacy) {
+            (Some(tau_start), Some(legacy_start)) if tau_start <= legacy_start => {
+                (tau_start, EVENT_KEY_MARKER_PREFIX)
+            }
+            (Some(_), Some(legacy_start)) => (legacy_start, LEGACY_EVENT_KEY_MARKER_PREFIX),
+            (Some(tau_start), None) => (tau_start, EVENT_KEY_MARKER_PREFIX),
+            (None, Some(legacy_start)) => (legacy_start, LEGACY_EVENT_KEY_MARKER_PREFIX),
+            (None, None) => break,
+        };
+        let after_start = &cursor[start + marker_prefix.len()..];
+        let Some(end) = after_start.find(EVENT_KEY_MARKER_SUFFIX) else {
+            break;
+        };
+        let key = after_start[..end].trim();
+        if !key.is_empty() {
+            keys.push(key.to_string());
+        }
+        cursor = &after_start[end + EVENT_KEY_MARKER_SUFFIX.len()..];
+    }
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        issue_command_reason_code, normalize_issue_command_status, render_issue_command_comment,
-        EVENT_KEY_MARKER_PREFIX, EVENT_KEY_MARKER_SUFFIX,
+        extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
+        render_issue_command_comment, EVENT_KEY_MARKER_PREFIX, EVENT_KEY_MARKER_SUFFIX,
+        LEGACY_EVENT_KEY_MARKER_PREFIX,
     };
 
     #[test]
@@ -124,5 +154,24 @@ mod tests {
         assert!(rendered.contains("Tau command response."));
         assert!(rendered.contains("Tau command `unknown` | status `reported`"));
         assert!(rendered.contains("reason_code `issue_command_unknown_reported`"));
+    }
+
+    #[test]
+    fn integration_extract_footer_event_keys_reads_tau_and_legacy_markers() {
+        let body = format!(
+            "first\n{EVENT_KEY_MARKER_PREFIX}tau-1{EVENT_KEY_MARKER_SUFFIX}\nsecond\n{LEGACY_EVENT_KEY_MARKER_PREFIX}legacy-2{EVENT_KEY_MARKER_SUFFIX}"
+        );
+        assert_eq!(
+            extract_footer_event_keys(&body),
+            vec!["tau-1".to_string(), "legacy-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn regression_extract_footer_event_keys_ignores_unterminated_markers() {
+        let body = format!(
+            "before {EVENT_KEY_MARKER_PREFIX}tau-1{EVENT_KEY_MARKER_SUFFIX} after {EVENT_KEY_MARKER_PREFIX}broken"
+        );
+        assert_eq!(extract_footer_event_keys(&body), vec!["tau-1".to_string()]);
     }
 }
