@@ -1,4 +1,9 @@
 use super::*;
+pub(crate) use tau_onboarding::profile_store::{
+    default_profile_store_path, load_profile_store, save_profile_store, validate_profile_name,
+};
+#[cfg(test)]
+pub(crate) use tau_onboarding::profile_store::{ProfileStoreFile, PROFILE_SCHEMA_VERSION};
 
 pub(crate) const MACRO_SCHEMA_VERSION: u32 = 1;
 pub(crate) const MACRO_USAGE: &str = "usage: /macro <save|run|list|show|delete> ...";
@@ -406,7 +411,6 @@ pub(crate) fn execute_macro_command(
     }
 }
 
-pub(crate) const PROFILE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const PROFILE_USAGE: &str = "usage: /profile <save|load|list|show|delete> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,36 +420,6 @@ pub(crate) enum ProfileCommand {
     List,
     Show { name: String },
     Delete { name: String },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct ProfileStoreFile {
-    pub(crate) schema_version: u32,
-    pub(crate) profiles: BTreeMap<String, ProfileDefaults>,
-}
-
-pub(crate) fn default_profile_store_path() -> Result<PathBuf> {
-    Ok(std::env::current_dir()
-        .context("failed to resolve current working directory")?
-        .join(".tau")
-        .join("profiles.json"))
-}
-
-pub(crate) fn validate_profile_name(name: &str) -> Result<()> {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        bail!("profile name must not be empty");
-    };
-    if !first.is_ascii_alphabetic() {
-        bail!("profile name '{}' must start with an ASCII letter", name);
-    }
-    if !chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')) {
-        bail!(
-            "profile name '{}' must contain only ASCII letters, digits, '-' or '_'",
-            name
-        );
-    }
-    Ok(())
 }
 
 pub(crate) fn parse_profile_command(command_args: &str) -> Result<ProfileCommand> {
@@ -508,47 +482,6 @@ pub(crate) fn parse_profile_command(command_args: &str) -> Result<ProfileCommand
         }
         other => bail!("unknown subcommand '{}'; {PROFILE_USAGE}", other),
     }
-}
-
-pub(crate) fn load_profile_store(path: &Path) -> Result<BTreeMap<String, ProfileDefaults>> {
-    if !path.exists() {
-        return Ok(BTreeMap::new());
-    }
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read profile store {}", path.display()))?;
-    let parsed = serde_json::from_str::<ProfileStoreFile>(&raw)
-        .with_context(|| format!("failed to parse profile store {}", path.display()))?;
-    if parsed.schema_version != PROFILE_SCHEMA_VERSION {
-        bail!(
-            "unsupported profile schema_version {} in {} (expected {})",
-            parsed.schema_version,
-            path.display(),
-            PROFILE_SCHEMA_VERSION
-        );
-    }
-    Ok(parsed.profiles)
-}
-
-pub(crate) fn save_profile_store(
-    path: &Path,
-    profiles: &BTreeMap<String, ProfileDefaults>,
-) -> Result<()> {
-    let payload = ProfileStoreFile {
-        schema_version: PROFILE_SCHEMA_VERSION,
-        profiles: profiles.clone(),
-    };
-    let mut encoded =
-        serde_json::to_string_pretty(&payload).context("failed to encode profile store")?;
-    encoded.push('\n');
-    let parent = path.parent().ok_or_else(|| {
-        anyhow!(
-            "profile store path {} does not have a parent directory",
-            path.display()
-        )
-    })?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create profile directory {}", parent.display()))?;
-    write_text_atomic(path, &encoded)
 }
 
 pub(crate) fn render_profile_diffs(
