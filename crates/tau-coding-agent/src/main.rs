@@ -277,7 +277,9 @@ pub(crate) use tau_access::trust_roots::{
 };
 #[cfg(test)]
 pub(crate) use tau_cli::validation::validate_gateway_remote_profile_inspect_cli;
+#[cfg(test)]
 pub(crate) use tau_cli::validation::validate_multi_channel_live_connectors_runner_cli;
+#[cfg(test)]
 pub(crate) use tau_cli::validation::{
     validate_browser_automation_contract_runner_cli, validate_custom_command_contract_runner_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,

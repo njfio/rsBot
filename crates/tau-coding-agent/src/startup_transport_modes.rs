@@ -2,7 +2,6 @@ use super::*;
 use crate::channel_adapters::{
     build_multi_channel_command_handlers, build_multi_channel_pairing_evaluator,
 };
-use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
     build_events_runner_cli_config, build_github_issues_bridge_cli_config,
@@ -12,7 +11,7 @@ use tau_onboarding::startup_transport_modes::{
     run_gateway_openresponses_server_if_requested, run_memory_contract_runner_if_requested,
     run_multi_agent_contract_runner_if_requested, run_multi_channel_contract_runner_if_requested,
     run_multi_channel_live_connectors_if_requested, run_multi_channel_live_runner_if_requested,
-    run_voice_contract_runner_if_requested,
+    run_voice_contract_runner_if_requested, validate_transport_mode_cli,
 };
 
 pub(crate) async fn run_transport_mode_if_requested(
@@ -23,21 +22,7 @@ pub(crate) async fn run_transport_mode_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
-    validate_github_issues_bridge_cli(cli)?;
-    validate_slack_bridge_cli(cli)?;
-    validate_events_runner_cli(cli)?;
-    validate_multi_channel_contract_runner_cli(cli)?;
-    validate_multi_channel_live_runner_cli(cli)?;
-    validate_multi_channel_live_connectors_runner_cli(cli)?;
-    validate_multi_agent_contract_runner_cli(cli)?;
-    validate_browser_automation_contract_runner_cli(cli)?;
-    validate_memory_contract_runner_cli(cli)?;
-    validate_dashboard_contract_runner_cli(cli)?;
-    validate_gateway_openresponses_server_cli(cli)?;
-    validate_gateway_contract_runner_cli(cli)?;
-    validate_deployment_contract_runner_cli(cli)?;
-    validate_custom_command_contract_runner_cli(cli)?;
-    validate_voice_contract_runner_cli(cli)?;
+    validate_transport_mode_cli(cli)?;
 
     if run_gateway_openresponses_server_if_requested(
         cli,

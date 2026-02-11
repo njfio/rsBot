@@ -6,6 +6,16 @@ use tau_ai::{LlmClient, ModelRef};
 use tau_browser_automation::browser_automation_runtime::{
     run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
 };
+use tau_cli::validation::{
+    validate_browser_automation_contract_runner_cli, validate_custom_command_contract_runner_cli,
+    validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
+    validate_events_runner_cli, validate_gateway_contract_runner_cli,
+    validate_gateway_openresponses_server_cli, validate_github_issues_bridge_cli,
+    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
+    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_connectors_runner_cli,
+    validate_multi_channel_live_runner_cli, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli,
+};
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
 use tau_custom_command::custom_command_runtime::{
@@ -27,6 +37,25 @@ use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
 use tau_provider::{load_credential_store, resolve_credential_store_encryption_mode};
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
 use tau_voice::voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
+
+pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
+    validate_github_issues_bridge_cli(cli)?;
+    validate_slack_bridge_cli(cli)?;
+    validate_events_runner_cli(cli)?;
+    validate_multi_channel_contract_runner_cli(cli)?;
+    validate_multi_channel_live_runner_cli(cli)?;
+    validate_multi_channel_live_connectors_runner_cli(cli)?;
+    validate_multi_agent_contract_runner_cli(cli)?;
+    validate_browser_automation_contract_runner_cli(cli)?;
+    validate_memory_contract_runner_cli(cli)?;
+    validate_dashboard_contract_runner_cli(cli)?;
+    validate_gateway_openresponses_server_cli(cli)?;
+    validate_gateway_contract_runner_cli(cli)?;
+    validate_deployment_contract_runner_cli(cli)?;
+    validate_custom_command_contract_runner_cli(cli)?;
+    validate_voice_contract_runner_cli(cli)?;
+    Ok(())
+}
 
 pub fn map_gateway_openresponses_auth_mode(
     mode: CliGatewayOpenResponsesAuthMode,
@@ -666,11 +695,12 @@ mod tests {
         build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
         build_voice_contract_runner_config, map_gateway_openresponses_auth_mode,
         resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
+        validate_transport_mode_cli,
     };
     use async_trait::async_trait;
     use clap::Parser;
     use std::collections::BTreeMap;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, ModelRef, TauAiError};
     use tau_cli::{Cli, CliGatewayOpenResponsesAuthMode};
@@ -769,6 +799,33 @@ mod tests {
             map_gateway_openresponses_auth_mode(CliGatewayOpenResponsesAuthMode::LocalhostDev),
             GatewayOpenResponsesAuthMode::LocalhostDev
         );
+    }
+
+    #[test]
+    fn unit_validate_transport_mode_cli_accepts_default_cli() {
+        let cli = parse_cli_with_stack();
+        validate_transport_mode_cli(&cli).expect("default transport validation should succeed");
+    }
+
+    #[test]
+    fn functional_validate_transport_mode_cli_accepts_minimum_github_bridge_configuration() {
+        let mut cli = parse_cli_with_stack();
+        cli.github_issues_bridge = true;
+        cli.github_repo = Some("owner/repo".to_string());
+        cli.github_token = Some("token-value".to_string());
+
+        validate_transport_mode_cli(&cli)
+            .expect("github bridge minimum configuration should validate");
+    }
+
+    #[test]
+    fn regression_validate_transport_mode_cli_rejects_events_prompt_template_conflict() {
+        let mut cli = parse_cli_with_stack();
+        cli.events_runner = true;
+        cli.prompt_template_file = Some(PathBuf::from("template.txt"));
+
+        let error = validate_transport_mode_cli(&cli).expect_err("conflicting flags should fail");
+        assert!(error.to_string().contains("--prompt-template-file"));
     }
 
     #[test]
