@@ -212,6 +212,21 @@ pub fn resolve_local_runtime_entry_mode(
     }
 }
 
+pub fn resolve_local_runtime_entry_mode_from_cli<FResolvePromptInput>(
+    cli: &Cli,
+    resolve_prompt_input: FResolvePromptInput,
+) -> Result<LocalRuntimeEntryMode>
+where
+    FResolvePromptInput: FnOnce(&Cli) -> Result<Option<String>>,
+{
+    let interactive_defaults = build_local_runtime_interactive_defaults(cli);
+    Ok(resolve_local_runtime_entry_mode(
+        resolve_prompt_input(cli)?,
+        interactive_defaults.orchestrator_mode == CliOrchestratorMode::PlanFirst,
+        cli.command_file.as_deref(),
+    ))
+}
+
 pub fn resolve_prompt_entry_runtime_mode(
     entry_mode: &LocalRuntimeEntryMode,
 ) -> Option<PromptEntryRuntimeMode> {
@@ -584,11 +599,12 @@ mod tests {
         register_runtime_extension_pipeline, register_runtime_extension_tool_hook_subscriber,
         register_runtime_extension_tools, register_runtime_json_event_subscriber,
         resolve_command_file_entry_path, resolve_extension_runtime_registrations,
-        resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
-        resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
-        resolve_session_runtime_from_cli, LocalRuntimeEntryMode, LocalRuntimeInteractiveDefaults,
-        PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome, PromptRuntimeMode,
-        RuntimeExtensionPipelineConfig, SessionBootstrapOutcome,
+        resolve_local_runtime_entry_mode, resolve_local_runtime_entry_mode_from_cli,
+        resolve_orchestrator_route_table, resolve_prompt_entry_runtime_mode,
+        resolve_prompt_runtime_mode, resolve_session_runtime, resolve_session_runtime_from_cli,
+        LocalRuntimeEntryMode, LocalRuntimeInteractiveDefaults, PromptEntryRuntimeMode,
+        PromptOrCommandFileEntryOutcome, PromptRuntimeMode, RuntimeExtensionPipelineConfig,
+        SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1045,6 +1061,50 @@ mod tests {
             resolve_local_runtime_entry_mode(Some("plan text".to_string()), true, None),
             LocalRuntimeEntryMode::PlanFirstPrompt("plan text".to_string())
         );
+    }
+
+    #[test]
+    fn unit_resolve_local_runtime_entry_mode_from_cli_defaults_to_interactive() {
+        let cli = parse_cli_with_stack();
+        let entry_mode = resolve_local_runtime_entry_mode_from_cli(&cli, |_cli| Ok(None))
+            .expect("entry mode should resolve");
+        assert_eq!(entry_mode, LocalRuntimeEntryMode::Interactive);
+    }
+
+    #[test]
+    fn functional_resolve_local_runtime_entry_mode_from_cli_uses_plan_first_prompt_mode() {
+        let mut cli = parse_cli_with_stack();
+        cli.orchestrator_mode = CliOrchestratorMode::PlanFirst;
+        let entry_mode =
+            resolve_local_runtime_entry_mode_from_cli(&cli, |_cli| Ok(Some("plan me".to_string())))
+                .expect("entry mode should resolve");
+        assert_eq!(
+            entry_mode,
+            LocalRuntimeEntryMode::PlanFirstPrompt("plan me".to_string())
+        );
+    }
+
+    #[test]
+    fn integration_resolve_local_runtime_entry_mode_from_cli_selects_command_file_without_prompt() {
+        let mut cli = parse_cli_with_stack();
+        cli.command_file = Some(PathBuf::from("commands.txt"));
+        let entry_mode = resolve_local_runtime_entry_mode_from_cli(&cli, |_cli| Ok(None))
+            .expect("entry mode should resolve");
+        assert_eq!(
+            entry_mode,
+            LocalRuntimeEntryMode::CommandFile(PathBuf::from("commands.txt"))
+        );
+    }
+
+    #[test]
+    fn regression_resolve_local_runtime_entry_mode_from_cli_propagates_prompt_resolver_errors() {
+        let cli = parse_cli_with_stack();
+        let error = resolve_local_runtime_entry_mode_from_cli(&cli, |_cli| {
+            Err(anyhow::anyhow!("prompt resolution failed"))
+        })
+        .expect_err("prompt resolver errors should propagate");
+
+        assert!(error.to_string().contains("prompt resolution failed"));
     }
 
     #[test]

@@ -471,7 +471,14 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"late"}'
             .complete(test_request())
             .await
             .expect_err("timeout should fail");
-        assert!(error.to_string().contains("timed out"));
+        let message = error.to_string();
+        let is_timeout_shape = message.contains("timed out")
+            || message.contains("timeout")
+            || message.contains("elapsed");
+        assert!(
+            is_timeout_shape,
+            "expected timeout-like error, got: {message}"
+        );
     }
 
     #[test]

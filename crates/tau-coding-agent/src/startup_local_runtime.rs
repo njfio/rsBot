@@ -11,7 +11,7 @@ use tau_onboarding::startup_local_runtime::{
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
     register_runtime_extension_pipeline as register_onboarding_runtime_extension_pipeline,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
-    resolve_local_runtime_entry_mode,
+    resolve_local_runtime_entry_mode_from_cli as resolve_onboarding_local_runtime_entry_mode_from_cli,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
     LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, PromptEntryRuntimeMode,
     PromptOrCommandFileEntryOutcome,
@@ -135,11 +135,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     );
 
     let interactive_defaults = build_onboarding_local_runtime_interactive_defaults(cli);
-    let entry_mode = resolve_local_runtime_entry_mode(
-        resolve_prompt_input(cli)?,
-        interactive_defaults.orchestrator_mode == CliOrchestratorMode::PlanFirst,
-        cli.command_file.as_deref(),
-    );
+    let entry_mode =
+        resolve_onboarding_local_runtime_entry_mode_from_cli(cli, resolve_prompt_input)?;
     let LocalRuntimeCommandDefaults {
         profile_defaults,
         auth_command_config,
