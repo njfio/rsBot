@@ -167,6 +167,23 @@ pub struct EventsRunnerCliConfig {
     pub stale_immediate_max_age_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackBridgeCliConfig {
+    pub state_dir: PathBuf,
+    pub api_base: String,
+    pub app_token: String,
+    pub bot_token: String,
+    pub bot_user_id: Option<String>,
+    pub detail_thread_output: bool,
+    pub detail_thread_threshold_chars: usize,
+    pub processed_event_cap: usize,
+    pub max_event_age_seconds: u64,
+    pub reconnect_delay_ms: u64,
+    pub retry_max_attempts: usize,
+    pub retry_base_delay_ms: u64,
+    pub artifact_retention_days: u64,
+}
+
 pub fn build_browser_automation_contract_runner_config(
     cli: &Cli,
 ) -> BrowserAutomationContractRunnerConfig {
@@ -246,6 +263,28 @@ pub fn build_events_runner_cli_config(cli: &Cli) -> EventsRunnerCliConfig {
         poll_interval_ms: cli.events_poll_interval_ms.max(1),
         queue_limit: cli.events_queue_limit.max(1),
         stale_immediate_max_age_seconds: cli.events_stale_immediate_max_age_seconds,
+    }
+}
+
+pub fn build_slack_bridge_cli_config(
+    cli: &Cli,
+    app_token: String,
+    bot_token: String,
+) -> SlackBridgeCliConfig {
+    SlackBridgeCliConfig {
+        state_dir: cli.slack_state_dir.clone(),
+        api_base: cli.slack_api_base.clone(),
+        app_token,
+        bot_token,
+        bot_user_id: cli.slack_bot_user_id.clone(),
+        detail_thread_output: cli.slack_thread_detail_output,
+        detail_thread_threshold_chars: cli.slack_thread_detail_threshold_chars.max(1),
+        processed_event_cap: cli.slack_processed_event_cap.max(1),
+        max_event_age_seconds: cli.slack_max_event_age_seconds,
+        reconnect_delay_ms: cli.slack_reconnect_delay_ms.max(1),
+        retry_max_attempts: cli.slack_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.slack_retry_base_delay_ms.max(1),
+        artifact_retention_days: cli.slack_artifact_retention_days,
     }
 }
 
@@ -462,8 +501,9 @@ mod tests {
         build_multi_channel_contract_runner_config, build_multi_channel_live_connectors_config,
         build_multi_channel_live_runner_config, build_multi_channel_media_config,
         build_multi_channel_outbound_config, build_multi_channel_telemetry_config,
-        build_voice_contract_runner_config, map_gateway_openresponses_auth_mode,
-        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
+        build_slack_bridge_cli_config, build_voice_contract_runner_config,
+        map_gateway_openresponses_auth_mode, resolve_gateway_openresponses_auth,
+        resolve_multi_channel_outbound_secret,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -706,6 +746,24 @@ mod tests {
         let config = build_events_runner_cli_config(&cli);
         assert_eq!(config.poll_interval_ms, 1);
         assert_eq!(config.queue_limit, 1);
+    }
+
+    #[test]
+    fn regression_build_slack_bridge_cli_config_enforces_minimums() {
+        let mut cli = parse_cli_with_stack();
+        cli.slack_thread_detail_threshold_chars = 0;
+        cli.slack_processed_event_cap = 0;
+        cli.slack_reconnect_delay_ms = 0;
+        cli.slack_retry_max_attempts = 0;
+        cli.slack_retry_base_delay_ms = 0;
+
+        let config =
+            build_slack_bridge_cli_config(&cli, "app-token".to_string(), "bot-token".to_string());
+        assert_eq!(config.detail_thread_threshold_chars, 1);
+        assert_eq!(config.processed_event_cap, 1);
+        assert_eq!(config.reconnect_delay_ms, 1);
+        assert_eq!(config.retry_max_attempts, 1);
+        assert_eq!(config.retry_base_delay_ms, 1);
     }
 
     #[test]
@@ -992,6 +1050,39 @@ mod tests {
         assert_eq!(config.poll_interval_ms, 2_500);
         assert_eq!(config.queue_limit, 77);
         assert_eq!(config.stale_immediate_max_age_seconds, 9_999);
+    }
+
+    #[test]
+    fn integration_build_slack_bridge_cli_config_preserves_runtime_fields() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.slack_state_dir = temp.path().join("slack-state");
+        cli.slack_api_base = "https://slack.example/api".to_string();
+        cli.slack_bot_user_id = Some("U123".to_string());
+        cli.slack_thread_detail_output = true;
+        cli.slack_thread_detail_threshold_chars = 500;
+        cli.slack_processed_event_cap = 250;
+        cli.slack_max_event_age_seconds = 3_600;
+        cli.slack_reconnect_delay_ms = 2_500;
+        cli.slack_retry_max_attempts = 8;
+        cli.slack_retry_base_delay_ms = 650;
+        cli.slack_artifact_retention_days = 14;
+
+        let config =
+            build_slack_bridge_cli_config(&cli, "app-token".to_string(), "bot-token".to_string());
+        assert_eq!(config.state_dir, cli.slack_state_dir);
+        assert_eq!(config.api_base, "https://slack.example/api");
+        assert_eq!(config.app_token, "app-token");
+        assert_eq!(config.bot_token, "bot-token");
+        assert_eq!(config.bot_user_id.as_deref(), Some("U123"));
+        assert!(config.detail_thread_output);
+        assert_eq!(config.detail_thread_threshold_chars, 500);
+        assert_eq!(config.processed_event_cap, 250);
+        assert_eq!(config.max_event_age_seconds, 3_600);
+        assert_eq!(config.reconnect_delay_ms, 2_500);
+        assert_eq!(config.retry_max_attempts, 8);
+        assert_eq!(config.retry_base_delay_ms, 650);
+        assert_eq!(config.artifact_retention_days, 14);
     }
 
     #[test]

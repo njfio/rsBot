@@ -8,10 +8,10 @@ use tau_onboarding::startup_transport_modes::{
     build_browser_automation_contract_runner_config, build_custom_command_contract_runner_config,
     build_dashboard_contract_runner_config, build_deployment_contract_runner_config,
     build_events_runner_cli_config, build_memory_contract_runner_config,
-    build_voice_contract_runner_config, run_gateway_contract_runner_if_requested,
-    run_gateway_openresponses_server_if_requested, run_multi_agent_contract_runner_if_requested,
-    run_multi_channel_contract_runner_if_requested, run_multi_channel_live_connectors_if_requested,
-    run_multi_channel_live_runner_if_requested,
+    build_slack_bridge_cli_config, build_voice_contract_runner_config,
+    run_gateway_contract_runner_if_requested, run_gateway_openresponses_server_if_requested,
+    run_multi_agent_contract_runner_if_requested, run_multi_channel_contract_runner_if_requested,
+    run_multi_channel_live_connectors_if_requested, run_multi_channel_live_runner_if_requested,
 };
 
 pub(crate) async fn run_transport_mode_if_requested(
@@ -140,6 +140,7 @@ pub(crate) async fn run_transport_mode_if_requested(
                 "--slack-bot-token (or --slack-bot-token-id) is required when --slack-bridge is set"
             )
         })?;
+        let config = build_slack_bridge_cli_config(cli, app_token, bot_token);
         run_slack_bridge(SlackBridgeRuntimeConfig {
             client: client.clone(),
             model: model_ref.model.clone(),
@@ -151,19 +152,19 @@ pub(crate) async fn run_transport_mode_if_requested(
             render_options,
             session_lock_wait_ms: cli.session_lock_wait_ms,
             session_lock_stale_ms: cli.session_lock_stale_ms,
-            state_dir: cli.slack_state_dir.clone(),
-            api_base: cli.slack_api_base.clone(),
-            app_token,
-            bot_token,
-            bot_user_id: cli.slack_bot_user_id.clone(),
-            detail_thread_output: cli.slack_thread_detail_output,
-            detail_thread_threshold_chars: cli.slack_thread_detail_threshold_chars.max(1),
-            processed_event_cap: cli.slack_processed_event_cap.max(1),
-            max_event_age_seconds: cli.slack_max_event_age_seconds,
-            reconnect_delay: Duration::from_millis(cli.slack_reconnect_delay_ms.max(1)),
-            retry_max_attempts: cli.slack_retry_max_attempts.max(1),
-            retry_base_delay_ms: cli.slack_retry_base_delay_ms.max(1),
-            artifact_retention_days: cli.slack_artifact_retention_days,
+            state_dir: config.state_dir,
+            api_base: config.api_base,
+            app_token: config.app_token,
+            bot_token: config.bot_token,
+            bot_user_id: config.bot_user_id,
+            detail_thread_output: config.detail_thread_output,
+            detail_thread_threshold_chars: config.detail_thread_threshold_chars,
+            processed_event_cap: config.processed_event_cap,
+            max_event_age_seconds: config.max_event_age_seconds,
+            reconnect_delay: Duration::from_millis(config.reconnect_delay_ms),
+            retry_max_attempts: config.retry_max_attempts,
+            retry_base_delay_ms: config.retry_base_delay_ms,
+            artifact_retention_days: config.artifact_retention_days,
         })
         .await?;
         return Ok(true);
