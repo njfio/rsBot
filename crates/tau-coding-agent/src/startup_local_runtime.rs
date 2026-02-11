@@ -4,6 +4,7 @@ use crate::extension_manifest::{
 };
 use tau_onboarding::startup_local_runtime::{
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
+    register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
     resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
     resolve_orchestrator_route_table, resolve_session_runtime, LocalRuntimeEntryMode,
     SessionBootstrapOutcome,
@@ -115,13 +116,13 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             diagnostics: Vec::new(),
         },
     );
-    tools::register_extension_tools(
+    register_onboarding_runtime_extension_tools(
         &mut agent,
         &extension_runtime_registrations.registered_tools,
+        &extension_runtime_registrations.diagnostics,
+        tools::register_extension_tools,
+        |diagnostic| eprintln!("{diagnostic}"),
     );
-    for diagnostic in &extension_runtime_registrations.diagnostics {
-        eprintln!("{diagnostic}");
-    }
     register_runtime_extension_tool_hook_subscriber(&mut agent, &extension_runtime_hooks);
 
     let entry_mode = resolve_local_runtime_entry_mode(

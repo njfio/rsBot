@@ -180,6 +180,22 @@ pub fn register_runtime_extension_tool_hook_subscriber<F>(
     });
 }
 
+pub fn register_runtime_extension_tools<T, FRegister, FReport>(
+    agent: &mut Agent,
+    registered_tools: &[T],
+    diagnostics: &[String],
+    register_tools: FRegister,
+    mut report_diagnostic: FReport,
+) where
+    FRegister: FnOnce(&mut Agent, &[T]),
+    FReport: FnMut(&str),
+{
+    register_tools(agent, registered_tools);
+    for diagnostic in diagnostics {
+        report_diagnostic(diagnostic);
+    }
+}
+
 fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -207,10 +223,10 @@ fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
 mod tests {
     use super::{
         extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
-        register_runtime_extension_tool_hook_subscriber, resolve_extension_runtime_registrations,
-        resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
-        resolve_prompt_runtime_mode, resolve_session_runtime, LocalRuntimeEntryMode,
-        PromptRuntimeMode, SessionBootstrapOutcome,
+        register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
+        resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
+        resolve_orchestrator_route_table, resolve_prompt_runtime_mode, resolve_session_runtime,
+        LocalRuntimeEntryMode, PromptRuntimeMode, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -597,5 +613,119 @@ mod tests {
 
         let _ = agent.prompt("run echo").await.expect("prompt succeeds");
         assert!(captured.lock().expect("capture lock").is_empty());
+    }
+
+    #[test]
+    fn unit_register_runtime_extension_tools_invokes_tool_registration_with_payload() {
+        let mut agent = build_tool_loop_agent();
+        let captured_tools = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&captured_tools);
+        let tools = vec!["tool-a".to_string(), "tool-b".to_string()];
+
+        register_runtime_extension_tools(
+            &mut agent,
+            &tools,
+            &[],
+            move |_agent, registered_tools| {
+                sink.lock()
+                    .expect("capture lock")
+                    .extend(registered_tools.iter().cloned());
+            },
+            |_diagnostic| {},
+        );
+
+        assert_eq!(
+            captured_tools.lock().expect("capture lock").as_slice(),
+            ["tool-a", "tool-b"]
+        );
+    }
+
+    #[test]
+    fn functional_register_runtime_extension_tools_reports_all_diagnostics_in_order() {
+        let mut agent = build_tool_loop_agent();
+        let captured_diagnostics = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&captured_diagnostics);
+        let diagnostics = vec!["first".to_string(), "second".to_string()];
+
+        register_runtime_extension_tools(
+            &mut agent,
+            &[],
+            &diagnostics,
+            |_agent, _registered_tools: &[String]| {},
+            move |diagnostic| {
+                sink.lock()
+                    .expect("capture lock")
+                    .push(diagnostic.to_string())
+            },
+        );
+
+        assert_eq!(
+            captured_diagnostics
+                .lock()
+                .expect("capture lock")
+                .as_slice(),
+            ["first", "second"]
+        );
+    }
+
+    #[test]
+    fn integration_register_runtime_extension_tools_registers_and_reports_together() {
+        let mut agent = build_tool_loop_agent();
+        let captured_tools = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured_diagnostics = Arc::new(Mutex::new(Vec::<String>::new()));
+        let tools_sink = Arc::clone(&captured_tools);
+        let diagnostics_sink = Arc::clone(&captured_diagnostics);
+        let tools = vec!["tool-x".to_string()];
+        let diagnostics = vec!["diag-x".to_string()];
+
+        register_runtime_extension_tools(
+            &mut agent,
+            &tools,
+            &diagnostics,
+            move |_agent, registered_tools| {
+                tools_sink
+                    .lock()
+                    .expect("capture lock")
+                    .extend(registered_tools.iter().cloned());
+            },
+            move |diagnostic| {
+                diagnostics_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(diagnostic.to_string());
+            },
+        );
+
+        assert_eq!(
+            captured_tools.lock().expect("capture lock").as_slice(),
+            ["tool-x"]
+        );
+        assert_eq!(
+            captured_diagnostics
+                .lock()
+                .expect("capture lock")
+                .as_slice(),
+            ["diag-x"]
+        );
+    }
+
+    #[test]
+    fn regression_register_runtime_extension_tools_handles_empty_inputs() {
+        let mut agent = build_tool_loop_agent();
+        let diagnostics_count = Arc::new(Mutex::new(0usize));
+        let diagnostics_sink = Arc::clone(&diagnostics_count);
+
+        register_runtime_extension_tools(
+            &mut agent,
+            &Vec::<String>::new(),
+            &[],
+            |_agent, _registered_tools| {},
+            move |_diagnostic| {
+                let mut guard = diagnostics_sink.lock().expect("capture lock");
+                *guard += 1;
+            },
+        );
+
+        assert_eq!(*diagnostics_count.lock().expect("capture lock"), 0);
     }
 }
