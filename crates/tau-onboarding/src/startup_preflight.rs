@@ -214,3 +214,146 @@ pub fn execute_startup_preflight(cli: &Cli, callbacks: &StartupPreflightCallback
     let actions = CallbackStartupPreflightActions { callbacks };
     tau_startup::execute_startup_preflight(cli, &actions)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{execute_startup_preflight, StartupPreflightCallbacks};
+    use anyhow::{anyhow, Result};
+    use clap::Parser;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tau_cli::Cli;
+
+    static ONBOARD_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static DAEMON_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn parse_cli_with_stack() -> Cli {
+        std::thread::Builder::new()
+            .name("tau-cli-parse".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::parse_from(["tau-rs"]))
+            .expect("spawn cli parse thread")
+            .join()
+            .expect("join cli parse thread")
+    }
+
+    fn noop_command(_cli: &Cli) -> Result<()> {
+        Ok(())
+    }
+
+    fn noop_secret(
+        _cli: &Cli,
+        _direct_secret: Option<&str>,
+        _secret_id: Option<&str>,
+        _secret_id_flag: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn daemon_false(_cli: &Cli) -> Result<bool> {
+        Ok(false)
+    }
+
+    fn onboarding_counter(_cli: &Cli) -> Result<()> {
+        ONBOARD_CALLS.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn onboarding_error(_cli: &Cli) -> Result<()> {
+        Err(anyhow!("onboarding callback failure"))
+    }
+
+    fn daemon_true_counter(_cli: &Cli) -> Result<bool> {
+        DAEMON_CALLS.fetch_add(1, Ordering::Relaxed);
+        Ok(true)
+    }
+
+    fn default_callbacks() -> StartupPreflightCallbacks {
+        StartupPreflightCallbacks {
+            execute_onboarding_command: noop_command,
+            execute_multi_channel_send_command: noop_command,
+            execute_multi_channel_channel_lifecycle_command: noop_command,
+            execute_deployment_wasm_package_command: noop_command,
+            execute_deployment_wasm_inspect_command: noop_command,
+            execute_project_index_command: noop_command,
+            execute_channel_store_admin_command: noop_command,
+            execute_multi_channel_live_readiness_preflight_command: noop_command,
+            execute_browser_automation_preflight_command: noop_command,
+            execute_extension_exec_command: noop_command,
+            execute_extension_list_command: noop_command,
+            execute_extension_show_command: noop_command,
+            execute_extension_validate_command: noop_command,
+            execute_package_validate_command: noop_command,
+            execute_package_show_command: noop_command,
+            execute_package_install_command: noop_command,
+            execute_package_update_command: noop_command,
+            execute_package_list_command: noop_command,
+            execute_package_remove_command: noop_command,
+            execute_package_rollback_command: noop_command,
+            execute_package_conflicts_command: noop_command,
+            execute_package_activate_command: noop_command,
+            execute_qa_loop_preflight_command: noop_command,
+            execute_mcp_server_command: noop_command,
+            execute_rpc_capabilities_command: noop_command,
+            execute_rpc_validate_frame_command: noop_command,
+            execute_rpc_dispatch_frame_command: noop_command,
+            execute_rpc_dispatch_ndjson_command: noop_command,
+            execute_rpc_serve_ndjson_command: noop_command,
+            execute_events_inspect_command: noop_command,
+            execute_events_validate_command: noop_command,
+            execute_events_simulate_command: noop_command,
+            execute_events_dry_run_command: noop_command,
+            execute_events_template_write_command: noop_command,
+            resolve_secret_from_cli_or_store_id: noop_secret,
+            handle_daemon_commands: daemon_false,
+        }
+    }
+
+    #[test]
+    fn unit_execute_startup_preflight_onboard_calls_callback() {
+        ONBOARD_CALLS.store(0, Ordering::Relaxed);
+        let mut callbacks = default_callbacks();
+        callbacks.execute_onboarding_command = onboarding_counter;
+        let mut cli = parse_cli_with_stack();
+        cli.onboard = true;
+
+        let handled =
+            execute_startup_preflight(&cli, &callbacks).expect("startup preflight should succeed");
+        assert!(handled);
+        assert_eq!(ONBOARD_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn functional_execute_startup_preflight_delegates_to_daemon_handler() {
+        DAEMON_CALLS.store(0, Ordering::Relaxed);
+        let mut callbacks = default_callbacks();
+        callbacks.handle_daemon_commands = daemon_true_counter;
+        let cli = parse_cli_with_stack();
+
+        let handled =
+            execute_startup_preflight(&cli, &callbacks).expect("startup preflight should succeed");
+        assert!(handled);
+        assert_eq!(DAEMON_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn integration_execute_startup_preflight_returns_false_when_no_mode_matches() {
+        let callbacks = default_callbacks();
+        let cli = parse_cli_with_stack();
+
+        let handled =
+            execute_startup_preflight(&cli, &callbacks).expect("startup preflight should succeed");
+        assert!(!handled);
+    }
+
+    #[test]
+    fn regression_execute_startup_preflight_propagates_callback_errors() {
+        let mut callbacks = default_callbacks();
+        callbacks.execute_onboarding_command = onboarding_error;
+        let mut cli = parse_cli_with_stack();
+        cli.onboard = true;
+
+        let error = execute_startup_preflight(&cli, &callbacks)
+            .expect_err("onboarding callback failure should propagate");
+        assert!(error.to_string().contains("onboarding callback failure"));
+    }
+}
