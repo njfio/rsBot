@@ -7,6 +7,13 @@ use tau_core::current_unix_timestamp_ms;
 
 const EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptRuntimeMode {
+    None,
+    Prompt(String),
+    PlanFirstPrompt(String),
+}
+
 pub fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str, Value)> {
     match event {
         AgentEvent::ToolExecutionStart {
@@ -43,6 +50,17 @@ pub fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str,
             ),
         )),
         _ => None,
+    }
+}
+
+pub fn resolve_prompt_runtime_mode(
+    prompt: Option<String>,
+    plan_first_mode: bool,
+) -> PromptRuntimeMode {
+    match prompt {
+        Some(prompt) if plan_first_mode => PromptRuntimeMode::PlanFirstPrompt(prompt),
+        Some(prompt) => PromptRuntimeMode::Prompt(prompt),
+        None => PromptRuntimeMode::None,
     }
 }
 
@@ -140,7 +158,7 @@ mod tests {
     use super::{
         extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
         register_runtime_extension_tool_hook_subscriber, resolve_extension_runtime_registrations,
-        resolve_orchestrator_route_table,
+        resolve_orchestrator_route_table, resolve_prompt_runtime_mode, PromptRuntimeMode,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -311,6 +329,38 @@ mod tests {
         );
         assert_eq!(result, vec!["empty".to_string()]);
         assert!(!discover_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn unit_resolve_prompt_runtime_mode_defaults_to_none() {
+        assert_eq!(
+            resolve_prompt_runtime_mode(None, false),
+            PromptRuntimeMode::None
+        );
+    }
+
+    #[test]
+    fn functional_resolve_prompt_runtime_mode_selects_prompt_mode() {
+        assert_eq!(
+            resolve_prompt_runtime_mode(Some("hello".to_string()), false),
+            PromptRuntimeMode::Prompt("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn integration_resolve_prompt_runtime_mode_selects_plan_first_prompt_mode() {
+        assert_eq!(
+            resolve_prompt_runtime_mode(Some("hello".to_string()), true),
+            PromptRuntimeMode::PlanFirstPrompt("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn regression_resolve_prompt_runtime_mode_preserves_whitespace_prompt_text() {
+        assert_eq!(
+            resolve_prompt_runtime_mode(Some("  keep me  ".to_string()), true),
+            PromptRuntimeMode::PlanFirstPrompt("  keep me  ".to_string())
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ use crate::extension_manifest::{
 use tau_onboarding::startup_local_runtime::{
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     resolve_extension_runtime_registrations, resolve_orchestrator_route_table,
+    resolve_prompt_runtime_mode, PromptRuntimeMode,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -120,8 +121,11 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     }
     register_runtime_extension_tool_hook_subscriber(&mut agent, &extension_runtime_hooks);
 
-    if let Some(prompt) = resolve_prompt_input(cli)? {
-        if cli.orchestrator_mode == CliOrchestratorMode::PlanFirst {
+    match resolve_prompt_runtime_mode(
+        resolve_prompt_input(cli)?,
+        cli.orchestrator_mode == CliOrchestratorMode::PlanFirst,
+    ) {
+        PromptRuntimeMode::PlanFirstPrompt(prompt) => {
             run_plan_first_prompt_with_runtime_hooks(
                 &mut agent,
                 &mut session_runtime,
@@ -140,7 +144,9 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 &extension_runtime_hooks,
             )
             .await?;
-        } else {
+            return Ok(());
+        }
+        PromptRuntimeMode::Prompt(prompt) => {
             run_prompt(
                 &mut agent,
                 &mut session_runtime,
@@ -150,8 +156,9 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 &extension_runtime_hooks,
             )
             .await?;
+            return Ok(());
         }
-        return Ok(());
+        PromptRuntimeMode::None => {}
     }
 
     let skills_sync_command_config = SkillsSyncCommandConfig {
