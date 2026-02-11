@@ -1,4 +1,7 @@
 use super::*;
+use tau_onboarding::startup_dispatch::{
+    resolve_runtime_skills_dir, resolve_runtime_skills_lock_path,
+};
 
 pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
     if execute_startup_preflight(&cli)? {
@@ -55,27 +58,4 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         skills_lock_path: &skills_lock_path,
     })
     .await
-}
-
-fn resolve_runtime_skills_dir(cli: &Cli, activation_applied: bool) -> PathBuf {
-    if !activation_applied {
-        return cli.skills_dir.clone();
-    }
-    let activated_skills_dir = cli.package_activate_destination.join("skills");
-    if activated_skills_dir.is_dir() {
-        return activated_skills_dir;
-    }
-    cli.skills_dir.clone()
-}
-
-fn resolve_runtime_skills_lock_path(
-    cli: &Cli,
-    bootstrap_lock_path: &Path,
-    effective_skills_dir: &Path,
-) -> PathBuf {
-    if effective_skills_dir == cli.skills_dir {
-        bootstrap_lock_path.to_path_buf()
-    } else {
-        default_skills_lock_path(effective_skills_dir)
-    }
 }

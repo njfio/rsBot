@@ -2950,6 +2950,7 @@ name = "tau-onboarding"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "serde",
  "serde_json",
  "tau-access",
@@ -2959,6 +2960,7 @@ dependencies = [
  "tau-provider",
  "tau-skills",
  "tau-tools",
+ "tempfile",
 ]
 
 [[package]]
