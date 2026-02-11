@@ -8,16 +8,15 @@ use crate::daemon_runtime::{
     inspect_tau_daemon, install_tau_daemon, start_tau_daemon, TauDaemonConfig,
     TauDaemonStatusReport,
 };
-use crate::macro_profile_commands::{
-    load_profile_store, save_profile_store, validate_profile_name,
-};
 use tau_onboarding::onboarding_paths::{
     collect_bootstrap_directories, parse_yes_no_response, resolve_tau_root,
+};
+use tau_onboarding::onboarding_profile_bootstrap::{
+    ensure_directory, ensure_profile_store_entry, resolve_onboarding_profile_name,
 };
 use tau_onboarding::onboarding_release_channel::ensure_onboarding_release_channel;
 
 const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 2;
-const ONBOARDING_DEFAULT_PROFILE: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct OnboardingExecutableCheck {
@@ -89,17 +88,6 @@ pub(crate) fn execute_onboarding_command(cli: &Cli) -> Result<()> {
         .context("failed to persist onboarding report")?;
     println!("{}", render_onboarding_summary(&report, &report_path));
     Ok(())
-}
-
-fn resolve_onboarding_profile_name(raw: &str) -> Result<String> {
-    let trimmed = raw.trim();
-    let profile_name = if trimmed.is_empty() {
-        ONBOARDING_DEFAULT_PROFILE.to_string()
-    } else {
-        trimmed.to_string()
-    };
-    validate_profile_name(&profile_name)?;
-    Ok(profile_name)
 }
 
 fn build_onboarding_report(
@@ -232,47 +220,6 @@ fn onboarding_mode_label(mode: OnboardingMode) -> &'static str {
     match mode {
         OnboardingMode::Interactive => "interactive",
         OnboardingMode::NonInteractive => "non-interactive",
-    }
-}
-
-fn ensure_directory(
-    path: &Path,
-    directories_created: &mut Vec<String>,
-    directories_existing: &mut Vec<String>,
-) -> Result<()> {
-    if path.exists() {
-        if !path.is_dir() {
-            bail!(
-                "onboarding path '{}' exists but is not a directory",
-                path.display()
-            );
-        }
-        directories_existing.push(path.display().to_string());
-    } else {
-        std::fs::create_dir_all(path)
-            .with_context(|| format!("failed to create directory {}", path.display()))?;
-        directories_created.push(path.display().to_string());
-    }
-    Ok(())
-}
-
-fn ensure_profile_store_entry(
-    cli: &Cli,
-    profile_store_path: &Path,
-    profile_name: &str,
-) -> Result<&'static str> {
-    let mut profiles = load_profile_store(profile_store_path)?;
-    if profiles.contains_key(profile_name) {
-        return Ok("unchanged");
-    }
-
-    let file_existed = profile_store_path.exists();
-    profiles.insert(profile_name.to_string(), build_profile_defaults(cli));
-    save_profile_store(profile_store_path, &profiles)?;
-    if file_existed {
-        Ok("updated")
-    } else {
-        Ok("created")
     }
 }
 
@@ -443,13 +390,11 @@ fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_onboarding_report, parse_yes_no_response, resolve_tau_root, OnboardingMode,
-        ONBOARDING_REPORT_SCHEMA_VERSION,
-    };
+    use super::{build_onboarding_report, OnboardingMode, ONBOARDING_REPORT_SCHEMA_VERSION};
     use crate::Cli;
     use clap::Parser;
     use std::path::{Path, PathBuf};
+    use tau_onboarding::onboarding_paths::{parse_yes_no_response, resolve_tau_root};
     use tempfile::tempdir;
 
     fn parse_cli_with_stack() -> Cli {
