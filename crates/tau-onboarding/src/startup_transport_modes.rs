@@ -8,7 +8,8 @@ use tau_gateway::{
     GatewayOpenResponsesAuthMode, GatewayOpenResponsesServerConfig, GatewayToolRegistrarFn,
 };
 use tau_multi_channel::{
-    MultiChannelMediaUnderstandingConfig, MultiChannelOutboundConfig, MultiChannelTelemetryConfig,
+    MultiChannelLiveConnectorsConfig, MultiChannelMediaUnderstandingConfig,
+    MultiChannelOutboundConfig, MultiChannelTelemetryConfig,
 };
 use tau_provider::{load_credential_store, resolve_credential_store_encryption_mode};
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
@@ -82,6 +83,56 @@ pub async fn run_gateway_openresponses_server_if_requested(
         tool_policy,
     );
     tau_gateway::run_gateway_openresponses_server(config).await?;
+    Ok(true)
+}
+
+pub fn build_multi_channel_live_connectors_config(cli: &Cli) -> MultiChannelLiveConnectorsConfig {
+    MultiChannelLiveConnectorsConfig {
+        state_path: cli.multi_channel_live_connectors_state_path.clone(),
+        ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
+        processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
+        retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
+        poll_once: cli.multi_channel_live_connectors_poll_once,
+        webhook_bind: cli.multi_channel_live_webhook_bind.clone(),
+        telegram_mode: cli.multi_channel_telegram_ingress_mode.into(),
+        telegram_api_base: cli.multi_channel_telegram_api_base.trim().to_string(),
+        telegram_bot_token: resolve_multi_channel_outbound_secret(
+            cli,
+            cli.multi_channel_telegram_bot_token.as_deref(),
+            "telegram-bot-token",
+        ),
+        telegram_webhook_secret: resolve_non_empty_cli_value(
+            cli.multi_channel_telegram_webhook_secret.as_deref(),
+        ),
+        discord_mode: cli.multi_channel_discord_ingress_mode.into(),
+        discord_api_base: cli.multi_channel_discord_api_base.trim().to_string(),
+        discord_bot_token: resolve_multi_channel_outbound_secret(
+            cli,
+            cli.multi_channel_discord_bot_token.as_deref(),
+            "discord-bot-token",
+        ),
+        discord_ingress_channel_ids: cli
+            .multi_channel_discord_ingress_channel_ids
+            .iter()
+            .map(|value| value.trim().to_string())
+            .collect(),
+        whatsapp_mode: cli.multi_channel_whatsapp_ingress_mode.into(),
+        whatsapp_webhook_verify_token: resolve_non_empty_cli_value(
+            cli.multi_channel_whatsapp_webhook_verify_token.as_deref(),
+        ),
+        whatsapp_webhook_app_secret: resolve_non_empty_cli_value(
+            cli.multi_channel_whatsapp_webhook_app_secret.as_deref(),
+        ),
+    }
+}
+
+pub async fn run_multi_channel_live_connectors_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.multi_channel_live_connectors_runner {
+        return Ok(false);
+    }
+    let config = build_multi_channel_live_connectors_config(cli);
+    tau_multi_channel::run_multi_channel_live_connectors_runner(config).await?;
     Ok(true)
 }
 
@@ -169,10 +220,10 @@ fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_gateway_openresponses_server_config, build_multi_channel_media_config,
-        build_multi_channel_outbound_config, build_multi_channel_telemetry_config,
-        map_gateway_openresponses_auth_mode, resolve_gateway_openresponses_auth,
-        resolve_multi_channel_outbound_secret,
+        build_gateway_openresponses_server_config, build_multi_channel_live_connectors_config,
+        build_multi_channel_media_config, build_multi_channel_outbound_config,
+        build_multi_channel_telemetry_config, map_gateway_openresponses_auth_mode,
+        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -182,6 +233,7 @@ mod tests {
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, ModelRef, TauAiError};
     use tau_cli::{Cli, CliGatewayOpenResponsesAuthMode};
     use tau_gateway::GatewayOpenResponsesAuthMode;
+    use tau_multi_channel::MultiChannelLiveConnectorMode;
     use tau_provider::{
         load_credential_store, save_credential_store, CredentialStoreData,
         CredentialStoreEncryptionMode, IntegrationCredentialStoreRecord,
@@ -343,6 +395,82 @@ mod tests {
         assert!(!handled);
     }
 
+    #[tokio::test]
+    async fn unit_run_multi_channel_live_connectors_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_multi_channel_live_connectors_if_requested(&cli)
+            .await
+            .expect("connectors helper");
+
+        assert!(!handled);
+    }
+
+    #[test]
+    fn integration_build_multi_channel_live_connectors_config_preserves_runtime_fields() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.credential_store = temp.path().join("credentials.json");
+        cli.multi_channel_live_connectors_state_path = temp.path().join("connectors-state.json");
+        cli.multi_channel_live_ingress_dir = temp.path().join("ingress");
+        cli.multi_channel_processed_event_cap = 0;
+        cli.multi_channel_retry_max_attempts = 0;
+        cli.multi_channel_retry_base_delay_ms = 42;
+        cli.multi_channel_live_connectors_poll_once = true;
+        cli.multi_channel_live_webhook_bind = "127.0.0.1:9999".to_string();
+        cli.multi_channel_telegram_ingress_mode =
+            tau_cli::CliMultiChannelLiveConnectorMode::Polling;
+        cli.multi_channel_discord_ingress_mode = tau_cli::CliMultiChannelLiveConnectorMode::Webhook;
+        cli.multi_channel_whatsapp_ingress_mode =
+            tau_cli::CliMultiChannelLiveConnectorMode::Webhook;
+        cli.multi_channel_telegram_api_base = " https://telegram.example ".to_string();
+        cli.multi_channel_discord_api_base = " https://discord.example ".to_string();
+        cli.multi_channel_telegram_bot_token = Some(" telegram-direct ".to_string());
+        cli.multi_channel_discord_ingress_channel_ids =
+            vec![" 111 ".to_string(), "222".to_string()];
+        cli.multi_channel_telegram_webhook_secret = Some(" tg-secret ".to_string());
+        cli.multi_channel_whatsapp_webhook_verify_token = Some(" wa-verify-secret ".to_string());
+        cli.multi_channel_whatsapp_webhook_app_secret = Some(" wa-app-secret ".to_string());
+        write_integration_secret(
+            &cli.credential_store,
+            "discord-bot-token",
+            Some("discord-store"),
+            false,
+        );
+
+        let config = build_multi_channel_live_connectors_config(&cli);
+        assert_eq!(
+            config.state_path,
+            cli.multi_channel_live_connectors_state_path
+        );
+        assert_eq!(config.ingress_dir, cli.multi_channel_live_ingress_dir);
+        assert_eq!(config.processed_event_cap, 1);
+        assert_eq!(config.retry_max_attempts, 1);
+        assert_eq!(config.retry_base_delay_ms, 42);
+        assert!(config.poll_once);
+        assert_eq!(config.webhook_bind, "127.0.0.1:9999");
+        assert_eq!(config.telegram_mode, MultiChannelLiveConnectorMode::Polling);
+        assert_eq!(config.discord_mode, MultiChannelLiveConnectorMode::Webhook);
+        assert_eq!(config.whatsapp_mode, MultiChannelLiveConnectorMode::Webhook);
+        assert_eq!(config.telegram_api_base, "https://telegram.example");
+        assert_eq!(config.discord_api_base, "https://discord.example");
+        assert_eq!(
+            config.telegram_bot_token.as_deref(),
+            Some("telegram-direct")
+        );
+        assert_eq!(config.discord_bot_token.as_deref(), Some("discord-store"));
+        assert_eq!(config.discord_ingress_channel_ids, vec!["111", "222"]);
+        assert_eq!(config.telegram_webhook_secret.as_deref(), Some("tg-secret"));
+        assert_eq!(
+            config.whatsapp_webhook_verify_token.as_deref(),
+            Some("wa-verify-secret")
+        );
+        assert_eq!(
+            config.whatsapp_webhook_app_secret.as_deref(),
+            Some("wa-app-secret")
+        );
+    }
+
     #[test]
     fn functional_resolve_multi_channel_outbound_secret_reads_active_store_entry() {
         let temp = tempdir().expect("tempdir");
@@ -411,6 +539,31 @@ mod tests {
     }
 
     #[test]
+    fn functional_build_multi_channel_live_connectors_config_resolves_store_fallbacks() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.credential_store = temp.path().join("credentials.json");
+        cli.multi_channel_telegram_bot_token = None;
+        cli.multi_channel_discord_bot_token = None;
+        write_integration_secret(
+            &cli.credential_store,
+            "telegram-bot-token",
+            Some("telegram-store"),
+            false,
+        );
+        write_integration_secret(
+            &cli.credential_store,
+            "discord-bot-token",
+            Some("discord-store"),
+            false,
+        );
+
+        let config = build_multi_channel_live_connectors_config(&cli);
+        assert_eq!(config.telegram_bot_token.as_deref(), Some("telegram-store"));
+        assert_eq!(config.discord_bot_token.as_deref(), Some("discord-store"));
+    }
+
+    #[test]
     fn regression_resolve_multi_channel_outbound_secret_returns_none_for_revoked_entry() {
         let temp = tempdir().expect("tempdir");
         let mut cli = parse_cli_with_stack();
@@ -439,5 +592,22 @@ mod tests {
         assert_eq!(telemetry.typing_presence_min_response_chars, 1);
         assert_eq!(media.max_attachments_per_event, 1);
         assert_eq!(media.max_summary_chars, 16);
+    }
+
+    #[test]
+    fn regression_build_multi_channel_live_connectors_config_ignores_revoked_store_secret() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.credential_store = temp.path().join("credentials.json");
+        cli.multi_channel_discord_bot_token = None;
+        write_integration_secret(
+            &cli.credential_store,
+            "discord-bot-token",
+            Some("discord-secret"),
+            true,
+        );
+
+        let config = build_multi_channel_live_connectors_config(&cli);
+        assert!(config.discord_bot_token.is_none());
     }
 }
