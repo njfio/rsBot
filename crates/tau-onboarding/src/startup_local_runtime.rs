@@ -115,6 +115,15 @@ pub fn resolve_prompt_entry_runtime_mode(
     }
 }
 
+pub fn resolve_command_file_entry_path(entry_mode: &LocalRuntimeEntryMode) -> Option<&Path> {
+    match entry_mode {
+        LocalRuntimeEntryMode::CommandFile(path) => Some(path.as_path()),
+        LocalRuntimeEntryMode::Interactive
+        | LocalRuntimeEntryMode::Prompt(_)
+        | LocalRuntimeEntryMode::PlanFirstPrompt(_) => None,
+    }
+}
+
 pub async fn execute_prompt_entry_mode<FRun, Fut>(
     entry_mode: &LocalRuntimeEntryMode,
     run_prompt_mode: FRun,
@@ -127,6 +136,20 @@ where
         return Ok(false);
     };
     run_prompt_mode(prompt_mode).await?;
+    Ok(true)
+}
+
+pub fn execute_command_file_entry_mode<FRun>(
+    entry_mode: &LocalRuntimeEntryMode,
+    run_command_file: FRun,
+) -> Result<bool>
+where
+    FRun: FnOnce(&Path) -> Result<()>,
+{
+    let Some(command_file_path) = resolve_command_file_entry_path(entry_mode) else {
+        return Ok(false);
+    };
+    run_command_file(command_file_path)?;
     Ok(true)
 }
 
@@ -294,13 +317,15 @@ fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_prompt_entry_mode, extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
+        execute_command_file_entry_mode, execute_prompt_entry_mode,
+        extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
         register_runtime_event_reporter_subscriber,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
-        register_runtime_json_event_subscriber, resolve_extension_runtime_registrations,
-        resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
-        resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
-        LocalRuntimeEntryMode, PromptEntryRuntimeMode, PromptRuntimeMode, SessionBootstrapOutcome,
+        register_runtime_json_event_subscriber, resolve_command_file_entry_path,
+        resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
+        resolve_orchestrator_route_table, resolve_prompt_entry_runtime_mode,
+        resolve_prompt_runtime_mode, resolve_session_runtime, LocalRuntimeEntryMode,
+        PromptEntryRuntimeMode, PromptRuntimeMode, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -589,6 +614,69 @@ mod tests {
         .expect_err("callback failures should propagate");
         assert!(
             error.to_string().contains("forced prompt dispatch failure"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn unit_resolve_command_file_entry_path_returns_none_for_interactive() {
+        assert_eq!(
+            resolve_command_file_entry_path(&LocalRuntimeEntryMode::Interactive),
+            None
+        );
+    }
+
+    #[test]
+    fn functional_execute_command_file_entry_mode_runs_callback_for_command_file_path() {
+        let mode = LocalRuntimeEntryMode::CommandFile(PathBuf::from("commands.txt"));
+        let captured = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let captured_sink = Arc::clone(&captured);
+
+        let handled = execute_command_file_entry_mode(&mode, |path| {
+            captured_sink
+                .lock()
+                .expect("lock captured paths")
+                .push(path.to_path_buf());
+            Ok(())
+        })
+        .expect("command-file dispatch should succeed");
+
+        assert!(handled);
+        let captured = captured.lock().expect("lock captured paths");
+        assert_eq!(captured.as_slice(), &[PathBuf::from("commands.txt")]);
+    }
+
+    #[test]
+    fn integration_execute_command_file_entry_mode_returns_false_for_prompt_entries() {
+        let prompt_mode = LocalRuntimeEntryMode::Prompt("prompt text".to_string());
+        let plan_first_mode = LocalRuntimeEntryMode::PlanFirstPrompt("prompt text".to_string());
+
+        let prompt_handled = execute_command_file_entry_mode(&prompt_mode, |_| {
+            panic!("prompt mode should not run command file callback")
+        })
+        .expect("prompt mode dispatch result");
+        let plan_first_handled = execute_command_file_entry_mode(&plan_first_mode, |_| {
+            panic!("plan-first prompt mode should not run command file callback")
+        })
+        .expect("plan-first mode dispatch result");
+
+        assert!(!prompt_handled);
+        assert!(!plan_first_handled);
+    }
+
+    #[test]
+    fn regression_execute_command_file_entry_mode_propagates_callback_errors() {
+        let mode = LocalRuntimeEntryMode::CommandFile(PathBuf::from("commands.txt"));
+
+        let error = execute_command_file_entry_mode(&mode, |_path| {
+            Err(anyhow::anyhow!("forced command-file dispatch failure"))
+        })
+        .expect_err("callback failures should propagate");
+
+        assert!(
+            error
+                .to_string()
+                .contains("forced command-file dispatch failure"),
             "unexpected error: {error}"
         );
     }

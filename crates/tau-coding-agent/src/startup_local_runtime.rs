@@ -3,14 +3,15 @@ use crate::extension_manifest::{
     discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
 };
 use tau_onboarding::startup_local_runtime::{
+    execute_command_file_entry_mode as execute_onboarding_command_file_entry_mode,
     execute_prompt_entry_mode as execute_onboarding_prompt_entry_mode,
     register_runtime_event_reporter_subscriber as register_onboarding_runtime_event_reporter_subscriber,
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
     resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
-    resolve_orchestrator_route_table, resolve_session_runtime, LocalRuntimeEntryMode,
-    PromptEntryRuntimeMode, SessionBootstrapOutcome,
+    resolve_orchestrator_route_table, resolve_session_runtime, PromptEntryRuntimeMode,
+    SessionBootstrapOutcome,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -215,14 +216,16 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         command_context,
     };
 
-    if let LocalRuntimeEntryMode::CommandFile(command_file_path) = entry_mode {
+    if execute_onboarding_command_file_entry_mode(&entry_mode, |command_file_path| {
         execute_command_file(
-            &command_file_path,
+            command_file_path,
             cli.command_file_error_mode,
             &mut agent,
             &mut session_runtime,
             command_context,
         )?;
+        Ok(())
+    })? {
         return Ok(());
     }
 
