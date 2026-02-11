@@ -1,14 +1,12 @@
 use super::*;
-use tau_onboarding::startup_dispatch::{
-    execute_startup_runtime_modes, resolve_startup_runtime_from_cli,
-};
+use tau_onboarding::startup_dispatch::execute_startup_runtime_from_cli_with_modes;
 
 pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
     if execute_startup_preflight(&cli)? {
         return Ok(());
     }
 
-    let runtime = resolve_startup_runtime_from_cli(
+    execute_startup_runtime_from_cli_with_modes(
         &cli,
         |cli| -> Result<(ModelRef, Vec<ModelRef>)> {
             let StartupModelResolution {
@@ -27,13 +25,7 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         |cli| Box::pin(run_startup_skills_bootstrap(cli)),
         execute_package_activate_on_startup,
         |skills_bootstrap| skills_bootstrap.skills_lock_path.clone(),
-    )
-    .await?;
-    let render_options = RenderOptions::from_cli(&cli);
-    execute_startup_runtime_modes(
-        &cli,
-        runtime,
-        render_options,
+        RenderOptions::from_cli,
         |cli, client, model_ref, system_prompt, tool_policy, render_options| {
             Box::pin(run_transport_mode_if_requested(
                 cli,
