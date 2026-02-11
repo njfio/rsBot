@@ -36,7 +36,7 @@ use tau_diagnostics::{
     DoctorCheckOptions, DoctorStatus,
 };
 use tau_github_issues::github_issues_helpers::{
-    attachment_filename_from_url, chunk_text_by_chars, evaluate_attachment_content_type_policy,
+    attachment_filename_from_url, evaluate_attachment_content_type_policy,
     evaluate_attachment_url_policy, extract_attachment_urls, split_at_char_index,
 };
 use tau_github_issues::github_transport_helpers::{
@@ -45,7 +45,7 @@ use tau_github_issues::github_transport_helpers::{
 };
 use tau_github_issues::issue_comment::{
     extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
-    render_issue_command_comment,
+    render_issue_command_comment, render_issue_comment_chunks_with_footer,
 };
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
@@ -5045,26 +5045,7 @@ fn render_issue_comment_chunks_with_limit(
     max_chars: usize,
 ) -> Vec<String> {
     let (content, footer) = render_issue_comment_response_parts(event, run);
-    let footer_block = format!("\n\n---\n{footer}");
-    let footer_len = footer_block.chars().count();
-    if max_chars == 0 {
-        return Vec::new();
-    }
-    if footer_len >= max_chars {
-        return vec![footer_block];
-    }
-    let content_len = content.chars().count();
-    if content_len + footer_len <= max_chars {
-        return vec![format!("{content}{footer_block}")];
-    }
-
-    let max_first_len = max_chars.saturating_sub(footer_len);
-    let (first_content, remainder) = split_at_char_index(&content, max_first_len);
-    let mut chunks = Vec::new();
-    chunks.push(format!("{first_content}{footer_block}"));
-    let mut trailing = chunk_text_by_chars(&remainder, max_chars);
-    chunks.append(&mut trailing);
-    chunks
+    render_issue_comment_chunks_with_footer(&content, &footer, max_chars)
 }
 
 fn render_issue_artifact_markdown(

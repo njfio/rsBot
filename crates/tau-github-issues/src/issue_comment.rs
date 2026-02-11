@@ -1,3 +1,5 @@
+use crate::github_issues_helpers::{chunk_text_by_chars, split_at_char_index};
+
 pub const EVENT_KEY_MARKER_PREFIX: &str = "<!-- tau-event-key:";
 pub const LEGACY_EVENT_KEY_MARKER_PREFIX: &str = "<!-- rsbot-event-key:";
 pub const EVENT_KEY_MARKER_SUFFIX: &str = " -->";
@@ -72,6 +74,33 @@ pub fn render_issue_command_comment(
     )
 }
 
+pub fn render_issue_comment_chunks_with_footer(
+    content: &str,
+    footer: &str,
+    max_chars: usize,
+) -> Vec<String> {
+    let footer_block = format!("\n\n---\n{footer}");
+    let footer_len = footer_block.chars().count();
+    if max_chars == 0 {
+        return Vec::new();
+    }
+    if footer_len >= max_chars {
+        return vec![footer_block];
+    }
+    let content_len = content.chars().count();
+    if content_len + footer_len <= max_chars {
+        return vec![format!("{content}{footer_block}")];
+    }
+
+    let max_first_len = max_chars.saturating_sub(footer_len);
+    let (first_content, remainder) = split_at_char_index(content, max_first_len);
+    let mut chunks = Vec::new();
+    chunks.push(format!("{first_content}{footer_block}"));
+    let mut trailing = chunk_text_by_chars(&remainder, max_chars);
+    chunks.append(&mut trailing);
+    chunks
+}
+
 pub fn extract_footer_event_keys(text: &str) -> Vec<String> {
     let mut keys = Vec::new();
     let mut cursor = text;
@@ -104,8 +133,8 @@ pub fn extract_footer_event_keys(text: &str) -> Vec<String> {
 mod tests {
     use super::{
         extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
-        render_issue_command_comment, EVENT_KEY_MARKER_PREFIX, EVENT_KEY_MARKER_SUFFIX,
-        LEGACY_EVENT_KEY_MARKER_PREFIX,
+        render_issue_command_comment, render_issue_comment_chunks_with_footer,
+        EVENT_KEY_MARKER_PREFIX, EVENT_KEY_MARKER_SUFFIX, LEGACY_EVENT_KEY_MARKER_PREFIX,
     };
 
     #[test]
@@ -173,5 +202,34 @@ mod tests {
             "before {EVENT_KEY_MARKER_PREFIX}tau-1{EVENT_KEY_MARKER_SUFFIX} after {EVENT_KEY_MARKER_PREFIX}broken"
         );
         assert_eq!(extract_footer_event_keys(&body), vec!["tau-1".to_string()]);
+    }
+
+    #[test]
+    fn unit_render_issue_comment_chunks_with_footer_returns_empty_for_zero_limit() {
+        assert!(render_issue_comment_chunks_with_footer("hello", "footer", 0).is_empty());
+    }
+
+    #[test]
+    fn functional_render_issue_comment_chunks_with_footer_returns_single_chunk_when_fit() {
+        let chunks = render_issue_comment_chunks_with_footer("hello", "footer", 64);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("hello"));
+        assert!(chunks[0].contains("footer"));
+    }
+
+    #[test]
+    fn integration_render_issue_comment_chunks_with_footer_splits_content_and_keeps_footer_first() {
+        let chunks = render_issue_comment_chunks_with_footer("abcdefghijklmnopqrstuvwxyz", "f", 20);
+        assert!(chunks.len() >= 2);
+        assert!(!chunks[0].contains("footer"));
+        assert!(chunks[0].contains("---"));
+        assert!(chunks[0].contains("\nf"));
+        assert!(chunks[1..].iter().all(|chunk| !chunk.contains("---")));
+    }
+
+    #[test]
+    fn regression_render_issue_comment_chunks_with_footer_handles_footer_longer_than_limit() {
+        let chunks = render_issue_comment_chunks_with_footer("hello", "very-long-footer", 3);
+        assert_eq!(chunks, vec!["\n\n---\nvery-long-footer".to_string()]);
     }
 }
