@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "name": "multi-agent-invalid-error-code",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "unsupported-error-code",
+      "phase": "review",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "reviewer": {}
+        },
+        "planner": {
+          "role": "planner"
+        },
+        "delegated": {
+          "role": "planner"
+        },
+        "review": {
+          "role": "reviewer"
+        }
+      },
+      "expected": {
+        "outcome": "malformed_input",
+        "error_code": "multi_agent_unknown_error_code"
+      }
+    }
+  ]
+}

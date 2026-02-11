@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
-use crate::multi_agent_contract::{
+use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
+use tau_orchestrator::multi_agent_contract::{
     evaluate_multi_agent_case, load_multi_agent_contract_fixture,
     validate_multi_agent_case_result_against_contract, MultiAgentContractCase,
     MultiAgentContractFixture, MultiAgentReplayStep,
 };
-use crate::{current_unix_timestamp_ms, write_text_atomic, TransportHealthSnapshot};
 
 const MULTI_AGENT_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 const MULTI_AGENT_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
@@ -251,7 +251,7 @@ impl MultiAgentRuntime {
         &mut self,
         case: &MultiAgentContractCase,
         case_key: &str,
-        result: &crate::multi_agent_contract::MultiAgentReplayResult,
+        result: &tau_orchestrator::multi_agent_contract::MultiAgentReplayResult,
     ) -> Result<usize> {
         let routed_case = MultiAgentRoutedCase {
             case_key: case_key.to_string(),
@@ -311,7 +311,7 @@ impl MultiAgentRuntime {
         &self,
         case: &MultiAgentContractCase,
         case_key: &str,
-        result: &crate::multi_agent_contract::MultiAgentReplayResult,
+        result: &tau_orchestrator::multi_agent_contract::MultiAgentReplayResult,
     ) -> Result<()> {
         let store = self.channel_store()?;
         let timestamp_unix_ms = current_unix_timestamp_ms();
@@ -580,10 +580,10 @@ mod tests {
         MULTI_AGENT_RUNTIME_EVENTS_LOG_FILE,
     };
     use crate::channel_store::ChannelStore;
-    use crate::multi_agent_contract::{
+    use crate::transport_health::TransportHealthState;
+    use tau_orchestrator::multi_agent_contract::{
         load_multi_agent_contract_fixture, parse_multi_agent_contract_fixture,
     };
-    use crate::transport_health::TransportHealthState;
 
     fn fixture_path(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -5,14 +5,15 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::multi_agent_router::{parse_multi_agent_route_table, select_multi_agent_route};
-use crate::MultiAgentRoutePhase;
+use crate::multi_agent_router::{
+    parse_multi_agent_route_table, select_multi_agent_route, MultiAgentRoutePhase,
+};
 
-pub(crate) const MULTI_AGENT_CONTRACT_SCHEMA_VERSION: u32 = 1;
+pub const MULTI_AGENT_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
-pub(crate) const MULTI_AGENT_ERROR_INVALID_ROUTE_TABLE: &str = "multi_agent_invalid_route_table";
-pub(crate) const MULTI_AGENT_ERROR_EMPTY_STEP_TEXT: &str = "multi_agent_empty_step_text";
-pub(crate) const MULTI_AGENT_ERROR_ROLE_UNAVAILABLE: &str = "multi_agent_role_unavailable";
+pub const MULTI_AGENT_ERROR_INVALID_ROUTE_TABLE: &str = "multi_agent_invalid_route_table";
+pub const MULTI_AGENT_ERROR_EMPTY_STEP_TEXT: &str = "multi_agent_empty_step_text";
+pub const MULTI_AGENT_ERROR_ROLE_UNAVAILABLE: &str = "multi_agent_role_unavailable";
 
 fn multi_agent_contract_schema_version() -> u32 {
     MULTI_AGENT_CONTRACT_SCHEMA_VERSION
@@ -20,14 +21,14 @@ fn multi_agent_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum MultiAgentOutcomeKind {
+pub enum MultiAgentOutcomeKind {
     Success,
     MalformedInput,
     RetryableFailure,
 }
 
 impl MultiAgentOutcomeKind {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
             Self::MalformedInput => "malformed_input",
@@ -37,63 +38,63 @@ impl MultiAgentOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct MultiAgentContractExpectation {
-    pub(crate) outcome: MultiAgentOutcomeKind,
+pub struct MultiAgentContractExpectation {
+    pub outcome: MultiAgentOutcomeKind,
     #[serde(default)]
-    pub(crate) error_code: String,
+    pub error_code: String,
     #[serde(default)]
-    pub(crate) selected_role: String,
+    pub selected_role: String,
     #[serde(default)]
-    pub(crate) attempted_roles: Vec<String>,
+    pub attempted_roles: Vec<String>,
     #[serde(default)]
-    pub(crate) category: String,
+    pub category: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct MultiAgentContractCase {
+pub struct MultiAgentContractCase {
     #[serde(default = "multi_agent_contract_schema_version")]
-    pub(crate) schema_version: u32,
-    pub(crate) case_id: String,
-    pub(crate) phase: MultiAgentRoutePhase,
-    pub(crate) route_table: Value,
+    pub schema_version: u32,
+    pub case_id: String,
+    pub phase: MultiAgentRoutePhase,
+    pub route_table: Value,
     #[serde(default)]
-    pub(crate) step_text: String,
+    pub step_text: String,
     #[serde(default)]
-    pub(crate) simulate_retryable_failure: bool,
-    pub(crate) expected: MultiAgentContractExpectation,
+    pub simulate_retryable_failure: bool,
+    pub expected: MultiAgentContractExpectation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct MultiAgentContractFixture {
-    pub(crate) schema_version: u32,
-    pub(crate) name: String,
+pub struct MultiAgentContractFixture {
+    pub schema_version: u32,
+    pub name: String,
     #[serde(default)]
-    pub(crate) description: String,
-    pub(crate) cases: Vec<MultiAgentContractCase>,
+    pub description: String,
+    pub cases: Vec<MultiAgentContractCase>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MultiAgentContractCapabilities {
-    pub(crate) schema_version: u32,
-    pub(crate) supported_phases: Vec<String>,
-    pub(crate) supported_outcomes: Vec<String>,
-    pub(crate) supported_error_codes: Vec<String>,
+pub struct MultiAgentContractCapabilities {
+    pub schema_version: u32,
+    pub supported_phases: Vec<String>,
+    pub supported_outcomes: Vec<String>,
+    pub supported_error_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MultiAgentReplayStep {
+pub enum MultiAgentReplayStep {
     Success,
     MalformedInput,
     RetryableFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MultiAgentReplayResult {
-    pub(crate) step: MultiAgentReplayStep,
-    pub(crate) error_code: Option<String>,
-    pub(crate) selected_role: String,
-    pub(crate) attempted_roles: Vec<String>,
-    pub(crate) category: String,
+pub struct MultiAgentReplayResult {
+    pub step: MultiAgentReplayStep,
+    pub error_code: Option<String>,
+    pub selected_role: String,
+    pub attempted_roles: Vec<String>,
+    pub category: String,
 }
 
 #[cfg(test)]
@@ -110,21 +111,21 @@ pub(crate) trait MultiAgentContractDriver {
     fn apply_case(&mut self, case: &MultiAgentContractCase) -> Result<MultiAgentReplayResult>;
 }
 
-pub(crate) fn parse_multi_agent_contract_fixture(raw: &str) -> Result<MultiAgentContractFixture> {
+pub fn parse_multi_agent_contract_fixture(raw: &str) -> Result<MultiAgentContractFixture> {
     let fixture = serde_json::from_str::<MultiAgentContractFixture>(raw)
         .context("failed to parse multi-agent contract fixture")?;
     validate_multi_agent_contract_fixture(&fixture)?;
     Ok(fixture)
 }
 
-pub(crate) fn load_multi_agent_contract_fixture(path: &Path) -> Result<MultiAgentContractFixture> {
+pub fn load_multi_agent_contract_fixture(path: &Path) -> Result<MultiAgentContractFixture> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read fixture {}", path.display()))?;
     parse_multi_agent_contract_fixture(&raw)
         .with_context(|| format!("invalid fixture {}", path.display()))
 }
 
-pub(crate) fn multi_agent_contract_capabilities() -> MultiAgentContractCapabilities {
+pub fn multi_agent_contract_capabilities() -> MultiAgentContractCapabilities {
     MultiAgentContractCapabilities {
         schema_version: MULTI_AGENT_CONTRACT_SCHEMA_VERSION,
         supported_phases: [
@@ -150,7 +151,7 @@ pub(crate) fn multi_agent_contract_capabilities() -> MultiAgentContractCapabilit
     }
 }
 
-pub(crate) fn validate_multi_agent_contract_compatibility(
+pub fn validate_multi_agent_contract_compatibility(
     fixture: &MultiAgentContractFixture,
 ) -> Result<()> {
     let capabilities = multi_agent_contract_capabilities();
@@ -203,9 +204,7 @@ pub(crate) fn validate_multi_agent_contract_compatibility(
     Ok(())
 }
 
-pub(crate) fn validate_multi_agent_contract_fixture(
-    fixture: &MultiAgentContractFixture,
-) -> Result<()> {
+pub fn validate_multi_agent_contract_fixture(fixture: &MultiAgentContractFixture) -> Result<()> {
     if fixture.schema_version != MULTI_AGENT_CONTRACT_SCHEMA_VERSION {
         bail!(
             "unsupported multi-agent contract schema version {} (expected {})",
@@ -436,7 +435,7 @@ fn validate_case_route_table_contract(case: &MultiAgentContractCase) -> Result<(
     Ok(())
 }
 
-pub(crate) fn evaluate_multi_agent_case(case: &MultiAgentContractCase) -> MultiAgentReplayResult {
+pub fn evaluate_multi_agent_case(case: &MultiAgentContractCase) -> MultiAgentReplayResult {
     let route_table_raw = match serde_json::to_string(&case.route_table) {
         Ok(raw) => raw,
         Err(_) => {
@@ -498,7 +497,7 @@ pub(crate) fn evaluate_multi_agent_case(case: &MultiAgentContractCase) -> MultiA
     }
 }
 
-pub(crate) fn validate_multi_agent_case_result_against_contract(
+pub fn validate_multi_agent_case_result_against_contract(
     case: &MultiAgentContractCase,
     result: &MultiAgentReplayResult,
 ) -> Result<()> {

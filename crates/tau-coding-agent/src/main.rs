@@ -33,7 +33,6 @@ mod mcp_server;
 mod memory_contract;
 mod memory_runtime;
 mod model_catalog;
-mod multi_agent_contract;
 mod multi_agent_router;
 mod multi_agent_runtime;
 mod multi_channel_adapters;
@@ -204,9 +203,7 @@ pub(crate) use crate::model_catalog::{
     render_model_show, render_models_list, ModelCatalog, ModelCatalogLoadOptions,
     MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
 };
-pub(crate) use crate::multi_agent_router::{
-    load_multi_agent_route_table, MultiAgentRoutePhase, MultiAgentRouteTable,
-};
+pub(crate) use crate::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTable};
 pub(crate) use crate::multi_channel_runtime::build_multi_channel_incident_timeline_report;
 pub(crate) use crate::multi_channel_runtime::build_multi_channel_route_inspect_report;
 #[cfg(test)]
