@@ -5,7 +5,8 @@ use crate::extension_manifest::{
 use tau_onboarding::startup_local_runtime::{
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
-    resolve_orchestrator_route_table, LocalRuntimeEntryMode,
+    resolve_orchestrator_route_table, resolve_session_runtime, LocalRuntimeEntryMode,
+    SessionBootstrapOutcome,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -65,21 +66,23 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             }
         });
     }
-    let mut session_runtime = if cli.no_session {
-        None
-    } else {
-        let outcome = initialize_session(
-            &cli.session,
-            cli.session_lock_wait_ms,
-            cli.session_lock_stale_ms,
-            cli.branch_from,
-            system_prompt,
-        )?;
-        if !outcome.lineage.is_empty() {
-            agent.replace_messages(outcome.lineage);
-        }
-        Some(outcome.runtime)
-    };
+    let mut session_runtime = resolve_session_runtime(
+        cli.no_session,
+        || {
+            let outcome = initialize_session(
+                &cli.session,
+                cli.session_lock_wait_ms,
+                cli.session_lock_stale_ms,
+                cli.branch_from,
+                system_prompt,
+            )?;
+            Ok(SessionBootstrapOutcome {
+                runtime: outcome.runtime,
+                lineage: outcome.lineage,
+            })
+        },
+        |lineage| agent.replace_messages(lineage),
+    )?;
 
     if cli.json_events {
         agent.subscribe(|event| {

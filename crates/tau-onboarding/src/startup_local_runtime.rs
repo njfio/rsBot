@@ -22,6 +22,12 @@ pub enum LocalRuntimeEntryMode {
     PlanFirstPrompt(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionBootstrapOutcome<TSession, TMessage> {
+    pub runtime: TSession,
+    pub lineage: Vec<TMessage>,
+}
+
 pub fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str, Value)> {
     match event {
         AgentEvent::ToolExecutionStart {
@@ -86,6 +92,26 @@ pub fn resolve_local_runtime_entry_mode(
             .map(|path| LocalRuntimeEntryMode::CommandFile(path.to_path_buf()))
             .unwrap_or(LocalRuntimeEntryMode::Interactive),
     }
+}
+
+pub fn resolve_session_runtime<TSession, TMessage, FInit, FReplace>(
+    no_session: bool,
+    initialize_session: FInit,
+    replace_messages: FReplace,
+) -> Result<Option<TSession>>
+where
+    FInit: FnOnce() -> Result<SessionBootstrapOutcome<TSession, TMessage>>,
+    FReplace: FnOnce(Vec<TMessage>),
+{
+    if no_session {
+        return Ok(None);
+    }
+
+    let outcome = initialize_session()?;
+    if !outcome.lineage.is_empty() {
+        replace_messages(outcome.lineage);
+    }
+    Ok(Some(outcome.runtime))
 }
 
 pub fn resolve_orchestrator_route_table<T, F>(
@@ -183,7 +209,8 @@ mod tests {
         extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
         register_runtime_extension_tool_hook_subscriber, resolve_extension_runtime_registrations,
         resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
-        resolve_prompt_runtime_mode, LocalRuntimeEntryMode, PromptRuntimeMode,
+        resolve_prompt_runtime_mode, resolve_session_runtime, LocalRuntimeEntryMode,
+        PromptRuntimeMode, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -422,6 +449,81 @@ mod tests {
             resolve_local_runtime_entry_mode(Some("plan text".to_string()), true, None),
             LocalRuntimeEntryMode::PlanFirstPrompt("plan text".to_string())
         );
+    }
+
+    #[test]
+    fn unit_resolve_session_runtime_no_session_skips_initialization() {
+        let init_called = AtomicBool::new(false);
+        let runtime = resolve_session_runtime::<u64, String, _, _>(
+            true,
+            || {
+                init_called.store(true, Ordering::Relaxed);
+                Ok(SessionBootstrapOutcome {
+                    runtime: 42,
+                    lineage: Vec::new(),
+                })
+            },
+            |_lineage| panic!("lineage replay should not run when no-session is enabled"),
+        )
+        .expect("session resolution should succeed");
+        assert_eq!(runtime, None);
+        assert!(!init_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn functional_resolve_session_runtime_initializes_without_lineage_replay() {
+        let replay_called = AtomicBool::new(false);
+        let runtime = resolve_session_runtime(
+            false,
+            || {
+                Ok(SessionBootstrapOutcome {
+                    runtime: "runtime".to_string(),
+                    lineage: Vec::<String>::new(),
+                })
+            },
+            |_lineage| replay_called.store(true, Ordering::Relaxed),
+        )
+        .expect("session resolution should succeed");
+        assert_eq!(runtime.as_deref(), Some("runtime"));
+        assert!(!replay_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn integration_resolve_session_runtime_replays_non_empty_lineage() {
+        let replayed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let replayed_sink = Arc::clone(&replayed);
+
+        let runtime = resolve_session_runtime(
+            false,
+            || {
+                Ok(SessionBootstrapOutcome {
+                    runtime: 7usize,
+                    lineage: vec!["msg-a".to_string(), "msg-b".to_string()],
+                })
+            },
+            move |lineage| {
+                replayed_sink.lock().expect("replay lock").extend(lineage);
+            },
+        )
+        .expect("session resolution should succeed");
+
+        assert_eq!(runtime, Some(7));
+        assert_eq!(
+            replayed.lock().expect("replay lock").as_slice(),
+            ["msg-a", "msg-b"]
+        );
+    }
+
+    #[test]
+    fn regression_resolve_session_runtime_propagates_initializer_error() {
+        let error = resolve_session_runtime::<u8, String, _, _>(
+            false,
+            || Err(anyhow::anyhow!("initializer failed")),
+            |_lineage| panic!("lineage replay should not run when init fails"),
+        )
+        .expect_err("initializer failure should be propagated");
+
+        assert!(error.to_string().contains("initializer failed"));
     }
 
     #[test]
