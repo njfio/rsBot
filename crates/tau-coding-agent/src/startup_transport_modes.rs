@@ -5,6 +5,10 @@ use crate::channel_adapters::{
 use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_gateway::{GatewayOpenResponsesAuthMode, GatewayToolRegistrar};
+use tau_onboarding::startup_transport_modes::{
+    build_multi_channel_media_config, build_multi_channel_outbound_config,
+    build_multi_channel_telemetry_config, resolve_multi_channel_outbound_secret,
+};
 
 #[derive(Clone)]
 struct GatewayToolPolicyRegistrar {
@@ -441,82 +445,4 @@ pub(crate) async fn run_transport_mode_if_requested(
     }
 
     Ok(false)
-}
-
-fn resolve_multi_channel_outbound_secret(
-    cli: &Cli,
-    direct_secret: Option<&str>,
-    integration_id: &str,
-) -> Option<String> {
-    if let Some(secret) = resolve_non_empty_cli_value(direct_secret) {
-        return Some(secret);
-    }
-    let store = load_credential_store(
-        &cli.credential_store,
-        resolve_credential_store_encryption_mode(cli),
-        cli.credential_store_key.as_deref(),
-    )
-    .ok()?;
-    let entry = store.integrations.get(integration_id)?;
-    if entry.revoked {
-        return None;
-    }
-    entry
-        .secret
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn build_multi_channel_outbound_config(cli: &Cli) -> tau_multi_channel::MultiChannelOutboundConfig {
-    tau_multi_channel::MultiChannelOutboundConfig {
-        mode: cli.multi_channel_outbound_mode.into(),
-        max_chars: cli.multi_channel_outbound_max_chars.max(1),
-        http_timeout_ms: cli.multi_channel_outbound_http_timeout_ms.max(1),
-        telegram_api_base: cli.multi_channel_telegram_api_base.trim().to_string(),
-        discord_api_base: cli.multi_channel_discord_api_base.trim().to_string(),
-        whatsapp_api_base: cli.multi_channel_whatsapp_api_base.trim().to_string(),
-        telegram_bot_token: resolve_multi_channel_outbound_secret(
-            cli,
-            cli.multi_channel_telegram_bot_token.as_deref(),
-            "telegram-bot-token",
-        ),
-        discord_bot_token: resolve_multi_channel_outbound_secret(
-            cli,
-            cli.multi_channel_discord_bot_token.as_deref(),
-            "discord-bot-token",
-        ),
-        whatsapp_access_token: resolve_multi_channel_outbound_secret(
-            cli,
-            cli.multi_channel_whatsapp_access_token.as_deref(),
-            "whatsapp-access-token",
-        ),
-        whatsapp_phone_number_id: resolve_multi_channel_outbound_secret(
-            cli,
-            cli.multi_channel_whatsapp_phone_number_id.as_deref(),
-            "whatsapp-phone-number-id",
-        ),
-    }
-}
-
-fn build_multi_channel_telemetry_config(
-    cli: &Cli,
-) -> tau_multi_channel::MultiChannelTelemetryConfig {
-    tau_multi_channel::MultiChannelTelemetryConfig {
-        typing_presence_enabled: cli.multi_channel_telemetry_typing_presence,
-        usage_summary_enabled: cli.multi_channel_telemetry_usage_summary,
-        include_identifiers: cli.multi_channel_telemetry_include_identifiers,
-        typing_presence_min_response_chars: cli.multi_channel_telemetry_min_response_chars.max(1),
-    }
-}
-
-fn build_multi_channel_media_config(
-    cli: &Cli,
-) -> tau_multi_channel::MultiChannelMediaUnderstandingConfig {
-    tau_multi_channel::MultiChannelMediaUnderstandingConfig {
-        enabled: cli.multi_channel_media_understanding,
-        max_attachments_per_event: cli.multi_channel_media_max_attachments.max(1),
-        max_summary_chars: cli.multi_channel_media_max_summary_chars.max(16),
-    }
 }
