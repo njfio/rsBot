@@ -6,7 +6,7 @@ use anyhow::Result;
 use serde_json::Value;
 use tau_agent_core::{Agent, AgentConfig, AgentEvent};
 use tau_ai::{LlmClient, ModelRef};
-use tau_cli::Cli;
+use tau_cli::{Cli, CliOrchestratorMode};
 use tau_core::current_unix_timestamp_ms;
 use tau_diagnostics::{build_doctor_command_config, DoctorCommandConfig};
 use tau_provider::AuthCommandConfig;
@@ -56,6 +56,33 @@ pub struct LocalRuntimeCommandDefaults {
     pub profile_defaults: ProfileDefaults,
     pub auth_command_config: AuthCommandConfig,
     pub doctor_config: DoctorCommandConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalRuntimeInteractiveDefaults {
+    pub turn_timeout_ms: u64,
+    pub orchestrator_mode: CliOrchestratorMode,
+    pub orchestrator_max_plan_steps: usize,
+    pub orchestrator_max_delegated_steps: usize,
+    pub orchestrator_max_executor_response_chars: usize,
+    pub orchestrator_max_delegated_step_response_chars: usize,
+    pub orchestrator_max_delegated_total_response_chars: usize,
+    pub orchestrator_delegate_steps: bool,
+}
+
+pub fn build_local_runtime_interactive_defaults(cli: &Cli) -> LocalRuntimeInteractiveDefaults {
+    LocalRuntimeInteractiveDefaults {
+        turn_timeout_ms: cli.turn_timeout_ms,
+        orchestrator_mode: cli.orchestrator_mode,
+        orchestrator_max_plan_steps: cli.orchestrator_max_plan_steps,
+        orchestrator_max_delegated_steps: cli.orchestrator_max_delegated_steps,
+        orchestrator_max_executor_response_chars: cli.orchestrator_max_executor_response_chars,
+        orchestrator_max_delegated_step_response_chars: cli
+            .orchestrator_max_delegated_step_response_chars,
+        orchestrator_max_delegated_total_response_chars: cli
+            .orchestrator_max_delegated_total_response_chars,
+        orchestrator_delegate_steps: cli.orchestrator_delegate_steps,
+    }
 }
 
 pub fn build_local_runtime_command_defaults(
@@ -550,17 +577,18 @@ mod tests {
     use super::{
         build_local_runtime_agent, build_local_runtime_command_defaults,
         build_local_runtime_doctor_config, build_local_runtime_extension_bootstrap,
-        execute_command_file_entry_mode, execute_prompt_entry_mode,
-        execute_prompt_or_command_file_entry_mode, extension_tool_hook_diagnostics,
-        extension_tool_hook_dispatch, register_runtime_event_reporter_if_configured,
-        register_runtime_event_reporter_subscriber, register_runtime_extension_pipeline,
-        register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
-        register_runtime_json_event_subscriber, resolve_command_file_entry_path,
-        resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
-        resolve_orchestrator_route_table, resolve_prompt_entry_runtime_mode,
-        resolve_prompt_runtime_mode, resolve_session_runtime, resolve_session_runtime_from_cli,
-        LocalRuntimeEntryMode, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
-        PromptRuntimeMode, RuntimeExtensionPipelineConfig, SessionBootstrapOutcome,
+        build_local_runtime_interactive_defaults, execute_command_file_entry_mode,
+        execute_prompt_entry_mode, execute_prompt_or_command_file_entry_mode,
+        extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
+        register_runtime_event_reporter_if_configured, register_runtime_event_reporter_subscriber,
+        register_runtime_extension_pipeline, register_runtime_extension_tool_hook_subscriber,
+        register_runtime_extension_tools, register_runtime_json_event_subscriber,
+        resolve_command_file_entry_path, resolve_extension_runtime_registrations,
+        resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
+        resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
+        resolve_session_runtime_from_cli, LocalRuntimeEntryMode, LocalRuntimeInteractiveDefaults,
+        PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome, PromptRuntimeMode,
+        RuntimeExtensionPipelineConfig, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -579,7 +607,7 @@ mod tests {
         ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, ModelRef,
         TauAiError, ToolDefinition,
     };
-    use tau_cli::Cli;
+    use tau_cli::{Cli, CliOrchestratorMode};
     use tau_tools::tools::ToolPolicy;
     use tokio::sync::Mutex as AsyncMutex;
 
@@ -1349,6 +1377,72 @@ mod tests {
         );
 
         assert!(!defaults.doctor_config.session_enabled);
+    }
+
+    #[test]
+    fn unit_build_local_runtime_interactive_defaults_preserves_timeout_and_mode() {
+        let mut cli = parse_cli_with_stack();
+        cli.turn_timeout_ms = 11_000;
+        cli.orchestrator_mode = CliOrchestratorMode::PlanFirst;
+
+        let defaults = build_local_runtime_interactive_defaults(&cli);
+
+        assert_eq!(defaults.turn_timeout_ms, 11_000);
+        assert_eq!(defaults.orchestrator_mode, CliOrchestratorMode::PlanFirst);
+    }
+
+    #[test]
+    fn functional_build_local_runtime_interactive_defaults_preserves_plan_and_delegate_budgets() {
+        let mut cli = parse_cli_with_stack();
+        cli.orchestrator_max_plan_steps = 7;
+        cli.orchestrator_max_delegated_steps = 13;
+        cli.orchestrator_delegate_steps = true;
+
+        let defaults = build_local_runtime_interactive_defaults(&cli);
+
+        assert_eq!(defaults.orchestrator_max_plan_steps, 7);
+        assert_eq!(defaults.orchestrator_max_delegated_steps, 13);
+        assert!(defaults.orchestrator_delegate_steps);
+    }
+
+    #[test]
+    fn integration_build_local_runtime_interactive_defaults_preserves_response_budgets() {
+        let mut cli = parse_cli_with_stack();
+        cli.orchestrator_max_executor_response_chars = 2222;
+        cli.orchestrator_max_delegated_step_response_chars = 3333;
+        cli.orchestrator_max_delegated_total_response_chars = 4444;
+
+        let defaults = build_local_runtime_interactive_defaults(&cli);
+
+        assert_eq!(defaults.orchestrator_max_executor_response_chars, 2222);
+        assert_eq!(
+            defaults.orchestrator_max_delegated_step_response_chars,
+            3333
+        );
+        assert_eq!(
+            defaults.orchestrator_max_delegated_total_response_chars,
+            4444
+        );
+    }
+
+    #[test]
+    fn regression_build_local_runtime_interactive_defaults_uses_default_cli_values() {
+        let cli = parse_cli_with_stack();
+        let defaults = build_local_runtime_interactive_defaults(&cli);
+        let expected = LocalRuntimeInteractiveDefaults {
+            turn_timeout_ms: cli.turn_timeout_ms,
+            orchestrator_mode: cli.orchestrator_mode,
+            orchestrator_max_plan_steps: cli.orchestrator_max_plan_steps,
+            orchestrator_max_delegated_steps: cli.orchestrator_max_delegated_steps,
+            orchestrator_max_executor_response_chars: cli.orchestrator_max_executor_response_chars,
+            orchestrator_max_delegated_step_response_chars: cli
+                .orchestrator_max_delegated_step_response_chars,
+            orchestrator_max_delegated_total_response_chars: cli
+                .orchestrator_max_delegated_total_response_chars,
+            orchestrator_delegate_steps: cli.orchestrator_delegate_steps,
+        };
+
+        assert_eq!(defaults, expected);
     }
 
     #[test]

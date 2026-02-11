@@ -6,6 +6,7 @@ use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_command_defaults as build_onboarding_local_runtime_command_defaults,
     build_local_runtime_extension_bootstrap as build_onboarding_local_runtime_extension_bootstrap,
+    build_local_runtime_interactive_defaults as build_onboarding_local_runtime_interactive_defaults,
     execute_prompt_or_command_file_entry_mode as execute_onboarding_prompt_or_command_file_entry_mode,
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
     register_runtime_extension_pipeline as register_onboarding_runtime_extension_pipeline,
@@ -133,9 +134,10 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         |root, hook, payload| dispatch_extension_runtime_hook(root, hook, payload).diagnostics,
     );
 
+    let interactive_defaults = build_onboarding_local_runtime_interactive_defaults(cli);
     let entry_mode = resolve_local_runtime_entry_mode(
         resolve_prompt_input(cli)?,
-        cli.orchestrator_mode == CliOrchestratorMode::PlanFirst,
+        interactive_defaults.orchestrator_mode == CliOrchestratorMode::PlanFirst,
         cli.command_file.as_deref(),
     );
     let LocalRuntimeCommandDefaults {
@@ -165,18 +167,19 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         extension_commands: &extension_runtime_registrations.registered_commands,
     };
     let interactive_config = InteractiveRuntimeConfig {
-        turn_timeout_ms: cli.turn_timeout_ms,
+        turn_timeout_ms: interactive_defaults.turn_timeout_ms,
         render_options,
         extension_runtime_hooks: &extension_runtime_hooks,
-        orchestrator_mode: cli.orchestrator_mode,
-        orchestrator_max_plan_steps: cli.orchestrator_max_plan_steps,
-        orchestrator_max_delegated_steps: cli.orchestrator_max_delegated_steps,
-        orchestrator_max_executor_response_chars: cli.orchestrator_max_executor_response_chars,
-        orchestrator_max_delegated_step_response_chars: cli
+        orchestrator_mode: interactive_defaults.orchestrator_mode,
+        orchestrator_max_plan_steps: interactive_defaults.orchestrator_max_plan_steps,
+        orchestrator_max_delegated_steps: interactive_defaults.orchestrator_max_delegated_steps,
+        orchestrator_max_executor_response_chars: interactive_defaults
+            .orchestrator_max_executor_response_chars,
+        orchestrator_max_delegated_step_response_chars: interactive_defaults
             .orchestrator_max_delegated_step_response_chars,
-        orchestrator_max_delegated_total_response_chars: cli
+        orchestrator_max_delegated_total_response_chars: interactive_defaults
             .orchestrator_max_delegated_total_response_chars,
-        orchestrator_delegate_steps: cli.orchestrator_delegate_steps,
+        orchestrator_delegate_steps: interactive_defaults.orchestrator_delegate_steps,
         orchestrator_route_table: &orchestrator_route_table,
         orchestrator_route_trace_log,
         command_context,
@@ -189,14 +192,14 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                     &mut agent,
                     &mut session_runtime,
                     &prompt,
-                    cli.turn_timeout_ms,
+                    interactive_defaults.turn_timeout_ms,
                     render_options,
-                    cli.orchestrator_max_plan_steps,
-                    cli.orchestrator_max_delegated_steps,
-                    cli.orchestrator_max_executor_response_chars,
-                    cli.orchestrator_max_delegated_step_response_chars,
-                    cli.orchestrator_max_delegated_total_response_chars,
-                    cli.orchestrator_delegate_steps,
+                    interactive_defaults.orchestrator_max_plan_steps,
+                    interactive_defaults.orchestrator_max_delegated_steps,
+                    interactive_defaults.orchestrator_max_executor_response_chars,
+                    interactive_defaults.orchestrator_max_delegated_step_response_chars,
+                    interactive_defaults.orchestrator_max_delegated_total_response_chars,
+                    interactive_defaults.orchestrator_delegate_steps,
                     &orchestrator_route_table,
                     orchestrator_route_trace_log,
                     tool_policy_json,
@@ -209,7 +212,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                     &mut agent,
                     &mut session_runtime,
                     &prompt,
-                    cli.turn_timeout_ms,
+                    interactive_defaults.turn_timeout_ms,
                     render_options,
                     &extension_runtime_hooks,
                 )
