@@ -184,6 +184,50 @@ pub fn build_memory_contract_runner_config(cli: &Cli) -> StandardContractRunnerC
     }
 }
 
+pub fn build_dashboard_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
+    StandardContractRunnerConfig {
+        fixture_path: cli.dashboard_fixture.clone(),
+        state_dir: cli.dashboard_state_dir.clone(),
+        queue_limit: cli.dashboard_queue_limit.max(1),
+        processed_case_cap: cli.dashboard_processed_case_cap.max(1),
+        retry_max_attempts: cli.dashboard_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.dashboard_retry_base_delay_ms,
+    }
+}
+
+pub fn build_deployment_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
+    StandardContractRunnerConfig {
+        fixture_path: cli.deployment_fixture.clone(),
+        state_dir: cli.deployment_state_dir.clone(),
+        queue_limit: cli.deployment_queue_limit.max(1),
+        processed_case_cap: cli.deployment_processed_case_cap.max(1),
+        retry_max_attempts: cli.deployment_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.deployment_retry_base_delay_ms,
+    }
+}
+
+pub fn build_custom_command_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
+    StandardContractRunnerConfig {
+        fixture_path: cli.custom_command_fixture.clone(),
+        state_dir: cli.custom_command_state_dir.clone(),
+        queue_limit: cli.custom_command_queue_limit.max(1),
+        processed_case_cap: cli.custom_command_processed_case_cap.max(1),
+        retry_max_attempts: cli.custom_command_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.custom_command_retry_base_delay_ms,
+    }
+}
+
+pub fn build_voice_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
+    StandardContractRunnerConfig {
+        fixture_path: cli.voice_fixture.clone(),
+        state_dir: cli.voice_state_dir.clone(),
+        queue_limit: cli.voice_queue_limit.max(1),
+        processed_case_cap: cli.voice_processed_case_cap.max(1),
+        retry_max_attempts: cli.voice_retry_max_attempts.max(1),
+        retry_base_delay_ms: cli.voice_retry_base_delay_ms,
+    }
+}
+
 pub fn build_multi_channel_contract_runner_config(
     cli: &Cli,
     command_handlers: MultiChannelCommandHandlers,
@@ -389,13 +433,16 @@ fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_browser_automation_contract_runner_config, build_gateway_contract_runner_config,
+        build_browser_automation_contract_runner_config,
+        build_custom_command_contract_runner_config, build_dashboard_contract_runner_config,
+        build_deployment_contract_runner_config, build_gateway_contract_runner_config,
         build_gateway_openresponses_server_config, build_memory_contract_runner_config,
         build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
         build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
         build_multi_channel_media_config, build_multi_channel_outbound_config,
-        build_multi_channel_telemetry_config, map_gateway_openresponses_auth_mode,
-        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
+        build_multi_channel_telemetry_config, build_voice_contract_runner_config,
+        map_gateway_openresponses_auth_mode, resolve_gateway_openresponses_auth,
+        resolve_multi_channel_outbound_secret,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -592,6 +639,41 @@ mod tests {
         assert_eq!(config.queue_limit, 1);
         assert_eq!(config.processed_case_cap, 1);
         assert_eq!(config.retry_max_attempts, 1);
+    }
+
+    #[test]
+    fn regression_build_standard_contract_runner_builders_enforce_minimums() {
+        let mut cli = parse_cli_with_stack();
+        cli.dashboard_queue_limit = 0;
+        cli.dashboard_processed_case_cap = 0;
+        cli.dashboard_retry_max_attempts = 0;
+        cli.deployment_queue_limit = 0;
+        cli.deployment_processed_case_cap = 0;
+        cli.deployment_retry_max_attempts = 0;
+        cli.custom_command_queue_limit = 0;
+        cli.custom_command_processed_case_cap = 0;
+        cli.custom_command_retry_max_attempts = 0;
+        cli.voice_queue_limit = 0;
+        cli.voice_processed_case_cap = 0;
+        cli.voice_retry_max_attempts = 0;
+
+        let dashboard = build_dashboard_contract_runner_config(&cli);
+        let deployment = build_deployment_contract_runner_config(&cli);
+        let custom = build_custom_command_contract_runner_config(&cli);
+        let voice = build_voice_contract_runner_config(&cli);
+
+        assert_eq!(dashboard.queue_limit, 1);
+        assert_eq!(dashboard.processed_case_cap, 1);
+        assert_eq!(dashboard.retry_max_attempts, 1);
+        assert_eq!(deployment.queue_limit, 1);
+        assert_eq!(deployment.processed_case_cap, 1);
+        assert_eq!(deployment.retry_max_attempts, 1);
+        assert_eq!(custom.queue_limit, 1);
+        assert_eq!(custom.processed_case_cap, 1);
+        assert_eq!(custom.retry_max_attempts, 1);
+        assert_eq!(voice.queue_limit, 1);
+        assert_eq!(voice.processed_case_cap, 1);
+        assert_eq!(voice.retry_max_attempts, 1);
     }
 
     #[test]
@@ -792,6 +874,72 @@ mod tests {
         assert_eq!(config.processed_case_cap, 9_100);
         assert_eq!(config.retry_max_attempts, 6);
         assert_eq!(config.retry_base_delay_ms, 45);
+    }
+
+    #[test]
+    fn integration_build_standard_contract_runner_builders_preserve_runtime_fields() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        cli.dashboard_fixture = temp.path().join("dashboard-fixture.json");
+        cli.dashboard_state_dir = temp.path().join("dashboard-state");
+        cli.dashboard_queue_limit = 33;
+        cli.dashboard_processed_case_cap = 9_000;
+        cli.dashboard_retry_max_attempts = 7;
+        cli.dashboard_retry_base_delay_ms = 31;
+
+        cli.deployment_fixture = temp.path().join("deployment-fixture.json");
+        cli.deployment_state_dir = temp.path().join("deployment-state");
+        cli.deployment_queue_limit = 19;
+        cli.deployment_processed_case_cap = 2_000;
+        cli.deployment_retry_max_attempts = 3;
+        cli.deployment_retry_base_delay_ms = 8;
+
+        cli.custom_command_fixture = temp.path().join("custom-fixture.json");
+        cli.custom_command_state_dir = temp.path().join("custom-state");
+        cli.custom_command_queue_limit = 41;
+        cli.custom_command_processed_case_cap = 1_234;
+        cli.custom_command_retry_max_attempts = 5;
+        cli.custom_command_retry_base_delay_ms = 16;
+
+        cli.voice_fixture = temp.path().join("voice-fixture.json");
+        cli.voice_state_dir = temp.path().join("voice-state");
+        cli.voice_queue_limit = 27;
+        cli.voice_processed_case_cap = 4_444;
+        cli.voice_retry_max_attempts = 9;
+        cli.voice_retry_base_delay_ms = 12;
+
+        let dashboard = build_dashboard_contract_runner_config(&cli);
+        let deployment = build_deployment_contract_runner_config(&cli);
+        let custom = build_custom_command_contract_runner_config(&cli);
+        let voice = build_voice_contract_runner_config(&cli);
+
+        assert_eq!(dashboard.fixture_path, cli.dashboard_fixture);
+        assert_eq!(dashboard.state_dir, cli.dashboard_state_dir);
+        assert_eq!(dashboard.queue_limit, 33);
+        assert_eq!(dashboard.processed_case_cap, 9_000);
+        assert_eq!(dashboard.retry_max_attempts, 7);
+        assert_eq!(dashboard.retry_base_delay_ms, 31);
+
+        assert_eq!(deployment.fixture_path, cli.deployment_fixture);
+        assert_eq!(deployment.state_dir, cli.deployment_state_dir);
+        assert_eq!(deployment.queue_limit, 19);
+        assert_eq!(deployment.processed_case_cap, 2_000);
+        assert_eq!(deployment.retry_max_attempts, 3);
+        assert_eq!(deployment.retry_base_delay_ms, 8);
+
+        assert_eq!(custom.fixture_path, cli.custom_command_fixture);
+        assert_eq!(custom.state_dir, cli.custom_command_state_dir);
+        assert_eq!(custom.queue_limit, 41);
+        assert_eq!(custom.processed_case_cap, 1_234);
+        assert_eq!(custom.retry_max_attempts, 5);
+        assert_eq!(custom.retry_base_delay_ms, 16);
+
+        assert_eq!(voice.fixture_path, cli.voice_fixture);
+        assert_eq!(voice.state_dir, cli.voice_state_dir);
+        assert_eq!(voice.queue_limit, 27);
+        assert_eq!(voice.processed_case_cap, 4_444);
+        assert_eq!(voice.retry_max_attempts, 9);
+        assert_eq!(voice.retry_base_delay_ms, 12);
     }
 
     #[test]

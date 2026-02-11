@@ -5,7 +5,9 @@ use crate::channel_adapters::{
 use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
-    build_browser_automation_contract_runner_config, build_memory_contract_runner_config,
+    build_browser_automation_contract_runner_config, build_custom_command_contract_runner_config,
+    build_dashboard_contract_runner_config, build_deployment_contract_runner_config,
+    build_memory_contract_runner_config, build_voice_contract_runner_config,
     run_gateway_contract_runner_if_requested, run_gateway_openresponses_server_if_requested,
     run_multi_agent_contract_runner_if_requested, run_multi_channel_contract_runner_if_requested,
     run_multi_channel_live_connectors_if_requested, run_multi_channel_live_runner_if_requested,
@@ -258,13 +260,14 @@ pub(crate) async fn run_transport_mode_if_requested(
     }
 
     if cli.dashboard_contract_runner {
+        let config = build_dashboard_contract_runner_config(cli);
         run_dashboard_contract_runner(DashboardRuntimeConfig {
-            fixture_path: cli.dashboard_fixture.clone(),
-            state_dir: cli.dashboard_state_dir.clone(),
-            queue_limit: cli.dashboard_queue_limit.max(1),
-            processed_case_cap: cli.dashboard_processed_case_cap.max(1),
-            retry_max_attempts: cli.dashboard_retry_max_attempts.max(1),
-            retry_base_delay_ms: cli.dashboard_retry_base_delay_ms,
+            fixture_path: config.fixture_path,
+            state_dir: config.state_dir,
+            queue_limit: config.queue_limit,
+            processed_case_cap: config.processed_case_cap,
+            retry_max_attempts: config.retry_max_attempts,
+            retry_base_delay_ms: config.retry_base_delay_ms,
         })
         .await?;
         return Ok(true);
@@ -275,39 +278,42 @@ pub(crate) async fn run_transport_mode_if_requested(
     }
 
     if cli.deployment_contract_runner {
+        let config = build_deployment_contract_runner_config(cli);
         run_deployment_contract_runner(DeploymentRuntimeConfig {
-            fixture_path: cli.deployment_fixture.clone(),
-            state_dir: cli.deployment_state_dir.clone(),
-            queue_limit: cli.deployment_queue_limit.max(1),
-            processed_case_cap: cli.deployment_processed_case_cap.max(1),
-            retry_max_attempts: cli.deployment_retry_max_attempts.max(1),
-            retry_base_delay_ms: cli.deployment_retry_base_delay_ms,
+            fixture_path: config.fixture_path,
+            state_dir: config.state_dir,
+            queue_limit: config.queue_limit,
+            processed_case_cap: config.processed_case_cap,
+            retry_max_attempts: config.retry_max_attempts,
+            retry_base_delay_ms: config.retry_base_delay_ms,
         })
         .await?;
         return Ok(true);
     }
 
     if cli.custom_command_contract_runner {
+        let config = build_custom_command_contract_runner_config(cli);
         run_custom_command_contract_runner(CustomCommandRuntimeConfig {
-            fixture_path: cli.custom_command_fixture.clone(),
-            state_dir: cli.custom_command_state_dir.clone(),
-            queue_limit: cli.custom_command_queue_limit.max(1),
-            processed_case_cap: cli.custom_command_processed_case_cap.max(1),
-            retry_max_attempts: cli.custom_command_retry_max_attempts.max(1),
-            retry_base_delay_ms: cli.custom_command_retry_base_delay_ms,
+            fixture_path: config.fixture_path,
+            state_dir: config.state_dir,
+            queue_limit: config.queue_limit,
+            processed_case_cap: config.processed_case_cap,
+            retry_max_attempts: config.retry_max_attempts,
+            retry_base_delay_ms: config.retry_base_delay_ms,
         })
         .await?;
         return Ok(true);
     }
 
     if cli.voice_contract_runner {
+        let config = build_voice_contract_runner_config(cli);
         run_voice_contract_runner(VoiceRuntimeConfig {
-            fixture_path: cli.voice_fixture.clone(),
-            state_dir: cli.voice_state_dir.clone(),
-            queue_limit: cli.voice_queue_limit.max(1),
-            processed_case_cap: cli.voice_processed_case_cap.max(1),
-            retry_max_attempts: cli.voice_retry_max_attempts.max(1),
-            retry_base_delay_ms: cli.voice_retry_base_delay_ms,
+            fixture_path: config.fixture_path,
+            state_dir: config.state_dir,
+            queue_limit: config.queue_limit,
+            processed_case_cap: config.processed_case_cap,
+            retry_max_attempts: config.retry_max_attempts,
+            retry_base_delay_ms: config.retry_base_delay_ms,
         })
         .await?;
         return Ok(true);
