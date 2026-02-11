@@ -6,11 +6,21 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tau-agent-core = { path = "../tau-agent-core" }
+tau-ai = { path = "../tau-ai" }
 tau-core = { path = "../tau-core" }
+tau-multi-channel = { path = "../tau-multi-channel" }
 tau-runtime = { path = "../tau-runtime" }
+tau-session = { path = "../tau-session" }
 tokio.workspace = true
+tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+reqwest.workspace = true
 tempfile = "3"

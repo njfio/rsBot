@@ -468,15 +468,13 @@ pub(crate) fn validate_multi_channel_live_connectors_runner_cli(cli: &Cli) -> Re
         );
     }
     if telegram_mode.is_webhook() || whatsapp_mode.is_webhook() {
-        crate::gateway_openresponses::validate_gateway_openresponses_bind(
-            &cli.multi_channel_live_webhook_bind,
-        )
-        .with_context(|| {
-            format!(
-                "invalid --multi-channel-live-webhook-bind '{}'",
-                cli.multi_channel_live_webhook_bind
-            )
-        })?;
+        tau_gateway::validate_gateway_openresponses_bind(&cli.multi_channel_live_webhook_bind)
+            .with_context(|| {
+                format!(
+                    "invalid --multi-channel-live-webhook-bind '{}'",
+                    cli.multi_channel_live_webhook_bind
+                )
+            })?;
     }
     if cli.multi_channel_live_connectors_poll_once
         && (telegram_mode.is_webhook() || whatsapp_mode.is_webhook())
@@ -1333,9 +1331,7 @@ pub(crate) fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()>
         bail!("--gateway-openresponses-rate-limit-max-requests must be greater than 0");
     }
 
-    let bind = crate::gateway_openresponses::validate_gateway_openresponses_bind(
-        &cli.gateway_openresponses_bind,
-    )?;
+    let bind = tau_gateway::validate_gateway_openresponses_bind(&cli.gateway_openresponses_bind)?;
     match cli.gateway_openresponses_auth_mode {
         CliGatewayOpenResponsesAuthMode::Token => {
             if auth_token.is_none() {

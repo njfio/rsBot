@@ -3,6 +3,29 @@ use crate::multi_channel_adapters::{
     build_multi_channel_command_handlers, build_multi_channel_pairing_evaluator,
 };
 use crate::runtime_cli_validation::validate_multi_channel_live_connectors_runner_cli;
+use std::sync::Arc;
+use tau_gateway::{GatewayOpenResponsesAuthMode, GatewayToolRegistrar};
+
+#[derive(Clone)]
+struct GatewayToolPolicyRegistrar {
+    policy: ToolPolicy,
+}
+
+impl GatewayToolRegistrar for GatewayToolPolicyRegistrar {
+    fn register(&self, agent: &mut tau_agent_core::Agent) {
+        crate::tools::register_builtin_tools(agent, self.policy.clone());
+    }
+}
+
+fn map_gateway_auth_mode(mode: CliGatewayOpenResponsesAuthMode) -> GatewayOpenResponsesAuthMode {
+    match mode {
+        CliGatewayOpenResponsesAuthMode::Token => GatewayOpenResponsesAuthMode::Token,
+        CliGatewayOpenResponsesAuthMode::PasswordSession => {
+            GatewayOpenResponsesAuthMode::PasswordSession
+        }
+        CliGatewayOpenResponsesAuthMode::LocalhostDev => GatewayOpenResponsesAuthMode::LocalhostDev,
+    }
+}
 
 pub(crate) async fn run_transport_mode_if_requested(
     cli: &Cli,
@@ -41,19 +64,21 @@ pub(crate) async fn run_transport_mode_if_requested(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        crate::gateway_openresponses::run_gateway_openresponses_server(
-            crate::gateway_openresponses::GatewayOpenResponsesServerConfig {
+        tau_gateway::run_gateway_openresponses_server(
+            tau_gateway::GatewayOpenResponsesServerConfig {
                 client: client.clone(),
                 model: model_ref.model.clone(),
                 system_prompt: system_prompt.to_string(),
                 max_turns: cli.max_turns,
-                tool_policy: tool_policy.clone(),
+                tool_registrar: Arc::new(GatewayToolPolicyRegistrar {
+                    policy: tool_policy.clone(),
+                }),
                 turn_timeout_ms: cli.turn_timeout_ms,
                 session_lock_wait_ms: cli.session_lock_wait_ms,
                 session_lock_stale_ms: cli.session_lock_stale_ms,
                 state_dir: cli.gateway_state_dir.clone(),
                 bind: cli.gateway_openresponses_bind.clone(),
-                auth_mode: cli.gateway_openresponses_auth_mode,
+                auth_mode: map_gateway_auth_mode(cli.gateway_openresponses_auth_mode),
                 auth_token,
                 auth_password,
                 session_ttl_seconds: cli.gateway_openresponses_session_ttl_seconds,

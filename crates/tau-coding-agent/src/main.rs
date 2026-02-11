@@ -23,11 +23,7 @@ mod deployment_wasm;
 mod diagnostics_commands;
 mod events;
 mod extension_manifest;
-mod gateway_contract;
-mod gateway_openresponses;
 mod gateway_remote_profile;
-mod gateway_runtime;
-mod gateway_ws_protocol;
 mod gemini_cli_client;
 mod github_issues;
 mod github_issues_helpers;
@@ -390,7 +386,6 @@ use browser_automation_runtime::{
 use custom_command_runtime::{run_custom_command_contract_runner, CustomCommandRuntimeConfig};
 use dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
 use deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
-use gateway_runtime::{run_gateway_contract_runner, GatewayRuntimeConfig};
 use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
 use memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
 use multi_agent_runtime::{run_multi_agent_contract_runner, MultiAgentRuntimeConfig};
@@ -419,6 +414,7 @@ pub(crate) use tau_access::trust_roots::{
 };
 pub(crate) use tau_core::write_text_atomic;
 pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
+use tau_gateway::{run_gateway_contract_runner, GatewayRuntimeConfig};
 use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
 pub(crate) fn normalize_daemon_subcommand_args(args: Vec<String>) -> Vec<String> {

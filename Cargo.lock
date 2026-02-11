@@ -2815,12 +2815,22 @@ name = "tau-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "axum 0.8.8",
+ "futures-util",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tau-agent-core",
+ "tau-ai",
  "tau-core",
+ "tau-multi-channel",
  "tau-runtime",
+ "tau-session",
  "tempfile",
  "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.24.0",
 ]
 
 [[package]]

@@ -20,14 +20,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentConfig, AgentEvent};
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
+use tau_core::{current_unix_timestamp, current_unix_timestamp_ms};
+use tau_runtime::TransportHealthSnapshot;
+use tau_session::SessionStore;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::{
-    current_unix_timestamp, current_unix_timestamp_ms, persist_messages, SessionRuntime,
-    SessionStore,
-};
+use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
 const OPENRESPONSES_ENDPOINT: &str = "/v1/responses";
 const WEBCHAT_ENDPOINT: &str = "/webchat";
@@ -38,25 +38,78 @@ const DEFAULT_SESSION_KEY: &str = "default";
 const INPUT_BODY_SIZE_MULTIPLIER: usize = 8;
 const GATEWAY_WS_HEARTBEAT_REQUEST_ID: &str = "gateway-heartbeat";
 
+pub trait GatewayToolRegistrar: Send + Sync {
+    fn register(&self, agent: &mut Agent);
+}
+
+#[derive(Clone, Default)]
+pub struct NoopGatewayToolRegistrar;
+
+impl GatewayToolRegistrar for NoopGatewayToolRegistrar {
+    fn register(&self, _agent: &mut Agent) {}
+}
+
 #[derive(Clone)]
-pub(crate) struct GatewayOpenResponsesServerConfig {
-    pub(crate) client: Arc<dyn LlmClient>,
-    pub(crate) model: String,
-    pub(crate) system_prompt: String,
-    pub(crate) max_turns: usize,
-    pub(crate) tool_policy: crate::tools::ToolPolicy,
-    pub(crate) turn_timeout_ms: u64,
-    pub(crate) session_lock_wait_ms: u64,
-    pub(crate) session_lock_stale_ms: u64,
-    pub(crate) state_dir: PathBuf,
-    pub(crate) bind: String,
-    pub(crate) auth_mode: crate::CliGatewayOpenResponsesAuthMode,
-    pub(crate) auth_token: Option<String>,
-    pub(crate) auth_password: Option<String>,
-    pub(crate) session_ttl_seconds: u64,
-    pub(crate) rate_limit_window_seconds: u64,
-    pub(crate) rate_limit_max_requests: usize,
-    pub(crate) max_input_chars: usize,
+pub struct GatewayToolRegistrarFn {
+    inner: Arc<dyn Fn(&mut Agent) + Send + Sync>,
+}
+
+impl GatewayToolRegistrarFn {
+    pub fn new<F>(handler: F) -> Self
+    where
+        F: Fn(&mut Agent) + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(handler),
+        }
+    }
+}
+
+impl GatewayToolRegistrar for GatewayToolRegistrarFn {
+    fn register(&self, agent: &mut Agent) {
+        (self.inner)(agent);
+    }
+}
+
+#[derive(Clone)]
+pub struct GatewayOpenResponsesServerConfig {
+    pub client: Arc<dyn LlmClient>,
+    pub model: String,
+    pub system_prompt: String,
+    pub max_turns: usize,
+    pub tool_registrar: Arc<dyn GatewayToolRegistrar>,
+    pub turn_timeout_ms: u64,
+    pub session_lock_wait_ms: u64,
+    pub session_lock_stale_ms: u64,
+    pub state_dir: PathBuf,
+    pub bind: String,
+    pub auth_mode: GatewayOpenResponsesAuthMode,
+    pub auth_token: Option<String>,
+    pub auth_password: Option<String>,
+    pub session_ttl_seconds: u64,
+    pub rate_limit_window_seconds: u64,
+    pub rate_limit_max_requests: usize,
+    pub max_input_chars: usize,
+}
+
+#[derive(Debug)]
+struct SessionRuntime {
+    store: SessionStore,
+    active_head: Option<u64>,
+}
+
+fn persist_messages(
+    session_runtime: &mut Option<SessionRuntime>,
+    new_messages: &[Message],
+) -> Result<()> {
+    let Some(runtime) = session_runtime.as_mut() else {
+        return Ok(());
+    };
+
+    runtime.active_head = runtime
+        .store
+        .append_messages(runtime.active_head, new_messages)?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -197,7 +250,7 @@ struct GatewayMultiChannelRuntimeStateFile {
     #[serde(default)]
     processed_event_keys: Vec<String>,
     #[serde(default)]
-    health: crate::transport_health::TransportHealthSnapshot,
+    health: TransportHealthSnapshot,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -215,7 +268,7 @@ struct GatewayMultiChannelConnectorsStateFile {
     #[serde(default)]
     channels: BTreeMap<
         String,
-        crate::multi_channel_live_connectors::MultiChannelLiveConnectorChannelState,
+        tau_multi_channel::multi_channel_live_connectors::MultiChannelLiveConnectorChannelState,
     >,
 }
 
@@ -389,7 +442,7 @@ impl SseFrame {
     }
 }
 
-pub(crate) async fn run_gateway_openresponses_server(
+pub async fn run_gateway_openresponses_server(
     config: GatewayOpenResponsesServerConfig,
 ) -> Result<()> {
     std::fs::create_dir_all(&config.state_dir)
@@ -556,7 +609,7 @@ async fn handle_gateway_auth_session(
     State(state): State<Arc<GatewayOpenResponsesServerState>>,
     body: Bytes,
 ) -> Response {
-    if state.config.auth_mode != crate::CliGatewayOpenResponsesAuthMode::PasswordSession {
+    if state.config.auth_mode != GatewayOpenResponsesAuthMode::PasswordSession {
         return OpenResponsesApiError::bad_request(
             "auth_mode_mismatch",
             "gateway auth session endpoint requires --gateway-openresponses-auth-mode=password-session",
@@ -1043,7 +1096,7 @@ async fn execute_openresponses_request(
             max_tokens: None,
         },
     );
-    crate::tools::register_builtin_tools(&mut agent, state.config.tool_policy.clone());
+    state.config.tool_registrar.register(&mut agent);
 
     let usage = Arc::new(Mutex::new(OpenResponsesUsageSummary::default()));
     agent.subscribe({
@@ -1927,8 +1980,8 @@ fn authorize_gateway_request(
     headers: &HeaderMap,
 ) -> Result<String, OpenResponsesApiError> {
     match state.config.auth_mode {
-        crate::CliGatewayOpenResponsesAuthMode::LocalhostDev => Ok("localhost-dev".to_string()),
-        crate::CliGatewayOpenResponsesAuthMode::Token => {
+        GatewayOpenResponsesAuthMode::LocalhostDev => Ok("localhost-dev".to_string()),
+        GatewayOpenResponsesAuthMode::Token => {
             let expected = state
                 .config
                 .auth_token
@@ -1948,7 +2001,7 @@ fn authorize_gateway_request(
             }
             Ok("token".to_string())
         }
-        crate::CliGatewayOpenResponsesAuthMode::PasswordSession => {
+        GatewayOpenResponsesAuthMode::PasswordSession => {
             let Some(session_token) = bearer_token_from_headers(headers) else {
                 note_gateway_auth_failure(state);
                 return Err(OpenResponsesApiError::unauthorized());
@@ -2246,7 +2299,7 @@ fn load_gateway_multi_channel_connectors_status_report(
 }
 
 fn normalize_gateway_connector_channel_summary(
-    state: &crate::multi_channel_live_connectors::MultiChannelLiveConnectorChannelState,
+    state: &tau_multi_channel::multi_channel_live_connectors::MultiChannelLiveConnectorChannelState,
 ) -> GatewayMultiChannelConnectorChannelSummary {
     GatewayMultiChannelConnectorChannelSummary {
         mode: normalize_non_empty_string(&state.mode, "unknown"),
@@ -2282,7 +2335,8 @@ fn normalize_non_empty_string(raw: &str, fallback: &str) -> String {
     }
 }
 
-pub(crate) fn validate_gateway_openresponses_bind(bind: &str) -> Result<SocketAddr> {
+#[cfg(test)]
+fn validate_gateway_openresponses_bind(bind: &str) -> Result<SocketAddr> {
     bind.parse::<SocketAddr>()
         .with_context(|| format!("invalid gateway socket address '{bind}'"))
 }
@@ -2343,7 +2397,7 @@ mod tests {
     fn test_state_with_auth(
         root: &Path,
         max_input_chars: usize,
-        auth_mode: crate::CliGatewayOpenResponsesAuthMode,
+        auth_mode: GatewayOpenResponsesAuthMode,
         token: Option<&str>,
         password: Option<&str>,
         rate_limit_window_seconds: u64,
@@ -2355,7 +2409,7 @@ mod tests {
                 model: "openai/gpt-4o-mini".to_string(),
                 system_prompt: "You are Tau.".to_string(),
                 max_turns: 4,
-                tool_policy: crate::tools::ToolPolicy::new(Vec::new()),
+                tool_registrar: Arc::new(NoopGatewayToolRegistrar),
                 turn_timeout_ms: 0,
                 session_lock_wait_ms: 500,
                 session_lock_stale_ms: 10_000,
@@ -2380,7 +2434,7 @@ mod tests {
         test_state_with_auth(
             root,
             max_input_chars,
-            crate::CliGatewayOpenResponsesAuthMode::Token,
+            GatewayOpenResponsesAuthMode::Token,
             Some(token),
             None,
             60,
@@ -2746,7 +2800,7 @@ invalid-json-line
         let state = test_state_with_auth(
             temp.path(),
             10_000,
-            crate::CliGatewayOpenResponsesAuthMode::PasswordSession,
+            GatewayOpenResponsesAuthMode::PasswordSession,
             None,
             Some("pw-secret"),
             60,
@@ -3158,7 +3212,7 @@ invalid-json-line
         let state = test_state_with_auth(
             temp.path(),
             10_000,
-            crate::CliGatewayOpenResponsesAuthMode::LocalhostDev,
+            GatewayOpenResponsesAuthMode::LocalhostDev,
             None,
             None,
             60,
@@ -3223,7 +3277,7 @@ invalid-json-line
         let state = test_state_with_auth(
             temp.path(),
             10_000,
-            crate::CliGatewayOpenResponsesAuthMode::PasswordSession,
+            GatewayOpenResponsesAuthMode::PasswordSession,
             None,
             Some("pw-secret"),
             60,
@@ -3257,13 +3311,13 @@ invalid-json-line
                 model: "openai/gpt-4o-mini".to_string(),
                 system_prompt: "You are Tau.".to_string(),
                 max_turns: 4,
-                tool_policy: crate::tools::ToolPolicy::new(Vec::new()),
+                tool_registrar: Arc::new(NoopGatewayToolRegistrar),
                 turn_timeout_ms: 0,
                 session_lock_wait_ms: 500,
                 session_lock_stale_ms: 10_000,
                 state_dir: temp.path().join(".tau/gateway"),
                 bind: "127.0.0.1:0".to_string(),
-                auth_mode: crate::CliGatewayOpenResponsesAuthMode::PasswordSession,
+                auth_mode: GatewayOpenResponsesAuthMode::PasswordSession,
                 auth_token: None,
                 auth_password: Some("pw-secret".to_string()),
                 session_ttl_seconds: 1,
@@ -3309,7 +3363,7 @@ invalid-json-line
         let state = test_state_with_auth(
             temp.path(),
             10_000,
-            crate::CliGatewayOpenResponsesAuthMode::Token,
+            GatewayOpenResponsesAuthMode::Token,
             Some("secret"),
             None,
             60,
