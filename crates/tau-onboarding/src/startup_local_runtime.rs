@@ -52,6 +52,13 @@ pub struct SessionBootstrapOutcome<TSession, TMessage> {
     pub lineage: Vec<TMessage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRuntimeExtensionBootstrap<TOrchestratorRouteTable, TExtensionRuntimeRegistrations> {
+    pub orchestrator_route_table: TOrchestratorRouteTable,
+    pub orchestrator_route_trace_log: Option<PathBuf>,
+    pub extension_runtime_registrations: TExtensionRuntimeRegistrations,
+}
+
 pub fn extension_tool_hook_dispatch(event: &AgentEvent) -> Option<(&'static str, Value)> {
     match event {
         AgentEvent::ToolExecutionStart {
@@ -222,6 +229,43 @@ where
     }
 }
 
+pub fn build_local_runtime_extension_bootstrap<
+    TOrchestratorRouteTable,
+    TExtensionRuntimeRegistrations,
+    FLoadRouteTable,
+    FDiscoverRegistrations,
+    FBuildEmptyRegistrations,
+>(
+    cli: &Cli,
+    extension_runtime_hooks_enabled: bool,
+    extension_runtime_root: &Path,
+    load_route_table: FLoadRouteTable,
+    discover_registrations: FDiscoverRegistrations,
+    build_empty_registrations: FBuildEmptyRegistrations,
+) -> Result<LocalRuntimeExtensionBootstrap<TOrchestratorRouteTable, TExtensionRuntimeRegistrations>>
+where
+    TOrchestratorRouteTable: Default,
+    FLoadRouteTable: FnOnce(&Path) -> Result<TOrchestratorRouteTable>,
+    FDiscoverRegistrations: FnOnce(&Path) -> TExtensionRuntimeRegistrations,
+    FBuildEmptyRegistrations: FnOnce(&Path) -> TExtensionRuntimeRegistrations,
+{
+    let orchestrator_route_table = resolve_orchestrator_route_table(
+        cli.orchestrator_route_table.as_deref(),
+        load_route_table,
+    )?;
+    let extension_runtime_registrations = resolve_extension_runtime_registrations(
+        extension_runtime_hooks_enabled,
+        extension_runtime_root,
+        discover_registrations,
+        build_empty_registrations,
+    );
+    Ok(LocalRuntimeExtensionBootstrap {
+        orchestrator_route_table,
+        orchestrator_route_trace_log: cli.telemetry_log.clone(),
+        extension_runtime_registrations,
+    })
+}
+
 pub fn extension_tool_hook_diagnostics<F>(
     event: &AgentEvent,
     root: &Path,
@@ -360,8 +404,9 @@ fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_local_runtime_doctor_config, execute_command_file_entry_mode,
-        execute_prompt_entry_mode, extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
+        build_local_runtime_doctor_config, build_local_runtime_extension_bootstrap,
+        execute_command_file_entry_mode, execute_prompt_entry_mode,
+        extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
         register_runtime_event_reporter_if_configured, register_runtime_event_reporter_subscriber,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
         register_runtime_json_event_subscriber, resolve_command_file_entry_path,
@@ -551,6 +596,111 @@ mod tests {
         );
         assert_eq!(result, vec!["empty".to_string()]);
         assert!(!discover_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn unit_build_local_runtime_extension_bootstrap_preserves_trace_log_default_route() {
+        let mut cli = parse_cli_with_stack();
+        cli.telemetry_log = Some(PathBuf::from("logs/telemetry.ndjson"));
+        let extension_root = Path::new("/tmp/extensions");
+
+        let bootstrap =
+            build_local_runtime_extension_bootstrap::<Vec<String>, Vec<String>, _, _, _>(
+                &cli,
+                false,
+                extension_root,
+                |_path| panic!("route loader should not be called without route table path"),
+                |_path| panic!("discover should not be called when runtime hooks are disabled"),
+                |path| vec![format!("empty:{}", path.display())],
+            )
+            .expect("bootstrap");
+
+        assert!(bootstrap.orchestrator_route_table.is_empty());
+        assert_eq!(
+            bootstrap.orchestrator_route_trace_log,
+            Some(PathBuf::from("logs/telemetry.ndjson"))
+        );
+        assert_eq!(
+            bootstrap.extension_runtime_registrations,
+            vec!["empty:/tmp/extensions".to_string()]
+        );
+    }
+
+    #[test]
+    fn functional_build_local_runtime_extension_bootstrap_uses_loader_and_discovery_when_enabled() {
+        let mut cli = parse_cli_with_stack();
+        cli.orchestrator_route_table = Some(PathBuf::from("/tmp/route-table.json"));
+        cli.telemetry_log = Some(PathBuf::from("/tmp/trace.ndjson"));
+        let extension_root = Path::new("/tmp/extensions");
+
+        let bootstrap = build_local_runtime_extension_bootstrap(
+            &cli,
+            true,
+            extension_root,
+            |path| Ok(vec![format!("route:{}", path.display())]),
+            |path| vec![format!("discover:{}", path.display())],
+            |_path| panic!("empty builder should not be used when runtime hooks are enabled"),
+        )
+        .expect("bootstrap");
+
+        assert_eq!(
+            bootstrap.orchestrator_route_table,
+            vec!["route:/tmp/route-table.json".to_string()]
+        );
+        assert_eq!(
+            bootstrap.orchestrator_route_trace_log,
+            Some(PathBuf::from("/tmp/trace.ndjson"))
+        );
+        assert_eq!(
+            bootstrap.extension_runtime_registrations,
+            vec!["discover:/tmp/extensions".to_string()]
+        );
+    }
+
+    #[test]
+    fn integration_build_local_runtime_extension_bootstrap_uses_empty_when_hooks_disabled() {
+        let cli = parse_cli_with_stack();
+        let discover_called = AtomicBool::new(false);
+        let extension_root = Path::new("/tmp/extensions");
+
+        let bootstrap =
+            build_local_runtime_extension_bootstrap::<Vec<String>, Vec<String>, _, _, _>(
+                &cli,
+                false,
+                extension_root,
+                |_path| panic!("route loader should not run when route table path is absent"),
+                |_path| {
+                    discover_called.store(true, Ordering::Relaxed);
+                    vec!["discover".to_string()]
+                },
+                |_path| vec!["empty".to_string()],
+            )
+            .expect("bootstrap");
+
+        assert!(!discover_called.load(Ordering::Relaxed));
+        assert_eq!(
+            bootstrap.extension_runtime_registrations,
+            vec!["empty".to_string()]
+        );
+    }
+
+    #[test]
+    fn regression_build_local_runtime_extension_bootstrap_propagates_loader_errors() {
+        let mut cli = parse_cli_with_stack();
+        cli.orchestrator_route_table = Some(PathBuf::from("/tmp/route-table.json"));
+        let extension_root = Path::new("/tmp/extensions");
+
+        let error = build_local_runtime_extension_bootstrap::<Vec<String>, Vec<String>, _, _, _>(
+            &cli,
+            true,
+            extension_root,
+            |_path| Err(anyhow::anyhow!("route loader failed")),
+            |_path| vec!["discover".to_string()],
+            |_path| vec!["empty".to_string()],
+        )
+        .expect_err("loader error should propagate");
+
+        assert!(error.to_string().contains("route loader failed"));
     }
 
     #[test]

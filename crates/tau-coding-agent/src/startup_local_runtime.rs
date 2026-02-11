@@ -4,15 +4,15 @@ use crate::extension_manifest::{
 };
 use tau_onboarding::startup_local_runtime::{
     build_local_runtime_doctor_config as build_onboarding_local_runtime_doctor_config,
+    build_local_runtime_extension_bootstrap as build_onboarding_local_runtime_extension_bootstrap,
     execute_command_file_entry_mode as execute_onboarding_command_file_entry_mode,
     execute_prompt_entry_mode as execute_onboarding_prompt_entry_mode,
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
-    resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
-    resolve_orchestrator_route_table, resolve_session_runtime, PromptEntryRuntimeMode,
-    SessionBootstrapOutcome,
+    resolve_local_runtime_entry_mode, resolve_session_runtime, LocalRuntimeExtensionBootstrap,
+    PromptEntryRuntimeMode, SessionBootstrapOutcome,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -97,14 +97,15 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         enabled: cli.extension_runtime_hooks,
         root: cli.extension_runtime_root.clone(),
     };
-    let orchestrator_route_table = resolve_orchestrator_route_table(
-        cli.orchestrator_route_table.as_deref(),
-        load_multi_agent_route_table,
-    )?;
-    let orchestrator_route_trace_log = cli.telemetry_log.as_deref();
-    let extension_runtime_registrations = resolve_extension_runtime_registrations(
+    let LocalRuntimeExtensionBootstrap {
+        orchestrator_route_table,
+        orchestrator_route_trace_log,
+        extension_runtime_registrations,
+    } = build_onboarding_local_runtime_extension_bootstrap(
+        cli,
         extension_runtime_hooks.enabled,
         &extension_runtime_hooks.root,
+        load_multi_agent_route_table,
         |root| discover_extension_runtime_registrations(root, crate::commands::COMMAND_NAMES),
         |root| ExtensionRuntimeRegistrationSummary {
             root: root.to_path_buf(),
@@ -117,7 +118,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             skipped_name_conflict: 0,
             diagnostics: Vec::new(),
         },
-    );
+    )?;
+    let orchestrator_route_trace_log = orchestrator_route_trace_log.as_deref();
     register_onboarding_runtime_extension_tools(
         &mut agent,
         &extension_runtime_registrations.registered_tools,
