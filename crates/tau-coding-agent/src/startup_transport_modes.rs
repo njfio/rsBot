@@ -5,9 +5,9 @@ use crate::channel_adapters::{
 use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
-    build_gateway_openresponses_server_config, build_multi_channel_media_config,
-    build_multi_channel_outbound_config, build_multi_channel_telemetry_config,
-    resolve_multi_channel_outbound_secret,
+    build_multi_channel_media_config, build_multi_channel_outbound_config,
+    build_multi_channel_telemetry_config, resolve_multi_channel_outbound_secret,
+    run_gateway_openresponses_server_if_requested,
 };
 
 pub(crate) async fn run_transport_mode_if_requested(
@@ -34,15 +34,15 @@ pub(crate) async fn run_transport_mode_if_requested(
     validate_custom_command_contract_runner_cli(cli)?;
     validate_voice_contract_runner_cli(cli)?;
 
-    if cli.gateway_openresponses_server {
-        let config = build_gateway_openresponses_server_config(
-            cli,
-            client.clone(),
-            model_ref,
-            system_prompt,
-            tool_policy,
-        );
-        tau_gateway::run_gateway_openresponses_server(config).await?;
+    if run_gateway_openresponses_server_if_requested(
+        cli,
+        client.clone(),
+        model_ref,
+        system_prompt,
+        tool_policy,
+    )
+    .await?
+    {
         return Ok(true);
     }
 
