@@ -50,6 +50,11 @@ use tau_github_issues::issue_comment::{
 use tau_github_issues::issue_filter::{
     build_required_issue_labels, issue_matches_required_labels, issue_matches_required_numbers,
 };
+use tau_github_issues::issue_render::{
+    render_event_prompt as render_shared_event_prompt,
+    render_issue_artifact_markdown as render_shared_issue_artifact_markdown,
+    IssueArtifactAttachmentView, IssueEventPromptAttachmentView,
+};
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
 
@@ -4942,37 +4947,28 @@ fn render_event_prompt(
     prompt: &str,
     downloaded_attachments: &[DownloadedGithubAttachment],
 ) -> String {
-    let mut rendered = format!(
-        "You are responding as Tau inside GitHub issues.\nRepository: {}\nIssue: #{} ({})\nAuthor: @{}\nEvent: {}\n\nUser message:\n{}\n\nProvide a direct, actionable response suitable for a GitHub issue comment.",
-        repo.as_slug(),
+    let repo_slug = repo.as_slug();
+    let attachment_views = downloaded_attachments
+        .iter()
+        .map(|attachment| IssueEventPromptAttachmentView {
+            source_url: &attachment.source_url,
+            original_name: &attachment.original_name,
+            path: &attachment.path,
+            content_type: attachment.content_type.as_deref(),
+            bytes: attachment.bytes,
+            policy_reason_code: &attachment.policy_reason_code,
+            expires_unix_ms: attachment.expires_unix_ms,
+        })
+        .collect::<Vec<_>>();
+    render_shared_event_prompt(
+        &repo_slug,
         event.issue_number,
-        event.issue_title,
-        event.author_login,
+        &event.issue_title,
+        &event.author_login,
         event.kind.as_str(),
-        prompt
-    );
-    if !downloaded_attachments.is_empty() {
-        rendered.push_str("\n\nDownloaded attachments:\n");
-        for attachment in downloaded_attachments {
-            rendered.push_str(&format!(
-                "- name={} path={} content_type={} bytes={} source_url={} policy_reason={} expires_unix_ms={}\n",
-                attachment.original_name,
-                attachment.path.display(),
-                attachment
-                    .content_type
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                attachment.bytes,
-                attachment.source_url,
-                attachment.policy_reason_code,
-                attachment
-                    .expires_unix_ms
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
-            ));
-        }
-    }
-    rendered
+        prompt,
+        &attachment_views,
+    )
 }
 
 fn increment_count(map: &mut BTreeMap<String, usize>, raw: &str) {
@@ -5058,45 +5054,31 @@ fn render_issue_artifact_markdown(
     assistant_reply: &str,
     downloaded_attachments: &[DownloadedGithubAttachment],
 ) -> String {
-    let status_label = prompt_status_label(status);
-    let mut lines = vec![
-        "# Tau Artifact".to_string(),
-        format!("repository: {}", repo.as_slug()),
-        format!("issue_number: {}", event.issue_number),
-        format!("event_key: {}", event.key),
-        format!("run_id: {}", run_id),
-        format!("status: {}", status_label),
-    ];
-    if downloaded_attachments.is_empty() {
-        lines.push("attachments: none".to_string());
-    } else {
-        lines.push(format!("attachments: {}", downloaded_attachments.len()));
-        for attachment in downloaded_attachments {
-            lines.push(format!(
-                "- name={} path={} relative_path={} content_type={} bytes={} source_url={} checksum_sha256={} policy_reason={} created_unix_ms={} expires_unix_ms={}",
-                attachment.original_name,
-                attachment.path.display(),
-                attachment.relative_path,
-                attachment
-                    .content_type
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                attachment.bytes,
-                attachment.source_url,
-                attachment.checksum_sha256,
-                attachment.policy_reason_code,
-                attachment.created_unix_ms,
-                attachment
-                    .expires_unix_ms
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
-            ));
-        }
-    }
-    lines.push(String::new());
-    lines.push("## Assistant Reply".to_string());
-    lines.push(assistant_reply.trim().to_string());
-    lines.join("\n")
+    let repo_slug = repo.as_slug();
+    let attachment_views = downloaded_attachments
+        .iter()
+        .map(|attachment| IssueArtifactAttachmentView {
+            source_url: &attachment.source_url,
+            original_name: &attachment.original_name,
+            path: &attachment.path,
+            relative_path: &attachment.relative_path,
+            content_type: attachment.content_type.as_deref(),
+            bytes: attachment.bytes,
+            checksum_sha256: &attachment.checksum_sha256,
+            policy_reason_code: &attachment.policy_reason_code,
+            created_unix_ms: attachment.created_unix_ms,
+            expires_unix_ms: attachment.expires_unix_ms,
+        })
+        .collect::<Vec<_>>();
+    render_shared_issue_artifact_markdown(
+        &repo_slug,
+        event.issue_number,
+        &event.key,
+        run_id,
+        prompt_status_label(status),
+        assistant_reply,
+        &attachment_views,
+    )
 }
 
 fn normalize_artifact_retention_days(days: u64) -> Option<u64> {

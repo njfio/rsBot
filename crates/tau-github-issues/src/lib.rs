@@ -6,3 +6,4 @@ pub mod github_issues_helpers;
 pub mod github_transport_helpers;
 pub mod issue_comment;
 pub mod issue_filter;
+pub mod issue_render;
