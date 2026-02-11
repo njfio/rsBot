@@ -47,6 +47,9 @@ use tau_github_issues::issue_comment::{
     extract_footer_event_keys, issue_command_reason_code, normalize_issue_command_status,
     render_issue_command_comment, render_issue_comment_chunks_with_footer,
 };
+use tau_github_issues::issue_filter::{
+    build_required_issue_labels, issue_matches_required_labels, issue_matches_required_numbers,
+};
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
 
@@ -1259,12 +1262,8 @@ impl GithubIssuesBridgeRuntime {
             .demo_index_binary_path
             .clone()
             .unwrap_or_else(default_demo_index_binary_path);
-        let required_issue_labels = config
-            .required_labels
-            .iter()
-            .map(|label| normalize_issue_label(label))
-            .filter(|label| !label.is_empty())
-            .collect::<HashSet<_>>();
+        let required_issue_labels =
+            build_required_issue_labels(config.required_labels.iter().map(|label| label.as_str()));
         let required_issue_numbers = config
             .required_issue_numbers
             .iter()
@@ -1371,7 +1370,10 @@ impl GithubIssuesBridgeRuntime {
             if !issue_matches_required_numbers(issue.number, &self.required_issue_numbers) {
                 continue;
             }
-            if !issue_matches_required_labels(&issue, &self.required_issue_labels) {
+            if !issue_matches_required_labels(
+                issue.labels.iter().map(|label| label.name.as_str()),
+                &self.required_issue_labels,
+            ) {
                 continue;
             }
 
@@ -5128,25 +5130,6 @@ fn default_demo_index_binary_path() -> PathBuf {
     })
 }
 
-fn normalize_issue_label(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase()
-}
-
-fn issue_matches_required_numbers(issue_number: u64, required: &HashSet<u64>) -> bool {
-    required.is_empty() || required.contains(&issue_number)
-}
-
-fn issue_matches_required_labels(issue: &GithubIssue, required: &HashSet<String>) -> bool {
-    if required.is_empty() {
-        return true;
-    }
-    issue
-        .labels
-        .iter()
-        .map(|label| normalize_issue_label(&label.name))
-        .any(|label| required.contains(&label))
-}
-
 fn render_issue_run_error_comment(
     event: &GithubBridgeEvent,
     run_id: &str,
@@ -6157,9 +6140,15 @@ printf '%s\n' "${payload}"
             pull_request: None,
         };
         let required = HashSet::from([String::from("tau-ready")]);
-        assert!(issue_matches_required_labels(&issue, &required));
+        assert!(issue_matches_required_labels(
+            issue.labels.iter().map(|label| label.name.as_str()),
+            &required
+        ));
         let required = HashSet::from([String::from("other")]);
-        assert!(!issue_matches_required_labels(&issue, &required));
+        assert!(!issue_matches_required_labels(
+            issue.labels.iter().map(|label| label.name.as_str()),
+            &required
+        ));
     }
 
     #[test]
