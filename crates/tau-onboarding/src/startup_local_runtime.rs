@@ -1,18 +1,41 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value;
-use tau_agent_core::{Agent, AgentEvent};
-use tau_ai::ModelRef;
+use tau_agent_core::{Agent, AgentConfig, AgentEvent};
+use tau_ai::{LlmClient, ModelRef};
 use tau_cli::Cli;
 use tau_core::current_unix_timestamp_ms;
 use tau_diagnostics::{build_doctor_command_config, DoctorCommandConfig};
 use tau_provider::AuthCommandConfig;
+use tau_tools::tools::{register_builtin_tools, ToolPolicy};
 
 use crate::startup_config::{build_auth_command_config, build_profile_defaults, ProfileDefaults};
 
 const EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+
+pub fn build_local_runtime_agent(
+    client: Arc<dyn LlmClient>,
+    model_ref: &ModelRef,
+    system_prompt: &str,
+    max_turns: usize,
+    tool_policy: ToolPolicy,
+) -> Agent {
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            model: model_ref.model.clone(),
+            system_prompt: system_prompt.to_string(),
+            max_turns,
+            temperature: Some(0.0),
+            max_tokens: None,
+        },
+    );
+    register_builtin_tools(&mut agent, tool_policy);
+    agent
+}
 
 pub fn build_local_runtime_doctor_config(
     cli: &Cli,
@@ -460,11 +483,12 @@ fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_local_runtime_command_defaults, build_local_runtime_doctor_config,
-        build_local_runtime_extension_bootstrap, execute_command_file_entry_mode,
-        execute_prompt_entry_mode, execute_prompt_or_command_file_entry_mode,
-        extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
-        register_runtime_event_reporter_if_configured, register_runtime_event_reporter_subscriber,
+        build_local_runtime_agent, build_local_runtime_command_defaults,
+        build_local_runtime_doctor_config, build_local_runtime_extension_bootstrap,
+        execute_command_file_entry_mode, execute_prompt_entry_mode,
+        execute_prompt_or_command_file_entry_mode, extension_tool_hook_diagnostics,
+        extension_tool_hook_dispatch, register_runtime_event_reporter_if_configured,
+        register_runtime_event_reporter_subscriber,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
         register_runtime_json_event_subscriber, resolve_command_file_entry_path,
         resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
@@ -483,12 +507,15 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     };
-    use tau_agent_core::{Agent, AgentConfig, AgentEvent, AgentTool, ToolExecutionResult};
+    use tau_agent_core::{
+        Agent, AgentConfig, AgentError, AgentEvent, AgentTool, ToolExecutionResult,
+    };
     use tau_ai::{
         ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, ModelRef,
         TauAiError, ToolDefinition,
     };
     use tau_cli::Cli;
+    use tau_tools::tools::ToolPolicy;
     use tokio::sync::Mutex as AsyncMutex;
 
     struct QueueClient {
@@ -564,6 +591,104 @@ mod tests {
         );
         agent.register_tool(EchoTool);
         agent
+    }
+
+    #[test]
+    fn unit_build_local_runtime_agent_preserves_system_prompt_message() {
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let client = Arc::new(QueueClient {
+            responses: AsyncMutex::new(VecDeque::new()),
+        });
+        let agent = build_local_runtime_agent(
+            client,
+            &model_ref,
+            "system prompt",
+            4,
+            ToolPolicy::new(vec![std::env::temp_dir()]),
+        );
+        assert_eq!(agent.messages().len(), 1);
+        assert_eq!(agent.messages()[0].text_content(), "system prompt");
+    }
+
+    #[tokio::test]
+    async fn functional_build_local_runtime_agent_registers_builtin_tools_with_model_identity() {
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let captured_request = Arc::new(Mutex::new(None));
+        let client = Arc::new(RecordingRequestClient {
+            captured_request: captured_request.clone(),
+            response: ChatResponse {
+                message: Message::assistant_text("ok"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        });
+        let mut agent = build_local_runtime_agent(
+            client,
+            &model_ref,
+            "system prompt",
+            4,
+            ToolPolicy::new(vec![std::env::temp_dir()]),
+        );
+        agent.prompt("hello").await.expect("prompt succeeds");
+        let request = captured_request
+            .lock()
+            .expect("captured request lock")
+            .clone()
+            .expect("captured request");
+        assert_eq!(request.model, "gpt-4o-mini");
+        assert!(
+            request.tools.iter().any(|tool| tool.name == "read"),
+            "expected built-in read tool to be registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_build_local_runtime_agent_respects_max_turns_limit() {
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let client = Arc::new(QueueClient {
+            responses: AsyncMutex::new(VecDeque::new()),
+        });
+        let mut agent = build_local_runtime_agent(
+            client,
+            &model_ref,
+            "system prompt",
+            0,
+            ToolPolicy::new(vec![std::env::temp_dir()]),
+        );
+        let error = agent
+            .prompt("hello")
+            .await
+            .expect_err("max turns should fail");
+        assert!(matches!(error, AgentError::MaxTurnsExceeded(0)));
+    }
+
+    #[test]
+    fn regression_build_local_runtime_agent_skips_empty_system_prompt_message() {
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let client = Arc::new(QueueClient {
+            responses: AsyncMutex::new(VecDeque::new()),
+        });
+        let agent = build_local_runtime_agent(
+            client,
+            &model_ref,
+            "   ",
+            4,
+            ToolPolicy::new(vec![std::env::temp_dir()]),
+        );
+        assert!(agent.messages().is_empty());
+    }
+
+    struct RecordingRequestClient {
+        captured_request: Arc<Mutex<Option<ChatRequest>>>,
+        response: ChatResponse,
+    }
+
+    #[async_trait]
+    impl LlmClient for RecordingRequestClient {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+            *self.captured_request.lock().expect("capture lock") = Some(request);
+            Ok(self.response.clone())
+        }
     }
 
     #[test]

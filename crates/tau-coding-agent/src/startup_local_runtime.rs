@@ -3,6 +3,7 @@ use crate::extension_manifest::{
     discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
 };
 use tau_onboarding::startup_local_runtime::{
+    build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_command_defaults as build_onboarding_local_runtime_command_defaults,
     build_local_runtime_extension_bootstrap as build_onboarding_local_runtime_extension_bootstrap,
     execute_prompt_or_command_file_entry_mode as execute_onboarding_prompt_or_command_file_entry_mode,
@@ -44,17 +45,13 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         skills_lock_path,
     } = config;
 
-    let mut agent = Agent::new(
+    let mut agent = build_onboarding_local_runtime_agent(
         client,
-        AgentConfig {
-            model: model_ref.model.clone(),
-            system_prompt: system_prompt.to_string(),
-            max_turns: cli.max_turns,
-            temperature: Some(0.0),
-            max_tokens: None,
-        },
+        model_ref,
+        system_prompt,
+        cli.max_turns,
+        tool_policy,
     );
-    tools::register_builtin_tools(&mut agent, tool_policy);
     register_onboarding_runtime_event_reporter_if_configured(
         &mut agent,
         cli.tool_audit_log.clone(),

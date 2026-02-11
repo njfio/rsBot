@@ -71,7 +71,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tau_agent_core::{Agent, AgentConfig, AgentEvent};
+use tau_agent_core::{Agent, AgentEvent};
 use tau_ai::{LlmClient, Message, MessageRole, ModelRef, Provider};
 
 pub(crate) use crate::auth_commands::execute_auth_command;
