@@ -2697,6 +2697,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-browser-automation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tau-core",
+ "tau-runtime",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "tau-cli"
 version = "0.1.0"
 dependencies = [
@@ -2735,6 +2748,7 @@ dependencies = [
  "tau-access",
  "tau-agent-core",
  "tau-ai",
+ "tau-browser-automation",
  "tau-cli",
  "tau-core",
  "tau-custom-command",
