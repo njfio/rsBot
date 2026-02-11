@@ -89,13 +89,11 @@ pub(crate) use crate::canvas::{
     execute_canvas_command, CanvasCommandConfig, CanvasEventOrigin, CanvasSessionLinkContext,
     CANVAS_USAGE,
 };
-use crate::channel_store::ChannelStore;
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::cli_args::Cli;
 pub(crate) use crate::cli_types::{
-    CliBashProfile, CliCommandFileErrorMode, CliDaemonProfile, CliEventTemplateSchedule,
-    CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile, CliOrchestratorMode,
-    CliOsSandboxMode, CliProviderAuthMode,
+    CliBashProfile, CliCommandFileErrorMode, CliEventTemplateSchedule,
+    CliGatewayOpenResponsesAuthMode, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
 };
 #[cfg(test)]
 pub(crate) use crate::cli_types::{
@@ -103,6 +101,8 @@ pub(crate) use crate::cli_types::{
     CliMultiChannelLiveConnectorMode, CliMultiChannelTransport, CliSessionImportMode,
     CliToolPolicyPreset,
 };
+#[cfg(test)]
+pub(crate) use crate::cli_types::{CliDaemonProfile, CliGatewayRemoteProfile};
 #[cfg(test)]
 pub(crate) use crate::cli_types::{CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm};
 #[cfg(test)]

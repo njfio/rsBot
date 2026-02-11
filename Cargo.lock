@@ -2743,6 +2743,7 @@ dependencies = [
  "tau-extensions",
  "tau-gateway",
  "tau-multi-channel",
+ "tau-ops",
  "tau-orchestrator",
  "tau-provider",
  "tau-release-channel",
@@ -2874,6 +2875,25 @@ dependencies = [
  "tau-runtime",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "tau-ops"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tau-access",
+ "tau-ai",
+ "tau-cli",
+ "tau-core",
+ "tau-multi-channel",
+ "tau-release-channel",
+ "tau-runtime",
+ "tau-session",
+ "tempfile",
 ]
 
 [[package]]
