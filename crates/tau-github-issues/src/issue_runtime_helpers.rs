@@ -71,12 +71,35 @@ pub fn is_expired_at(expires_unix_ms: Option<u64>, now_unix_ms: u64) -> bool {
         .unwrap_or(false)
 }
 
+pub fn sha256_hex(payload: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+pub fn short_key_hash(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    let digest = hasher.finalize();
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         is_expired_at, issue_session_id, normalize_artifact_retention_days,
         normalize_relative_channel_path, parse_rfc3339_to_unix_ms,
-        render_issue_artifact_pointer_line, sanitize_for_path, session_path_for_issue,
+        render_issue_artifact_pointer_line, sanitize_for_path, session_path_for_issue, sha256_hex,
+        short_key_hash,
     };
     use std::path::Path;
 
@@ -150,5 +173,25 @@ mod tests {
         assert!(!is_expired_at(None, 100));
         assert!(!is_expired_at(Some(101), 100));
         assert!(is_expired_at(Some(100), 100));
+    }
+
+    #[test]
+    fn unit_sha256_hex_returns_expected_digest_for_known_payload() {
+        assert_eq!(
+            sha256_hex(b"tau"),
+            "2bfcf64c38aeb71a5f36b5aa43dd96cd81c76452533e46061a35e4c46c87eaf1"
+        );
+    }
+
+    #[test]
+    fn functional_short_key_hash_returns_eight_hex_chars() {
+        let digest = short_key_hash("issue-comment-created:1200");
+        assert_eq!(digest.len(), 8);
+        assert!(digest.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn regression_short_key_hash_is_stable_for_identical_inputs() {
+        assert_eq!(short_key_hash("same-input"), short_key_hash("same-input"));
     }
 }
