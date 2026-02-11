@@ -2746,6 +2746,7 @@ dependencies = [
  "tau-runtime",
  "tau-session",
  "tau-skills",
+ "tau-startup",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2909,6 +2910,21 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "tau-startup"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tau-access",
+ "tau-cli",
+ "tau-core",
+ "tau-events",
+ "tau-gateway",
+ "tau-multi-channel",
+ "tau-session",
 ]
 
 [[package]]

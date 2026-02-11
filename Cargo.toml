@@ -15,6 +15,7 @@ members = [
   "crates/tau-events",
   "crates/tau-deployment",
   "crates/tau-tui",
+  "crates/tau-startup",
   "crates/tau-coding-agent",
 ]
 resolver = "2"

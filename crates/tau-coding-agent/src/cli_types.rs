@@ -22,17 +22,6 @@ impl From<CliOsSandboxMode> for OsSandboxMode {
     }
 }
 
-pub(crate) fn map_webhook_signature_algorithm(
-    value: CliWebhookSignatureAlgorithm,
-) -> crate::events::WebhookSignatureAlgorithm {
-    match value {
-        CliWebhookSignatureAlgorithm::GithubSha256 => {
-            crate::events::WebhookSignatureAlgorithm::GithubSha256
-        }
-        CliWebhookSignatureAlgorithm::SlackV0 => crate::events::WebhookSignatureAlgorithm::SlackV0,
-    }
-}
-
 impl From<CliToolPolicyPreset> for ToolPolicyPreset {
     fn from(value: CliToolPolicyPreset) -> Self {
         match value {

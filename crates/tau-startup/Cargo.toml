@@ -1,0 +1,29 @@
+[package]
+name = "tau-startup"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+
+[dependencies.tau-access]
+path = "../tau-access"
+
+[dependencies.tau-cli]
+path = "../tau-cli"
+
+[dependencies.tau-core]
+path = "../tau-core"
+
+[dependencies.tau-events]
+path = "../tau-events"
+
+[dependencies.tau-gateway]
+path = "../tau-gateway"
+
+[dependencies.tau-multi-channel]
+path = "../tau-multi-channel"
+
+[dependencies.tau-session]
+path = "../tau-session"

@@ -160,8 +160,7 @@ pub(crate) use crate::diagnostics_commands::{
 use crate::events::{
     execute_events_dry_run_command, execute_events_inspect_command,
     execute_events_simulate_command, execute_events_template_write_command,
-    execute_events_validate_command, ingest_webhook_immediate_event, run_event_scheduler,
-    EventSchedulerConfig, EventWebhookIngestConfig,
+    execute_events_validate_command, run_event_scheduler, EventSchedulerConfig,
 };
 pub(crate) use crate::extension_manifest::{
     apply_extension_message_transforms, dispatch_extension_runtime_hook,
@@ -333,26 +332,33 @@ pub(crate) use tau_access::trust_roots::{
     apply_trust_root_mutation_specs, load_trust_root_records, parse_trust_rotation_spec,
     parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,
 };
+#[cfg(test)]
 pub(crate) use tau_cli::validation::validate_gateway_remote_profile_inspect_cli;
 pub(crate) use tau_cli::validation::validate_multi_channel_live_connectors_runner_cli;
 pub(crate) use tau_cli::validation::{
-    validate_browser_automation_contract_runner_cli, validate_browser_automation_preflight_cli,
-    validate_custom_command_contract_runner_cli, validate_daemon_cli,
-    validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
-    validate_deployment_wasm_inspect_cli, validate_deployment_wasm_package_cli,
-    validate_event_webhook_ingest_cli, validate_events_runner_cli,
+    validate_browser_automation_contract_runner_cli, validate_custom_command_contract_runner_cli,
+    validate_daemon_cli, validate_dashboard_contract_runner_cli,
+    validate_deployment_contract_runner_cli, validate_events_runner_cli,
     validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
-    validate_gateway_service_cli, validate_github_issues_bridge_cli,
-    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_contract_runner_cli,
-    validate_multi_channel_incident_timeline_cli, validate_multi_channel_live_ingest_cli,
-    validate_multi_channel_live_runner_cli, validate_multi_channel_send_cli,
-    validate_project_index_cli, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
+    validate_github_issues_bridge_cli, validate_memory_contract_runner_cli,
+    validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
+    validate_multi_channel_live_runner_cli, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli,
+};
+#[cfg(test)]
+pub(crate) use tau_cli::validation::{
+    validate_deployment_wasm_inspect_cli, validate_deployment_wasm_package_cli,
+    validate_event_webhook_ingest_cli, validate_gateway_service_cli,
+    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_incident_timeline_cli,
+    validate_multi_channel_live_ingest_cli, validate_multi_channel_send_cli,
+    validate_project_index_cli,
 };
 pub(crate) use tau_core::write_text_atomic;
 pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
 use tau_gateway::{run_gateway_contract_runner, GatewayRuntimeConfig};
+#[cfg(test)]
 pub(crate) use tau_multi_channel::build_multi_channel_incident_timeline_report;
+#[cfg(test)]
 pub(crate) use tau_multi_channel::build_multi_channel_route_inspect_report;
 use tau_multi_channel::{
     run_multi_channel_contract_runner, run_multi_channel_live_runner,
@@ -364,6 +370,8 @@ use tau_orchestrator::multi_agent_runtime::{
 #[cfg(test)]
 pub(crate) use tau_orchestrator::parse_numbered_plan_steps;
 pub(crate) use tau_session::execute_session_graph_export_command;
+#[cfg(test)]
+pub(crate) use tau_session::validate_session_file;
 use tau_session::SessionImportMode;
 #[cfg(test)]
 pub(crate) use tau_session::{
@@ -390,8 +398,7 @@ pub(crate) use tau_session::{
 };
 pub(crate) use tau_session::{execute_branch_alias_command, execute_session_bookmark_command};
 pub(crate) use tau_session::{
-    format_id_list, format_remap_ids, initialize_session, session_lineage_messages,
-    validate_session_file, SessionRuntime,
+    format_id_list, format_remap_ids, initialize_session, session_lineage_messages, SessionRuntime,
 };
 pub(crate) use tau_session::{session_message_preview, session_message_role};
 use voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};

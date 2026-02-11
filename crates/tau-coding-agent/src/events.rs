@@ -5,8 +5,7 @@ use async_trait::async_trait;
 use tau_agent_core::{Agent, AgentConfig, AgentEvent};
 use tau_ai::{LlmClient, Message, MessageRole};
 use tau_events::{
-    dry_run_events, enforce_events_dry_run_gate,
-    ingest_webhook_immediate_event as ingest_webhook_immediate_event_core, inspect_events,
+    dry_run_events, enforce_events_dry_run_gate, inspect_events,
     run_event_scheduler as run_core_event_scheduler, simulate_events, validate_events_definitions,
     EventRunner, EventSchedulerConfig as CoreEventSchedulerConfig, EventTemplateSchedule,
     EventsDryRunConfig, EventsDryRunGateConfig, EventsInspectConfig, EventsSimulateConfig,
@@ -21,8 +20,8 @@ use crate::{
 use tau_session::SessionStore;
 
 pub(crate) use tau_events::{
-    EventDefinition, EventWebhookIngestConfig, EventsDryRunReport, EventsInspectReport,
-    EventsSimulateReport, EventsValidateReport, WebhookSignatureAlgorithm,
+    EventDefinition, EventsDryRunReport, EventsInspectReport, EventsSimulateReport,
+    EventsValidateReport,
 };
 
 #[derive(Clone)]
@@ -232,10 +231,6 @@ pub(crate) async fn run_event_scheduler(config: EventSchedulerConfig) -> Result<
         stale_immediate_max_age_seconds: config.stale_immediate_max_age_seconds,
     };
     run_core_event_scheduler(core).await
-}
-
-pub(crate) fn ingest_webhook_immediate_event(config: &EventWebhookIngestConfig) -> Result<()> {
-    ingest_webhook_immediate_event_core(config)
 }
 
 #[derive(Clone)]
