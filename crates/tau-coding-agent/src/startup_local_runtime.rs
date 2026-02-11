@@ -11,9 +11,10 @@ use tau_onboarding::startup_local_runtime::{
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
-    resolve_local_runtime_entry_mode, resolve_session_runtime, LocalRuntimeCommandDefaults,
-    LocalRuntimeExtensionBootstrap, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
-    SessionBootstrapOutcome,
+    resolve_local_runtime_entry_mode,
+    resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
+    LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, PromptEntryRuntimeMode,
+    PromptOrCommandFileEntryOutcome, SessionBootstrapOutcome,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -66,15 +67,16 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         |logger, event| logger.log_event(event),
         |error| eprintln!("telemetry logger error: {error}"),
     )?;
-    let mut session_runtime = resolve_session_runtime(
-        cli.no_session,
-        || {
+    let mut session_runtime = resolve_onboarding_session_runtime_from_cli(
+        cli,
+        system_prompt,
+        |session_path, lock_wait_ms, lock_stale_ms, branch_from, prompt| {
             let outcome = initialize_session(
-                &cli.session,
-                cli.session_lock_wait_ms,
-                cli.session_lock_stale_ms,
-                cli.branch_from,
-                system_prompt,
+                session_path,
+                lock_wait_ms,
+                lock_stale_ms,
+                branch_from,
+                prompt,
             )?;
             Ok(SessionBootstrapOutcome {
                 runtime: outcome.runtime,

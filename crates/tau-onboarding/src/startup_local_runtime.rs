@@ -276,6 +276,37 @@ where
     Ok(Some(outcome.runtime))
 }
 
+pub fn resolve_session_runtime_from_cli<TSession, TMessage, FInit, FReplace>(
+    cli: &Cli,
+    system_prompt: &str,
+    initialize_session: FInit,
+    replace_messages: FReplace,
+) -> Result<Option<TSession>>
+where
+    FInit: FnOnce(
+        &Path,
+        u64,
+        u64,
+        Option<u64>,
+        &str,
+    ) -> Result<SessionBootstrapOutcome<TSession, TMessage>>,
+    FReplace: FnOnce(Vec<TMessage>),
+{
+    resolve_session_runtime(
+        cli.no_session,
+        || {
+            initialize_session(
+                &cli.session,
+                cli.session_lock_wait_ms,
+                cli.session_lock_stale_ms,
+                cli.branch_from,
+                system_prompt,
+            )
+        },
+        replace_messages,
+    )
+}
+
 pub fn resolve_orchestrator_route_table<T, F>(
     route_table_path: Option<&Path>,
     load_route_table: F,
@@ -493,9 +524,9 @@ mod tests {
         register_runtime_json_event_subscriber, resolve_command_file_entry_path,
         resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
         resolve_orchestrator_route_table, resolve_prompt_entry_runtime_mode,
-        resolve_prompt_runtime_mode, resolve_session_runtime, LocalRuntimeEntryMode,
-        PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome, PromptRuntimeMode,
-        SessionBootstrapOutcome,
+        resolve_prompt_runtime_mode, resolve_session_runtime, resolve_session_runtime_from_cli,
+        LocalRuntimeEntryMode, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
+        PromptRuntimeMode, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1359,6 +1390,108 @@ mod tests {
         .expect_err("initializer failure should be propagated");
 
         assert!(error.to_string().contains("initializer failed"));
+    }
+
+    #[test]
+    fn unit_resolve_session_runtime_from_cli_no_session_skips_initialization() {
+        let mut cli = parse_cli_with_stack();
+        cli.no_session = true;
+        let init_called = AtomicBool::new(false);
+
+        let runtime = resolve_session_runtime_from_cli::<u64, String, _, _>(
+            &cli,
+            "system prompt",
+            |_session_path, _lock_wait_ms, _lock_stale_ms, _branch_from, _system_prompt| {
+                init_called.store(true, Ordering::Relaxed);
+                Ok(SessionBootstrapOutcome {
+                    runtime: 7,
+                    lineage: Vec::new(),
+                })
+            },
+            |_lineage| panic!("lineage replay should not run when no-session is enabled"),
+        )
+        .expect("session resolution should succeed");
+
+        assert_eq!(runtime, None);
+        assert!(!init_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn functional_resolve_session_runtime_from_cli_forwards_cli_bootstrap_inputs() {
+        let mut cli = parse_cli_with_stack();
+        cli.no_session = false;
+        cli.session = PathBuf::from("custom-session.json");
+        cli.session_lock_wait_ms = 222;
+        cli.session_lock_stale_ms = 333;
+        cli.branch_from = Some(55);
+        let replayed = Arc::new(Mutex::new(Vec::<String>::new()));
+        let replayed_sink = Arc::clone(&replayed);
+
+        let runtime = resolve_session_runtime_from_cli(
+            &cli,
+            "boot system prompt",
+            |session_path, lock_wait_ms, lock_stale_ms, branch_from, system_prompt| {
+                assert_eq!(session_path, Path::new("custom-session.json"));
+                assert_eq!(lock_wait_ms, 222);
+                assert_eq!(lock_stale_ms, 333);
+                assert_eq!(branch_from, Some(55));
+                assert_eq!(system_prompt, "boot system prompt");
+                Ok(SessionBootstrapOutcome {
+                    runtime: "runtime".to_string(),
+                    lineage: vec!["lineage-message".to_string()],
+                })
+            },
+            move |lineage| {
+                replayed_sink.lock().expect("replay lock").extend(lineage);
+            },
+        )
+        .expect("session resolution should succeed");
+
+        assert_eq!(runtime.as_deref(), Some("runtime"));
+        assert_eq!(
+            replayed.lock().expect("replay lock").as_slice(),
+            ["lineage-message"]
+        );
+    }
+
+    #[test]
+    fn integration_resolve_session_runtime_from_cli_returns_runtime_when_lineage_empty() {
+        let mut cli = parse_cli_with_stack();
+        cli.no_session = false;
+        let replay_called = AtomicBool::new(false);
+
+        let runtime = resolve_session_runtime_from_cli(
+            &cli,
+            "boot system prompt",
+            |_session_path, _lock_wait_ms, _lock_stale_ms, _branch_from, _system_prompt| {
+                Ok(SessionBootstrapOutcome {
+                    runtime: 99usize,
+                    lineage: Vec::<String>::new(),
+                })
+            },
+            |_lineage| replay_called.store(true, Ordering::Relaxed),
+        )
+        .expect("session resolution should succeed");
+
+        assert_eq!(runtime, Some(99));
+        assert!(!replay_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn regression_resolve_session_runtime_from_cli_propagates_initializer_error() {
+        let cli = parse_cli_with_stack();
+
+        let error = resolve_session_runtime_from_cli::<u8, String, _, _>(
+            &cli,
+            "system prompt",
+            |_session_path, _lock_wait_ms, _lock_stale_ms, _branch_from, _system_prompt| {
+                Err(anyhow::anyhow!("session bootstrap failed"))
+            },
+            |_lineage| panic!("lineage replay should not run when init fails"),
+        )
+        .expect_err("initializer failure should be propagated");
+
+        assert!(error.to_string().contains("session bootstrap failed"));
     }
 
     #[test]
