@@ -5,15 +5,15 @@ use crate::channel_adapters::{
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
     build_events_runner_cli_config, build_github_issues_bridge_cli_config,
-    build_slack_bridge_cli_config, resolve_contract_transport_mode,
+    build_slack_bridge_cli_config, resolve_bridge_transport_mode, resolve_contract_transport_mode,
     resolve_multi_channel_transport_mode, run_browser_automation_contract_runner_if_requested,
     run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
     run_deployment_contract_runner_if_requested, run_gateway_contract_runner_if_requested,
     run_gateway_openresponses_server_if_requested, run_memory_contract_runner_if_requested,
     run_multi_agent_contract_runner_if_requested, run_multi_channel_contract_runner_if_requested,
     run_multi_channel_live_connectors_if_requested, run_multi_channel_live_runner_if_requested,
-    run_voice_contract_runner_if_requested, validate_transport_mode_cli, ContractTransportMode,
-    MultiChannelTransportMode,
+    run_voice_contract_runner_if_requested, validate_transport_mode_cli, BridgeTransportMode,
+    ContractTransportMode, MultiChannelTransportMode,
 };
 
 fn build_multi_channel_runtime_dependencies(
@@ -236,43 +236,44 @@ pub(crate) async fn run_transport_mode_if_requested(
         return Ok(true);
     }
 
-    if run_github_issues_bridge_if_requested(
-        cli,
-        client,
-        model_ref,
-        system_prompt,
-        tool_policy,
-        render_options,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    if run_slack_bridge_if_requested(
-        cli,
-        client,
-        model_ref,
-        system_prompt,
-        tool_policy,
-        render_options,
-    )
-    .await?
-    {
-        return Ok(true);
-    }
-
-    if run_events_runner_if_requested(
-        cli,
-        client,
-        model_ref,
-        system_prompt,
-        tool_policy,
-        render_options,
-    )
-    .await?
-    {
-        return Ok(true);
+    match resolve_bridge_transport_mode(cli) {
+        BridgeTransportMode::GithubIssuesBridge => {
+            run_github_issues_bridge_if_requested(
+                cli,
+                client,
+                model_ref,
+                system_prompt,
+                tool_policy,
+                render_options,
+            )
+            .await?;
+            return Ok(true);
+        }
+        BridgeTransportMode::SlackBridge => {
+            run_slack_bridge_if_requested(
+                cli,
+                client,
+                model_ref,
+                system_prompt,
+                tool_policy,
+                render_options,
+            )
+            .await?;
+            return Ok(true);
+        }
+        BridgeTransportMode::EventsRunner => {
+            run_events_runner_if_requested(
+                cli,
+                client,
+                model_ref,
+                system_prompt,
+                tool_policy,
+                render_options,
+            )
+            .await?;
+            return Ok(true);
+        }
+        BridgeTransportMode::None => {}
     }
 
     match resolve_multi_channel_transport_mode(cli) {

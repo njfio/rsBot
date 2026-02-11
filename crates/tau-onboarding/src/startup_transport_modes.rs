@@ -47,6 +47,14 @@ pub enum MultiChannelTransportMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeTransportMode {
+    None,
+    GithubIssuesBridge,
+    SlackBridge,
+    EventsRunner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractTransportMode {
     None,
     MultiAgent,
@@ -87,6 +95,18 @@ pub fn resolve_multi_channel_transport_mode(cli: &Cli) -> MultiChannelTransportM
         MultiChannelTransportMode::LiveConnectorsRunner
     } else {
         MultiChannelTransportMode::None
+    }
+}
+
+pub fn resolve_bridge_transport_mode(cli: &Cli) -> BridgeTransportMode {
+    if cli.github_issues_bridge {
+        BridgeTransportMode::GithubIssuesBridge
+    } else if cli.slack_bridge {
+        BridgeTransportMode::SlackBridge
+    } else if cli.events_runner {
+        BridgeTransportMode::EventsRunner
+    } else {
+        BridgeTransportMode::None
     }
 }
 
@@ -749,9 +769,10 @@ mod tests {
         build_multi_channel_media_config, build_multi_channel_outbound_config,
         build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
         build_voice_contract_runner_config, map_gateway_openresponses_auth_mode,
-        resolve_contract_transport_mode, resolve_gateway_openresponses_auth,
-        resolve_multi_channel_outbound_secret, resolve_multi_channel_transport_mode,
-        validate_transport_mode_cli, ContractTransportMode, MultiChannelTransportMode,
+        resolve_bridge_transport_mode, resolve_contract_transport_mode,
+        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
+        resolve_multi_channel_transport_mode, validate_transport_mode_cli, BridgeTransportMode,
+        ContractTransportMode, MultiChannelTransportMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -912,6 +933,47 @@ mod tests {
         assert_eq!(
             resolve_multi_channel_transport_mode(&cli),
             MultiChannelTransportMode::LiveConnectorsRunner
+        );
+    }
+
+    #[test]
+    fn unit_resolve_bridge_transport_mode_defaults_to_none() {
+        let cli = parse_cli_with_stack();
+        assert_eq!(
+            resolve_bridge_transport_mode(&cli),
+            BridgeTransportMode::None
+        );
+    }
+
+    #[test]
+    fn functional_resolve_bridge_transport_mode_prefers_github_issues_bridge() {
+        let mut cli = parse_cli_with_stack();
+        cli.github_issues_bridge = true;
+        cli.slack_bridge = true;
+        cli.events_runner = true;
+        assert_eq!(
+            resolve_bridge_transport_mode(&cli),
+            BridgeTransportMode::GithubIssuesBridge
+        );
+    }
+
+    #[test]
+    fn integration_resolve_bridge_transport_mode_selects_slack_bridge() {
+        let mut cli = parse_cli_with_stack();
+        cli.slack_bridge = true;
+        assert_eq!(
+            resolve_bridge_transport_mode(&cli),
+            BridgeTransportMode::SlackBridge
+        );
+    }
+
+    #[test]
+    fn regression_resolve_bridge_transport_mode_selects_events_runner() {
+        let mut cli = parse_cli_with_stack();
+        cli.events_runner = true;
+        assert_eq!(
+            resolve_bridge_transport_mode(&cli),
+            BridgeTransportMode::EventsRunner
         );
     }
 
