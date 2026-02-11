@@ -194,8 +194,7 @@ pub(crate) use crate::runtime_output::{
     event_to_json, persist_messages, print_assistant_messages, summarize_message,
 };
 pub(crate) use crate::runtime_types::{
-    AuthCommandConfig, CommandExecutionContext, ProfileAuthDefaults, ProfileDefaults,
-    ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults, RenderOptions,
+    AuthCommandConfig, CommandExecutionContext, ProfileDefaults, RenderOptions,
     SkillsSyncCommandConfig,
 };
 #[cfg(test)]
@@ -236,9 +235,7 @@ pub(crate) use crate::skills_commands::{
 pub(crate) use crate::skills_commands::{
     render_skills_lock_write_success, render_skills_sync_drift_details, render_skills_sync_in_sync,
 };
-pub(crate) use crate::startup_config::{
-    build_auth_command_config, build_profile_defaults, default_provider_auth_method,
-};
+pub(crate) use crate::startup_config::{build_auth_command_config, build_profile_defaults};
 use crate::startup_dispatch::run_cli;
 #[cfg(test)]
 pub(crate) use crate::startup_local_runtime::register_runtime_extension_tool_hook_subscriber;
