@@ -33,6 +33,7 @@ tau-provider = { path = "../tau-provider" }
 tau-diagnostics = { path = "../tau-diagnostics" }
 tau-release-channel = { path = "../tau-release-channel" }
 tau-ops = { path = "../tau-ops" }
+tau-memory = { path = "../tau-memory" }
 tau-agent-core = { path = "../tau-agent-core" }
 tau-ai = { path = "../tau-ai" }
 reqwest.workspace = true
