@@ -17,6 +17,7 @@ tau-cli = { path = "../tau-cli" }
 tau-core = { path = "../tau-core" }
 tau-custom-command = { path = "../tau-custom-command" }
 tau-dashboard = { path = "../tau-dashboard" }
+tau-diagnostics = { path = "../tau-diagnostics" }
 tau-deployment = { path = "../tau-deployment" }
 tau-gateway = { path = "../tau-gateway" }
 tau-memory = { path = "../tau-memory" }
