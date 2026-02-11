@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -18,6 +19,12 @@ pub enum PromptRuntimeMode {
 pub enum LocalRuntimeEntryMode {
     Interactive,
     CommandFile(PathBuf),
+    Prompt(String),
+    PlanFirstPrompt(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptEntryRuntimeMode {
     Prompt(String),
     PlanFirstPrompt(String),
 }
@@ -92,6 +99,35 @@ pub fn resolve_local_runtime_entry_mode(
             .map(|path| LocalRuntimeEntryMode::CommandFile(path.to_path_buf()))
             .unwrap_or(LocalRuntimeEntryMode::Interactive),
     }
+}
+
+pub fn resolve_prompt_entry_runtime_mode(
+    entry_mode: &LocalRuntimeEntryMode,
+) -> Option<PromptEntryRuntimeMode> {
+    match entry_mode {
+        LocalRuntimeEntryMode::Prompt(prompt) => {
+            Some(PromptEntryRuntimeMode::Prompt(prompt.clone()))
+        }
+        LocalRuntimeEntryMode::PlanFirstPrompt(prompt) => {
+            Some(PromptEntryRuntimeMode::PlanFirstPrompt(prompt.clone()))
+        }
+        LocalRuntimeEntryMode::Interactive | LocalRuntimeEntryMode::CommandFile(_) => None,
+    }
+}
+
+pub async fn execute_prompt_entry_mode<FRun, Fut>(
+    entry_mode: &LocalRuntimeEntryMode,
+    run_prompt_mode: FRun,
+) -> Result<bool>
+where
+    FRun: FnOnce(PromptEntryRuntimeMode) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let Some(prompt_mode) = resolve_prompt_entry_runtime_mode(entry_mode) else {
+        return Ok(false);
+    };
+    run_prompt_mode(prompt_mode).await?;
+    Ok(true)
 }
 
 pub fn resolve_session_runtime<TSession, TMessage, FInit, FReplace>(
@@ -258,13 +294,13 @@ fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
+        execute_prompt_entry_mode, extension_tool_hook_diagnostics, extension_tool_hook_dispatch,
         register_runtime_event_reporter_subscriber,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
         register_runtime_json_event_subscriber, resolve_extension_runtime_registrations,
         resolve_local_runtime_entry_mode, resolve_orchestrator_route_table,
-        resolve_prompt_runtime_mode, resolve_session_runtime, LocalRuntimeEntryMode,
-        PromptRuntimeMode, SessionBootstrapOutcome,
+        resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
+        LocalRuntimeEntryMode, PromptEntryRuntimeMode, PromptRuntimeMode, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use serde_json::Value;
@@ -502,6 +538,58 @@ mod tests {
         assert_eq!(
             resolve_local_runtime_entry_mode(Some("plan text".to_string()), true, None),
             LocalRuntimeEntryMode::PlanFirstPrompt("plan text".to_string())
+        );
+    }
+
+    #[test]
+    fn unit_resolve_prompt_entry_runtime_mode_returns_none_for_interactive() {
+        assert_eq!(
+            resolve_prompt_entry_runtime_mode(&LocalRuntimeEntryMode::Interactive),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn functional_execute_prompt_entry_mode_runs_prompt_variant() {
+        let mode = LocalRuntimeEntryMode::Prompt("prompt text".to_string());
+        let handled = execute_prompt_entry_mode(&mode, |prompt_mode| async move {
+            assert_eq!(
+                prompt_mode,
+                PromptEntryRuntimeMode::Prompt("prompt text".to_string())
+            );
+            Ok(())
+        })
+        .await
+        .expect("prompt dispatch should succeed");
+        assert!(handled);
+    }
+
+    #[tokio::test]
+    async fn integration_execute_prompt_entry_mode_runs_plan_first_variant() {
+        let mode = LocalRuntimeEntryMode::PlanFirstPrompt("plan text".to_string());
+        let handled = execute_prompt_entry_mode(&mode, |prompt_mode| async move {
+            assert_eq!(
+                prompt_mode,
+                PromptEntryRuntimeMode::PlanFirstPrompt("plan text".to_string())
+            );
+            Ok(())
+        })
+        .await
+        .expect("plan-first dispatch should succeed");
+        assert!(handled);
+    }
+
+    #[tokio::test]
+    async fn regression_execute_prompt_entry_mode_propagates_callback_errors() {
+        let mode = LocalRuntimeEntryMode::Prompt("prompt text".to_string());
+        let error = execute_prompt_entry_mode(&mode, |_prompt_mode| async {
+            Err(anyhow::anyhow!("forced prompt dispatch failure"))
+        })
+        .await
+        .expect_err("callback failures should propagate");
+        assert!(
+            error.to_string().contains("forced prompt dispatch failure"),
+            "unexpected error: {error}"
         );
     }
 

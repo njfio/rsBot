@@ -3,13 +3,14 @@ use crate::extension_manifest::{
     discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
 };
 use tau_onboarding::startup_local_runtime::{
+    execute_prompt_entry_mode as execute_onboarding_prompt_entry_mode,
     register_runtime_event_reporter_subscriber as register_onboarding_runtime_event_reporter_subscriber,
     register_runtime_extension_tool_hook_subscriber as register_onboarding_runtime_extension_tool_hook_subscriber,
     register_runtime_extension_tools as register_onboarding_runtime_extension_tools,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
     resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
     resolve_orchestrator_route_table, resolve_session_runtime, LocalRuntimeEntryMode,
-    SessionBootstrapOutcome,
+    PromptEntryRuntimeMode, SessionBootstrapOutcome,
 };
 
 pub(crate) struct LocalRuntimeConfig<'a> {
@@ -132,42 +133,45 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         cli.orchestrator_mode == CliOrchestratorMode::PlanFirst,
         cli.command_file.as_deref(),
     );
-
-    match &entry_mode {
-        LocalRuntimeEntryMode::PlanFirstPrompt(prompt) => {
-            run_plan_first_prompt_with_runtime_hooks(
-                &mut agent,
-                &mut session_runtime,
-                prompt,
-                cli.turn_timeout_ms,
-                render_options,
-                cli.orchestrator_max_plan_steps,
-                cli.orchestrator_max_delegated_steps,
-                cli.orchestrator_max_executor_response_chars,
-                cli.orchestrator_max_delegated_step_response_chars,
-                cli.orchestrator_max_delegated_total_response_chars,
-                cli.orchestrator_delegate_steps,
-                &orchestrator_route_table,
-                orchestrator_route_trace_log,
-                tool_policy_json,
-                &extension_runtime_hooks,
-            )
-            .await?;
-            return Ok(());
+    if execute_onboarding_prompt_entry_mode(&entry_mode, |prompt_mode| async {
+        match prompt_mode {
+            PromptEntryRuntimeMode::PlanFirstPrompt(prompt) => {
+                run_plan_first_prompt_with_runtime_hooks(
+                    &mut agent,
+                    &mut session_runtime,
+                    &prompt,
+                    cli.turn_timeout_ms,
+                    render_options,
+                    cli.orchestrator_max_plan_steps,
+                    cli.orchestrator_max_delegated_steps,
+                    cli.orchestrator_max_executor_response_chars,
+                    cli.orchestrator_max_delegated_step_response_chars,
+                    cli.orchestrator_max_delegated_total_response_chars,
+                    cli.orchestrator_delegate_steps,
+                    &orchestrator_route_table,
+                    orchestrator_route_trace_log,
+                    tool_policy_json,
+                    &extension_runtime_hooks,
+                )
+                .await?;
+            }
+            PromptEntryRuntimeMode::Prompt(prompt) => {
+                run_prompt(
+                    &mut agent,
+                    &mut session_runtime,
+                    &prompt,
+                    cli.turn_timeout_ms,
+                    render_options,
+                    &extension_runtime_hooks,
+                )
+                .await?;
+            }
         }
-        LocalRuntimeEntryMode::Prompt(prompt) => {
-            run_prompt(
-                &mut agent,
-                &mut session_runtime,
-                prompt,
-                cli.turn_timeout_ms,
-                render_options,
-                &extension_runtime_hooks,
-            )
-            .await?;
-            return Ok(());
-        }
-        LocalRuntimeEntryMode::CommandFile(_) | LocalRuntimeEntryMode::Interactive => {}
+        Ok(())
+    })
+    .await?
+    {
+        return Ok(());
     }
 
     let skills_sync_command_config = SkillsSyncCommandConfig {
