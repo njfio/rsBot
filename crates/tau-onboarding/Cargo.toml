@@ -15,3 +15,7 @@ tau-core = { path = "../tau-core" }
 tau-provider = { path = "../tau-provider" }
 tau-skills = { path = "../tau-skills" }
 tau-tools = { path = "../tau-tools" }
+
+[dev-dependencies]
+clap = { workspace = true }
+tempfile = "3"
