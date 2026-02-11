@@ -65,7 +65,8 @@ use tau_github_issues::issue_runtime_helpers::{
     parse_rfc3339_to_unix_ms as parse_shared_rfc3339_to_unix_ms,
     render_issue_artifact_pointer_line as render_shared_issue_artifact_pointer_line,
     sanitize_for_path as shared_sanitize_for_path,
-    session_path_for_issue as shared_session_path_for_issue,
+    session_path_for_issue as shared_session_path_for_issue, sha256_hex as shared_sha256_hex,
+    short_key_hash as shared_short_key_hash,
 };
 use tau_session::SessionStore;
 use tau_session::{parse_session_search_args, search_session_entries};
@@ -5787,25 +5788,11 @@ fn is_artifact_record_expired(record: &ChannelArtifactRecord, now_unix_ms: u64) 
 }
 
 fn sha256_hex(payload: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(payload);
-    let digest = hasher.finalize();
-    digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
+    shared_sha256_hex(payload)
 }
 
 fn short_key_hash(key: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(key.as_bytes());
-    let digest = hasher.finalize();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}",
-        digest[0], digest[1], digest[2], digest[3]
-    )
+    shared_short_key_hash(key)
 }
 
 #[cfg(test)]
