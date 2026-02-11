@@ -1,11 +1,8 @@
 use super::*;
 
-use std::collections::BTreeSet;
 use std::io::{self, Write};
 
-use crate::daemon_runtime::{
-    inspect_tau_daemon, install_tau_daemon, start_tau_daemon, TauDaemonConfig,
-};
+use tau_onboarding::onboarding_daemon::run_onboarding_daemon_bootstrap;
 use tau_onboarding::onboarding_paths::{
     collect_bootstrap_directories, parse_yes_no_response, resolve_tau_root,
 };
@@ -15,8 +12,7 @@ use tau_onboarding::onboarding_profile_bootstrap::{
 use tau_onboarding::onboarding_release_channel::ensure_onboarding_release_channel;
 use tau_onboarding::onboarding_report::{
     build_onboarding_next_steps, collect_executable_checks, render_onboarding_summary,
-    resolve_onboarding_report_path, write_onboarding_report, OnboardingDaemonBootstrapReport,
-    OnboardingReport,
+    resolve_onboarding_report_path, write_onboarding_report, OnboardingReport,
 };
 
 const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 2;
@@ -112,69 +108,6 @@ fn build_onboarding_report(
         executable_checks,
         daemon_bootstrap,
         next_steps,
-    })
-}
-
-fn run_onboarding_daemon_bootstrap(cli: &Cli) -> Result<OnboardingDaemonBootstrapReport> {
-    let config = TauDaemonConfig {
-        state_dir: cli.daemon_state_dir.clone(),
-        profile: cli.daemon_profile,
-    };
-
-    let requested_install = cli.onboard_install_daemon;
-    let requested_start = cli.onboard_start_daemon;
-    let install_action = if requested_install {
-        install_tau_daemon(&config).with_context(|| {
-            format!(
-                "onboarding daemon install failed for '{}'; run --daemon-install to retry",
-                config.state_dir.display()
-            )
-        })?;
-        "installed"
-    } else {
-        "skipped"
-    };
-
-    let start_action = if requested_start {
-        start_tau_daemon(&config).with_context(|| {
-            format!(
-                "onboarding daemon start failed for '{}'; run --daemon-start after resolving diagnostics",
-                config.state_dir.display()
-            )
-        })?;
-        "started"
-    } else {
-        "skipped"
-    };
-
-    let status = inspect_tau_daemon(&config).with_context(|| {
-        format!(
-            "onboarding daemon readiness inspection failed for '{}'",
-            config.state_dir.display()
-        )
-    })?;
-
-    let mut readiness_reason_codes = BTreeSet::new();
-    for diagnostic in &status.diagnostics {
-        readiness_reason_codes.insert(diagnostic.clone());
-    }
-    if requested_install && !status.installed {
-        readiness_reason_codes.insert("daemon_install_expected_installed".to_string());
-    }
-    if requested_start && !status.running {
-        readiness_reason_codes.insert("daemon_start_expected_running".to_string());
-    }
-    let readiness_reason_codes = readiness_reason_codes.into_iter().collect::<Vec<_>>();
-    let ready = readiness_reason_codes.is_empty();
-
-    Ok(OnboardingDaemonBootstrapReport {
-        requested_install,
-        requested_start,
-        install_action: install_action.to_string(),
-        start_action: start_action.to_string(),
-        ready,
-        readiness_reason_codes,
-        status,
     })
 }
 
