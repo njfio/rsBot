@@ -6,8 +6,8 @@ use crate::validate_multi_channel_live_connectors_runner_cli;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
     build_multi_channel_media_config, build_multi_channel_outbound_config,
-    build_multi_channel_telemetry_config, resolve_multi_channel_outbound_secret,
-    run_gateway_openresponses_server_if_requested,
+    build_multi_channel_telemetry_config, run_gateway_openresponses_server_if_requested,
+    run_multi_channel_live_connectors_if_requested,
 };
 
 pub(crate) async fn run_transport_mode_if_requested(
@@ -237,48 +237,7 @@ pub(crate) async fn run_transport_mode_if_requested(
         return Ok(true);
     }
 
-    if cli.multi_channel_live_connectors_runner {
-        tau_multi_channel::run_multi_channel_live_connectors_runner(
-            tau_multi_channel::MultiChannelLiveConnectorsConfig {
-                state_path: cli.multi_channel_live_connectors_state_path.clone(),
-                ingress_dir: cli.multi_channel_live_ingress_dir.clone(),
-                processed_event_cap: cli.multi_channel_processed_event_cap.max(1),
-                retry_max_attempts: cli.multi_channel_retry_max_attempts.max(1),
-                retry_base_delay_ms: cli.multi_channel_retry_base_delay_ms,
-                poll_once: cli.multi_channel_live_connectors_poll_once,
-                webhook_bind: cli.multi_channel_live_webhook_bind.clone(),
-                telegram_mode: cli.multi_channel_telegram_ingress_mode.into(),
-                telegram_api_base: cli.multi_channel_telegram_api_base.trim().to_string(),
-                telegram_bot_token: resolve_multi_channel_outbound_secret(
-                    cli,
-                    cli.multi_channel_telegram_bot_token.as_deref(),
-                    "telegram-bot-token",
-                ),
-                telegram_webhook_secret: resolve_non_empty_cli_value(
-                    cli.multi_channel_telegram_webhook_secret.as_deref(),
-                ),
-                discord_mode: cli.multi_channel_discord_ingress_mode.into(),
-                discord_api_base: cli.multi_channel_discord_api_base.trim().to_string(),
-                discord_bot_token: resolve_multi_channel_outbound_secret(
-                    cli,
-                    cli.multi_channel_discord_bot_token.as_deref(),
-                    "discord-bot-token",
-                ),
-                discord_ingress_channel_ids: cli
-                    .multi_channel_discord_ingress_channel_ids
-                    .iter()
-                    .map(|value| value.trim().to_string())
-                    .collect(),
-                whatsapp_mode: cli.multi_channel_whatsapp_ingress_mode.into(),
-                whatsapp_webhook_verify_token: resolve_non_empty_cli_value(
-                    cli.multi_channel_whatsapp_webhook_verify_token.as_deref(),
-                ),
-                whatsapp_webhook_app_secret: resolve_non_empty_cli_value(
-                    cli.multi_channel_whatsapp_webhook_app_secret.as_deref(),
-                ),
-            },
-        )
-        .await?;
+    if run_multi_channel_live_connectors_if_requested(cli).await? {
         return Ok(true);
     }
 
