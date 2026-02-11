@@ -8,6 +8,7 @@ reqwest = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 anyhow = { workspace = true }
 tau-session = { path = "../tau-session" }
 tau-ai = { path = "../tau-ai" }

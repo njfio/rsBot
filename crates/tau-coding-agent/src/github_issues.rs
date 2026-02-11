@@ -61,6 +61,14 @@ use tau_github_issues::issue_comment::{
     IssueCommentUsageView,
 };
 use tau_github_issues::issue_demo_index::parse_demo_index_run_command as parse_shared_demo_index_run_command;
+use tau_github_issues::issue_event_collection::{
+    collect_issue_events as collect_shared_issue_events, GithubBridgeEvent, GithubIssue,
+    GithubIssueComment,
+};
+#[cfg(test)]
+use tau_github_issues::issue_event_collection::{
+    GithubBridgeEventKind, GithubIssueLabel, GithubUser,
+};
 use tau_github_issues::issue_filter::{
     build_required_issue_labels, issue_matches_required_labels, issue_matches_required_numbers,
 };
@@ -576,40 +584,6 @@ impl JsonlEventLog {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct GithubUser {
-    login: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct GithubIssueLabel {
-    name: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct GithubIssue {
-    id: u64,
-    number: u64,
-    title: String,
-    body: Option<String>,
-    created_at: String,
-    updated_at: String,
-    user: GithubUser,
-    #[serde(default)]
-    labels: Vec<GithubIssueLabel>,
-    #[serde(default)]
-    pull_request: Option<Value>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct GithubIssueComment {
-    id: u64,
-    body: Option<String>,
-    created_at: String,
-    updated_at: String,
-    user: GithubUser,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct GithubCommentCreateResponse {
     id: u64,
@@ -918,35 +892,6 @@ impl GithubApiClient {
             }
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum GithubBridgeEventKind {
-    Opened,
-    CommentCreated,
-    CommentEdited,
-}
-
-impl GithubBridgeEventKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Opened => "issue_opened",
-            Self::CommentCreated => "issue_comment_created",
-            Self::CommentEdited => "issue_comment_edited",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GithubBridgeEvent {
-    key: String,
-    kind: GithubBridgeEventKind,
-    issue_number: u64,
-    issue_title: String,
-    author_login: String,
-    occurred_at: String,
-    body: String,
-    raw_payload: Value,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -5497,70 +5442,13 @@ fn collect_issue_events(
     include_issue_body: bool,
     include_edited_comments: bool,
 ) -> Vec<GithubBridgeEvent> {
-    let mut events = Vec::new();
-    if include_issue_body
-        && issue.user.login != bot_login
-        && !issue.body.as_deref().unwrap_or_default().trim().is_empty()
-    {
-        let body = issue.body.clone().unwrap_or_default();
-        events.push(GithubBridgeEvent {
-            key: format!("issue-opened:{}", issue.id),
-            kind: GithubBridgeEventKind::Opened,
-            issue_number: issue.number,
-            issue_title: issue.title.clone(),
-            author_login: issue.user.login.clone(),
-            occurred_at: issue.created_at.clone(),
-            body,
-            raw_payload: serde_json::to_value(issue).unwrap_or(Value::Null),
-        });
-    }
-
-    for comment in comments {
-        if comment.user.login == bot_login {
-            continue;
-        }
-        let body = comment
-            .body
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if body.is_empty() {
-            continue;
-        }
-        let is_edit = comment.updated_at != comment.created_at;
-        if is_edit && !include_edited_comments {
-            continue;
-        }
-        let (key, kind) = if is_edit {
-            (
-                format!("issue-comment-edited:{}:{}", comment.id, comment.updated_at),
-                GithubBridgeEventKind::CommentEdited,
-            )
-        } else {
-            (
-                format!("issue-comment-created:{}", comment.id),
-                GithubBridgeEventKind::CommentCreated,
-            )
-        };
-        events.push(GithubBridgeEvent {
-            key,
-            kind,
-            issue_number: issue.number,
-            issue_title: issue.title.clone(),
-            author_login: comment.user.login.clone(),
-            occurred_at: comment.created_at.clone(),
-            body: body.to_string(),
-            raw_payload: serde_json::to_value(comment).unwrap_or(Value::Null),
-        });
-    }
-
-    events.sort_by(|left, right| {
-        left.occurred_at
-            .cmp(&right.occurred_at)
-            .then(left.key.cmp(&right.key))
-    });
-    events
+    collect_shared_issue_events(
+        issue,
+        comments,
+        bot_login,
+        include_issue_body,
+        include_edited_comments,
+    )
 }
 
 fn session_path_for_issue(repo_state_dir: &Path, issue_number: u64) -> PathBuf {
