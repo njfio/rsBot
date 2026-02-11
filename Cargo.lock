@@ -2963,6 +2963,7 @@ dependencies = [
  "tau-custom-command",
  "tau-dashboard",
  "tau-deployment",
+ "tau-diagnostics",
  "tau-gateway",
  "tau-memory",
  "tau-multi-channel",
