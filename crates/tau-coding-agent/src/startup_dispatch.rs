@@ -1,7 +1,6 @@
 use super::*;
 use tau_onboarding::startup_dispatch::{
-    resolve_startup_model_runtime_from_cli, resolve_startup_runtime_dispatch_context_from_cli,
-    StartupModelRuntimeResolution, StartupRuntimeDispatchContext,
+    resolve_startup_runtime_from_cli, StartupRuntimeDispatchContext, StartupRuntimeResolution,
 };
 
 pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
@@ -9,12 +8,19 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    let StartupModelRuntimeResolution {
+    let StartupRuntimeResolution {
         model_ref,
         fallback_model_refs,
         model_catalog,
         client,
-    } = resolve_startup_model_runtime_from_cli(
+        runtime_dispatch_context:
+            StartupRuntimeDispatchContext {
+                effective_skills_dir,
+                skills_lock_path,
+                system_prompt,
+                startup_policy,
+            },
+    } = resolve_startup_runtime_from_cli(
         &cli,
         |cli| -> Result<(ModelRef, Vec<ModelRef>)> {
             let StartupModelResolution {
@@ -30,15 +36,6 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         |cli, model_ref, fallback_model_refs: &Vec<ModelRef>| {
             build_client_with_fallbacks(cli, model_ref, fallback_model_refs)
         },
-    )
-    .await?;
-    let StartupRuntimeDispatchContext {
-        effective_skills_dir,
-        skills_lock_path,
-        system_prompt,
-        startup_policy,
-    } = resolve_startup_runtime_dispatch_context_from_cli(
-        &cli,
         |cli| Box::pin(run_startup_skills_bootstrap(cli)),
         execute_package_activate_on_startup,
         |skills_bootstrap| skills_bootstrap.skills_lock_path.clone(),

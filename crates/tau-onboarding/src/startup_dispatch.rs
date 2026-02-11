@@ -16,6 +16,14 @@ pub struct StartupRuntimeDispatchContext {
     pub startup_policy: StartupPolicyBundle,
 }
 
+pub struct StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient> {
+    pub model_ref: TModelRef,
+    pub fallback_model_refs: TFallbackModelRefs,
+    pub model_catalog: TModelCatalog,
+    pub client: TClient,
+    pub runtime_dispatch_context: StartupRuntimeDispatchContext,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupModelRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient> {
     pub model_ref: TModelRef,
@@ -56,6 +64,71 @@ where
         fallback_model_refs,
         model_catalog,
         client,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resolve_startup_runtime_from_cli<
+    TModelRef,
+    TFallbackModelRefs,
+    TModelCatalog,
+    TClient,
+    TSkillsBootstrap,
+    TPackageActivation,
+    FResolveModels,
+    FResolveModelCatalog,
+    FValidateModelCatalog,
+    FBuildClientWithFallbacks,
+    FRunSkillsBootstrap,
+    FExecutePackageActivateOnStartup,
+    FResolveBootstrapLockPath,
+>(
+    cli: &Cli,
+    resolve_models: FResolveModels,
+    resolve_model_catalog: FResolveModelCatalog,
+    validate_model_catalog: FValidateModelCatalog,
+    build_client_with_fallbacks: FBuildClientWithFallbacks,
+    run_skills_bootstrap: FRunSkillsBootstrap,
+    execute_package_activate_on_startup: FExecutePackageActivateOnStartup,
+    resolve_bootstrap_lock_path: FResolveBootstrapLockPath,
+) -> Result<StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient>>
+where
+    FResolveModels: FnOnce(&Cli) -> Result<(TModelRef, TFallbackModelRefs)>,
+    FResolveModelCatalog:
+        for<'a> FnOnce(&'a Cli) -> Pin<Box<dyn Future<Output = Result<TModelCatalog>> + 'a>>,
+    FValidateModelCatalog: FnOnce(&TModelCatalog, &TModelRef, &TFallbackModelRefs) -> Result<()>,
+    FBuildClientWithFallbacks: FnOnce(&Cli, &TModelRef, &TFallbackModelRefs) -> Result<TClient>,
+    FRunSkillsBootstrap:
+        for<'a> FnOnce(&'a Cli) -> Pin<Box<dyn Future<Output = Result<TSkillsBootstrap>> + 'a>>,
+    FExecutePackageActivateOnStartup: FnOnce(&Cli) -> Result<Option<TPackageActivation>>,
+    FResolveBootstrapLockPath: FnOnce(&TSkillsBootstrap) -> PathBuf,
+{
+    let StartupModelRuntimeResolution {
+        model_ref,
+        fallback_model_refs,
+        model_catalog,
+        client,
+    } = resolve_startup_model_runtime_from_cli(
+        cli,
+        resolve_models,
+        resolve_model_catalog,
+        validate_model_catalog,
+        build_client_with_fallbacks,
+    )
+    .await?;
+    let runtime_dispatch_context = resolve_startup_runtime_dispatch_context_from_cli(
+        cli,
+        run_skills_bootstrap,
+        execute_package_activate_on_startup,
+        resolve_bootstrap_lock_path,
+    )
+    .await?;
+    Ok(StartupRuntimeResolution {
+        model_ref,
+        fallback_model_refs,
+        model_catalog,
+        client,
+        runtime_dispatch_context,
     })
 }
 
@@ -129,7 +202,8 @@ mod tests {
     use super::{
         build_startup_runtime_dispatch_context, resolve_runtime_skills_dir,
         resolve_runtime_skills_lock_path, resolve_startup_model_runtime_from_cli,
-        resolve_startup_runtime_dispatch_context_from_cli, StartupModelRuntimeResolution,
+        resolve_startup_runtime_dispatch_context_from_cli, resolve_startup_runtime_from_cli,
+        StartupModelRuntimeResolution, StartupRuntimeResolution,
     };
     use anyhow::{anyhow, Result};
     use clap::Parser;
@@ -490,5 +564,169 @@ mod tests {
         .expect_err("validation errors should propagate");
 
         assert!(error.to_string().contains("catalog validation failed"));
+    }
+
+    #[tokio::test]
+    async fn unit_resolve_startup_runtime_from_cli_returns_composed_outputs() {
+        let mut cli = parse_cli_with_stack();
+        let workspace = tempdir().expect("tempdir");
+        cli.system_prompt = "Tau system prompt".to_string();
+        cli.skills_dir = workspace.path().join(".tau/skills");
+        std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+        let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
+        let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
+
+        let StartupRuntimeResolution {
+            model_ref,
+            fallback_model_refs,
+            model_catalog,
+            client,
+            runtime_dispatch_context,
+        } = resolve_startup_runtime_from_cli(
+            &cli,
+            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
+            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
+            |_catalog, _model, _fallback| Ok(()),
+            |_cli, model, _fallback| Ok(format!("client:{model}")),
+            |_cli| {
+                Box::pin(async move {
+                    Ok(MockSkillsBootstrap {
+                        skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
+                    })
+                })
+            },
+            |_cli| Ok(None::<()>),
+            |bootstrap| bootstrap.skills_lock_path.clone(),
+        )
+        .await
+        .expect("runtime");
+
+        assert_eq!(model_ref, "primary");
+        assert_eq!(fallback_model_refs, vec!["fallback".to_string()]);
+        assert_eq!(model_catalog, "catalog");
+        assert_eq!(client, "client:primary");
+        assert_eq!(
+            runtime_dispatch_context.effective_skills_dir,
+            cli.skills_dir
+        );
+        assert_eq!(
+            runtime_dispatch_context.skills_lock_path,
+            bootstrap_lock_path
+        );
+    }
+
+    #[tokio::test]
+    async fn functional_resolve_startup_runtime_from_cli_uses_activated_runtime_paths() {
+        let mut cli = parse_cli_with_stack();
+        let workspace = tempdir().expect("tempdir");
+        cli.system_prompt = "Tau system prompt".to_string();
+        cli.skills_dir = workspace.path().join(".tau/skills");
+        cli.package_activate_destination = workspace.path().join("packages-active");
+        std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+        let activated_skills_dir = cli.package_activate_destination.join("skills");
+        std::fs::create_dir_all(&activated_skills_dir).expect("create activated skills dir");
+        let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
+        let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
+
+        let resolution = resolve_startup_runtime_from_cli(
+            &cli,
+            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
+            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
+            |_catalog, _model, _fallback| Ok(()),
+            |_cli, model, fallback| Ok(format!("client:{model}+{}", fallback.len())),
+            |_cli| {
+                Box::pin(async move {
+                    Ok(MockSkillsBootstrap {
+                        skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
+                    })
+                })
+            },
+            |_cli| Ok(Some("activated".to_string())),
+            |bootstrap| bootstrap.skills_lock_path.clone(),
+        )
+        .await
+        .expect("runtime");
+
+        assert_eq!(resolution.client, "client:primary+1");
+        assert_eq!(
+            resolution.runtime_dispatch_context.effective_skills_dir,
+            activated_skills_dir
+        );
+        assert_eq!(
+            resolution.runtime_dispatch_context.skills_lock_path,
+            default_skills_lock_path(&resolution.runtime_dispatch_context.effective_skills_dir)
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_resolve_startup_runtime_from_cli_short_circuits_when_model_resolution_fails(
+    ) {
+        let cli = parse_cli_with_stack();
+        let model_catalog_calls = AtomicUsize::new(0);
+        let model_validation_calls = AtomicUsize::new(0);
+        let client_builder_calls = AtomicUsize::new(0);
+        let dispatch_calls = AtomicUsize::new(0);
+
+        let result = resolve_startup_runtime_from_cli(
+            &cli,
+            |_cli| -> Result<(String, Vec<String>)> { Err(anyhow!("model resolution failed")) },
+            |_cli| {
+                model_catalog_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async { Ok("catalog".to_string()) })
+            },
+            |_catalog: &String, _model: &String, _fallback: &Vec<String>| {
+                model_validation_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+            |_cli, _model: &String, _fallback: &Vec<String>| {
+                client_builder_calls.fetch_add(1, Ordering::Relaxed);
+                Ok("client".to_string())
+            },
+            |_cli| {
+                dispatch_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move {
+                    Ok(MockSkillsBootstrap {
+                        skills_lock_path: PathBuf::from("unused"),
+                    })
+                })
+            },
+            |_cli| Ok(None::<()>),
+            |bootstrap| bootstrap.skills_lock_path.clone(),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("model resolution errors should propagate"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("model resolution failed"));
+        assert_eq!(model_catalog_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(model_validation_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(client_builder_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(dispatch_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn regression_resolve_startup_runtime_from_cli_propagates_dispatch_errors() {
+        let cli = parse_cli_with_stack();
+        let result = resolve_startup_runtime_from_cli(
+            &cli,
+            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
+            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
+            |_catalog, _model, _fallback| Ok(()),
+            |_cli, _model, _fallback| Ok("client".to_string()),
+            |_cli| Box::pin(async move { Err(anyhow!("skills bootstrap failed")) }),
+            |_cli| -> Result<Option<()>> {
+                panic!("activation callback should not run when skills bootstrap fails");
+            },
+            |_bootstrap: &MockSkillsBootstrap| PathBuf::from("unused"),
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("dispatch errors should propagate"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("skills bootstrap failed"));
     }
 }
