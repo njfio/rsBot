@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::sync::Arc;
 
 use tau_ai::{LlmClient, ModelRef};
@@ -61,6 +62,27 @@ pub fn build_gateway_openresponses_server_config(
         rate_limit_max_requests: cli.gateway_openresponses_rate_limit_max_requests,
         max_input_chars: cli.gateway_openresponses_max_input_chars,
     }
+}
+
+pub async fn run_gateway_openresponses_server_if_requested(
+    cli: &Cli,
+    client: Arc<dyn LlmClient>,
+    model_ref: &ModelRef,
+    system_prompt: &str,
+    tool_policy: &ToolPolicy,
+) -> Result<bool> {
+    if !cli.gateway_openresponses_server {
+        return Ok(false);
+    }
+    let config = build_gateway_openresponses_server_config(
+        cli,
+        client,
+        model_ref,
+        system_prompt,
+        tool_policy,
+    );
+    tau_gateway::run_gateway_openresponses_server(config).await?;
+    Ok(true)
 }
 
 pub fn resolve_multi_channel_outbound_secret(
@@ -299,6 +321,26 @@ mod tests {
         assert_eq!(config.rate_limit_window_seconds, 120);
         assert_eq!(config.rate_limit_max_requests, 40);
         assert_eq!(config.max_input_chars, 24_000);
+    }
+
+    #[tokio::test]
+    async fn unit_run_gateway_openresponses_server_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let client: Arc<dyn LlmClient> = Arc::new(NoopClient);
+        let tool_policy = ToolPolicy::new(vec![]);
+
+        let handled = super::run_gateway_openresponses_server_if_requested(
+            &cli,
+            client,
+            &model_ref,
+            "system prompt",
+            &tool_policy,
+        )
+        .await
+        .expect("gateway helper");
+
+        assert!(!handled);
     }
 
     #[test]
