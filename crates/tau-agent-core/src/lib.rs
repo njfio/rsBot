@@ -115,6 +115,10 @@ pub enum AgentError {
 }
 
 type EventHandler = Arc<dyn Fn(&AgentEvent) + Send + Sync>;
+const CONTEXT_SUMMARY_PREFIX: &str = "[Tau context summary]";
+const CONTEXT_SUMMARY_MAX_CHARS: usize = 1_200;
+const CONTEXT_SUMMARY_SNIPPET_MAX_CHARS: usize = 160;
+const CONTEXT_SUMMARY_MAX_EXCERPTS: usize = 6;
 
 #[derive(Clone)]
 struct RegisteredTool {
@@ -483,6 +487,54 @@ fn bounded_messages(messages: &[Message], max_messages: usize) -> Vec<Message> {
         return messages.to_vec();
     }
 
+    if max_messages < 3 {
+        return bounded_messages_without_summary(messages, max_messages);
+    }
+
+    if matches!(
+        messages.first().map(|message| message.role),
+        Some(MessageRole::System)
+    ) {
+        let tail_keep = max_messages - 2;
+        let tail_start = messages.len().saturating_sub(tail_keep);
+        if tail_start <= 1 {
+            return messages.to_vec();
+        }
+
+        let dropped = &messages[1..tail_start];
+        if dropped.is_empty() {
+            return bounded_messages_without_summary(messages, max_messages);
+        }
+
+        let mut bounded = Vec::with_capacity(max_messages);
+        bounded.push(messages[0].clone());
+        bounded.push(Message::system(summarize_dropped_messages(dropped)));
+        bounded.extend_from_slice(&messages[tail_start..]);
+        bounded
+    } else {
+        let tail_keep = max_messages - 1;
+        let tail_start = messages.len().saturating_sub(tail_keep);
+        if tail_start == 0 {
+            return messages.to_vec();
+        }
+
+        let dropped = &messages[..tail_start];
+        if dropped.is_empty() {
+            return bounded_messages_without_summary(messages, max_messages);
+        }
+
+        let mut bounded = Vec::with_capacity(max_messages);
+        bounded.push(Message::system(summarize_dropped_messages(dropped)));
+        bounded.extend_from_slice(&messages[tail_start..]);
+        bounded
+    }
+}
+
+fn bounded_messages_without_summary(messages: &[Message], max_messages: usize) -> Vec<Message> {
+    if max_messages == 0 || messages.len() <= max_messages {
+        return messages.to_vec();
+    }
+
     if max_messages > 1
         && matches!(
             messages.first().map(|message| message.role),
@@ -501,6 +553,90 @@ fn bounded_messages(messages: &[Message], max_messages: usize) -> Vec<Message> {
     } else {
         messages[messages.len() - max_messages..].to_vec()
     }
+}
+
+fn summarize_dropped_messages(messages: &[Message]) -> String {
+    let mut user_count = 0usize;
+    let mut assistant_count = 0usize;
+    let mut tool_count = 0usize;
+    let mut system_count = 0usize;
+    let mut excerpts = Vec::new();
+
+    for message in messages {
+        match message.role {
+            MessageRole::User => user_count = user_count.saturating_add(1),
+            MessageRole::Assistant => assistant_count = assistant_count.saturating_add(1),
+            MessageRole::Tool => tool_count = tool_count.saturating_add(1),
+            MessageRole::System => system_count = system_count.saturating_add(1),
+        }
+
+        let content = collapse_whitespace(&message.text_content());
+        if content.is_empty() {
+            continue;
+        }
+        if message.role == MessageRole::System && content.starts_with(CONTEXT_SUMMARY_PREFIX) {
+            continue;
+        }
+        if excerpts.len() >= CONTEXT_SUMMARY_MAX_EXCERPTS {
+            continue;
+        }
+
+        let preview = truncate_chars(&content, CONTEXT_SUMMARY_SNIPPET_MAX_CHARS);
+        excerpts.push(format!("- {}: {}", role_label(message.role), preview));
+    }
+
+    let mut summary = format!(
+        "{CONTEXT_SUMMARY_PREFIX}\n\
+         summarized_messages={}; roles: user={}, assistant={}, tool={}, system={}.",
+        messages.len(),
+        user_count,
+        assistant_count,
+        tool_count,
+        system_count
+    );
+
+    if !excerpts.is_empty() {
+        let excerpt_block = excerpts.join("\n");
+        summary.push_str("\nexcerpts:\n");
+        summary.push_str(&excerpt_block);
+    }
+
+    truncate_chars(&summary, CONTEXT_SUMMARY_MAX_CHARS)
+}
+
+fn role_label(role: MessageRole) -> &'static str {
+    match role {
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+        MessageRole::System => "system",
+    }
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return text.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+
+    let truncate_at = text
+        .char_indices()
+        .nth(max_chars - 1)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len());
+    let mut truncated = text[..truncate_at].to_string();
+    truncated.push('…');
+    truncated
 }
 
 async fn execute_tool_call_inner(
@@ -556,7 +692,10 @@ mod tests {
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, ContentBlock, Message, MessageRole};
     use tokio::sync::Mutex as AsyncMutex;
 
-    use crate::{Agent, AgentConfig, AgentError, AgentEvent, AgentTool, ToolExecutionResult};
+    use crate::{
+        bounded_messages, truncate_chars, Agent, AgentConfig, AgentError, AgentEvent, AgentTool,
+        ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX,
+    };
 
     struct MockClient {
         responses: AsyncMutex<VecDeque<ChatResponse>>,
@@ -1183,13 +1322,73 @@ mod tests {
         let first_request = requests.first().expect("request should be captured");
         assert_eq!(first_request.messages.len(), 4);
         assert_eq!(first_request.messages[0].role, MessageRole::System);
-        assert_eq!(first_request.messages[1].text_content(), "a2");
+        assert_eq!(first_request.messages[1].role, MessageRole::System);
+        assert!(first_request.messages[1]
+            .text_content()
+            .starts_with(CONTEXT_SUMMARY_PREFIX));
         assert_eq!(first_request.messages[2].text_content(), "u3");
         assert_eq!(first_request.messages[3].text_content(), "latest");
         assert!(
             agent.messages().len() <= 4,
             "history should be compacted to configured context window"
         );
+    }
+
+    #[test]
+    fn unit_bounded_messages_inserts_summary_with_system_prompt() {
+        let messages = vec![
+            Message::system("sys"),
+            Message::user("u1"),
+            Message::assistant_text("a1"),
+            Message::user("u2"),
+            Message::assistant_text("a2"),
+        ];
+
+        let bounded = bounded_messages(&messages, 4);
+        assert_eq!(bounded.len(), 4);
+        assert_eq!(bounded[0].role, MessageRole::System);
+        assert_eq!(bounded[1].role, MessageRole::System);
+        assert!(bounded[1]
+            .text_content()
+            .starts_with(CONTEXT_SUMMARY_PREFIX));
+        assert_eq!(bounded[2].text_content(), "u2");
+        assert_eq!(bounded[3].text_content(), "a2");
+    }
+
+    #[test]
+    fn regression_bounded_messages_inserts_summary_without_system_prompt() {
+        let messages = vec![
+            Message::user("u1"),
+            Message::assistant_text("a1"),
+            Message::user("u2"),
+            Message::assistant_text("a2"),
+        ];
+
+        let bounded = bounded_messages(&messages, 3);
+        assert_eq!(bounded.len(), 3);
+        assert_eq!(bounded[0].role, MessageRole::System);
+        assert!(bounded[0]
+            .text_content()
+            .starts_with(CONTEXT_SUMMARY_PREFIX));
+        assert_eq!(bounded[1].text_content(), "u2");
+        assert_eq!(bounded[2].text_content(), "a2");
+    }
+
+    #[test]
+    fn regression_truncate_chars_preserves_utf8_and_appends_ellipsis() {
+        let long = "alpha beta gamma delta epsilon zeta eta theta";
+        let truncated = truncate_chars(long, 12);
+        assert_eq!(truncated.chars().count(), 12);
+        assert!(truncated.ends_with('…'));
+
+        let long_unicode = "hello 👋 from τau runtime";
+        let truncated_unicode = truncate_chars(long_unicode, 9);
+        assert_eq!(truncated_unicode.chars().count(), 9);
+        assert!(truncated_unicode.ends_with('…'));
+
+        let very_long = "x".repeat(CONTEXT_SUMMARY_MAX_CHARS + 200);
+        let clipped = truncate_chars(&very_long, CONTEXT_SUMMARY_MAX_CHARS);
+        assert!(clipped.chars().count() <= CONTEXT_SUMMARY_MAX_CHARS);
     }
 
     #[tokio::test]
