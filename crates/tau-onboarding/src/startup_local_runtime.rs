@@ -140,6 +140,13 @@ pub enum PromptOrCommandFileEntryDispatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalRuntimeEntryDispatch {
+    PlanFirstPrompt(String),
+    Prompt(String),
+    CommandFile(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionBootstrapOutcome<TSession, TMessage> {
     pub runtime: TSession,
     pub lineage: Vec<TMessage>,
@@ -368,6 +375,31 @@ where
             path.to_path_buf(),
         ))
         .await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+pub async fn execute_local_runtime_entry_mode_with_dispatch<FRun, Fut>(
+    entry_mode: &LocalRuntimeEntryMode,
+    run_entry: FRun,
+) -> Result<bool>
+where
+    FRun: FnOnce(LocalRuntimeEntryDispatch) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    if let Some(prompt_mode) = resolve_prompt_entry_runtime_mode(entry_mode) {
+        let dispatch = match prompt_mode {
+            PromptEntryRuntimeMode::PlanFirstPrompt(prompt) => {
+                LocalRuntimeEntryDispatch::PlanFirstPrompt(prompt)
+            }
+            PromptEntryRuntimeMode::Prompt(prompt) => LocalRuntimeEntryDispatch::Prompt(prompt),
+        };
+        run_entry(dispatch).await?;
+        return Ok(true);
+    }
+    if let Some(path) = resolve_command_file_entry_path(entry_mode) {
+        run_entry(LocalRuntimeEntryDispatch::CommandFile(path.to_path_buf())).await?;
         return Ok(true);
     }
     Ok(false)
@@ -826,8 +858,8 @@ mod tests {
         build_local_runtime_agent, build_local_runtime_command_defaults,
         build_local_runtime_doctor_config, build_local_runtime_extension_bootstrap,
         build_local_runtime_extension_startup, build_local_runtime_interactive_defaults,
-        execute_command_file_entry_mode, execute_prompt_entry_mode,
-        execute_prompt_or_command_file_entry_mode,
+        execute_command_file_entry_mode, execute_local_runtime_entry_mode_with_dispatch,
+        execute_prompt_entry_mode, execute_prompt_or_command_file_entry_mode,
         execute_prompt_or_command_file_entry_mode_with_dispatch, extension_tool_hook_diagnostics,
         extension_tool_hook_dispatch, register_runtime_event_reporter_if_configured,
         register_runtime_event_reporter_pair_if_configured,
@@ -838,7 +870,7 @@ mod tests {
         resolve_local_runtime_entry_mode, resolve_local_runtime_entry_mode_from_cli,
         resolve_local_runtime_startup_from_cli, resolve_orchestrator_route_table,
         resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
-        resolve_session_runtime_from_cli, LocalRuntimeEntryMode,
+        resolve_session_runtime_from_cli, LocalRuntimeEntryDispatch, LocalRuntimeEntryMode,
         LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
         LocalRuntimeInteractiveDefaults, LocalRuntimeStartupResolution, PromptEntryRuntimeMode,
         PromptOrCommandFileEntryDispatch, PromptOrCommandFileEntryOutcome, PromptRuntimeMode,
@@ -1819,6 +1851,87 @@ mod tests {
             error
                 .to_string()
                 .contains("forced dispatch callback failure"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unit_execute_local_runtime_entry_mode_with_dispatch_returns_false_for_interactive() {
+        let mode = LocalRuntimeEntryMode::Interactive;
+        let handled = execute_local_runtime_entry_mode_with_dispatch(&mode, |_dispatch| async {
+            panic!("interactive mode should not execute dispatch callback")
+        })
+        .await
+        .expect("interactive dispatch should succeed");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn functional_execute_local_runtime_entry_mode_with_dispatch_handles_prompt_entry() {
+        let mode = LocalRuntimeEntryMode::Prompt("prompt text".to_string());
+        let handled =
+            execute_local_runtime_entry_mode_with_dispatch(&mode, |dispatch| async move {
+                assert_eq!(
+                    dispatch,
+                    LocalRuntimeEntryDispatch::Prompt("prompt text".to_string())
+                );
+                Ok(())
+            })
+            .await
+            .expect("prompt dispatch should succeed");
+
+        assert!(handled);
+    }
+
+    #[tokio::test]
+    async fn integration_execute_local_runtime_entry_mode_with_dispatch_handles_command_file_entry()
+    {
+        let mode = LocalRuntimeEntryMode::CommandFile(PathBuf::from("commands.txt"));
+        let captured = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let captured_sink = Arc::clone(&captured);
+
+        let handled = execute_local_runtime_entry_mode_with_dispatch(&mode, move |dispatch| {
+            let sink = Arc::clone(&captured_sink);
+            async move {
+                match dispatch {
+                    LocalRuntimeEntryDispatch::PlanFirstPrompt(_)
+                    | LocalRuntimeEntryDispatch::Prompt(_) => {
+                        panic!("command-file mode should not execute prompt dispatch")
+                    }
+                    LocalRuntimeEntryDispatch::CommandFile(path) => {
+                        sink.lock().expect("capture lock").push(path);
+                    }
+                }
+                Ok(())
+            }
+        })
+        .await
+        .expect("command-file dispatch should succeed");
+
+        assert!(handled);
+        assert_eq!(
+            captured.lock().expect("capture lock").as_slice(),
+            &[PathBuf::from("commands.txt")]
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_execute_local_runtime_entry_mode_with_dispatch_propagates_callback_errors()
+    {
+        let mode = LocalRuntimeEntryMode::PlanFirstPrompt("prompt text".to_string());
+        let error = execute_local_runtime_entry_mode_with_dispatch(&mode, |_dispatch| async {
+            Err(anyhow::anyhow!(
+                "forced local runtime entry dispatch failure"
+            ))
+        })
+        .await
+        .expect_err("dispatch callback errors should propagate");
+
+        assert!(
+            error
+                .to_string()
+                .contains("forced local runtime entry dispatch failure"),
             "unexpected error: {error}"
         );
     }
