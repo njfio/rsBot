@@ -134,6 +134,12 @@ pub enum PromptOrCommandFileEntryOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptOrCommandFileEntryDispatch {
+    Prompt(PromptEntryRuntimeMode),
+    CommandFile(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionBootstrapOutcome<TSession, TMessage> {
     pub runtime: TSession,
     pub lineage: Vec<TMessage>,
@@ -343,6 +349,28 @@ where
         ));
     }
     Ok(PromptOrCommandFileEntryOutcome::None)
+}
+
+pub async fn execute_prompt_or_command_file_entry_mode_with_dispatch<FRun, Fut>(
+    entry_mode: &LocalRuntimeEntryMode,
+    run_entry: FRun,
+) -> Result<bool>
+where
+    FRun: FnOnce(PromptOrCommandFileEntryDispatch) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    if let Some(prompt_mode) = resolve_prompt_entry_runtime_mode(entry_mode) {
+        run_entry(PromptOrCommandFileEntryDispatch::Prompt(prompt_mode)).await?;
+        return Ok(true);
+    }
+    if let Some(path) = resolve_command_file_entry_path(entry_mode) {
+        run_entry(PromptOrCommandFileEntryDispatch::CommandFile(
+            path.to_path_buf(),
+        ))
+        .await?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub fn resolve_session_runtime<TSession, TMessage, FInit, FReplace>(
@@ -677,7 +705,8 @@ mod tests {
         build_local_runtime_doctor_config, build_local_runtime_extension_bootstrap,
         build_local_runtime_extension_startup, build_local_runtime_interactive_defaults,
         execute_command_file_entry_mode, execute_prompt_entry_mode,
-        execute_prompt_or_command_file_entry_mode, extension_tool_hook_diagnostics,
+        execute_prompt_or_command_file_entry_mode,
+        execute_prompt_or_command_file_entry_mode_with_dispatch, extension_tool_hook_diagnostics,
         extension_tool_hook_dispatch, register_runtime_event_reporter_if_configured,
         register_runtime_event_reporter_subscriber, register_runtime_extension_pipeline,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
@@ -688,8 +717,8 @@ mod tests {
         resolve_prompt_runtime_mode, resolve_session_runtime, resolve_session_runtime_from_cli,
         LocalRuntimeEntryMode, LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
         LocalRuntimeInteractiveDefaults, LocalRuntimeStartupResolution, PromptEntryRuntimeMode,
-        PromptOrCommandFileEntryOutcome, PromptRuntimeMode, RuntimeExtensionPipelineConfig,
-        SessionBootstrapOutcome,
+        PromptOrCommandFileEntryDispatch, PromptOrCommandFileEntryOutcome, PromptRuntimeMode,
+        RuntimeExtensionPipelineConfig, SessionBootstrapOutcome,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1581,6 +1610,90 @@ mod tests {
 
         assert!(
             error.to_string().contains("forced merged dispatch failure"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unit_execute_prompt_or_command_file_entry_mode_with_dispatch_returns_false_for_interactive(
+    ) {
+        let mode = LocalRuntimeEntryMode::Interactive;
+        let handled = execute_prompt_or_command_file_entry_mode_with_dispatch(&mode, |_| async {
+            panic!("interactive mode should not execute dispatch callback");
+        })
+        .await
+        .expect("interactive dispatch should succeed");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn functional_execute_prompt_or_command_file_entry_mode_with_dispatch_handles_prompt_entry(
+    ) {
+        let mode = LocalRuntimeEntryMode::Prompt("prompt text".to_string());
+        let handled =
+            execute_prompt_or_command_file_entry_mode_with_dispatch(&mode, |dispatch| async move {
+                assert_eq!(
+                    dispatch,
+                    PromptOrCommandFileEntryDispatch::Prompt(PromptEntryRuntimeMode::Prompt(
+                        "prompt text".to_string()
+                    ))
+                );
+                Ok(())
+            })
+            .await
+            .expect("prompt dispatch should succeed");
+
+        assert!(handled);
+    }
+
+    #[tokio::test]
+    async fn integration_execute_prompt_or_command_file_entry_mode_with_dispatch_handles_command_file_entry(
+    ) {
+        let mode = LocalRuntimeEntryMode::CommandFile(PathBuf::from("commands.txt"));
+        let captured = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+        let captured_sink = Arc::clone(&captured);
+
+        let handled =
+            execute_prompt_or_command_file_entry_mode_with_dispatch(&mode, move |dispatch| {
+                let sink = Arc::clone(&captured_sink);
+                async move {
+                    match dispatch {
+                        PromptOrCommandFileEntryDispatch::Prompt(_) => {
+                            panic!("command-file mode should not execute prompt dispatch")
+                        }
+                        PromptOrCommandFileEntryDispatch::CommandFile(path) => {
+                            sink.lock().expect("capture lock").push(path);
+                        }
+                    }
+                    Ok(())
+                }
+            })
+            .await
+            .expect("command-file dispatch should succeed");
+
+        assert!(handled);
+        assert_eq!(
+            captured.lock().expect("capture lock").as_slice(),
+            &[PathBuf::from("commands.txt")]
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_execute_prompt_or_command_file_entry_mode_with_dispatch_propagates_callback_errors(
+    ) {
+        let mode = LocalRuntimeEntryMode::CommandFile(PathBuf::from("commands.txt"));
+        let error =
+            execute_prompt_or_command_file_entry_mode_with_dispatch(&mode, |_dispatch| async {
+                Err(anyhow::anyhow!("forced dispatch callback failure"))
+            })
+            .await
+            .expect_err("dispatch callback errors should propagate");
+
+        assert!(
+            error
+                .to_string()
+                .contains("forced dispatch callback failure"),
             "unexpected error: {error}"
         );
     }

@@ -5,14 +5,14 @@ use crate::extension_manifest::{
 use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_extension_startup as build_onboarding_local_runtime_extension_startup,
-    execute_prompt_or_command_file_entry_mode as execute_onboarding_prompt_or_command_file_entry_mode,
+    execute_prompt_or_command_file_entry_mode_with_dispatch as execute_onboarding_prompt_or_command_file_entry_mode_with_dispatch,
     register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
     register_runtime_extension_pipeline as register_onboarding_runtime_extension_pipeline,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
     resolve_local_runtime_startup_from_cli as resolve_onboarding_local_runtime_startup_from_cli,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
     LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, LocalRuntimeExtensionStartup,
-    LocalRuntimeStartupResolution, PromptEntryRuntimeMode, PromptOrCommandFileEntryOutcome,
+    LocalRuntimeStartupResolution, PromptEntryRuntimeMode, PromptOrCommandFileEntryDispatch,
     RuntimeExtensionPipelineConfig as OnboardingRuntimeExtensionPipelineConfig,
     SessionBootstrapOutcome,
 };
@@ -185,57 +185,60 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         command_context,
     };
 
-    match execute_onboarding_prompt_or_command_file_entry_mode(&entry_mode, |prompt_mode| async {
-        match prompt_mode {
-            PromptEntryRuntimeMode::PlanFirstPrompt(prompt) => {
-                run_plan_first_prompt_with_runtime_hooks(
-                    &mut agent,
-                    &mut session_runtime,
-                    &prompt,
-                    interactive_defaults.turn_timeout_ms,
-                    render_options,
-                    interactive_defaults.orchestrator_max_plan_steps,
-                    interactive_defaults.orchestrator_max_delegated_steps,
-                    interactive_defaults.orchestrator_max_executor_response_chars,
-                    interactive_defaults.orchestrator_max_delegated_step_response_chars,
-                    interactive_defaults.orchestrator_max_delegated_total_response_chars,
-                    interactive_defaults.orchestrator_delegate_steps,
-                    &orchestrator_route_table,
-                    orchestrator_route_trace_log,
-                    tool_policy_json,
-                    &extension_runtime_hooks,
-                )
-                .await?;
+    if execute_onboarding_prompt_or_command_file_entry_mode_with_dispatch(
+        &entry_mode,
+        |entry_dispatch| async {
+            match entry_dispatch {
+                PromptOrCommandFileEntryDispatch::Prompt(prompt_mode) => match prompt_mode {
+                    PromptEntryRuntimeMode::PlanFirstPrompt(prompt) => {
+                        run_plan_first_prompt_with_runtime_hooks(
+                            &mut agent,
+                            &mut session_runtime,
+                            &prompt,
+                            interactive_defaults.turn_timeout_ms,
+                            render_options,
+                            interactive_defaults.orchestrator_max_plan_steps,
+                            interactive_defaults.orchestrator_max_delegated_steps,
+                            interactive_defaults.orchestrator_max_executor_response_chars,
+                            interactive_defaults.orchestrator_max_delegated_step_response_chars,
+                            interactive_defaults.orchestrator_max_delegated_total_response_chars,
+                            interactive_defaults.orchestrator_delegate_steps,
+                            &orchestrator_route_table,
+                            orchestrator_route_trace_log,
+                            tool_policy_json,
+                            &extension_runtime_hooks,
+                        )
+                        .await?;
+                    }
+                    PromptEntryRuntimeMode::Prompt(prompt) => {
+                        run_prompt(
+                            &mut agent,
+                            &mut session_runtime,
+                            &prompt,
+                            interactive_defaults.turn_timeout_ms,
+                            render_options,
+                            &extension_runtime_hooks,
+                        )
+                        .await?;
+                    }
+                },
+                PromptOrCommandFileEntryDispatch::CommandFile(command_file_path) => {
+                    execute_command_file(
+                        &command_file_path,
+                        cli.command_file_error_mode,
+                        &mut agent,
+                        &mut session_runtime,
+                        command_context,
+                    )?;
+                }
             }
-            PromptEntryRuntimeMode::Prompt(prompt) => {
-                run_prompt(
-                    &mut agent,
-                    &mut session_runtime,
-                    &prompt,
-                    interactive_defaults.turn_timeout_ms,
-                    render_options,
-                    &extension_runtime_hooks,
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    })
+            Ok(())
+        },
+    )
     .await?
     {
-        PromptOrCommandFileEntryOutcome::PromptHandled => return Ok(()),
-        PromptOrCommandFileEntryOutcome::CommandFile(command_file_path) => {
-            execute_command_file(
-                &command_file_path,
-                cli.command_file_error_mode,
-                &mut agent,
-                &mut session_runtime,
-                command_context,
-            )?;
-            return Ok(());
-        }
-        PromptOrCommandFileEntryOutcome::None => {}
-    };
+        return Ok(());
+    }
 
     run_interactive(agent, session_runtime, interactive_config).await
 }
