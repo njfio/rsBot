@@ -278,6 +278,7 @@ impl EventRunner for TauEventRunner {
                 max_turns: self.max_turns,
                 temperature: Some(0.0),
                 max_tokens: None,
+                ..AgentConfig::default()
             },
         );
         crate::tools::register_builtin_tools(&mut agent, self.tool_policy.clone());

@@ -14,6 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use tau_agent_core::Agent;
 use tau_ai::StreamDeltaHandler;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc;
 
 use crate::{
     apply_extension_message_transforms, current_unix_timestamp_ms, dispatch_extension_runtime_hook,
@@ -508,22 +509,31 @@ where
 {
     let checkpoint = agent.messages().to_vec();
     let streamed_output = Arc::new(AtomicBool::new(false));
-    let stream_delta_handler = if render_options.stream_output {
+    let (stream_delta_handler, mut stream_task) = if render_options.stream_output {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let streamed_output = streamed_output.clone();
         let stream_delay_ms = render_options.stream_delay_ms;
-        Some(Arc::new(move |delta: String| {
-            if delta.is_empty() {
-                return;
+        let task = tokio::spawn(async move {
+            while let Some(delta) = rx.recv().await {
+                if delta.is_empty() {
+                    continue;
+                }
+                streamed_output.store(true, Ordering::Relaxed);
+                print!("{delta}");
+                let _ = std::io::stdout().flush();
+                if stream_delay_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(stream_delay_ms)).await;
+                }
             }
-            streamed_output.store(true, Ordering::Relaxed);
-            print!("{delta}");
-            let _ = std::io::stdout().flush();
-            if stream_delay_ms > 0 {
-                std::thread::sleep(Duration::from_millis(stream_delay_ms));
-            }
-        }) as StreamDeltaHandler)
+        });
+        (
+            Some(Arc::new(move |delta: String| {
+                let _ = tx.send(delta);
+            }) as StreamDeltaHandler),
+            Some(task),
+        )
     } else {
-        None
+        (None, None)
     };
     tokio::pin!(cancellation_signal);
 
@@ -547,6 +557,11 @@ where
             _ = &mut timeout => PromptOutcome::TimedOut,
         }
     };
+
+    drop(stream_delta_handler);
+    if let Some(task) = stream_task.take() {
+        let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+    }
 
     let prompt_result = match prompt_result {
         PromptOutcome::Result(result) => result,

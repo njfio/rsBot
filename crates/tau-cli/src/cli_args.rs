@@ -508,6 +508,49 @@ pub struct Cli {
     pub max_turns: usize,
 
     #[arg(
+        long = "agent-max-parallel-tool-calls",
+        env = "TAU_AGENT_MAX_PARALLEL_TOOL_CALLS",
+        default_value_t = 4,
+        value_parser = parse_positive_usize,
+        help = "Maximum number of tool calls executed concurrently within one assistant turn"
+    )]
+    pub agent_max_parallel_tool_calls: usize,
+
+    #[arg(
+        long = "agent-max-context-messages",
+        env = "TAU_AGENT_MAX_CONTEXT_MESSAGES",
+        value_parser = parse_positive_usize,
+        help = "Optional rolling message window sent to the model per turn (pins system message when possible)"
+    )]
+    pub agent_max_context_messages: Option<usize>,
+
+    #[arg(
+        long = "agent-request-max-retries",
+        env = "TAU_AGENT_REQUEST_MAX_RETRIES",
+        default_value_t = 2,
+        help = "Maximum agent-level retries for retryable model request failures"
+    )]
+    pub agent_request_max_retries: usize,
+
+    #[arg(
+        long = "agent-request-retry-initial-backoff-ms",
+        env = "TAU_AGENT_REQUEST_RETRY_INITIAL_BACKOFF_MS",
+        default_value_t = 200,
+        value_parser = parse_positive_u64,
+        help = "Initial backoff delay in milliseconds for agent-level retryable request failures"
+    )]
+    pub agent_request_retry_initial_backoff_ms: u64,
+
+    #[arg(
+        long = "agent-request-retry-max-backoff-ms",
+        env = "TAU_AGENT_REQUEST_RETRY_MAX_BACKOFF_MS",
+        default_value_t = 2_000,
+        value_parser = parse_positive_u64,
+        help = "Maximum backoff delay in milliseconds for agent-level retryable request failures"
+    )]
+    pub agent_request_retry_max_backoff_ms: u64,
+
+    #[arg(
         long,
         env = "TAU_REQUEST_TIMEOUT_MS",
         default_value_t = 120_000,

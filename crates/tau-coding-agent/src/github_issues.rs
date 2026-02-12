@@ -4645,6 +4645,7 @@ async fn run_prompt_for_event(request: RunPromptForEventRequest<'_>) -> Result<P
             max_turns: config.max_turns,
             temperature: Some(0.0),
             max_tokens: None,
+            ..AgentConfig::default()
         },
     );
     let mut tool_policy = config.tool_policy.clone();

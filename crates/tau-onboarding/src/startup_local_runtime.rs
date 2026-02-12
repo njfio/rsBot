@@ -16,11 +16,21 @@ use crate::startup_config::{build_auth_command_config, build_profile_defaults, P
 
 const EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalRuntimeAgentSettings {
+    pub max_turns: usize,
+    pub max_parallel_tool_calls: usize,
+    pub max_context_messages: Option<usize>,
+    pub request_max_retries: usize,
+    pub request_retry_initial_backoff_ms: u64,
+    pub request_retry_max_backoff_ms: u64,
+}
+
 pub fn build_local_runtime_agent(
     client: Arc<dyn LlmClient>,
     model_ref: &ModelRef,
     system_prompt: &str,
-    max_turns: usize,
+    settings: LocalRuntimeAgentSettings,
     tool_policy: ToolPolicy,
 ) -> Agent {
     let mut agent = Agent::new(
@@ -28,9 +38,14 @@ pub fn build_local_runtime_agent(
         AgentConfig {
             model: model_ref.model.clone(),
             system_prompt: system_prompt.to_string(),
-            max_turns,
+            max_turns: settings.max_turns,
             temperature: Some(0.0),
             max_tokens: None,
+            max_parallel_tool_calls: settings.max_parallel_tool_calls,
+            max_context_messages: settings.max_context_messages,
+            request_max_retries: settings.request_max_retries,
+            request_retry_initial_backoff_ms: settings.request_retry_initial_backoff_ms,
+            request_retry_max_backoff_ms: settings.request_retry_max_backoff_ms,
         },
     );
     register_builtin_tools(&mut agent, tool_policy);
@@ -870,8 +885,8 @@ mod tests {
         resolve_local_runtime_entry_mode, resolve_local_runtime_entry_mode_from_cli,
         resolve_local_runtime_startup_from_cli, resolve_orchestrator_route_table,
         resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
-        resolve_session_runtime_from_cli, LocalRuntimeEntryDispatch, LocalRuntimeEntryMode,
-        LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
+        resolve_session_runtime_from_cli, LocalRuntimeAgentSettings, LocalRuntimeEntryDispatch,
+        LocalRuntimeEntryMode, LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
         LocalRuntimeInteractiveDefaults, LocalRuntimeStartupResolution, PromptEntryRuntimeMode,
         PromptOrCommandFileEntryDispatch, PromptOrCommandFileEntryOutcome, PromptRuntimeMode,
         RuntimeEventReporterPairRegistration, RuntimeEventReporterRegistrationConfig,
@@ -983,7 +998,14 @@ mod tests {
             client,
             &model_ref,
             "system prompt",
-            4,
+            LocalRuntimeAgentSettings {
+                max_turns: 4,
+                max_parallel_tool_calls: 4,
+                max_context_messages: Some(256),
+                request_max_retries: 2,
+                request_retry_initial_backoff_ms: 200,
+                request_retry_max_backoff_ms: 2_000,
+            },
             ToolPolicy::new(vec![std::env::temp_dir()]),
         );
         assert_eq!(agent.messages().len(), 1);
@@ -1006,7 +1028,14 @@ mod tests {
             client,
             &model_ref,
             "system prompt",
-            4,
+            LocalRuntimeAgentSettings {
+                max_turns: 4,
+                max_parallel_tool_calls: 4,
+                max_context_messages: Some(256),
+                request_max_retries: 2,
+                request_retry_initial_backoff_ms: 200,
+                request_retry_max_backoff_ms: 2_000,
+            },
             ToolPolicy::new(vec![std::env::temp_dir()]),
         );
         agent.prompt("hello").await.expect("prompt succeeds");
@@ -1032,7 +1061,14 @@ mod tests {
             client,
             &model_ref,
             "system prompt",
-            0,
+            LocalRuntimeAgentSettings {
+                max_turns: 0,
+                max_parallel_tool_calls: 4,
+                max_context_messages: Some(256),
+                request_max_retries: 2,
+                request_retry_initial_backoff_ms: 200,
+                request_retry_max_backoff_ms: 2_000,
+            },
             ToolPolicy::new(vec![std::env::temp_dir()]),
         );
         let error = agent
@@ -1052,7 +1088,14 @@ mod tests {
             client,
             &model_ref,
             "   ",
-            4,
+            LocalRuntimeAgentSettings {
+                max_turns: 4,
+                max_parallel_tool_calls: 4,
+                max_context_messages: Some(256),
+                request_max_retries: 2,
+                request_retry_initial_backoff_ms: 200,
+                request_retry_max_backoff_ms: 2_000,
+            },
             ToolPolicy::new(vec![std::env::temp_dir()]),
         );
         assert!(agent.messages().is_empty());

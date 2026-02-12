@@ -1094,6 +1094,7 @@ async fn execute_openresponses_request(
             max_turns: state.config.max_turns,
             temperature: Some(0.0),
             max_tokens: None,
+            ..AgentConfig::default()
         },
     );
     state.config.tool_registrar.register(&mut agent);

@@ -10,8 +10,8 @@ use tau_onboarding::startup_local_runtime::{
     register_runtime_observability_if_configured as register_onboarding_runtime_observability_if_configured,
     resolve_local_runtime_startup_from_cli as resolve_onboarding_local_runtime_startup_from_cli,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
-    LocalRuntimeCommandDefaults, LocalRuntimeEntryDispatch, LocalRuntimeExtensionBootstrap,
-    LocalRuntimeExtensionStartup, LocalRuntimeStartupResolution,
+    LocalRuntimeAgentSettings, LocalRuntimeCommandDefaults, LocalRuntimeEntryDispatch,
+    LocalRuntimeExtensionBootstrap, LocalRuntimeExtensionStartup, LocalRuntimeStartupResolution,
     RuntimeEventReporterRegistrationConfig,
     RuntimeExtensionPipelineConfig as OnboardingRuntimeExtensionPipelineConfig,
     SessionBootstrapOutcome,
@@ -50,7 +50,14 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         client,
         model_ref,
         system_prompt,
-        cli.max_turns,
+        LocalRuntimeAgentSettings {
+            max_turns: cli.max_turns,
+            max_parallel_tool_calls: cli.agent_max_parallel_tool_calls,
+            max_context_messages: cli.agent_max_context_messages,
+            request_max_retries: cli.agent_request_max_retries,
+            request_retry_initial_backoff_ms: cli.agent_request_retry_initial_backoff_ms,
+            request_retry_max_backoff_ms: cli.agent_request_retry_max_backoff_ms,
+        },
         tool_policy,
     );
     register_onboarding_runtime_observability_if_configured(
