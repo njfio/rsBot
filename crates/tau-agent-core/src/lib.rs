@@ -2322,6 +2322,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regression_bug_1_max_parallel_tool_calls_zero_clamps_to_safe_serial_execution() {
+        let first_assistant = Message::assistant_blocks(vec![
+            ContentBlock::ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({ "path": "a.txt" }),
+            },
+            ContentBlock::ToolCall {
+                id: "call_2".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({ "path": "b.txt" }),
+            },
+        ]);
+        let second_assistant = Message::assistant_text("done");
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: first_assistant,
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: second_assistant,
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                max_parallel_tool_calls: 0,
+                ..AgentConfig::default()
+            },
+        );
+        agent.register_tool(ReadTool);
+
+        let messages = agent
+            .prompt("read both")
+            .await
+            .expect("zero parallel limit should be normalized to a safe value");
+        let tool_messages = messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Tool)
+            .collect::<Vec<_>>();
+        assert_eq!(tool_messages.len(), 2);
+        assert!(tool_messages[0].text_content().contains("read:a.txt"));
+        assert!(tool_messages[1].text_content().contains("read:b.txt"));
+    }
+
+    #[tokio::test]
     async fn functional_context_window_limits_request_messages_and_compacts_history() {
         let client = Arc::new(CapturingMockClient {
             responses: AsyncMutex::new(VecDeque::from([ChatResponse {
@@ -2666,6 +2718,20 @@ mod tests {
             assert_eq!(
                 messages.last().expect("assistant reply").text_content(),
                 format!("echo:prompt-{}", index + 1)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_bug_6_run_parallel_prompts_allows_zero_parallel_limit() {
+        let agent = Agent::new(Arc::new(EchoClient), AgentConfig::default());
+        let results = agent.run_parallel_prompts(vec!["p1", "p2", "p3"], 0).await;
+        assert_eq!(results.len(), 3);
+        for (index, result) in results.into_iter().enumerate() {
+            let messages = result.expect("zero parallel limit should clamp to a valid value");
+            assert_eq!(
+                messages.last().expect("assistant reply").text_content(),
+                format!("echo:p{}", index + 1)
             );
         }
     }
