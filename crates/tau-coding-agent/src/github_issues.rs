@@ -4117,7 +4117,11 @@ impl GithubIssuesBridgeRuntime {
         let json_args = ensure_shared_auth_json_flag(&command.args);
         let report_payload_json =
             execute_auth_command(&self.config.auth_command_config, &json_args);
-        let summary_line = build_issue_auth_summary_line(command.kind, &report_payload_json);
+        let summary_kind = match command.kind {
+            TauIssueAuthCommandKind::Status => IssueAuthSummaryKind::Status,
+            TauIssueAuthCommandKind::Matrix => IssueAuthSummaryKind::Matrix,
+        };
+        let summary_line = build_shared_issue_auth_summary_line(summary_kind, &report_payload_json);
         let channel_store = ChannelStore::open(
             &self.repository_state_dir.join("channel-store"),
             "github",
@@ -4507,7 +4511,13 @@ async fn execute_issue_run_task(params: IssueRunTaskParams) -> RunTaskResult {
         Err(error) => (
             "failed".to_string(),
             PromptUsageSummary::default(),
-            vec![render_issue_run_error_comment(&event, &run_id, &error)],
+            vec![render_shared_issue_run_error_comment(
+                &event.key,
+                &run_id,
+                &error.to_string(),
+                EVENT_KEY_MARKER_PREFIX,
+                EVENT_KEY_MARKER_SUFFIX,
+            )],
             Some(error.to_string()),
         ),
     };
@@ -4847,11 +4857,12 @@ async fn download_issue_attachments(
         let path = file_dir.join(format!("{:02}-{}", index + 1, safe_name));
         std::fs::write(&path, &payload.bytes)
             .with_context(|| format!("failed to write {}", path.display()))?;
-        let relative_path = normalize_relative_channel_path(
+        let relative_path = normalize_shared_relative_channel_path(
             &path,
             &channel_store.channel_dir(),
             "attachment file",
-        )?;
+        )
+        .map_err(|error| anyhow!(error))?;
         let created_unix_ms = current_unix_timestamp_ms();
         let expires_unix_ms = retention_days
             .map(|days| days.saturating_mul(86_400_000))
@@ -4898,15 +4909,6 @@ async fn download_issue_attachments(
     }
 
     Ok(downloaded)
-}
-
-fn normalize_relative_channel_path(
-    path: &Path,
-    channel_root: &Path,
-    label: &str,
-) -> Result<String> {
-    normalize_shared_relative_channel_path(path, channel_root, label)
-        .map_err(|error| anyhow!(error))
 }
 
 fn initialize_issue_session_runtime(
@@ -5066,20 +5068,6 @@ fn default_demo_index_binary_path() -> PathBuf {
             .join("../../target/debug/tau-coding-agent")
             .to_path_buf()
     })
-}
-
-fn render_issue_run_error_comment(
-    event: &GithubBridgeEvent,
-    run_id: &str,
-    error: &anyhow::Error,
-) -> String {
-    render_shared_issue_run_error_comment(
-        &event.key,
-        run_id,
-        &error.to_string(),
-        EVENT_KEY_MARKER_PREFIX,
-        EVENT_KEY_MARKER_SUFFIX,
-    )
 }
 
 fn event_action_from_body(body: &str) -> EventAction {
@@ -5262,14 +5250,6 @@ fn doctor_status_label(status: DoctorStatus) -> &'static str {
     }
 }
 
-fn build_issue_auth_summary_line(kind: TauIssueAuthCommandKind, raw_json: &str) -> String {
-    let summary_kind = match kind {
-        TauIssueAuthCommandKind::Status => IssueAuthSummaryKind::Status,
-        TauIssueAuthCommandKind::Matrix => IssueAuthSummaryKind::Matrix,
-    };
-    build_shared_issue_auth_summary_line(summary_kind, raw_json)
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -5291,8 +5271,8 @@ mod tests {
         evaluate_attachment_url_policy, event_action_from_body, extract_attachment_urls,
         extract_footer_event_keys, is_retryable_github_status, issue_command_reason_code,
         issue_matches_required_labels, issue_matches_required_numbers, issue_shared_session_id,
-        normalize_issue_command_status, normalize_relative_channel_path,
-        normalize_shared_artifact_retention_days, parse_shared_rfc3339_to_unix_ms,
+        normalize_issue_command_status, normalize_shared_artifact_retention_days,
+        normalize_shared_relative_channel_path, parse_shared_rfc3339_to_unix_ms,
         parse_tau_issue_command, post_issue_comment_chunks, render_event_prompt,
         render_issue_command_comment, render_issue_comment_chunks_with_limit,
         render_issue_comment_response_parts, retry_delay, run_prompt_for_event,
@@ -5868,11 +5848,14 @@ printf '%s\n' "${payload}"
         let channel_root = Path::new("/tmp/tau-channel");
         let file_path = channel_root.join("attachments/issue-comment-created_1/01-trace.log");
         let relative =
-            normalize_relative_channel_path(&file_path, channel_root, "attachment").expect("path");
+            normalize_shared_relative_channel_path(&file_path, channel_root, "attachment")
+                .map_err(|error| anyhow::anyhow!(error))
+                .expect("path");
         assert_eq!(relative, "attachments/issue-comment-created_1/01-trace.log");
 
         let outside = Path::new("/tmp/not-channel/trace.log");
-        let error = normalize_relative_channel_path(outside, channel_root, "attachment")
+        let error = normalize_shared_relative_channel_path(outside, channel_root, "attachment")
+            .map_err(|error| anyhow::anyhow!(error))
             .expect_err("outside channel root should fail");
         assert!(error.to_string().contains("failed to derive relative path"));
     }
