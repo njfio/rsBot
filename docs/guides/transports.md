@@ -537,7 +537,7 @@ state persistence, and channel-store snapshots.
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
   --gateway-contract-runner \
-  --gateway-fixture crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json \
+  --gateway-fixture crates/tau-gateway/testdata/gateway-contract/rollout-pass.json \
   --gateway-state-dir .tau/gateway \
   --gateway-guardrail-failure-streak-threshold 2 \
   --gateway-guardrail-retryable-failures-threshold 2

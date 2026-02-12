@@ -204,6 +204,76 @@ tau_demo_common_run_step() {
   fi
 }
 
+tau_demo_common_run_expect_failure() {
+  local label="$1"
+  local expected_exit_code="$2"
+  local expected_message="$3"
+  shift 3
+
+  TAU_DEMO_STEP_TOTAL=$((TAU_DEMO_STEP_TOTAL + 1))
+  local rendered_command
+  printf -v rendered_command '%q ' "${TAU_DEMO_BINARY}" "$@"
+  rendered_command="${rendered_command% }"
+
+  echo "[demo:${TAU_DEMO_NAME}] [${TAU_DEMO_STEP_TOTAL}] ${label}"
+  echo "[demo:${TAU_DEMO_NAME}] command: ${rendered_command}"
+  echo "[demo:${TAU_DEMO_NAME}] expected_exit=${expected_exit_code} expected_message=${expected_message}"
+
+  if [[ -n "${TAU_DEMO_TRACE_LOG:-}" ]]; then
+    printf '%s\t%s\t%s\t%s\n' \
+      "${label}" \
+      "${rendered_command}" \
+      "${expected_exit_code}" \
+      "${expected_message}" >>"${TAU_DEMO_TRACE_LOG}"
+  fi
+
+  local stdout_log
+  local stderr_log
+  stdout_log="$(mktemp)"
+  stderr_log="$(mktemp)"
+
+  local rc
+  set +e
+  tau_demo_common_exec_binary "$@" >"${stdout_log}" 2>"${stderr_log}"
+  rc=$?
+  set -e
+
+  if [[ "${rc}" -ne "${expected_exit_code}" ]]; then
+    echo "[demo:${TAU_DEMO_NAME}] FAIL ${label} unexpected_exit=${rc} expected=${expected_exit_code}" >&2
+    if [[ -s "${stdout_log}" ]]; then
+      echo "[demo:${TAU_DEMO_NAME}] stdout (unexpected-exit):" >&2
+      cat "${stdout_log}" >&2
+    fi
+    if [[ -s "${stderr_log}" ]]; then
+      echo "[demo:${TAU_DEMO_NAME}] stderr (unexpected-exit):" >&2
+      cat "${stderr_log}" >&2
+    fi
+    rm -f "${stdout_log}" "${stderr_log}"
+    return "${rc}"
+  fi
+
+  if [[ -n "${expected_message}" ]]; then
+    if ! grep -Fq -- "${expected_message}" "${stdout_log}" && ! grep -Fq -- "${expected_message}" "${stderr_log}"; then
+      echo "[demo:${TAU_DEMO_NAME}] FAIL ${label} missing_expected_message=${expected_message}" >&2
+      if [[ -s "${stdout_log}" ]]; then
+        echo "[demo:${TAU_DEMO_NAME}] stdout (missing-expected-message):" >&2
+        cat "${stdout_log}" >&2
+      fi
+      if [[ -s "${stderr_log}" ]]; then
+        echo "[demo:${TAU_DEMO_NAME}] stderr (missing-expected-message):" >&2
+        cat "${stderr_log}" >&2
+      fi
+      rm -f "${stdout_log}" "${stderr_log}"
+      return 1
+    fi
+  fi
+
+  TAU_DEMO_STEP_PASSED=$((TAU_DEMO_STEP_PASSED + 1))
+  echo "[demo:${TAU_DEMO_NAME}] PASS ${label}"
+
+  rm -f "${stdout_log}" "${stderr_log}"
+}
+
 tau_demo_common_finish() {
   local failed=$((TAU_DEMO_STEP_TOTAL - TAU_DEMO_STEP_PASSED))
   echo "[demo:${TAU_DEMO_NAME}] summary: total=${TAU_DEMO_STEP_TOTAL} passed=${TAU_DEMO_STEP_PASSED} failed=${failed}"

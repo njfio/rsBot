@@ -14,7 +14,7 @@ if [[ "${init_rc}" -ne 0 ]]; then
   exit "${init_rc}"
 fi
 
-fixture_path="${TAU_DEMO_REPO_ROOT}/crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json"
+fixture_path="${TAU_DEMO_REPO_ROOT}/crates/tau-gateway/testdata/gateway-contract/rollout-pass.json"
 demo_state_dir=".tau/demo-gateway"
 
 tau_demo_common_require_file "${fixture_path}"
@@ -30,7 +30,7 @@ tau_demo_common_run_step \
 tau_demo_common_run_step \
   "gateway-runner" \
   --gateway-contract-runner \
-  --gateway-fixture ./crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json \
+  --gateway-fixture ./crates/tau-gateway/testdata/gateway-contract/rollout-pass.json \
   --gateway-state-dir "${demo_state_dir}"
 
 tau_demo_common_run_step \

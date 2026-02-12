@@ -15,6 +15,7 @@ timeout_seconds=""
 scenario_ids=(
   "onboarding"
   "gateway-auth"
+  "gateway-remote-access"
   "multi-channel-live"
   "deployment-wasm"
 )
@@ -86,6 +87,9 @@ scenario_wrapper() {
     gateway-auth)
       echo "gateway-auth.sh"
       ;;
+    gateway-remote-access)
+      echo "gateway-remote-access.sh"
+      ;;
     multi-channel-live)
       echo "multi-channel.sh"
       ;;
@@ -106,6 +110,9 @@ scenario_description() {
       ;;
     gateway-auth)
       echo "Validate gateway remote profile auth posture for token and password-session modes."
+      ;;
+    gateway-remote-access)
+      echo "Validate remote profile inspect + remote plan fail-closed guardrails for wave-9 profiles."
       ;;
     multi-channel-live)
       echo "Exercise Telegram/Discord/WhatsApp fixture ingest and multi-channel routing health."
@@ -129,6 +136,10 @@ scenario_expected_markers() {
     gateway-auth)
       echo "[demo:gateway-auth] PASS gateway-remote-profile-token-mode"
       echo "[demo:gateway-auth] PASS gateway-remote-profile-password-session-mode"
+      ;;
+    gateway-remote-access)
+      echo "[demo:gateway-remote-access] PASS gateway-remote-plan-export-tailscale-serve"
+      echo "[demo:gateway-remote-access] PASS gateway-remote-plan-fails-closed-for-missing-password"
       ;;
     multi-channel-live)
       echo "[demo:multi-channel] PASS multi-channel-live-ingest-telegram"
@@ -154,6 +165,9 @@ scenario_troubleshooting_hint() {
     gateway-auth)
       echo "Check gateway auth flags (--gateway-openresponses-auth-mode/token/password) and rerun ./scripts/demo/gateway-auth.sh."
       ;;
+    gateway-remote-access)
+      echo "Check remote profile/auth flags and inspect .tau/demo-gateway-remote-access/trace.log before rerunning ./scripts/demo/gateway-remote-access.sh."
+      ;;
     multi-channel-live)
       echo "Confirm Telegram/Discord/WhatsApp fixture files exist and rerun ./scripts/demo/multi-channel.sh --fail-fast."
       ;;
@@ -175,6 +189,10 @@ normalize_scenario_name() {
       ;;
     gateway-auth|gatewayauth|gateway-auth.sh|gatewayauth.sh)
       echo "gateway-auth"
+      return 0
+      ;;
+    gateway-remote-access|gatewayremoteaccess|gateway-remote-access.sh|gatewayremoteaccess.sh)
+      echo "gateway-remote-access"
       return 0
       ;;
     multi-channel-live|multichannel-live|multi-channel|multi-channel-live.sh|multi-channel.sh)
@@ -329,6 +347,7 @@ Usage: index.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--on
 Run the operator-focused demo index for fresh-clone validation:
 - onboarding
 - gateway-auth
+- gateway-remote-access
 - multi-channel-live (Telegram/Discord/WhatsApp)
 - deployment-wasm
 
@@ -337,7 +356,7 @@ Options:
   --binary PATH      tau-coding-agent binary path (default: <repo-root>/target/debug/tau-coding-agent)
   --skip-build       Skip cargo build and require --binary to exist
   --list             Print selected scenarios and exit without execution
-  --only SCENARIOS   Comma-separated subset (names: onboarding,gateway-auth,multi-channel-live,deployment-wasm)
+  --only SCENARIOS   Comma-separated subset (names: onboarding,gateway-auth,gateway-remote-access,multi-channel-live,deployment-wasm)
   --json             Emit deterministic JSON output for list/summary modes
   --report-file      Write deterministic JSON report artifact to path
   --fail-fast        Stop after first failed scenario

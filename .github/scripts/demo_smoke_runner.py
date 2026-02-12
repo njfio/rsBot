@@ -18,6 +18,9 @@ DEMO_SMOKE_SCHEMA_VERSION = 1
 class SmokeCommand:
     name: str
     args: list[str]
+    expected_exit_code: int
+    stdout_contains: str | None
+    stderr_contains: str | None
 
 
 @dataclass(frozen=True)
@@ -28,10 +31,14 @@ class SmokeCommandResult:
     duration_ms: int
     stdout_path: Path
     stderr_path: Path
+    expected_exit_code: int
+    stdout_contains: str | None
+    stderr_contains: str | None
+    expectation_failures: list[str]
 
     @property
     def succeeded(self) -> bool:
-        return self.returncode == 0
+        return not self.expectation_failures
 
 
 @dataclass(frozen=True)
@@ -72,6 +79,27 @@ def load_manifest(path: Path) -> list[SmokeCommand]:
         args = command.get("args")
         if not isinstance(args, list) or not args:
             raise ValueError(f"commands[{index}].args must be a non-empty array")
+
+        expected_exit_code = command.get("expected_exit_code", 0)
+        if not isinstance(expected_exit_code, int) or expected_exit_code < 0:
+            raise ValueError(
+                f"commands[{index}].expected_exit_code must be a non-negative integer"
+            )
+        stdout_contains = command.get("stdout_contains")
+        if stdout_contains is not None and (
+            not isinstance(stdout_contains, str) or not stdout_contains.strip()
+        ):
+            raise ValueError(
+                f"commands[{index}].stdout_contains must be a non-empty string when set"
+            )
+        stderr_contains = command.get("stderr_contains")
+        if stderr_contains is not None and (
+            not isinstance(stderr_contains, str) or not stderr_contains.strip()
+        ):
+            raise ValueError(
+                f"commands[{index}].stderr_contains must be a non-empty string when set"
+            )
+
         parsed_args: list[str] = []
         for arg_index, arg in enumerate(args):
             if not isinstance(arg, str) or not arg.strip():
@@ -79,7 +107,15 @@ def load_manifest(path: Path) -> list[SmokeCommand]:
                     f"commands[{index}].args[{arg_index}] must be a non-empty string"
                 )
             parsed_args.append(arg)
-        parsed.append(SmokeCommand(name=name.strip(), args=parsed_args))
+        parsed.append(
+            SmokeCommand(
+                name=name.strip(),
+                args=parsed_args,
+                expected_exit_code=expected_exit_code,
+                stdout_contains=stdout_contains.strip() if stdout_contains else None,
+                stderr_contains=stderr_contains.strip() if stderr_contains else None,
+            )
+        )
     return parsed
 
 
@@ -136,6 +172,11 @@ def run_commands(
         command_line = format_command(binary, command.args)
         print(f"[demo-smoke] [{index}/{total}] {command.name}")
         print(f"[demo-smoke] command: {command_line}")
+        print(f"[demo-smoke] expected_exit_code: {command.expected_exit_code}")
+        if command.stdout_contains is not None:
+            print(f"[demo-smoke] expected_stdout_contains: {command.stdout_contains}")
+        if command.stderr_contains is not None:
+            print(f"[demo-smoke] expected_stderr_contains: {command.stderr_contains}")
 
         started = time.perf_counter()
         completed = subprocess.run(
@@ -150,6 +191,20 @@ def run_commands(
         stdout_path.write_text(completed.stdout, encoding="utf-8")
         stderr_path.write_text(completed.stderr, encoding="utf-8")
 
+        expectation_failures: list[str] = []
+        if completed.returncode != command.expected_exit_code:
+            expectation_failures.append(
+                f"exit-code-mismatch expected={command.expected_exit_code} actual={completed.returncode}"
+            )
+        if command.stdout_contains is not None and command.stdout_contains not in completed.stdout:
+            expectation_failures.append(
+                f"stdout-missing-substring {command.stdout_contains!r}"
+            )
+        if command.stderr_contains is not None and command.stderr_contains not in completed.stderr:
+            expectation_failures.append(
+                f"stderr-missing-substring {command.stderr_contains!r}"
+            )
+
         result = SmokeCommandResult(
             name=command.name,
             args=command.args,
@@ -157,14 +212,17 @@ def run_commands(
             duration_ms=duration_ms,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
+            expected_exit_code=command.expected_exit_code,
+            stdout_contains=command.stdout_contains,
+            stderr_contains=command.stderr_contains,
+            expectation_failures=expectation_failures,
         )
         results.append(result)
         if result.succeeded:
             print(f"[demo-smoke] PASS {command.name} ({duration_ms}ms)")
         else:
-            print(
-                f"[demo-smoke] FAIL {command.name} exit={result.returncode} ({duration_ms}ms)"
-            )
+            print(f"[demo-smoke] FAIL {command.name} ({duration_ms}ms)")
+            print(f"[demo-smoke] expectation failures: {', '.join(result.expectation_failures)}")
             print(f"[demo-smoke] stdout log: {stdout_path}")
             print(f"[demo-smoke] stderr log: {stderr_path}")
             if not keep_going:
