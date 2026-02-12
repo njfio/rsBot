@@ -1,9 +1,10 @@
-use super::*;
-use crate::channel_adapters::{
-    build_multi_channel_command_handlers, build_multi_channel_pairing_evaluator,
-};
+use std::{sync::Arc, time::Duration};
+
+use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
+use tau_ai::{LlmClient, ModelRef};
+use tau_cli::Cli;
+use tau_onboarding::startup_config::build_auth_command_config;
 use tau_onboarding::startup_transport_modes::{
     build_transport_doctor_config as build_onboarding_transport_doctor_config,
     resolve_github_issues_bridge_repo_and_token_from_cli as resolve_onboarding_github_issues_bridge_repo_and_token_from_cli,
@@ -22,6 +23,16 @@ use tau_onboarding::startup_transport_modes::{
     run_transport_mode_if_requested as run_onboarding_transport_mode_if_requested,
     run_voice_contract_runner_if_requested, TransportRuntimeExecutor,
 };
+use tau_provider::resolve_secret_from_cli_or_store_id;
+
+use crate::channel_adapters::{
+    build_multi_channel_command_handlers, build_multi_channel_pairing_evaluator,
+};
+use crate::events::{run_event_scheduler, EventSchedulerConfig};
+use crate::github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
+use crate::runtime_types::RenderOptions;
+use crate::slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
+use crate::tools::ToolPolicy;
 
 struct CodingAgentTransportRuntimeExecutor<'a> {
     cli: &'a Cli,

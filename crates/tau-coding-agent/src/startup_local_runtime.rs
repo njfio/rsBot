@@ -1,7 +1,29 @@
-use super::*;
+use std::{path::Path, sync::Arc};
+
+use anyhow::Result;
+use serde_json::Value;
+#[cfg(test)]
+use tau_agent_core::Agent;
+use tau_agent_core::AgentEvent;
+use tau_ai::{LlmClient, ModelRef};
+use tau_cli::Cli;
+use tau_session::initialize_session;
+
+use crate::commands::execute_command_file;
 use crate::extension_manifest::{
-    discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
+    discover_extension_runtime_registrations, dispatch_extension_runtime_hook,
+    ExtensionRuntimeRegistrationSummary,
 };
+use crate::model_catalog::ModelCatalog;
+use crate::multi_agent_router::load_multi_agent_route_table;
+use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
+use crate::runtime_loop::{
+    resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
+    InteractiveRuntimeConfig, RuntimeExtensionHooksConfig,
+};
+use crate::runtime_output::event_to_json;
+use crate::runtime_types::{CommandExecutionContext, RenderOptions, SkillsSyncCommandConfig};
+use crate::tools::{self, ToolPolicy};
 use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_extension_startup as build_onboarding_local_runtime_extension_startup,
