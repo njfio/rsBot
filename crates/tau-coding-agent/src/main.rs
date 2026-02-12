@@ -7,9 +7,7 @@ mod channel_lifecycle;
 mod channel_send;
 mod channel_store;
 mod channel_store_admin;
-mod cli_args;
 mod cli_executable;
-mod cli_types;
 mod commands;
 mod credentials;
 mod custom_command_contract;
@@ -74,32 +72,14 @@ pub(crate) use crate::canvas::{
     CANVAS_USAGE,
 };
 pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
-pub(crate) use crate::cli_args::Cli;
-#[cfg(test)]
-pub(crate) use crate::cli_types::CliProviderAuthMode;
-#[cfg(test)]
-pub(crate) use crate::cli_types::{
-    CliBashProfile, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
-    CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelTransport,
-    CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
-};
-pub(crate) use crate::cli_types::{
-    CliCommandFileErrorMode, CliEventTemplateSchedule, CliOrchestratorMode,
-};
-#[cfg(test)]
-pub(crate) use crate::cli_types::{CliDaemonProfile, CliGatewayRemoteProfile};
-#[cfg(test)]
-pub(crate) use crate::cli_types::{CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm};
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
 pub(crate) use crate::commands::{
-    canonical_command_name, execute_command_file, handle_command_with_session_import_mode,
-    parse_command, CommandAction, COMMAND_NAMES,
+    execute_command_file, handle_command_with_session_import_mode, CommandAction, COMMAND_NAMES,
 };
 #[cfg(test)]
 pub(crate) use crate::commands::{
-    parse_command_file, render_command_help, render_help_overview, unknown_command_message,
-    CommandFileEntry, CommandFileReport,
+    render_command_help, render_help_overview, unknown_command_message,
 };
 pub(crate) use crate::credentials::{
     execute_integration_auth_command, resolve_non_empty_cli_value,
@@ -249,6 +229,8 @@ pub(crate) use tau_access::trust_roots::{
     parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,
 };
 #[cfg(test)]
+pub(crate) use tau_cli::parse_command_file;
+#[cfg(test)]
 pub(crate) use tau_cli::validation::validate_gateway_remote_profile_inspect_cli;
 #[cfg(test)]
 pub(crate) use tau_cli::validation::validate_multi_channel_live_connectors_runner_cli;
@@ -270,6 +252,23 @@ pub(crate) use tau_cli::validation::{
     validate_multi_channel_incident_timeline_cli, validate_multi_channel_live_ingest_cli,
     validate_multi_channel_send_cli, validate_project_index_cli,
 };
+pub(crate) use tau_cli::Cli;
+#[cfg(test)]
+pub(crate) use tau_cli::CliProviderAuthMode;
+pub(crate) use tau_cli::{canonical_command_name, parse_command};
+#[cfg(test)]
+pub(crate) use tau_cli::{
+    CliBashProfile, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
+    CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelTransport,
+    CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
+};
+pub(crate) use tau_cli::{CliCommandFileErrorMode, CliEventTemplateSchedule, CliOrchestratorMode};
+#[cfg(test)]
+pub(crate) use tau_cli::{CliDaemonProfile, CliGatewayRemoteProfile};
+#[cfg(test)]
+pub(crate) use tau_cli::{CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm};
+#[cfg(test)]
+pub(crate) use tau_cli::{CommandFileEntry, CommandFileReport};
 pub(crate) use tau_core::write_text_atomic;
 pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
 #[cfg(test)]

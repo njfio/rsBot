@@ -6,7 +6,9 @@ use crate::extension_manifest::{
 use crate::runtime_types::{
     ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
 };
-pub(crate) use tau_cli::{CommandFileEntry, CommandFileReport, CommandSpec, ParsedCommand};
+use tau_cli::{
+    canonical_command_name, normalize_help_topic, parse_command, CommandFileReport, CommandSpec,
+};
 use tau_session::{
     execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
     parse_session_diff_args, parse_session_stats_args,
@@ -407,10 +409,6 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "/exit",
 ];
 
-pub(crate) fn parse_command_file(path: &Path) -> Result<Vec<CommandFileEntry>> {
-    tau_cli::parse_command_file(path)
-}
-
 pub(crate) fn execute_command_file(
     path: &Path,
     mode: CliCommandFileErrorMode,
@@ -418,7 +416,7 @@ pub(crate) fn execute_command_file(
     session_runtime: &mut Option<SessionRuntime>,
     command_context: CommandExecutionContext<'_>,
 ) -> Result<CommandFileReport> {
-    let entries = parse_command_file(path)?;
+    let entries = tau_cli::parse_command_file(path)?;
     let mut report = CommandFileReport {
         total: entries.len(),
         executed: 0,
@@ -1316,23 +1314,11 @@ pub(crate) fn handle_command_with_session_import_mode(
     Ok(CommandAction::Continue)
 }
 
-pub(crate) fn parse_command(input: &str) -> Option<ParsedCommand<'_>> {
-    tau_cli::parse_command(input)
-}
-
-pub(crate) fn canonical_command_name(name: &str) -> &str {
-    tau_cli::canonical_command_name(name)
-}
-
 pub(crate) fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
     match mode {
         SessionImportMode::Merge => "merge",
         SessionImportMode::Replace => "replace",
     }
-}
-
-pub(crate) fn normalize_help_topic(topic: &str) -> String {
-    tau_cli::normalize_help_topic(topic)
 }
 
 pub(crate) fn render_help_overview() -> String {
