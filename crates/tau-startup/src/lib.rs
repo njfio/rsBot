@@ -20,9 +20,11 @@ use tau_gateway::{
 use tau_session::validate_session_file;
 
 pub mod startup_model_catalog;
+pub mod startup_multi_channel_adapters;
 pub mod startup_multi_channel_commands;
 
 pub use startup_model_catalog::*;
+pub use startup_multi_channel_adapters::*;
 pub use startup_multi_channel_commands::*;
 
 pub trait StartupPreflightActions {
