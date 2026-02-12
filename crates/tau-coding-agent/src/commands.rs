@@ -6,6 +6,7 @@ use crate::extension_manifest::{
 use crate::runtime_types::{
     ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
 };
+pub(crate) use tau_cli::{CommandSpec, ParsedCommand};
 use tau_session::{
     execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
     parse_session_diff_args, parse_session_stats_args,
@@ -15,21 +16,6 @@ use tau_session::{
 pub(crate) enum CommandAction {
     Continue,
     Exit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ParsedCommand<'a> {
-    pub(crate) name: &'a str,
-    pub(crate) args: &'a str,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CommandSpec {
-    pub(crate) name: &'static str,
-    pub(crate) usage: &'static str,
-    pub(crate) description: &'static str,
-    pub(crate) details: &'static str,
-    pub(crate) example: &'static str,
 }
 
 pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
@@ -1359,23 +1345,11 @@ pub(crate) fn handle_command_with_session_import_mode(
 }
 
 pub(crate) fn parse_command(input: &str) -> Option<ParsedCommand<'_>> {
-    let trimmed = input.trim();
-    if !trimmed.starts_with('/') {
-        return None;
-    }
-
-    let mut parts = trimmed.splitn(2, char::is_whitespace);
-    let name = parts.next().unwrap_or_default();
-    let args = parts.next().map(str::trim).unwrap_or_default();
-    Some(ParsedCommand { name, args })
+    tau_cli::parse_command(input)
 }
 
 pub(crate) fn canonical_command_name(name: &str) -> &str {
-    if name == "/exit" {
-        "/quit"
-    } else {
-        name
-    }
+    tau_cli::canonical_command_name(name)
 }
 
 pub(crate) fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
@@ -1386,117 +1360,21 @@ pub(crate) fn session_import_mode_label(mode: SessionImportMode) -> &'static str
 }
 
 pub(crate) fn normalize_help_topic(topic: &str) -> String {
-    let trimmed = topic.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    if trimmed.starts_with('/') {
-        trimmed.to_string()
-    } else {
-        format!("/{trimmed}")
-    }
+    tau_cli::normalize_help_topic(topic)
 }
 
 pub(crate) fn render_help_overview() -> String {
-    let mut lines = vec!["commands:".to_string()];
-    for spec in COMMAND_SPECS {
-        lines.push(format!("  {:<22} {}", spec.usage, spec.description));
-    }
-    lines.push("tip: run /help <command> for details".to_string());
-    lines.join("\n")
+    tau_cli::render_help_overview(COMMAND_SPECS)
 }
 
 pub(crate) fn render_command_help(topic: &str) -> Option<String> {
-    let normalized = normalize_help_topic(topic);
-    let command_name = canonical_command_name(&normalized);
-    let spec = COMMAND_SPECS
-        .iter()
-        .find(|entry| entry.name == command_name)?;
-    Some(format!(
-        "command: {}\nusage: {}\n{}\n{}\nexample: {}",
-        spec.name, spec.usage, spec.description, spec.details, spec.example
-    ))
+    tau_cli::render_command_help(topic, COMMAND_SPECS)
 }
 
 pub(crate) fn unknown_help_topic_message(topic: &str) -> String {
-    match suggest_command(topic) {
-        Some(suggestion) => format!(
-            "unknown help topic: {topic}\ndid you mean {suggestion}?\nrun /help for command list"
-        ),
-        None => format!("unknown help topic: {topic}\nrun /help for command list"),
-    }
+    tau_cli::unknown_help_topic_message(topic, COMMAND_NAMES)
 }
 
 pub(crate) fn unknown_command_message(command: &str) -> String {
-    match suggest_command(command) {
-        Some(suggestion) => {
-            format!("unknown command: {command}\ndid you mean {suggestion}?\nrun /help for command list")
-        }
-        None => format!("unknown command: {command}\nrun /help for command list"),
-    }
-}
-
-fn suggest_command(command: &str) -> Option<&'static str> {
-    let command = canonical_command_name(command);
-    if command.is_empty() {
-        return None;
-    }
-
-    if let Some(prefix_match) = COMMAND_NAMES
-        .iter()
-        .find(|candidate| candidate.starts_with(command))
-    {
-        return Some(prefix_match);
-    }
-
-    let mut best: Option<(&str, usize)> = None;
-    for candidate in COMMAND_NAMES {
-        let distance = levenshtein_distance(command, candidate);
-        match best {
-            Some((_, best_distance)) if distance >= best_distance => {}
-            _ => best = Some((candidate, distance)),
-        }
-    }
-
-    let (candidate, distance) = best?;
-    let threshold = match command.len() {
-        0..=4 => 1,
-        5..=8 => 2,
-        _ => 3,
-    };
-    if distance <= threshold {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-fn levenshtein_distance(a: &str, b: &str) -> usize {
-    if a == b {
-        return 0;
-    }
-    if a.is_empty() {
-        return b.chars().count();
-    }
-    if b.is_empty() {
-        return a.chars().count();
-    }
-
-    let b_chars = b.chars().collect::<Vec<_>>();
-    let mut previous = (0..=b_chars.len()).collect::<Vec<_>>();
-    let mut current = vec![0; b_chars.len() + 1];
-
-    for (i, left) in a.chars().enumerate() {
-        current[0] = i + 1;
-        for (j, right) in b_chars.iter().enumerate() {
-            let substitution_cost = if left == *right { 0 } else { 1 };
-            let deletion = previous[j + 1] + 1;
-            let insertion = current[j] + 1;
-            let substitution = previous[j] + substitution_cost;
-            current[j + 1] = deletion.min(insertion).min(substitution);
-        }
-        previous.clone_from_slice(&current);
-    }
-
-    previous[b_chars.len()]
+    tau_cli::unknown_command_message(command, COMMAND_NAMES)
 }
