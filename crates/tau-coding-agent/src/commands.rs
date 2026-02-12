@@ -6,7 +6,7 @@ use crate::extension_manifest::{
 use crate::runtime_types::{
     ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
 };
-pub(crate) use tau_cli::{CommandSpec, ParsedCommand};
+pub(crate) use tau_cli::{CommandFileEntry, CommandFileReport, CommandSpec, ParsedCommand};
 use tau_session::{
     execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
     parse_session_diff_args, parse_session_stats_args,
@@ -407,36 +407,8 @@ pub(crate) const COMMAND_NAMES: &[&str] = &[
     "/exit",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CommandFileEntry {
-    pub(crate) line_number: usize,
-    pub(crate) command: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CommandFileReport {
-    pub(crate) total: usize,
-    pub(crate) executed: usize,
-    pub(crate) succeeded: usize,
-    pub(crate) failed: usize,
-    pub(crate) halted_early: bool,
-}
-
 pub(crate) fn parse_command_file(path: &Path) -> Result<Vec<CommandFileEntry>> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read command file {}", path.display()))?;
-    let mut entries = Vec::new();
-    for (index, line) in raw.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        entries.push(CommandFileEntry {
-            line_number: index + 1,
-            command: trimmed.to_string(),
-        });
-    }
-    Ok(entries)
+    tau_cli::parse_command_file(path)
 }
 
 pub(crate) fn execute_command_file(
