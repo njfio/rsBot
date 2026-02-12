@@ -2537,7 +2537,7 @@ impl GithubIssuesBridgeRuntime {
             TauIssueCommand::Compact => {
                 let session_path =
                     session_path_for_issue(&self.repository_state_dir, event.issue_number);
-                let compact_report = compact_issue_session(
+                let compact_report = shared_compact_issue_session(
                     &session_path,
                     self.config.session_lock_wait_ms,
                     self.config.session_lock_stale_ms,
@@ -2605,12 +2605,13 @@ impl GithubIssuesBridgeRuntime {
             TauIssueCommand::ChatStart => {
                 let session_path =
                     session_path_for_issue(&self.repository_state_dir, event.issue_number);
-                let (before_entries, after_entries, head_id) = ensure_issue_session_initialized(
-                    &session_path,
-                    &self.config.system_prompt,
-                    self.config.session_lock_wait_ms,
-                    self.config.session_lock_stale_ms,
-                )?;
+                let (before_entries, after_entries, head_id) =
+                    shared_ensure_issue_session_initialized(
+                        &session_path,
+                        &self.config.system_prompt,
+                        self.config.session_lock_wait_ms,
+                        self.config.session_lock_stale_ms,
+                    )?;
                 let message = if before_entries == 0 {
                     format!(
                         "Chat session started for issue #{}.\n\nentries={} head={}",
@@ -2666,12 +2667,13 @@ impl GithubIssuesBridgeRuntime {
             TauIssueCommand::ChatResume => {
                 let session_path =
                     session_path_for_issue(&self.repository_state_dir, event.issue_number);
-                let (before_entries, after_entries, head_id) = ensure_issue_session_initialized(
-                    &session_path,
-                    &self.config.system_prompt,
-                    self.config.session_lock_wait_ms,
-                    self.config.session_lock_stale_ms,
-                )?;
+                let (before_entries, after_entries, head_id) =
+                    shared_ensure_issue_session_initialized(
+                        &session_path,
+                        &self.config.system_prompt,
+                        self.config.session_lock_wait_ms,
+                        self.config.session_lock_stale_ms,
+                    )?;
                 let message = if before_entries == 0 {
                     format!(
                         "No existing chat session found for issue #{}.\nStarted a new session with entries={} head={}.",
@@ -2753,7 +2755,8 @@ impl GithubIssuesBridgeRuntime {
                 } else {
                     let session_path =
                         session_path_for_issue(&self.repository_state_dir, event.issue_number);
-                    let (removed_session, removed_lock) = reset_issue_session_files(&session_path)?;
+                    let (removed_session, removed_lock) =
+                        shared_reset_issue_session_files(&session_path)?;
                     if self.state_store.clear_issue_session(event.issue_number) {
                         *state_dirty = true;
                     }
@@ -5239,32 +5242,6 @@ fn build_summarize_prompt(
     focus: Option<&str>,
 ) -> String {
     build_shared_summarize_prompt(&repo.as_slug(), event.issue_number, focus)
-}
-
-fn compact_issue_session(
-    session_path: &Path,
-    lock_wait_ms: u64,
-    lock_stale_ms: u64,
-) -> Result<tau_session::CompactReport> {
-    shared_compact_issue_session(session_path, lock_wait_ms, lock_stale_ms)
-}
-
-fn ensure_issue_session_initialized(
-    session_path: &Path,
-    system_prompt: &str,
-    lock_wait_ms: u64,
-    lock_stale_ms: u64,
-) -> Result<(usize, usize, Option<u64>)> {
-    shared_ensure_issue_session_initialized(
-        session_path,
-        system_prompt,
-        lock_wait_ms,
-        lock_stale_ms,
-    )
-}
-
-fn reset_issue_session_files(session_path: &Path) -> Result<(bool, bool)> {
-    shared_reset_issue_session_files(session_path)
 }
 
 fn prompt_status_label(status: PromptRunStatus) -> &'static str {
