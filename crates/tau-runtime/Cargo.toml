@@ -12,6 +12,7 @@ sha2.workspace = true
 tau-ai = { path = "../tau-ai" }
 tau-agent-core = { path = "../tau-agent-core" }
 tau-core = { path = "../tau-core" }
+tau-session = { path = "../tau-session" }
 
 [dev-dependencies]
 tempfile = "3"

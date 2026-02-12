@@ -43,7 +43,6 @@ mod transport_health;
 mod voice_contract;
 
 use std::{
-    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -55,7 +54,7 @@ use serde_json::Value;
 use tau_agent_core::{Agent, AgentEvent};
 #[cfg(test)]
 pub(crate) use tau_ai::Provider;
-use tau_ai::{LlmClient, Message, MessageRole, ModelRef};
+use tau_ai::{LlmClient, Message, ModelRef};
 pub(crate) use tau_extensions as extension_manifest;
 pub(crate) use tau_skills as package_manifest;
 #[cfg(test)]
