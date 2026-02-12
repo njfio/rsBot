@@ -112,6 +112,8 @@ pub enum AgentError {
     Ai(#[from] TauAiError),
     #[error("agent exceeded max turns ({0})")]
     MaxTurnsExceeded(usize),
+    #[error("structured output error: {0}")]
+    StructuredOutput(String),
 }
 
 type EventHandler = Arc<dyn Fn(&AgentEvent) + Send + Sync>;
@@ -247,6 +249,15 @@ impl Agent {
         self.prompt_with_stream(text, None).await
     }
 
+    pub async fn prompt_json(
+        &mut self,
+        text: impl Into<String>,
+        schema: &Value,
+    ) -> Result<Value, AgentError> {
+        let new_messages = self.prompt(text).await?;
+        parse_structured_output(&new_messages, schema)
+    }
+
     pub async fn prompt_with_stream(
         &mut self,
         text: impl Into<String>,
@@ -267,6 +278,11 @@ impl Agent {
 
     pub async fn continue_turn(&mut self) -> Result<Vec<Message>, AgentError> {
         self.continue_turn_with_stream(None).await
+    }
+
+    pub async fn continue_turn_json(&mut self, schema: &Value) -> Result<Value, AgentError> {
+        let new_messages = self.continue_turn().await?;
+        parse_structured_output(&new_messages, schema)
     }
 
     pub async fn continue_turn_with_stream(
@@ -639,6 +655,77 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     truncated
 }
 
+fn parse_structured_output(messages: &[Message], schema: &Value) -> Result<Value, AgentError> {
+    let assistant = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::Assistant)
+        .ok_or_else(|| {
+            AgentError::StructuredOutput(
+                "assistant response missing for structured output".to_string(),
+            )
+        })?;
+    let content = assistant.text_content();
+    let value = extract_json_payload(&content).map_err(AgentError::StructuredOutput)?;
+    validate_json_against_schema(schema, &value).map_err(AgentError::StructuredOutput)?;
+    Ok(value)
+}
+
+fn extract_json_payload(text: &str) -> Result<Value, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("assistant response was empty; expected JSON output".to_string());
+    }
+
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(value);
+    }
+
+    let mut cursor = 0usize;
+    while let Some(open_rel) = text[cursor..].find("```") {
+        let open = cursor + open_rel;
+        let after_open = &text[open + 3..];
+        let header_end_rel = after_open.find('\n').unwrap_or(after_open.len());
+        let header = after_open[..header_end_rel].trim();
+        let block_start = if header_end_rel < after_open.len() {
+            open + 3 + header_end_rel + 1
+        } else {
+            open + 3 + header_end_rel
+        };
+        let Some(close_rel) = text[block_start..].find("```") else {
+            break;
+        };
+        let close = block_start + close_rel;
+        cursor = close + 3;
+
+        if !(header.is_empty() || header.eq_ignore_ascii_case("json")) {
+            continue;
+        }
+
+        let block = text[block_start..close].trim();
+        if block.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(block) {
+            return Ok(value);
+        }
+    }
+
+    Err("assistant response did not contain parseable JSON content".to_string())
+}
+
+fn validate_json_against_schema(schema: &Value, payload: &Value) -> Result<(), String> {
+    let validator = validator_for(schema)
+        .map_err(|error| format!("invalid structured output schema: {error}"))?;
+    let mut errors = validator.iter_errors(payload);
+    if let Some(first) = errors.next() {
+        return Err(format!(
+            "structured output schema validation failed: {first}"
+        ));
+    }
+    Ok(())
+}
+
 async fn execute_tool_call_inner(
     call: ToolCall,
     registered: Option<(ToolDefinition, Arc<dyn AgentTool>)>,
@@ -693,8 +780,9 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     use crate::{
-        bounded_messages, truncate_chars, Agent, AgentConfig, AgentError, AgentEvent, AgentTool,
-        ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX,
+        bounded_messages, extract_json_payload, truncate_chars, Agent, AgentConfig, AgentError,
+        AgentEvent, AgentTool, ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS,
+        CONTEXT_SUMMARY_PREFIX,
     };
 
     struct MockClient {
@@ -1230,6 +1318,146 @@ mod tests {
             "Hello"
         );
         assert_eq!(streamed.lock().expect("stream lock").as_str(), "Hello");
+    }
+
+    #[test]
+    fn unit_extract_json_payload_parses_plain_and_fenced_json() {
+        let plain = extract_json_payload(r#"{"ok":true,"count":2}"#).expect("plain json");
+        assert_eq!(plain["ok"], true);
+        assert_eq!(plain["count"], 2);
+
+        let fenced = extract_json_payload(
+            "result follows\n```json\n{\"status\":\"pass\",\"items\":[1,2]}\n```\nthanks",
+        )
+        .expect("fenced json");
+        assert_eq!(fenced["status"], "pass");
+        assert_eq!(fenced["items"][1], 2);
+    }
+
+    #[tokio::test]
+    async fn functional_prompt_json_returns_validated_value() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("{\"tasks\":[\"a\",\"b\"],\"ok\":true}"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                },
+                "ok": { "type": "boolean" }
+            },
+            "required": ["tasks", "ok"],
+            "additionalProperties": false
+        });
+
+        let value = agent
+            .prompt_json("return tasks", &schema)
+            .await
+            .expect("structured output should succeed");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["tasks"][0], "a");
+    }
+
+    #[tokio::test]
+    async fn integration_prompt_json_accepts_fenced_json_payload() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text(
+                    "Here is the payload:\n```json\n{\"mode\":\"apply\",\"steps\":3}\n```",
+                ),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "mode": { "type": "string" },
+                "steps": { "type": "integer" }
+            },
+            "required": ["mode", "steps"]
+        });
+
+        let value = agent
+            .prompt_json("return mode", &schema)
+            .await
+            .expect("fenced structured output should parse");
+        assert_eq!(value["mode"], "apply");
+        assert_eq!(value["steps"], 3);
+    }
+
+    #[tokio::test]
+    async fn regression_prompt_json_fails_closed_on_non_json_response() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("not-json-response"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let schema = serde_json::json!({ "type": "object" });
+
+        let error = agent
+            .prompt_json("return object", &schema)
+            .await
+            .expect_err("non-json output must fail");
+        assert!(matches!(error, AgentError::StructuredOutput(_)));
+        assert!(error.to_string().contains("did not contain parseable JSON"));
+    }
+
+    #[tokio::test]
+    async fn regression_prompt_json_fails_closed_on_schema_mismatch() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("{\"ok\":true}"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "ok": { "type": "boolean" },
+                "tasks": { "type": "array" }
+            },
+            "required": ["ok", "tasks"]
+        });
+
+        let error = agent
+            .prompt_json("return object", &schema)
+            .await
+            .expect_err("schema mismatch must fail");
+        assert!(matches!(error, AgentError::StructuredOutput(_)));
+        assert!(error.to_string().contains("schema validation failed"));
+    }
+
+    #[tokio::test]
+    async fn regression_continue_turn_json_fails_closed_when_assistant_lacks_json() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("ack"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let schema = serde_json::json!({ "type": "object" });
+
+        let error = agent
+            .continue_turn_json(&schema)
+            .await
+            .expect_err("missing json must fail");
+        assert!(matches!(error, AgentError::StructuredOutput(_)));
     }
 
     #[tokio::test]
