@@ -1,13 +1,26 @@
-use super::*;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
-pub(crate) struct SkillsSearchMatch {
-    pub(crate) name: String,
-    pub(crate) file: String,
-    pub(crate) name_hit: bool,
-    pub(crate) content_hit: bool,
+use anyhow::{bail, Result};
+use serde::Serialize;
+use tau_core::{current_unix_timestamp, is_expired_unix};
+
+use crate::trust_roots::{
+    load_trust_root_records, parse_trust_rotation_spec, parse_trusted_root_spec,
+    save_trust_root_records, TrustedRootRecord,
+};
+use crate::*;
+
+pub struct SkillsSearchMatch {
+    pub name: String,
+    pub file: String,
+    pub name_hit: bool,
+    pub content_hit: bool,
 }
 
-pub(crate) fn parse_skills_search_args(command_args: &str) -> Result<(String, usize)> {
+pub fn parse_skills_search_args(command_args: &str) -> Result<(String, usize)> {
     const DEFAULT_MAX_RESULTS: usize = 20;
     let tokens = command_args
         .split_whitespace()
@@ -44,7 +57,7 @@ pub(crate) fn parse_skills_search_args(command_args: &str) -> Result<(String, us
     Ok((query, max_results))
 }
 
-pub(crate) fn render_skills_search(
+pub fn render_skills_search(
     skills_dir: &Path,
     query: &str,
     max_results: usize,
@@ -79,7 +92,7 @@ pub(crate) fn render_skills_search(
     lines.join("\n")
 }
 
-pub(crate) fn execute_skills_search_command(skills_dir: &Path, command_args: &str) -> String {
+pub fn execute_skills_search_command(skills_dir: &Path, command_args: &str) -> String {
     let (query, max_results) = match parse_skills_search_args(command_args) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -136,7 +149,7 @@ pub(crate) fn execute_skills_search_command(skills_dir: &Path, command_args: &st
     render_skills_search(skills_dir, &query, max_results, &matches, total_matches)
 }
 
-pub(crate) fn render_skills_show(skills_dir: &Path, skill: &skills::Skill) -> String {
+pub fn render_skills_show(skills_dir: &Path, skill: &Skill) -> String {
     let file = skill
         .path
         .file_name()
@@ -152,7 +165,7 @@ pub(crate) fn render_skills_show(skills_dir: &Path, skill: &skills::Skill) -> St
     )
 }
 
-pub(crate) fn execute_skills_show_command(skills_dir: &Path, skill_name: &str) -> String {
+pub fn execute_skills_show_command(skills_dir: &Path, skill_name: &str) -> String {
     match load_catalog(skills_dir) {
         Ok(catalog) => match catalog.into_iter().find(|skill| skill.name == skill_name) {
             Some(skill) => render_skills_show(skills_dir, &skill),
@@ -171,7 +184,7 @@ pub(crate) fn execute_skills_show_command(skills_dir: &Path, skill_name: &str) -
     }
 }
 
-pub(crate) fn render_skills_list(skills_dir: &Path, catalog: &[skills::Skill]) -> String {
+pub fn render_skills_list(skills_dir: &Path, catalog: &[Skill]) -> String {
     let mut lines = vec![format!(
         "skills list: path={} count={}",
         skills_dir.display(),
@@ -192,7 +205,7 @@ pub(crate) fn render_skills_list(skills_dir: &Path, catalog: &[skills::Skill]) -
     lines.join("\n")
 }
 
-pub(crate) fn execute_skills_list_command(skills_dir: &Path) -> String {
+pub fn execute_skills_list_command(skills_dir: &Path) -> String {
     match load_catalog(skills_dir) {
         Ok(catalog) => render_skills_list(skills_dir, &catalog),
         Err(error) => format!(
@@ -202,7 +215,7 @@ pub(crate) fn execute_skills_list_command(skills_dir: &Path) -> String {
     }
 }
 
-pub(crate) fn resolve_skills_lock_path(command_args: &str, default_lock_path: &Path) -> PathBuf {
+pub fn resolve_skills_lock_path(command_args: &str, default_lock_path: &Path) -> PathBuf {
     if command_args.is_empty() {
         default_lock_path.to_path_buf()
     } else {
@@ -210,7 +223,7 @@ pub(crate) fn resolve_skills_lock_path(command_args: &str, default_lock_path: &P
     }
 }
 
-pub(crate) fn parse_skills_lock_diff_args(
+pub fn parse_skills_lock_diff_args(
     command_args: &str,
     default_lock_path: &Path,
 ) -> Result<(PathBuf, bool)> {
@@ -245,11 +258,10 @@ pub(crate) fn parse_skills_lock_diff_args(
     ))
 }
 
-pub(crate) const SKILLS_PRUNE_USAGE: &str =
-    "usage: /skills-prune [lockfile_path] [--dry-run|--apply]";
+pub const SKILLS_PRUNE_USAGE: &str = "usage: /skills-prune [lockfile_path] [--dry-run|--apply]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SkillsPruneMode {
+pub enum SkillsPruneMode {
     DryRun,
     Apply,
 }
@@ -264,12 +276,12 @@ impl SkillsPruneMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SkillsPruneCandidate {
-    pub(crate) file: String,
-    pub(crate) path: PathBuf,
+pub struct SkillsPruneCandidate {
+    pub file: String,
+    pub path: PathBuf,
 }
 
-pub(crate) fn parse_skills_prune_args(
+pub fn parse_skills_prune_args(
     command_args: &str,
     default_lock_path: &Path,
 ) -> Result<(PathBuf, SkillsPruneMode)> {
@@ -315,7 +327,7 @@ pub(crate) fn parse_skills_prune_args(
     ))
 }
 
-pub(crate) fn validate_skills_prune_file_name(file: &str) -> Result<()> {
+pub fn validate_skills_prune_file_name(file: &str) -> Result<()> {
     if file.contains('\\') {
         bail!(
             "unsafe lockfile entry '{}': path separators are not allowed",
@@ -362,10 +374,7 @@ pub(crate) fn validate_skills_prune_file_name(file: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn resolve_prunable_skill_file_name(
-    skills_dir: &Path,
-    skill_path: &Path,
-) -> Result<String> {
+pub fn resolve_prunable_skill_file_name(skills_dir: &Path, skill_path: &Path) -> Result<String> {
     let relative_path = skill_path.strip_prefix(skills_dir).with_context(|| {
         format!(
             "unsafe skill path '{}': outside skills dir '{}'",
@@ -397,9 +406,9 @@ pub(crate) fn resolve_prunable_skill_file_name(
     Ok(file.to_string())
 }
 
-pub(crate) fn derive_skills_prune_candidates(
+pub fn derive_skills_prune_candidates(
     skills_dir: &Path,
-    catalog: &[skills::Skill],
+    catalog: &[Skill],
     tracked_files: &HashSet<String>,
 ) -> Result<Vec<SkillsPruneCandidate>> {
     let mut candidates = Vec::new();
@@ -417,7 +426,7 @@ pub(crate) fn derive_skills_prune_candidates(
     Ok(candidates)
 }
 
-pub(crate) fn execute_skills_prune_command(
+pub fn execute_skills_prune_command(
     skills_dir: &Path,
     default_lock_path: &Path,
     command_args: &str,
@@ -529,15 +538,14 @@ pub(crate) fn execute_skills_prune_command(
     lines.join("\n")
 }
 
-pub(crate) const SKILLS_TRUST_LIST_USAGE: &str = "usage: /skills-trust-list [trust_root_file]";
-pub(crate) const SKILLS_TRUST_ADD_USAGE: &str =
+pub const SKILLS_TRUST_LIST_USAGE: &str = "usage: /skills-trust-list [trust_root_file]";
+pub const SKILLS_TRUST_ADD_USAGE: &str =
     "usage: /skills-trust-add <id=base64_key> [trust_root_file]";
-pub(crate) const SKILLS_TRUST_REVOKE_USAGE: &str =
-    "usage: /skills-trust-revoke <id> [trust_root_file]";
-pub(crate) const SKILLS_TRUST_ROTATE_USAGE: &str =
+pub const SKILLS_TRUST_REVOKE_USAGE: &str = "usage: /skills-trust-revoke <id> [trust_root_file]";
+pub const SKILLS_TRUST_ROTATE_USAGE: &str =
     "usage: /skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]";
 
-pub(crate) fn parse_skills_trust_mutation_args(
+pub fn parse_skills_trust_mutation_args(
     command_args: &str,
     default_trust_root_path: Option<&Path>,
     usage: &str,
@@ -563,7 +571,7 @@ pub(crate) fn parse_skills_trust_mutation_args(
     Ok((tokens[0].to_string(), trust_root_path))
 }
 
-pub(crate) fn parse_skills_trust_list_args(
+pub fn parse_skills_trust_list_args(
     command_args: &str,
     default_trust_root_path: Option<&Path>,
 ) -> Result<PathBuf> {
@@ -587,7 +595,7 @@ pub(crate) fn parse_skills_trust_list_args(
     Ok(PathBuf::from(tokens[0]))
 }
 
-pub(crate) fn execute_skills_trust_add_command(
+pub fn execute_skills_trust_add_command(
     default_trust_root_path: Option<&Path>,
     command_args: &str,
 ) -> String {
@@ -655,7 +663,7 @@ pub(crate) fn execute_skills_trust_add_command(
     }
 }
 
-pub(crate) fn execute_skills_trust_revoke_command(
+pub fn execute_skills_trust_revoke_command(
     default_trust_root_path: Option<&Path>,
     command_args: &str,
 ) -> String {
@@ -713,7 +721,7 @@ pub(crate) fn execute_skills_trust_revoke_command(
     }
 }
 
-pub(crate) fn execute_skills_trust_rotate_command(
+pub fn execute_skills_trust_rotate_command(
     default_trust_root_path: Option<&Path>,
     command_args: &str,
 ) -> String {
@@ -782,7 +790,7 @@ pub(crate) fn execute_skills_trust_rotate_command(
     }
 }
 
-pub(crate) fn trust_record_status(record: &TrustedRootRecord, now_unix: u64) -> &'static str {
+pub fn trust_record_status(record: &TrustedRootRecord, now_unix: u64) -> &'static str {
     if record.revoked {
         "revoked"
     } else if is_expired_unix(record.expires_unix, now_unix) {
@@ -792,7 +800,7 @@ pub(crate) fn trust_record_status(record: &TrustedRootRecord, now_unix: u64) -> 
     }
 }
 
-pub(crate) fn render_skills_trust_list(path: &Path, records: &[TrustedRootRecord]) -> String {
+pub fn render_skills_trust_list(path: &Path, records: &[TrustedRootRecord]) -> String {
     let now_unix = current_unix_timestamp();
     let mut lines = vec![format!(
         "skills trust list: path={} count={}",
@@ -822,7 +830,7 @@ pub(crate) fn render_skills_trust_list(path: &Path, records: &[TrustedRootRecord
     lines.join("\n")
 }
 
-pub(crate) fn execute_skills_trust_list_command(
+pub fn execute_skills_trust_list_command(
     default_trust_root_path: Option<&Path>,
     command_args: &str,
 ) -> String {
@@ -852,10 +860,7 @@ pub(crate) fn execute_skills_trust_list_command(
     }
 }
 
-pub(crate) fn render_skills_lock_diff_in_sync(
-    path: &Path,
-    report: &skills::SkillsSyncReport,
-) -> String {
+pub fn render_skills_lock_diff_in_sync(path: &Path, report: &SkillsSyncReport) -> String {
     format!(
         "skills lock diff: in-sync path={} expected_entries={} actual_entries={}",
         path.display(),
@@ -864,10 +869,7 @@ pub(crate) fn render_skills_lock_diff_in_sync(
     )
 }
 
-pub(crate) fn render_skills_lock_diff_drift(
-    path: &Path,
-    report: &skills::SkillsSyncReport,
-) -> String {
+pub fn render_skills_lock_diff_drift(path: &Path, report: &SkillsSyncReport) -> String {
     format!(
         "skills lock diff: drift path={} {}",
         path.display(),
@@ -875,7 +877,7 @@ pub(crate) fn render_skills_lock_diff_drift(
     )
 }
 
-pub(crate) fn execute_skills_lock_diff_command(
+pub fn execute_skills_lock_diff_command(
     skills_dir: &Path,
     default_lock_path: &Path,
     command_args: &str,
@@ -930,14 +932,14 @@ pub(crate) fn execute_skills_lock_diff_command(
     }
 }
 
-pub(crate) fn render_skills_lock_write_success(path: &Path, entries: usize) -> String {
+pub fn render_skills_lock_write_success(path: &Path, entries: usize) -> String {
     format!(
         "skills lock write: path={} entries={entries}",
         path.display()
     )
 }
 
-pub(crate) fn execute_skills_lock_write_command(
+pub fn execute_skills_lock_write_command(
     skills_dir: &Path,
     default_lock_path: &Path,
     command_args: &str,
@@ -952,7 +954,7 @@ pub(crate) fn execute_skills_lock_write_command(
     }
 }
 
-pub(crate) fn render_skills_sync_field(items: &[String], separator: &str) -> String {
+pub fn render_skills_sync_field(items: &[String], separator: &str) -> String {
     if items.is_empty() {
         "none".to_string()
     } else {
@@ -960,7 +962,7 @@ pub(crate) fn render_skills_sync_field(items: &[String], separator: &str) -> Str
     }
 }
 
-pub(crate) fn render_skills_sync_drift_details(report: &skills::SkillsSyncReport) -> String {
+pub fn render_skills_sync_drift_details(report: &SkillsSyncReport) -> String {
     format!(
         "expected_entries={} actual_entries={} missing={} extra={} changed={} metadata={}",
         report.expected_entries,
@@ -972,7 +974,7 @@ pub(crate) fn render_skills_sync_drift_details(report: &skills::SkillsSyncReport
     )
 }
 
-pub(crate) fn render_skills_sync_in_sync(path: &Path, report: &skills::SkillsSyncReport) -> String {
+pub fn render_skills_sync_in_sync(path: &Path, report: &SkillsSyncReport) -> String {
     format!(
         "skills sync: in-sync path={} expected_entries={} actual_entries={}",
         path.display(),
@@ -981,7 +983,7 @@ pub(crate) fn render_skills_sync_in_sync(path: &Path, report: &skills::SkillsSyn
     )
 }
 
-pub(crate) fn render_skills_sync_drift(path: &Path, report: &skills::SkillsSyncReport) -> String {
+pub fn render_skills_sync_drift(path: &Path, report: &SkillsSyncReport) -> String {
     format!(
         "skills sync: drift path={} {}",
         path.display(),
@@ -989,7 +991,7 @@ pub(crate) fn render_skills_sync_drift(path: &Path, report: &skills::SkillsSyncR
     )
 }
 
-pub(crate) fn execute_skills_sync_command(
+pub fn execute_skills_sync_command(
     skills_dir: &Path,
     default_lock_path: &Path,
     command_args: &str,
@@ -1010,19 +1012,19 @@ pub(crate) fn execute_skills_sync_command(
     }
 }
 
-pub(crate) const SKILLS_VERIFY_USAGE: &str =
+pub const SKILLS_VERIFY_USAGE: &str =
     "usage: /skills-verify [lockfile_path] [trust_root_file] [--json]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SkillsVerifyArgs {
-    pub(crate) lock_path: PathBuf,
-    pub(crate) trust_root_path: Option<PathBuf>,
-    pub(crate) json_output: bool,
+pub struct SkillsVerifyArgs {
+    pub lock_path: PathBuf,
+    pub trust_root_path: Option<PathBuf>,
+    pub json_output: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum SkillsVerifyStatus {
+pub enum SkillsVerifyStatus {
     Pass,
     Warn,
     Fail,
@@ -1047,53 +1049,53 @@ impl SkillsVerifyStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct SkillsVerifyEntry {
-    pub(crate) file: String,
-    pub(crate) name: String,
-    pub(crate) status: SkillsVerifyStatus,
-    pub(crate) checks: Vec<String>,
+pub struct SkillsVerifyEntry {
+    pub file: String,
+    pub name: String,
+    pub status: SkillsVerifyStatus,
+    pub checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct SkillsVerifyTrustSummary {
-    pub(crate) total: usize,
-    pub(crate) active: usize,
-    pub(crate) revoked: usize,
-    pub(crate) expired: usize,
+pub struct SkillsVerifyTrustSummary {
+    pub total: usize,
+    pub active: usize,
+    pub revoked: usize,
+    pub expired: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct SkillsVerifySummary {
-    pub(crate) entries: usize,
-    pub(crate) pass: usize,
-    pub(crate) warn: usize,
-    pub(crate) fail: usize,
-    pub(crate) status: SkillsVerifyStatus,
+pub struct SkillsVerifySummary {
+    pub entries: usize,
+    pub pass: usize,
+    pub warn: usize,
+    pub fail: usize,
+    pub status: SkillsVerifyStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct SkillsVerifyReport {
-    pub(crate) lock_path: String,
-    pub(crate) trust_root_path: Option<String>,
-    pub(crate) expected_entries: usize,
-    pub(crate) actual_entries: usize,
-    pub(crate) missing: Vec<String>,
-    pub(crate) extra: Vec<String>,
-    pub(crate) changed: Vec<String>,
-    pub(crate) metadata_mismatch: Vec<String>,
-    pub(crate) trust: Option<SkillsVerifyTrustSummary>,
-    pub(crate) summary: SkillsVerifySummary,
-    pub(crate) entries: Vec<SkillsVerifyEntry>,
+pub struct SkillsVerifyReport {
+    pub lock_path: String,
+    pub trust_root_path: Option<String>,
+    pub expected_entries: usize,
+    pub actual_entries: usize,
+    pub missing: Vec<String>,
+    pub extra: Vec<String>,
+    pub changed: Vec<String>,
+    pub metadata_mismatch: Vec<String>,
+    pub trust: Option<SkillsVerifyTrustSummary>,
+    pub summary: SkillsVerifySummary,
+    pub entries: Vec<SkillsVerifyEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TrustRootState {
+pub enum TrustRootState {
     Active,
     Revoked,
     Expired,
 }
 
-pub(crate) fn parse_skills_verify_args(
+pub fn parse_skills_verify_args(
     command_args: &str,
     default_lock_path: &Path,
     default_trust_root_path: Option<&Path>,
@@ -1135,7 +1137,7 @@ pub(crate) fn parse_skills_verify_args(
     })
 }
 
-pub(crate) fn update_verify_status(
+pub fn update_verify_status(
     status: &mut SkillsVerifyStatus,
     checks: &mut Vec<String>,
     next_status: SkillsVerifyStatus,
@@ -1147,7 +1149,7 @@ pub(crate) fn update_verify_status(
     checks.push(check);
 }
 
-pub(crate) fn build_skills_verify_report(
+pub fn build_skills_verify_report(
     skills_dir: &Path,
     lock_path: &Path,
     trust_root_path: Option<&Path>,
@@ -1235,12 +1237,12 @@ pub(crate) fn build_skills_verify_report(
         }
 
         match &lock_entry.source {
-            crate::skills::SkillLockSource::Remote {
+            crate::SkillLockSource::Remote {
                 signing_key_id,
                 signature,
                 ..
             }
-            | crate::skills::SkillLockSource::Registry {
+            | crate::SkillLockSource::Registry {
                 signing_key_id,
                 signature,
                 ..
@@ -1292,8 +1294,8 @@ pub(crate) fn build_skills_verify_report(
                     }
                 }
             },
-            crate::skills::SkillLockSource::Unknown => checks.push("source=unknown".to_string()),
-            crate::skills::SkillLockSource::Local { .. } => checks.push("source=local".to_string()),
+            crate::SkillLockSource::Unknown => checks.push("source=unknown".to_string()),
+            crate::SkillLockSource::Local { .. } => checks.push("source=local".to_string()),
         }
 
         entries.push(SkillsVerifyEntry {
@@ -1353,7 +1355,7 @@ pub(crate) fn build_skills_verify_report(
     })
 }
 
-pub(crate) fn render_skills_verify_report(report: &SkillsVerifyReport) -> String {
+pub fn render_skills_verify_report(report: &SkillsVerifyReport) -> String {
     let mut lines = vec![format!(
         "skills verify: status={} lock_path={} trust_root_path={} entries={} pass={} warn={} fail={}",
         report.summary.status.as_str(),
@@ -1399,7 +1401,7 @@ pub(crate) fn render_skills_verify_report(report: &SkillsVerifyReport) -> String
     lines.join("\n")
 }
 
-pub(crate) fn execute_skills_verify_command(
+pub fn execute_skills_verify_command(
     skills_dir: &Path,
     default_lock_path: &Path,
     default_trust_root_path: Option<&Path>,

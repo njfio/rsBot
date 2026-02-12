@@ -11,6 +11,7 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tau-core = { path = "../tau-core" }
 
 [dev-dependencies]
 httpmock = "0.8"

@@ -11,6 +11,12 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod commands;
+pub mod trust_roots;
+
+pub use commands::*;
+pub use trust_roots::*;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     pub name: String,

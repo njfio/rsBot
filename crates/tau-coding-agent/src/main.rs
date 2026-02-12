@@ -30,7 +30,6 @@ mod rpc_protocol;
 mod runtime_loop;
 mod runtime_output;
 mod runtime_types;
-mod skills_commands;
 mod slack;
 mod slack_helpers;
 mod startup_dispatch;
@@ -61,6 +60,7 @@ use tau_agent_core::{Agent, AgentEvent};
 use tau_ai::{LlmClient, Message, MessageRole, ModelRef, Provider};
 pub(crate) use tau_extensions as extension_manifest;
 pub(crate) use tau_skills as skills;
+pub(crate) use tau_skills as skills_commands;
 
 pub(crate) use crate::auth_commands::execute_auth_command;
 #[cfg(test)]
@@ -159,10 +159,7 @@ pub(crate) use crate::runtime_types::{
 };
 #[cfg(test)]
 pub(crate) use crate::skills::default_skills_lock_path;
-use crate::skills::{
-    load_catalog, load_skills_lockfile, sync_skills_with_lockfile, write_skills_lockfile,
-    TrustedKey,
-};
+use crate::skills::TrustedKey;
 #[cfg(test)]
 pub(crate) use crate::skills_commands::{
     derive_skills_prune_candidates, parse_skills_lock_diff_args, parse_skills_prune_args,
@@ -217,9 +214,9 @@ pub(crate) use tau_access::rbac::{
     execute_rbac_command, github_principal, rbac_policy_path_for_state_dir,
     resolve_local_principal, slack_principal, RbacDecision, RBAC_USAGE,
 };
+#[cfg(test)]
 pub(crate) use tau_access::trust_roots::{
-    apply_trust_root_mutation_specs, load_trust_root_records, parse_trust_rotation_spec,
-    parse_trusted_root_spec, save_trust_root_records, TrustedRootRecord,
+    load_trust_root_records, parse_trust_rotation_spec, parse_trusted_root_spec, TrustedRootRecord,
 };
 #[cfg(test)]
 pub(crate) use tau_cli::parse_command_file;
@@ -263,7 +260,7 @@ pub(crate) use tau_cli::{CliMultiChannelOutboundMode, CliWebhookSignatureAlgorit
 #[cfg(test)]
 pub(crate) use tau_cli::{CommandFileEntry, CommandFileReport};
 pub(crate) use tau_core::write_text_atomic;
-pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
+pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms};
 #[cfg(test)]
 pub(crate) use tau_diagnostics::build_doctor_command_config;
 #[cfg(test)]
