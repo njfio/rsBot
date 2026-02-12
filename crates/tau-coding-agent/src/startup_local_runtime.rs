@@ -6,13 +6,14 @@ use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_extension_startup as build_onboarding_local_runtime_extension_startup,
     execute_prompt_or_command_file_entry_mode_with_dispatch as execute_onboarding_prompt_or_command_file_entry_mode_with_dispatch,
-    register_runtime_event_reporter_if_configured as register_onboarding_runtime_event_reporter_if_configured,
+    register_runtime_event_reporter_pair_if_configured as register_onboarding_runtime_event_reporter_pair_if_configured,
     register_runtime_extension_pipeline as register_onboarding_runtime_extension_pipeline,
     register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
     resolve_local_runtime_startup_from_cli as resolve_onboarding_local_runtime_startup_from_cli,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
     LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, LocalRuntimeExtensionStartup,
     LocalRuntimeStartupResolution, PromptEntryRuntimeMode, PromptOrCommandFileEntryDispatch,
+    RuntimeEventReporterRegistrationConfig,
     RuntimeExtensionPipelineConfig as OnboardingRuntimeExtensionPipelineConfig,
     SessionBootstrapOutcome,
 };
@@ -53,19 +54,24 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         cli.max_turns,
         tool_policy,
     );
-    register_onboarding_runtime_event_reporter_if_configured(
+    register_onboarding_runtime_event_reporter_pair_if_configured(
         &mut agent,
-        cli.tool_audit_log.clone(),
-        ToolAuditLogger::open,
-        |logger, event| logger.log_event(event),
-        |error| eprintln!("tool audit logger error: {error}"),
-    )?;
-    register_onboarding_runtime_event_reporter_if_configured(
-        &mut agent,
-        cli.telemetry_log.clone(),
-        |path| PromptTelemetryLogger::open(path, model_ref.provider.as_str(), &model_ref.model),
-        |logger, event| logger.log_event(event),
-        |error| eprintln!("telemetry logger error: {error}"),
+        RuntimeEventReporterRegistrationConfig {
+            path: cli.tool_audit_log.clone(),
+            open_reporter: ToolAuditLogger::open,
+            report_event: |logger: &ToolAuditLogger, event: &AgentEvent| logger.log_event(event),
+            emit_error: |error: &str| eprintln!("tool audit logger error: {error}"),
+        },
+        RuntimeEventReporterRegistrationConfig {
+            path: cli.telemetry_log.clone(),
+            open_reporter: |path| {
+                PromptTelemetryLogger::open(path, model_ref.provider.as_str(), &model_ref.model)
+            },
+            report_event: |logger: &PromptTelemetryLogger, event: &AgentEvent| {
+                logger.log_event(event)
+            },
+            emit_error: |error: &str| eprintln!("telemetry logger error: {error}"),
+        },
     )?;
     let mut session_runtime = resolve_onboarding_session_runtime_from_cli(
         cli,
