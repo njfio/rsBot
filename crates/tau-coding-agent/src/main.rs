@@ -245,6 +245,8 @@ pub(crate) use tau_cli::validation::{
 };
 pub(crate) use tau_cli::Cli;
 #[cfg(test)]
+pub(crate) use tau_cli::CliEventTemplateSchedule;
+#[cfg(test)]
 pub(crate) use tau_cli::CliProviderAuthMode;
 #[cfg(test)]
 pub(crate) use tau_cli::{
@@ -252,7 +254,7 @@ pub(crate) use tau_cli::{
     CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelTransport,
     CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
 };
-pub(crate) use tau_cli::{CliCommandFileErrorMode, CliEventTemplateSchedule, CliOrchestratorMode};
+pub(crate) use tau_cli::{CliCommandFileErrorMode, CliOrchestratorMode};
 #[cfg(test)]
 pub(crate) use tau_cli::{CliDaemonProfile, CliGatewayRemoteProfile};
 #[cfg(test)]

@@ -16,6 +16,9 @@ use sha2::Sha256;
 use tau_core::{current_unix_timestamp_ms, write_text_atomic};
 use tau_runtime::channel_store::{ChannelLogEntry, ChannelStore};
 
+mod events_cli_commands;
+pub use events_cli_commands::*;
+
 const EVENT_RUNNER_STATE_SCHEMA_VERSION: u32 = 1;
 
 #[async_trait]
