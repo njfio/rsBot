@@ -1389,7 +1389,7 @@ impl GithubIssuesBridgeRuntime {
                 }
             }
 
-            let events = collect_issue_events(
+            let events = collect_shared_issue_events(
                 &issue,
                 &comments,
                 &self.bot_login,
@@ -1931,7 +1931,11 @@ impl GithubIssuesBridgeRuntime {
                     .await;
             }
             TauIssueCommand::Summarize { focus } => {
-                let prompt = build_summarize_prompt(&self.repo, event, focus.as_deref());
+                let prompt = build_shared_summarize_prompt(
+                    &self.repo.as_slug(),
+                    event.issue_number,
+                    focus.as_deref(),
+                );
                 return self
                     .enqueue_issue_run(event, prompt, report, state_dirty)
                     .await;
@@ -4094,7 +4098,7 @@ impl GithubIssuesBridgeRuntime {
             short_key_hash(event_key)
         );
         let report_payload = execute_auth_command(&self.config.auth_command_config, &command.args);
-        let json_args = ensure_auth_json_flag(&command.args);
+        let json_args = ensure_shared_auth_json_flag(&command.args);
         let report_payload_json =
             execute_auth_command(&self.config.auth_command_config, &json_args);
         let summary_line = build_issue_auth_summary_line(command.kind, &report_payload_json);
@@ -5236,14 +5240,6 @@ fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCo
     })
 }
 
-fn build_summarize_prompt(
-    repo: &RepoRef,
-    event: &GithubBridgeEvent,
-    focus: Option<&str>,
-) -> String {
-    build_shared_summarize_prompt(&repo.as_slug(), event.issue_number, focus)
-}
-
 fn prompt_status_label(status: PromptRunStatus) -> &'static str {
     match status {
         PromptRunStatus::Completed => "completed",
@@ -5260,32 +5256,12 @@ fn doctor_status_label(status: DoctorStatus) -> &'static str {
     }
 }
 
-fn ensure_auth_json_flag(args: &str) -> String {
-    ensure_shared_auth_json_flag(args)
-}
-
 fn build_issue_auth_summary_line(kind: TauIssueAuthCommandKind, raw_json: &str) -> String {
     let summary_kind = match kind {
         TauIssueAuthCommandKind::Status => IssueAuthSummaryKind::Status,
         TauIssueAuthCommandKind::Matrix => IssueAuthSummaryKind::Matrix,
     };
     build_shared_issue_auth_summary_line(summary_kind, raw_json)
-}
-
-fn collect_issue_events(
-    issue: &GithubIssue,
-    comments: &[GithubIssueComment],
-    bot_login: &str,
-    include_issue_body: bool,
-    include_edited_comments: bool,
-) -> Vec<GithubBridgeEvent> {
-    collect_shared_issue_events(
-        issue,
-        comments,
-        bot_login,
-        include_issue_body,
-        include_edited_comments,
-    )
 }
 
 fn session_path_for_issue(repo_state_dir: &Path, issue_number: u64) -> PathBuf {
@@ -5333,7 +5309,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        collect_issue_events, evaluate_attachment_content_type_policy,
+        collect_shared_issue_events, evaluate_attachment_content_type_policy,
         evaluate_attachment_url_policy, event_action_from_body, extract_attachment_urls,
         extract_footer_event_keys, is_retryable_github_status, issue_command_reason_code,
         issue_matches_required_labels, issue_matches_required_numbers, issue_session_id,
@@ -5649,7 +5625,7 @@ printf '%s\n' "${payload}"
                 },
             },
         ];
-        let events = collect_issue_events(&issue, &comments, "tau", true, true);
+        let events = collect_shared_issue_events(&issue, &comments, "tau", true, true);
         assert_eq!(events.len(), 3);
         assert_eq!(events[0].kind, GithubBridgeEventKind::Opened);
         assert_eq!(events[1].kind, GithubBridgeEventKind::CommentCreated);
