@@ -1414,7 +1414,7 @@ impl GithubIssuesBridgeRuntime {
                     continue;
                 }
 
-                let action = event_action_from_body(&event.body);
+                let action = event_action_from_shared_body(&event.body, parse_tau_issue_command);
                 let policy_channel = format!("github:{}", self.repo.as_slug());
                 let pairing_policy = pairing_policy_for_state_dir(&self.config.state_dir);
                 let pairing_decision = evaluate_pairing_access(
@@ -5070,10 +5070,6 @@ fn default_demo_index_binary_path() -> PathBuf {
     })
 }
 
-fn event_action_from_body(body: &str) -> EventAction {
-    event_action_from_shared_body(body, parse_tau_issue_command)
-}
-
 fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
     let usage = tau_shared_command_usage("/tau");
     let parsed = parse_shared_issue_command(
@@ -5126,7 +5122,19 @@ fn parse_demo_index_command(remainder: &str) -> TauIssueCommand {
         DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
         DEMO_INDEX_MAX_TIMEOUT_SECONDS,
     );
-    match parse_shared_demo_index_issue_command(remainder, &usage, parse_demo_index_run_command) {
+    match parse_shared_demo_index_issue_command(remainder, &usage, |raw| {
+        let parsed = parse_shared_demo_index_run_command(
+            raw,
+            &DEMO_INDEX_SCENARIOS,
+            DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
+            DEMO_INDEX_MAX_TIMEOUT_SECONDS,
+            &usage,
+        )?;
+        Ok(DemoIndexRunCommand {
+            scenarios: parsed.scenarios,
+            timeout_seconds: parsed.timeout_seconds,
+        })
+    }) {
         Ok(DemoIndexIssueCommand::List) => TauIssueCommand::DemoIndexList,
         Ok(DemoIndexIssueCommand::Report) => TauIssueCommand::DemoIndexReport,
         Ok(DemoIndexIssueCommand::Run(command)) => TauIssueCommand::DemoIndexRun { command },
@@ -5214,26 +5222,6 @@ fn parse_artifacts_command(remainder: &str) -> TauIssueCommand {
     }
 }
 
-fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCommand, String> {
-    let usage = demo_index_shared_command_usage(
-        "/tau",
-        &DEMO_INDEX_SCENARIOS,
-        DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
-        DEMO_INDEX_MAX_TIMEOUT_SECONDS,
-    );
-    let parsed = parse_shared_demo_index_run_command(
-        raw,
-        &DEMO_INDEX_SCENARIOS,
-        DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
-        DEMO_INDEX_MAX_TIMEOUT_SECONDS,
-        &usage,
-    )?;
-    Ok(DemoIndexRunCommand {
-        scenarios: parsed.scenarios,
-        timeout_seconds: parsed.timeout_seconds,
-    })
-}
-
 fn prompt_status_label(status: PromptRunStatus) -> &'static str {
     match status {
         PromptRunStatus::Completed => "completed",
@@ -5268,7 +5256,7 @@ mod tests {
 
     use super::{
         collect_shared_issue_events, evaluate_attachment_content_type_policy,
-        evaluate_attachment_url_policy, event_action_from_body, extract_attachment_urls,
+        evaluate_attachment_url_policy, event_action_from_shared_body, extract_attachment_urls,
         extract_footer_event_keys, is_retryable_github_status, issue_command_reason_code,
         issue_matches_required_labels, issue_matches_required_numbers, issue_shared_session_id,
         normalize_issue_command_status, normalize_shared_artifact_retention_days,
@@ -6629,7 +6617,7 @@ printf '%s\n' "${payload}"
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
         let parsed = parse_tau_issue_command("/tau chat unknown").expect("command parse");
         assert!(matches!(parsed, TauIssueCommand::Invalid { .. }));
-        let action = event_action_from_body("/tau unknown");
+        let action = event_action_from_shared_body("/tau unknown", parse_tau_issue_command);
         assert!(matches!(
             action,
             EventAction::Command(TauIssueCommand::Invalid { .. })
