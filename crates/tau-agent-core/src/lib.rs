@@ -5,7 +5,7 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -46,6 +46,7 @@ pub struct AgentConfig {
     pub request_max_retries: usize,
     pub request_retry_initial_backoff_ms: u64,
     pub request_retry_max_backoff_ms: u64,
+    pub stream_retry_with_buffering: bool,
     pub request_timeout_ms: Option<u64>,
     pub tool_timeout_ms: Option<u64>,
     pub max_estimated_input_tokens: Option<u32>,
@@ -75,6 +76,7 @@ impl Default for AgentConfig {
             request_max_retries: 2,
             request_retry_initial_backoff_ms: 200,
             request_retry_max_backoff_ms: 2_000,
+            stream_retry_with_buffering: true,
             request_timeout_ms: Some(120_000),
             tool_timeout_ms: Some(120_000),
             max_estimated_input_tokens: Some(120_000),
@@ -1040,6 +1042,12 @@ impl Agent {
         let max_backoff_ms = self.config.request_retry_max_backoff_ms.max(backoff_ms);
         let request_timeout = timeout_duration_from_ms(self.config.request_timeout_ms);
         let cancellation_token = self.cancellation_token();
+        let stream_retry_enabled = on_delta.is_some() && self.config.stream_retry_with_buffering;
+        let stream_buffer_state = if stream_retry_enabled {
+            Some(Arc::new(Mutex::new(StreamingRetryBufferState::default())))
+        } else {
+            None
+        };
 
         loop {
             if cancellation_token
@@ -1051,9 +1059,35 @@ impl Agent {
             }
 
             let request_for_attempt = request.clone();
+            let attempt_on_delta = if stream_retry_enabled {
+                let user_handler = on_delta
+                    .as_ref()
+                    .expect("stream retry enabled requires a delta handler")
+                    .clone();
+                let state: Arc<Mutex<StreamingRetryBufferState>> = Arc::clone(
+                    stream_buffer_state
+                        .as_ref()
+                        .expect("stream retry enabled requires buffer state"),
+                );
+                state
+                    .lock()
+                    .expect("stream buffer state lock")
+                    .reset_attempt();
+                Some(Arc::new(move |delta: String| {
+                    let replay = {
+                        let mut guard = state.lock().expect("stream buffer state lock");
+                        stream_retry_buffer_on_delta(&mut guard, delta.as_str())
+                    };
+                    if let Some(replayed_delta) = replay {
+                        user_handler(replayed_delta);
+                    }
+                }) as StreamDeltaHandler)
+            } else {
+                on_delta.clone()
+            };
             let client_call = self
                 .client
-                .complete_with_stream(request_for_attempt, on_delta.clone());
+                .complete_with_stream(request_for_attempt, attempt_on_delta);
             let response_result = if let Some(timeout) = request_timeout {
                 let timed = if let Some(token) = cancellation_token.clone() {
                     tokio::select! {
@@ -1067,7 +1101,8 @@ impl Agent {
                 match timed {
                     Ok(result) => result,
                     Err(_) => {
-                        let can_retry = attempt < max_retries && on_delta.is_none();
+                        let can_retry =
+                            attempt < max_retries && (on_delta.is_none() || stream_retry_enabled);
                         if !can_retry {
                             return Err(AgentError::RequestTimeout {
                                 timeout_ms: timeout.as_millis() as u64,
@@ -1097,7 +1132,7 @@ impl Agent {
                 Ok(response) => return Ok(response),
                 Err(error) => {
                     let can_retry = attempt < max_retries
-                        && on_delta.is_none()
+                        && (on_delta.is_none() || stream_retry_enabled)
                         && is_retryable_ai_error(&error);
                     if !can_retry {
                         return Err(AgentError::Ai(error));
@@ -1746,6 +1781,53 @@ fn cache_insert_with_limit<T: Clone>(
     }
 }
 
+#[derive(Default)]
+struct StreamingRetryBufferState {
+    delivered_output: String,
+    attempt_output: String,
+}
+
+impl StreamingRetryBufferState {
+    fn reset_attempt(&mut self) {
+        self.attempt_output.clear();
+    }
+}
+
+fn stream_retry_buffer_on_delta(
+    state: &mut StreamingRetryBufferState,
+    delta: &str,
+) -> Option<String> {
+    state.attempt_output.push_str(delta);
+    if state.delivered_output.is_empty() {
+        state.delivered_output.push_str(delta);
+        return Some(delta.to_string());
+    }
+
+    if state.attempt_output.len() <= state.delivered_output.len() {
+        if state.delivered_output.starts_with(&state.attempt_output) {
+            return None;
+        }
+        state.delivered_output.push_str(delta);
+        return Some(delta.to_string());
+    }
+
+    if state.attempt_output.starts_with(&state.delivered_output) {
+        let replay = state
+            .attempt_output
+            .get(state.delivered_output.len()..)
+            .unwrap_or_default()
+            .to_string();
+        if replay.is_empty() {
+            return None;
+        }
+        state.delivered_output.push_str(&replay);
+        return Some(replay);
+    }
+
+    state.delivered_output.push_str(delta);
+    Some(delta.to_string())
+}
+
 fn timeout_duration_from_ms(timeout_ms: Option<u64>) -> Option<Duration> {
     timeout_ms
         .filter(|timeout_ms| *timeout_ms > 0)
@@ -1798,8 +1880,9 @@ mod tests {
     use crate::{
         assistant_text_suggests_failure, bounded_messages, build_structured_output_retry_prompt,
         cache_insert_with_limit, embed_text_vector, estimate_chat_request_tokens,
-        extract_json_payload, retrieve_memory_matches, truncate_chars, Agent, AgentConfig,
-        AgentError, AgentEvent, AgentTool, CooperativeCancellationToken, ToolExecutionResult,
+        extract_json_payload, retrieve_memory_matches, stream_retry_buffer_on_delta,
+        truncate_chars, Agent, AgentConfig, AgentError, AgentEvent, AgentTool,
+        CooperativeCancellationToken, StreamingRetryBufferState, ToolExecutionResult,
         CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX, MEMORY_RECALL_PREFIX,
     };
 
@@ -1845,6 +1928,42 @@ mod tests {
                 }
             }
             Ok(self.response.clone())
+        }
+    }
+
+    struct RetryingStreamingOutcome {
+        deltas: Vec<String>,
+        response: Result<ChatResponse, tau_ai::TauAiError>,
+    }
+
+    struct RetryingStreamingClient {
+        outcomes: AsyncMutex<VecDeque<RetryingStreamingOutcome>>,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl tau_ai::LlmClient for RetryingStreamingClient {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, tau_ai::TauAiError> {
+            self.complete_with_stream(request, None).await
+        }
+
+        async fn complete_with_stream(
+            &self,
+            _request: ChatRequest,
+            on_delta: Option<tau_ai::StreamDeltaHandler>,
+        ) -> Result<ChatResponse, tau_ai::TauAiError> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            let outcome = self.outcomes.lock().await.pop_front().ok_or_else(|| {
+                tau_ai::TauAiError::InvalidResponse("stream queue empty".to_string())
+            })?;
+
+            if let Some(handler) = on_delta {
+                for delta in outcome.deltas {
+                    handler(delta);
+                }
+            }
+
+            outcome.response
         }
     }
 
@@ -2166,6 +2285,7 @@ mod tests {
         let config = AgentConfig::default();
         assert_eq!(config.request_timeout_ms, Some(120_000));
         assert_eq!(config.tool_timeout_ms, Some(120_000));
+        assert!(config.stream_retry_with_buffering);
         assert_eq!(config.max_estimated_input_tokens, Some(120_000));
         assert_eq!(config.max_estimated_total_tokens, None);
         assert_eq!(config.structured_output_max_retries, 1);
@@ -2192,6 +2312,22 @@ mod tests {
         assert!(!cache.contains_key("a"));
         assert_eq!(cache.get("b"), Some(&2));
         assert_eq!(cache.get("c"), Some(&3));
+    }
+
+    #[test]
+    fn unit_stream_retry_buffer_on_delta_suppresses_replayed_prefix() {
+        let mut state = StreamingRetryBufferState::default();
+        assert_eq!(
+            stream_retry_buffer_on_delta(&mut state, "Hel"),
+            Some("Hel".to_string())
+        );
+
+        state.reset_attempt();
+        assert_eq!(stream_retry_buffer_on_delta(&mut state, "Hel"), None);
+        assert_eq!(
+            stream_retry_buffer_on_delta(&mut state, "lo"),
+            Some("lo".to_string())
+        );
     }
 
     #[test]
@@ -2967,6 +3103,189 @@ mod tests {
             "Hello"
         );
         assert_eq!(streamed.lock().expect("stream lock").as_str(), "Hello");
+    }
+
+    #[tokio::test]
+    async fn functional_streaming_retry_replays_buffer_without_duplicate_output() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(RetryingStreamingClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                RetryingStreamingOutcome {
+                    deltas: vec!["Hel".to_string()],
+                    response: Err(tau_ai::TauAiError::HttpStatus {
+                        status: 503,
+                        body: "transient".to_string(),
+                    }),
+                },
+                RetryingStreamingOutcome {
+                    deltas: vec!["Hello".to_string()],
+                    response: Ok(ChatResponse {
+                        message: Message::assistant_text("Hello"),
+                        finish_reason: Some("stop".to_string()),
+                        usage: ChatUsage::default(),
+                    }),
+                },
+            ])),
+            attempts: attempts.clone(),
+        });
+
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                request_max_retries: 1,
+                request_retry_initial_backoff_ms: 1,
+                request_retry_max_backoff_ms: 1,
+                stream_retry_with_buffering: true,
+                ..AgentConfig::default()
+            },
+        );
+        let streamed = Arc::new(Mutex::new(String::new()));
+        let streamed_sink = streamed.clone();
+        let sink = Arc::new(move |delta: String| {
+            streamed_sink
+                .lock()
+                .expect("stream lock")
+                .push_str(delta.as_str());
+        });
+
+        let messages = agent
+            .prompt_with_stream("hello", Some(sink))
+            .await
+            .expect("retrying stream should succeed");
+
+        assert_eq!(messages.last().expect("assistant").text_content(), "Hello");
+        assert_eq!(streamed.lock().expect("stream lock").as_str(), "Hello");
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn integration_streaming_retry_with_buffering_continues_tool_turns() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let first_turn_retry = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+            id: "call_1".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({ "path": "README.md" }),
+        }]);
+        let final_assistant = Message::assistant_text("done");
+        let client = Arc::new(RetryingStreamingClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                RetryingStreamingOutcome {
+                    deltas: vec!["To".to_string()],
+                    response: Err(tau_ai::TauAiError::HttpStatus {
+                        status: 503,
+                        body: "temporary".to_string(),
+                    }),
+                },
+                RetryingStreamingOutcome {
+                    deltas: vec!["Tool ".to_string()],
+                    response: Ok(ChatResponse {
+                        message: first_turn_retry,
+                        finish_reason: Some("tool_calls".to_string()),
+                        usage: ChatUsage::default(),
+                    }),
+                },
+                RetryingStreamingOutcome {
+                    deltas: vec!["done".to_string()],
+                    response: Ok(ChatResponse {
+                        message: final_assistant,
+                        finish_reason: Some("stop".to_string()),
+                        usage: ChatUsage::default(),
+                    }),
+                },
+            ])),
+            attempts: attempts.clone(),
+        });
+
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                request_max_retries: 1,
+                request_retry_initial_backoff_ms: 1,
+                request_retry_max_backoff_ms: 1,
+                stream_retry_with_buffering: true,
+                ..AgentConfig::default()
+            },
+        );
+        agent.register_tool(ReadTool);
+
+        let streamed = Arc::new(Mutex::new(String::new()));
+        let streamed_sink = streamed.clone();
+        let sink = Arc::new(move |delta: String| {
+            streamed_sink
+                .lock()
+                .expect("stream lock")
+                .push_str(delta.as_str());
+        });
+
+        let messages = agent
+            .prompt_with_stream("read file", Some(sink))
+            .await
+            .expect("streaming retry with tools should succeed");
+
+        assert_eq!(messages.last().expect("assistant").text_content(), "done");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.role == MessageRole::Tool),
+            "tool turn should still execute after a retried streaming failure"
+        );
+        assert_eq!(streamed.lock().expect("stream lock").as_str(), "Tool done");
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
+    }
+
+    #[tokio::test]
+    async fn regression_streaming_retry_disabled_fails_without_retrying_stream() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(RetryingStreamingClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                RetryingStreamingOutcome {
+                    deltas: vec!["Hel".to_string()],
+                    response: Err(tau_ai::TauAiError::HttpStatus {
+                        status: 503,
+                        body: "temporary".to_string(),
+                    }),
+                },
+                RetryingStreamingOutcome {
+                    deltas: vec!["Hello".to_string()],
+                    response: Ok(ChatResponse {
+                        message: Message::assistant_text("Hello"),
+                        finish_reason: Some("stop".to_string()),
+                        usage: ChatUsage::default(),
+                    }),
+                },
+            ])),
+            attempts: attempts.clone(),
+        });
+
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                request_max_retries: 1,
+                request_retry_initial_backoff_ms: 1,
+                request_retry_max_backoff_ms: 1,
+                stream_retry_with_buffering: false,
+                ..AgentConfig::default()
+            },
+        );
+        let streamed = Arc::new(Mutex::new(String::new()));
+        let streamed_sink = streamed.clone();
+        let sink = Arc::new(move |delta: String| {
+            streamed_sink
+                .lock()
+                .expect("stream lock")
+                .push_str(delta.as_str());
+        });
+
+        let error = agent
+            .prompt_with_stream("hello", Some(sink))
+            .await
+            .expect_err("disabled buffering should not retry streaming errors");
+        assert!(matches!(
+            error,
+            AgentError::Ai(tau_ai::TauAiError::HttpStatus { status: 503, .. })
+        ));
+        assert_eq!(streamed.lock().expect("stream lock").as_str(), "Hel");
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
