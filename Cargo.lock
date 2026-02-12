@@ -2845,7 +2845,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "shell-words",
  "tau-access",
  "tau-agent-core",
  "tau-ai",
@@ -2881,7 +2880,6 @@ dependencies = [
  "tracing-subscriber",
  "wait-timeout",
  "wasmparser",
- "yrs",
 ]
 
 [[package]]
@@ -3098,6 +3096,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shell-words",
  "tau-access",
  "tau-ai",
  "tau-cli",
@@ -3108,6 +3107,7 @@ dependencies = [
  "tau-session",
  "tempfile",
  "wait-timeout",
+ "yrs",
 ]
 
 [[package]]

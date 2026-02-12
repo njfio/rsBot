@@ -48,7 +48,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use serde_json::Value;
 use tau_agent_core::{Agent, AgentEvent};

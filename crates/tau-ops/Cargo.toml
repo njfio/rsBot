@@ -9,7 +9,9 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+shell-words.workspace = true
 wait-timeout.workspace = true
+yrs.workspace = true
 tau-access = { path = "../tau-access" }
 tau-ai = { path = "../tau-ai" }
 tau-cli = { path = "../tau-cli" }
