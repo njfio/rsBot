@@ -2581,7 +2581,7 @@ impl GithubIssuesBridgeRuntime {
                 }))?;
             }
             TauIssueCommand::Help => {
-                let message = tau_command_usage();
+                let message = tau_shared_command_usage("/tau");
                 let posted = self
                     .post_issue_command_comment(
                         event.issue_number,
@@ -5074,7 +5074,7 @@ fn event_action_from_body(body: &str) -> EventAction {
 }
 
 fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
-    let usage = tau_command_usage();
+    let usage = tau_shared_command_usage("/tau");
     let parsed = parse_shared_issue_command(
         body,
         "/tau",
@@ -5095,7 +5095,11 @@ fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
         ParsedIssueCommand::Special(command) => command,
         ParsedIssueCommand::Invalid { message } => TauIssueCommand::Invalid { message },
         ParsedIssueCommand::Unknown { command } => TauIssueCommand::Invalid {
-            message: format!("Unknown command `{}`.\n\n{}", command, tau_command_usage()),
+            message: format!(
+                "Unknown command `{}`.\n\n{}",
+                command,
+                tau_shared_command_usage("/tau")
+            ),
         },
     };
     Some(parsed)
@@ -5115,7 +5119,12 @@ fn map_issue_core_command(command: IssueCoreCommand) -> TauIssueCommand {
 }
 
 fn parse_demo_index_command(remainder: &str) -> TauIssueCommand {
-    let usage = demo_index_command_usage();
+    let usage = demo_index_shared_command_usage(
+        "/tau",
+        &DEMO_INDEX_SCENARIOS,
+        DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
+        DEMO_INDEX_MAX_TIMEOUT_SECONDS,
+    );
     match parse_shared_demo_index_issue_command(remainder, &usage, parse_demo_index_run_command) {
         Ok(DemoIndexIssueCommand::List) => TauIssueCommand::DemoIndexList,
         Ok(DemoIndexIssueCommand::Report) => TauIssueCommand::DemoIndexReport,
@@ -5125,14 +5134,15 @@ fn parse_demo_index_command(remainder: &str) -> TauIssueCommand {
 }
 
 fn parse_doctor_issue_command(remainder: &str) -> TauIssueCommand {
-    match parse_shared_issue_doctor_command(remainder, &doctor_command_usage()) {
+    let usage = doctor_shared_command_usage("/tau");
+    match parse_shared_issue_doctor_command(remainder, &usage) {
         Ok(command) => TauIssueCommand::Doctor { command },
         Err(message) => TauIssueCommand::Invalid { message },
     }
 }
 
 fn parse_issue_auth_command(remainder: &str) -> TauIssueCommand {
-    let usage = issue_auth_command_usage();
+    let usage = issue_auth_shared_command_usage("/tau", AUTH_STATUS_USAGE, AUTH_MATRIX_USAGE);
     match parse_shared_issue_auth_command(remainder, &usage, |args| {
         match parse_auth_command(args) {
             Ok(AuthCommand::Status { .. }) => Ok(Some(TauIssueAuthCommandKind::Status)),
@@ -5204,7 +5214,12 @@ fn parse_artifacts_command(remainder: &str) -> TauIssueCommand {
 }
 
 fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCommand, String> {
-    let usage = demo_index_command_usage();
+    let usage = demo_index_shared_command_usage(
+        "/tau",
+        &DEMO_INDEX_SCENARIOS,
+        DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
+        DEMO_INDEX_MAX_TIMEOUT_SECONDS,
+    );
     let parsed = parse_shared_demo_index_run_command(
         raw,
         &DEMO_INDEX_SCENARIOS,
@@ -5216,27 +5231,6 @@ fn parse_demo_index_run_command(raw: &str) -> std::result::Result<DemoIndexRunCo
         scenarios: parsed.scenarios,
         timeout_seconds: parsed.timeout_seconds,
     })
-}
-
-fn doctor_command_usage() -> String {
-    doctor_shared_command_usage("/tau")
-}
-
-fn issue_auth_command_usage() -> String {
-    issue_auth_shared_command_usage("/tau", AUTH_STATUS_USAGE, AUTH_MATRIX_USAGE)
-}
-
-fn demo_index_command_usage() -> String {
-    demo_index_shared_command_usage(
-        "/tau",
-        &DEMO_INDEX_SCENARIOS,
-        DEMO_INDEX_DEFAULT_TIMEOUT_SECONDS,
-        DEMO_INDEX_MAX_TIMEOUT_SECONDS,
-    )
-}
-
-fn tau_command_usage() -> String {
-    tau_shared_command_usage("/tau")
 }
 
 fn build_summarize_prompt(
