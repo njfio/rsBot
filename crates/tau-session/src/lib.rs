@@ -15,6 +15,7 @@ use tau_ai::Message;
 mod session_commands;
 mod session_graph_commands;
 mod session_navigation_commands;
+mod session_runtime_commands;
 mod session_runtime_helpers;
 
 const SESSION_SCHEMA_VERSION: u32 = 1;
@@ -492,6 +493,7 @@ impl SessionStore {
 pub use session_commands::*;
 pub use session_graph_commands::*;
 pub use session_navigation_commands::*;
+pub use session_runtime_commands::*;
 pub use session_runtime_helpers::*;
 
 fn has_cycle(start_id: u64, entries: &HashMap<u64, SessionEntry>) -> bool {

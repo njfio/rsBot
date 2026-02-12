@@ -9,8 +9,9 @@ use crate::runtime_types::{
 use tau_cli::{canonical_command_name, normalize_help_topic, parse_command, CommandFileReport};
 pub(crate) use tau_ops::COMMAND_NAMES;
 use tau_session::{
-    execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
-    parse_session_diff_args, parse_session_stats_args,
+    execute_branch_switch_command, execute_resume_command, execute_session_compact_command,
+    execute_session_diff_command, execute_session_repair_command, execute_session_search_command,
+    execute_session_stats_command, parse_session_diff_args, parse_session_stats_args,
 };
 use tau_startup::{execute_command_file_with_handler, CommandFileAction};
 
@@ -593,15 +594,11 @@ pub(crate) fn handle_command_with_session_import_mode(
             return Ok(CommandAction::Continue);
         };
 
-        runtime.active_head = runtime.store.head_id();
-        agent.replace_messages(session_lineage_messages(runtime)?);
-        println!(
-            "resumed at head {}",
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
+        let outcome = execute_resume_command(command_args, runtime);
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -750,60 +747,30 @@ pub(crate) fn handle_command_with_session_import_mode(
     }
 
     if command_name == "/session-repair" {
-        if !command_args.is_empty() {
-            println!("usage: /session-repair");
-            return Ok(CommandAction::Continue);
-        }
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
 
-        let report = runtime.store.repair()?;
-        runtime.active_head = runtime
-            .active_head
-            .filter(|head| runtime.store.contains(*head))
-            .or_else(|| runtime.store.head_id());
-        agent.replace_messages(session_lineage_messages(runtime)?);
-
-        println!(
-            "repair complete: removed_duplicates={} duplicate_ids={} removed_invalid_parent={} invalid_parent_ids={} removed_cycles={} cycle_ids={}",
-            report.removed_duplicates,
-            format_id_list(&report.duplicate_ids),
-            report.removed_invalid_parent,
-            format_id_list(&report.invalid_parent_ids),
-            report.removed_cycles,
-            format_id_list(&report.cycle_ids)
-        );
+        let outcome = execute_session_repair_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
     if command_name == "/session-compact" {
-        if !command_args.is_empty() {
-            println!("usage: /session-compact");
-            return Ok(CommandAction::Continue);
-        }
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
 
-        let report = runtime.store.compact_to_lineage(runtime.active_head)?;
-        runtime.active_head = report
-            .head_id
-            .filter(|head| runtime.store.contains(*head))
-            .or_else(|| runtime.store.head_id());
-        agent.replace_messages(session_lineage_messages(runtime)?);
-
-        println!(
-            "compact complete: removed_entries={} retained_entries={} head={}",
-            report.removed_entries,
-            report.retained_entries,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
+        let outcome = execute_session_compact_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -812,22 +779,12 @@ pub(crate) fn handle_command_with_session_import_mode(
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
-        if command_args.is_empty() {
-            println!("usage: /branch <id>");
-            return Ok(CommandAction::Continue);
+
+        let outcome = execute_branch_switch_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
         }
-
-        let target = command_args
-            .parse::<u64>()
-            .map_err(|_| anyhow!("invalid branch id '{}'; expected an integer", command_args))?;
-
-        if !runtime.store.contains(target) {
-            bail!("unknown session id {}", target);
-        }
-
-        runtime.active_head = Some(target);
-        agent.replace_messages(session_lineage_messages(runtime)?);
-        println!("switched to branch id {target}");
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -853,10 +810,7 @@ pub(crate) fn handle_command_with_session_import_mode(
 }
 
 pub(crate) fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
-    match mode {
-        SessionImportMode::Merge => "merge",
-        SessionImportMode::Replace => "replace",
-    }
+    tau_session::session_import_mode_label(mode)
 }
 
 pub(crate) fn render_help_overview() -> String {

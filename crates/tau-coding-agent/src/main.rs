@@ -48,7 +48,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::Result;
 use clap::Parser;
 use serde_json::Value;
 use tau_agent_core::{Agent, AgentEvent};
@@ -339,6 +339,8 @@ pub(crate) use tau_provider::{
 pub(crate) use tau_provider::{parse_integration_auth_command, IntegrationAuthCommand};
 pub(crate) use tau_session::execute_session_graph_export_command;
 #[cfg(test)]
+pub(crate) use tau_session::format_id_list;
+#[cfg(test)]
 pub(crate) use tau_session::validate_session_file;
 use tau_session::SessionImportMode;
 #[cfg(test)]
@@ -366,7 +368,7 @@ pub(crate) use tau_session::{
 };
 pub(crate) use tau_session::{execute_branch_alias_command, execute_session_bookmark_command};
 pub(crate) use tau_session::{
-    format_id_list, format_remap_ids, initialize_session, session_lineage_messages, SessionRuntime,
+    format_remap_ids, initialize_session, session_lineage_messages, SessionRuntime,
 };
 pub(crate) use tau_session::{session_message_preview, session_message_role};
 #[cfg(test)]
