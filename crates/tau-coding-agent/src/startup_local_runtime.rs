@@ -6,9 +6,8 @@ use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_extension_startup as build_onboarding_local_runtime_extension_startup,
     execute_prompt_or_command_file_entry_mode_with_dispatch as execute_onboarding_prompt_or_command_file_entry_mode_with_dispatch,
-    register_runtime_event_reporter_pair_if_configured as register_onboarding_runtime_event_reporter_pair_if_configured,
     register_runtime_extension_pipeline as register_onboarding_runtime_extension_pipeline,
-    register_runtime_json_event_subscriber as register_onboarding_runtime_json_event_subscriber,
+    register_runtime_observability_if_configured as register_onboarding_runtime_observability_if_configured,
     resolve_local_runtime_startup_from_cli as resolve_onboarding_local_runtime_startup_from_cli,
     resolve_session_runtime_from_cli as resolve_onboarding_session_runtime_from_cli,
     LocalRuntimeCommandDefaults, LocalRuntimeExtensionBootstrap, LocalRuntimeExtensionStartup,
@@ -54,7 +53,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         cli.max_turns,
         tool_policy,
     );
-    register_onboarding_runtime_event_reporter_pair_if_configured(
+    register_onboarding_runtime_observability_if_configured(
         &mut agent,
         RuntimeEventReporterRegistrationConfig {
             path: cli.tool_audit_log.clone(),
@@ -72,6 +71,9 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             },
             emit_error: |error: &str| eprintln!("telemetry logger error: {error}"),
         },
+        cli.json_events,
+        event_to_json,
+        |value| println!("{value}"),
     )?;
     let mut session_runtime = resolve_onboarding_session_runtime_from_cli(
         cli,
@@ -91,13 +93,6 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         },
         |lineage| agent.replace_messages(lineage),
     )?;
-
-    register_onboarding_runtime_json_event_subscriber(
-        &mut agent,
-        cli.json_events,
-        event_to_json,
-        |value| println!("{value}"),
-    );
     let LocalRuntimeExtensionStartup {
         extension_hooks,
         bootstrap:

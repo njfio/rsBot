@@ -753,6 +753,50 @@ where
     })
 }
 
+pub fn register_runtime_observability_if_configured<
+    TFirstReporter,
+    TSecondReporter,
+    FFirstOpen,
+    FFirstReport,
+    FFirstEmit,
+    EFirst,
+    FSecondOpen,
+    FSecondReport,
+    FSecondEmit,
+    ESecond,
+    FRenderEvent,
+    FEmitJson,
+>(
+    agent: &mut Agent,
+    first: RuntimeEventReporterRegistrationConfig<FFirstOpen, FFirstReport, FFirstEmit>,
+    second: RuntimeEventReporterRegistrationConfig<FSecondOpen, FSecondReport, FSecondEmit>,
+    json_events_enabled: bool,
+    render_event: FRenderEvent,
+    emit_json: FEmitJson,
+) -> Result<RuntimeEventReporterPairRegistration>
+where
+    TFirstReporter: Send + Sync + 'static,
+    TSecondReporter: Send + Sync + 'static,
+    FFirstOpen: FnOnce(PathBuf) -> Result<TFirstReporter>,
+    FFirstReport:
+        Fn(&TFirstReporter, &AgentEvent) -> std::result::Result<(), EFirst> + Send + Sync + 'static,
+    FFirstEmit: Fn(&str) + Send + Sync + 'static,
+    EFirst: std::fmt::Display,
+    FSecondOpen: FnOnce(PathBuf) -> Result<TSecondReporter>,
+    FSecondReport: Fn(&TSecondReporter, &AgentEvent) -> std::result::Result<(), ESecond>
+        + Send
+        + Sync
+        + 'static,
+    FSecondEmit: Fn(&str) + Send + Sync + 'static,
+    ESecond: std::fmt::Display,
+    FRenderEvent: Fn(&AgentEvent) -> Value + Send + Sync + 'static,
+    FEmitJson: Fn(&Value) + Send + Sync + 'static,
+{
+    let registration = register_runtime_event_reporter_pair_if_configured(agent, first, second)?;
+    register_runtime_json_event_subscriber(agent, json_events_enabled, render_event, emit_json);
+    Ok(registration)
+}
+
 fn extension_tool_hook_payload(hook: &str, data: Value) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -789,12 +833,13 @@ mod tests {
         register_runtime_event_reporter_pair_if_configured,
         register_runtime_event_reporter_subscriber, register_runtime_extension_pipeline,
         register_runtime_extension_tool_hook_subscriber, register_runtime_extension_tools,
-        register_runtime_json_event_subscriber, resolve_command_file_entry_path,
-        resolve_extension_runtime_registrations, resolve_local_runtime_entry_mode,
-        resolve_local_runtime_entry_mode_from_cli, resolve_local_runtime_startup_from_cli,
-        resolve_orchestrator_route_table, resolve_prompt_entry_runtime_mode,
-        resolve_prompt_runtime_mode, resolve_session_runtime, resolve_session_runtime_from_cli,
-        LocalRuntimeEntryMode, LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
+        register_runtime_json_event_subscriber, register_runtime_observability_if_configured,
+        resolve_command_file_entry_path, resolve_extension_runtime_registrations,
+        resolve_local_runtime_entry_mode, resolve_local_runtime_entry_mode_from_cli,
+        resolve_local_runtime_startup_from_cli, resolve_orchestrator_route_table,
+        resolve_prompt_entry_runtime_mode, resolve_prompt_runtime_mode, resolve_session_runtime,
+        resolve_session_runtime_from_cli, LocalRuntimeEntryMode,
+        LocalRuntimeExtensionHooksDefaults, LocalRuntimeExtensionStartup,
         LocalRuntimeInteractiveDefaults, LocalRuntimeStartupResolution, PromptEntryRuntimeMode,
         PromptOrCommandFileEntryDispatch, PromptOrCommandFileEntryOutcome, PromptRuntimeMode,
         RuntimeEventReporterPairRegistration, RuntimeEventReporterRegistrationConfig,
@@ -2844,6 +2889,228 @@ mod tests {
             .expect("capture lock")
             .iter()
             .any(|message| message == "forced second reporter failure"));
+    }
+
+    #[tokio::test]
+    async fn unit_register_runtime_observability_if_configured_skips_optional_reporters_and_json_when_disabled(
+    ) {
+        let mut agent = build_tool_loop_agent();
+        let captured_json_events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured_json_events_sink = Arc::clone(&captured_json_events);
+
+        let registration = register_runtime_observability_if_configured(
+            &mut agent,
+            RuntimeEventReporterRegistrationConfig {
+                path: None,
+                open_reporter: |_path| Ok(()),
+                report_event: |_reporter: &(), _event: &AgentEvent| Ok::<(), &'static str>(()),
+                emit_error: |_error: &str| {},
+            },
+            RuntimeEventReporterRegistrationConfig {
+                path: None,
+                open_reporter: |_path| Ok(()),
+                report_event: |_reporter: &(), _event: &AgentEvent| Ok::<(), &'static str>(()),
+                emit_error: |_error: &str| {},
+            },
+            false,
+            |_event| serde_json::json!({"kind":"ignored"}),
+            move |value| {
+                captured_json_events_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(value["kind"].as_str().unwrap_or("missing").to_string());
+            },
+        )
+        .expect("observability registration should succeed");
+
+        assert_eq!(
+            registration,
+            RuntimeEventReporterPairRegistration {
+                first_registered: false,
+                second_registered: false,
+            }
+        );
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(captured_json_events
+            .lock()
+            .expect("capture lock")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn functional_register_runtime_observability_if_configured_registers_reporters_and_emits_json(
+    ) {
+        let mut agent = build_tool_loop_agent();
+        let observed_start_events = Arc::new(Mutex::new(0usize));
+        let observed_start_events_sink = Arc::clone(&observed_start_events);
+        let observed_end_events = Arc::new(Mutex::new(0usize));
+        let observed_end_events_sink = Arc::clone(&observed_end_events);
+        let captured_json_events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured_json_events_sink = Arc::clone(&captured_json_events);
+
+        let registration = register_runtime_observability_if_configured(
+            &mut agent,
+            RuntimeEventReporterRegistrationConfig {
+                path: Some(PathBuf::from("tool-audit.log")),
+                open_reporter: move |_path| Ok(Arc::clone(&observed_start_events_sink)),
+                report_event: |reporter: &Arc<Mutex<usize>>, event: &AgentEvent| {
+                    if matches!(event, AgentEvent::ToolExecutionStart { .. }) {
+                        let mut guard = reporter.lock().expect("reporter lock");
+                        *guard += 1;
+                    }
+                    Ok::<(), &'static str>(())
+                },
+                emit_error: |_error: &str| {},
+            },
+            RuntimeEventReporterRegistrationConfig {
+                path: Some(PathBuf::from("telemetry.log")),
+                open_reporter: move |_path| Ok(Arc::clone(&observed_end_events_sink)),
+                report_event: |reporter: &Arc<Mutex<usize>>, event: &AgentEvent| {
+                    if matches!(event, AgentEvent::ToolExecutionEnd { .. }) {
+                        let mut guard = reporter.lock().expect("reporter lock");
+                        *guard += 1;
+                    }
+                    Ok::<(), &'static str>(())
+                },
+                emit_error: |_error: &str| {},
+            },
+            true,
+            |event| match event {
+                AgentEvent::ToolExecutionStart { .. } => serde_json::json!({"kind":"start"}),
+                AgentEvent::ToolExecutionEnd { .. } => serde_json::json!({"kind":"end"}),
+                _ => serde_json::json!({"kind":"other"}),
+            },
+            move |value| {
+                captured_json_events_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(value["kind"].as_str().unwrap_or("missing").to_string());
+            },
+        )
+        .expect("observability registration should succeed");
+
+        assert_eq!(
+            registration,
+            RuntimeEventReporterPairRegistration {
+                first_registered: true,
+                second_registered: true,
+            }
+        );
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(*observed_start_events.lock().expect("reporter lock") > 0);
+        assert!(*observed_end_events.lock().expect("reporter lock") > 0);
+        assert!(captured_json_events
+            .lock()
+            .expect("capture lock")
+            .iter()
+            .any(|kind| kind == "start"));
+    }
+
+    #[test]
+    fn integration_register_runtime_observability_if_configured_propagates_reporter_open_errors() {
+        let mut agent = build_tool_loop_agent();
+
+        let error = register_runtime_observability_if_configured(
+            &mut agent,
+            RuntimeEventReporterRegistrationConfig {
+                path: Some(PathBuf::from("tool-audit.log")),
+                open_reporter: |_path| Err(anyhow::anyhow!("failed to open first reporter")),
+                report_event: |_reporter: &(), _event: &AgentEvent| Ok::<(), &'static str>(()),
+                emit_error: |_error: &str| {},
+            },
+            RuntimeEventReporterRegistrationConfig {
+                path: Some(PathBuf::from("telemetry.log")),
+                open_reporter: |_path| Ok(()),
+                report_event: |_reporter: &(), _event: &AgentEvent| Ok::<(), &'static str>(()),
+                emit_error: |_error: &str| {},
+            },
+            true,
+            |_event| serde_json::json!({"kind":"ignored"}),
+            |_value| {},
+        )
+        .expect_err("first reporter open errors should propagate");
+
+        assert!(
+            error.to_string().contains("failed to open first reporter"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_register_runtime_observability_if_configured_emits_report_errors_and_keeps_json_stream(
+    ) {
+        let mut agent = build_tool_loop_agent();
+        let first_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let first_errors_sink = Arc::clone(&first_errors);
+        let second_errors = Arc::new(Mutex::new(Vec::<String>::new()));
+        let second_errors_sink = Arc::clone(&second_errors);
+        let captured_json_events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured_json_events_sink = Arc::clone(&captured_json_events);
+
+        let registration = register_runtime_observability_if_configured(
+            &mut agent,
+            RuntimeEventReporterRegistrationConfig {
+                path: Some(PathBuf::from("tool-audit.log")),
+                open_reporter: |_path| Ok(()),
+                report_event: |_reporter: &(), _event: &AgentEvent| {
+                    Err("forced first observability reporter failure")
+                },
+                emit_error: move |error: &str| {
+                    first_errors_sink
+                        .lock()
+                        .expect("capture lock")
+                        .push(error.to_string())
+                },
+            },
+            RuntimeEventReporterRegistrationConfig {
+                path: Some(PathBuf::from("telemetry.log")),
+                open_reporter: |_path| Ok(()),
+                report_event: |_reporter: &(), _event: &AgentEvent| {
+                    Err("forced second observability reporter failure")
+                },
+                emit_error: move |error: &str| {
+                    second_errors_sink
+                        .lock()
+                        .expect("capture lock")
+                        .push(error.to_string())
+                },
+            },
+            true,
+            |event| match event {
+                AgentEvent::ToolExecutionStart { .. } => serde_json::json!({"kind":"start"}),
+                _ => serde_json::json!({"kind":"other"}),
+            },
+            move |value| {
+                captured_json_events_sink
+                    .lock()
+                    .expect("capture lock")
+                    .push(value["kind"].as_str().unwrap_or("missing").to_string());
+            },
+        )
+        .expect("observability registration should succeed");
+
+        assert_eq!(
+            registration,
+            RuntimeEventReporterPairRegistration {
+                first_registered: true,
+                second_registered: true,
+            }
+        );
+        let _ = agent.prompt("run echo").await.expect("prompt succeeds");
+        assert!(first_errors
+            .lock()
+            .expect("capture lock")
+            .iter()
+            .any(|message| message == "forced first observability reporter failure"));
+        assert!(second_errors
+            .lock()
+            .expect("capture lock")
+            .iter()
+            .any(|message| message == "forced second observability reporter failure"));
+        assert!(!captured_json_events
+            .lock()
+            .expect("capture lock")
+            .is_empty());
     }
 
     #[tokio::test]
