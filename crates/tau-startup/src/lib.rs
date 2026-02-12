@@ -4,10 +4,10 @@ use tau_access::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir,
 use tau_cli::validation::{
     validate_browser_automation_preflight_cli, validate_deployment_wasm_inspect_cli,
     validate_deployment_wasm_package_cli, validate_event_webhook_ingest_cli,
-    validate_gateway_remote_profile_inspect_cli, validate_gateway_service_cli,
-    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_incident_timeline_cli,
-    validate_multi_channel_live_ingest_cli, validate_multi_channel_send_cli,
-    validate_project_index_cli,
+    validate_gateway_remote_plan_cli, validate_gateway_remote_profile_inspect_cli,
+    validate_gateway_service_cli, validate_multi_channel_channel_lifecycle_cli,
+    validate_multi_channel_incident_timeline_cli, validate_multi_channel_live_ingest_cli,
+    validate_multi_channel_send_cli, validate_project_index_cli,
 };
 use tau_cli::Cli;
 use tau_core::current_unix_timestamp_ms;
@@ -196,6 +196,12 @@ pub fn execute_startup_preflight(cli: &Cli, actions: &dyn StartupPreflightAction
     if cli.gateway_remote_profile_inspect {
         validate_gateway_remote_profile_inspect_cli(cli)?;
         tau_cli::gateway_remote_profile::execute_gateway_remote_profile_inspect_command(cli)?;
+        return Ok(true);
+    }
+
+    if cli.gateway_remote_plan {
+        validate_gateway_remote_plan_cli(cli)?;
+        tau_cli::gateway_remote_profile::execute_gateway_remote_plan_command(cli)?;
         return Ok(true);
     }
 

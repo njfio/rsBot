@@ -12175,6 +12175,46 @@ fn functional_validate_gateway_remote_profile_inspect_cli_rejects_prompt_conflic
 }
 
 #[test]
+fn unit_validate_gateway_remote_plan_cli_accepts_minimum_configuration() {
+    let mut cli = test_cli();
+    cli.gateway_remote_plan = true;
+
+    validate_gateway_remote_plan_cli(&cli).expect("gateway remote plan config should validate");
+}
+
+#[test]
+fn functional_validate_gateway_remote_plan_cli_rejects_prompt_conflicts() {
+    let mut cli = test_cli();
+    cli.gateway_remote_plan = true;
+    cli.prompt = Some("conflict".to_string());
+
+    let error = validate_gateway_remote_plan_cli(&cli).expect_err("prompt conflict should fail");
+    assert!(error
+        .to_string()
+        .contains("--gateway-remote-plan cannot be combined"));
+}
+
+#[test]
+fn regression_validate_gateway_remote_plan_cli_rejects_hold_profile_configuration() {
+    let mut cli = test_cli();
+    cli.gateway_remote_plan = true;
+    cli.gateway_openresponses_server = true;
+    cli.gateway_remote_profile = CliGatewayRemoteProfile::TailscaleFunnel;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
+    cli.gateway_openresponses_auth_password = None;
+    cli.gateway_openresponses_bind = "127.0.0.1:8787".to_string();
+
+    let error = validate_gateway_remote_plan_cli(&cli)
+        .expect_err("invalid selected profile posture should fail closed");
+    assert!(error
+        .to_string()
+        .contains("gateway remote plan rejected: profile=tailscale-funnel gate=hold"));
+    assert!(error
+        .to_string()
+        .contains("tailscale_funnel_missing_password"));
+}
+
+#[test]
 fn unit_validate_gateway_openresponses_server_cli_accepts_minimum_configuration() {
     let mut cli = test_cli();
     cli.gateway_openresponses_server = true;
@@ -18168,6 +18208,55 @@ fn regression_execute_startup_preflight_gateway_remote_profile_inspect_fails_clo
     let error = execute_startup_preflight(&cli)
         .expect_err("unsafe local-only remote profile should fail closed");
     assert!(error.to_string().contains("local_only_non_loopback_bind"));
+}
+
+#[test]
+fn functional_execute_startup_preflight_runs_gateway_remote_plan_mode() {
+    let mut cli = test_cli();
+    cli.gateway_remote_plan = true;
+    cli.gateway_remote_plan_json = true;
+    cli.gateway_openresponses_server = true;
+    cli.gateway_remote_profile = CliGatewayRemoteProfile::ProxyRemote;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
+    cli.gateway_openresponses_auth_token = Some("edge-token".to_string());
+    cli.gateway_openresponses_bind = "127.0.0.1:8787".to_string();
+
+    let handled = execute_startup_preflight(&cli).expect("gateway remote plan preflight");
+    assert!(handled);
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_gateway_remote_plan_tailscale_serve_mode() {
+    let mut cli = test_cli();
+    cli.gateway_remote_plan = true;
+    cli.gateway_openresponses_server = true;
+    cli.gateway_remote_profile = CliGatewayRemoteProfile::TailscaleServe;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
+    cli.gateway_openresponses_auth_token = Some("edge-token".to_string());
+    cli.gateway_openresponses_bind = "127.0.0.1:8787".to_string();
+
+    let handled = execute_startup_preflight(&cli).expect("gateway remote plan preflight");
+    assert!(handled);
+}
+
+#[test]
+fn regression_execute_startup_preflight_gateway_remote_plan_fails_closed() {
+    let mut cli = test_cli();
+    cli.gateway_remote_plan = true;
+    cli.gateway_openresponses_server = true;
+    cli.gateway_remote_profile = CliGatewayRemoteProfile::TailscaleFunnel;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
+    cli.gateway_openresponses_auth_password = None;
+    cli.gateway_openresponses_bind = "127.0.0.1:8787".to_string();
+
+    let error =
+        execute_startup_preflight(&cli).expect_err("missing funnel password should fail closed");
+    assert!(error
+        .to_string()
+        .contains("gateway remote plan rejected: profile=tailscale-funnel gate=hold"));
+    assert!(error
+        .to_string()
+        .contains("tailscale_funnel_missing_password"));
 }
 
 #[test]

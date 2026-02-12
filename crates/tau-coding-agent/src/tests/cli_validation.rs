@@ -2021,6 +2021,39 @@ fn regression_cli_gateway_remote_profile_json_requires_inspect() {
 }
 
 #[test]
+fn unit_cli_gateway_remote_plan_defaults_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.gateway_remote_plan);
+    assert!(!cli.gateway_remote_plan_json);
+}
+
+#[test]
+fn functional_cli_gateway_remote_plan_accepts_json_and_profile_override() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--gateway-remote-plan",
+        "--gateway-remote-plan-json",
+        "--gateway-remote-profile",
+        "tailscale-serve",
+    ]);
+    assert!(cli.gateway_remote_plan);
+    assert!(cli.gateway_remote_plan_json);
+    assert_eq!(
+        cli.gateway_remote_profile,
+        CliGatewayRemoteProfile::TailscaleServe
+    );
+}
+
+#[test]
+fn regression_cli_gateway_remote_plan_json_requires_plan() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--gateway-remote-plan-json"]);
+    let error = parse.expect_err("json output should require plan flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
 fn unit_cli_gateway_service_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.gateway_service_start);

@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use serde::Serialize;
 
 use crate::{Cli, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile};
 
@@ -34,16 +35,339 @@ fn has_non_empty(value: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-pub fn evaluate_gateway_remote_profile(cli: &Cli) -> Result<GatewayRemoteProfileReport> {
-    let config = GatewayRemoteProfileConfig {
+fn gateway_remote_profile_config_for(
+    cli: &Cli,
+    profile: GatewayRemoteProfile,
+) -> GatewayRemoteProfileConfig {
+    GatewayRemoteProfileConfig {
         bind: cli.gateway_openresponses_bind.clone(),
         auth_mode: map_auth_mode(cli.gateway_openresponses_auth_mode),
-        profile: map_remote_profile(cli.gateway_remote_profile),
+        profile,
         auth_token_configured: has_non_empty(cli.gateway_openresponses_auth_token.as_deref()),
         auth_password_configured: has_non_empty(cli.gateway_openresponses_auth_password.as_deref()),
         server_enabled: cli.gateway_openresponses_server,
-    };
+    }
+}
+
+pub fn evaluate_gateway_remote_profile(cli: &Cli) -> Result<GatewayRemoteProfileReport> {
+    let config =
+        gateway_remote_profile_config_for(cli, map_remote_profile(cli.gateway_remote_profile));
     evaluate_gateway_remote_profile_config(&config)
+}
+
+pub const GATEWAY_REMOTE_PLAN_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `GatewayRemoteExposureWorkflowPlan` used across Tau components.
+pub struct GatewayRemoteExposureWorkflowPlan {
+    pub workflow: String,
+    pub gateway_profile: String,
+    pub gate: String,
+    pub risk_level: String,
+    pub description: String,
+    pub reason_codes: Vec<String>,
+    pub preflight_checks: Vec<String>,
+    pub auth_requirements: Vec<String>,
+    pub bind_requirements: Vec<String>,
+    pub warnings: Vec<String>,
+    pub commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `GatewayRemoteExposurePlanReport` used across Tau components.
+pub struct GatewayRemoteExposurePlanReport {
+    pub schema_version: u32,
+    pub selected_profile: String,
+    pub selected_profile_gate: String,
+    pub selected_profile_reason_codes: Vec<String>,
+    pub plans: Vec<GatewayRemoteExposureWorkflowPlan>,
+}
+
+fn format_check(name: &str, passed: bool, detail: &str) -> String {
+    format!(
+        "check={} status={} detail={}",
+        name,
+        if passed { "pass" } else { "hold" },
+        detail
+    )
+}
+
+fn summarize_reason_codes(reason_codes: &[String]) -> String {
+    if reason_codes.is_empty() {
+        "none".to_string()
+    } else {
+        reason_codes.join(",")
+    }
+}
+
+fn build_tailscale_serve_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflowPlan> {
+    let report = evaluate_gateway_remote_profile_config(&gateway_remote_profile_config_for(
+        cli,
+        GatewayRemoteProfile::TailscaleServe,
+    ))?;
+    let auth_mode_ok = matches!(
+        cli.gateway_openresponses_auth_mode,
+        CliGatewayOpenResponsesAuthMode::Token | CliGatewayOpenResponsesAuthMode::PasswordSession
+    );
+    let auth_secret_ok = has_non_empty(cli.gateway_openresponses_auth_token.as_deref())
+        || has_non_empty(cli.gateway_openresponses_auth_password.as_deref());
+    let preflight_checks = vec![
+        format_check(
+            "gateway_openresponses_server_enabled",
+            cli.gateway_openresponses_server,
+            "enable --gateway-openresponses-server before exposing remotely",
+        ),
+        format_check(
+            "loopback_bind_required",
+            report.loopback_bind,
+            "bind should stay loopback when using tailscale serve",
+        ),
+        format_check(
+            "auth_mode_token_or_password_session",
+            auth_mode_ok,
+            "supported auth modes for tailscale serve: token or password-session",
+        ),
+        format_check(
+            "auth_secret_configured",
+            auth_secret_ok,
+            "set --gateway-openresponses-auth-token or --gateway-openresponses-auth-password",
+        ),
+    ];
+    Ok(GatewayRemoteExposureWorkflowPlan {
+        workflow: "tailscale-serve".to_string(),
+        gateway_profile: "tailscale-serve".to_string(),
+        gate: report.gate,
+        risk_level: report.risk_level,
+        description:
+            "Publish a loopback-bound gateway through tailscale serve for private network operators."
+                .to_string(),
+        reason_codes: report.reason_codes,
+        preflight_checks,
+        auth_requirements: vec![
+            "token (recommended) or password-session auth mode".to_string(),
+            "non-empty auth token/password value".to_string(),
+        ],
+        bind_requirements: vec![
+            "gateway bind must stay loopback (127.0.0.1 or ::1)".to_string(),
+            "avoid direct public bind for serve profile".to_string(),
+        ],
+        warnings: vec![
+            "localhost-dev auth mode is unsupported for tailscale serve".to_string(),
+            "review tailscale ACL posture before exposing operator routes".to_string(),
+        ],
+        commands: vec![
+            "tau-rs --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-remote-profile tailscale-serve --gateway-openresponses-auth-mode token --gateway-openresponses-auth-token <TOKEN>".to_string(),
+            "tailscale serve --bg 8787 http://127.0.0.1:8787".to_string(),
+            "curl -H \"Authorization: Bearer <TOKEN>\" http://127.0.0.1:8787/gateway/status".to_string(),
+        ],
+    })
+}
+
+fn build_tailscale_funnel_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflowPlan> {
+    let report = evaluate_gateway_remote_profile_config(&gateway_remote_profile_config_for(
+        cli,
+        GatewayRemoteProfile::TailscaleFunnel,
+    ))?;
+    let auth_mode_ok = matches!(
+        cli.gateway_openresponses_auth_mode,
+        CliGatewayOpenResponsesAuthMode::PasswordSession
+    );
+    let password_ok = has_non_empty(cli.gateway_openresponses_auth_password.as_deref());
+    let preflight_checks = vec![
+        format_check(
+            "gateway_openresponses_server_enabled",
+            cli.gateway_openresponses_server,
+            "enable --gateway-openresponses-server before exposing remotely",
+        ),
+        format_check(
+            "loopback_bind_required",
+            report.loopback_bind,
+            "bind should stay loopback when using tailscale funnel",
+        ),
+        format_check(
+            "auth_mode_password_session_required",
+            auth_mode_ok,
+            "tailscale funnel requires --gateway-openresponses-auth-mode=password-session",
+        ),
+        format_check(
+            "auth_password_configured",
+            password_ok,
+            "set --gateway-openresponses-auth-password to a non-empty value",
+        ),
+    ];
+    Ok(GatewayRemoteExposureWorkflowPlan {
+        workflow: "tailscale-funnel".to_string(),
+        gateway_profile: "tailscale-funnel".to_string(),
+        gate: report.gate,
+        risk_level: report.risk_level,
+        description: "Expose a loopback-bound gateway through tailscale funnel with password-session auth for internet-accessible remote operators.".to_string(),
+        reason_codes: report.reason_codes,
+        preflight_checks,
+        auth_requirements: vec![
+            "password-session auth mode".to_string(),
+            "non-empty auth password".to_string(),
+        ],
+        bind_requirements: vec![
+            "gateway bind must stay loopback (127.0.0.1 or ::1)".to_string(),
+            "public access should terminate through tailscale funnel, not direct bind".to_string(),
+        ],
+        warnings: vec![
+            "funnel exposure should be treated as internet-facing and high-risk".to_string(),
+            "rotate session password regularly and monitor auth/session usage".to_string(),
+        ],
+        commands: vec![
+            "tau-rs --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-remote-profile tailscale-funnel --gateway-openresponses-auth-mode password-session --gateway-openresponses-auth-password <PASSWORD>".to_string(),
+            "tailscale funnel --bg 8787".to_string(),
+            "curl -X POST http://127.0.0.1:8787/gateway/auth/session -H \"Content-Type: application/json\" -d '{\"password\":\"<PASSWORD>\"}'".to_string(),
+        ],
+    })
+}
+
+fn build_ssh_tunnel_fallback_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflowPlan> {
+    let report = evaluate_gateway_remote_profile_config(&gateway_remote_profile_config_for(
+        cli,
+        GatewayRemoteProfile::ProxyRemote,
+    ))?;
+    let auth_mode_ok = matches!(
+        cli.gateway_openresponses_auth_mode,
+        CliGatewayOpenResponsesAuthMode::Token
+    );
+    let token_ok = has_non_empty(cli.gateway_openresponses_auth_token.as_deref());
+    let preflight_checks = vec![
+        format_check(
+            "gateway_openresponses_server_enabled",
+            cli.gateway_openresponses_server,
+            "enable --gateway-openresponses-server before exposing remotely",
+        ),
+        format_check(
+            "loopback_bind_required",
+            report.loopback_bind,
+            "bind should stay loopback when using SSH tunnel fallback",
+        ),
+        format_check(
+            "auth_mode_token_required",
+            auth_mode_ok,
+            "ssh fallback uses bearer-token auth for deterministic operator access",
+        ),
+        format_check(
+            "auth_token_configured",
+            token_ok,
+            "set --gateway-openresponses-auth-token to a non-empty value",
+        ),
+    ];
+    Ok(GatewayRemoteExposureWorkflowPlan {
+        workflow: "ssh-tunnel-fallback".to_string(),
+        gateway_profile: "proxy-remote".to_string(),
+        gate: report.gate,
+        risk_level: report.risk_level,
+        description:
+            "Fallback workflow that keeps gateway loopback-bound and grants remote operator access over an SSH local-forward tunnel."
+                .to_string(),
+        reason_codes: report.reason_codes,
+        preflight_checks,
+        auth_requirements: vec![
+            "token auth mode".to_string(),
+            "non-empty bearer auth token".to_string(),
+        ],
+        bind_requirements: vec![
+            "gateway bind must stay loopback (127.0.0.1 or ::1)".to_string(),
+            "remote access must flow through SSH forwarding, not direct bind".to_string(),
+        ],
+        warnings: vec![
+            "use short-lived SSH sessions and least-privilege host credentials".to_string(),
+            "treat forwarded local port as privileged control-plane access".to_string(),
+        ],
+        commands: vec![
+            "tau-rs --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-remote-profile proxy-remote --gateway-openresponses-auth-mode token --gateway-openresponses-auth-token <TOKEN>".to_string(),
+            "ssh -N -L 8787:127.0.0.1:8787 <user>@<host>".to_string(),
+            "curl -H \"Authorization: Bearer <TOKEN>\" http://127.0.0.1:8787/gateway/status".to_string(),
+        ],
+    })
+}
+
+pub fn evaluate_gateway_remote_plan(cli: &Cli) -> Result<GatewayRemoteExposurePlanReport> {
+    let selected_profile_report = evaluate_gateway_remote_profile(cli)?;
+    if selected_profile_report.gate != "pass" {
+        bail!(
+            "gateway remote plan rejected: profile={} gate={} reason_codes={}",
+            selected_profile_report.profile,
+            selected_profile_report.gate,
+            summarize_reason_codes(&selected_profile_report.reason_codes)
+        );
+    }
+    Ok(GatewayRemoteExposurePlanReport {
+        schema_version: GATEWAY_REMOTE_PLAN_SCHEMA_VERSION,
+        selected_profile: selected_profile_report.profile,
+        selected_profile_gate: selected_profile_report.gate,
+        selected_profile_reason_codes: selected_profile_report.reason_codes,
+        plans: vec![
+            build_tailscale_serve_plan(cli)?,
+            build_tailscale_funnel_plan(cli)?,
+            build_ssh_tunnel_fallback_plan(cli)?,
+        ],
+    })
+}
+
+pub fn render_gateway_remote_plan_report(report: &GatewayRemoteExposurePlanReport) -> String {
+    let mut lines = vec![format!(
+        "gateway remote plan export: schema_version={} selected_profile={} selected_profile_gate={} selected_profile_reason_codes={}",
+        report.schema_version,
+        report.selected_profile,
+        report.selected_profile_gate,
+        summarize_reason_codes(&report.selected_profile_reason_codes)
+    )];
+    for plan in &report.plans {
+        lines.push(format!(
+            "workflow={} profile={} gate={} risk_level={} reason_codes={}",
+            plan.workflow,
+            plan.gateway_profile,
+            plan.gate,
+            plan.risk_level,
+            summarize_reason_codes(&plan.reason_codes)
+        ));
+        lines.push(format!("description={}", plan.description));
+        lines.push(format!(
+            "preflight_checks={}",
+            if plan.preflight_checks.is_empty() {
+                "none".to_string()
+            } else {
+                plan.preflight_checks.join(" | ")
+            }
+        ));
+        lines.push(format!(
+            "auth_requirements={}",
+            if plan.auth_requirements.is_empty() {
+                "none".to_string()
+            } else {
+                plan.auth_requirements.join(" | ")
+            }
+        ));
+        lines.push(format!(
+            "bind_requirements={}",
+            if plan.bind_requirements.is_empty() {
+                "none".to_string()
+            } else {
+                plan.bind_requirements.join(" | ")
+            }
+        ));
+        lines.push(format!(
+            "warnings={}",
+            if plan.warnings.is_empty() {
+                "none".to_string()
+            } else {
+                plan.warnings.join(" | ")
+            }
+        ));
+        lines.push(format!(
+            "commands={}",
+            if plan.commands.is_empty() {
+                "none".to_string()
+            } else {
+                plan.commands.join(" | ")
+            }
+        ));
+    }
+    lines.join("\n")
 }
 
 pub fn render_gateway_remote_profile_report(report: &GatewayRemoteProfileReport) -> String {
@@ -90,6 +414,20 @@ pub fn execute_gateway_remote_profile_inspect_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+pub fn execute_gateway_remote_plan_command(cli: &Cli) -> Result<()> {
+    let report = evaluate_gateway_remote_plan(cli)?;
+    if cli.gateway_remote_plan_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("failed to render gateway remote plan json")?
+        );
+    } else {
+        println!("{}", render_gateway_remote_plan_report(&report));
+    }
+    Ok(())
+}
+
 pub fn validate_gateway_remote_profile_for_openresponses(cli: &Cli) -> Result<()> {
     if !cli.gateway_openresponses_server {
         return Ok(());
@@ -114,7 +452,9 @@ pub fn validate_gateway_remote_profile_for_openresponses(cli: &Cli) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_gateway_remote_profile, validate_gateway_remote_profile_for_openresponses,
+        evaluate_gateway_remote_plan, evaluate_gateway_remote_profile,
+        execute_gateway_remote_plan_command, render_gateway_remote_plan_report,
+        validate_gateway_remote_profile_for_openresponses,
     };
     use crate::Cli;
     use clap::Parser;
@@ -273,5 +613,109 @@ mod tests {
             .to_string()
             .contains("gateway remote profile rejected"));
         assert!(error.to_string().contains("local_only_non_loopback_bind"));
+    }
+
+    #[test]
+    fn unit_evaluate_gateway_remote_plan_returns_three_workflows() {
+        let cli = parse_cli_with_stack(&[
+            "tau-rs",
+            "--gateway-openresponses-server",
+            "--gateway-remote-profile",
+            "tailscale-serve",
+            "--gateway-openresponses-auth-mode",
+            "token",
+            "--gateway-openresponses-auth-token",
+            "edge-token",
+            "--gateway-openresponses-bind",
+            "127.0.0.1:8787",
+            "--gateway-remote-plan",
+        ]);
+        let report = evaluate_gateway_remote_plan(&cli).expect("plan should evaluate");
+        assert_eq!(
+            report.schema_version,
+            super::GATEWAY_REMOTE_PLAN_SCHEMA_VERSION
+        );
+        assert_eq!(report.selected_profile, "tailscale-serve");
+        assert_eq!(report.plans.len(), 3);
+        assert!(report
+            .plans
+            .iter()
+            .any(|plan| plan.workflow == "tailscale-serve"));
+        assert!(report
+            .plans
+            .iter()
+            .any(|plan| plan.workflow == "tailscale-funnel"));
+        assert!(report
+            .plans
+            .iter()
+            .any(|plan| plan.workflow == "ssh-tunnel-fallback"));
+    }
+
+    #[test]
+    fn functional_render_gateway_remote_plan_report_includes_workflow_sections() {
+        let cli = parse_cli_with_stack(&[
+            "tau-rs",
+            "--gateway-openresponses-server",
+            "--gateway-remote-profile",
+            "proxy-remote",
+            "--gateway-openresponses-auth-mode",
+            "token",
+            "--gateway-openresponses-auth-token",
+            "edge-token",
+            "--gateway-openresponses-bind",
+            "127.0.0.1:8787",
+            "--gateway-remote-plan",
+        ]);
+        let report = evaluate_gateway_remote_plan(&cli).expect("plan should evaluate");
+        let rendered = render_gateway_remote_plan_report(&report);
+        assert!(rendered.contains("gateway remote plan export:"));
+        assert!(rendered.contains("workflow=tailscale-serve"));
+        assert!(rendered.contains("workflow=tailscale-funnel"));
+        assert!(rendered.contains("workflow=ssh-tunnel-fallback"));
+        assert!(rendered.contains("commands="));
+        assert!(rendered.contains("preflight_checks="));
+    }
+
+    #[test]
+    fn integration_execute_gateway_remote_plan_command_supports_json_mode() {
+        let cli = parse_cli_with_stack(&[
+            "tau-rs",
+            "--gateway-openresponses-server",
+            "--gateway-remote-profile",
+            "tailscale-funnel",
+            "--gateway-openresponses-auth-mode",
+            "password-session",
+            "--gateway-openresponses-auth-password",
+            "edge-password",
+            "--gateway-openresponses-bind",
+            "127.0.0.1:8787",
+            "--gateway-remote-plan",
+            "--gateway-remote-plan-json",
+        ]);
+        execute_gateway_remote_plan_command(&cli)
+            .expect("gateway remote plan command should succeed in json mode");
+    }
+
+    #[test]
+    fn regression_evaluate_gateway_remote_plan_rejects_hold_selected_profile_configuration() {
+        let cli = parse_cli_with_stack(&[
+            "tau-rs",
+            "--gateway-openresponses-server",
+            "--gateway-remote-profile",
+            "tailscale-funnel",
+            "--gateway-openresponses-auth-mode",
+            "password-session",
+            "--gateway-openresponses-bind",
+            "127.0.0.1:8787",
+            "--gateway-remote-plan",
+        ]);
+        let error = evaluate_gateway_remote_plan(&cli)
+            .expect_err("missing password for selected profile should fail closed");
+        assert!(error
+            .to_string()
+            .contains("gateway remote plan rejected: profile=tailscale-funnel gate=hold"));
+        assert!(error
+            .to_string()
+            .contains("tailscale_funnel_missing_password"));
     }
 }
