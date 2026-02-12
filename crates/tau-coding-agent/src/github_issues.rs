@@ -72,6 +72,9 @@ use tau_github_issues::issue_comment::{
     IssueCommentArtifactView, IssueCommentAttachmentView, IssueCommentRunView,
     IssueCommentUsageView,
 };
+use tau_github_issues::issue_core_command::{
+    parse_issue_core_command as parse_shared_issue_core_command, IssueCoreCommand,
+};
 use tau_github_issues::issue_demo_index::parse_demo_index_run_command as parse_shared_demo_index_run_command;
 use tau_github_issues::issue_demo_index_command::{
     parse_demo_index_issue_command as parse_shared_demo_index_issue_command, DemoIndexIssueCommand,
@@ -5069,93 +5072,40 @@ fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
     let envelope = parse_shared_issue_command_envelope(body, "/tau", &usage)?;
     let parsed = match envelope {
         Err(message) => TauIssueCommand::Invalid { message },
-        Ok(envelope) => match envelope.command {
-            "run" => {
-                if envelope.remainder.is_empty() {
-                    TauIssueCommand::Invalid {
-                        message: "Usage: /tau run <prompt>".to_string(),
+        Ok(envelope) => {
+            if let Some(core) =
+                parse_shared_issue_core_command(envelope.command, envelope.remainder)
+            {
+                match core {
+                    Ok(IssueCoreCommand::Run { prompt }) => TauIssueCommand::Run { prompt },
+                    Ok(IssueCoreCommand::Stop) => TauIssueCommand::Stop,
+                    Ok(IssueCoreCommand::Status) => TauIssueCommand::Status,
+                    Ok(IssueCoreCommand::Health) => TauIssueCommand::Health,
+                    Ok(IssueCoreCommand::Compact) => TauIssueCommand::Compact,
+                    Ok(IssueCoreCommand::Help) => TauIssueCommand::Help,
+                    Ok(IssueCoreCommand::Canvas { args }) => TauIssueCommand::Canvas { args },
+                    Ok(IssueCoreCommand::Summarize { focus }) => {
+                        TauIssueCommand::Summarize { focus }
                     }
-                } else {
-                    TauIssueCommand::Run {
-                        prompt: envelope.remainder.to_string(),
-                    }
+                    Err(message) => TauIssueCommand::Invalid { message },
+                }
+            } else {
+                match envelope.command {
+                    "auth" => parse_issue_auth_command(envelope.remainder),
+                    "doctor" => parse_doctor_issue_command(envelope.remainder),
+                    "chat" => parse_chat_command(envelope.remainder),
+                    "artifacts" => parse_artifacts_command(envelope.remainder),
+                    "demo-index" => parse_demo_index_command(envelope.remainder),
+                    _ => TauIssueCommand::Invalid {
+                        message: format!(
+                            "Unknown command `{}`.\n\n{}",
+                            envelope.command,
+                            tau_command_usage()
+                        ),
+                    },
                 }
             }
-            "stop" => {
-                if envelope.remainder.is_empty() {
-                    TauIssueCommand::Stop
-                } else {
-                    TauIssueCommand::Invalid {
-                        message: "Usage: /tau stop".to_string(),
-                    }
-                }
-            }
-            "status" => {
-                if envelope.remainder.is_empty() {
-                    TauIssueCommand::Status
-                } else {
-                    TauIssueCommand::Invalid {
-                        message: "Usage: /tau status".to_string(),
-                    }
-                }
-            }
-            "health" => {
-                if envelope.remainder.is_empty() {
-                    TauIssueCommand::Health
-                } else {
-                    TauIssueCommand::Invalid {
-                        message: "Usage: /tau health".to_string(),
-                    }
-                }
-            }
-            "auth" => parse_issue_auth_command(envelope.remainder),
-            "doctor" => parse_doctor_issue_command(envelope.remainder),
-            "compact" => {
-                if envelope.remainder.is_empty() {
-                    TauIssueCommand::Compact
-                } else {
-                    TauIssueCommand::Invalid {
-                        message: "Usage: /tau compact".to_string(),
-                    }
-                }
-            }
-            "help" => {
-                if envelope.remainder.is_empty() {
-                    TauIssueCommand::Help
-                } else {
-                    TauIssueCommand::Invalid {
-                        message: "Usage: /tau help".to_string(),
-                    }
-                }
-            }
-            "chat" => parse_chat_command(envelope.remainder),
-            "artifacts" => parse_artifacts_command(envelope.remainder),
-            "demo-index" => parse_demo_index_command(envelope.remainder),
-            "canvas" => {
-                if envelope.remainder.is_empty() {
-                    TauIssueCommand::Invalid {
-                        message: "Usage: /tau canvas <create|update|show|export|import> ..."
-                            .to_string(),
-                    }
-                } else {
-                    TauIssueCommand::Canvas {
-                        args: envelope.remainder.to_string(),
-                    }
-                }
-            }
-            "summarize" => {
-                let focus =
-                    (!envelope.remainder.is_empty()).then(|| envelope.remainder.to_string());
-                TauIssueCommand::Summarize { focus }
-            }
-            _ => TauIssueCommand::Invalid {
-                message: format!(
-                    "Unknown command `{}`.\n\n{}",
-                    envelope.command,
-                    tau_command_usage()
-                ),
-            },
-        },
+        }
     };
     Some(parsed)
 }

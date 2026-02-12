@@ -11,6 +11,7 @@ pub mod issue_chat_command;
 pub mod issue_command_envelope;
 pub mod issue_command_usage;
 pub mod issue_comment;
+pub mod issue_core_command;
 pub mod issue_demo_index;
 pub mod issue_demo_index_command;
 pub mod issue_doctor_command;
