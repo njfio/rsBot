@@ -1,4 +1,5 @@
 mod auth;
+mod auth_commands_runtime;
 mod claude_cli_client;
 mod cli_executable;
 mod client;
@@ -12,6 +13,7 @@ mod model_catalog;
 mod types;
 
 pub use auth::*;
+pub use auth_commands_runtime::*;
 pub use claude_cli_client::*;
 pub use cli_executable::is_executable_available;
 pub use client::*;

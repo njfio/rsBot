@@ -3142,6 +3142,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "wait-timeout",
 ]
 
 [[package]]

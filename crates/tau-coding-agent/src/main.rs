@@ -7,7 +7,6 @@ mod channel_lifecycle;
 mod channel_send;
 mod channel_store;
 mod channel_store_admin;
-mod cli_executable;
 mod commands;
 mod custom_command_contract;
 mod dashboard_contract;
@@ -53,10 +52,11 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use serde::Serialize;
 use serde_json::Value;
 use tau_agent_core::{Agent, AgentEvent};
-use tau_ai::{LlmClient, Message, MessageRole, ModelRef, Provider};
+#[cfg(test)]
+pub(crate) use tau_ai::Provider;
+use tau_ai::{LlmClient, Message, MessageRole, ModelRef};
 pub(crate) use tau_extensions as extension_manifest;
 pub(crate) use tau_skills as package_manifest;
 #[cfg(test)]
@@ -259,8 +259,10 @@ pub(crate) use tau_cli::{CliDaemonProfile, CliGatewayRemoteProfile};
 pub(crate) use tau_cli::{CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm};
 #[cfg(test)]
 pub(crate) use tau_cli::{CommandFileEntry, CommandFileReport};
+#[cfg(test)]
+pub(crate) use tau_core::current_unix_timestamp;
+pub(crate) use tau_core::current_unix_timestamp_ms;
 pub(crate) use tau_core::write_text_atomic;
-pub(crate) use tau_core::{current_unix_timestamp, current_unix_timestamp_ms};
 #[cfg(test)]
 pub(crate) use tau_diagnostics::build_doctor_command_config;
 #[cfg(test)]
@@ -312,29 +314,25 @@ pub(crate) use tau_provider::resolve_credential_store_encryption_mode;
 pub(crate) use tau_provider::resolve_fallback_models;
 #[cfg(test)]
 pub(crate) use tau_provider::CredentialStoreEncryptionMode;
-pub(crate) use tau_provider::ProviderAuthMethod;
 pub(crate) use tau_provider::{
-    build_client_with_fallbacks, configured_provider_auth_method_from_config,
-    missing_provider_api_key_message, provider_auth_capability, provider_auth_mode_flag,
+    build_client_with_fallbacks, execute_integration_auth_command,
+    resolve_secret_from_cli_or_store_id,
 };
 #[cfg(test)]
-pub(crate) use tau_provider::{build_provider_client, provider_api_key_candidates_with_inputs};
-#[cfg(test)]
 pub(crate) use tau_provider::{
-    decrypt_credential_store_secret, encrypt_credential_store_secret,
-    IntegrationCredentialStoreRecord,
-};
-pub(crate) use tau_provider::{
-    execute_integration_auth_command, resolve_secret_from_cli_or_store_id,
+    build_provider_client, decrypt_credential_store_secret, encrypt_credential_store_secret,
+    provider_api_key_candidates_with_inputs, provider_auth_capability,
+    IntegrationCredentialStoreRecord, ProviderAuthMethod,
 };
 #[cfg(test)]
 pub(crate) use tau_provider::{
     is_retryable_provider_error, resolve_store_backed_provider_credential, ClientRoute,
     FallbackRoutingClient,
 };
+#[cfg(test)]
 pub(crate) use tau_provider::{
-    load_credential_store, resolve_non_empty_secret_with_source, save_credential_store,
-    CredentialStoreData, ProviderCredentialStoreRecord,
+    load_credential_store, save_credential_store, CredentialStoreData,
+    ProviderCredentialStoreRecord,
 };
 #[cfg(test)]
 pub(crate) use tau_provider::{parse_integration_auth_command, IntegrationAuthCommand};
