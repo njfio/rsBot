@@ -1,6 +1,6 @@
 //! Core runtime primitives for building tool-using LLM agents in Tau.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -54,6 +54,10 @@ pub struct AgentConfig {
     pub memory_embedding_dimensions: usize,
     pub memory_min_similarity: f32,
     pub memory_max_chars_per_item: usize,
+    pub response_cache_enabled: bool,
+    pub response_cache_max_entries: usize,
+    pub tool_result_cache_enabled: bool,
+    pub tool_result_cache_max_entries: usize,
 }
 
 impl Default for AgentConfig {
@@ -79,6 +83,10 @@ impl Default for AgentConfig {
             memory_embedding_dimensions: 128,
             memory_min_similarity: 0.55,
             memory_max_chars_per_item: 180,
+            response_cache_enabled: true,
+            response_cache_max_entries: 128,
+            tool_result_cache_enabled: true,
+            tool_result_cache_max_entries: 256,
         }
     }
 }
@@ -202,6 +210,9 @@ impl ToolExecutionResult {
 #[async_trait]
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
+    fn is_cacheable(&self) -> bool {
+        false
+    }
     async fn execute(&self, arguments: Value) -> ToolExecutionResult;
 }
 
@@ -292,6 +303,7 @@ const FAILURE_SIGNAL_PHRASES: &[&str] = &[
 struct RegisteredTool {
     definition: ToolDefinition,
     tool: Arc<dyn AgentTool>,
+    cacheable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +351,10 @@ pub struct Agent {
     config: AgentConfig,
     messages: Vec<Message>,
     tools: HashMap<String, RegisteredTool>,
+    response_cache: HashMap<String, tau_ai::ChatResponse>,
+    response_cache_order: VecDeque<String>,
+    tool_result_cache: HashMap<String, ToolExecutionResult>,
+    tool_result_cache_order: VecDeque<String>,
     handlers: Vec<EventHandler>,
     cancellation_token: Option<CooperativeCancellationToken>,
 }
@@ -356,6 +372,10 @@ impl Agent {
             config,
             messages,
             tools: HashMap::new(),
+            response_cache: HashMap::new(),
+            response_cache_order: VecDeque::new(),
+            tool_result_cache: HashMap::new(),
+            tool_result_cache_order: VecDeque::new(),
             handlers: Vec::new(),
             cancellation_token: None,
         }
@@ -374,12 +394,14 @@ impl Agent {
     where
         T: AgentTool + 'static,
     {
+        let cacheable = tool.is_cacheable();
         let definition = tool.definition();
         self.tools.insert(
             definition.name.clone(),
             RegisteredTool {
                 definition,
                 tool: Arc::new(tool),
+                cacheable,
             },
         );
     }
@@ -585,6 +607,104 @@ impl Agent {
             .unwrap_or(false)
     }
 
+    fn response_cache_eligible(
+        &self,
+        request: &ChatRequest,
+        on_delta: &Option<StreamDeltaHandler>,
+    ) -> bool {
+        if !self.config.response_cache_enabled
+            || self.config.response_cache_max_entries == 0
+            || on_delta.is_some()
+        {
+            return false;
+        }
+        let temperature = request.temperature.unwrap_or(0.0);
+        temperature.abs() <= f32::EPSILON
+    }
+
+    fn response_cache_key(request: &ChatRequest) -> Option<String> {
+        serde_json::to_string(request).ok()
+    }
+
+    fn lookup_response_cache(
+        &self,
+        request: &ChatRequest,
+        on_delta: &Option<StreamDeltaHandler>,
+    ) -> Option<tau_ai::ChatResponse> {
+        if !self.response_cache_eligible(request, on_delta) {
+            return None;
+        }
+        let key = Self::response_cache_key(request)?;
+        self.response_cache.get(&key).cloned()
+    }
+
+    fn store_response_cache(
+        &mut self,
+        request: &ChatRequest,
+        on_delta: &Option<StreamDeltaHandler>,
+        response: &tau_ai::ChatResponse,
+    ) {
+        if !self.response_cache_eligible(request, on_delta) {
+            return;
+        }
+        let Some(key) = Self::response_cache_key(request) else {
+            return;
+        };
+        cache_insert_with_limit(
+            &mut self.response_cache,
+            &mut self.response_cache_order,
+            key,
+            response.clone(),
+            self.config.response_cache_max_entries,
+        );
+    }
+
+    fn tool_result_cache_key(call: &ToolCall) -> Option<String> {
+        serde_json::to_string(&json!({
+            "name": call.name,
+            "arguments": call.arguments,
+        }))
+        .ok()
+    }
+
+    fn lookup_tool_result_cache(&self, call: &ToolCall) -> Option<ToolExecutionResult> {
+        if !self.config.tool_result_cache_enabled || self.config.tool_result_cache_max_entries == 0
+        {
+            return None;
+        }
+        let registered = self.tools.get(&call.name)?;
+        if !registered.cacheable {
+            return None;
+        }
+        let key = Self::tool_result_cache_key(call)?;
+        self.tool_result_cache.get(&key).cloned()
+    }
+
+    fn store_tool_result_cache(&mut self, call: &ToolCall, result: &ToolExecutionResult) {
+        if !self.config.tool_result_cache_enabled
+            || self.config.tool_result_cache_max_entries == 0
+            || result.is_error
+        {
+            return;
+        }
+        let Some(registered) = self.tools.get(&call.name) else {
+            return;
+        };
+        if !registered.cacheable {
+            return;
+        }
+        let Some(key) = Self::tool_result_cache_key(call) else {
+            return;
+        };
+        cache_insert_with_limit(
+            &mut self.tool_result_cache,
+            &mut self.tool_result_cache_order,
+            key,
+            result.clone(),
+            self.config.tool_result_cache_max_entries,
+        );
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .values()
@@ -669,7 +789,15 @@ impl Agent {
             self.enforce_token_budget(&request)?;
 
             let request_started = std::time::Instant::now();
-            let response = self.complete_with_retry(request, on_delta.clone()).await?;
+            let response = if let Some(cached) = self.lookup_response_cache(&request, &on_delta) {
+                cached
+            } else {
+                let response = self
+                    .complete_with_retry(request.clone(), on_delta.clone())
+                    .await?;
+                self.store_response_cache(&request, &on_delta, &response);
+                response
+            };
             let request_duration_ms = request_started.elapsed().as_millis() as u64;
             let finish_reason = response.finish_reason.clone();
             let usage = response.usage.clone();
@@ -921,11 +1049,16 @@ impl Agent {
             return Ok(stats);
         }
 
+        enum PendingToolResult {
+            Ready(ToolExecutionResult),
+            Pending(tokio::task::JoinHandle<ToolExecutionResult>),
+        }
+
         for chunk in tool_calls.chunks(max_parallel) {
             if self.is_cancelled() {
                 return Err(AgentError::Cancelled);
             }
-            let mut handles = Vec::with_capacity(chunk.len());
+            let mut pending = Vec::with_capacity(chunk.len());
             for call in chunk.iter().cloned() {
                 if self.is_cancelled() {
                     return Err(AgentError::Cancelled);
@@ -935,17 +1068,25 @@ impl Agent {
                     tool_name: call.name.clone(),
                     arguments: call.arguments.clone(),
                 });
+                if let Some(cached) = self.lookup_tool_result_cache(&call) {
+                    pending.push((call, PendingToolResult::Ready(cached)));
+                    continue;
+                }
                 let handle = self.spawn_tool_call_task(call.clone());
-                handles.push((call, handle));
+                pending.push((call, PendingToolResult::Pending(handle)));
             }
 
-            for (call, handle) in handles {
-                let result = match handle.await {
-                    Ok(result) => result,
-                    Err(error) => ToolExecutionResult::error(json!({
-                        "error": format!("tool '{}' execution task failed: {error}", call.name)
-                    })),
+            for (call, execution) in pending {
+                let result = match execution {
+                    PendingToolResult::Ready(result) => result,
+                    PendingToolResult::Pending(handle) => match handle.await {
+                        Ok(result) => result,
+                        Err(error) => ToolExecutionResult::error(json!({
+                            "error": format!("tool '{}' execution task failed: {error}", call.name)
+                        })),
+                    },
                 };
+                self.store_tool_result_cache(&call, &result);
                 let is_error = self.record_tool_result(call, result);
                 if is_error {
                     stats.errors = stats.errors.saturating_add(1);
@@ -978,11 +1119,17 @@ impl Agent {
             arguments: call.arguments.clone(),
         });
 
-        let result = match self.spawn_tool_call_task(call.clone()).await {
-            Ok(result) => result,
-            Err(error) => ToolExecutionResult::error(json!({
-                "error": format!("tool '{}' execution task failed: {error}", call.name)
-            })),
+        let result = if let Some(cached) = self.lookup_tool_result_cache(&call) {
+            cached
+        } else {
+            let result = match self.spawn_tool_call_task(call.clone()).await {
+                Ok(result) => result,
+                Err(error) => ToolExecutionResult::error(json!({
+                    "error": format!("tool '{}' execution task failed: {error}", call.name)
+                })),
+            };
+            self.store_tool_result_cache(&call, &result);
+            result
         };
         self.record_tool_result(call, result)
     }
@@ -1484,6 +1631,30 @@ async fn sleep_with_cancellation(
     }
 }
 
+fn cache_insert_with_limit<T: Clone>(
+    cache: &mut HashMap<String, T>,
+    order: &mut VecDeque<String>,
+    key: String,
+    value: T,
+    max_entries: usize,
+) {
+    if max_entries == 0 {
+        return;
+    }
+    if let Some(position) = order.iter().position(|entry| entry == &key) {
+        order.remove(position);
+    }
+    order.push_back(key.clone());
+    cache.insert(key, value);
+
+    while cache.len() > max_entries {
+        let Some(oldest) = order.pop_front() else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+}
+
 fn timeout_duration_from_ms(timeout_ms: Option<u64>) -> Option<Duration> {
     timeout_ms
         .filter(|timeout_ms| *timeout_ms > 0)
@@ -1518,7 +1689,7 @@ fn validate_tool_arguments(definition: &ToolDefinition, arguments: &Value) -> Re
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{HashMap, VecDeque},
         sync::{
             atomic::{AtomicUsize, Ordering},
             Arc, Mutex,
@@ -1535,10 +1706,10 @@ mod tests {
 
     use crate::{
         assistant_text_suggests_failure, bounded_messages, build_structured_output_retry_prompt,
-        embed_text_vector, estimate_chat_request_tokens, extract_json_payload,
-        retrieve_memory_matches, truncate_chars, Agent, AgentConfig, AgentError, AgentEvent,
-        AgentTool, CooperativeCancellationToken, ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS,
-        CONTEXT_SUMMARY_PREFIX, MEMORY_RECALL_PREFIX,
+        cache_insert_with_limit, embed_text_vector, estimate_chat_request_tokens,
+        extract_json_payload, retrieve_memory_matches, truncate_chars, Agent, AgentConfig,
+        AgentError, AgentEvent, AgentTool, CooperativeCancellationToken, ToolExecutionResult,
+        CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX, MEMORY_RECALL_PREFIX,
     };
 
     struct MockClient {
@@ -1718,6 +1889,27 @@ mod tests {
         }
     }
 
+    struct CountingStaticClient {
+        calls: Arc<AtomicUsize>,
+        response: ChatResponse,
+    }
+
+    #[async_trait]
+    impl tau_ai::LlmClient for CountingStaticClient {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, tau_ai::TauAiError> {
+            self.complete_with_stream(request, None).await
+        }
+
+        async fn complete_with_stream(
+            &self,
+            _request: ChatRequest,
+            _on_delta: Option<tau_ai::StreamDeltaHandler>,
+        ) -> Result<ChatResponse, tau_ai::TauAiError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.response.clone())
+        }
+    }
+
     fn last_user_prompt(request: &ChatRequest) -> String {
         request
             .messages
@@ -1785,6 +1977,41 @@ mod tests {
         }
     }
 
+    struct CountingReadTool {
+        calls: Arc<AtomicUsize>,
+        cacheable: bool,
+    }
+
+    #[async_trait]
+    impl AgentTool for CountingReadTool {
+        fn definition(&self) -> tau_ai::ToolDefinition {
+            tau_ai::ToolDefinition {
+                name: "counting_read".to_string(),
+                description: "Reads and counts invocations".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    },
+                    "required": ["path"]
+                }),
+            }
+        }
+
+        fn is_cacheable(&self) -> bool {
+            self.cacheable
+        }
+
+        async fn execute(&self, arguments: serde_json::Value) -> ToolExecutionResult {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let path = arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing>");
+            ToolExecutionResult::ok(serde_json::json!({ "content": format!("counting:{path}") }))
+        }
+    }
+
     struct PanicTool;
 
     #[async_trait]
@@ -1819,6 +2046,24 @@ mod tests {
         assert_eq!(config.memory_embedding_dimensions, 128);
         assert_eq!(config.memory_min_similarity, 0.55);
         assert_eq!(config.memory_max_chars_per_item, 180);
+        assert!(config.response_cache_enabled);
+        assert_eq!(config.response_cache_max_entries, 128);
+        assert!(config.tool_result_cache_enabled);
+        assert_eq!(config.tool_result_cache_max_entries, 256);
+    }
+
+    #[test]
+    fn unit_cache_insert_with_limit_evicts_oldest_entries() {
+        let mut cache = HashMap::new();
+        let mut order = VecDeque::new();
+        cache_insert_with_limit(&mut cache, &mut order, "a".to_string(), 1_u32, 2);
+        cache_insert_with_limit(&mut cache, &mut order, "b".to_string(), 2_u32, 2);
+        cache_insert_with_limit(&mut cache, &mut order, "c".to_string(), 3_u32, 2);
+
+        assert_eq!(cache.len(), 2);
+        assert!(!cache.contains_key("a"));
+        assert_eq!(cache.get("b"), Some(&2));
+        assert_eq!(cache.get("c"), Some(&3));
     }
 
     #[tokio::test]
@@ -1913,6 +2158,101 @@ mod tests {
         assert_eq!(new_messages.len(), 2);
         assert_eq!(new_messages[0].role, MessageRole::User);
         assert_eq!(new_messages[1].text_content(), "Hello from model");
+    }
+
+    #[tokio::test]
+    async fn functional_response_cache_reuses_model_response_for_identical_request() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(CountingStaticClient {
+            calls: calls.clone(),
+            response: ChatResponse {
+                message: Message::assistant_text("cached"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        });
+
+        let mut agent = Agent::new(client, AgentConfig::default());
+        agent.append_message(Message::user("cache me"));
+        let baseline_messages = agent.messages.clone();
+        let start_index = baseline_messages.len().saturating_sub(1);
+
+        let _ = agent
+            .run_loop(start_index, None, false)
+            .await
+            .expect("first run should succeed");
+        agent.messages = baseline_messages;
+        let _ = agent
+            .run_loop(start_index, None, false)
+            .await
+            .expect("second run should succeed");
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn regression_response_cache_disabled_dispatches_each_time() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(CountingStaticClient {
+            calls: calls.clone(),
+            response: ChatResponse {
+                message: Message::assistant_text("uncached"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        });
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                response_cache_enabled: false,
+                ..AgentConfig::default()
+            },
+        );
+        agent.append_message(Message::user("cache disabled"));
+        let baseline_messages = agent.messages.clone();
+        let start_index = baseline_messages.len().saturating_sub(1);
+
+        let _ = agent
+            .run_loop(start_index, None, false)
+            .await
+            .expect("first run should succeed");
+        agent.messages = baseline_messages;
+        let _ = agent
+            .run_loop(start_index, None, false)
+            .await
+            .expect("second run should succeed");
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn regression_streaming_requests_bypass_response_cache() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = Arc::new(CountingStaticClient {
+            calls: calls.clone(),
+            response: ChatResponse {
+                message: Message::assistant_text("streamed"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        agent.append_message(Message::user("streaming cache bypass"));
+        let baseline_messages = agent.messages.clone();
+        let start_index = baseline_messages.len().saturating_sub(1);
+        let sink = Arc::new(|_delta: String| {});
+
+        let _ = agent
+            .run_loop(start_index, Some(sink.clone()), false)
+            .await
+            .expect("first streamed run should succeed");
+        agent.messages = baseline_messages;
+        let _ = agent
+            .run_loop(start_index, Some(sink), false)
+            .await
+            .expect("second streamed run should succeed");
+
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
@@ -3083,6 +3423,117 @@ mod tests {
         assert_eq!(tool_messages.len(), 2);
         assert!(tool_messages[0].text_content().contains("read:a.txt"));
         assert!(tool_messages[1].text_content().contains("read:b.txt"));
+    }
+
+    #[tokio::test]
+    async fn integration_parallel_tool_cache_reuses_results_across_chunks() {
+        let first_assistant = Message::assistant_blocks(vec![
+            ContentBlock::ToolCall {
+                id: "call_1".to_string(),
+                name: "counting_read".to_string(),
+                arguments: serde_json::json!({ "path": "a.txt" }),
+            },
+            ContentBlock::ToolCall {
+                id: "call_2".to_string(),
+                name: "counting_read".to_string(),
+                arguments: serde_json::json!({ "path": "b.txt" }),
+            },
+            ContentBlock::ToolCall {
+                id: "call_3".to_string(),
+                name: "counting_read".to_string(),
+                arguments: serde_json::json!({ "path": "a.txt" }),
+            },
+        ]);
+        let second_assistant = Message::assistant_text("done");
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: first_assistant,
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: second_assistant,
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                max_parallel_tool_calls: 2,
+                ..AgentConfig::default()
+            },
+        );
+        agent.register_tool(CountingReadTool {
+            calls: calls.clone(),
+            cacheable: true,
+        });
+
+        let messages = agent
+            .prompt("read all")
+            .await
+            .expect("prompt should succeed");
+        let tool_messages = messages
+            .iter()
+            .filter(|message| message.role == MessageRole::Tool)
+            .collect::<Vec<_>>();
+        assert_eq!(tool_messages.len(), 3);
+        assert!(tool_messages[0].text_content().contains("counting:a.txt"));
+        assert!(tool_messages[1].text_content().contains("counting:b.txt"));
+        assert!(tool_messages[2].text_content().contains("counting:a.txt"));
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn regression_non_cacheable_tool_executes_each_identical_call() {
+        let first_assistant = Message::assistant_blocks(vec![
+            ContentBlock::ToolCall {
+                id: "call_1".to_string(),
+                name: "counting_read".to_string(),
+                arguments: serde_json::json!({ "path": "a.txt" }),
+            },
+            ContentBlock::ToolCall {
+                id: "call_2".to_string(),
+                name: "counting_read".to_string(),
+                arguments: serde_json::json!({ "path": "a.txt" }),
+            },
+        ]);
+        let second_assistant = Message::assistant_text("done");
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: first_assistant,
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: second_assistant,
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                max_parallel_tool_calls: 1,
+                ..AgentConfig::default()
+            },
+        );
+        agent.register_tool(CountingReadTool {
+            calls: calls.clone(),
+            cacheable: false,
+        });
+
+        let _ = agent
+            .prompt("read duplicate")
+            .await
+            .expect("prompt should succeed");
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
