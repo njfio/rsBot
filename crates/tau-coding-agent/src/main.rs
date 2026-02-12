@@ -44,7 +44,7 @@ mod transport_health;
 mod voice_contract;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -53,7 +53,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use tau_agent_core::{Agent, AgentEvent};
 use tau_ai::{LlmClient, Message, MessageRole, ModelRef, Provider};
@@ -218,6 +218,8 @@ pub(crate) use tau_access::trust_roots::{
     load_trust_root_records, parse_trust_rotation_spec, parse_trusted_root_spec, TrustedRootRecord,
 };
 #[cfg(test)]
+pub(crate) use tau_cli::parse_command;
+#[cfg(test)]
 pub(crate) use tau_cli::parse_command_file;
 #[cfg(test)]
 pub(crate) use tau_cli::validation::validate_gateway_remote_profile_inspect_cli;
@@ -244,7 +246,6 @@ pub(crate) use tau_cli::validation::{
 pub(crate) use tau_cli::Cli;
 #[cfg(test)]
 pub(crate) use tau_cli::CliProviderAuthMode;
-pub(crate) use tau_cli::{canonical_command_name, parse_command};
 #[cfg(test)]
 pub(crate) use tau_cli::{
     CliBashProfile, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
