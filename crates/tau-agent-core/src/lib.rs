@@ -1,6 +1,8 @@
 //! Core runtime primitives for building tool-using LLM agents in Tau.
 use std::{
     collections::{HashMap, VecDeque},
+    future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -394,16 +396,100 @@ impl Agent {
     where
         T: AgentTool + 'static,
     {
+        let (_, replaced) = self.register_tool_internal(tool);
+        if replaced.is_some() {
+            self.clear_tool_result_cache();
+        }
+    }
+
+    fn register_tool_internal<T>(&mut self, tool: T) -> (String, Option<RegisteredTool>)
+    where
+        T: AgentTool + 'static,
+    {
         let cacheable = tool.is_cacheable();
         let definition = tool.definition();
-        self.tools.insert(
-            definition.name.clone(),
+        let name = definition.name.clone();
+        let replaced = self.tools.insert(
+            name.clone(),
             RegisteredTool {
                 definition,
                 tool: Arc::new(tool),
                 cacheable,
             },
         );
+        (name, replaced)
+    }
+
+    /// Returns true when a tool with `tool_name` is registered.
+    pub fn has_tool(&self, tool_name: &str) -> bool {
+        self.tools.contains_key(tool_name)
+    }
+
+    /// Returns sorted registered tool names.
+    pub fn registered_tool_names(&self) -> Vec<String> {
+        let mut names = self.tools.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// Unregisters a tool by name.
+    pub fn unregister_tool(&mut self, tool_name: &str) -> bool {
+        let removed = self.tools.remove(tool_name).is_some();
+        if removed {
+            self.clear_tool_result_cache();
+        }
+        removed
+    }
+
+    /// Removes all registered tools.
+    pub fn clear_tools(&mut self) {
+        if self.tools.is_empty() {
+            return;
+        }
+        self.tools.clear();
+        self.clear_tool_result_cache();
+    }
+
+    /// Registers a temporary tool for the duration of `run` and restores prior state afterward.
+    pub async fn with_scoped_tool<T, R>(
+        &mut self,
+        tool: T,
+        run: impl for<'a> FnOnce(&'a mut Self) -> Pin<Box<dyn Future<Output = R> + 'a>>,
+    ) -> R
+    where
+        T: AgentTool + 'static,
+    {
+        self.with_scoped_tools(std::iter::once(tool), run).await
+    }
+
+    /// Registers temporary tools for the duration of `run` and restores prior state afterward.
+    pub async fn with_scoped_tools<T, I, R>(
+        &mut self,
+        tools: I,
+        run: impl for<'a> FnOnce(&'a mut Self) -> Pin<Box<dyn Future<Output = R> + 'a>>,
+    ) -> R
+    where
+        T: AgentTool + 'static,
+        I: IntoIterator<Item = T>,
+    {
+        let mut replaced = Vec::new();
+        for tool in tools {
+            let (name, previous) = self.register_tool_internal(tool);
+            replaced.push((name, previous));
+        }
+        self.clear_tool_result_cache();
+
+        let result = run(self).await;
+
+        for (name, previous) in replaced.into_iter().rev() {
+            if let Some(previous) = previous {
+                self.tools.insert(name, previous);
+            } else {
+                self.tools.remove(&name);
+            }
+        }
+        self.clear_tool_result_cache();
+        result
     }
 
     /// Installs or clears a cooperative cancellation token for subsequent runs.
@@ -703,6 +789,11 @@ impl Agent {
             result.clone(),
             self.config.tool_result_cache_max_entries,
         );
+    }
+
+    fn clear_tool_result_cache(&mut self) {
+        self.tool_result_cache.clear();
+        self.tool_result_cache_order.clear();
     }
 
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -2012,6 +2103,43 @@ mod tests {
         }
     }
 
+    struct CacheableVariantTool {
+        label: &'static str,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AgentTool for CacheableVariantTool {
+        fn definition(&self) -> tau_ai::ToolDefinition {
+            tau_ai::ToolDefinition {
+                name: "cacheable_read".to_string(),
+                description: "Cacheable read variant".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    },
+                    "required": ["path"]
+                }),
+            }
+        }
+
+        fn is_cacheable(&self) -> bool {
+            true
+        }
+
+        async fn execute(&self, arguments: serde_json::Value) -> ToolExecutionResult {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let path = arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing>");
+            ToolExecutionResult::ok(
+                serde_json::json!({ "content": format!("{}:{path}", self.label) }),
+            )
+        }
+    }
+
     struct PanicTool;
 
     #[async_trait]
@@ -2064,6 +2192,43 @@ mod tests {
         assert!(!cache.contains_key("a"));
         assert_eq!(cache.get("b"), Some(&2));
         assert_eq!(cache.get("c"), Some(&3));
+    }
+
+    #[test]
+    fn unit_dynamic_tool_registry_supports_presence_and_lifecycle_helpers() {
+        let mut agent = Agent::new(Arc::new(EchoClient), AgentConfig::default());
+        assert!(!agent.has_tool("read"));
+        assert!(!agent.unregister_tool("read"));
+
+        agent.register_tool(ReadTool);
+        assert!(agent.has_tool("read"));
+        assert_eq!(agent.registered_tool_names(), vec!["read".to_string()]);
+
+        assert!(agent.unregister_tool("read"));
+        assert!(!agent.has_tool("read"));
+
+        agent.register_tool(ReadTool);
+        agent.clear_tools();
+        assert!(agent.registered_tool_names().is_empty());
+    }
+
+    #[tokio::test]
+    async fn functional_with_scoped_tool_registers_within_scope_and_restores_after() {
+        let mut agent = Agent::new(Arc::new(EchoClient), AgentConfig::default());
+        assert!(!agent.has_tool("read"));
+
+        let value = agent
+            .with_scoped_tool(ReadTool, |agent| {
+                Box::pin(async move {
+                    assert!(agent.has_tool("read"));
+                    assert_eq!(agent.registered_tool_names(), vec!["read".to_string()]);
+                    42usize
+                })
+            })
+            .await;
+
+        assert_eq!(value, 42);
+        assert!(!agent.has_tool("read"));
     }
 
     #[tokio::test]
@@ -2294,6 +2459,141 @@ mod tests {
         assert_eq!(new_messages[2].role, MessageRole::Tool);
         assert!(new_messages[2].text_content().contains("read:README.md"));
         assert_eq!(new_messages[3].text_content(), "Done reading file");
+    }
+
+    #[tokio::test]
+    async fn integration_scoped_tool_lifecycle_supports_prompt_execution() {
+        let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+            id: "call_1".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({ "path": "README.md" }),
+        }]);
+        let second_assistant = Message::assistant_text("done");
+
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: first_assistant,
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: second_assistant,
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+
+        let mut agent = Agent::new(client, AgentConfig::default());
+        assert!(!agent.has_tool("read"));
+
+        let messages = agent
+            .with_scoped_tool(ReadTool, |agent| {
+                Box::pin(async move { agent.prompt("read").await })
+            })
+            .await
+            .expect("scoped tool prompt should succeed");
+
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.role == MessageRole::Tool),
+            "scoped tool should be available while running the closure"
+        );
+        assert!(!agent.has_tool("read"));
+    }
+
+    #[tokio::test]
+    async fn regression_scoped_tool_restores_replaced_tool_and_avoids_stale_cache() {
+        let make_tool_call = |id: &str| {
+            Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                id: id.to_string(),
+                name: "cacheable_read".to_string(),
+                arguments: serde_json::json!({ "path": "a.txt" }),
+            }])
+        };
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: make_tool_call("call_1"),
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("base pass 1"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: make_tool_call("call_2"),
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("scoped pass"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: make_tool_call("call_3"),
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("base pass 2"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+
+        let base_calls = Arc::new(AtomicUsize::new(0));
+        let scoped_calls = Arc::new(AtomicUsize::new(0));
+        let mut agent = Agent::new(client, AgentConfig::default());
+        agent.register_tool(CacheableVariantTool {
+            label: "base",
+            calls: base_calls.clone(),
+        });
+
+        let first = agent
+            .prompt("first run")
+            .await
+            .expect("base tool run should succeed");
+        let first_tool = first
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("first tool result");
+        assert!(first_tool.text_content().contains("base:a.txt"));
+
+        let second = agent
+            .with_scoped_tool(
+                CacheableVariantTool {
+                    label: "scoped",
+                    calls: scoped_calls.clone(),
+                },
+                |agent| Box::pin(async move { agent.prompt("second run").await }),
+            )
+            .await
+            .expect("scoped tool run should succeed");
+        let second_tool = second
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("second tool result");
+        assert!(second_tool.text_content().contains("scoped:a.txt"));
+
+        let third = agent
+            .prompt("third run")
+            .await
+            .expect("restored base tool run should succeed");
+        let third_tool = third
+            .iter()
+            .find(|message| message.role == MessageRole::Tool)
+            .expect("third tool result");
+        assert!(third_tool.text_content().contains("base:a.txt"));
+
+        assert_eq!(base_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(scoped_calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
