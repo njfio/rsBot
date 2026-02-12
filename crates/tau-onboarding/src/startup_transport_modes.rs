@@ -743,6 +743,20 @@ where
     Ok(true)
 }
 
+pub async fn run_events_runner_with_runtime_defaults_if_requested<FRun, Fut>(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    system_prompt: &str,
+    run_events: FRun,
+) -> Result<bool>
+where
+    FRun: FnOnce(EventsRunnerCliConfig, TransportRuntimeDefaults) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let runtime_defaults = build_transport_runtime_defaults(cli, model_ref, system_prompt);
+    run_events_runner_if_requested(cli, move |config| run_events(config, runtime_defaults)).await
+}
+
 pub fn build_slack_bridge_cli_config(
     cli: &Cli,
     app_token: String,
@@ -782,6 +796,25 @@ where
     let config = build_slack_bridge_cli_config(cli, app_token, bot_token);
     run_bridge(config).await?;
     Ok(true)
+}
+
+pub async fn run_slack_bridge_with_runtime_defaults_if_requested<FResolveTokens, FRunBridge, Fut>(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    system_prompt: &str,
+    resolve_tokens: FResolveTokens,
+    run_bridge: FRunBridge,
+) -> Result<bool>
+where
+    FResolveTokens: FnOnce() -> Result<(String, String)>,
+    FRunBridge: FnOnce(SlackBridgeCliConfig, TransportRuntimeDefaults) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let runtime_defaults = build_transport_runtime_defaults(cli, model_ref, system_prompt);
+    run_slack_bridge_if_requested(cli, resolve_tokens, move |config| {
+        run_bridge(config, runtime_defaults)
+    })
+    .await
 }
 
 pub fn build_github_issues_bridge_cli_config(
@@ -829,6 +862,29 @@ where
     let config = build_github_issues_bridge_cli_config(cli, repo_slug, token);
     run_bridge(config).await?;
     Ok(true)
+}
+
+pub async fn run_github_issues_bridge_with_runtime_defaults_if_requested<
+    FResolveRepoAndToken,
+    FRunBridge,
+    Fut,
+>(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    system_prompt: &str,
+    resolve_repo_and_token: FResolveRepoAndToken,
+    run_bridge: FRunBridge,
+) -> Result<bool>
+where
+    FResolveRepoAndToken: FnOnce() -> Result<(String, String)>,
+    FRunBridge: FnOnce(GithubIssuesBridgeCliConfig, TransportRuntimeDefaults) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let runtime_defaults = build_transport_runtime_defaults(cli, model_ref, system_prompt);
+    run_github_issues_bridge_if_requested(cli, resolve_repo_and_token, move |config| {
+        run_bridge(config, runtime_defaults)
+    })
+    .await
 }
 
 pub fn build_multi_channel_contract_runner_config(
@@ -1051,8 +1107,10 @@ mod tests {
         resolve_bridge_transport_mode, resolve_contract_transport_mode,
         resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
         resolve_multi_channel_transport_mode, resolve_transport_runtime_mode,
-        run_events_runner_if_requested, run_github_issues_bridge_if_requested,
-        run_slack_bridge_if_requested, run_transport_mode_if_requested,
+        run_events_runner_if_requested, run_events_runner_with_runtime_defaults_if_requested,
+        run_github_issues_bridge_if_requested,
+        run_github_issues_bridge_with_runtime_defaults_if_requested, run_slack_bridge_if_requested,
+        run_slack_bridge_with_runtime_defaults_if_requested, run_transport_mode_if_requested,
         validate_transport_mode_cli, BridgeTransportMode, ContractTransportMode,
         EventsRunnerCliConfig, MultiChannelTransportMode, SlackBridgeCliConfig,
         TransportRuntimeDefaults, TransportRuntimeExecutor, TransportRuntimeMode,
@@ -2658,6 +2716,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unit_run_events_runner_with_runtime_defaults_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+        let called = Arc::new(Mutex::new(false));
+        let called_sink = Arc::clone(&called);
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let ran = run_events_runner_with_runtime_defaults_if_requested(
+            &cli,
+            &model_ref,
+            "system prompt",
+            move |_config, _defaults| {
+                let sink = Arc::clone(&called_sink);
+                async move {
+                    *sink.lock().expect("called lock") = true;
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("events helper succeeds");
+
+        assert!(!ran);
+        assert!(!*called.lock().expect("called lock"));
+    }
+
+    #[tokio::test]
     async fn functional_run_slack_bridge_if_requested_builds_config_with_resolved_tokens() {
         let mut cli = parse_cli_with_stack();
         cli.slack_bridge = true;
@@ -2699,6 +2783,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn functional_run_slack_bridge_with_runtime_defaults_passes_defaults() {
+        let mut cli = parse_cli_with_stack();
+        cli.slack_bridge = true;
+        cli.max_turns = 42;
+        cli.turn_timeout_ms = 20_000;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let captured = Arc::new(Mutex::new(
+            None::<(SlackBridgeCliConfig, TransportRuntimeDefaults)>,
+        ));
+        let captured_sink = Arc::clone(&captured);
+
+        let ran = run_slack_bridge_with_runtime_defaults_if_requested(
+            &cli,
+            &model_ref,
+            "bridge system prompt",
+            || Ok(("app-token".to_string(), "bot-token".to_string())),
+            move |config, defaults| {
+                let sink = Arc::clone(&captured_sink);
+                async move {
+                    *sink.lock().expect("capture lock") = Some((config, defaults));
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("slack helper succeeds");
+
+        assert!(ran);
+        let (config, defaults) = captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("captured payload");
+        assert_eq!(config.app_token, "app-token");
+        assert_eq!(defaults.model, "gpt-4o-mini");
+        assert_eq!(defaults.system_prompt, "bridge system prompt");
+        assert_eq!(defaults.max_turns, 42);
+        assert_eq!(defaults.turn_timeout_ms, 20_000);
+    }
+
+    #[tokio::test]
     async fn integration_run_events_runner_if_requested_passes_normalized_config() {
         let mut cli = parse_cli_with_stack();
         cli.events_runner = true;
@@ -2728,6 +2853,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_run_events_runner_with_runtime_defaults_passes_normalized_config() {
+        let mut cli = parse_cli_with_stack();
+        cli.events_runner = true;
+        cli.events_poll_interval_ms = 0;
+        cli.events_queue_limit = 0;
+        cli.session_lock_wait_ms = 123;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let captured = Arc::new(Mutex::new(
+            None::<(EventsRunnerCliConfig, TransportRuntimeDefaults)>,
+        ));
+        let captured_sink = Arc::clone(&captured);
+
+        let ran = run_events_runner_with_runtime_defaults_if_requested(
+            &cli,
+            &model_ref,
+            "events system prompt",
+            move |config, defaults| {
+                let sink = Arc::clone(&captured_sink);
+                async move {
+                    *sink.lock().expect("capture lock") = Some((config, defaults));
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .expect("events helper succeeds");
+
+        assert!(ran);
+        let (config, defaults) = captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("captured payload");
+        assert_eq!(config.poll_interval_ms, 1);
+        assert_eq!(config.queue_limit, 1);
+        assert_eq!(defaults.system_prompt, "events system prompt");
+        assert_eq!(defaults.session_lock_wait_ms, 123);
+    }
+
+    #[tokio::test]
     async fn regression_run_github_issues_bridge_if_requested_propagates_resolver_errors() {
         let mut cli = parse_cli_with_stack();
         cli.github_issues_bridge = true;
@@ -2736,6 +2901,29 @@ mod tests {
             &cli,
             || Err(anyhow::anyhow!("missing bridge credentials")),
             |_config| async { Ok(()) },
+        )
+        .await
+        .expect_err("resolver failures should propagate");
+
+        assert!(
+            error.to_string().contains("missing bridge credentials"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_run_github_issues_bridge_with_runtime_defaults_propagates_resolver_errors()
+    {
+        let mut cli = parse_cli_with_stack();
+        cli.github_issues_bridge = true;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let error = run_github_issues_bridge_with_runtime_defaults_if_requested(
+            &cli,
+            &model_ref,
+            "github bridge prompt",
+            || Err(anyhow::anyhow!("missing bridge credentials")),
+            |_config, _defaults| async { Ok(()) },
         )
         .await
         .expect_err("resolver failures should propagate");
