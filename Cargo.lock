@@ -2922,9 +2922,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "clap",
  "serde",
  "serde_json",
  "sha2",
+ "tau-cli",
  "tau-core",
  "tau-runtime",
  "tempfile",
