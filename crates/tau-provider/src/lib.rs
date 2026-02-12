@@ -8,6 +8,7 @@ mod credentials;
 mod fallback;
 mod gemini_cli_client;
 mod integration_auth;
+mod model_catalog;
 mod types;
 
 pub use auth::*;
@@ -20,4 +21,5 @@ pub use credentials::*;
 pub use fallback::*;
 pub use gemini_cli_client::*;
 pub use integration_auth::*;
+pub use model_catalog::*;
 pub use types::*;
