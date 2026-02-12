@@ -3205,11 +3205,13 @@ dependencies = [
  "anyhow",
  "serde_json",
  "tau-access",
+ "tau-ai",
  "tau-cli",
  "tau-core",
  "tau-events",
  "tau-gateway",
  "tau-multi-channel",
+ "tau-provider",
  "tau-session",
 ]
 

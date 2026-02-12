@@ -107,9 +107,8 @@ pub(crate) use crate::mcp_server::execute_mcp_server_command;
 #[cfg(test)]
 pub(crate) use crate::model_catalog::default_model_catalog_cache_path;
 pub(crate) use crate::model_catalog::{
-    ensure_model_supports_tools, load_model_catalog_with_cache, parse_models_list_args,
-    render_model_show, render_models_list, ModelCatalog, ModelCatalogLoadOptions,
-    MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
+    parse_models_list_args, render_model_show, render_models_list, ModelCatalog, MODELS_LIST_USAGE,
+    MODEL_SHOW_USAGE,
 };
 pub(crate) use crate::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTable};
 #[cfg(test)]

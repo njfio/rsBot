@@ -10,6 +10,9 @@ serde_json = "1"
 [dependencies.tau-access]
 path = "../tau-access"
 
+[dependencies.tau-ai]
+path = "../tau-ai"
+
 [dependencies.tau-cli]
 path = "../tau-cli"
 
@@ -24,6 +27,9 @@ path = "../tau-gateway"
 
 [dependencies.tau-multi-channel]
 path = "../tau-multi-channel"
+
+[dependencies.tau-provider]
+path = "../tau-provider"
 
 [dependencies.tau-session]
 path = "../tau-session"

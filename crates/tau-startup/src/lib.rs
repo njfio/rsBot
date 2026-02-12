@@ -19,6 +19,10 @@ use tau_gateway::{
 };
 use tau_session::validate_session_file;
 
+pub mod startup_model_catalog;
+
+pub use startup_model_catalog::*;
+
 pub trait StartupPreflightActions {
     fn execute_onboarding_command(&self, cli: &Cli) -> Result<()>;
     fn execute_multi_channel_send_command(&self, cli: &Cli) -> Result<()>;
