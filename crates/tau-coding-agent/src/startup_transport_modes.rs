@@ -7,17 +7,16 @@ use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
     build_multi_channel_runtime_dependencies as build_onboarding_multi_channel_runtime_dependencies,
     build_transport_doctor_config as build_onboarding_transport_doctor_config,
-    build_transport_runtime_defaults as build_onboarding_transport_runtime_defaults,
     run_browser_automation_contract_runner_if_requested,
     run_custom_command_contract_runner_if_requested, run_dashboard_contract_runner_if_requested,
     run_deployment_contract_runner_if_requested,
-    run_events_runner_if_requested as run_onboarding_events_runner_if_requested,
+    run_events_runner_with_runtime_defaults_if_requested as run_onboarding_events_runner_with_runtime_defaults_if_requested,
     run_gateway_contract_runner_if_requested, run_gateway_openresponses_server_if_requested,
-    run_github_issues_bridge_if_requested as run_onboarding_github_issues_bridge_if_requested,
+    run_github_issues_bridge_with_runtime_defaults_if_requested as run_onboarding_github_issues_bridge_with_runtime_defaults_if_requested,
     run_memory_contract_runner_if_requested, run_multi_agent_contract_runner_if_requested,
     run_multi_channel_contract_runner_if_requested, run_multi_channel_live_connectors_if_requested,
     run_multi_channel_live_runner_if_requested,
-    run_slack_bridge_if_requested as run_onboarding_slack_bridge_if_requested,
+    run_slack_bridge_with_runtime_defaults_if_requested as run_onboarding_slack_bridge_with_runtime_defaults_if_requested,
     run_transport_mode_if_requested as run_onboarding_transport_mode_if_requested,
     run_voice_contract_runner_if_requested, TransportRuntimeExecutor,
 };
@@ -30,10 +29,10 @@ async fn run_github_issues_bridge_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
-    let runtime_defaults =
-        build_onboarding_transport_runtime_defaults(cli, model_ref, system_prompt);
-    run_onboarding_github_issues_bridge_if_requested(
+    run_onboarding_github_issues_bridge_with_runtime_defaults_if_requested(
         cli,
+        model_ref,
+        system_prompt,
         || {
             let repo_slug = cli.github_repo.clone().ok_or_else(|| {
                 anyhow!("--github-repo is required when --github-issues-bridge is set")
@@ -51,11 +50,11 @@ async fn run_github_issues_bridge_if_requested(
             })?;
             Ok((repo_slug, token))
         },
-        |config| async move {
+        |config, runtime_defaults| async move {
             run_github_issues_bridge(GithubIssuesBridgeRuntimeConfig {
                 client: client.clone(),
-                model: runtime_defaults.model.clone(),
-                system_prompt: runtime_defaults.system_prompt.clone(),
+                model: runtime_defaults.model,
+                system_prompt: runtime_defaults.system_prompt,
                 max_turns: runtime_defaults.max_turns,
                 tool_policy: tool_policy.clone(),
                 turn_timeout_ms: runtime_defaults.turn_timeout_ms,
@@ -98,10 +97,10 @@ async fn run_slack_bridge_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
-    let runtime_defaults =
-        build_onboarding_transport_runtime_defaults(cli, model_ref, system_prompt);
-    run_onboarding_slack_bridge_if_requested(
+    run_onboarding_slack_bridge_with_runtime_defaults_if_requested(
         cli,
+        model_ref,
+        system_prompt,
         || {
             let app_token = resolve_secret_from_cli_or_store_id(
                 cli,
@@ -127,11 +126,11 @@ async fn run_slack_bridge_if_requested(
             })?;
             Ok((app_token, bot_token))
         },
-        |config| async move {
+        |config, runtime_defaults| async move {
             run_slack_bridge(SlackBridgeRuntimeConfig {
                 client: client.clone(),
-                model: runtime_defaults.model.clone(),
-                system_prompt: runtime_defaults.system_prompt.clone(),
+                model: runtime_defaults.model,
+                system_prompt: runtime_defaults.system_prompt,
                 max_turns: runtime_defaults.max_turns,
                 tool_policy: tool_policy.clone(),
                 turn_timeout_ms: runtime_defaults.turn_timeout_ms,
@@ -167,28 +166,31 @@ async fn run_events_runner_if_requested(
     tool_policy: &ToolPolicy,
     render_options: RenderOptions,
 ) -> Result<bool> {
-    let runtime_defaults =
-        build_onboarding_transport_runtime_defaults(cli, model_ref, system_prompt);
-    run_onboarding_events_runner_if_requested(cli, |config| async move {
-        run_event_scheduler(EventSchedulerConfig {
-            client: client.clone(),
-            model: runtime_defaults.model.clone(),
-            system_prompt: runtime_defaults.system_prompt.clone(),
-            max_turns: runtime_defaults.max_turns,
-            tool_policy: tool_policy.clone(),
-            turn_timeout_ms: runtime_defaults.turn_timeout_ms,
-            render_options,
-            session_lock_wait_ms: runtime_defaults.session_lock_wait_ms,
-            session_lock_stale_ms: runtime_defaults.session_lock_stale_ms,
-            channel_store_root: config.channel_store_root,
-            events_dir: config.events_dir,
-            state_path: config.state_path,
-            poll_interval: Duration::from_millis(config.poll_interval_ms),
-            queue_limit: config.queue_limit,
-            stale_immediate_max_age_seconds: config.stale_immediate_max_age_seconds,
-        })
-        .await
-    })
+    run_onboarding_events_runner_with_runtime_defaults_if_requested(
+        cli,
+        model_ref,
+        system_prompt,
+        |config, runtime_defaults| async move {
+            run_event_scheduler(EventSchedulerConfig {
+                client: client.clone(),
+                model: runtime_defaults.model,
+                system_prompt: runtime_defaults.system_prompt,
+                max_turns: runtime_defaults.max_turns,
+                tool_policy: tool_policy.clone(),
+                turn_timeout_ms: runtime_defaults.turn_timeout_ms,
+                render_options,
+                session_lock_wait_ms: runtime_defaults.session_lock_wait_ms,
+                session_lock_stale_ms: runtime_defaults.session_lock_stale_ms,
+                channel_store_root: config.channel_store_root,
+                events_dir: config.events_dir,
+                state_path: config.state_path,
+                poll_interval: Duration::from_millis(config.poll_interval_ms),
+                queue_limit: config.queue_limit,
+                stale_immediate_max_age_seconds: config.stale_immediate_max_age_seconds,
+            })
+            .await
+        },
+    )
     .await
 }
 
