@@ -44,7 +44,7 @@ mod transport_health;
 mod voice_contract;
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},

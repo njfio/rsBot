@@ -3106,6 +3106,7 @@ dependencies = [
  "tau-runtime",
  "tau-session",
  "tempfile",
+ "wait-timeout",
 ]
 
 [[package]]
