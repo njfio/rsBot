@@ -3224,6 +3224,7 @@ dependencies = [
  "tau-gateway",
  "tau-multi-channel",
  "tau-provider",
+ "tau-runtime",
  "tau-session",
 ]
 

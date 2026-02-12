@@ -23,11 +23,13 @@ pub mod runtime_types;
 pub mod startup_model_catalog;
 pub mod startup_multi_channel_adapters;
 pub mod startup_multi_channel_commands;
+pub mod startup_rpc_capabilities_command;
 
 pub use runtime_types::*;
 pub use startup_model_catalog::*;
 pub use startup_multi_channel_adapters::*;
 pub use startup_multi_channel_commands::*;
+pub use startup_rpc_capabilities_command::*;
 
 pub trait StartupPreflightActions {
     fn execute_onboarding_command(&self, cli: &Cli) -> Result<()>;

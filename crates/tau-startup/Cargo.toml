@@ -37,5 +37,8 @@ path = "../tau-multi-channel"
 [dependencies.tau-provider]
 path = "../tau-provider"
 
+[dependencies.tau-runtime]
+path = "../tau-runtime"
+
 [dependencies.tau-session]
 path = "../tau-session"
