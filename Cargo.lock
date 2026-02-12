@@ -3096,6 +3096,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "sha2",
  "tau-access",
  "tau-ai",
  "tau-cli",
