@@ -1,40 +1,18 @@
-use std::path::PathBuf;
-
 use crate::extension_manifest::ExtensionRegisteredCommand;
-use crate::{Cli, ModelCatalog};
-pub(crate) use tau_diagnostics::DoctorCommandConfig;
-#[cfg(test)]
-pub(crate) use tau_diagnostics::{DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus};
+use crate::ModelCatalog;
 pub(crate) use tau_onboarding::startup_config::ProfileDefaults;
 #[cfg(test)]
 pub(crate) use tau_onboarding::startup_config::{
     ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
 };
-pub(crate) use tau_provider::AuthCommandConfig;
 use tau_session::SessionImportMode;
-
-#[derive(Debug, Clone)]
-pub(crate) struct SkillsSyncCommandConfig {
-    pub(crate) skills_dir: PathBuf,
-    pub(crate) default_lock_path: PathBuf,
-    pub(crate) default_trust_root_path: Option<PathBuf>,
-    pub(crate) doctor_config: DoctorCommandConfig,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RenderOptions {
-    pub(crate) stream_output: bool,
-    pub(crate) stream_delay_ms: u64,
-}
-
-impl RenderOptions {
-    pub(crate) fn from_cli(cli: &Cli) -> Self {
-        Self {
-            stream_output: cli.stream_output,
-            stream_delay_ms: cli.stream_delay_ms,
-        }
-    }
-}
+pub(crate) use tau_startup::runtime_types::{
+    AuthCommandConfig, DoctorCommandConfig, RenderOptions, SkillsSyncCommandConfig,
+};
+#[cfg(test)]
+pub(crate) use tau_startup::runtime_types::{
+    DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct CommandExecutionContext<'a> {

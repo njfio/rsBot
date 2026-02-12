@@ -3217,6 +3217,7 @@ dependencies = [
  "tau-core",
  "tau-diagnostics",
  "tau-events",
+ "tau-extensions",
  "tau-gateway",
  "tau-multi-channel",
  "tau-provider",

@@ -25,6 +25,9 @@ path = "../tau-events"
 [dependencies.tau-diagnostics]
 path = "../tau-diagnostics"
 
+[dependencies.tau-extensions]
+path = "../tau-extensions"
+
 [dependencies.tau-gateway]
 path = "../tau-gateway"
 
