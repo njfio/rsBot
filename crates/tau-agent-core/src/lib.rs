@@ -455,7 +455,7 @@ impl Agent {
 
     fn emit(&self, event: AgentEvent) {
         for handler in &self.handlers {
-            handler(&event);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&event)));
         }
     }
 
@@ -1063,7 +1063,10 @@ fn validate_tool_arguments(definition: &ToolDefinition, arguments: &Value) -> Re
 mod tests {
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
         time::{Duration, Instant},
     };
 
@@ -1514,6 +1517,135 @@ mod tests {
                 "turn_end:2",
                 "agent_end",
             ]
+        );
+    }
+
+    #[test]
+    fn unit_emit_isolates_panicking_handler_and_invokes_remaining_subscribers() {
+        let mut agent = Agent::new(Arc::new(EchoClient), AgentConfig::default());
+        let observed = Arc::new(AtomicUsize::new(0));
+
+        agent.subscribe(|event| {
+            if matches!(event, AgentEvent::AgentStart) {
+                panic!("forced event handler panic");
+            }
+        });
+        let observed_clone = observed.clone();
+        agent.subscribe(move |_event| {
+            observed_clone.fetch_add(1, Ordering::Relaxed);
+        });
+
+        agent.emit(AgentEvent::AgentStart);
+        assert_eq!(observed.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn functional_prompt_completes_when_event_handler_panics() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("ok"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        agent.subscribe(|event| {
+            if matches!(event, AgentEvent::AgentStart) {
+                panic!("panic in functional handler");
+            }
+        });
+
+        let messages = agent
+            .prompt("hello")
+            .await
+            .expect("panic in event handler should not abort prompt");
+        assert_eq!(messages.last().expect("assistant").text_content(), "ok");
+    }
+
+    #[tokio::test]
+    async fn integration_tool_turn_completes_when_handler_panics_on_tool_events() {
+        let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+            id: "call_1".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({ "path": "README.md" }),
+        }]);
+        let second_assistant = Message::assistant_text("done");
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: first_assistant,
+                    finish_reason: Some("tool_calls".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: second_assistant,
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        agent.register_tool(ReadTool);
+        agent.subscribe(|event| {
+            if matches!(event, AgentEvent::ToolExecutionStart { .. }) {
+                panic!("panic on tool start");
+            }
+        });
+
+        let messages = agent
+            .prompt("read")
+            .await
+            .expect("tool turn should survive panicking handler");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.role == MessageRole::Tool),
+            "tool result should still be recorded"
+        );
+        assert_eq!(messages.last().expect("assistant").text_content(), "done");
+    }
+
+    #[tokio::test]
+    async fn regression_panicking_handler_does_not_break_subsequent_prompts() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: Message::assistant_text("first"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("second"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let event_count = Arc::new(AtomicUsize::new(0));
+        let event_count_clone = event_count.clone();
+        agent.subscribe(move |_event| {
+            event_count_clone.fetch_add(1, Ordering::Relaxed);
+        });
+        agent.subscribe(|event| {
+            if matches!(event, AgentEvent::AgentStart) {
+                panic!("panic every run");
+            }
+        });
+
+        let first = agent
+            .prompt("one")
+            .await
+            .expect("first prompt should succeed");
+        let second = agent
+            .prompt("two")
+            .await
+            .expect("second prompt should succeed");
+        assert_eq!(first.last().expect("assistant").text_content(), "first");
+        assert_eq!(second.last().expect("assistant").text_content(), "second");
+        assert!(
+            event_count.load(Ordering::Relaxed) > 0,
+            "non-panicking handler should keep receiving events across runs"
         );
     }
 
