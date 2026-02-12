@@ -20,7 +20,7 @@ use rustyline::{
     validate::Validator,
     Config as ReadlineConfig, Context as ReadlineContext, Editor, Helper,
 };
-use tau_agent_core::Agent;
+use tau_agent_core::{Agent, AgentError, CooperativeCancellationToken};
 use tau_ai::StreamDeltaHandler;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
@@ -765,6 +765,8 @@ where
     F: Future,
 {
     let checkpoint = agent.messages().to_vec();
+    let cancellation_token = CooperativeCancellationToken::new();
+    agent.set_cancellation_token(Some(cancellation_token.clone()));
     let streamed_output = Arc::new(AtomicBool::new(false));
     let (stream_delta_handler, mut stream_task) = if render_options.stream_output {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -800,20 +802,37 @@ where
         TimedOut,
     }
 
-    let prompt_result = if turn_timeout_ms == 0 {
-        tokio::select! {
-            result = agent.prompt_with_stream(prompt, stream_delta_handler.clone()) => PromptOutcome::Result(result),
-            _ = &mut cancellation_signal => PromptOutcome::Cancelled,
-        }
-    } else {
-        let timeout = tokio::time::sleep(Duration::from_millis(turn_timeout_ms));
-        tokio::pin!(timeout);
-        tokio::select! {
-            result = agent.prompt_with_stream(prompt, stream_delta_handler.clone()) => PromptOutcome::Result(result),
-            _ = &mut cancellation_signal => PromptOutcome::Cancelled,
-            _ = &mut timeout => PromptOutcome::TimedOut,
+    let prompt_result = {
+        let mut prompt_future =
+            std::pin::pin!(agent.prompt_with_stream(prompt, stream_delta_handler.clone()));
+        if turn_timeout_ms == 0 {
+            tokio::select! {
+                result = &mut prompt_future => PromptOutcome::Result(result),
+                _ = &mut cancellation_signal => {
+                    cancellation_token.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut prompt_future).await;
+                    PromptOutcome::Cancelled
+                },
+            }
+        } else {
+            let timeout = tokio::time::sleep(Duration::from_millis(turn_timeout_ms));
+            tokio::pin!(timeout);
+            tokio::select! {
+                result = &mut prompt_future => PromptOutcome::Result(result),
+                _ = &mut cancellation_signal => {
+                    cancellation_token.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut prompt_future).await;
+                    PromptOutcome::Cancelled
+                },
+                _ = &mut timeout => {
+                    cancellation_token.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut prompt_future).await;
+                    PromptOutcome::TimedOut
+                },
+            }
         }
     };
+    agent.set_cancellation_token(None);
 
     drop(stream_delta_handler);
     if let Some(task) = stream_task.take() {
@@ -832,7 +851,14 @@ where
         }
     };
 
-    let new_messages = prompt_result?;
+    let new_messages = match prompt_result {
+        Ok(messages) => messages,
+        Err(AgentError::Cancelled) => {
+            agent.replace_messages(checkpoint);
+            return Ok(PromptRunStatus::Cancelled);
+        }
+        Err(error) => return Err(error.into()),
+    };
     persist_messages(session_runtime, &new_messages)?;
     print_assistant_messages(
         &new_messages,

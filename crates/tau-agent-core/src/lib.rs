@@ -1,5 +1,12 @@
 //! Core runtime primitives for building tool-using LLM agents in Tau.
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use jsonschema::validator_for;
@@ -73,6 +80,40 @@ impl Default for AgentConfig {
             memory_min_similarity: 0.55,
             memory_max_chars_per_item: 180,
         }
+    }
+}
+
+/// Cooperative cancellation token shared across runtime components.
+#[derive(Debug, Clone, Default)]
+pub struct CooperativeCancellationToken {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl CooperativeCancellationToken {
+    /// Creates a new, not-yet-cancelled token.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Marks the token as cancelled and wakes pending waiters.
+    pub fn cancel(&self) {
+        let already_cancelled = self.cancelled.swap(true, Ordering::SeqCst);
+        if !already_cancelled {
+            self.notify.notify_waiters();
+        }
+    }
+
+    /// Returns true when cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        self.notify.notified().await;
     }
 }
 
@@ -205,6 +246,8 @@ pub enum AgentEvent {
 pub enum AgentError {
     #[error(transparent)]
     Ai(#[from] TauAiError),
+    #[error("agent execution cancelled")]
+    Cancelled,
     #[error("agent exceeded max turns ({0})")]
     MaxTurnsExceeded(usize),
     #[error("model request timed out after {timeout_ms}ms on attempt {attempt}")]
@@ -297,6 +340,7 @@ pub struct Agent {
     messages: Vec<Message>,
     tools: HashMap<String, RegisteredTool>,
     handlers: Vec<EventHandler>,
+    cancellation_token: Option<CooperativeCancellationToken>,
 }
 
 impl Agent {
@@ -313,6 +357,7 @@ impl Agent {
             messages,
             tools: HashMap::new(),
             handlers: Vec::new(),
+            cancellation_token: None,
         }
     }
 
@@ -337,6 +382,11 @@ impl Agent {
                 tool: Arc::new(tool),
             },
         );
+    }
+
+    /// Installs or clears a cooperative cancellation token for subsequent runs.
+    pub fn set_cancellation_token(&mut self, token: Option<CooperativeCancellationToken>) {
+        self.cancellation_token = token;
     }
 
     /// Returns the current conversation history.
@@ -524,6 +574,17 @@ impl Agent {
         }
     }
 
+    fn cancellation_token(&self) -> Option<CooperativeCancellationToken> {
+        self.cancellation_token.clone()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancellation_token
+            .as_ref()
+            .map(CooperativeCancellationToken::is_cancelled)
+            .unwrap_or(false)
+    }
+
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .values()
@@ -578,11 +639,17 @@ impl Agent {
         on_delta: Option<StreamDeltaHandler>,
         json_mode: bool,
     ) -> Result<Vec<Message>, AgentError> {
+        if self.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
         self.emit(AgentEvent::AgentStart);
         let mut pending_replan_on_tool_failure = false;
         let mut replans_used = 0usize;
 
         for turn in 1..=self.config.max_turns {
+            if self.is_cancelled() {
+                return Err(AgentError::Cancelled);
+            }
             self.emit(AgentEvent::TurnStart { turn });
 
             let tools = self.tool_definitions();
@@ -655,7 +722,7 @@ impl Agent {
                 return Ok(new_messages);
             }
 
-            let tool_stats = self.execute_tool_calls(tool_calls).await;
+            let tool_stats = self.execute_tool_calls(tool_calls).await?;
             pending_replan_on_tool_failure =
                 tool_stats.total > 0 && tool_stats.errors == tool_stats.total;
 
@@ -745,22 +812,40 @@ impl Agent {
         request: ChatRequest,
         on_delta: Option<StreamDeltaHandler>,
     ) -> Result<tau_ai::ChatResponse, AgentError> {
+        if self.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
         let max_retries = self.config.request_max_retries;
         let mut attempt = 0usize;
         let mut backoff_ms = self.config.request_retry_initial_backoff_ms.max(1);
         let max_backoff_ms = self.config.request_retry_max_backoff_ms.max(backoff_ms);
         let request_timeout = timeout_duration_from_ms(self.config.request_timeout_ms);
+        let cancellation_token = self.cancellation_token();
 
         loop {
+            if cancellation_token
+                .as_ref()
+                .map(CooperativeCancellationToken::is_cancelled)
+                .unwrap_or(false)
+            {
+                return Err(AgentError::Cancelled);
+            }
+
             let request_for_attempt = request.clone();
+            let client_call = self
+                .client
+                .complete_with_stream(request_for_attempt, on_delta.clone());
             let response_result = if let Some(timeout) = request_timeout {
-                match tokio::time::timeout(
-                    timeout,
-                    self.client
-                        .complete_with_stream(request_for_attempt, on_delta.clone()),
-                )
-                .await
-                {
+                let timed = if let Some(token) = cancellation_token.clone() {
+                    tokio::select! {
+                        _ = token.cancelled() => return Err(AgentError::Cancelled),
+                        timed = tokio::time::timeout(timeout, client_call) => timed,
+                    }
+                } else {
+                    tokio::time::timeout(timeout, client_call).await
+                };
+
+                match timed {
                     Ok(result) => result,
                     Err(_) => {
                         let can_retry = attempt < max_retries && on_delta.is_none();
@@ -770,16 +855,23 @@ impl Agent {
                                 attempt: attempt.saturating_add(1),
                             });
                         }
-                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        sleep_with_cancellation(
+                            Duration::from_millis(backoff_ms),
+                            cancellation_token.clone(),
+                        )
+                        .await?;
                         backoff_ms = backoff_ms.saturating_mul(2).min(max_backoff_ms);
                         attempt = attempt.saturating_add(1);
                         continue;
                     }
                 }
+            } else if let Some(token) = cancellation_token.clone() {
+                tokio::select! {
+                    _ = token.cancelled() => return Err(AgentError::Cancelled),
+                    result = client_call => result,
+                }
             } else {
-                self.client
-                    .complete_with_stream(request_for_attempt, on_delta.clone())
-                    .await
+                client_call.await
             };
 
             match response_result {
@@ -792,7 +884,11 @@ impl Agent {
                         return Err(AgentError::Ai(error));
                     }
 
-                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                    sleep_with_cancellation(
+                        Duration::from_millis(backoff_ms),
+                        cancellation_token.clone(),
+                    )
+                    .await?;
                     backoff_ms = backoff_ms.saturating_mul(2).min(max_backoff_ms);
                     attempt = attempt.saturating_add(1);
                 }
@@ -800,7 +896,13 @@ impl Agent {
         }
     }
 
-    async fn execute_tool_calls(&mut self, tool_calls: Vec<ToolCall>) -> ToolExecutionStats {
+    async fn execute_tool_calls(
+        &mut self,
+        tool_calls: Vec<ToolCall>,
+    ) -> Result<ToolExecutionStats, AgentError> {
+        if self.is_cancelled() {
+            return Err(AgentError::Cancelled);
+        }
         let mut stats = ToolExecutionStats {
             total: 0,
             errors: 0,
@@ -808,17 +910,26 @@ impl Agent {
         let max_parallel = self.config.max_parallel_tool_calls.max(1);
         if max_parallel == 1 || tool_calls.len() <= 1 {
             for call in tool_calls {
+                if self.is_cancelled() {
+                    return Err(AgentError::Cancelled);
+                }
                 if self.execute_tool_call(call).await {
                     stats.errors = stats.errors.saturating_add(1);
                 }
                 stats.total = stats.total.saturating_add(1);
             }
-            return stats;
+            return Ok(stats);
         }
 
         for chunk in tool_calls.chunks(max_parallel) {
+            if self.is_cancelled() {
+                return Err(AgentError::Cancelled);
+            }
             let mut handles = Vec::with_capacity(chunk.len());
             for call in chunk.iter().cloned() {
+                if self.is_cancelled() {
+                    return Err(AgentError::Cancelled);
+                }
                 self.emit(AgentEvent::ToolExecutionStart {
                     tool_call_id: call.id.clone(),
                     tool_name: call.name.clone(),
@@ -842,7 +953,7 @@ impl Agent {
                 stats.total = stats.total.saturating_add(1);
             }
         }
-        stats
+        Ok(stats)
     }
 
     fn spawn_tool_call_task(&self, call: ToolCall) -> tokio::task::JoinHandle<ToolExecutionResult> {
@@ -851,10 +962,16 @@ impl Agent {
             .get(&call.name)
             .map(|tool| (tool.definition.clone(), Arc::clone(&tool.tool)));
         let tool_timeout = timeout_duration_from_ms(self.config.tool_timeout_ms);
-        tokio::spawn(async move { execute_tool_call_inner(call, registered, tool_timeout).await })
+        let cancellation_token = self.cancellation_token();
+        tokio::spawn(async move {
+            execute_tool_call_inner(call, registered, tool_timeout, cancellation_token).await
+        })
     }
 
     async fn execute_tool_call(&mut self, call: ToolCall) -> bool {
+        if self.is_cancelled() {
+            return true;
+        }
         self.emit(AgentEvent::ToolExecutionStart {
             tool_call_id: call.id.clone(),
             tool_name: call.name.clone(),
@@ -1300,29 +1417,70 @@ async fn execute_tool_call_inner(
     call: ToolCall,
     registered: Option<(ToolDefinition, Arc<dyn AgentTool>)>,
     tool_timeout: Option<Duration>,
+    cancellation_token: Option<CooperativeCancellationToken>,
 ) -> ToolExecutionResult {
+    if cancellation_token
+        .as_ref()
+        .map(CooperativeCancellationToken::is_cancelled)
+        .unwrap_or(false)
+    {
+        return ToolExecutionResult::error(json!({
+            "error": format!("tool '{}' cancelled before execution", call.name)
+        }));
+    }
+
     if let Some((definition, tool)) = registered {
         if let Err(error) = validate_tool_arguments(&definition, &call.arguments) {
             return ToolExecutionResult::error(json!({ "error": error }));
         }
-        if let Some(timeout) = tool_timeout {
-            match tokio::time::timeout(timeout, tool.execute(call.arguments)).await {
-                Ok(result) => result,
-                Err(_) => ToolExecutionResult::error(json!({
-                    "error": format!(
-                        "tool '{}' timed out after {}ms",
-                        definition.name,
-                        timeout.as_millis()
-                    )
+
+        let tool_name = definition.name.clone();
+        let execution = async move {
+            if let Some(timeout) = tool_timeout {
+                match tokio::time::timeout(timeout, tool.execute(call.arguments)).await {
+                    Ok(result) => result,
+                    Err(_) => ToolExecutionResult::error(json!({
+                        "error": format!(
+                            "tool '{}' timed out after {}ms",
+                            tool_name,
+                            timeout.as_millis()
+                        )
+                    })),
+                }
+            } else {
+                tool.execute(call.arguments).await
+            }
+        };
+
+        if let Some(token) = cancellation_token {
+            tokio::select! {
+                _ = token.cancelled() => ToolExecutionResult::error(json!({
+                    "error": format!("tool '{}' cancelled", definition.name)
                 })),
+                result = execution => result,
             }
         } else {
-            tool.execute(call.arguments).await
+            execution.await
         }
     } else {
         ToolExecutionResult::error(json!({
             "error": format!("Tool '{}' is not registered", call.name)
         }))
+    }
+}
+
+async fn sleep_with_cancellation(
+    delay: Duration,
+    cancellation_token: Option<CooperativeCancellationToken>,
+) -> Result<(), AgentError> {
+    if let Some(token) = cancellation_token {
+        tokio::select! {
+            _ = token.cancelled() => Err(AgentError::Cancelled),
+            _ = tokio::time::sleep(delay) => Ok(()),
+        }
+    } else {
+        tokio::time::sleep(delay).await;
+        Ok(())
     }
 }
 
@@ -1379,8 +1537,8 @@ mod tests {
         assistant_text_suggests_failure, bounded_messages, build_structured_output_retry_prompt,
         embed_text_vector, estimate_chat_request_tokens, extract_json_payload,
         retrieve_memory_matches, truncate_chars, Agent, AgentConfig, AgentError, AgentEvent,
-        AgentTool, ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX,
-        MEMORY_RECALL_PREFIX,
+        AgentTool, CooperativeCancellationToken, ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS,
+        CONTEXT_SUMMARY_PREFIX, MEMORY_RECALL_PREFIX,
     };
 
     struct MockClient {
@@ -1663,6 +1821,22 @@ mod tests {
         assert_eq!(config.memory_max_chars_per_item, 180);
     }
 
+    #[tokio::test]
+    async fn unit_cooperative_cancellation_token_signals_waiters() {
+        let token = CooperativeCancellationToken::new();
+        let waiter = token.clone();
+        let task = tokio::spawn(async move {
+            waiter.cancelled().await;
+            1usize
+        });
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        token.cancel();
+
+        assert!(token.is_cancelled());
+        assert_eq!(task.await.expect("waiter task should complete"), 1);
+    }
+
     #[test]
     fn unit_estimate_chat_request_tokens_accounts_for_tools_and_max_tokens() {
         let request = ChatRequest {
@@ -1698,6 +1872,29 @@ mod tests {
             estimate.total_tokens,
             estimate.input_tokens.saturating_add(64)
         );
+    }
+
+    #[tokio::test]
+    async fn functional_prompt_returns_cancelled_when_token_is_pre_cancelled() {
+        let client = Arc::new(CapturingMockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("should not be used"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+            requests: AsyncMutex::new(Vec::new()),
+        });
+        let mut agent = Agent::new(client.clone(), AgentConfig::default());
+        let token = CooperativeCancellationToken::new();
+        token.cancel();
+        agent.set_cancellation_token(Some(token));
+
+        let error = agent
+            .prompt("hello")
+            .await
+            .expect_err("prompt should cancel");
+        assert!(matches!(error, AgentError::Cancelled));
+        assert_eq!(client.requests.lock().await.len(), 0);
     }
 
     #[tokio::test]
@@ -2616,6 +2813,77 @@ mod tests {
         let requests = client.requests.lock().await;
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].tool_choice, None);
+    }
+
+    #[tokio::test]
+    async fn integration_tool_execution_cancellation_propagates_as_agent_cancelled() {
+        let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+            id: "call_1".to_string(),
+            name: "slow_read".to_string(),
+            arguments: serde_json::json!({
+                "path": "README.md"
+            }),
+        }]);
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: first_assistant,
+                finish_reason: Some("tool_calls".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        agent.register_tool(SlowReadTool { delay_ms: 500 });
+        let token = CooperativeCancellationToken::new();
+        agent.set_cancellation_token(Some(token.clone()));
+
+        let cancel_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            token.cancel();
+        });
+
+        let error = agent
+            .prompt("read with cancellation")
+            .await
+            .expect_err("prompt should cancel cooperatively");
+        assert!(
+            matches!(error, AgentError::Cancelled),
+            "expected AgentError::Cancelled, got {error:?}"
+        );
+        cancel_task.await.expect("cancel task should complete");
+    }
+
+    #[tokio::test]
+    async fn regression_agent_can_continue_after_cancellation_token_is_cleared() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("ok"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let token = CooperativeCancellationToken::new();
+        token.cancel();
+        agent.set_cancellation_token(Some(token));
+
+        let error = agent
+            .prompt("cancelled run")
+            .await
+            .expect_err("first prompt should be cancelled");
+        assert!(matches!(error, AgentError::Cancelled));
+
+        agent.set_cancellation_token(None);
+        let new_messages = agent
+            .prompt("second run")
+            .await
+            .expect("agent should continue once token is cleared");
+        assert_eq!(
+            new_messages
+                .last()
+                .expect("assistant response should exist")
+                .text_content(),
+            "ok"
+        );
     }
 
     #[tokio::test]
