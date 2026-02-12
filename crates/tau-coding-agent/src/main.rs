@@ -43,11 +43,10 @@ mod transport_health;
 mod voice_contract;
 
 use std::{
-    collections::HashMap,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
