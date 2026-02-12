@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use std::{
     collections::HashSet,
     fs,
@@ -92,6 +93,7 @@ pub fn execute_extension_validate_command(cli: &Cli) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ExtensionManifestSummary` used across Tau components.
 pub struct ExtensionManifestSummary {
     pub manifest_path: PathBuf,
     pub id: String,
@@ -104,6 +106,7 @@ pub struct ExtensionManifestSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionListEntry` used across Tau components.
 pub struct ExtensionListEntry {
     pub manifest_path: PathBuf,
     pub id: String,
@@ -112,12 +115,14 @@ pub struct ExtensionListEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionListInvalidEntry` used across Tau components.
 pub struct ExtensionListInvalidEntry {
     pub manifest_path: PathBuf,
     pub error: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionListReport` used across Tau components.
 pub struct ExtensionListReport {
     pub list_root: PathBuf,
     pub entries: Vec<ExtensionListEntry>,
@@ -125,6 +130,7 @@ pub struct ExtensionListReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionExecSummary` used across Tau components.
 pub struct ExtensionExecSummary {
     pub manifest_path: PathBuf,
     pub id: String,
@@ -138,6 +144,7 @@ pub struct ExtensionExecSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionRuntimeHookDispatchSummary` used across Tau components.
 pub struct ExtensionRuntimeHookDispatchSummary {
     pub root: PathBuf,
     pub hook: String,
@@ -154,6 +161,7 @@ pub struct ExtensionRuntimeHookDispatchSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionMessageTransformResult` used across Tau components.
 pub struct ExtensionMessageTransformResult {
     pub root: PathBuf,
     pub prompt: String,
@@ -169,6 +177,7 @@ pub struct ExtensionMessageTransformResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionPolicyOverrideResult` used across Tau components.
 pub struct ExtensionPolicyOverrideResult {
     pub root: PathBuf,
     pub allowed: bool,
@@ -184,24 +193,28 @@ pub struct ExtensionPolicyOverrideResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `ExtensionRegisteredCommandAction` values.
 pub enum ExtensionRegisteredCommandAction {
     Continue,
     Exit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionRegisteredCommandResult` used across Tau components.
 pub struct ExtensionRegisteredCommandResult {
     pub output: Option<String>,
     pub action: ExtensionRegisteredCommandAction,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Public struct `ExtensionRegisteredToolResult` used across Tau components.
 pub struct ExtensionRegisteredToolResult {
     pub content: Value,
     pub is_error: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Public struct `ExtensionRegisteredTool` used across Tau components.
 pub struct ExtensionRegisteredTool {
     pub name: String,
     pub description: String,
@@ -214,6 +227,7 @@ pub struct ExtensionRegisteredTool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ExtensionRegisteredCommand` used across Tau components.
 pub struct ExtensionRegisteredCommand {
     pub name: String,
     pub description: String,
@@ -226,6 +240,7 @@ pub struct ExtensionRegisteredCommand {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Public struct `ExtensionRuntimeRegistrationSummary` used across Tau components.
 pub struct ExtensionRuntimeRegistrationSummary {
     pub root: PathBuf,
     pub discovered: usize,
@@ -251,6 +266,7 @@ struct PolicyOverrideResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `ExtensionManifest` used across Tau components.
 pub struct ExtensionManifest {
     schema_version: u32,
     id: String,

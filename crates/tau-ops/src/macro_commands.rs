@@ -10,6 +10,7 @@ pub const MACRO_SCHEMA_VERSION: u32 = 1;
 pub const MACRO_USAGE: &str = "usage: /macro <save|run|list|show|delete> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `MacroCommand` values.
 pub enum MacroCommand {
     List,
     Save {
@@ -29,12 +30,14 @@ pub enum MacroCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MacroExecutionAction` values.
 pub enum MacroExecutionAction {
     Continue,
     Exit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MacroFile` used across Tau components.
 pub struct MacroFile {
     pub schema_version: u32,
     pub macros: BTreeMap<String, Vec<String>>,

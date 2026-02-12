@@ -8,6 +8,7 @@ const ROUTE_TABLE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_ROLE_NAME: &str = "default";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Public struct `MultiAgentRoleProfile` used across Tau components.
 pub struct MultiAgentRoleProfile {
     #[serde(default)]
     pub model: Option<String>,
@@ -18,6 +19,7 @@ pub struct MultiAgentRoleProfile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Public struct `MultiAgentRouteTarget` used across Tau components.
 pub struct MultiAgentRouteTarget {
     pub role: String,
     #[serde(default)]
@@ -34,6 +36,7 @@ impl Default for MultiAgentRouteTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Public struct `MultiAgentRouteTable` used across Tau components.
 pub struct MultiAgentRouteTable {
     schema_version: u32,
     #[serde(default = "default_role_profiles")]
@@ -63,6 +66,7 @@ impl Default for MultiAgentRouteTable {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiAgentRoutePhase` values.
 pub enum MultiAgentRoutePhase {
     Planner,
     DelegatedStep,
@@ -80,6 +84,7 @@ impl MultiAgentRoutePhase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiAgentRouteSelection` used across Tau components.
 pub struct MultiAgentRouteSelection {
     pub phase: MultiAgentRoutePhase,
     pub category: Option<String>,

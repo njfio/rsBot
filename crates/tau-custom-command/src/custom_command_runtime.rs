@@ -24,6 +24,7 @@ fn custom_command_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `CustomCommandRuntimeConfig` used across Tau components.
 pub struct CustomCommandRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -34,6 +35,7 @@ pub struct CustomCommandRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `CustomCommandRuntimeSummary` used across Tau components.
 pub struct CustomCommandRuntimeSummary {
     pub discovered_cases: usize,
     pub queued_cases: usize,

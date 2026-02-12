@@ -10,6 +10,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
 tau-core = { path = "../tau-core" }
+tau-contract = { path = "../tau-contract" }
 tau-runtime = { path = "../tau-runtime" }
 
 [dev-dependencies]

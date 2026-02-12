@@ -72,6 +72,7 @@ const MULTI_CHANNEL_INCIDENT_REPLAY_EXPORT_SCHEMA_VERSION: u32 = 1;
 const MULTI_CHANNEL_INCIDENT_DIAGNOSTIC_CAP: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `MultiChannelPairingDecision` values.
 pub enum MultiChannelPairingDecision {
     Allow { reason_code: String },
     Deny { reason_code: String },
@@ -85,6 +86,7 @@ impl MultiChannelPairingDecision {
     }
 }
 
+/// Trait contract for `MultiChannelPairingEvaluator` behavior.
 pub trait MultiChannelPairingEvaluator: Send + Sync {
     fn evaluate_pairing(
         &self,
@@ -95,14 +97,17 @@ pub trait MultiChannelPairingEvaluator: Send + Sync {
     ) -> Result<MultiChannelPairingDecision>;
 }
 
+/// Trait contract for `MultiChannelAuthCommandExecutor` behavior.
 pub trait MultiChannelAuthCommandExecutor: Send + Sync {
     fn execute_auth_status(&self, provider: Option<&str>) -> String;
 }
 
+/// Trait contract for `MultiChannelDoctorCommandExecutor` behavior.
 pub trait MultiChannelDoctorCommandExecutor: Send + Sync {
     fn execute_doctor(&self, online: bool) -> String;
 }
 
+/// Trait contract for `MultiChannelApprovalsCommandExecutor` behavior.
 pub trait MultiChannelApprovalsCommandExecutor: Send + Sync {
     fn execute_approvals(
         &self,
@@ -113,6 +118,7 @@ pub trait MultiChannelApprovalsCommandExecutor: Send + Sync {
 }
 
 #[derive(Clone, Default)]
+/// Public struct `MultiChannelCommandHandlers` used across Tau components.
 pub struct MultiChannelCommandHandlers {
     pub auth: Option<Arc<dyn MultiChannelAuthCommandExecutor>>,
     pub doctor: Option<Arc<dyn MultiChannelDoctorCommandExecutor>>,
@@ -124,6 +130,7 @@ fn multi_channel_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelTelemetryConfig` used across Tau components.
 pub struct MultiChannelTelemetryConfig {
     pub typing_presence_enabled: bool,
     pub usage_summary_enabled: bool,
@@ -143,6 +150,7 @@ impl Default for MultiChannelTelemetryConfig {
 }
 
 #[derive(Clone)]
+/// Public struct `MultiChannelRuntimeConfig` used across Tau components.
 pub struct MultiChannelRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -160,6 +168,7 @@ pub struct MultiChannelRuntimeConfig {
 }
 
 #[derive(Clone)]
+/// Public struct `MultiChannelLiveRuntimeConfig` used across Tau components.
 pub struct MultiChannelLiveRuntimeConfig {
     pub ingress_dir: PathBuf,
     pub state_dir: PathBuf,
@@ -177,6 +186,7 @@ pub struct MultiChannelLiveRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `MultiChannelRuntimeSummary` used across Tau components.
 pub struct MultiChannelRuntimeSummary {
     pub discovered_events: usize,
     pub queued_events: usize,
@@ -452,6 +462,7 @@ pub async fn run_multi_channel_live_runner(config: MultiChannelLiveRuntimeConfig
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `MultiChannelRouteInspectReport` used across Tau components.
 pub struct MultiChannelRouteInspectReport {
     pub event_key: String,
     pub transport: String,
@@ -471,6 +482,7 @@ pub struct MultiChannelRouteInspectReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `MultiChannelIncidentOutcomeCounts` used across Tau components.
 pub struct MultiChannelIncidentOutcomeCounts {
     pub allowed: usize,
     pub denied: usize,
@@ -479,6 +491,7 @@ pub struct MultiChannelIncidentOutcomeCounts {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelIncidentTimelineEntry` used across Tau components.
 pub struct MultiChannelIncidentTimelineEntry {
     pub event_key: String,
     pub transport: String,
@@ -497,6 +510,7 @@ pub struct MultiChannelIncidentTimelineEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelIncidentReplayExportSummary` used across Tau components.
 pub struct MultiChannelIncidentReplayExportSummary {
     pub path: String,
     pub event_count: usize,
@@ -504,6 +518,7 @@ pub struct MultiChannelIncidentReplayExportSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelIncidentTimelineReport` used across Tau components.
 pub struct MultiChannelIncidentTimelineReport {
     pub generated_unix_ms: u64,
     pub state_dir: String,
@@ -529,6 +544,7 @@ pub struct MultiChannelIncidentTimelineReport {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelIncidentTimelineQuery` used across Tau components.
 pub struct MultiChannelIncidentTimelineQuery {
     pub state_dir: PathBuf,
     pub window_start_unix_ms: Option<u64>,
@@ -1231,6 +1247,7 @@ fn write_multi_channel_incident_replay_export(
     })
 }
 
+/// Public struct `MultiChannelRouteInspectConfig` used across Tau components.
 pub struct MultiChannelRouteInspectConfig {
     pub inspect_file: PathBuf,
     pub state_dir: PathBuf,

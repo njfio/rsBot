@@ -61,6 +61,7 @@ fn rbac_schema_version() -> u32 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
+/// Enumerates supported `RbacDecision` values.
 pub enum RbacDecision {
     Allow {
         reason_code: String,

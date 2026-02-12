@@ -9,6 +9,7 @@ pub const TRANSPORT_REPLAY_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `TransportReplayKind` values.
 pub enum TransportReplayKind {
     GithubIssues,
     SlackSocket,
@@ -17,6 +18,7 @@ pub enum TransportReplayKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `TransportReplayFault` values.
 pub enum TransportReplayFault {
     Duplicate,
     OutOfOrder,
@@ -25,6 +27,7 @@ pub enum TransportReplayFault {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `TransportReplayFixtureEvent` used across Tau components.
 pub struct TransportReplayFixtureEvent {
     pub sequence: u64,
     pub event_key: String,
@@ -39,6 +42,7 @@ pub struct TransportReplayFixtureEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `TransportReplayFixture` used across Tau components.
 pub struct TransportReplayFixture {
     pub schema_version: u32,
     pub name: String,
@@ -49,6 +53,7 @@ pub struct TransportReplayFixture {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ReplayDispatchKind` values.
 pub enum ReplayDispatchKind {
     Delivery,
     TransientProbe,
@@ -56,6 +61,7 @@ pub enum ReplayDispatchKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Public struct `ReplayDispatchEvent` used across Tau components.
 pub struct ReplayDispatchEvent {
     pub sequence: u64,
     pub event_key: String,
@@ -67,6 +73,7 @@ pub struct ReplayDispatchEvent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ReplayStep` values.
 pub enum ReplayStep {
     Applied,
     DuplicateIgnored,
@@ -76,6 +83,7 @@ pub enum ReplayStep {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `TransportReplaySummary` used across Tau components.
 pub struct TransportReplaySummary {
     pub discovered_events: usize,
     pub dispatched_events: usize,
@@ -88,6 +96,7 @@ pub struct TransportReplaySummary {
     pub repair_actions: usize,
 }
 
+/// Trait contract for `TransportReplayDriver` behavior.
 pub trait TransportReplayDriver {
     fn apply(&mut self, dispatch: &ReplayDispatchEvent) -> Result<ReplayStep>;
 

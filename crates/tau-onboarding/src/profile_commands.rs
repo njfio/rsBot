@@ -9,6 +9,7 @@ use crate::startup_config::ProfileDefaults;
 pub const PROFILE_USAGE: &str = "usage: /profile <save|load|list|show|delete> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `ProfileCommand` values.
 pub enum ProfileCommand {
     Save { name: String },
     Load { name: String },

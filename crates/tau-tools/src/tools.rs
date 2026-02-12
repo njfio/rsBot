@@ -105,6 +105,7 @@ struct SessionStatsComputed {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `BashCommandProfile` values.
 pub enum BashCommandProfile {
     Permissive,
     Balanced,
@@ -112,6 +113,7 @@ pub enum BashCommandProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ToolPolicyPreset` values.
 pub enum ToolPolicyPreset {
     Permissive,
     Balanced,
@@ -120,6 +122,7 @@ pub enum ToolPolicyPreset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `OsSandboxMode` values.
 pub enum OsSandboxMode {
     Off,
     Auto,
@@ -134,6 +137,7 @@ struct BashSandboxSpec {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `ToolPolicy` used across Tau components.
 pub struct ToolPolicy {
     pub allowed_roots: Vec<PathBuf>,
     pub policy_preset: ToolPolicyPreset,
@@ -319,6 +323,7 @@ impl AgentTool for ExtensionProcessTool {
     }
 }
 
+/// Public struct `ReadTool` used across Tau components.
 pub struct ReadTool {
     policy: Arc<ToolPolicy>,
 }
@@ -401,6 +406,7 @@ impl AgentTool for ReadTool {
     }
 }
 
+/// Public struct `WriteTool` used across Tau components.
 pub struct WriteTool {
     policy: Arc<ToolPolicy>,
 }
@@ -512,6 +518,7 @@ impl AgentTool for WriteTool {
     }
 }
 
+/// Public struct `EditTool` used across Tau components.
 pub struct EditTool {
     policy: Arc<ToolPolicy>,
 }
@@ -655,6 +662,7 @@ impl AgentTool for EditTool {
     }
 }
 
+/// Public struct `SessionsListTool` used across Tau components.
 pub struct SessionsListTool {
     policy: Arc<ToolPolicy>,
 }
@@ -711,6 +719,7 @@ impl AgentTool for SessionsListTool {
     }
 }
 
+/// Public struct `SessionsHistoryTool` used across Tau components.
 pub struct SessionsHistoryTool {
     policy: Arc<ToolPolicy>,
 }
@@ -833,6 +842,7 @@ impl AgentTool for SessionsHistoryTool {
     }
 }
 
+/// Public struct `SessionsSearchTool` used across Tau components.
 pub struct SessionsSearchTool {
     policy: Arc<ToolPolicy>,
 }
@@ -1048,6 +1058,7 @@ fn compute_store_stats(store: &SessionStore) -> Result<SessionStatsComputed, Str
     })
 }
 
+/// Public struct `SessionsStatsTool` used across Tau components.
 pub struct SessionsStatsTool {
     policy: Arc<ToolPolicy>,
 }
@@ -1221,6 +1232,7 @@ impl AgentTool for SessionsStatsTool {
     }
 }
 
+/// Public struct `SessionsSendTool` used across Tau components.
 pub struct SessionsSendTool {
     policy: Arc<ToolPolicy>,
 }
@@ -1352,6 +1364,7 @@ impl AgentTool for SessionsSendTool {
     }
 }
 
+/// Public struct `BashTool` used across Tau components.
 pub struct BashTool {
     policy: Arc<ToolPolicy>,
 }

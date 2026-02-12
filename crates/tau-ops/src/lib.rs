@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 mod canvas_commands;
 mod channel_store_admin;
 mod command_catalog;

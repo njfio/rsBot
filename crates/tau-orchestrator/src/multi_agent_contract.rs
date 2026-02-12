@@ -4,6 +4,10 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 use crate::multi_agent_router::{
     parse_multi_agent_route_table, select_multi_agent_route, MultiAgentRoutePhase,
@@ -21,6 +25,7 @@ fn multi_agent_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiAgentOutcomeKind` values.
 pub enum MultiAgentOutcomeKind {
     Success,
     MalformedInput,
@@ -38,6 +43,7 @@ impl MultiAgentOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiAgentContractExpectation` used across Tau components.
 pub struct MultiAgentContractExpectation {
     pub outcome: MultiAgentOutcomeKind,
     #[serde(default)]
@@ -51,6 +57,7 @@ pub struct MultiAgentContractExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `MultiAgentContractCase` used across Tau components.
 pub struct MultiAgentContractCase {
     #[serde(default = "multi_agent_contract_schema_version")]
     pub schema_version: u32,
@@ -65,6 +72,7 @@ pub struct MultiAgentContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `MultiAgentContractFixture` used across Tau components.
 pub struct MultiAgentContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -74,6 +82,7 @@ pub struct MultiAgentContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiAgentContractCapabilities` used across Tau components.
 pub struct MultiAgentContractCapabilities {
     pub schema_version: u32,
     pub supported_phases: Vec<String>,
@@ -82,6 +91,7 @@ pub struct MultiAgentContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MultiAgentReplayStep` values.
 pub enum MultiAgentReplayStep {
     Success,
     MalformedInput,
@@ -89,6 +99,7 @@ pub enum MultiAgentReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiAgentReplayResult` used across Tau components.
 pub struct MultiAgentReplayResult {
     pub step: MultiAgentReplayStep,
     pub error_code: Option<String>,
@@ -112,17 +123,15 @@ pub(crate) trait MultiAgentContractDriver {
 }
 
 pub fn parse_multi_agent_contract_fixture(raw: &str) -> Result<MultiAgentContractFixture> {
-    let fixture = serde_json::from_str::<MultiAgentContractFixture>(raw)
-        .context("failed to parse multi-agent contract fixture")?;
-    validate_multi_agent_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse multi-agent contract fixture",
+        validate_multi_agent_contract_fixture,
+    )
 }
 
 pub fn load_multi_agent_contract_fixture(path: &Path) -> Result<MultiAgentContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_multi_agent_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_multi_agent_contract_fixture)
 }
 
 pub fn multi_agent_contract_capabilities() -> MultiAgentContractCapabilities {
@@ -205,28 +214,18 @@ pub fn validate_multi_agent_contract_compatibility(
 }
 
 pub fn validate_multi_agent_contract_fixture(fixture: &MultiAgentContractFixture) -> Result<()> {
-    if fixture.schema_version != MULTI_AGENT_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported multi-agent contract schema version {} (expected {})",
-            fixture.schema_version,
-            MULTI_AGENT_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "multi-agent",
+        fixture.schema_version,
+        MULTI_AGENT_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_multi_agent_contract_case(case, index)?;
-        let trimmed_case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(trimmed_case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", trimmed_case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_multi_agent_contract_compatibility(fixture)?;
     Ok(())

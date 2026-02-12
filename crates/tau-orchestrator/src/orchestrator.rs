@@ -13,6 +13,7 @@ use tau_core::time_utils::current_unix_timestamp_ms;
 const ORCHESTRATOR_ROUTE_TRACE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `OrchestratorPromptRunStatus` values.
 pub enum OrchestratorPromptRunStatus {
     Completed,
     Cancelled,
@@ -20,12 +21,14 @@ pub enum OrchestratorPromptRunStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `OrchestratorRenderOptions` used across Tau components.
 pub struct OrchestratorRenderOptions {
     pub stream_output: bool,
     pub stream_delay_ms: u64,
 }
 
 #[async_trait(?Send)]
+/// Trait contract for `OrchestratorRuntime` behavior.
 pub trait OrchestratorRuntime {
     async fn run_prompt_with_cancellation(
         &mut self,

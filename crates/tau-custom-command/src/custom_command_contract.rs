@@ -1,11 +1,15 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 pub const CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
@@ -20,6 +24,7 @@ fn custom_command_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `CustomCommandOutcomeKind` values.
 pub enum CustomCommandOutcomeKind {
     Success,
     MalformedInput,
@@ -27,6 +32,7 @@ pub enum CustomCommandOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `CustomCommandCaseExpectation` used across Tau components.
 pub struct CustomCommandCaseExpectation {
     pub outcome: CustomCommandOutcomeKind,
     pub status_code: u16,
@@ -37,6 +43,7 @@ pub struct CustomCommandCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `CustomCommandContractCase` used across Tau components.
 pub struct CustomCommandContractCase {
     #[serde(default = "custom_command_contract_schema_version")]
     pub schema_version: u32,
@@ -54,6 +61,7 @@ pub struct CustomCommandContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `CustomCommandContractFixture` used across Tau components.
 pub struct CustomCommandContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -63,6 +71,7 @@ pub struct CustomCommandContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CustomCommandContractCapabilities` used across Tau components.
 pub struct CustomCommandContractCapabilities {
     pub schema_version: u32,
     pub supported_outcomes: BTreeSet<CustomCommandOutcomeKind>,
@@ -71,6 +80,7 @@ pub struct CustomCommandContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `CustomCommandReplayStep` values.
 pub enum CustomCommandReplayStep {
     Success,
     MalformedInput,
@@ -78,6 +88,7 @@ pub enum CustomCommandReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CustomCommandReplayResult` used across Tau components.
 pub struct CustomCommandReplayResult {
     pub step: CustomCommandReplayStep,
     pub status_code: u16,
@@ -87,6 +98,7 @@ pub struct CustomCommandReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `CustomCommandReplaySummary` used across Tau components.
 pub struct CustomCommandReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -95,23 +107,22 @@ pub struct CustomCommandReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `CustomCommandContractDriver` behavior.
 pub trait CustomCommandContractDriver {
     fn apply_case(&mut self, case: &CustomCommandContractCase)
         -> Result<CustomCommandReplayResult>;
 }
 
 pub fn parse_custom_command_contract_fixture(raw: &str) -> Result<CustomCommandContractFixture> {
-    let fixture = serde_json::from_str::<CustomCommandContractFixture>(raw)
-        .context("failed to parse custom-command contract fixture")?;
-    validate_custom_command_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse custom-command contract fixture",
+        validate_custom_command_contract_fixture,
+    )
 }
 
 pub fn load_custom_command_contract_fixture(path: &Path) -> Result<CustomCommandContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_custom_command_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_custom_command_contract_fixture)
 }
 
 pub fn custom_command_contract_capabilities() -> CustomCommandContractCapabilities {
@@ -186,28 +197,18 @@ pub fn validate_custom_command_contract_compatibility(
 pub fn validate_custom_command_contract_fixture(
     fixture: &CustomCommandContractFixture,
 ) -> Result<()> {
-    if fixture.schema_version != CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported custom-command contract schema version {} (expected {})",
-            fixture.schema_version,
-            CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "custom-command",
+        fixture.schema_version,
+        CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_custom_command_case(case, index)?;
-        let case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_custom_command_contract_compatibility(fixture)?;
     Ok(())

@@ -53,6 +53,7 @@ fn default_external_server_enabled() -> bool {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `McpServeReport` used across Tau components.
 pub struct McpServeReport {
     pub processed_frames: usize,
     pub error_count: usize,

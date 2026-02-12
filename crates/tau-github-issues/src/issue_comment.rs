@@ -44,6 +44,7 @@ pub fn issue_command_reason_code(command: &str, status: &str) -> String {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Public struct `IssueCommentUsageView` used across Tau components.
 pub struct IssueCommentUsageView {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -51,6 +52,7 @@ pub struct IssueCommentUsageView {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Public struct `IssueCommentArtifactView` used across Tau components.
 pub struct IssueCommentArtifactView<'a> {
     pub relative_path: &'a str,
     pub checksum_sha256: &'a str,
@@ -58,6 +60,7 @@ pub struct IssueCommentArtifactView<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Public struct `IssueCommentRunView` used across Tau components.
 pub struct IssueCommentRunView<'a> {
     pub event_key: &'a str,
     pub run_id: &'a str,
@@ -69,6 +72,7 @@ pub struct IssueCommentRunView<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Public struct `IssueCommentAttachmentView` used across Tau components.
 pub struct IssueCommentAttachmentView<'a> {
     pub policy_reason_code: &'a str,
 }

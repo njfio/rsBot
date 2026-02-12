@@ -23,6 +23,7 @@ fn default_route_binding_selector() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelRouteBindingFile` used across Tau components.
 pub struct MultiChannelRouteBindingFile {
     #[serde(default = "multi_channel_route_bindings_schema_version")]
     pub schema_version: u32,
@@ -40,6 +41,7 @@ impl Default for MultiChannelRouteBindingFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelRouteBinding` used across Tau components.
 pub struct MultiChannelRouteBinding {
     pub binding_id: String,
     #[serde(default = "default_route_binding_selector")]
@@ -59,6 +61,7 @@ pub struct MultiChannelRouteBinding {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `MultiChannelRouteDecision` used across Tau components.
 pub struct MultiChannelRouteDecision {
     pub binding_id: String,
     pub matched: bool,

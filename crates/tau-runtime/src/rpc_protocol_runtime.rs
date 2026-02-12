@@ -27,6 +27,7 @@ const RPC_RUN_STREAM_TOOL_EVENTS_KIND: &str = "run.stream.tool_events";
 pub const RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `RpcErrorContract` used across Tau components.
 pub struct RpcErrorContract {
     pub code: &'static str,
     pub category: &'static str,
@@ -75,6 +76,7 @@ pub fn rpc_error_contracts() -> &'static [RpcErrorContract] {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `RpcFrameKind` values.
 pub enum RpcFrameKind {
     CapabilitiesRequest,
     RunStart,
@@ -120,6 +122,7 @@ impl FromStr for RpcFrameKind {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `RpcFrame` used across Tau components.
 pub struct RpcFrame {
     pub request_id: String,
     pub kind: RpcFrameKind,
@@ -127,6 +130,7 @@ pub struct RpcFrame {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+/// Public struct `RpcResponseFrame` used across Tau components.
 pub struct RpcResponseFrame {
     pub schema_version: u32,
     pub request_id: String,
@@ -135,6 +139,7 @@ pub struct RpcResponseFrame {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Public struct `RpcNdjsonDispatchReport` used across Tau components.
 pub struct RpcNdjsonDispatchReport {
     pub responses: Vec<RpcResponseFrame>,
     pub processed_lines: usize,
@@ -142,6 +147,7 @@ pub struct RpcNdjsonDispatchReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `RpcNdjsonServeReport` used across Tau components.
 pub struct RpcNdjsonServeReport {
     pub processed_lines: usize,
     pub error_count: usize,

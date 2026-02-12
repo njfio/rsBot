@@ -12,6 +12,7 @@ pub const MULTI_CHANNEL_POLICY_FILE_NAME: &str = "channel-policy.json";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelDmPolicy` values.
 pub enum MultiChannelDmPolicy {
     #[default]
     Allow,
@@ -29,6 +30,7 @@ impl MultiChannelDmPolicy {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelAllowFrom` values.
 pub enum MultiChannelAllowFrom {
     Any,
     #[default]
@@ -48,6 +50,7 @@ impl MultiChannelAllowFrom {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelGroupPolicy` values.
 pub enum MultiChannelGroupPolicy {
     #[default]
     Allow,
@@ -64,6 +67,7 @@ impl MultiChannelGroupPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `MultiChannelChannelPolicy` used across Tau components.
 pub struct MultiChannelChannelPolicy {
     #[serde(default, rename = "dmPolicy")]
     pub dm_policy: MultiChannelDmPolicy,
@@ -83,6 +87,7 @@ impl MultiChannelChannelPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelPolicyFile` used across Tau components.
 pub struct MultiChannelPolicyFile {
     pub schema_version: u32,
     #[serde(default, rename = "strictMode")]
@@ -106,6 +111,7 @@ impl Default for MultiChannelPolicyFile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelConversationKind` values.
 pub enum MultiChannelConversationKind {
     Dm,
     Group,
@@ -121,6 +127,7 @@ impl MultiChannelConversationKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Enumerates supported `MultiChannelPolicyDecision` values.
 pub enum MultiChannelPolicyDecision {
     Allow { reason_code: String },
     Deny { reason_code: String },
@@ -143,6 +150,7 @@ impl MultiChannelPolicyDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Public struct `MultiChannelPolicyEvaluation` used across Tau components.
 pub struct MultiChannelPolicyEvaluation {
     pub policy_channel: String,
     pub matched_policy_key: String,

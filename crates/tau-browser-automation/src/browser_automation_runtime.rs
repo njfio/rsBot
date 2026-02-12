@@ -26,6 +26,7 @@ fn browser_automation_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `BrowserAutomationRuntimeConfig` used across Tau components.
 pub struct BrowserAutomationRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -39,6 +40,7 @@ pub struct BrowserAutomationRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `BrowserAutomationRuntimeSummary` used across Tau components.
 pub struct BrowserAutomationRuntimeSummary {
     pub discovered_cases: usize,
     pub queued_cases: usize,

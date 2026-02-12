@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 pub mod onboarding_command;
 pub mod onboarding_daemon;
 pub mod onboarding_paths;

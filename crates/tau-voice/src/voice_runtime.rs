@@ -23,6 +23,7 @@ fn voice_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `VoiceRuntimeConfig` used across Tau components.
 pub struct VoiceRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -33,6 +34,7 @@ pub struct VoiceRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `VoiceRuntimeSummary` used across Tau components.
 pub struct VoiceRuntimeSummary {
     pub discovered_cases: usize,
     pub queued_cases: usize,

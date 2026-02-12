@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `IssueDoctorCommand` used across Tau components.
 pub struct IssueDoctorCommand {
     pub online: bool,
 }

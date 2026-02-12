@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 pub mod approvals;
 pub mod pairing;
 pub mod rbac;

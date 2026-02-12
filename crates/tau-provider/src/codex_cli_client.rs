@@ -23,6 +23,7 @@ const DEFAULT_EXEC_ARGS: &[&str] = &[
 static OUTPUT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CodexCliConfig` used across Tau components.
 pub struct CodexCliConfig {
     pub executable: String,
     pub extra_args: Vec<String>,
@@ -30,6 +31,7 @@ pub struct CodexCliConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CodexCliClient` used across Tau components.
 pub struct CodexCliClient {
     config: CodexCliConfig,
 }

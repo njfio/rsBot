@@ -15,6 +15,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Enumerates supported `OpenAiAuthScheme` values.
 pub enum OpenAiAuthScheme {
     #[default]
     Bearer,
@@ -22,6 +23,7 @@ pub enum OpenAiAuthScheme {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `OpenAiConfig` used across Tau components.
 pub struct OpenAiConfig {
     pub api_base: String,
     pub api_key: String,
@@ -35,6 +37,7 @@ pub struct OpenAiConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `OpenAiClient` used across Tau components.
 pub struct OpenAiClient {
     client: reqwest::Client,
     config: OpenAiConfig,

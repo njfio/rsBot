@@ -12,6 +12,7 @@ use crate::client::build_provider_client;
 type FallbackEventSink = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 
 #[derive(Clone)]
+/// Public struct `ClientRoute` used across Tau components.
 pub struct ClientRoute {
     pub provider: Provider,
     pub model: String,
@@ -24,6 +25,7 @@ impl ClientRoute {
     }
 }
 
+/// Public struct `FallbackRoutingClient` used across Tau components.
 pub struct FallbackRoutingClient {
     routes: Vec<ClientRoute>,
     event_sink: Option<FallbackEventSink>,

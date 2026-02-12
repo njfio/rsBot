@@ -1,17 +1,20 @@
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default)]
+/// Public struct `MultiChannelCredentialRecord` used across Tau components.
 pub struct MultiChannelCredentialRecord {
     pub secret: Option<String>,
     pub revoked: bool,
 }
 
 #[derive(Debug, Clone, Default)]
+/// Public struct `MultiChannelCredentialStoreSnapshot` used across Tau components.
 pub struct MultiChannelCredentialStoreSnapshot {
     pub integrations: BTreeMap<String, MultiChannelCredentialRecord>,
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `ResolvedSecret` used across Tau components.
 pub struct ResolvedSecret {
     pub value: Option<String>,
     pub source: String,

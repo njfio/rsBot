@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `IssueChatCommand` values.
 pub enum IssueChatCommand {
     Start,
     Resume,
@@ -18,6 +19,7 @@ pub enum IssueChatCommand {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Public struct `IssueChatParseConfig` used across Tau components.
 pub struct IssueChatParseConfig<'a> {
     pub show_default_limit: usize,
     pub show_max_limit: usize,

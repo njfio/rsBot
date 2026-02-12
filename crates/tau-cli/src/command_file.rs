@@ -3,12 +3,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CommandFileEntry` used across Tau components.
 pub struct CommandFileEntry {
     pub line_number: usize,
     pub command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CommandFileReport` used across Tau components.
 pub struct CommandFileReport {
     pub total: usize,
     pub executed: usize,

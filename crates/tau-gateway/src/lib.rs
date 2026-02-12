@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 pub mod gateway_contract;
 pub mod gateway_openresponses;
 pub mod gateway_runtime;

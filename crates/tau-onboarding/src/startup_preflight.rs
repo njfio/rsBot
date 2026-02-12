@@ -6,6 +6,7 @@ pub type ResolveSecretFn = fn(&Cli, Option<&str>, Option<&str>, &str) -> Result<
 pub type HandleDaemonCommandsFn = fn(&Cli) -> Result<bool>;
 
 #[derive(Clone, Copy)]
+/// Public struct `StartupPreflightCallbacks` used across Tau components.
 pub struct StartupPreflightCallbacks {
     pub execute_onboarding_command: StartupCommandFn,
     pub execute_multi_channel_send_command: StartupCommandFn,

@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use anyhow::{anyhow, Context, Result};
 use tau_access::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
 use tau_cli::validation::{
@@ -31,6 +32,7 @@ pub use startup_multi_channel_adapters::*;
 pub use startup_multi_channel_commands::*;
 pub use startup_rpc_capabilities_command::*;
 
+/// Trait contract for `StartupPreflightActions` behavior.
 pub trait StartupPreflightActions {
     fn execute_onboarding_command(&self, cli: &Cli) -> Result<()>;
     fn execute_multi_channel_send_command(&self, cli: &Cli) -> Result<()>;

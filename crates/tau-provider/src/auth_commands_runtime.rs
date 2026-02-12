@@ -21,6 +21,7 @@ pub const AUTH_MATRIX_USAGE: &str =
     "usage: /auth matrix [provider] [--mode <mode>] [--mode-support <all|supported|unsupported>] [--availability <all|available|unavailable>] [--state <state>] [--source-kind <all|flag|env|credential-store|none>] [--revoked <all|revoked|not-revoked>] [--json]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `AuthMatrixAvailabilityFilter` values.
 pub enum AuthMatrixAvailabilityFilter {
     All,
     Available,
@@ -38,6 +39,7 @@ impl AuthMatrixAvailabilityFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `AuthMatrixModeSupportFilter` values.
 pub enum AuthMatrixModeSupportFilter {
     All,
     Supported,
@@ -55,6 +57,7 @@ impl AuthMatrixModeSupportFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `AuthSourceKindFilter` values.
 pub enum AuthSourceKindFilter {
     All,
     Flag,
@@ -76,6 +79,7 @@ impl AuthSourceKindFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `AuthRevokedFilter` values.
 pub enum AuthRevokedFilter {
     All,
     Revoked,
@@ -93,6 +97,7 @@ impl AuthRevokedFilter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `AuthCommand` values.
 pub enum AuthCommand {
     Login {
         provider: Provider,
@@ -133,6 +138,7 @@ pub enum AuthCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `AuthQueryFilters` used across Tau components.
 pub struct AuthQueryFilters {
     pub mode: Option<ProviderAuthMethod>,
     pub mode_support: AuthMatrixModeSupportFilter,
@@ -143,6 +149,7 @@ pub struct AuthQueryFilters {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `AuthStatusRow` used across Tau components.
 pub struct AuthStatusRow {
     provider: String,
     mode: String,

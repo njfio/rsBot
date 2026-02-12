@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 pub mod cli_args;
 pub mod cli_types;
 pub mod command_file;

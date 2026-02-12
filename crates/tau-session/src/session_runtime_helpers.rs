@@ -6,6 +6,7 @@ use tau_ai::Message;
 use crate::{SessionRuntime, SessionStore};
 
 #[derive(Debug)]
+/// Public struct `SessionInitializationOutcome` used across Tau components.
 pub struct SessionInitializationOutcome {
     pub runtime: SessionRuntime,
     pub lineage: Vec<Message>,

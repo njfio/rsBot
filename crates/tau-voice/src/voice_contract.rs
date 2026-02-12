@@ -1,11 +1,15 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 pub const VOICE_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
@@ -20,6 +24,7 @@ fn voice_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `VoiceFixtureMode` values.
 pub enum VoiceFixtureMode {
     WakeWord,
     Turn,
@@ -36,6 +41,7 @@ impl VoiceFixtureMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `VoiceOutcomeKind` values.
 pub enum VoiceOutcomeKind {
     Success,
     MalformedInput,
@@ -43,6 +49,7 @@ pub enum VoiceOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `VoiceCaseExpectation` used across Tau components.
 pub struct VoiceCaseExpectation {
     pub outcome: VoiceOutcomeKind,
     pub status_code: u16,
@@ -53,6 +60,7 @@ pub struct VoiceCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `VoiceContractCase` used across Tau components.
 pub struct VoiceContractCase {
     #[serde(default = "voice_contract_schema_version")]
     pub schema_version: u32,
@@ -72,6 +80,7 @@ pub struct VoiceContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `VoiceContractFixture` used across Tau components.
 pub struct VoiceContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -81,6 +90,7 @@ pub struct VoiceContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `VoiceContractCapabilities` used across Tau components.
 pub struct VoiceContractCapabilities {
     pub schema_version: u32,
     pub supported_modes: BTreeSet<VoiceFixtureMode>,
@@ -91,6 +101,7 @@ pub struct VoiceContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `VoiceReplayStep` values.
 pub enum VoiceReplayStep {
     Success,
     MalformedInput,
@@ -98,6 +109,7 @@ pub enum VoiceReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `VoiceReplayResult` used across Tau components.
 pub struct VoiceReplayResult {
     pub step: VoiceReplayStep,
     pub status_code: u16,
@@ -107,6 +119,7 @@ pub struct VoiceReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `VoiceReplaySummary` used across Tau components.
 pub struct VoiceReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -115,22 +128,21 @@ pub struct VoiceReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `VoiceContractDriver` behavior.
 pub trait VoiceContractDriver {
     fn apply_case(&mut self, case: &VoiceContractCase) -> Result<VoiceReplayResult>;
 }
 
 pub fn parse_voice_contract_fixture(raw: &str) -> Result<VoiceContractFixture> {
-    let fixture = serde_json::from_str::<VoiceContractFixture>(raw)
-        .context("failed to parse voice contract fixture")?;
-    validate_voice_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse voice contract fixture",
+        validate_voice_contract_fixture,
+    )
 }
 
 pub fn load_voice_contract_fixture(path: &Path) -> Result<VoiceContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_voice_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_voice_contract_fixture)
 }
 
 pub fn voice_contract_capabilities() -> VoiceContractCapabilities {
@@ -223,28 +235,18 @@ pub fn validate_voice_contract_compatibility(fixture: &VoiceContractFixture) -> 
 }
 
 pub fn validate_voice_contract_fixture(fixture: &VoiceContractFixture) -> Result<()> {
-    if fixture.schema_version != VOICE_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported voice contract schema version {} (expected {})",
-            fixture.schema_version,
-            VOICE_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "voice",
+        fixture.schema_version,
+        VOICE_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_voice_case(case, index)?;
-        let trimmed_case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(trimmed_case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", trimmed_case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_voice_contract_compatibility(fixture)?;
     Ok(())

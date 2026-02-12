@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,7 @@ const MULTI_CHANNEL_READINESS_WHATSAPP_PHONE_NUMBER_ID_INTEGRATION_ID: &str =
     "whatsapp-phone-number-id";
 
 #[derive(Debug, Default)]
+/// Public struct `ToolAuditAggregate` used across Tau components.
 pub struct ToolAuditAggregate {
     pub count: u64,
     pub error_count: u64,
@@ -38,6 +40,7 @@ pub struct ToolAuditAggregate {
 }
 
 #[derive(Debug, Default)]
+/// Public struct `ProviderAuditAggregate` used across Tau components.
 pub struct ProviderAuditAggregate {
     pub count: u64,
     pub error_count: u64,
@@ -48,6 +51,7 @@ pub struct ProviderAuditAggregate {
 }
 
 #[derive(Debug, Default)]
+/// Public struct `AuditSummary` used across Tau components.
 pub struct AuditSummary {
     pub record_count: u64,
     pub tool_event_count: u64,
@@ -241,6 +245,7 @@ pub fn execute_audit_summary_command(command_args: &str) -> String {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `DoctorStatus` values.
 pub enum DoctorStatus {
     Pass,
     Warn,
@@ -258,6 +263,7 @@ impl DoctorStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DoctorCheckResult` used across Tau components.
 pub struct DoctorCheckResult {
     pub key: String,
     pub status: DoctorStatus,
@@ -267,6 +273,7 @@ pub struct DoctorCheckResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DoctorProviderKeyStatus` used across Tau components.
 pub struct DoctorProviderKeyStatus {
     pub provider_kind: Provider,
     pub provider: String,
@@ -280,6 +287,7 @@ pub struct DoctorProviderKeyStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DoctorMultiChannelReadinessConfig` used across Tau components.
 pub struct DoctorMultiChannelReadinessConfig {
     pub ingress_dir: PathBuf,
     pub credential_store_path: PathBuf,
@@ -307,6 +315,7 @@ impl Default for DoctorMultiChannelReadinessConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DoctorCommandConfig` used across Tau components.
 pub struct DoctorCommandConfig {
     pub model: String,
     pub provider_keys: Vec<DoctorProviderKeyStatus>,
@@ -323,12 +332,14 @@ pub struct DoctorCommandConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `DoctorCommandOutputFormat` values.
 pub enum DoctorCommandOutputFormat {
     Text,
     Json,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `DoctorCommandArgs` used across Tau components.
 pub struct DoctorCommandArgs {
     pub output_format: DoctorCommandOutputFormat,
     pub online: bool,
@@ -344,17 +355,20 @@ impl Default for DoctorCommandArgs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Public struct `DoctorCheckOptions` used across Tau components.
 pub struct DoctorCheckOptions {
     pub online: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MultiChannelReadinessOutputFormat` values.
 pub enum MultiChannelReadinessOutputFormat {
     Text,
     Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiChannelLiveReadinessReport` used across Tau components.
 pub struct MultiChannelLiveReadinessReport {
     pub checks: Vec<DoctorCheckResult>,
     pub pass: usize,
@@ -365,12 +379,14 @@ pub struct MultiChannelLiveReadinessReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `BrowserAutomationReadinessOutputFormat` values.
 pub enum BrowserAutomationReadinessOutputFormat {
     Text,
     Json,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `BrowserAutomationReadinessReport` used across Tau components.
 pub struct BrowserAutomationReadinessReport {
     pub checks: Vec<DoctorCheckResult>,
     pub pass: usize,

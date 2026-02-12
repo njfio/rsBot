@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 pub mod channel_store;
 pub mod observability_loggers_runtime;
 pub mod rpc_capabilities_runtime;

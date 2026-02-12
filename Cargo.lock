@@ -2803,6 +2803,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tau-contract",
  "tau-core",
  "tau-runtime",
  "tempfile",
@@ -2883,6 +2884,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-contract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tau-core"
 version = "0.1.0"
 dependencies = [
@@ -2897,6 +2907,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tau-contract",
  "tau-core",
  "tau-runtime",
  "tempfile",
@@ -2910,6 +2921,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tau-contract",
  "tau-core",
  "tau-runtime",
  "tempfile",
@@ -2927,6 +2939,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tau-cli",
+ "tau-contract",
  "tau-core",
  "tau-runtime",
  "tempfile",
@@ -2997,6 +3010,7 @@ dependencies = [
  "serde_json",
  "tau-agent-core",
  "tau-ai",
+ "tau-contract",
  "tau-core",
  "tau-multi-channel",
  "tau-runtime",
@@ -3022,12 +3036,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-github-issues-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "tau-memory"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tau-contract",
  "tau-core",
  "tau-runtime",
  "tau-session",
@@ -3048,6 +3067,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tau-contract",
  "tau-core",
  "tau-orchestrator",
  "tau-runtime",
@@ -3120,6 +3140,7 @@ dependencies = [
  "async-trait",
  "serde",
  "serde_json",
+ "tau-contract",
  "tau-core",
  "tau-runtime",
  "tempfile",
@@ -3209,6 +3230,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-slack-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "tau-startup"
 version = "0.1.0"
 dependencies = [
@@ -3266,6 +3291,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tau-contract",
  "tau-core",
  "tau-runtime",
  "tempfile",

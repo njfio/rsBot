@@ -1,11 +1,15 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 use crate::deployment_wasm::load_deployment_wasm_manifest;
 
@@ -26,6 +30,7 @@ fn default_replicas() -> u16 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `DeploymentOutcomeKind` values.
 pub enum DeploymentOutcomeKind {
     Success,
     MalformedInput,
@@ -33,6 +38,7 @@ pub enum DeploymentOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DeploymentCaseExpectation` used across Tau components.
 pub struct DeploymentCaseExpectation {
     pub outcome: DeploymentOutcomeKind,
     pub status_code: u16,
@@ -43,6 +49,7 @@ pub struct DeploymentCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DeploymentContractCase` used across Tau components.
 pub struct DeploymentContractCase {
     #[serde(default = "deployment_contract_schema_version")]
     pub schema_version: u32,
@@ -66,6 +73,7 @@ pub struct DeploymentContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DeploymentContractFixture` used across Tau components.
 pub struct DeploymentContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -75,6 +83,7 @@ pub struct DeploymentContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DeploymentContractCapabilities` used across Tau components.
 pub struct DeploymentContractCapabilities {
     pub schema_version: u32,
     pub supported_outcomes: BTreeSet<DeploymentOutcomeKind>,
@@ -85,6 +94,7 @@ pub struct DeploymentContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `DeploymentReplayStep` values.
 pub enum DeploymentReplayStep {
     Success,
     MalformedInput,
@@ -92,6 +102,7 @@ pub enum DeploymentReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DeploymentReplayResult` used across Tau components.
 pub struct DeploymentReplayResult {
     pub step: DeploymentReplayStep,
     pub status_code: u16,
@@ -101,6 +112,7 @@ pub struct DeploymentReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `DeploymentReplaySummary` used across Tau components.
 pub struct DeploymentReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -109,22 +121,21 @@ pub struct DeploymentReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `DeploymentContractDriver` behavior.
 pub trait DeploymentContractDriver {
     fn apply_case(&mut self, case: &DeploymentContractCase) -> Result<DeploymentReplayResult>;
 }
 
 pub fn parse_deployment_contract_fixture(raw: &str) -> Result<DeploymentContractFixture> {
-    let fixture = serde_json::from_str::<DeploymentContractFixture>(raw)
-        .context("failed to parse deployment contract fixture")?;
-    validate_deployment_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse deployment contract fixture",
+        validate_deployment_contract_fixture,
+    )
 }
 
 pub fn load_deployment_contract_fixture(path: &Path) -> Result<DeploymentContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_deployment_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_deployment_contract_fixture)
 }
 
 pub fn deployment_contract_capabilities() -> DeploymentContractCapabilities {
@@ -242,28 +253,18 @@ pub fn validate_deployment_contract_compatibility(
 }
 
 pub fn validate_deployment_contract_fixture(fixture: &DeploymentContractFixture) -> Result<()> {
-    if fixture.schema_version != DEPLOYMENT_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported deployment contract schema version {} (expected {})",
-            fixture.schema_version,
-            DEPLOYMENT_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "deployment",
+        fixture.schema_version,
+        DEPLOYMENT_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_deployment_case(case, index)?;
-        let case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
     validate_deployment_contract_compatibility(fixture)?;
     Ok(())
 }

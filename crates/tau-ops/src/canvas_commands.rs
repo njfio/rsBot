@@ -29,6 +29,7 @@ fn canvas_event_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CanvasEventOrigin` used across Tau components.
 pub struct CanvasEventOrigin {
     pub transport: String,
     pub channel: Option<String>,
@@ -48,12 +49,14 @@ impl Default for CanvasEventOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CanvasSessionLinkContext` used across Tau components.
 pub struct CanvasSessionLinkContext {
     pub session_path: PathBuf,
     pub session_head_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `CanvasCommandConfig` used across Tau components.
 pub struct CanvasCommandConfig {
     pub canvas_root: PathBuf,
     pub channel_store_root: PathBuf,

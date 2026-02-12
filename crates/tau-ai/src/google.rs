@@ -14,6 +14,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// Public struct `GoogleConfig` used across Tau components.
 pub struct GoogleConfig {
     pub api_base: String,
     pub api_key: String,
@@ -24,6 +25,7 @@ pub struct GoogleConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `GoogleClient` used across Tau components.
 pub struct GoogleClient {
     client: reqwest::Client,
     config: GoogleConfig,

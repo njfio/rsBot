@@ -21,6 +21,7 @@ struct ChannelStoreMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `ChannelLogEntry` used across Tau components.
 pub struct ChannelLogEntry {
     pub timestamp_unix_ms: u64,
     pub direction: String,
@@ -30,6 +31,7 @@ pub struct ChannelLogEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `ChannelContextEntry` used across Tau components.
 pub struct ChannelContextEntry {
     pub timestamp_unix_ms: u64,
     pub role: String,
@@ -37,12 +39,14 @@ pub struct ChannelContextEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ChannelRef` used across Tau components.
 pub struct ChannelRef {
     pub transport: String,
     pub channel_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `ChannelInspectReport` used across Tau components.
 pub struct ChannelInspectReport {
     pub transport: String,
     pub channel_id: String,
@@ -60,6 +64,7 @@ pub struct ChannelInspectReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `ChannelRepairReport` used across Tau components.
 pub struct ChannelRepairReport {
     pub log_removed_lines: usize,
     pub context_removed_lines: usize,
@@ -70,6 +75,7 @@ pub struct ChannelRepairReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ChannelArtifactRecord` used across Tau components.
 pub struct ChannelArtifactRecord {
     pub id: String,
     pub run_id: String,
@@ -83,12 +89,14 @@ pub struct ChannelArtifactRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `ChannelArtifactLoadReport` used across Tau components.
 pub struct ChannelArtifactLoadReport {
     pub records: Vec<ChannelArtifactRecord>,
     pub invalid_lines: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `ChannelArtifactPurgeReport` used across Tau components.
 pub struct ChannelArtifactPurgeReport {
     pub expired_removed: usize,
     pub invalid_removed: usize,
@@ -97,6 +105,7 @@ pub struct ChannelArtifactPurgeReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ChannelAttachmentRecord` used across Tau components.
 pub struct ChannelAttachmentRecord {
     pub id: String,
     pub run_id: String,
@@ -115,6 +124,7 @@ pub struct ChannelAttachmentRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `ChannelAttachmentLoadReport` used across Tau components.
 pub struct ChannelAttachmentLoadReport {
     pub records: Vec<ChannelAttachmentRecord>,
     pub invalid_lines: usize,
@@ -127,6 +137,7 @@ struct ChannelAttachmentPurgeReport {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `ChannelStore` used across Tau components.
 pub struct ChannelStore {
     base_dir: PathBuf,
     transport: String,

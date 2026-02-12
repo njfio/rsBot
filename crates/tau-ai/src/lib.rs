@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 mod anthropic;
 mod google;
 mod openai;

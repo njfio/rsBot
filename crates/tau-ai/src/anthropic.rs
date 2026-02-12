@@ -15,6 +15,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// Public struct `AnthropicConfig` used across Tau components.
 pub struct AnthropicConfig {
     pub api_base: String,
     pub api_key: String,
@@ -25,6 +26,7 @@ pub struct AnthropicConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `AnthropicClient` used across Tau components.
 pub struct AnthropicClient {
     client: reqwest::Client,
     config: AnthropicConfig,

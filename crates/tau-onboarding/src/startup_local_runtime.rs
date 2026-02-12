@@ -17,6 +17,7 @@ use crate::startup_config::{build_auth_command_config, build_profile_defaults, P
 const EXTENSION_TOOL_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `LocalRuntimeAgentSettings` used across Tau components.
 pub struct LocalRuntimeAgentSettings {
     pub max_turns: usize,
     pub max_parallel_tool_calls: usize,
@@ -67,6 +68,7 @@ pub fn build_local_runtime_doctor_config(
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `LocalRuntimeCommandDefaults` used across Tau components.
 pub struct LocalRuntimeCommandDefaults {
     pub profile_defaults: ProfileDefaults,
     pub auth_command_config: AuthCommandConfig,
@@ -74,6 +76,7 @@ pub struct LocalRuntimeCommandDefaults {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `LocalRuntimeInteractiveDefaults` used across Tau components.
 pub struct LocalRuntimeInteractiveDefaults {
     pub turn_timeout_ms: u64,
     pub orchestrator_mode: CliOrchestratorMode,
@@ -121,6 +124,7 @@ pub fn build_local_runtime_command_defaults(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `PromptRuntimeMode` values.
 pub enum PromptRuntimeMode {
     None,
     Prompt(String),
@@ -128,6 +132,7 @@ pub enum PromptRuntimeMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `LocalRuntimeEntryMode` values.
 pub enum LocalRuntimeEntryMode {
     Interactive,
     CommandFile(PathBuf),
@@ -136,12 +141,14 @@ pub enum LocalRuntimeEntryMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `PromptEntryRuntimeMode` values.
 pub enum PromptEntryRuntimeMode {
     Prompt(String),
     PlanFirstPrompt(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `PromptOrCommandFileEntryOutcome` values.
 pub enum PromptOrCommandFileEntryOutcome {
     PromptHandled,
     CommandFile(PathBuf),
@@ -149,12 +156,14 @@ pub enum PromptOrCommandFileEntryOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `PromptOrCommandFileEntryDispatch` values.
 pub enum PromptOrCommandFileEntryDispatch {
     Prompt(PromptEntryRuntimeMode),
     CommandFile(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `LocalRuntimeEntryDispatch` values.
 pub enum LocalRuntimeEntryDispatch {
     PlanFirstPrompt(String),
     Prompt(String),
@@ -162,12 +171,14 @@ pub enum LocalRuntimeEntryDispatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SessionBootstrapOutcome` used across Tau components.
 pub struct SessionBootstrapOutcome<TSession, TMessage> {
     pub runtime: TSession,
     pub lineage: Vec<TMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `LocalRuntimeExtensionBootstrap` used across Tau components.
 pub struct LocalRuntimeExtensionBootstrap<TOrchestratorRouteTable, TExtensionRuntimeRegistrations> {
     pub orchestrator_route_table: TOrchestratorRouteTable,
     pub orchestrator_route_trace_log: Option<PathBuf>,
@@ -175,12 +186,14 @@ pub struct LocalRuntimeExtensionBootstrap<TOrchestratorRouteTable, TExtensionRun
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `LocalRuntimeExtensionHooksDefaults` used across Tau components.
 pub struct LocalRuntimeExtensionHooksDefaults {
     pub enabled: bool,
     pub root: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `LocalRuntimeExtensionStartup` used across Tau components.
 pub struct LocalRuntimeExtensionStartup<TOrchestratorRouteTable, TExtensionRuntimeRegistrations> {
     pub extension_hooks: LocalRuntimeExtensionHooksDefaults,
     pub bootstrap:
@@ -269,6 +282,7 @@ where
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `LocalRuntimeStartupResolution` used across Tau components.
 pub struct LocalRuntimeStartupResolution {
     pub interactive_defaults: LocalRuntimeInteractiveDefaults,
     pub entry_mode: LocalRuntimeEntryMode,
@@ -627,6 +641,7 @@ pub fn register_runtime_extension_tools<T, FRegister, FReport>(
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `RuntimeExtensionPipelineConfig` used across Tau components.
 pub struct RuntimeExtensionPipelineConfig<'a, T> {
     pub enabled: bool,
     pub root: PathBuf,
@@ -723,11 +738,13 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `RuntimeEventReporterPairRegistration` used across Tau components.
 pub struct RuntimeEventReporterPairRegistration {
     pub first_registered: bool,
     pub second_registered: bool,
 }
 
+/// Public struct `RuntimeEventReporterRegistrationConfig` used across Tau components.
 pub struct RuntimeEventReporterRegistrationConfig<FOpen, FReport, FEmit> {
     pub path: Option<PathBuf>,
     pub open_reporter: FOpen,

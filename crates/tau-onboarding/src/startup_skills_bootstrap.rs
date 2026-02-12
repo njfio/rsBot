@@ -12,6 +12,7 @@ use tau_skills::{
 
 use crate::startup_resolution::resolve_skill_trust_roots;
 
+/// Public struct `StartupSkillsBootstrapOutput` used across Tau components.
 pub struct StartupSkillsBootstrapOutput {
     pub skills_lock_path: PathBuf,
 }

@@ -12,12 +12,14 @@ const DAEMON_STATE_FILE_NAME: &str = "state.json";
 const DAEMON_PID_FILE_NAME: &str = "daemon.pid";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauDaemonConfig` used across Tau components.
 pub struct TauDaemonConfig {
     pub state_dir: PathBuf,
     pub profile: CliDaemonProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `TauDaemonStatusReport` used across Tau components.
 pub struct TauDaemonStatusReport {
     pub schema_version: u32,
     pub state_path: String,

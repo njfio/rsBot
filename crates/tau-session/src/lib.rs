@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
@@ -21,6 +22,7 @@ const DEFAULT_LOCK_WAIT_MS: u64 = 5_000;
 const DEFAULT_LOCK_STALE_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `SessionEntry` used across Tau components.
 pub struct SessionEntry {
     pub id: u64,
     pub parent_id: Option<u64>,
@@ -40,6 +42,7 @@ enum SessionRecord {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `RepairReport` used across Tau components.
 pub struct RepairReport {
     pub removed_duplicates: usize,
     pub duplicate_ids: Vec<u64>,
@@ -50,6 +53,7 @@ pub struct RepairReport {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Public struct `CompactReport` used across Tau components.
 pub struct CompactReport {
     pub removed_entries: usize,
     pub retained_entries: usize,
@@ -57,6 +61,7 @@ pub struct CompactReport {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Public struct `SessionValidationReport` used across Tau components.
 pub struct SessionValidationReport {
     pub entries: usize,
     pub duplicates: usize,
@@ -71,12 +76,14 @@ impl SessionValidationReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `SessionImportMode` values.
 pub enum SessionImportMode {
     Merge,
     Replace,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `ImportReport` used across Tau components.
 pub struct ImportReport {
     pub imported_entries: usize,
     pub remapped_entries: usize,
@@ -87,6 +94,7 @@ pub struct ImportReport {
 }
 
 #[derive(Debug)]
+/// Public struct `SessionStore` used across Tau components.
 pub struct SessionStore {
     path: PathBuf,
     entries: Vec<SessionEntry>,
@@ -96,6 +104,7 @@ pub struct SessionStore {
 }
 
 #[derive(Debug)]
+/// Public struct `SessionRuntime` used across Tau components.
 pub struct SessionRuntime {
     pub store: SessionStore,
     pub active_head: Option<u64>,

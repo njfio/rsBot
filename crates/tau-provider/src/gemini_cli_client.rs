@@ -11,6 +11,7 @@ use tau_ai::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `GeminiCliConfig` used across Tau components.
 pub struct GeminiCliConfig {
     pub executable: String,
     pub extra_args: Vec<String>,
@@ -18,6 +19,7 @@ pub struct GeminiCliConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `GeminiCliClient` used across Tau components.
 pub struct GeminiCliClient {
     config: GeminiCliConfig,
 }

@@ -3,6 +3,7 @@ use std::path::Path;
 use tau_release_channel::{load_release_channel_store, save_release_channel_store, ReleaseChannel};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `OnboardingReleaseChannelState` used across Tau components.
 pub struct OnboardingReleaseChannelState {
     pub channel: ReleaseChannel,
     pub source: &'static str,

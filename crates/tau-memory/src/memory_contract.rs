@@ -1,8 +1,12 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 pub const MEMORY_CONTRACT_SCHEMA_VERSION: u32 = 1;
 const MEMORY_CONTRACT_DEFAULT_RETRIEVAL_LIMIT: usize = 5;
@@ -22,6 +26,7 @@ fn default_retrieval_limit() -> usize {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MemoryFixtureMode` values.
 pub enum MemoryFixtureMode {
     Extract,
     Retrieve,
@@ -38,6 +43,7 @@ impl MemoryFixtureMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MemoryOutcomeKind` values.
 pub enum MemoryOutcomeKind {
     Success,
     MalformedInput,
@@ -45,6 +51,7 @@ pub enum MemoryOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MemoryScope` used across Tau components.
 pub struct MemoryScope {
     pub workspace_id: String,
     #[serde(default)]
@@ -54,6 +61,7 @@ pub struct MemoryScope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MemoryEntry` used across Tau components.
 pub struct MemoryEntry {
     pub memory_id: String,
     pub summary: String,
@@ -70,6 +78,7 @@ pub struct MemoryEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MemoryCaseExpectation` used across Tau components.
 pub struct MemoryCaseExpectation {
     pub outcome: MemoryOutcomeKind,
     #[serde(default)]
@@ -79,6 +88,7 @@ pub struct MemoryCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MemoryContractCase` used across Tau components.
 pub struct MemoryContractCase {
     #[serde(default = "memory_contract_schema_version")]
     pub schema_version: u32,
@@ -99,6 +109,7 @@ pub struct MemoryContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MemoryContractFixture` used across Tau components.
 pub struct MemoryContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -108,6 +119,7 @@ pub struct MemoryContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MemoryContractCapabilities` used across Tau components.
 pub struct MemoryContractCapabilities {
     pub schema_version: u32,
     pub supported_modes: BTreeSet<MemoryFixtureMode>,
@@ -116,6 +128,7 @@ pub struct MemoryContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MemoryReplayStep` values.
 pub enum MemoryReplayStep {
     Success,
     MalformedInput,
@@ -123,6 +136,7 @@ pub enum MemoryReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MemoryReplayResult` used across Tau components.
 pub struct MemoryReplayResult {
     pub step: MemoryReplayStep,
     pub error_code: Option<String>,
@@ -131,6 +145,7 @@ pub struct MemoryReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `MemoryReplaySummary` used across Tau components.
 pub struct MemoryReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -139,22 +154,21 @@ pub struct MemoryReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `MemoryContractDriver` behavior.
 pub trait MemoryContractDriver {
     fn apply_case(&mut self, case: &MemoryContractCase) -> Result<MemoryReplayResult>;
 }
 
 pub fn parse_memory_contract_fixture(raw: &str) -> Result<MemoryContractFixture> {
-    let fixture = serde_json::from_str::<MemoryContractFixture>(raw)
-        .context("failed to parse memory contract fixture")?;
-    validate_memory_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse memory contract fixture",
+        validate_memory_contract_fixture,
+    )
 }
 
 pub fn load_memory_contract_fixture(path: &Path) -> Result<MemoryContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_memory_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_memory_contract_fixture)
 }
 
 pub fn memory_contract_capabilities() -> MemoryContractCapabilities {
@@ -217,29 +231,19 @@ pub fn validate_memory_contract_compatibility(fixture: &MemoryContractFixture) -
 }
 
 pub fn validate_memory_contract_fixture(fixture: &MemoryContractFixture) -> Result<()> {
-    if fixture.schema_version != MEMORY_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported memory contract schema version {} (expected {})",
-            fixture.schema_version,
-            MEMORY_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "memory",
+        fixture.schema_version,
+        MEMORY_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
     let capabilities = memory_contract_capabilities();
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_memory_case(case, index)?;
-        let trimmed_case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(trimmed_case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", trimmed_case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_memory_contract_compatibility(fixture)?;
     if capabilities.schema_version != MEMORY_CONTRACT_SCHEMA_VERSION {

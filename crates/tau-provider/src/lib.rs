@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 mod auth;
 mod auth_commands_runtime;
 mod claude_cli_client;

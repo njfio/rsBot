@@ -11,6 +11,7 @@ use tau_ai::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ClaudeCliConfig` used across Tau components.
 pub struct ClaudeCliConfig {
     pub executable: String,
     pub extra_args: Vec<String>,
@@ -18,6 +19,7 @@ pub struct ClaudeCliConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ClaudeCliClient` used across Tau components.
 pub struct ClaudeCliClient {
     config: ClaudeCliConfig,
 }

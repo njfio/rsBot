@@ -18,6 +18,7 @@ const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "m4a", "ogg", "flac", "aac", "
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "m4v", "avi", "mkv", "webm"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelMediaUnderstandingConfig` used across Tau components.
 pub struct MultiChannelMediaUnderstandingConfig {
     pub enabled: bool,
     pub max_attachments_per_event: usize,
@@ -36,6 +37,7 @@ impl Default for MultiChannelMediaUnderstandingConfig {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MediaUnderstandingDecision` values.
 pub enum MediaUnderstandingDecision {
     Processed,
     Skipped,
@@ -53,6 +55,7 @@ impl MediaUnderstandingDecision {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MediaUnderstandingOutcome` used across Tau components.
 pub struct MediaUnderstandingOutcome {
     pub attachment_id: String,
     pub decision: MediaUnderstandingDecision,
@@ -71,6 +74,7 @@ pub struct MediaUnderstandingOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `MediaUnderstandingReport` used across Tau components.
 pub struct MediaUnderstandingReport {
     pub processed: usize,
     pub skipped: usize,
@@ -118,6 +122,7 @@ impl MediaKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MediaUnderstandingProviderError` used across Tau components.
 pub struct MediaUnderstandingProviderError {
     pub reason_code: String,
     pub detail: String,
@@ -134,6 +139,7 @@ impl MediaUnderstandingProviderError {
     }
 }
 
+/// Trait contract for `MediaUnderstandingProvider` behavior.
 pub trait MediaUnderstandingProvider {
     fn describe_image(
         &self,
@@ -152,6 +158,7 @@ pub trait MediaUnderstandingProvider {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+/// Public struct `DeterministicMediaUnderstandingProvider` used across Tau components.
 pub struct DeterministicMediaUnderstandingProvider;
 
 impl MediaUnderstandingProvider for DeterministicMediaUnderstandingProvider {

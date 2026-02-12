@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -22,6 +23,7 @@ pub use events_cli_commands::*;
 const EVENT_RUNNER_STATE_SCHEMA_VERSION: u32 = 1;
 
 #[async_trait]
+/// Trait contract for `EventRunner` behavior.
 pub trait EventRunner: Send + Sync {
     async fn run_event(
         &self,
@@ -32,6 +34,7 @@ pub trait EventRunner: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `EventTemplateSchedule` values.
 pub enum EventTemplateSchedule {
     Immediate,
     At,
@@ -39,6 +42,7 @@ pub enum EventTemplateSchedule {
 }
 
 #[derive(Clone)]
+/// Public struct `EventSchedulerConfig` used across Tau components.
 pub struct EventSchedulerConfig {
     pub runner: std::sync::Arc<dyn EventRunner>,
     pub channel_store_root: PathBuf,
@@ -50,6 +54,7 @@ pub struct EventSchedulerConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `EventWebhookIngestConfig` used across Tau components.
 pub struct EventWebhookIngestConfig {
     pub events_dir: PathBuf,
     pub state_path: PathBuf,
@@ -66,6 +71,7 @@ pub struct EventWebhookIngestConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `WebhookSignatureAlgorithm` values.
 pub enum WebhookSignatureAlgorithm {
     GithubSha256,
     SlackV0,
@@ -73,6 +79,7 @@ pub enum WebhookSignatureAlgorithm {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+/// Enumerates supported `EventSchedule` values.
 pub enum EventSchedule {
     Immediate,
     At { at_unix_ms: u64 },
@@ -80,6 +87,7 @@ pub enum EventSchedule {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `EventDefinition` used across Tau components.
 pub struct EventDefinition {
     pub id: String,
     pub channel: String,
@@ -141,6 +149,7 @@ enum DueDecision {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `EventsInspectConfig` used across Tau components.
 pub struct EventsInspectConfig {
     pub events_dir: PathBuf,
     pub state_path: PathBuf,
@@ -149,6 +158,7 @@ pub struct EventsInspectConfig {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `EventsInspectReport` used across Tau components.
 pub struct EventsInspectReport {
     pub events_dir: String,
     pub state_path: String,
@@ -172,12 +182,14 @@ pub struct EventsInspectReport {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `EventsValidateConfig` used across Tau components.
 pub struct EventsValidateConfig {
     pub events_dir: PathBuf,
     pub state_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `EventsValidateDiagnostic` used across Tau components.
 pub struct EventsValidateDiagnostic {
     pub path: String,
     pub event_id: Option<String>,
@@ -186,6 +198,7 @@ pub struct EventsValidateDiagnostic {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `EventsValidateReport` used across Tau components.
 pub struct EventsValidateReport {
     pub events_dir: String,
     pub state_path: String,
@@ -200,6 +213,7 @@ pub struct EventsValidateReport {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `EventsSimulateConfig` used across Tau components.
 pub struct EventsSimulateConfig {
     pub events_dir: PathBuf,
     pub state_path: PathBuf,
@@ -208,6 +222,7 @@ pub struct EventsSimulateConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `EventsDryRunConfig` used across Tau components.
 pub struct EventsDryRunConfig {
     pub events_dir: PathBuf,
     pub state_path: PathBuf,
@@ -216,12 +231,14 @@ pub struct EventsDryRunConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `EventsDryRunGateConfig` used across Tau components.
 pub struct EventsDryRunGateConfig {
     pub max_error_rows: Option<usize>,
     pub max_execute_rows: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `EventsDryRunGateOutcome` used across Tau components.
 pub struct EventsDryRunGateOutcome {
     status: &'static str,
     reason_codes: Vec<String>,
@@ -233,6 +250,7 @@ pub struct EventsDryRunGateOutcome {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `EventsSimulateRow` used across Tau components.
 pub struct EventsSimulateRow {
     pub path: String,
     pub event_id: String,
@@ -246,6 +264,7 @@ pub struct EventsSimulateRow {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `EventsSimulateReport` used across Tau components.
 pub struct EventsSimulateReport {
     pub events_dir: String,
     pub state_path: String,
@@ -262,6 +281,7 @@ pub struct EventsSimulateReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `EventsDryRunRow` used across Tau components.
 pub struct EventsDryRunRow {
     pub path: String,
     pub event_id: Option<String>,
@@ -276,6 +296,7 @@ pub struct EventsDryRunRow {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `EventsDryRunReport` used across Tau components.
 pub struct EventsDryRunReport {
     pub events_dir: String,
     pub state_path: String,
@@ -291,6 +312,7 @@ pub struct EventsDryRunReport {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `EventsTemplateConfig` used across Tau components.
 pub struct EventsTemplateConfig {
     pub target_path: PathBuf,
     pub overwrite: bool,
@@ -304,6 +326,7 @@ pub struct EventsTemplateConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `EventsTemplateWriteReport` used across Tau components.
 pub struct EventsTemplateWriteReport {
     pub path: PathBuf,
     pub schedule: String,

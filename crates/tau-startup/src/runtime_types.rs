@@ -6,6 +6,7 @@ pub use tau_diagnostics::{DoctorMultiChannelReadinessConfig, DoctorProviderKeySt
 pub use tau_provider::AuthCommandConfig;
 
 #[derive(Debug, Clone)]
+/// Public struct `SkillsSyncCommandConfig` used across Tau components.
 pub struct SkillsSyncCommandConfig {
     pub skills_dir: PathBuf,
     pub default_lock_path: PathBuf,
@@ -14,6 +15,7 @@ pub struct SkillsSyncCommandConfig {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Public struct `RenderOptions` used across Tau components.
 pub struct RenderOptions {
     pub stream_output: bool,
     pub stream_delay_ms: u64,

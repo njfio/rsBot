@@ -18,6 +18,7 @@ fn current_unix_timestamp_ms() -> u64 {
 }
 
 #[derive(Clone)]
+/// Public struct `ToolAuditLogger` used across Tau components.
 pub struct ToolAuditLogger {
     path: PathBuf,
     file: Arc<Mutex<std::fs::File>>,
@@ -95,6 +96,7 @@ struct PromptTelemetryRunState {
 }
 
 #[derive(Clone)]
+/// Public struct `PromptTelemetryLogger` used across Tau components.
 pub struct PromptTelemetryLogger {
     path: PathBuf,
     provider: String,

@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `IssueAuthSummaryKind` values.
 pub enum IssueAuthSummaryKind {
     Status,
     Matrix,

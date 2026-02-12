@@ -12,6 +12,7 @@ const DISCORD_SAFE_MAX_CHARS: usize = 2000;
 const WHATSAPP_SAFE_MAX_CHARS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MultiChannelOutboundMode` values.
 pub enum MultiChannelOutboundMode {
     ChannelStore,
     DryRun,
@@ -29,6 +30,7 @@ impl MultiChannelOutboundMode {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelOutboundConfig` used across Tau components.
 pub struct MultiChannelOutboundConfig {
     pub mode: MultiChannelOutboundMode,
     pub max_chars: usize,
@@ -60,6 +62,7 @@ impl Default for MultiChannelOutboundConfig {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `MultiChannelOutboundDeliveryReceipt` used across Tau components.
 pub struct MultiChannelOutboundDeliveryReceipt {
     pub transport: String,
     pub mode: String,
@@ -76,6 +79,7 @@ pub struct MultiChannelOutboundDeliveryReceipt {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `MultiChannelOutboundDeliveryResult` used across Tau components.
 pub struct MultiChannelOutboundDeliveryResult {
     pub mode: String,
     pub chunk_count: usize,
@@ -83,6 +87,7 @@ pub struct MultiChannelOutboundDeliveryResult {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelOutboundDeliveryError` used across Tau components.
 pub struct MultiChannelOutboundDeliveryError {
     pub reason_code: String,
     pub detail: String,
@@ -122,6 +127,7 @@ struct MultiChannelOutboundRequest {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelOutboundDispatcher` used across Tau components.
 pub struct MultiChannelOutboundDispatcher {
     config: MultiChannelOutboundConfig,
     client: Option<reqwest::Client>,

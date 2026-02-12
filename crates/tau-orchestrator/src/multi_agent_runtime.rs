@@ -25,6 +25,7 @@ fn multi_agent_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiAgentRuntimeConfig` used across Tau components.
 pub struct MultiAgentRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -35,6 +36,7 @@ pub struct MultiAgentRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `MultiAgentRuntimeSummary` used across Tau components.
 pub struct MultiAgentRuntimeSummary {
     pub discovered_cases: usize,
     pub queued_cases: usize,

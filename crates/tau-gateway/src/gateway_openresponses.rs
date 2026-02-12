@@ -38,11 +38,13 @@ const DEFAULT_SESSION_KEY: &str = "default";
 const INPUT_BODY_SIZE_MULTIPLIER: usize = 8;
 const GATEWAY_WS_HEARTBEAT_REQUEST_ID: &str = "gateway-heartbeat";
 
+/// Trait contract for `GatewayToolRegistrar` behavior.
 pub trait GatewayToolRegistrar: Send + Sync {
     fn register(&self, agent: &mut Agent);
 }
 
 #[derive(Clone, Default)]
+/// Public struct `NoopGatewayToolRegistrar` used across Tau components.
 pub struct NoopGatewayToolRegistrar;
 
 impl GatewayToolRegistrar for NoopGatewayToolRegistrar {
@@ -50,6 +52,7 @@ impl GatewayToolRegistrar for NoopGatewayToolRegistrar {
 }
 
 #[derive(Clone)]
+/// Public struct `GatewayToolRegistrarFn` used across Tau components.
 pub struct GatewayToolRegistrarFn {
     inner: Arc<dyn Fn(&mut Agent) + Send + Sync>,
 }
@@ -72,6 +75,7 @@ impl GatewayToolRegistrar for GatewayToolRegistrarFn {
 }
 
 #[derive(Clone)]
+/// Public struct `GatewayOpenResponsesServerConfig` used across Tau components.
 pub struct GatewayOpenResponsesServerConfig {
     pub client: Arc<dyn LlmClient>,
     pub model: String,

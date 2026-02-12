@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ pub use command_runtime::{execute_release_channel_command, RELEASE_CHANNEL_USAGE
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Enumerates supported `ReleaseChannel` values.
 pub enum ReleaseChannel {
     Stable,
     Beta,
@@ -56,6 +58,7 @@ impl std::str::FromStr for ReleaseChannel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `ReleaseChannelRollbackMetadata` used across Tau components.
 pub struct ReleaseChannelRollbackMetadata {
     #[serde(default)]
     pub previous_channel: Option<ReleaseChannel>,
@@ -68,6 +71,7 @@ pub struct ReleaseChannelRollbackMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ReleaseChannelStoreFile` used across Tau components.
 pub struct ReleaseChannelStoreFile {
     pub schema_version: u32,
     pub release_channel: ReleaseChannel,
@@ -82,6 +86,7 @@ struct LegacyReleaseChannelStoreFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `GitHubReleaseRecord` used across Tau components.
 pub struct GitHubReleaseRecord {
     pub tag_name: String,
     #[serde(default)]
@@ -91,6 +96,7 @@ pub struct GitHubReleaseRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ReleaseLookupSource` values.
 pub enum ReleaseLookupSource {
     Live,
     CacheFresh,
@@ -98,6 +104,7 @@ pub enum ReleaseLookupSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `LatestChannelReleaseResolution` used across Tau components.
 pub struct LatestChannelReleaseResolution {
     pub latest: Option<String>,
     pub source: ReleaseLookupSource,

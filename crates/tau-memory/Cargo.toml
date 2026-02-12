@@ -12,6 +12,7 @@ tokio = { version = "1.43", features = ["time"] }
 # Internal crates
 
 tau-core = { path = "../tau-core" }
+tau-contract = { path = "../tau-contract" }
 tau-runtime = { path = "../tau-runtime" }
 tau-session = { path = "../tau-session" }
 

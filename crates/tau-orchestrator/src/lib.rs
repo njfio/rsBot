@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 pub mod multi_agent_contract;
 pub mod multi_agent_router;
 pub mod multi_agent_runtime;

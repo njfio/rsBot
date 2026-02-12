@@ -18,6 +18,7 @@ use crate::multi_channel_contract::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelLiveIngressReasonCode` values.
 pub enum MultiChannelLiveIngressReasonCode {
     InvalidJson,
     UnsupportedSchemaVersion,
@@ -49,6 +50,7 @@ impl MultiChannelLiveIngressReasonCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiChannelLiveIngressParseError` used across Tau components.
 pub struct MultiChannelLiveIngressParseError {
     pub code: MultiChannelLiveIngressReasonCode,
     pub message: String,
@@ -63,6 +65,7 @@ impl Display for MultiChannelLiveIngressParseError {
 impl std::error::Error for MultiChannelLiveIngressParseError {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `MultiChannelLiveInboundEnvelope` used across Tau components.
 pub struct MultiChannelLiveInboundEnvelope {
     #[serde(default = "multi_channel_live_ingress_schema_version")]
     pub schema_version: u32,
@@ -79,6 +82,7 @@ fn multi_channel_live_ingress_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelLivePayloadIngestConfig` used across Tau components.
 pub struct MultiChannelLivePayloadIngestConfig {
     pub ingress_dir: PathBuf,
     pub payload_file: PathBuf,
@@ -87,6 +91,7 @@ pub struct MultiChannelLivePayloadIngestConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiChannelLivePayloadIngestReport` used across Tau components.
 pub struct MultiChannelLivePayloadIngestReport {
     pub ingress_path: PathBuf,
     pub transport: MultiChannelTransport,

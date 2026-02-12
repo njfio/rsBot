@@ -13,6 +13,7 @@ use crate::trust_roots::{
 };
 use crate::*;
 
+/// Public struct `SkillsSearchMatch` used across Tau components.
 pub struct SkillsSearchMatch {
     pub name: String,
     pub file: String,
@@ -261,6 +262,7 @@ pub fn parse_skills_lock_diff_args(
 pub const SKILLS_PRUNE_USAGE: &str = "usage: /skills-prune [lockfile_path] [--dry-run|--apply]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `SkillsPruneMode` values.
 pub enum SkillsPruneMode {
     DryRun,
     Apply,
@@ -276,6 +278,7 @@ impl SkillsPruneMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SkillsPruneCandidate` used across Tau components.
 pub struct SkillsPruneCandidate {
     pub file: String,
     pub path: PathBuf,
@@ -1016,6 +1019,7 @@ pub const SKILLS_VERIFY_USAGE: &str =
     "usage: /skills-verify [lockfile_path] [trust_root_file] [--json]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SkillsVerifyArgs` used across Tau components.
 pub struct SkillsVerifyArgs {
     pub lock_path: PathBuf,
     pub trust_root_path: Option<PathBuf>,
@@ -1024,6 +1028,7 @@ pub struct SkillsVerifyArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `SkillsVerifyStatus` values.
 pub enum SkillsVerifyStatus {
     Pass,
     Warn,
@@ -1049,6 +1054,7 @@ impl SkillsVerifyStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Public struct `SkillsVerifyEntry` used across Tau components.
 pub struct SkillsVerifyEntry {
     pub file: String,
     pub name: String,
@@ -1057,6 +1063,7 @@ pub struct SkillsVerifyEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Public struct `SkillsVerifyTrustSummary` used across Tau components.
 pub struct SkillsVerifyTrustSummary {
     pub total: usize,
     pub active: usize,
@@ -1065,6 +1072,7 @@ pub struct SkillsVerifyTrustSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Public struct `SkillsVerifySummary` used across Tau components.
 pub struct SkillsVerifySummary {
     pub entries: usize,
     pub pass: usize,
@@ -1074,6 +1082,7 @@ pub struct SkillsVerifySummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Public struct `SkillsVerifyReport` used across Tau components.
 pub struct SkillsVerifyReport {
     pub lock_path: String,
     pub trust_root_path: Option<String>,
@@ -1089,6 +1098,7 @@ pub struct SkillsVerifyReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `TrustRootState` values.
 pub enum TrustRootState {
     Active,
     Revoked,

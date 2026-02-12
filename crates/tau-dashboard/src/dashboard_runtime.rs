@@ -27,6 +27,7 @@ fn dashboard_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `DashboardRuntimeConfig` used across Tau components.
 pub struct DashboardRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -37,6 +38,7 @@ pub struct DashboardRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `DashboardRuntimeSummary` used across Tau components.
 pub struct DashboardRuntimeSummary {
     pub discovered_cases: usize,
     pub queued_cases: usize,

@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tau_contract::{
+    load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header_with_empty_message,
+};
 
 pub const MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
@@ -13,6 +17,7 @@ fn multi_channel_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelTransport` values.
 pub enum MultiChannelTransport {
     Telegram,
     Discord,
@@ -31,6 +36,7 @@ impl MultiChannelTransport {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelEventKind` values.
 pub enum MultiChannelEventKind {
     Message,
     Edit,
@@ -39,6 +45,7 @@ pub enum MultiChannelEventKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelAttachment` used across Tau components.
 pub struct MultiChannelAttachment {
     pub attachment_id: String,
     pub url: String,
@@ -51,6 +58,7 @@ pub struct MultiChannelAttachment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `MultiChannelInboundEvent` used across Tau components.
 pub struct MultiChannelInboundEvent {
     #[serde(default = "multi_channel_contract_schema_version")]
     pub schema_version: u32,
@@ -73,6 +81,7 @@ pub struct MultiChannelInboundEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `MultiChannelContractFixture` used across Tau components.
 pub struct MultiChannelContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -82,35 +91,28 @@ pub struct MultiChannelContractFixture {
 }
 
 pub fn parse_multi_channel_contract_fixture(raw: &str) -> Result<MultiChannelContractFixture> {
-    let fixture = serde_json::from_str::<MultiChannelContractFixture>(raw)
-        .context("failed to parse multi-channel contract fixture")?;
-    validate_multi_channel_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse multi-channel contract fixture",
+        validate_multi_channel_contract_fixture,
+    )
 }
 
 pub fn load_multi_channel_contract_fixture(path: &Path) -> Result<MultiChannelContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_multi_channel_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_multi_channel_contract_fixture)
 }
 
 pub fn validate_multi_channel_contract_fixture(
     fixture: &MultiChannelContractFixture,
 ) -> Result<()> {
-    if fixture.schema_version != MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported multi-channel contract schema version {} (expected {})",
-            fixture.schema_version,
-            MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.events.is_empty() {
-        bail!("fixture must include at least one event");
-    }
+    validate_fixture_header_with_empty_message(
+        "multi-channel",
+        fixture.schema_version,
+        MULTI_CHANNEL_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.events.len(),
+        "fixture must include at least one event",
+    )?;
 
     let mut event_keys = HashSet::new();
     for (index, event) in fixture.events.iter().enumerate() {

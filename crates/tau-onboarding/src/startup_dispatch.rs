@@ -11,6 +11,7 @@ use tau_tools::tools::ToolPolicy;
 use crate::startup_policy::{resolve_startup_policy, StartupPolicyBundle};
 use crate::startup_prompt_composition::compose_startup_system_prompt;
 
+/// Public struct `StartupRuntimeDispatchContext` used across Tau components.
 pub struct StartupRuntimeDispatchContext {
     pub effective_skills_dir: PathBuf,
     pub skills_lock_path: PathBuf,
@@ -18,6 +19,7 @@ pub struct StartupRuntimeDispatchContext {
     pub startup_policy: StartupPolicyBundle,
 }
 
+/// Public struct `StartupRuntimeResolution` used across Tau components.
 pub struct StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient> {
     pub model_ref: TModelRef,
     pub fallback_model_refs: TFallbackModelRefs,
@@ -112,6 +114,7 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `StartupModelRuntimeResolution` used across Tau components.
 pub struct StartupModelRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient> {
     pub model_ref: TModelRef,
     pub fallback_model_refs: TFallbackModelRefs,

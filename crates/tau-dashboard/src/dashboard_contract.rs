@@ -1,8 +1,12 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 pub const DASHBOARD_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
@@ -20,6 +24,7 @@ fn dashboard_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `DashboardFixtureMode` values.
 pub enum DashboardFixtureMode {
     Snapshot,
     Filter,
@@ -38,6 +43,7 @@ impl DashboardFixtureMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `DashboardOutcomeKind` values.
 pub enum DashboardOutcomeKind {
     Success,
     MalformedInput,
@@ -46,6 +52,7 @@ pub enum DashboardOutcomeKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `DashboardFilterKind` values.
 pub enum DashboardFilterKind {
     TimeWindow,
     Channel,
@@ -55,6 +62,7 @@ pub enum DashboardFilterKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `DashboardControlAction` values.
 pub enum DashboardControlAction {
     Pause,
     Resume,
@@ -73,6 +81,7 @@ impl DashboardControlAction {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `DashboardWidgetKind` values.
 pub enum DashboardWidgetKind {
     HealthSummary,
     TransportTable,
@@ -83,6 +92,7 @@ pub enum DashboardWidgetKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DashboardScope` used across Tau components.
 pub struct DashboardScope {
     pub workspace_id: String,
     #[serde(default)]
@@ -90,6 +100,7 @@ pub struct DashboardScope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DashboardFilter` used across Tau components.
 pub struct DashboardFilter {
     pub filter_id: String,
     pub kind: DashboardFilterKind,
@@ -97,6 +108,7 @@ pub struct DashboardFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DashboardWidgetSpec` used across Tau components.
 pub struct DashboardWidgetSpec {
     pub widget_id: String,
     pub kind: DashboardWidgetKind,
@@ -106,6 +118,7 @@ pub struct DashboardWidgetSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DashboardCaseExpectation` used across Tau components.
 pub struct DashboardCaseExpectation {
     pub outcome: DashboardOutcomeKind,
     #[serde(default)]
@@ -117,6 +130,7 @@ pub struct DashboardCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DashboardContractCase` used across Tau components.
 pub struct DashboardContractCase {
     #[serde(default = "dashboard_contract_schema_version")]
     pub schema_version: u32,
@@ -135,6 +149,7 @@ pub struct DashboardContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DashboardContractFixture` used across Tau components.
 pub struct DashboardContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -144,6 +159,7 @@ pub struct DashboardContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DashboardContractCapabilities` used across Tau components.
 pub struct DashboardContractCapabilities {
     pub schema_version: u32,
     pub supported_modes: BTreeSet<DashboardFixtureMode>,
@@ -152,6 +168,7 @@ pub struct DashboardContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `DashboardReplayStep` values.
 pub enum DashboardReplayStep {
     Success,
     MalformedInput,
@@ -159,6 +176,7 @@ pub enum DashboardReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DashboardReplayResult` used across Tau components.
 pub struct DashboardReplayResult {
     pub step: DashboardReplayStep,
     pub error_code: Option<String>,
@@ -168,6 +186,7 @@ pub struct DashboardReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `DashboardReplaySummary` used across Tau components.
 pub struct DashboardReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -176,22 +195,21 @@ pub struct DashboardReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `DashboardContractDriver` behavior.
 pub trait DashboardContractDriver {
     fn apply_case(&mut self, case: &DashboardContractCase) -> Result<DashboardReplayResult>;
 }
 
 pub fn parse_dashboard_contract_fixture(raw: &str) -> Result<DashboardContractFixture> {
-    let fixture = serde_json::from_str::<DashboardContractFixture>(raw)
-        .context("failed to parse dashboard contract fixture")?;
-    validate_dashboard_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse dashboard contract fixture",
+        validate_dashboard_contract_fixture,
+    )
 }
 
 pub fn load_dashboard_contract_fixture(path: &Path) -> Result<DashboardContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_dashboard_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_dashboard_contract_fixture)
 }
 
 pub fn dashboard_contract_capabilities() -> DashboardContractCapabilities {
@@ -258,28 +276,18 @@ pub fn validate_dashboard_contract_compatibility(fixture: &DashboardContractFixt
 }
 
 pub fn validate_dashboard_contract_fixture(fixture: &DashboardContractFixture) -> Result<()> {
-    if fixture.schema_version != DASHBOARD_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported dashboard contract schema version {} (expected {})",
-            fixture.schema_version,
-            DASHBOARD_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "dashboard",
+        fixture.schema_version,
+        DASHBOARD_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_dashboard_case(case, index)?;
-        let trimmed_case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(trimmed_case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", trimmed_case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_dashboard_contract_compatibility(fixture)?;
     Ok(())

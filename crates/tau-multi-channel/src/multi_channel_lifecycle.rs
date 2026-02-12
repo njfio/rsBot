@@ -27,6 +27,7 @@ const ONLINE_PROBE_MAX_ATTEMPTS: usize = 2;
 const ONLINE_PROBE_RETRY_DELAY_MS: u64 = 150;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MultiChannelLifecycleAction` values.
 pub enum MultiChannelLifecycleAction {
     Status,
     Login,
@@ -46,6 +47,7 @@ impl MultiChannelLifecycleAction {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelLifecycleCommandConfig` used across Tau components.
 pub struct MultiChannelLifecycleCommandConfig {
     pub state_dir: PathBuf,
     pub ingress_dir: PathBuf,
@@ -65,6 +67,7 @@ pub struct MultiChannelLifecycleCommandConfig {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `MultiChannelLifecycleReport` used across Tau components.
 pub struct MultiChannelLifecycleReport {
     pub action: String,
     pub channel: String,

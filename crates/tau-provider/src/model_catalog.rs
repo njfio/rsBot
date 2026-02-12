@@ -15,6 +15,7 @@ pub const MODELS_LIST_USAGE: &str = "/models-list [query] [--provider <name>] [-
 pub const MODEL_SHOW_USAGE: &str = "/model-show <provider/model>";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `ModelCatalogEntry` used across Tau components.
 pub struct ModelCatalogEntry {
     pub provider: String,
     pub model: String,
@@ -30,12 +31,14 @@ pub struct ModelCatalogEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `ModelCatalogFile` used across Tau components.
 pub struct ModelCatalogFile {
     pub schema_version: u32,
     pub entries: Vec<ModelCatalogEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `ModelCatalogSource` values.
 pub enum ModelCatalogSource {
     BuiltIn,
     Cache { path: PathBuf },
@@ -44,6 +47,7 @@ pub enum ModelCatalogSource {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `ModelCatalog` used across Tau components.
 pub struct ModelCatalog {
     entries: Vec<ModelCatalogEntry>,
     index: HashMap<String, usize>,
@@ -52,6 +56,7 @@ pub struct ModelCatalog {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ModelListArgs` used across Tau components.
 pub struct ModelListArgs {
     pub query: Option<String>,
     pub provider: Option<String>,
@@ -62,6 +67,7 @@ pub struct ModelListArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ModelCatalogLoadOptions` used across Tau components.
 pub struct ModelCatalogLoadOptions {
     pub cache_path: PathBuf,
     pub refresh_url: Option<String>,

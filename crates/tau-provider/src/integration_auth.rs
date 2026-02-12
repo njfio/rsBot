@@ -88,6 +88,7 @@ const INTEGRATION_AUTH_REVOKE_USAGE: &str =
     "usage: /integration-auth revoke <integration-id> [--json]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `IntegrationAuthCommand` values.
 pub enum IntegrationAuthCommand {
     Set {
         integration_id: String,

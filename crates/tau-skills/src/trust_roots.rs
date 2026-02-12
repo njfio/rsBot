@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tau_core::write_text_atomic;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `TrustedRootRecord` used across Tau components.
 pub struct TrustedRootRecord {
     pub id: String,
     pub public_key: String,
@@ -24,6 +25,7 @@ enum TrustedRootFileFormat {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Public struct `TrustMutationReport` used across Tau components.
 pub struct TrustMutationReport {
     pub added: usize,
     pub updated: usize,

@@ -1,6 +1,7 @@
 use crate::issue_command_envelope::parse_issue_command_envelope;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `ParsedIssueCommand` values.
 pub enum ParsedIssueCommand<Core, Special> {
     Core(Core),
     Special(Special),

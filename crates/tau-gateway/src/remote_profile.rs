@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `GatewayOpenResponsesAuthMode` values.
 pub enum GatewayOpenResponsesAuthMode {
     Token,
     PasswordSession,
@@ -21,6 +22,7 @@ impl GatewayOpenResponsesAuthMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `GatewayRemoteProfile` values.
 pub enum GatewayRemoteProfile {
     LocalOnly,
     PasswordRemote,
@@ -42,6 +44,7 @@ impl GatewayRemoteProfile {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `GatewayRemoteProfileConfig` used across Tau components.
 pub struct GatewayRemoteProfileConfig {
     pub bind: String,
     pub auth_mode: GatewayOpenResponsesAuthMode,
@@ -52,6 +55,7 @@ pub struct GatewayRemoteProfileConfig {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `GatewayRemoteProfileReport` used across Tau components.
 pub struct GatewayRemoteProfileReport {
     pub profile: String,
     pub posture: String,

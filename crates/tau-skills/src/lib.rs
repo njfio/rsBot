@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -20,6 +21,7 @@ pub use package_manifest::*;
 pub use trust_roots::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `Skill` used across Tau components.
 pub struct Skill {
     pub name: String,
     pub content: String,
@@ -27,6 +29,7 @@ pub struct Skill {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `SkillInstallReport` used across Tau components.
 pub struct SkillInstallReport {
     pub installed: usize,
     pub updated: usize,
@@ -40,12 +43,14 @@ const SKILLS_CACHE_ARTIFACTS_DIR: &str = "artifacts";
 const SKILLS_CACHE_MANIFESTS_DIR: &str = "manifests";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `SkillsDownloadOptions` used across Tau components.
 pub struct SkillsDownloadOptions {
     pub cache_dir: Option<PathBuf>,
     pub offline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `RemoteSkillSource` used across Tau components.
 pub struct RemoteSkillSource {
     pub url: String,
     pub sha256: Option<String>,
@@ -56,6 +61,7 @@ pub struct RemoteSkillSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+/// Enumerates supported `SkillLockSource` values.
 pub enum SkillLockSource {
     Unknown,
     Local {
@@ -82,6 +88,7 @@ pub enum SkillLockSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Public struct `SkillLockEntry` used across Tau components.
 pub struct SkillLockEntry {
     pub name: String,
     pub file: String,
@@ -90,18 +97,21 @@ pub struct SkillLockEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Public struct `SkillsLockfile` used across Tau components.
 pub struct SkillsLockfile {
     pub schema_version: u32,
     pub entries: Vec<SkillLockEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SkillLockHint` used across Tau components.
 pub struct SkillLockHint {
     pub file: String,
     pub source: SkillLockSource,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `SkillsSyncReport` used across Tau components.
 pub struct SkillsSyncReport {
     pub expected_entries: usize,
     pub actual_entries: usize,
@@ -121,12 +131,14 @@ impl SkillsSyncReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TrustedKey` used across Tau components.
 pub struct TrustedKey {
     pub id: String,
     pub public_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Public struct `RegistrySkillEntry` used across Tau components.
 pub struct RegistrySkillEntry {
     pub name: String,
     pub url: String,
@@ -139,6 +151,7 @@ pub struct RegistrySkillEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Public struct `RegistryKeyEntry` used across Tau components.
 pub struct RegistryKeyEntry {
     pub id: String,
     pub public_key: String,
@@ -150,6 +163,7 @@ pub struct RegistryKeyEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Public struct `SkillRegistryManifest` used across Tau components.
 pub struct SkillRegistryManifest {
     pub version: u32,
     #[serde(default)]

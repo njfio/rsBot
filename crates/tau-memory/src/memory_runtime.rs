@@ -24,6 +24,7 @@ fn memory_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MemoryRuntimeConfig` used across Tau components.
 pub struct MemoryRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -34,6 +35,7 @@ pub struct MemoryRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `MemoryRuntimeSummary` used across Tau components.
 pub struct MemoryRuntimeSummary {
     pub discovered_cases: usize,
     pub queued_cases: usize,

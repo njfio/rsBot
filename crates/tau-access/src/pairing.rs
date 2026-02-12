@@ -9,6 +9,7 @@ const PAIRING_SCHEMA_VERSION: u32 = 1;
 const ALLOWLIST_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
+/// Public struct `PairingPolicyConfig` used across Tau components.
 pub struct PairingPolicyConfig {
     pub registry_path: PathBuf,
     pub allowlist_path: PathBuf,
@@ -16,6 +17,7 @@ pub struct PairingPolicyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `PairingRecord` used across Tau components.
 pub struct PairingRecord {
     pub channel: String,
     pub actor_id: String,
@@ -40,6 +42,7 @@ struct PairingAllowlistFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `PairingDecision` values.
 pub enum PairingDecision {
     Allow { reason_code: String },
     Deny { reason_code: String },

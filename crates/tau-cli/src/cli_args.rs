@@ -38,6 +38,7 @@ fn parse_positive_u64(value: &str) -> Result<u64, String> {
     about = "Pure Rust coding agent inspired by upstream mono",
     version
 )]
+/// Public struct `Cli` used across Tau components.
 pub struct Cli {
     #[arg(
         long,

@@ -49,6 +49,7 @@ const GATEWAY_WS_RUN_LIFECYCLE_EVENT_KINDS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `GatewayWsRequestKind` values.
 pub enum GatewayWsRequestKind {
     Capabilities,
     GatewayStatus,
@@ -76,6 +77,7 @@ impl FromStr for GatewayWsRequestKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// Public struct `GatewayWsRequestFrame` used across Tau components.
 pub struct GatewayWsRequestFrame {
     pub request_id: String,
     pub kind: GatewayWsRequestKind,
@@ -83,6 +85,7 @@ pub struct GatewayWsRequestFrame {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `GatewayWsResponseFrame` used across Tau components.
 pub struct GatewayWsResponseFrame {
     pub schema_version: u32,
     pub request_id: String,

@@ -64,6 +64,7 @@ fn resolve_skill_trust_roots(cli: &Cli) -> Result<Vec<TrustedKey>> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `PackageManifestSummary` used across Tau components.
 pub struct PackageManifestSummary {
     pub manifest_path: PathBuf,
     pub name: String,
@@ -76,6 +77,7 @@ pub struct PackageManifestSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageInstallReport` used across Tau components.
 pub struct PackageInstallReport {
     pub manifest_path: PathBuf,
     pub install_root: PathBuf,
@@ -90,6 +92,7 @@ pub struct PackageInstallReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageListEntry` used across Tau components.
 pub struct PackageListEntry {
     pub manifest_path: PathBuf,
     pub package_dir: PathBuf,
@@ -99,6 +102,7 @@ pub struct PackageListEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageListInvalidEntry` used across Tau components.
 pub struct PackageListInvalidEntry {
     pub package_dir: PathBuf,
     pub manifest_path: PathBuf,
@@ -106,6 +110,7 @@ pub struct PackageListInvalidEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageListReport` used across Tau components.
 pub struct PackageListReport {
     pub list_root: PathBuf,
     pub packages: Vec<PackageListEntry>,
@@ -113,6 +118,7 @@ pub struct PackageListReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageConflictEntry` used across Tau components.
 pub struct PackageConflictEntry {
     pub kind: String,
     pub path: String,
@@ -121,6 +127,7 @@ pub struct PackageConflictEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageConflictReport` used across Tau components.
 pub struct PackageConflictReport {
     pub conflict_root: PathBuf,
     pub packages: usize,
@@ -129,6 +136,7 @@ pub struct PackageConflictReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `PackageActivationConflictPolicy` values.
 pub enum PackageActivationConflictPolicy {
     Error,
     KeepFirst,
@@ -158,6 +166,7 @@ impl PackageActivationConflictPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageActivationReport` used across Tau components.
 pub struct PackageActivationReport {
     pub activation_root: PathBuf,
     pub destination_root: PathBuf,
@@ -168,6 +177,7 @@ pub struct PackageActivationReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageRemoveReport` used across Tau components.
 pub struct PackageRemoveReport {
     pub remove_root: PathBuf,
     pub package_dir: PathBuf,
@@ -177,6 +187,7 @@ pub struct PackageRemoveReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `PackageRemoveStatus` values.
 pub enum PackageRemoveStatus {
     Removed,
     NotFound,
@@ -192,6 +203,7 @@ impl PackageRemoveStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `PackageRollbackReport` used across Tau components.
 pub struct PackageRollbackReport {
     pub rollback_root: PathBuf,
     pub package_name: String,
@@ -201,6 +213,7 @@ pub struct PackageRollbackReport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `PackageRollbackStatus` values.
 pub enum PackageRollbackStatus {
     RolledBack,
     AlreadyAtTarget,
@@ -216,6 +229,7 @@ impl PackageRollbackStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `FileUpsertOutcome` values.
 pub enum FileUpsertOutcome {
     Installed,
     Updated,

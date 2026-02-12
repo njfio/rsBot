@@ -697,6 +697,7 @@ mod tests {
     #[test]
     fn unit_extract_tokens_and_symbols_are_deterministic() {
         let text = r#"
+            /// Public struct `IndexReport` used across Tau components.
             pub struct IndexReport { value: usize }
             pub fn build_index() {}
             fn private_helper() {}

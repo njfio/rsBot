@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `EventAction` values.
 pub enum EventAction<Command> {
     RunPrompt { prompt: String },
     Command(Command),

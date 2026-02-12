@@ -1,10 +1,12 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `ParsedCommand` used across Tau components.
 pub struct ParsedCommand<'a> {
     pub name: &'a str,
     pub args: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `CommandSpec` used across Tau components.
 pub struct CommandSpec {
     pub name: &'static str,
     pub usage: &'static str,

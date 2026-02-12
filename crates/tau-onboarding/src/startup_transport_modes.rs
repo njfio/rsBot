@@ -44,6 +44,7 @@ use tau_tools::tools::{register_builtin_tools, ToolPolicy};
 use tau_voice::voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MultiChannelTransportMode` values.
 pub enum MultiChannelTransportMode {
     None,
     ContractRunner,
@@ -52,6 +53,7 @@ pub enum MultiChannelTransportMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `BridgeTransportMode` values.
 pub enum BridgeTransportMode {
     None,
     GithubIssuesBridge,
@@ -60,6 +62,7 @@ pub enum BridgeTransportMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ContractTransportMode` values.
 pub enum ContractTransportMode {
     None,
     MultiAgent,
@@ -73,6 +76,7 @@ pub enum ContractTransportMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `TransportRuntimeMode` values.
 pub enum TransportRuntimeMode {
     None,
     GatewayOpenResponsesServer,
@@ -93,6 +97,7 @@ pub enum TransportRuntimeMode {
 }
 
 #[async_trait::async_trait]
+/// Trait contract for `TransportRuntimeExecutor` behavior.
 pub trait TransportRuntimeExecutor {
     async fn run_gateway_openresponses_server(&self) -> Result<()>;
     async fn run_github_issues_bridge(&self) -> Result<()>;
@@ -217,6 +222,7 @@ pub fn build_transport_doctor_config(cli: &Cli, model_ref: &ModelRef) -> DoctorC
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TransportRuntimeDefaults` used across Tau components.
 pub struct TransportRuntimeDefaults {
     pub model: String,
     pub system_prompt: String,
@@ -497,6 +503,7 @@ pub async fn run_multi_agent_contract_runner_if_requested(cli: &Cli) -> Result<b
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `BrowserAutomationContractRunnerConfig` used across Tau components.
 pub struct BrowserAutomationContractRunnerConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -510,6 +517,7 @@ pub struct BrowserAutomationContractRunnerConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `StandardContractRunnerConfig` used across Tau components.
 pub struct StandardContractRunnerConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -520,6 +528,7 @@ pub struct StandardContractRunnerConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `EventsRunnerCliConfig` used across Tau components.
 pub struct EventsRunnerCliConfig {
     pub channel_store_root: PathBuf,
     pub events_dir: PathBuf,
@@ -530,6 +539,7 @@ pub struct EventsRunnerCliConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SlackBridgeCliConfig` used across Tau components.
 pub struct SlackBridgeCliConfig {
     pub state_dir: PathBuf,
     pub api_base: String,
@@ -547,6 +557,7 @@ pub struct SlackBridgeCliConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `GithubIssuesBridgeCliConfig` used across Tau components.
 pub struct GithubIssuesBridgeCliConfig {
     pub state_dir: PathBuf,
     pub repo_slug: String,

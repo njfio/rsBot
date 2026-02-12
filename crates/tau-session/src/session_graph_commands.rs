@@ -5,6 +5,7 @@ use tau_core::write_text_atomic;
 use crate::{session_message_preview, session_message_role, SessionEntry, SessionRuntime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `SessionGraphFormat` values.
 pub enum SessionGraphFormat {
     Mermaid,
     Dot,

@@ -1,3 +1,4 @@
+//! Core library surface for the crates crate.
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -10,6 +11,7 @@ use tau_ai::{
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
+/// Public struct `AgentConfig` used across Tau components.
 pub struct AgentConfig {
     pub model: String,
     pub system_prompt: String,
@@ -41,6 +43,7 @@ impl Default for AgentConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `ToolExecutionResult` used across Tau components.
 pub struct ToolExecutionResult {
     pub content: Value,
     pub is_error: bool,
@@ -70,12 +73,14 @@ impl ToolExecutionResult {
 }
 
 #[async_trait]
+/// Trait contract for `AgentTool` behavior.
 pub trait AgentTool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     async fn execute(&self, arguments: Value) -> ToolExecutionResult;
 }
 
 #[derive(Debug, Clone)]
+/// Enumerates supported `AgentEvent` values.
 pub enum AgentEvent {
     AgentStart,
     AgentEnd {
@@ -107,6 +112,7 @@ pub enum AgentEvent {
 }
 
 #[derive(Debug, Error)]
+/// Enumerates supported `AgentError` values.
 pub enum AgentError {
     #[error(transparent)]
     Ai(#[from] TauAiError),
@@ -129,6 +135,7 @@ struct RegisteredTool {
 }
 
 #[derive(Clone)]
+/// Public struct `Agent` used across Tau components.
 pub struct Agent {
     client: Arc<dyn LlmClient>,
     config: AgentConfig,

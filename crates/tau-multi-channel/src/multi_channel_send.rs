@@ -28,6 +28,7 @@ const WHATSAPP_TOKEN_INTEGRATION_ID: &str = "whatsapp-access-token";
 const WHATSAPP_PHONE_NUMBER_ID_INTEGRATION_ID: &str = "whatsapp-phone-number-id";
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelSendCommandConfig` used across Tau components.
 pub struct MultiChannelSendCommandConfig {
     pub transport: MultiChannelTransport,
     pub target: String,
@@ -48,6 +49,7 @@ pub struct MultiChannelSendCommandConfig {
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Public struct `MultiChannelSendReport` used across Tau components.
 pub struct MultiChannelSendReport {
     pub schema: String,
     pub action: String,

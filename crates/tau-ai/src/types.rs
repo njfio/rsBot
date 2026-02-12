@@ -6,6 +6,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MessageRole` values.
 pub enum MessageRole {
     System,
     User,
@@ -14,6 +15,7 @@ pub enum MessageRole {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `ToolCall` used across Tau components.
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -22,6 +24,7 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
+/// Enumerates supported `ContentBlock` values.
 pub enum ContentBlock {
     Text {
         text: String,
@@ -44,6 +47,7 @@ impl ContentBlock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `Message` used across Tau components.
 pub struct Message {
     pub role: MessageRole,
     pub content: Vec<ContentBlock>,
@@ -142,6 +146,7 @@ impl Message {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `ToolDefinition` used across Tau components.
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
@@ -149,6 +154,7 @@ pub struct ToolDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `ChatRequest` used across Tau components.
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -158,6 +164,7 @@ pub struct ChatRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+/// Public struct `ChatUsage` used across Tau components.
 pub struct ChatUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -165,6 +172,7 @@ pub struct ChatUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `ChatResponse` used across Tau components.
 pub struct ChatResponse {
     pub message: Message,
     pub finish_reason: Option<String>,
@@ -172,6 +180,7 @@ pub struct ChatResponse {
 }
 
 #[derive(Debug, Error)]
+/// Enumerates supported `TauAiError` values.
 pub enum TauAiError {
     #[error("missing API key")]
     MissingApiKey,
@@ -188,6 +197,7 @@ pub enum TauAiError {
 pub type StreamDeltaHandler = Arc<dyn Fn(String) + Send + Sync>;
 
 #[async_trait]
+/// Trait contract for `LlmClient` behavior.
 pub trait LlmClient: Send + Sync {
     async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, TauAiError>;
 
