@@ -71,6 +71,9 @@ use tau_github_issues::issue_demo_index_command::{
 use tau_github_issues::issue_doctor_command::{
     parse_issue_doctor_command as parse_shared_issue_doctor_command, IssueDoctorCommand,
 };
+use tau_github_issues::issue_event_action::{
+    event_action_from_body as event_action_from_shared_body, EventAction as SharedEventAction,
+};
 use tau_github_issues::issue_event_collection::{
     collect_issue_events as collect_shared_issue_events, GithubBridgeEvent, GithubIssue,
     GithubIssueComment,
@@ -1089,11 +1092,7 @@ enum TauIssueCommand {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EventAction {
-    RunPrompt { prompt: String },
-    Command(TauIssueCommand),
-}
+type EventAction = SharedEventAction<TauIssueCommand>;
 
 #[derive(Debug)]
 struct ActiveIssueRun {
@@ -5054,12 +5053,7 @@ fn render_issue_run_error_comment(
 }
 
 fn event_action_from_body(body: &str) -> EventAction {
-    match parse_tau_issue_command(body) {
-        Some(command) => EventAction::Command(command),
-        None => EventAction::RunPrompt {
-            prompt: body.trim().to_string(),
-        },
-    }
+    event_action_from_shared_body(body, parse_tau_issue_command)
 }
 
 fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
