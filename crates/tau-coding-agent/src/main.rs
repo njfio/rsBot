@@ -191,6 +191,7 @@ pub(crate) use crate::startup_model_catalog::{
 };
 pub(crate) use crate::startup_preflight::execute_startup_preflight;
 pub(crate) use crate::startup_transport_modes::run_transport_mode_if_requested;
+#[cfg(test)]
 pub(crate) use crate::tool_policy_config::build_tool_policy;
 #[cfg(test)]
 pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
