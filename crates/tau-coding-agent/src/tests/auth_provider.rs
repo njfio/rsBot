@@ -15684,6 +15684,33 @@ async fn integration_run_prompt_with_cancellation_completes_when_not_cancelled()
 }
 
 #[tokio::test]
+async fn functional_run_prompt_with_cancellation_stream_fallback_avoids_blocking_delay() {
+    let mut agent = Agent::new(Arc::new(SuccessClient), AgentConfig::default());
+    let mut runtime = None;
+    let started = Instant::now();
+
+    let status = run_prompt_with_cancellation(
+        &mut agent,
+        &mut runtime,
+        "hello",
+        0,
+        pending::<()>(),
+        RenderOptions {
+            stream_output: true,
+            stream_delay_ms: 300,
+        },
+    )
+    .await
+    .expect("prompt should complete");
+
+    assert_eq!(status, PromptRunStatus::Completed);
+    assert!(
+        started.elapsed() < Duration::from_millis(260),
+        "fallback render path should not block on configured stream delay"
+    );
+}
+
+#[tokio::test]
 async fn integration_tool_hook_subscriber_dispatches_pre_and_post_tool_call_hooks() {
     let temp = tempdir().expect("tempdir");
     let read_target = temp.path().join("README.md");

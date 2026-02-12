@@ -1,4 +1,4 @@
-use std::{io::Write, time::Duration};
+use std::io::Write;
 
 use anyhow::Result;
 use tau_agent_core::AgentEvent;
@@ -41,7 +41,7 @@ pub fn persist_messages(
 pub fn print_assistant_messages(
     messages: &[Message],
     stream_output: bool,
-    stream_delay_ms: u64,
+    _stream_delay_ms: u64,
     suppress_first_streamed_text: bool,
 ) {
     let mut suppressed_once = false;
@@ -63,9 +63,6 @@ pub fn print_assistant_messages(
                 for chunk in stream_text_chunks(&text) {
                     print!("{chunk}");
                     let _ = stdout.flush();
-                    if stream_delay_ms > 0 {
-                        std::thread::sleep(Duration::from_millis(stream_delay_ms));
-                    }
                 }
                 println!("\n");
             } else {
@@ -141,7 +138,9 @@ pub fn event_to_json(event: &AgentEvent) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{event_to_json, stream_text_chunks, summarize_message};
+    use std::time::{Duration, Instant};
+
+    use super::{event_to_json, print_assistant_messages, stream_text_chunks, summarize_message};
     use tau_agent_core::{AgentEvent, ToolExecutionResult};
     use tau_ai::{ContentBlock, Message, ToolCall};
 
@@ -186,5 +185,20 @@ mod tests {
         assert_eq!(value["tool_name"], "write");
         assert_eq!(value["is_error"], false);
         assert_eq!(value["content"]["ok"], true);
+    }
+
+    #[test]
+    fn unit_print_assistant_messages_stream_fallback_avoids_blocking_delay() {
+        let started = Instant::now();
+        print_assistant_messages(
+            &[Message::assistant_text("fallback stream render")],
+            true,
+            300,
+            false,
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(350),
+            "fallback render should not sleep per chunk in sync path"
+        );
     }
 }
