@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -779,6 +779,36 @@ pub fn build_slack_bridge_cli_config(
     }
 }
 
+pub fn resolve_slack_bridge_tokens_from_cli<FResolveSecret>(
+    cli: &Cli,
+    mut resolve_secret: FResolveSecret,
+) -> Result<(String, String)>
+where
+    FResolveSecret: FnMut(Option<&str>, Option<&str>, &str) -> Result<Option<String>>,
+{
+    let app_token = resolve_secret(
+        cli.slack_app_token.as_deref(),
+        cli.slack_app_token_id.as_deref(),
+        "--slack-app-token-id",
+    )?
+    .ok_or_else(|| {
+        anyhow!(
+            "--slack-app-token (or --slack-app-token-id) is required when --slack-bridge is set"
+        )
+    })?;
+    let bot_token = resolve_secret(
+        cli.slack_bot_token.as_deref(),
+        cli.slack_bot_token_id.as_deref(),
+        "--slack-bot-token-id",
+    )?
+    .ok_or_else(|| {
+        anyhow!(
+            "--slack-bot-token (or --slack-bot-token-id) is required when --slack-bridge is set"
+        )
+    })?;
+    Ok((app_token, bot_token))
+}
+
 pub async fn run_slack_bridge_if_requested<FResolveTokens, FRunBridge, Fut>(
     cli: &Cli,
     resolve_tokens: FResolveTokens,
@@ -843,6 +873,30 @@ pub fn build_github_issues_bridge_cli_config(
         retry_base_delay_ms: cli.github_retry_base_delay_ms.max(1),
         artifact_retention_days: cli.github_artifact_retention_days,
     }
+}
+
+pub fn resolve_github_issues_bridge_repo_and_token_from_cli<FResolveSecret>(
+    cli: &Cli,
+    mut resolve_secret: FResolveSecret,
+) -> Result<(String, String)>
+where
+    FResolveSecret: FnMut(Option<&str>, Option<&str>, &str) -> Result<Option<String>>,
+{
+    let repo_slug = cli
+        .github_repo
+        .clone()
+        .ok_or_else(|| anyhow!("--github-repo is required when --github-issues-bridge is set"))?;
+    let token = resolve_secret(
+        cli.github_token.as_deref(),
+        cli.github_token_id.as_deref(),
+        "--github-token-id",
+    )?
+    .ok_or_else(|| {
+        anyhow!(
+            "--github-token (or --github-token-id) is required when --github-issues-bridge is set"
+        )
+    })?;
+    Ok((repo_slug, token))
 }
 
 pub async fn run_github_issues_bridge_if_requested<FResolveRepoAndToken, FRunBridge, Fut>(
@@ -1105,8 +1159,9 @@ mod tests {
         build_transport_runtime_defaults, build_voice_contract_runner_config,
         execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
         resolve_bridge_transport_mode, resolve_contract_transport_mode,
-        resolve_gateway_openresponses_auth, resolve_multi_channel_outbound_secret,
-        resolve_multi_channel_transport_mode, resolve_transport_runtime_mode,
+        resolve_gateway_openresponses_auth, resolve_github_issues_bridge_repo_and_token_from_cli,
+        resolve_multi_channel_outbound_secret, resolve_multi_channel_transport_mode,
+        resolve_slack_bridge_tokens_from_cli, resolve_transport_runtime_mode,
         run_events_runner_if_requested, run_events_runner_with_runtime_defaults_if_requested,
         run_github_issues_bridge_if_requested,
         run_github_issues_bridge_with_runtime_defaults_if_requested, run_slack_bridge_if_requested,
@@ -2692,6 +2747,95 @@ mod tests {
 
         let config = build_multi_channel_live_connectors_config(&cli);
         assert!(config.discord_bot_token.is_none());
+    }
+
+    #[test]
+    fn unit_resolve_github_issues_bridge_repo_and_token_from_cli_resolves_direct_token() {
+        let mut cli = parse_cli_with_stack();
+        cli.github_repo = Some("owner/repo".to_string());
+        cli.github_token = Some("ghp_direct".to_string());
+
+        let (repo_slug, token) = resolve_github_issues_bridge_repo_and_token_from_cli(
+            &cli,
+            |direct, _secret_id, _flag| Ok(direct.map(str::to_string)),
+        )
+        .expect("github repo/token should resolve");
+
+        assert_eq!(repo_slug, "owner/repo");
+        assert_eq!(token, "ghp_direct");
+    }
+
+    #[test]
+    fn functional_resolve_github_issues_bridge_repo_and_token_from_cli_uses_secret_resolver_inputs()
+    {
+        let mut cli = parse_cli_with_stack();
+        cli.github_repo = Some("owner/repo".to_string());
+        cli.github_token_id = Some("github-token-secret".to_string());
+        let captures = Arc::new(Mutex::new(
+            Vec::<(Option<String>, Option<String>, String)>::new(),
+        ));
+        let captures_sink = Arc::clone(&captures);
+
+        let (_repo_slug, token) = resolve_github_issues_bridge_repo_and_token_from_cli(
+            &cli,
+            move |direct, secret_id, flag| {
+                captures_sink.lock().expect("captures lock").push((
+                    direct.map(str::to_string),
+                    secret_id.map(str::to_string),
+                    flag.to_string(),
+                ));
+                Ok(Some("ghp_from_store".to_string()))
+            },
+        )
+        .expect("github repo/token should resolve");
+
+        assert_eq!(token, "ghp_from_store");
+        assert_eq!(
+            captures.lock().expect("captures lock").as_slice(),
+            &[(
+                None,
+                Some("github-token-secret".to_string()),
+                "--github-token-id".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn integration_resolve_slack_bridge_tokens_from_cli_uses_secret_resolver_for_both_tokens() {
+        let mut cli = parse_cli_with_stack();
+        cli.slack_app_token_id = Some("slack-app-secret".to_string());
+        cli.slack_bot_token_id = Some("slack-bot-secret".to_string());
+
+        let (app_token, bot_token) = resolve_slack_bridge_tokens_from_cli(
+            &cli,
+            |_direct, secret_id, _flag| match secret_id {
+                Some("slack-app-secret") => Ok(Some("xapp-1".to_string())),
+                Some("slack-bot-secret") => Ok(Some("xoxb-1".to_string())),
+                _ => Ok(None),
+            },
+        )
+        .expect("slack tokens should resolve");
+
+        assert_eq!(app_token, "xapp-1");
+        assert_eq!(bot_token, "xoxb-1");
+    }
+
+    #[test]
+    fn regression_resolve_slack_bridge_tokens_from_cli_fails_closed_when_bot_token_missing() {
+        let mut cli = parse_cli_with_stack();
+        cli.slack_app_token = Some("xapp-direct".to_string());
+        cli.slack_bot_token = None;
+        cli.slack_bot_token_id = None;
+
+        let error = resolve_slack_bridge_tokens_from_cli(&cli, |direct, _secret_id, _flag| {
+            Ok(direct.map(str::to_string))
+        })
+        .expect_err("missing bot token should fail");
+
+        assert!(
+            error.to_string().contains("--slack-bot-token"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
