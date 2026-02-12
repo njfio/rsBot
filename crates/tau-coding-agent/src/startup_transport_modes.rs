@@ -5,7 +5,6 @@ use crate::channel_adapters::{
 use async_trait::async_trait;
 use std::sync::Arc;
 use tau_onboarding::startup_transport_modes::{
-    build_multi_channel_runtime_dependencies as build_onboarding_multi_channel_runtime_dependencies,
     build_transport_doctor_config as build_onboarding_transport_doctor_config,
     resolve_github_issues_bridge_repo_and_token_from_cli as resolve_onboarding_github_issues_bridge_repo_and_token_from_cli,
     resolve_slack_bridge_tokens_from_cli as resolve_onboarding_slack_bridge_tokens_from_cli,
@@ -16,8 +15,9 @@ use tau_onboarding::startup_transport_modes::{
     run_gateway_contract_runner_if_requested, run_gateway_openresponses_server_if_requested,
     run_github_issues_bridge_with_runtime_defaults_if_requested as run_onboarding_github_issues_bridge_with_runtime_defaults_if_requested,
     run_memory_contract_runner_if_requested, run_multi_agent_contract_runner_if_requested,
-    run_multi_channel_contract_runner_if_requested, run_multi_channel_live_connectors_if_requested,
-    run_multi_channel_live_runner_if_requested,
+    run_multi_channel_contract_runner_with_runtime_dependencies_if_requested as run_onboarding_multi_channel_contract_runner_with_runtime_dependencies_if_requested,
+    run_multi_channel_live_connectors_if_requested,
+    run_multi_channel_live_runner_with_runtime_dependencies_if_requested as run_onboarding_multi_channel_live_runner_with_runtime_dependencies_if_requested,
     run_slack_bridge_with_runtime_defaults_if_requested as run_onboarding_slack_bridge_with_runtime_defaults_if_requested,
     run_transport_mode_if_requested as run_onboarding_transport_mode_if_requested,
     run_voice_contract_runner_if_requested, TransportRuntimeExecutor,
@@ -189,32 +189,24 @@ impl TransportRuntimeExecutor for CodingAgentTransportRuntimeExecutor<'_> {
     }
 
     async fn run_multi_channel_contract_runner(&self) -> Result<()> {
-        let (command_handlers, pairing_evaluator) =
-            build_onboarding_multi_channel_runtime_dependencies(
-                self.cli,
-                self.model_ref,
-                build_multi_channel_command_handlers,
-                build_multi_channel_pairing_evaluator,
-            );
-        run_multi_channel_contract_runner_if_requested(
+        run_onboarding_multi_channel_contract_runner_with_runtime_dependencies_if_requested(
             self.cli,
-            command_handlers,
-            pairing_evaluator,
+            self.model_ref,
+            build_multi_channel_command_handlers,
+            build_multi_channel_pairing_evaluator,
         )
         .await?;
         Ok(())
     }
 
     async fn run_multi_channel_live_runner(&self) -> Result<()> {
-        let (command_handlers, pairing_evaluator) =
-            build_onboarding_multi_channel_runtime_dependencies(
-                self.cli,
-                self.model_ref,
-                build_multi_channel_command_handlers,
-                build_multi_channel_pairing_evaluator,
-            );
-        run_multi_channel_live_runner_if_requested(self.cli, command_handlers, pairing_evaluator)
-            .await?;
+        run_onboarding_multi_channel_live_runner_with_runtime_dependencies_if_requested(
+            self.cli,
+            self.model_ref,
+            build_multi_channel_command_handlers,
+            build_multi_channel_pairing_evaluator,
+        )
+        .await?;
         Ok(())
     }
 

@@ -266,6 +266,28 @@ where
     )
 }
 
+pub async fn run_multi_channel_contract_runner_with_runtime_dependencies_if_requested<
+    FBuildHandlers,
+    FBuildPairing,
+>(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    build_command_handlers: FBuildHandlers,
+    build_pairing_evaluator: FBuildPairing,
+) -> Result<bool>
+where
+    FBuildHandlers: FnOnce(AuthCommandConfig, DoctorCommandConfig) -> MultiChannelCommandHandlers,
+    FBuildPairing: FnOnce() -> std::sync::Arc<dyn MultiChannelPairingEvaluator>,
+{
+    let (command_handlers, pairing_evaluator) = build_multi_channel_runtime_dependencies(
+        cli,
+        model_ref,
+        build_command_handlers,
+        build_pairing_evaluator,
+    );
+    run_multi_channel_contract_runner_if_requested(cli, command_handlers, pairing_evaluator).await
+}
+
 pub fn resolve_multi_channel_transport_mode(cli: &Cli) -> MultiChannelTransportMode {
     if cli.multi_channel_contract_runner {
         MultiChannelTransportMode::ContractRunner
@@ -1012,6 +1034,28 @@ pub async fn run_multi_channel_live_runner_if_requested(
     Ok(true)
 }
 
+pub async fn run_multi_channel_live_runner_with_runtime_dependencies_if_requested<
+    FBuildHandlers,
+    FBuildPairing,
+>(
+    cli: &Cli,
+    model_ref: &ModelRef,
+    build_command_handlers: FBuildHandlers,
+    build_pairing_evaluator: FBuildPairing,
+) -> Result<bool>
+where
+    FBuildHandlers: FnOnce(AuthCommandConfig, DoctorCommandConfig) -> MultiChannelCommandHandlers,
+    FBuildPairing: FnOnce() -> std::sync::Arc<dyn MultiChannelPairingEvaluator>,
+{
+    let (command_handlers, pairing_evaluator) = build_multi_channel_runtime_dependencies(
+        cli,
+        model_ref,
+        build_command_handlers,
+        build_pairing_evaluator,
+    );
+    run_multi_channel_live_runner_if_requested(cli, command_handlers, pairing_evaluator).await
+}
+
 pub fn build_multi_channel_live_connectors_config(cli: &Cli) -> MultiChannelLiveConnectorsConfig {
     MultiChannelLiveConnectorsConfig {
         state_path: cli.multi_channel_live_connectors_state_path.clone(),
@@ -1164,11 +1208,14 @@ mod tests {
         resolve_slack_bridge_tokens_from_cli, resolve_transport_runtime_mode,
         run_events_runner_if_requested, run_events_runner_with_runtime_defaults_if_requested,
         run_github_issues_bridge_if_requested,
-        run_github_issues_bridge_with_runtime_defaults_if_requested, run_slack_bridge_if_requested,
-        run_slack_bridge_with_runtime_defaults_if_requested, run_transport_mode_if_requested,
-        validate_transport_mode_cli, BridgeTransportMode, ContractTransportMode,
-        EventsRunnerCliConfig, MultiChannelTransportMode, SlackBridgeCliConfig,
-        TransportRuntimeDefaults, TransportRuntimeExecutor, TransportRuntimeMode,
+        run_github_issues_bridge_with_runtime_defaults_if_requested,
+        run_multi_channel_contract_runner_with_runtime_dependencies_if_requested,
+        run_multi_channel_live_runner_with_runtime_dependencies_if_requested,
+        run_slack_bridge_if_requested, run_slack_bridge_with_runtime_defaults_if_requested,
+        run_transport_mode_if_requested, validate_transport_mode_cli, BridgeTransportMode,
+        ContractTransportMode, EventsRunnerCliConfig, MultiChannelTransportMode,
+        SlackBridgeCliConfig, TransportRuntimeDefaults, TransportRuntimeExecutor,
+        TransportRuntimeMode,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -2142,6 +2189,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unit_run_multi_channel_contract_runner_with_runtime_dependencies_composes_inputs() {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let handler_called = Arc::new(Mutex::new(false));
+        let handler_called_sink = Arc::clone(&handler_called);
+        let pairing_called = Arc::new(Mutex::new(false));
+        let pairing_called_sink = Arc::clone(&pairing_called);
+
+        let handled = run_multi_channel_contract_runner_with_runtime_dependencies_if_requested(
+            &cli,
+            &model_ref,
+            move |_auth_config, _doctor_config| {
+                *handler_called_sink.lock().expect("handler lock") = true;
+                tau_multi_channel::MultiChannelCommandHandlers::default()
+            },
+            move || {
+                *pairing_called_sink.lock().expect("pairing lock") = true;
+                Arc::new(AllowAllPairingEvaluator)
+            },
+        )
+        .await
+        .expect("composed helper should succeed");
+
+        assert!(!handled);
+        assert!(*handler_called.lock().expect("handler lock"));
+        assert!(*pairing_called.lock().expect("pairing lock"));
+    }
+
+    #[tokio::test]
+    async fn functional_run_multi_channel_contract_runner_with_runtime_dependencies_preserves_auth_and_doctor_config(
+    ) {
+        let mut cli = parse_cli_with_stack();
+        cli.openai_api_key = Some("test-openai-key".to_string());
+        cli.no_session = true;
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let captured = Arc::new(Mutex::new(None::<(String, bool, PathBuf)>));
+        let captured_sink = Arc::clone(&captured);
+
+        let handled = run_multi_channel_contract_runner_with_runtime_dependencies_if_requested(
+            &cli,
+            &model_ref,
+            move |auth_config, doctor_config| {
+                *captured_sink.lock().expect("capture lock") = Some((
+                    auth_config.openai_api_key.unwrap_or_default(),
+                    doctor_config.session_enabled,
+                    doctor_config.skills_lock_path,
+                ));
+                tau_multi_channel::MultiChannelCommandHandlers::default()
+            },
+            || Arc::new(AllowAllPairingEvaluator),
+        )
+        .await
+        .expect("composed helper should succeed");
+
+        assert!(!handled);
+        let (openai_key, session_enabled, skills_lock_path) = captured
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("captured payload");
+        assert_eq!(openai_key, "test-openai-key");
+        assert!(!session_enabled);
+        assert_eq!(skills_lock_path, default_skills_lock_path(&cli.skills_dir));
+    }
+
+    #[tokio::test]
     async fn unit_run_multi_channel_live_runner_if_requested_returns_false_when_disabled() {
         let cli = parse_cli_with_stack();
 
@@ -2154,6 +2267,64 @@ mod tests {
         .expect("multi-channel live helper");
 
         assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn integration_run_multi_channel_live_runner_with_runtime_dependencies_preserves_model_identity(
+    ) {
+        let cli = parse_cli_with_stack();
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+        let captured_model = Arc::new(Mutex::new(None::<String>));
+        let captured_model_sink = Arc::clone(&captured_model);
+        let pairing_called = Arc::new(Mutex::new(false));
+        let pairing_called_sink = Arc::clone(&pairing_called);
+
+        let handled = run_multi_channel_live_runner_with_runtime_dependencies_if_requested(
+            &cli,
+            &model_ref,
+            move |_auth_config, doctor_config| {
+                *captured_model_sink.lock().expect("capture lock") = Some(doctor_config.model);
+                tau_multi_channel::MultiChannelCommandHandlers::default()
+            },
+            move || {
+                *pairing_called_sink.lock().expect("pairing lock") = true;
+                Arc::new(AllowAllPairingEvaluator)
+            },
+        )
+        .await
+        .expect("composed helper should succeed");
+
+        assert!(!handled);
+        assert_eq!(
+            captured_model.lock().expect("capture lock").clone(),
+            Some("openai/gpt-4o-mini".to_string())
+        );
+        assert!(*pairing_called.lock().expect("pairing lock"));
+    }
+
+    #[tokio::test]
+    async fn regression_run_multi_channel_contract_runner_with_runtime_dependencies_propagates_runner_errors(
+    ) {
+        let mut cli = parse_cli_with_stack();
+        cli.multi_channel_contract_runner = true;
+        cli.multi_channel_fixture = PathBuf::from("/definitely/missing-contract-fixture.json");
+        let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+
+        let error = run_multi_channel_contract_runner_with_runtime_dependencies_if_requested(
+            &cli,
+            &model_ref,
+            |_auth_config, _doctor_config| {
+                tau_multi_channel::MultiChannelCommandHandlers::default()
+            },
+            || Arc::new(AllowAllPairingEvaluator),
+        )
+        .await
+        .expect_err("runner error should propagate");
+
+        assert!(
+            error.to_string().contains("missing-contract-fixture"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
