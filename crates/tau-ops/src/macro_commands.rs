@@ -28,6 +28,12 @@ pub enum MacroCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacroExecutionAction {
+    Continue,
+    Exit,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MacroFile {
     pub schema_version: u32,
@@ -244,17 +250,178 @@ pub fn render_macro_show(path: &Path, name: &str, commands: &[String]) -> String
     lines.join("\n")
 }
 
+pub fn execute_macro_command_with_runner<F>(
+    command_args: &str,
+    macro_path: &Path,
+    command_names: &[&str],
+    mut run_command: F,
+) -> String
+where
+    F: FnMut(&str) -> Result<MacroExecutionAction>,
+{
+    let command = match parse_macro_command(command_args) {
+        Ok(command) => command,
+        Err(error) => {
+            return format!("macro error: path={} error={error}", macro_path.display());
+        }
+    };
+
+    let mut macros = match load_macro_file(macro_path) {
+        Ok(macros) => macros,
+        Err(error) => {
+            return format!("macro error: path={} error={error}", macro_path.display());
+        }
+    };
+
+    match command {
+        MacroCommand::List => render_macro_list(macro_path, &macros),
+        MacroCommand::Save {
+            name,
+            commands_file,
+        } => {
+            let commands = match load_macro_commands(&commands_file) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    return format!(
+                        "macro error: path={} name={} error={error}",
+                        macro_path.display(),
+                        name
+                    );
+                }
+            };
+            if let Err(error) = validate_macro_commands(&commands, command_names) {
+                return format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                );
+            }
+            macros.insert(name.clone(), commands.clone());
+            match save_macro_file(macro_path, &macros) {
+                Ok(()) => format!(
+                    "macro save: path={} name={} source={} commands={}",
+                    macro_path.display(),
+                    name,
+                    commands_file.display(),
+                    commands.len()
+                ),
+                Err(error) => format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                ),
+            }
+        }
+        MacroCommand::Run { name, dry_run } => {
+            let Some(commands) = macros.get(&name) else {
+                return format!(
+                    "macro error: path={} name={} error=unknown macro '{}'",
+                    macro_path.display(),
+                    name,
+                    name
+                );
+            };
+            if let Err(error) = validate_macro_commands(commands, command_names) {
+                return format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                );
+            }
+            if dry_run {
+                let mut lines = vec![format!(
+                    "macro run: path={} name={} mode=dry-run commands={}",
+                    macro_path.display(),
+                    name,
+                    commands.len()
+                )];
+                for command in commands {
+                    lines.push(format!("plan: command={command}"));
+                }
+                return lines.join("\n");
+            }
+
+            for command in commands {
+                match run_command(command) {
+                    Ok(MacroExecutionAction::Continue) => {}
+                    Ok(MacroExecutionAction::Exit) => {
+                        return format!(
+                            "macro error: path={} name={} error=exit command is not allowed in macros",
+                            macro_path.display(),
+                            name
+                        );
+                    }
+                    Err(error) => {
+                        return format!(
+                            "macro error: path={} name={} command={} error={error}",
+                            macro_path.display(),
+                            name,
+                            command
+                        );
+                    }
+                }
+            }
+
+            format!(
+                "macro run: path={} name={} mode=apply commands={} executed={}",
+                macro_path.display(),
+                name,
+                commands.len(),
+                commands.len()
+            )
+        }
+        MacroCommand::Show { name } => {
+            let Some(commands) = macros.get(&name) else {
+                return format!(
+                    "macro error: path={} name={} error=unknown macro '{}'",
+                    macro_path.display(),
+                    name,
+                    name
+                );
+            };
+            render_macro_show(macro_path, &name, commands)
+        }
+        MacroCommand::Delete { name } => {
+            if !macros.contains_key(&name) {
+                return format!(
+                    "macro error: path={} name={} error=unknown macro '{}'",
+                    macro_path.display(),
+                    name,
+                    name
+                );
+            }
+
+            macros.remove(&name);
+            match save_macro_file(macro_path, &macros) {
+                Ok(()) => format!(
+                    "macro delete: path={} name={} status=deleted remaining={}",
+                    macro_path.display(),
+                    name,
+                    macros.len()
+                ),
+                Err(error) => format!(
+                    "macro error: path={} name={} error={error}",
+                    macro_path.display(),
+                    name
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use anyhow::anyhow;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use tempfile::tempdir;
 
     use super::{
-        load_macro_commands, load_macro_file, parse_macro_command, render_macro_list,
-        render_macro_show, save_macro_file, validate_macro_command_entry, validate_macro_commands,
-        validate_macro_name, MacroCommand, MacroFile, MACRO_SCHEMA_VERSION, MACRO_USAGE,
+        execute_macro_command_with_runner, load_macro_commands, load_macro_file,
+        parse_macro_command, render_macro_list, render_macro_show, save_macro_file,
+        validate_macro_command_entry, validate_macro_commands, validate_macro_name, MacroCommand,
+        MacroExecutionAction, MacroFile, MACRO_SCHEMA_VERSION, MACRO_USAGE,
     };
 
     const TEST_COMMAND_NAMES: &[&str] = &["/help", "/session", "/skills-list", "/macro"];
@@ -399,6 +566,116 @@ mod tests {
         assert!(show_output.contains("macro show: path="));
         assert!(show_output.contains("name=alpha"));
         assert!(show_output.contains("command: index=0 value=/help"));
+    }
+
+    #[test]
+    fn integration_execute_macro_command_with_runner_handles_full_lifecycle() {
+        let temp = tempdir().expect("tempdir");
+        let macro_path = temp.path().join(".tau").join("macros.json");
+        let commands_file = temp.path().join("quick.commands");
+        std::fs::write(&commands_file, "/help\n/session\n").expect("write command file");
+
+        let save_output = execute_macro_command_with_runner(
+            &format!("save quick {}", commands_file.display()),
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Continue),
+        );
+        assert!(save_output.contains("macro save: path="));
+        assert!(save_output.contains("name=quick"));
+        assert!(save_output.contains("commands=2"));
+
+        let list_output = execute_macro_command_with_runner(
+            "list",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Continue),
+        );
+        assert!(list_output.contains("macro list: path="));
+        assert!(list_output.contains("count=1"));
+        assert!(list_output.contains("macro: name=quick commands=2"));
+
+        let show_output = execute_macro_command_with_runner(
+            "show quick",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Continue),
+        );
+        assert!(show_output.contains("macro show: path="));
+        assert!(show_output.contains("name=quick commands=2"));
+        assert!(show_output.contains("command: index=0 value=/help"));
+
+        let dry_run_output = execute_macro_command_with_runner(
+            "run quick --dry-run",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Continue),
+        );
+        assert!(dry_run_output.contains("mode=dry-run"));
+        assert!(dry_run_output.contains("plan: command=/help"));
+
+        let mut executed = Vec::new();
+        let run_output = execute_macro_command_with_runner(
+            "run quick",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |command| {
+                executed.push(command.to_string());
+                Ok(MacroExecutionAction::Continue)
+            },
+        );
+        assert_eq!(executed, vec!["/help".to_string(), "/session".to_string()]);
+        assert!(run_output.contains("mode=apply"));
+        assert!(run_output.contains("executed=2"));
+
+        let delete_output = execute_macro_command_with_runner(
+            "delete quick",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Continue),
+        );
+        assert!(delete_output.contains("status=deleted"));
+        assert!(delete_output.contains("remaining=0"));
+    }
+
+    #[test]
+    fn regression_execute_macro_command_with_runner_reports_runner_and_lookup_errors() {
+        let temp = tempdir().expect("tempdir");
+        let macro_path = temp.path().join(".tau").join("macros.json");
+        let commands_file = temp.path().join("quick.commands");
+        std::fs::write(&commands_file, "/help\n").expect("write command file");
+
+        execute_macro_command_with_runner(
+            &format!("save quick {}", commands_file.display()),
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Continue),
+        );
+
+        let missing_output = execute_macro_command_with_runner(
+            "run missing",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Continue),
+        );
+        assert!(missing_output.contains("unknown macro 'missing'"));
+
+        let exit_output = execute_macro_command_with_runner(
+            "run quick",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Ok(MacroExecutionAction::Exit),
+        );
+        assert!(exit_output.contains("exit command is not allowed in macros"));
+
+        let error_output = execute_macro_command_with_runner(
+            "run quick",
+            &macro_path,
+            TEST_COMMAND_NAMES,
+            |_command| Err(anyhow!("runner failed")),
+        );
+        assert!(error_output.contains("command=/help"));
+        assert!(error_output.contains("runner failed"));
     }
 
     #[test]
