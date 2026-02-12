@@ -1,9 +1,5 @@
 use super::*;
 
-pub(crate) fn summarize_message(message: &Message) -> String {
-    tau_runtime::runtime_output_runtime::summarize_message(message)
-}
-
 pub(crate) fn persist_messages(
     session_runtime: &mut Option<SessionRuntime>,
     new_messages: &[Message],

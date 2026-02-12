@@ -143,9 +143,7 @@ pub(crate) use crate::runtime_loop::{
 };
 #[cfg(test)]
 pub(crate) use crate::runtime_output::stream_text_chunks;
-pub(crate) use crate::runtime_output::{
-    event_to_json, persist_messages, print_assistant_messages, summarize_message,
-};
+pub(crate) use crate::runtime_output::{event_to_json, persist_messages, print_assistant_messages};
 pub(crate) use crate::runtime_types::{
     AuthCommandConfig, CommandExecutionContext, ProfileDefaults, RenderOptions,
     SkillsSyncCommandConfig,
@@ -341,6 +339,8 @@ pub(crate) use tau_session::execute_session_graph_export_command;
 #[cfg(test)]
 pub(crate) use tau_session::format_id_list;
 #[cfg(test)]
+pub(crate) use tau_session::format_remap_ids;
+#[cfg(test)]
 pub(crate) use tau_session::validate_session_file;
 use tau_session::SessionImportMode;
 #[cfg(test)]
@@ -367,9 +367,7 @@ pub(crate) use tau_session::{
     resolve_session_graph_format, SessionGraphFormat,
 };
 pub(crate) use tau_session::{execute_branch_alias_command, execute_session_bookmark_command};
-pub(crate) use tau_session::{
-    format_remap_ids, initialize_session, session_lineage_messages, SessionRuntime,
-};
+pub(crate) use tau_session::{initialize_session, session_lineage_messages, SessionRuntime};
 pub(crate) use tau_session::{session_message_preview, session_message_role};
 #[cfg(test)]
 pub(crate) use tau_startup::command_file_error_mode_label;

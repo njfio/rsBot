@@ -9,9 +9,11 @@ use crate::runtime_types::{
 use tau_cli::{canonical_command_name, normalize_help_topic, parse_command, CommandFileReport};
 pub(crate) use tau_ops::COMMAND_NAMES;
 use tau_session::{
-    execute_branch_switch_command, execute_resume_command, execute_session_compact_command,
-    execute_session_diff_command, execute_session_repair_command, execute_session_search_command,
-    execute_session_stats_command, parse_session_diff_args, parse_session_stats_args,
+    execute_branch_switch_command, execute_branches_command, execute_resume_command,
+    execute_session_compact_command, execute_session_diff_command, execute_session_export_command,
+    execute_session_import_command, execute_session_repair_command, execute_session_search_command,
+    execute_session_stats_command, execute_session_status_command, parse_session_diff_args,
+    parse_session_stats_args,
 };
 use tau_startup::{execute_command_file_with_handler, CommandFileAction};
 
@@ -280,24 +282,42 @@ pub(crate) fn handle_command_with_session_import_mode(
     }
 
     if command_name == "/session" {
-        if !command_args.is_empty() {
-            println!("usage: /session");
-            return Ok(CommandAction::Continue);
-        }
-        match session_runtime.as_ref() {
-            Some(runtime) => {
-                println!(
-                    "session: path={} entries={} active_head={}",
-                    runtime.store.path().display(),
-                    runtime.store.entries().len(),
-                    runtime
-                        .active_head
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                );
+        let Some(runtime) = session_runtime.as_ref() else {
+            if command_args.is_empty() {
+                println!("session: disabled");
+            } else {
+                println!("usage: /session");
             }
-            None => println!("session: disabled"),
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_session_status_command(command_args, runtime);
+        println!("{}", outcome.message);
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session-export" {
+        let Some(runtime) = session_runtime.as_ref() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_session_export_command(command_args, runtime)?;
+        println!("{}", outcome.message);
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session-import" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_session_import_command(command_args, runtime, session_import_mode)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
         }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -375,65 +395,6 @@ pub(crate) fn handle_command_with_session_import_mode(
         println!(
             "{}",
             execute_session_graph_export_command(runtime, command_args)
-        );
-        return Ok(CommandAction::Continue);
-    }
-
-    if command_name == "/session-export" {
-        let Some(runtime) = session_runtime.as_ref() else {
-            println!("session is disabled");
-            return Ok(CommandAction::Continue);
-        };
-        if command_args.is_empty() {
-            println!("usage: /session-export <path>");
-            return Ok(CommandAction::Continue);
-        }
-
-        let destination = PathBuf::from(command_args);
-        let exported = runtime
-            .store
-            .export_lineage(runtime.active_head, &destination)?;
-        println!(
-            "session export complete: path={} entries={} head={}",
-            destination.display(),
-            exported,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
-        return Ok(CommandAction::Continue);
-    }
-
-    if command_name == "/session-import" {
-        let Some(runtime) = session_runtime.as_mut() else {
-            println!("session is disabled");
-            return Ok(CommandAction::Continue);
-        };
-        if command_args.is_empty() {
-            println!("usage: /session-import <path>");
-            return Ok(CommandAction::Continue);
-        }
-
-        let source = PathBuf::from(command_args);
-        let report = runtime
-            .store
-            .import_snapshot(&source, session_import_mode)?;
-        runtime.active_head = report.active_head;
-        agent.replace_messages(session_lineage_messages(runtime)?);
-        println!(
-            "session import complete: path={} mode={} imported_entries={} remapped_entries={} remapped_ids={} replaced_entries={} total_entries={} head={}",
-            source.display(),
-            session_import_mode_label(session_import_mode),
-            report.imported_entries,
-            report.remapped_entries,
-            format_remap_ids(&report.remapped_ids),
-            report.replaced_entries,
-            report.resulting_entries,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
         );
         return Ok(CommandAction::Continue);
     }
@@ -612,22 +573,8 @@ pub(crate) fn handle_command_with_session_import_mode(
             return Ok(CommandAction::Continue);
         };
 
-        let tips = runtime.store.branch_tips();
-        if tips.is_empty() {
-            println!("no branches");
-        } else {
-            for tip in tips {
-                println!(
-                    "id={} parent={} text={}",
-                    tip.id,
-                    tip.parent_id
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    summarize_message(&tip.message)
-                );
-            }
-        }
-
+        let outcome = execute_branches_command(command_args, runtime);
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -807,10 +754,6 @@ pub(crate) fn handle_command_with_session_import_mode(
 
     println!("{}", unknown_command_message(parsed.name));
     Ok(CommandAction::Continue)
-}
-
-pub(crate) fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
-    tau_session::session_import_mode_label(mode)
 }
 
 pub(crate) fn render_help_overview() -> String {

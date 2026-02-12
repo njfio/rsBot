@@ -1,6 +1,9 @@
-use anyhow::{anyhow, bail, Result};
+use std::path::PathBuf;
 
-use crate::{format_id_list, SessionImportMode, SessionRuntime};
+use anyhow::{anyhow, bail, Result};
+use tau_ai::Message;
+
+use crate::{format_id_list, format_remap_ids, SessionImportMode, SessionRuntime};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `SessionRuntimeCommandOutcome` used across Tau components.
@@ -133,11 +136,148 @@ pub fn execute_branch_switch_command(
     ))
 }
 
+pub fn execute_session_status_command(
+    command_args: &str,
+    runtime: &SessionRuntime,
+) -> SessionRuntimeCommandOutcome {
+    if !command_args.is_empty() {
+        return SessionRuntimeCommandOutcome::new("usage: /session".to_string(), false);
+    }
+
+    SessionRuntimeCommandOutcome::new(
+        format!(
+            "session: path={} entries={} active_head={}",
+            runtime.store.path().display(),
+            runtime.store.entries().len(),
+            runtime
+                .active_head
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        false,
+    )
+}
+
+pub fn execute_session_export_command(
+    command_args: &str,
+    runtime: &SessionRuntime,
+) -> Result<SessionRuntimeCommandOutcome> {
+    if command_args.is_empty() {
+        return Ok(SessionRuntimeCommandOutcome::new(
+            "usage: /session-export <path>".to_string(),
+            false,
+        ));
+    }
+
+    let destination = PathBuf::from(command_args);
+    let exported = runtime
+        .store
+        .export_lineage(runtime.active_head, &destination)?;
+    Ok(SessionRuntimeCommandOutcome::new(
+        format!(
+            "session export complete: path={} entries={} head={}",
+            destination.display(),
+            exported,
+            runtime
+                .active_head
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        false,
+    ))
+}
+
+pub fn execute_session_import_command(
+    command_args: &str,
+    runtime: &mut SessionRuntime,
+    session_import_mode: SessionImportMode,
+) -> Result<SessionRuntimeCommandOutcome> {
+    if command_args.is_empty() {
+        return Ok(SessionRuntimeCommandOutcome::new(
+            "usage: /session-import <path>".to_string(),
+            false,
+        ));
+    }
+
+    let source = PathBuf::from(command_args);
+    let report = runtime
+        .store
+        .import_snapshot(&source, session_import_mode)?;
+    runtime.active_head = report.active_head;
+    Ok(SessionRuntimeCommandOutcome::new(
+        format!(
+            "session import complete: path={} mode={} imported_entries={} remapped_entries={} remapped_ids={} replaced_entries={} total_entries={} head={}",
+            source.display(),
+            session_import_mode_label(session_import_mode),
+            report.imported_entries,
+            report.remapped_entries,
+            format_remap_ids(&report.remapped_ids),
+            report.replaced_entries,
+            report.resulting_entries,
+            runtime
+                .active_head
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        true,
+    ))
+}
+
+pub fn execute_branches_command(
+    command_args: &str,
+    runtime: &SessionRuntime,
+) -> SessionRuntimeCommandOutcome {
+    if !command_args.is_empty() {
+        return SessionRuntimeCommandOutcome::new("usage: /branches".to_string(), false);
+    }
+
+    let tips = runtime.store.branch_tips();
+    if tips.is_empty() {
+        return SessionRuntimeCommandOutcome::new("no branches".to_string(), false);
+    }
+
+    let lines = tips
+        .iter()
+        .map(|tip| {
+            format!(
+                "id={} parent={} text={}",
+                tip.id,
+                tip.parent_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                summarize_message(&tip.message)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    SessionRuntimeCommandOutcome::new(lines, false)
+}
+
+fn summarize_message(message: &Message) -> String {
+    let text = message.text_content().replace('\n', " ");
+    if text.trim().is_empty() {
+        return format!(
+            "{:?} (tool_calls={})",
+            message.role,
+            message.tool_calls().len()
+        );
+    }
+
+    let max = 60usize;
+    if text.chars().count() <= max {
+        text
+    } else {
+        format!("{}...", text.chars().take(max).collect::<String>())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_branch_switch_command, execute_resume_command, execute_session_compact_command,
-        execute_session_repair_command, session_import_mode_label,
+        execute_branch_switch_command, execute_branches_command, execute_resume_command,
+        execute_session_compact_command, execute_session_export_command,
+        execute_session_import_command, execute_session_repair_command,
+        execute_session_status_command, session_import_mode_label,
     };
     use crate::{SessionImportMode, SessionRuntime, SessionStore};
     use std::{
@@ -153,6 +293,26 @@ mod tests {
     }
 
     impl SessionRuntimeFixture {
+        fn empty() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos();
+            let root = std::env::temp_dir()
+                .join("tau-session-runtime-commands-tests")
+                .join(format!("case-{unique}"));
+            fs::create_dir_all(&root).expect("create fixture root");
+            let session_path = root.join("session.jsonl");
+            let store = SessionStore::load(&session_path).expect("load session store");
+            Self {
+                runtime: SessionRuntime {
+                    store,
+                    active_head: None,
+                },
+                root,
+            }
+        }
+
         fn seeded() -> Self {
             let unique = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -232,6 +392,47 @@ mod tests {
     }
 
     #[test]
+    fn functional_execute_session_export_command_writes_active_lineage_snapshot() {
+        let mut fixture = SessionRuntimeFixture::seeded();
+        let root_id = fixture
+            .runtime
+            .store
+            .entries()
+            .first()
+            .expect("system entry should exist")
+            .id;
+        fixture
+            .runtime
+            .store
+            .append_messages(Some(root_id), &[Message::assistant_text("branch-only")])
+            .expect("append branch-only message");
+
+        let destination = fixture.root.join("snapshot.jsonl");
+        let outcome = execute_session_export_command(
+            destination.to_str().expect("utf8 destination path"),
+            &fixture.runtime,
+        )
+        .expect("export command should succeed");
+        assert!(!outcome.reload_active_head);
+        assert!(outcome.message.starts_with("session export complete:"));
+
+        let exported = SessionStore::load(&destination).expect("load exported snapshot");
+        assert_eq!(exported.entries().len(), 3);
+        assert_eq!(
+            exported.entries()[0].message.text_content(),
+            "system prompt"
+        );
+        assert_eq!(
+            exported.entries()[1].message.text_content(),
+            "first user prompt"
+        );
+        assert_eq!(
+            exported.entries()[2].message.text_content(),
+            "first assistant response"
+        );
+    }
+
+    #[test]
     fn integration_execute_session_compact_command_prunes_diverged_lineage() {
         let mut fixture = SessionRuntimeFixture::with_diverged_branches();
         let branch_tips = fixture.runtime.store.branch_tips();
@@ -254,6 +455,72 @@ mod tests {
     }
 
     #[test]
+    fn integration_execute_session_import_command_updates_head_and_requests_reload() {
+        let mut fixture = SessionRuntimeFixture::seeded();
+        let source = fixture.root.join("import.jsonl");
+
+        let mut source_store = SessionStore::load(&source).expect("load source snapshot");
+        let source_head = source_store
+            .append_messages(None, &[Message::system("import-root")])
+            .expect("append import root");
+        source_store
+            .append_messages(source_head, &[Message::user("import-user")])
+            .expect("append import user");
+
+        let outcome = execute_session_import_command(
+            source.to_str().expect("utf8 source path"),
+            &mut fixture.runtime,
+            SessionImportMode::Merge,
+        )
+        .expect("import should succeed");
+        assert!(outcome.reload_active_head);
+        assert!(outcome.message.contains("session import complete:"));
+        assert!(outcome.message.contains("mode=merge"));
+        assert!(outcome.message.contains("imported_entries=2"));
+        assert_eq!(fixture.runtime.active_head, fixture.runtime.store.head_id());
+        assert_eq!(
+            fixture
+                .runtime
+                .store
+                .lineage_messages(fixture.runtime.active_head)
+                .expect("lineage should resolve")
+                .last()
+                .expect("imported head message should exist")
+                .text_content(),
+            "import-user"
+        );
+    }
+
+    #[test]
+    fn integration_execute_branches_command_lists_branch_tips_and_summarizes_messages() {
+        let mut fixture = SessionRuntimeFixture::with_diverged_branches();
+        let root_id = fixture
+            .runtime
+            .store
+            .entries()
+            .first()
+            .expect("system entry should exist")
+            .id;
+        fixture
+            .runtime
+            .store
+            .append_messages(
+                Some(root_id),
+                &[Message::user(
+                    "line one\nline two to ensure branch summaries normalize whitespace",
+                )],
+            )
+            .expect("append newline message branch");
+
+        let outcome = execute_branches_command("", &fixture.runtime);
+        assert!(!outcome.reload_active_head);
+        assert!(outcome.message.contains("id="));
+        assert!(outcome.message.contains("parent="));
+        assert!(outcome.message.contains("text="));
+        assert!(outcome.message.contains("line one line two"));
+    }
+
+    #[test]
     fn regression_execute_session_repair_command_usage_returns_non_reloading_outcome() {
         let mut fixture = SessionRuntimeFixture::seeded();
         let original_head = fixture.runtime.active_head;
@@ -263,6 +530,48 @@ mod tests {
         assert!(!outcome.reload_active_head);
         assert_eq!(outcome.message, "usage: /session-repair");
         assert_eq!(fixture.runtime.active_head, original_head);
+    }
+
+    #[test]
+    fn regression_execute_session_status_command_usage_and_empty_state() {
+        let fixture = SessionRuntimeFixture::empty();
+        let usage = execute_session_status_command("extra", &fixture.runtime);
+        assert_eq!(usage.message, "usage: /session");
+        assert!(!usage.reload_active_head);
+
+        let status = execute_session_status_command("", &fixture.runtime);
+        assert!(!status.reload_active_head);
+        assert!(status.message.contains("session: path="));
+        assert!(status.message.contains("entries=0"));
+        assert!(status.message.contains("active_head=none"));
+    }
+
+    #[test]
+    fn regression_execute_branches_command_usage_and_empty_session() {
+        let fixture = SessionRuntimeFixture::empty();
+        let usage = execute_branches_command("extra", &fixture.runtime);
+        assert_eq!(usage.message, "usage: /branches");
+        assert!(!usage.reload_active_head);
+
+        let no_branches = execute_branches_command("", &fixture.runtime);
+        assert_eq!(no_branches.message, "no branches");
+        assert!(!no_branches.reload_active_head);
+    }
+
+    #[test]
+    fn regression_execute_session_export_and_import_usage_paths_are_non_reloading() {
+        let mut fixture = SessionRuntimeFixture::seeded();
+
+        let export_usage =
+            execute_session_export_command("", &fixture.runtime).expect("usage should succeed");
+        assert_eq!(export_usage.message, "usage: /session-export <path>");
+        assert!(!export_usage.reload_active_head);
+
+        let import_usage =
+            execute_session_import_command("", &mut fixture.runtime, SessionImportMode::Merge)
+                .expect("usage should succeed");
+        assert_eq!(import_usage.message, "usage: /session-import <path>");
+        assert!(!import_usage.reload_active_head);
     }
 
     #[test]
