@@ -7,6 +7,7 @@ pub mod github_transport_helpers;
 pub mod issue_artifacts_command;
 pub mod issue_auth_command;
 pub mod issue_auth_helpers;
+pub mod issue_chat_command;
 pub mod issue_command_usage;
 pub mod issue_comment;
 pub mod issue_demo_index;

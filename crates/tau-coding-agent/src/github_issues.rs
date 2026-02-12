@@ -54,6 +54,10 @@ use tau_github_issues::issue_auth_helpers::{
     build_issue_auth_summary_line as build_shared_issue_auth_summary_line,
     ensure_auth_json_flag as ensure_shared_auth_json_flag, IssueAuthSummaryKind,
 };
+use tau_github_issues::issue_chat_command::{
+    parse_issue_chat_command as parse_shared_issue_chat_command, IssueChatCommand,
+    IssueChatParseConfig,
+};
 use tau_github_issues::issue_command_usage::{
     demo_index_command_usage as demo_index_shared_command_usage,
     doctor_command_usage as doctor_shared_command_usage,
@@ -5135,74 +5139,7 @@ fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
                 }
             }
         }
-        "chat" => {
-            let mut chat_parts = remainder.splitn(2, char::is_whitespace);
-            let chat_command = chat_parts.next();
-            let chat_remainder = chat_parts.next().unwrap_or_default().trim();
-            match chat_command {
-                Some("start") if chat_remainder.is_empty() => TauIssueCommand::ChatStart,
-                Some("resume") if chat_remainder.is_empty() => TauIssueCommand::ChatResume,
-                Some("reset") if chat_remainder.is_empty() => TauIssueCommand::ChatReset,
-                Some("export") if chat_remainder.is_empty() => TauIssueCommand::ChatExport,
-                Some("status") if chat_remainder.is_empty() => TauIssueCommand::ChatStatus,
-                Some("summary") if chat_remainder.is_empty() => TauIssueCommand::ChatSummary,
-                Some("replay") if chat_remainder.is_empty() => TauIssueCommand::ChatReplay,
-                Some("show") => {
-                    if chat_remainder.is_empty() {
-                        TauIssueCommand::ChatShow {
-                            limit: CHAT_SHOW_DEFAULT_LIMIT,
-                        }
-                    } else {
-                        let mut show_parts = chat_remainder.split_whitespace();
-                        match (show_parts.next(), show_parts.next()) {
-                            (Some(raw), None) => match raw.parse::<usize>() {
-                                Ok(limit) if limit > 0 => TauIssueCommand::ChatShow {
-                                    limit: limit.min(CHAT_SHOW_MAX_LIMIT),
-                                },
-                                _ => TauIssueCommand::Invalid {
-                                    message: "Usage: /tau chat show [limit]".to_string(),
-                                },
-                            },
-                            _ => TauIssueCommand::Invalid {
-                                message: "Usage: /tau chat show [limit]".to_string(),
-                            },
-                        }
-                    }
-                }
-                Some("search") => {
-                    if chat_remainder.is_empty() {
-                        TauIssueCommand::Invalid {
-                            message:
-                                "Usage: /tau chat search <query> [--role <role>] [--limit <n>]"
-                                    .to_string(),
-                        }
-                    } else {
-                        match parse_session_search_args(chat_remainder) {
-                            Ok(args) if args.limit <= CHAT_SEARCH_MAX_LIMIT => {
-                                TauIssueCommand::ChatSearch {
-                                    query: args.query,
-                                    role: args.role,
-                                    limit: args.limit,
-                                }
-                            }
-                            _ => TauIssueCommand::Invalid {
-                                message:
-                                    "Usage: /tau chat search <query> [--role <role>] [--limit <n>]"
-                                        .to_string(),
-                            },
-                        }
-                    }
-                }
-                None => TauIssueCommand::Invalid {
-                    message: "Usage: /tau chat <start|resume|reset|export|status|summary|replay|show [limit]|search <query>>"
-                        .to_string(),
-                },
-                _ => TauIssueCommand::Invalid {
-                    message: "Usage: /tau chat <start|resume|reset|export|status|summary|replay|show [limit]|search <query>>"
-                        .to_string(),
-                },
-            }
-        }
+        "chat" => parse_chat_command(remainder),
         "artifacts" => parse_artifacts_command(remainder),
         "demo-index" => parse_demo_index_command(remainder),
         "canvas" => {
@@ -5256,6 +5193,38 @@ fn parse_issue_auth_command(remainder: &str) -> TauIssueCommand {
         }
     }) {
         Ok(command) => TauIssueCommand::Auth { command },
+        Err(message) => TauIssueCommand::Invalid { message },
+    }
+}
+
+fn parse_chat_command(remainder: &str) -> TauIssueCommand {
+    match parse_shared_issue_chat_command(
+        remainder,
+        IssueChatParseConfig {
+            show_default_limit: CHAT_SHOW_DEFAULT_LIMIT,
+            show_max_limit: CHAT_SHOW_MAX_LIMIT,
+            search_max_limit: CHAT_SEARCH_MAX_LIMIT,
+            usage: chat_command_usage(),
+            show_usage: chat_show_command_usage(),
+            search_usage: chat_search_command_usage(),
+        },
+        |raw| {
+            parse_session_search_args(raw)
+                .map(|args| (args.query, args.role, args.limit))
+                .map_err(|error| error.to_string())
+        },
+    ) {
+        Ok(IssueChatCommand::Start) => TauIssueCommand::ChatStart,
+        Ok(IssueChatCommand::Resume) => TauIssueCommand::ChatResume,
+        Ok(IssueChatCommand::Reset) => TauIssueCommand::ChatReset,
+        Ok(IssueChatCommand::Export) => TauIssueCommand::ChatExport,
+        Ok(IssueChatCommand::Status) => TauIssueCommand::ChatStatus,
+        Ok(IssueChatCommand::Summary) => TauIssueCommand::ChatSummary,
+        Ok(IssueChatCommand::Replay) => TauIssueCommand::ChatReplay,
+        Ok(IssueChatCommand::Show { limit }) => TauIssueCommand::ChatShow { limit },
+        Ok(IssueChatCommand::Search { query, role, limit }) => {
+            TauIssueCommand::ChatSearch { query, role, limit }
+        }
         Err(message) => TauIssueCommand::Invalid { message },
     }
 }
@@ -5319,6 +5288,18 @@ fn tau_command_usage() -> String {
 
 fn artifacts_command_usage() -> &'static str {
     "Usage: /tau artifacts [purge|run <run_id>|show <artifact_id>]"
+}
+
+fn chat_command_usage() -> &'static str {
+    "Usage: /tau chat <start|resume|reset|export|status|summary|replay|show [limit]|search <query>>"
+}
+
+fn chat_show_command_usage() -> &'static str {
+    "Usage: /tau chat show [limit]"
+}
+
+fn chat_search_command_usage() -> &'static str {
+    "Usage: /tau chat search <query> [--role <role>] [--limit <n>]"
 }
 
 fn build_summarize_prompt(
