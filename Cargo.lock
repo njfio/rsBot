@@ -2862,6 +2862,7 @@ dependencies = [
  "tau-extensions",
  "tau-gateway",
  "tau-github-issues",
+ "tau-github-issues-runtime",
  "tau-memory",
  "tau-multi-channel",
  "tau-onboarding",
@@ -2872,6 +2873,7 @@ dependencies = [
  "tau-runtime",
  "tau-session",
  "tau-skills",
+ "tau-slack-runtime",
  "tau-startup",
  "tau-tools",
  "tau-voice",
@@ -3040,6 +3042,29 @@ dependencies = [
 [[package]]
 name = "tau-github-issues-runtime"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "httpmock",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tau-access",
+ "tau-agent-core",
+ "tau-ai",
+ "tau-core",
+ "tau-diagnostics",
+ "tau-github-issues",
+ "tau-ops",
+ "tau-orchestrator",
+ "tau-provider",
+ "tau-runtime",
+ "tau-session",
+ "tau-startup",
+ "tau-tools",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "tau-memory"
@@ -3234,6 +3259,27 @@ dependencies = [
 [[package]]
 name = "tau-slack-runtime"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures-util",
+ "httpmock",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tau-access",
+ "tau-agent-core",
+ "tau-ai",
+ "tau-core",
+ "tau-ops",
+ "tau-runtime",
+ "tau-session",
+ "tau-startup",
+ "tau-tools",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+]
 
 [[package]]
 name = "tau-startup"

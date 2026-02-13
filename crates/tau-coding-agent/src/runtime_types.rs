@@ -7,11 +7,11 @@ pub(crate) use tau_onboarding::startup_config::{
 };
 use tau_session::SessionImportMode;
 pub(crate) use tau_startup::runtime_types::{
-    AuthCommandConfig, DoctorCommandConfig, RenderOptions, SkillsSyncCommandConfig,
+    AuthCommandConfig, RenderOptions, SkillsSyncCommandConfig,
 };
 #[cfg(test)]
 pub(crate) use tau_startup::runtime_types::{
-    DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
+    DoctorCommandConfig, DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
 };
 
 #[derive(Clone, Copy)]

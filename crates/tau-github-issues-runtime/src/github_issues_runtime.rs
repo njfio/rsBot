@@ -148,7 +148,7 @@ const DEMO_INDEX_SCENARIOS: [&str; 4] = [
 ];
 
 #[derive(Clone)]
-pub(crate) struct GithubIssuesBridgeRuntimeConfig {
+pub struct GithubIssuesBridgeRuntimeConfig {
     pub client: Arc<dyn LlmClient>,
     pub model: String,
     pub system_prompt: String,
@@ -704,8 +704,9 @@ impl GithubApiClient {
             let since_value = since.map(ToOwned::to_owned);
             let chunk: Vec<GithubIssue> = self
                 .request_json("list issues", || {
-                    let mut request =
-                        self.http.get(format!("{}/repos/{owner}/{repo}/issues", api_base));
+                    let mut request = self
+                        .http
+                        .get(format!("{}/repos/{owner}/{repo}/issues", api_base));
                     request = request.query(&[
                         ("state", "open"),
                         ("sort", "updated"),
@@ -1196,9 +1197,7 @@ pub(crate) struct PollCycleReport {
     pub failed_events: usize,
 }
 
-pub(crate) async fn run_github_issues_bridge(
-    config: GithubIssuesBridgeRuntimeConfig,
-) -> Result<()> {
+pub async fn run_github_issues_bridge(config: GithubIssuesBridgeRuntimeConfig) -> Result<()> {
     let mut runtime = GithubIssuesBridgeRuntime::new(config).await?;
     runtime.run().await
 }

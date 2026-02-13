@@ -4,6 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tau_ai::{LlmClient, ModelRef};
 use tau_cli::Cli;
+use tau_github_issues_runtime::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
 use tau_onboarding::startup_config::build_auth_command_config;
 use tau_onboarding::startup_transport_modes::{
     build_transport_doctor_config as build_onboarding_transport_doctor_config,
@@ -24,14 +25,13 @@ use tau_onboarding::startup_transport_modes::{
     run_voice_contract_runner_if_requested, TransportRuntimeExecutor,
 };
 use tau_provider::resolve_secret_from_cli_or_store_id;
+use tau_slack_runtime::{run_slack_bridge, SlackBridgeRuntimeConfig};
 
 use crate::channel_adapters::{
     build_multi_channel_command_handlers, build_multi_channel_pairing_evaluator,
 };
 use crate::events::{run_event_scheduler, EventSchedulerConfig};
-use crate::github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
 use crate::runtime_types::RenderOptions;
-use crate::slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
 use crate::tools::ToolPolicy;
 
 struct CodingAgentTransportRuntimeExecutor<'a> {

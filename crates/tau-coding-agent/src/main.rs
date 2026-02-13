@@ -14,7 +14,6 @@ mod custom_command_contract;
 mod dashboard_contract;
 mod deployment_wasm;
 mod events;
-mod github_issues;
 mod macro_profile_commands;
 mod mcp_server;
 mod memory_contract;
@@ -30,7 +29,6 @@ mod rpc_protocol;
 mod runtime_loop;
 mod runtime_output;
 mod runtime_types;
-mod slack;
 mod slack_helpers;
 mod startup_dispatch;
 mod startup_local_runtime;
@@ -41,6 +39,7 @@ mod tool_policy_config;
 mod tools;
 #[cfg(test)]
 mod transport_conformance;
+#[cfg(test)]
 mod transport_health;
 mod voice_contract;
 
@@ -61,10 +60,14 @@ pub(crate) use tau_ai::Provider;
 use tau_ai::{LlmClient, Message, ModelRef};
 pub(crate) use tau_extensions as extension_manifest;
 #[cfg(test)]
+use tau_github_issues_runtime::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
+#[cfg(test)]
 pub(crate) use tau_skills as package_manifest;
 #[cfg(test)]
 pub(crate) use tau_skills as skills;
 pub(crate) use tau_skills as skills_commands;
+#[cfg(test)]
+use tau_slack_runtime::{run_slack_bridge, SlackBridgeRuntimeConfig};
 
 pub(crate) use crate::auth_commands::execute_auth_command;
 #[cfg(test)]
@@ -173,6 +176,7 @@ pub(crate) use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
     InteractiveRuntimeConfig, RuntimeExtensionHooksConfig,
 };
+#[cfg(test)]
 pub(crate) use crate::runtime_loop::{run_prompt_with_cancellation, PromptRunStatus};
 #[cfg(test)]
 pub(crate) use crate::runtime_output::event_to_json;
@@ -180,9 +184,10 @@ pub(crate) use crate::runtime_output::event_to_json;
 pub(crate) use crate::runtime_output::stream_text_chunks;
 #[cfg(test)]
 pub(crate) use crate::runtime_output::{persist_messages, print_assistant_messages};
+#[cfg(test)]
+pub(crate) use crate::runtime_types::RenderOptions;
 pub(crate) use crate::runtime_types::{
-    AuthCommandConfig, CommandExecutionContext, ProfileDefaults, RenderOptions,
-    SkillsSyncCommandConfig,
+    AuthCommandConfig, CommandExecutionContext, ProfileDefaults, SkillsSyncCommandConfig,
 };
 #[cfg(test)]
 pub(crate) use crate::runtime_types::{
@@ -232,22 +237,23 @@ pub(crate) use crate::tool_policy_config::build_tool_policy;
 pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
 #[cfg(test)]
 pub(crate) use crate::tool_policy_config::tool_policy_to_json;
+#[cfg(test)]
 pub(crate) use crate::transport_health::TransportHealthSnapshot;
-#[cfg(test)]
-use github_issues::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
-#[cfg(test)]
-use slack::{run_slack_bridge, SlackBridgeRuntimeConfig};
 pub(crate) use tau_access::approvals::{
     evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
 };
+#[cfg(test)]
 pub(crate) use tau_access::pairing::{
-    evaluate_pairing_access, execute_pair_command, execute_unpair_command,
-    pairing_policy_for_state_dir, PairingDecision,
+    evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision,
+};
+pub(crate) use tau_access::pairing::{execute_pair_command, execute_unpair_command};
+#[cfg(test)]
+pub(crate) use tau_access::rbac::{
+    authorize_action_for_principal_with_policy_path, github_principal,
+    rbac_policy_path_for_state_dir, slack_principal,
 };
 pub(crate) use tau_access::rbac::{
-    authorize_action_for_principal_with_policy_path, authorize_command_for_principal,
-    execute_rbac_command, github_principal, rbac_policy_path_for_state_dir,
-    resolve_local_principal, slack_principal, RbacDecision,
+    authorize_command_for_principal, execute_rbac_command, resolve_local_principal, RbacDecision,
 };
 #[cfg(test)]
 pub(crate) use tau_access::trust_roots::{
@@ -303,7 +309,9 @@ pub(crate) use tau_cli::{CliMultiChannelOutboundMode, CliWebhookSignatureAlgorit
 pub(crate) use tau_cli::{CommandFileEntry, CommandFileReport};
 #[cfg(test)]
 pub(crate) use tau_core::current_unix_timestamp;
+#[cfg(test)]
 pub(crate) use tau_core::current_unix_timestamp_ms;
+#[cfg(test)]
 pub(crate) use tau_core::write_text_atomic;
 #[cfg(test)]
 pub(crate) use tau_diagnostics::build_doctor_command_config;
@@ -421,6 +429,7 @@ pub(crate) use tau_session::{
 };
 pub(crate) use tau_session::{execute_branch_alias_command, execute_session_bookmark_command};
 pub(crate) use tau_session::{session_lineage_messages, SessionRuntime};
+#[cfg(test)]
 pub(crate) use tau_session::{session_message_preview, session_message_role};
 #[cfg(test)]
 pub(crate) use tau_startup::command_file_error_mode_label;

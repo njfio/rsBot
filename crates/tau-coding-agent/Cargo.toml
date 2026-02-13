@@ -35,10 +35,12 @@ tau-release-channel = { path = "../tau-release-channel" }
 tau-ops = { path = "../tau-ops" }
 tau-memory = { path = "../tau-memory" }
 tau-github-issues = { path = "../tau-github-issues" }
+tau-github-issues-runtime = { path = "../tau-github-issues-runtime" }
 tau-dashboard = { path = "../tau-dashboard" }
 tau-custom-command = { path = "../tau-custom-command" }
 tau-browser-automation = { path = "../tau-browser-automation" }
 tau-voice = { path = "../tau-voice" }
+tau-slack-runtime = { path = "../tau-slack-runtime" }
 tau-tools = { path = "../tau-tools" }
 tau-onboarding = { path = "../tau-onboarding" }
 tau-agent-core = { path = "../tau-agent-core" }
