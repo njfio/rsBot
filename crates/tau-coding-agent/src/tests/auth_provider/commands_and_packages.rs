@@ -1,4 +1,3 @@
-use super::make_script_executable;
 use super::super::{
     branch_alias_path_for_session, build_multi_channel_incident_timeline_report,
     build_multi_channel_route_inspect_report, command_file_error_mode_label,
@@ -18,21 +17,21 @@ use super::super::{
     execute_skills_trust_rotate_command, execute_skills_verify_command, format_id_list,
     format_remap_ids, handle_command, handle_command_with_session_import_mode, load_branch_aliases,
     load_macro_file, load_profile_store, load_session_bookmarks, load_trust_root_records,
-    parse_branch_alias_command, parse_command_file, parse_macro_command,
-    parse_profile_command, parse_session_bookmark_command, parse_skills_lock_diff_args,
-    parse_skills_prune_args, parse_skills_search_args, parse_skills_trust_list_args,
-    parse_skills_trust_mutation_args, parse_skills_verify_args, render_command_help,
-    render_help_overview, render_macro_list, render_macro_show, render_profile_diffs,
-    render_profile_list, render_profile_show, render_skills_list, render_skills_lock_diff_drift,
-    render_skills_lock_diff_in_sync, render_skills_lock_write_success, render_skills_search,
-    render_skills_show, render_skills_sync_drift_details, render_skills_trust_list,
-    render_skills_verify_report, resolve_prompt_input, resolve_prunable_skill_file_name,
-    resolve_secret_from_cli_or_store_id, resolve_skills_lock_path, save_branch_aliases,
-    save_macro_file, save_profile_store, save_session_bookmarks, session_bookmark_path_for_session,
-    session_lineage_messages, set_workspace_tau_paths, skills_command_config, tempdir,
-    test_auth_command_config, test_cli, test_command_context, test_profile_defaults,
-    test_tool_policy_json, trust_record_status, unknown_command_message,
-    validate_branch_alias_name, validate_custom_command_contract_runner_cli, validate_daemon_cli,
+    parse_branch_alias_command, parse_command_file, parse_macro_command, parse_profile_command,
+    parse_session_bookmark_command, parse_skills_lock_diff_args, parse_skills_prune_args,
+    parse_skills_search_args, parse_skills_trust_list_args, parse_skills_trust_mutation_args,
+    parse_skills_verify_args, render_command_help, render_help_overview, render_macro_list,
+    render_macro_show, render_profile_diffs, render_profile_list, render_profile_show,
+    render_skills_list, render_skills_lock_diff_drift, render_skills_lock_diff_in_sync,
+    render_skills_lock_write_success, render_skills_search, render_skills_show,
+    render_skills_sync_drift_details, render_skills_trust_list, render_skills_verify_report,
+    resolve_prompt_input, resolve_prunable_skill_file_name, resolve_secret_from_cli_or_store_id,
+    resolve_skills_lock_path, save_branch_aliases, save_macro_file, save_profile_store,
+    save_session_bookmarks, session_bookmark_path_for_session, session_lineage_messages,
+    set_workspace_tau_paths, skills_command_config, tempdir, test_auth_command_config, test_cli,
+    test_command_context, test_profile_defaults, test_tool_policy_json, trust_record_status,
+    unknown_command_message, validate_branch_alias_name,
+    validate_custom_command_contract_runner_cli, validate_daemon_cli,
     validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
     validate_deployment_wasm_inspect_cli, validate_deployment_wasm_package_cli,
     validate_event_webhook_ingest_cli, validate_events_runner_cli,
@@ -60,6 +59,7 @@ use super::super::{
     SESSION_BOOKMARK_USAGE, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE,
     SKILLS_VERIFY_USAGE,
 };
+use super::make_script_executable;
 
 #[test]
 fn unit_default_macro_config_path_uses_project_local_file_location() {
