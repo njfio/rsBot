@@ -4,7 +4,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -66,6 +66,9 @@ pub struct AgentConfig {
     pub model_output_cost_per_million: Option<f64>,
     pub cost_budget_usd: Option<f64>,
     pub cost_alert_thresholds_percent: Vec<u8>,
+    pub async_event_queue_capacity: usize,
+    pub async_event_handler_timeout_ms: Option<u64>,
+    pub async_event_block_on_full: bool,
 }
 
 impl Default for AgentConfig {
@@ -101,6 +104,9 @@ impl Default for AgentConfig {
             model_output_cost_per_million: None,
             cost_budget_usd: None,
             cost_alert_thresholds_percent: vec![80, 100],
+            async_event_queue_capacity: 128,
+            async_event_handler_timeout_ms: Some(5_000),
+            async_event_block_on_full: false,
         }
     }
 }
@@ -114,6 +120,37 @@ pub struct AgentCostSnapshot {
     pub estimated_cost_usd: f64,
     pub budget_usd: Option<f64>,
     pub budget_utilization: Option<f64>,
+}
+
+/// Public struct `AsyncEventDispatchMetrics` used across Tau components.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AsyncEventDispatchMetrics {
+    pub enqueued: u64,
+    pub dropped_full: u64,
+    pub completed: u64,
+    pub timed_out: u64,
+    pub panicked: u64,
+}
+
+#[derive(Default)]
+struct AsyncEventDispatchMetricsInner {
+    enqueued: AtomicU64,
+    dropped_full: AtomicU64,
+    completed: AtomicU64,
+    timed_out: AtomicU64,
+    panicked: AtomicU64,
+}
+
+impl AsyncEventDispatchMetricsInner {
+    fn snapshot(&self) -> AsyncEventDispatchMetrics {
+        AsyncEventDispatchMetrics {
+            enqueued: self.enqueued.load(Ordering::Relaxed),
+            dropped_full: self.dropped_full.load(Ordering::Relaxed),
+            completed: self.completed.load(Ordering::Relaxed),
+            timed_out: self.timed_out.load(Ordering::Relaxed),
+            panicked: self.panicked.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Cooperative cancellation token shared across runtime components.
@@ -386,6 +423,9 @@ impl AgentDirectMessagePolicy {
 }
 
 type EventHandler = Arc<dyn Fn(&AgentEvent) + Send + Sync>;
+type AsyncEventHandlerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+type AsyncEventHandler = Arc<dyn Fn(AgentEvent) -> AsyncEventHandlerFuture + Send + Sync>;
+type AsyncEventSender = std::sync::mpsc::SyncSender<AgentEvent>;
 const CONTEXT_SUMMARY_PREFIX: &str = "[Tau context summary]";
 const CONTEXT_SUMMARY_MAX_CHARS: usize = 1_200;
 const CONTEXT_SUMMARY_SNIPPET_MAX_CHARS: usize = 160;
@@ -467,6 +507,8 @@ pub struct Agent {
     tool_result_cache: HashMap<String, ToolExecutionResult>,
     tool_result_cache_order: VecDeque<String>,
     handlers: Vec<EventHandler>,
+    async_handlers: Vec<AsyncEventSender>,
+    async_event_metrics: Arc<AsyncEventDispatchMetricsInner>,
     cancellation_token: Option<CooperativeCancellationToken>,
     cumulative_usage: ChatUsage,
     cumulative_cost_usd: f64,
@@ -493,6 +535,8 @@ impl Agent {
             tool_result_cache: HashMap::new(),
             tool_result_cache_order: VecDeque::new(),
             handlers: Vec::new(),
+            async_handlers: Vec::new(),
+            async_event_metrics: Arc::new(AsyncEventDispatchMetricsInner::default()),
             cancellation_token: None,
             cumulative_usage: ChatUsage::default(),
             cumulative_cost_usd: 0.0,
@@ -506,6 +550,30 @@ impl Agent {
         F: Fn(&AgentEvent) + Send + Sync + 'static,
     {
         self.handlers.push(Arc::new(handler));
+    }
+
+    /// Adds an asynchronous event subscriber that runs in an isolated worker.
+    ///
+    /// Async handlers are dispatched through a bounded queue to provide backpressure.
+    /// Panics and timeouts are isolated and reflected in [`Agent::async_event_metrics`].
+    pub fn subscribe_async<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(AgentEvent) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let queue_capacity = self.config.async_event_queue_capacity.max(1);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(queue_capacity);
+        let timeout = timeout_duration_from_ms(self.config.async_event_handler_timeout_ms);
+        let metrics = Arc::clone(&self.async_event_metrics);
+        let boxed_handler: AsyncEventHandler =
+            Arc::new(move |event: AgentEvent| Box::pin(handler(event)));
+        spawn_async_event_handler_worker(receiver, boxed_handler, timeout, metrics);
+        self.async_handlers.push(sender);
+    }
+
+    /// Returns aggregate async event dispatch metrics for this agent instance.
+    pub fn async_event_metrics(&self) -> AsyncEventDispatchMetrics {
+        self.async_event_metrics.snapshot()
     }
 
     /// Registers a tool exposed to the language model.
@@ -867,6 +935,37 @@ impl Agent {
     fn emit(&self, event: AgentEvent) {
         for handler in &self.handlers {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&event)));
+        }
+        for sender in &self.async_handlers {
+            if self.config.async_event_block_on_full {
+                match sender.send(event.clone()) {
+                    Ok(()) => {
+                        self.async_event_metrics
+                            .enqueued
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(_) => {
+                        self.async_event_metrics
+                            .dropped_full
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                continue;
+            }
+
+            match sender.try_send(event.clone()) {
+                Ok(()) => {
+                    self.async_event_metrics
+                        .enqueued
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                Err(std::sync::mpsc::TrySendError::Full(_))
+                | Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    self.async_event_metrics
+                        .dropped_full
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
         }
     }
 
@@ -2053,6 +2152,55 @@ async fn sleep_with_cancellation(
     }
 }
 
+fn spawn_async_event_handler_worker(
+    receiver: std::sync::mpsc::Receiver<AgentEvent>,
+    handler: AsyncEventHandler,
+    timeout: Option<Duration>,
+    metrics: Arc<AsyncEventDispatchMetricsInner>,
+) {
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(_) => return,
+        };
+
+        while let Ok(event) = receiver.recv() {
+            let handler = Arc::clone(&handler);
+            let metrics = Arc::clone(&metrics);
+            runtime.block_on(async move {
+                let mut task = tokio::spawn(async move { (handler)(event).await });
+                if let Some(timeout) = timeout {
+                    match tokio::time::timeout(timeout, &mut task).await {
+                        Ok(Ok(())) => {
+                            metrics.completed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(Err(_)) => {
+                            metrics.panicked.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(_) => {
+                            task.abort();
+                            let _ = task.await;
+                            metrics.timed_out.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                } else {
+                    match task.await {
+                        Ok(()) => {
+                            metrics.completed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(_) => {
+                            metrics.panicked.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+        }
+    });
+}
+
 fn cache_insert_with_limit<T: Clone>(
     cache: &mut HashMap<String, T>,
     order: &mut VecDeque<String>,
@@ -2197,9 +2345,9 @@ mod tests {
         estimate_usage_cost_usd, extract_json_payload, normalize_cost_alert_thresholds,
         retrieve_memory_matches, stream_retry_buffer_on_delta, truncate_chars, Agent, AgentConfig,
         AgentDirectMessageError, AgentDirectMessagePolicy, AgentError, AgentEvent, AgentTool,
-        CooperativeCancellationToken, StreamingRetryBufferState, ToolExecutionResult,
-        CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX, DIRECT_MESSAGE_PREFIX,
-        MEMORY_RECALL_PREFIX,
+        AsyncEventDispatchMetrics, CooperativeCancellationToken, StreamingRetryBufferState,
+        ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX,
+        DIRECT_MESSAGE_PREFIX, MEMORY_RECALL_PREFIX,
     };
 
     struct MockClient {
@@ -2619,6 +2767,9 @@ mod tests {
         assert_eq!(config.model_output_cost_per_million, None);
         assert_eq!(config.cost_budget_usd, None);
         assert_eq!(config.cost_alert_thresholds_percent, vec![80, 100]);
+        assert_eq!(config.async_event_queue_capacity, 128);
+        assert_eq!(config.async_event_handler_timeout_ms, Some(5_000));
+        assert!(!config.async_event_block_on_full);
     }
 
     #[test]
@@ -3345,6 +3496,111 @@ mod tests {
 
         agent.emit(AgentEvent::AgentStart);
         assert_eq!(observed.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unit_async_event_metrics_default_to_zero() {
+        let agent = Agent::new(Arc::new(EchoClient), AgentConfig::default());
+        assert_eq!(
+            agent.async_event_metrics(),
+            AsyncEventDispatchMetrics::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn functional_async_subscriber_receives_events_and_records_metrics() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("ok"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(client, AgentConfig::default());
+        let observed = Arc::new(AtomicUsize::new(0));
+        let observed_clone = observed.clone();
+        agent.subscribe_async(move |_event| {
+            let observed_clone = observed_clone.clone();
+            async move {
+                observed_clone.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        let _ = agent.prompt("hello").await.expect("prompt should succeed");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+        while tokio::time::Instant::now() < deadline {
+            let metrics = agent.async_event_metrics();
+            if observed.load(Ordering::Relaxed) > 0 && metrics.completed > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            observed.load(Ordering::Relaxed) > 0,
+            "async handler should observe at least one event"
+        );
+        let metrics = agent.async_event_metrics();
+        assert!(metrics.enqueued > 0);
+        assert!(metrics.completed > 0);
+        assert_eq!(metrics.dropped_full, 0);
+    }
+
+    #[tokio::test]
+    async fn integration_async_subscriber_backpressure_drops_when_queue_is_full() {
+        let mut agent = Agent::new(
+            Arc::new(EchoClient),
+            AgentConfig {
+                async_event_queue_capacity: 1,
+                async_event_block_on_full: false,
+                async_event_handler_timeout_ms: None,
+                ..AgentConfig::default()
+            },
+        );
+        agent.subscribe_async(|_event| async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+        });
+
+        for _ in 0..20 {
+            agent.emit(AgentEvent::AgentStart);
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let metrics = agent.async_event_metrics();
+        assert!(metrics.enqueued >= 1);
+        assert!(metrics.dropped_full > 0);
+    }
+
+    #[tokio::test]
+    async fn regression_async_subscriber_timeout_and_panic_are_isolated() {
+        let client = Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+                message: Message::assistant_text("ok"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            }])),
+        });
+        let mut agent = Agent::new(
+            client,
+            AgentConfig {
+                async_event_queue_capacity: 16,
+                async_event_handler_timeout_ms: Some(20),
+                ..AgentConfig::default()
+            },
+        );
+        agent.subscribe_async(|_event| async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        agent.subscribe_async(|_event| async move {
+            panic!("forced async handler panic");
+        });
+
+        let _ = agent
+            .prompt("trigger async handlers")
+            .await
+            .expect("prompt should remain healthy");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let metrics = agent.async_event_metrics();
+        assert!(metrics.timed_out > 0);
+        assert!(metrics.panicked > 0);
     }
 
     #[tokio::test]
