@@ -58,6 +58,9 @@ pub struct AgentConfig {
     pub memory_embedding_dimensions: usize,
     pub memory_min_similarity: f32,
     pub memory_max_chars_per_item: usize,
+    pub memory_embedding_model: Option<String>,
+    pub memory_embedding_api_base: Option<String>,
+    pub memory_embedding_api_key: Option<String>,
     pub response_cache_enabled: bool,
     pub response_cache_max_entries: usize,
     pub tool_result_cache_enabled: bool,
@@ -96,6 +99,9 @@ impl Default for AgentConfig {
             memory_embedding_dimensions: 128,
             memory_min_similarity: 0.55,
             memory_max_chars_per_item: 180,
+            memory_embedding_model: None,
+            memory_embedding_api_base: None,
+            memory_embedding_api_key: None,
             response_cache_enabled: true,
             response_cache_max_entries: 128,
             tool_result_cache_enabled: true,
@@ -1213,7 +1219,7 @@ impl Agent {
             let tools = self.tool_definitions();
             let request = ChatRequest {
                 model: self.config.model.clone(),
-                messages: self.request_messages(),
+                messages: self.request_messages().await,
                 tool_choice: if tools.is_empty() {
                     None
                 } else {
@@ -1305,7 +1311,7 @@ impl Agent {
         Err(AgentError::MaxTurnsExceeded(self.config.max_turns))
     }
 
-    fn request_messages(&self) -> Vec<Message> {
+    async fn request_messages(&self) -> Vec<Message> {
         let Some(limit) = self.config.max_context_messages else {
             return self.messages.clone();
         };
@@ -1313,7 +1319,7 @@ impl Agent {
         if self.config.memory_retrieval_limit == 0 || self.messages.len() <= limit {
             return messages;
         }
-        let Some(recall) = self.build_memory_recall_message(limit) else {
+        let Some(recall) = self.build_memory_recall_message(limit).await else {
             return messages;
         };
         let insert_at = messages
@@ -1334,7 +1340,7 @@ impl Agent {
         self.messages = bounded_messages(&self.messages, limit);
     }
 
-    fn build_memory_recall_message(&self, context_limit: usize) -> Option<String> {
+    async fn build_memory_recall_message(&self, context_limit: usize) -> Option<String> {
         let query = self
             .messages
             .iter()
@@ -1354,7 +1360,9 @@ impl Agent {
             self.config.memory_retrieval_limit,
             self.config.memory_embedding_dimensions,
             self.config.memory_min_similarity,
-        );
+            &self.config,
+        )
+        .await;
         if recalled.is_empty() {
             return None;
         }
@@ -1915,48 +1923,198 @@ fn assistant_text_suggests_failure(text: &str) -> bool {
         .any(|phrase| normalized.contains(phrase))
 }
 
-fn retrieve_memory_matches(
+#[derive(Debug, Clone)]
+struct MemoryEmbeddingApiConfig {
+    model: String,
+    api_base: String,
+    api_key: String,
+}
+
+async fn retrieve_memory_matches(
     history: &[Message],
     query: &str,
     limit: usize,
     dimensions: usize,
     min_similarity: f32,
+    config: &AgentConfig,
 ) -> Vec<MemoryRecallMatch> {
     if limit == 0 {
         return Vec::new();
     }
-    let query_embedding = embed_text_vector(query, dimensions);
-    if query_embedding.iter().all(|component| *component == 0.0) {
-        return Vec::new();
-    }
-
-    let mut matches = history
+    let candidates = history
         .iter()
         .filter_map(|message| match message.role {
             MessageRole::User | MessageRole::Assistant => {
                 let text = message.text_content();
                 if text.trim().is_empty() {
-                    return None;
-                }
-                let candidate_embedding = embed_text_vector(&text, dimensions);
-                let score = cosine_similarity(&query_embedding, &candidate_embedding);
-                if score >= min_similarity {
-                    Some(MemoryRecallMatch {
-                        score,
-                        role: message.role,
-                        text,
-                    })
-                } else {
                     None
+                } else {
+                    Some((message.role, text))
                 }
             }
             MessageRole::Tool | MessageRole::System => None,
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let api_embeddings = if let Some(api_config) = resolve_memory_embedding_api_config(config) {
+        let mut inputs = Vec::with_capacity(candidates.len().saturating_add(1));
+        inputs.push(query.to_string());
+        inputs.extend(candidates.iter().map(|(_, text)| text.clone()));
+        match embed_text_vectors_via_api(&inputs, dimensions, &api_config).await {
+            Ok(vectors) if vectors.len() == inputs.len() => Some(vectors),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    let (query_embedding, candidate_embeddings) = if let Some(vectors) = api_embeddings {
+        let query_embedding = vectors.first().cloned().unwrap_or_default();
+        let candidate_embeddings = vectors.into_iter().skip(1).collect::<Vec<_>>();
+        (query_embedding, candidate_embeddings)
+    } else {
+        let query_embedding = embed_text_vector(query, dimensions);
+        let candidate_embeddings = candidates
+            .iter()
+            .map(|(_, text)| embed_text_vector(text, dimensions))
+            .collect::<Vec<_>>();
+        (query_embedding, candidate_embeddings)
+    };
+    if query_embedding.iter().all(|component| *component == 0.0) {
+        return Vec::new();
+    }
+
+    let mut matches = candidates
+        .into_iter()
+        .zip(candidate_embeddings.into_iter())
+        .filter_map(|((role, text), candidate_embedding)| {
+            let score = cosine_similarity(&query_embedding, &candidate_embedding);
+            if score >= min_similarity {
+                Some(MemoryRecallMatch { score, role, text })
+            } else {
+                None
+            }
         })
         .collect::<Vec<_>>();
 
     matches.sort_by(|left, right| right.score.total_cmp(&left.score));
     matches.truncate(limit);
     matches
+}
+
+fn resolve_memory_embedding_api_config(config: &AgentConfig) -> Option<MemoryEmbeddingApiConfig> {
+    let model = config.memory_embedding_model.as_deref()?.trim();
+    let api_key = config.memory_embedding_api_key.as_deref()?.trim();
+    if model.is_empty() || api_key.is_empty() {
+        return None;
+    }
+    let api_base = config
+        .memory_embedding_api_base
+        .as_deref()
+        .unwrap_or("https://api.openai.com/v1")
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    if api_base.is_empty() {
+        return None;
+    }
+    Some(MemoryEmbeddingApiConfig {
+        model: model.to_string(),
+        api_base,
+        api_key: api_key.to_string(),
+    })
+}
+
+async fn embed_text_vectors_via_api(
+    inputs: &[String],
+    dimensions: usize,
+    config: &MemoryEmbeddingApiConfig,
+) -> Result<Vec<Vec<f32>>, String> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{}/embeddings", config.api_base))
+        .bearer_auth(config.api_key.as_str())
+        .json(&json!({
+            "model": config.model,
+            "input": inputs,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("embedding request failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "embedding request failed with status {}: {}",
+            status.as_u16(),
+            truncate_chars(&body, 240)
+        ));
+    }
+
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("failed to parse embedding response json: {error}"))?;
+    let data = payload
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "embedding response missing data array".to_string())?;
+    if data.len() != inputs.len() {
+        return Err(format!(
+            "embedding response size mismatch: expected {}, got {}",
+            inputs.len(),
+            data.len()
+        ));
+    }
+
+    let mut vectors = Vec::with_capacity(data.len());
+    for item in data {
+        let raw_embedding = item
+            .get("embedding")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "embedding item missing embedding array".to_string())?;
+        let parsed = raw_embedding
+            .iter()
+            .map(|component| {
+                component
+                    .as_f64()
+                    .map(|value| value as f32)
+                    .ok_or_else(|| "embedding component must be numeric".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        vectors.push(resize_and_normalize_embedding(&parsed, dimensions));
+    }
+
+    Ok(vectors)
+}
+
+fn resize_and_normalize_embedding(values: &[f32], dimensions: usize) -> Vec<f32> {
+    let dimensions = dimensions.max(1);
+    let mut resized = vec![0.0f32; dimensions];
+    for (index, value) in values.iter().enumerate() {
+        let bucket = index % dimensions;
+        resized[bucket] += *value;
+    }
+
+    let magnitude = resized
+        .iter()
+        .map(|component| component * component)
+        .sum::<f32>()
+        .sqrt();
+    if magnitude > 0.0 {
+        for component in &mut resized {
+            *component /= magnitude;
+        }
+    }
+    resized
 }
 
 fn embed_text_vector(text: &str, dimensions: usize) -> Vec<f32> {
@@ -2345,6 +2503,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
+    use httpmock::prelude::*;
     use tau_ai::{
         ChatRequest, ChatResponse, ChatUsage, ContentBlock, Message, MessageRole, ToolChoice,
         ToolDefinition,
@@ -2771,6 +2930,9 @@ mod tests {
         assert_eq!(config.memory_embedding_dimensions, 128);
         assert_eq!(config.memory_min_similarity, 0.55);
         assert_eq!(config.memory_max_chars_per_item, 180);
+        assert_eq!(config.memory_embedding_model, None);
+        assert_eq!(config.memory_embedding_api_base, None);
+        assert_eq!(config.memory_embedding_api_key, None);
         assert!(config.response_cache_enabled);
         assert_eq!(config.response_cache_max_entries, 128);
         assert!(config.tool_result_cache_enabled);
@@ -4401,13 +4563,21 @@ mod tests {
         assert!(!assistant_text_suggests_failure("Completed successfully."));
     }
 
-    #[test]
-    fn unit_vector_retrieval_prefers_semantically_related_entries() {
+    #[tokio::test]
+    async fn unit_vector_retrieval_prefers_semantically_related_entries() {
         let history = vec![
             Message::user("rust tokio async runtime troubleshooting"),
             Message::assistant_text("pasta recipe with basil and tomato"),
         ];
-        let matches = retrieve_memory_matches(&history, "tokio runtime async rust", 1, 64, 0.0);
+        let matches = retrieve_memory_matches(
+            &history,
+            "tokio runtime async rust",
+            1,
+            64,
+            0.0,
+            &AgentConfig::default(),
+        )
+        .await;
         assert_eq!(matches.len(), 1);
         assert!(matches[0].text.contains("tokio"));
 
@@ -4425,6 +4595,79 @@ mod tests {
             .map(|(left, right)| left * right)
             .sum::<f32>();
         assert!(related_score > unrelated_score);
+    }
+
+    #[tokio::test]
+    async fn integration_memory_retrieval_uses_embedding_api_when_configured() {
+        let server = MockServer::start();
+        let embedding_mock = server.mock(|when, then| {
+            when.method(POST).path("/embeddings");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"{
+  "data": [
+    { "embedding": [1.0, 0.0, 0.0] },
+    { "embedding": [0.95, 0.05, 0.0] },
+    { "embedding": [0.0, 1.0, 0.0] }
+  ]
+}"#,
+                );
+        });
+
+        let history = vec![
+            Message::assistant_text("retry strategy for postgres in payments service"),
+            Message::assistant_text("fresh tomato pasta recipe"),
+        ];
+        let config = AgentConfig {
+            memory_embedding_dimensions: 3,
+            memory_embedding_model: Some("text-embedding-3-small".to_string()),
+            memory_embedding_api_base: Some(server.url("")),
+            memory_embedding_api_key: Some("test-key".to_string()),
+            ..AgentConfig::default()
+        };
+
+        let matches = retrieve_memory_matches(
+            &history,
+            "payments postgres retry policy",
+            1,
+            3,
+            0.2,
+            &config,
+        )
+        .await;
+
+        embedding_mock.assert();
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].text.contains("payments"));
+        assert!(matches[0].text.contains("postgres"));
+    }
+
+    #[tokio::test]
+    async fn regression_memory_retrieval_falls_back_to_hash_when_embedding_api_fails() {
+        let server = MockServer::start();
+        let embedding_mock = server.mock(|when, then| {
+            when.method(POST).path("/embeddings");
+            then.status(500);
+        });
+
+        let history = vec![
+            Message::assistant_text("tokio runtime troubleshooting checklist"),
+            Message::assistant_text("basil and tomato pasta"),
+        ];
+        let config = AgentConfig {
+            memory_embedding_dimensions: 64,
+            memory_embedding_model: Some("text-embedding-3-small".to_string()),
+            memory_embedding_api_base: Some(server.url("")),
+            memory_embedding_api_key: Some("test-key".to_string()),
+            ..AgentConfig::default()
+        };
+
+        let matches = retrieve_memory_matches(&history, "tokio runtime", 1, 64, 0.0, &config).await;
+
+        embedding_mock.assert();
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].text.contains("tokio"));
     }
 
     #[test]
