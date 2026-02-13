@@ -1,5 +1,6 @@
 use super::*;
 
+/// Covers baseline parsing and filtering helpers for issue event ingestion.
 #[test]
 fn unit_normalize_artifact_retention_days_maps_zero_to_none() {
     assert_eq!(normalize_shared_artifact_retention_days(0), None);

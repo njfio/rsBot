@@ -6,6 +6,7 @@ use tau_session::SessionStore;
 
 use crate::SessionRuntime;
 
+/// Loads or initializes issue chat session state and primes agent history.
 pub(super) fn initialize_issue_session_runtime(
     session_path: &Path,
     system_prompt: &str,

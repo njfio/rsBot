@@ -89,6 +89,7 @@ pub(super) struct GithubIssuesBridgeStateStore {
 }
 
 impl GithubIssuesBridgeStateStore {
+    /// Loads persisted bridge state and rebuilds in-memory de-duplication indexes.
     pub(super) fn load(path: PathBuf, cap: usize) -> Result<Self> {
         let mut state = if path.exists() {
             let raw = std::fs::read_to_string(&path)

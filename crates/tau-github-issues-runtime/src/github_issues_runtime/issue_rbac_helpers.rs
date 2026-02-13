@@ -1,5 +1,6 @@
 use super::{EventAction, TauIssueAuthCommandKind, TauIssueCommand};
 
+/// Maps parsed issue events to RBAC action identifiers used by policy checks.
 pub(super) fn rbac_action_for_event(action: &EventAction) -> String {
     match action {
         EventAction::RunPrompt { .. } => "command:/tau-run".to_string(),

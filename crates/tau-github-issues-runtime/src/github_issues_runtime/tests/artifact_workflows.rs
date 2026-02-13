@@ -1,5 +1,6 @@
 use super::*;
 
+/// Confirms artifact listing and retrieval behavior across run and TTL states.
 #[tokio::test]
 async fn functional_render_issue_artifacts_filters_by_run_id() {
     let server = MockServer::start();

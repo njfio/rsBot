@@ -1,5 +1,6 @@
 use super::*;
 
+/// Exercises polling retry and replay-safe comment update behavior.
 #[tokio::test]
 async fn integration_github_api_client_retries_rate_limits() {
     let server = MockServer::start();
