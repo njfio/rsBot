@@ -891,11 +891,15 @@ where
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
         Err(_) => {
-            let runtime = tokio::runtime::Builder::new_current_thread()
+            match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("failed to create temporary tokio runtime for mcp tool execution");
-            runtime.block_on(future)
+            {
+                Ok(runtime) => runtime.block_on(future),
+                Err(error) => ToolExecutionResult::error(json!({
+                    "error": format!("failed to create temporary tokio runtime for mcp tool execution: {error}")
+                })),
+            }
         }
     }
 }

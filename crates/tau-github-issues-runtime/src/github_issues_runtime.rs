@@ -697,23 +697,26 @@ impl GithubApiClient {
         let mut page = 1_u32;
         let mut rows = Vec::new();
         loop {
-            let mut request = self.http.get(format!(
-                "{}/repos/{}/{}/issues",
-                self.api_base, self.repo.owner, self.repo.name
-            ));
-            request = request.query(&[
-                ("state", "open"),
-                ("sort", "updated"),
-                ("direction", "asc"),
-                ("per_page", "100"),
-                ("page", &page.to_string()),
-            ]);
-            if let Some(since_value) = since {
-                request = request.query(&[("since", since_value)]);
-            }
+            let api_base = self.api_base.clone();
+            let owner = self.repo.owner.clone();
+            let repo = self.repo.name.clone();
+            let page_value = page.to_string();
+            let since_value = since.map(ToOwned::to_owned);
             let chunk: Vec<GithubIssue> = self
                 .request_json("list issues", || {
-                    request.try_clone().expect("cloned request")
+                    let mut request =
+                        self.http.get(format!("{}/repos/{owner}/{repo}/issues", api_base));
+                    request = request.query(&[
+                        ("state", "open"),
+                        ("sort", "updated"),
+                        ("direction", "asc"),
+                        ("per_page", "100"),
+                        ("page", page_value.as_str()),
+                    ]);
+                    if let Some(since_value) = since_value.as_deref() {
+                        request = request.query(&[("since", since_value)]);
+                    }
+                    request
                 })
                 .await?;
             let chunk_len = chunk.len();
@@ -734,21 +737,23 @@ impl GithubApiClient {
         let mut page = 1_u32;
         let mut rows = Vec::new();
         loop {
-            let request = self
-                .http
-                .get(format!(
-                    "{}/repos/{}/{}/issues/{}/comments",
-                    self.api_base, self.repo.owner, self.repo.name, issue_number
-                ))
-                .query(&[
-                    ("sort", "created"),
-                    ("direction", "asc"),
-                    ("per_page", "100"),
-                    ("page", &page.to_string()),
-                ]);
+            let api_base = self.api_base.clone();
+            let owner = self.repo.owner.clone();
+            let repo = self.repo.name.clone();
+            let page_value = page.to_string();
             let chunk: Vec<GithubIssueComment> = self
                 .request_json("list issue comments", || {
-                    request.try_clone().expect("cloned request")
+                    self.http
+                        .get(format!(
+                            "{}/repos/{}/{}/issues/{}/comments",
+                            api_base, owner, repo, issue_number
+                        ))
+                        .query(&[
+                            ("sort", "created"),
+                            ("direction", "asc"),
+                            ("per_page", "100"),
+                            ("page", page_value.as_str()),
+                        ])
                 })
                 .await?;
             let chunk_len = chunk.len();

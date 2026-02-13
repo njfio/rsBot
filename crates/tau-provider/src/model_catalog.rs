@@ -91,12 +91,22 @@ impl Default for ModelListArgs {
 
 impl ModelCatalog {
     pub fn built_in() -> Self {
-        Self::from_file(
+        match Self::from_file(
             built_in_model_catalog_file(),
             ModelCatalogSource::BuiltIn,
             None,
-        )
-        .expect("built-in model catalog should be valid")
+        ) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                eprintln!("warning: built-in model catalog failed to load: {error}");
+                Self {
+                    entries: Vec::new(),
+                    index: HashMap::new(),
+                    source: ModelCatalogSource::BuiltIn,
+                    cache_age: None,
+                }
+            }
+        }
     }
 
     pub fn entries(&self) -> &[ModelCatalogEntry] {
