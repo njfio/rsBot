@@ -1406,22 +1406,27 @@ impl Agent {
 
             let request_for_attempt = request.clone();
             let attempt_on_delta = if stream_retry_enabled {
-                let user_handler = on_delta
-                    .as_ref()
-                    .expect("stream retry enabled requires a delta handler")
-                    .clone();
-                let state: Arc<Mutex<StreamingRetryBufferState>> = Arc::clone(
-                    stream_buffer_state
-                        .as_ref()
-                        .expect("stream retry enabled requires buffer state"),
-                );
-                state
-                    .lock()
-                    .expect("stream buffer state lock")
-                    .reset_attempt();
+                let user_handler = match on_delta.as_ref() {
+                    Some(handler) => handler.clone(),
+                    None => {
+                        return Err(AgentError::Ai(TauAiError::InvalidResponse(
+                            "stream retry invariant violated: missing delta handler".to_string(),
+                        )));
+                    }
+                };
+                let state: Arc<Mutex<StreamingRetryBufferState>> =
+                    match stream_buffer_state.as_ref() {
+                        Some(state) => Arc::clone(state),
+                        None => {
+                            return Err(AgentError::Ai(TauAiError::InvalidResponse(
+                                "stream retry invariant violated: missing buffer state".to_string(),
+                            )));
+                        }
+                    };
+                lock_or_recover(state.as_ref()).reset_attempt();
                 Some(Arc::new(move |delta: String| {
                     let replay = {
-                        let mut guard = state.lock().expect("stream buffer state lock");
+                        let mut guard = lock_or_recover(state.as_ref());
                         stream_retry_buffer_on_delta(&mut guard, delta.as_str())
                     };
                     if let Some(replayed_delta) = replay {
@@ -2199,6 +2204,13 @@ fn spawn_async_event_handler_worker(
             });
         }
     });
+}
+
+fn lock_or_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 fn cache_insert_with_limit<T: Clone>(

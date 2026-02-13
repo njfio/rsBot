@@ -659,9 +659,10 @@ fn normalize_decision_actor(decision_actor: Option<&str>) -> String {
 
 fn approval_store_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("approvals store lock poisoned")
+    match LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 fn load_approval_policy(path: &Path) -> Result<ApprovalPolicyFile> {

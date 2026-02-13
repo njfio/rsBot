@@ -149,10 +149,7 @@ impl FallbackRoutingClient {
         if !self.circuit_breaker.enabled {
             return None;
         }
-        let mut state = self
-            .route_circuit_state
-            .lock()
-            .expect("route circuit state lock");
+        let mut state = lock_or_recover_mutex(&self.route_circuit_state);
         let route_state = state.get_mut(route_index)?;
         let open_until = route_state.open_until_unix_ms?;
         if now_unix_ms < open_until {
@@ -164,10 +161,7 @@ impl FallbackRoutingClient {
     }
 
     fn record_route_success(&self, route_index: usize) {
-        let mut state = self
-            .route_circuit_state
-            .lock()
-            .expect("route circuit state lock");
+        let mut state = lock_or_recover_mutex(&self.route_circuit_state);
         let Some(route_state) = state.get_mut(route_index) else {
             return;
         };
@@ -179,10 +173,7 @@ impl FallbackRoutingClient {
         if !self.circuit_breaker.enabled {
             return None;
         }
-        let mut state = self
-            .route_circuit_state
-            .lock()
-            .expect("route circuit state lock");
+        let mut state = lock_or_recover_mutex(&self.route_circuit_state);
         let route_state = state.get_mut(route_index)?;
         route_state.consecutive_failures = route_state.consecutive_failures.saturating_add(1);
         let threshold = self.circuit_breaker.failure_threshold.max(1);
@@ -302,6 +293,13 @@ fn fallback_error_metadata(error: &TauAiError) -> (&'static str, Option<u16>) {
         TauAiError::MissingApiKey => ("missing_api_key", None),
         TauAiError::Serde(_) => ("serde", None),
         TauAiError::InvalidResponse(_) => ("invalid_response", None),
+    }
+}
+
+fn lock_or_recover_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
