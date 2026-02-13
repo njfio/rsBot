@@ -160,6 +160,18 @@ impl AsyncEventDispatchMetricsInner {
 }
 
 /// Cooperative cancellation token shared across runtime components.
+///
+/// # Examples
+///
+/// ```
+/// use tau_agent_core::CooperativeCancellationToken;
+///
+/// let token = CooperativeCancellationToken::new();
+/// assert!(!token.is_cancelled());
+///
+/// token.cancel();
+/// assert!(token.is_cancelled());
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct CooperativeCancellationToken {
     cancelled: Arc<AtomicBool>,
@@ -407,6 +419,19 @@ impl AgentDirectMessagePolicy {
     }
 
     /// Adds route permissions for both directions between `left_agent_id` and `right_agent_id`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tau_agent_core::AgentDirectMessagePolicy;
+    ///
+    /// let mut policy = AgentDirectMessagePolicy::default();
+    /// policy.allow_bidirectional_route("planner", "executor");
+    ///
+    /// assert!(policy.allows("planner", "executor"));
+    /// assert!(policy.allows("executor", "planner"));
+    /// assert!(!policy.allows("planner", "reviewer"));
+    /// ```
     pub fn allow_bidirectional_route(
         &mut self,
         left_agent_id: impl Into<String>,
@@ -583,6 +608,57 @@ impl Agent {
     }
 
     /// Registers a tool exposed to the language model.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_trait::async_trait;
+    /// use serde_json::json;
+    /// use std::sync::Arc;
+    /// use tau_agent_core::{Agent, AgentConfig, AgentTool, ToolExecutionResult};
+    /// use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, TauAiError, ToolDefinition};
+    ///
+    /// struct StaticClient;
+    ///
+    /// #[async_trait]
+    /// impl LlmClient for StaticClient {
+    ///     async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+    ///         Ok(ChatResponse {
+    ///             message: tau_ai::Message::assistant_text("ok"),
+    ///             finish_reason: Some("stop".to_string()),
+    ///             usage: ChatUsage::default(),
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// struct EchoTool;
+    ///
+    /// #[async_trait]
+    /// impl AgentTool for EchoTool {
+    ///     fn definition(&self) -> ToolDefinition {
+    ///         ToolDefinition {
+    ///             name: "echo".to_string(),
+    ///             description: "Echoes input text".to_string(),
+    ///             parameters: json!({
+    ///                 "type": "object",
+    ///                 "properties": {
+    ///                     "text": { "type": "string" }
+    ///                 }
+    ///             }),
+    ///         }
+    ///     }
+    ///
+    ///     async fn execute(&self, arguments: serde_json::Value) -> ToolExecutionResult {
+    ///         ToolExecutionResult::ok(json!({ "echo": arguments }))
+    ///     }
+    /// }
+    ///
+    /// let mut agent = Agent::new(Arc::new(StaticClient), AgentConfig::default());
+    /// agent.register_tool(EchoTool);
+    ///
+    /// assert!(agent.has_tool("echo"));
+    /// assert_eq!(agent.registered_tool_names(), vec!["echo".to_string()]);
+    /// ```
     pub fn register_tool<T>(&mut self, tool: T)
     where
         T: AgentTool + 'static,
@@ -656,6 +732,44 @@ impl Agent {
     }
 
     /// Sends a direct message to `recipient` when allowed by `policy`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_trait::async_trait;
+    /// use std::sync::Arc;
+    /// use tau_agent_core::{Agent, AgentConfig, AgentDirectMessagePolicy};
+    /// use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, TauAiError};
+    ///
+    /// struct StaticClient;
+    ///
+    /// #[async_trait]
+    /// impl LlmClient for StaticClient {
+    ///     async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+    ///         Ok(ChatResponse {
+    ///             message: tau_ai::Message::assistant_text("ok"),
+    ///             finish_reason: Some("stop".to_string()),
+    ///             usage: ChatUsage::default(),
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// let mut planner = Agent::new(Arc::new(StaticClient), AgentConfig::default());
+    /// planner.set_agent_id("planner");
+    ///
+    /// let mut executor = Agent::new(Arc::new(StaticClient), AgentConfig::default());
+    /// executor.set_agent_id("executor");
+    ///
+    /// let mut policy = AgentDirectMessagePolicy::default();
+    /// policy.allow_route("planner", "executor");
+    ///
+    /// planner
+    ///     .send_direct_message(&mut executor, "check module boundaries", &policy)
+    ///     .expect("route is allowed");
+    ///
+    /// let latest = executor.messages().last().expect("direct message appended");
+    /// assert!(latest.text_content().contains("check module boundaries"));
+    /// ```
     pub fn send_direct_message(
         &self,
         recipient: &mut Agent,
