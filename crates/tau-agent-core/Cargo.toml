@@ -7,9 +7,11 @@ license.workspace = true
 [dependencies]
 async-trait.workspace = true
 jsonschema.workspace = true
+reqwest.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tau-ai = { path = "../tau-ai" }
 
 [dev-dependencies]
+httpmock = "0.8"
