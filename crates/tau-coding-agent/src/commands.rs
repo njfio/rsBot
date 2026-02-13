@@ -1,22 +1,75 @@
-use super::*;
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use tau_access::approvals::{
+    evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
+};
+use tau_access::pairing::{execute_pair_command, execute_unpair_command};
+use tau_access::rbac::{
+    authorize_command_for_principal, execute_rbac_command, resolve_local_principal, RbacDecision,
+};
+use tau_agent_core::Agent;
+#[cfg(test)]
+use tau_ai::Provider;
+use tau_cli::{
+    canonical_command_name, normalize_help_topic, parse_command, CliCommandFileErrorMode,
+    CommandFileReport,
+};
+use tau_diagnostics::{
+    execute_audit_summary_command, execute_doctor_cli_command, execute_policy_command,
+};
+#[cfg(test)]
+use tau_diagnostics::{
+    DoctorCommandConfig, DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
+};
+use tau_onboarding::startup_config::ProfileDefaults;
+use tau_provider::{
+    execute_integration_auth_command, parse_models_list_args, render_model_show,
+    render_models_list, AuthCommandConfig, ModelCatalog, MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
+};
+#[cfg(test)]
+use tau_provider::{CredentialStoreEncryptionMode, ProviderAuthMethod};
+use tau_session::{
+    execute_branch_alias_command, execute_branch_switch_command, execute_branches_command,
+    execute_resume_command, execute_session_bookmark_command, execute_session_compact_command,
+    execute_session_diff_runtime_command, execute_session_export_command,
+    execute_session_graph_export_runtime_command, execute_session_import_command,
+    execute_session_merge_command, execute_session_repair_command,
+    execute_session_search_runtime_command, execute_session_stats_runtime_command,
+    execute_session_status_command, session_lineage_messages, SessionImportMode, SessionRuntime,
+};
+#[cfg(test)]
+use tau_skills::default_skills_lock_path;
+use tau_skills::{
+    execute_skills_list_command, execute_skills_lock_diff_command,
+    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
+    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_skills_trust_list_command, execute_skills_trust_revoke_command,
+    execute_skills_trust_rotate_command, execute_skills_verify_command,
+};
+use tau_startup::{execute_command_file_with_handler, CommandFileAction, SkillsSyncCommandConfig};
+
+use crate::auth_commands::execute_auth_command;
+use crate::canvas::{
+    execute_canvas_command, CanvasCommandConfig, CanvasEventOrigin, CanvasSessionLinkContext,
+};
 use crate::extension_manifest::{
     dispatch_extension_registered_command, ExtensionRegisteredCommandAction,
 };
+use crate::macro_profile_commands::{
+    default_macro_config_path, default_profile_store_path, execute_macro_command,
+    execute_profile_command,
+};
+use crate::qa_loop_commands::execute_qa_loop_cli_command;
+use crate::release_channel_commands::{
+    default_release_channel_path, execute_release_channel_command,
+};
+use crate::runtime_types::CommandExecutionContext;
 #[cfg(test)]
 use crate::runtime_types::{
     ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
 };
-use tau_cli::{canonical_command_name, normalize_help_topic, parse_command, CommandFileReport};
 pub(crate) use tau_ops::COMMAND_NAMES;
-use tau_session::{
-    execute_branch_switch_command, execute_branches_command, execute_resume_command,
-    execute_session_compact_command, execute_session_diff_runtime_command,
-    execute_session_export_command, execute_session_graph_export_runtime_command,
-    execute_session_import_command, execute_session_merge_command, execute_session_repair_command,
-    execute_session_search_runtime_command, execute_session_stats_runtime_command,
-    execute_session_status_command,
-};
-use tau_startup::{execute_command_file_with_handler, CommandFileAction};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandAction {

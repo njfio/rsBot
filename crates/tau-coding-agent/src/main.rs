@@ -43,6 +43,7 @@ mod transport_conformance;
 mod transport_health;
 mod voice_contract;
 
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::{sync::Arc, time::Duration};
@@ -51,6 +52,7 @@ use anyhow::Result;
 use clap::Parser;
 #[cfg(test)]
 use serde_json::Value;
+#[cfg(test)]
 use tau_agent_core::Agent;
 #[cfg(test)]
 use tau_agent_core::AgentEvent;
@@ -65,14 +67,17 @@ use tau_github_issues_runtime::{run_github_issues_bridge, GithubIssuesBridgeRunt
 pub(crate) use tau_skills as package_manifest;
 #[cfg(test)]
 pub(crate) use tau_skills as skills;
+#[cfg(test)]
 pub(crate) use tau_skills as skills_commands;
 #[cfg(test)]
 use tau_slack_runtime::{run_slack_bridge, SlackBridgeRuntimeConfig};
 
+#[cfg(test)]
 pub(crate) use crate::auth_commands::execute_auth_command;
 #[cfg(test)]
 pub(crate) use crate::auth_commands::{parse_auth_command, AuthCommand};
 pub(crate) use crate::bootstrap_helpers::init_tracing;
+#[cfg(test)]
 pub(crate) use crate::canvas::{
     execute_canvas_command, CanvasCommandConfig, CanvasEventOrigin, CanvasSessionLinkContext,
 };
@@ -109,6 +114,7 @@ pub(crate) use crate::extension_manifest::{
     execute_extension_exec_command, execute_extension_list_command, execute_extension_show_command,
     execute_extension_validate_command,
 };
+#[cfg(test)]
 pub(crate) use crate::macro_profile_commands::{
     default_macro_config_path, default_profile_store_path, execute_macro_command,
     execute_profile_command,
@@ -125,8 +131,10 @@ pub(crate) use crate::macro_profile_commands::{
 pub(crate) use crate::mcp_server::execute_mcp_server_command;
 #[cfg(test)]
 pub(crate) use crate::model_catalog::default_model_catalog_cache_path;
+pub(crate) use crate::model_catalog::ModelCatalog;
+#[cfg(test)]
 pub(crate) use crate::model_catalog::{
-    parse_models_list_args, render_model_show, render_models_list, ModelCatalog, MODELS_LIST_USAGE,
+    parse_models_list_args, render_model_show, render_models_list, MODELS_LIST_USAGE,
     MODEL_SHOW_USAGE,
 };
 #[cfg(test)]
@@ -154,9 +162,11 @@ pub(crate) use crate::package_manifest::{
 };
 #[cfg(test)]
 pub(crate) use crate::project_index::execute_project_index_command;
+#[cfg(test)]
 pub(crate) use crate::qa_loop_commands::execute_qa_loop_cli_command;
 #[cfg(test)]
 pub(crate) use crate::qa_loop_commands::execute_qa_loop_preflight_command;
+#[cfg(test)]
 pub(crate) use crate::release_channel_commands::{
     default_release_channel_path, execute_release_channel_command,
 };
@@ -186,6 +196,7 @@ pub(crate) use crate::runtime_output::stream_text_chunks;
 pub(crate) use crate::runtime_output::{persist_messages, print_assistant_messages};
 #[cfg(test)]
 pub(crate) use crate::runtime_types::RenderOptions;
+#[cfg(test)]
 pub(crate) use crate::runtime_types::{
     AuthCommandConfig, CommandExecutionContext, ProfileDefaults, SkillsSyncCommandConfig,
 };
@@ -207,6 +218,7 @@ pub(crate) use crate::skills_commands::{
     SkillsVerifySummary, SkillsVerifyTrustSummary, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE,
     SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
+#[cfg(test)]
 pub(crate) use crate::skills_commands::{
     execute_skills_list_command, execute_skills_lock_diff_command,
     execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
@@ -239,6 +251,7 @@ pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
 pub(crate) use crate::tool_policy_config::tool_policy_to_json;
 #[cfg(test)]
 pub(crate) use crate::transport_health::TransportHealthSnapshot;
+#[cfg(test)]
 pub(crate) use tau_access::approvals::{
     evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
 };
@@ -246,12 +259,14 @@ pub(crate) use tau_access::approvals::{
 pub(crate) use tau_access::pairing::{
     evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision,
 };
+#[cfg(test)]
 pub(crate) use tau_access::pairing::{execute_pair_command, execute_unpair_command};
 #[cfg(test)]
 pub(crate) use tau_access::rbac::{
     authorize_action_for_principal_with_policy_path, github_principal,
     rbac_policy_path_for_state_dir, slack_principal,
 };
+#[cfg(test)]
 pub(crate) use tau_access::rbac::{
     authorize_command_for_principal, execute_rbac_command, resolve_local_principal, RbacDecision,
 };
@@ -288,6 +303,7 @@ pub(crate) use tau_cli::validation::{
     validate_multi_channel_send_cli, validate_project_index_cli,
 };
 pub(crate) use tau_cli::Cli;
+#[cfg(test)]
 pub(crate) use tau_cli::CliCommandFileErrorMode;
 #[cfg(test)]
 pub(crate) use tau_cli::CliEventTemplateSchedule;
@@ -322,6 +338,7 @@ pub(crate) use tau_diagnostics::{
     run_doctor_checks_with_lookup, summarize_audit_file, DoctorCheckOptions, DoctorCheckResult,
     DoctorCommandArgs, DoctorCommandOutputFormat, DoctorStatus,
 };
+#[cfg(test)]
 pub(crate) use tau_diagnostics::{
     execute_audit_summary_command, execute_doctor_cli_command, execute_policy_command,
 };
@@ -360,6 +377,7 @@ pub(crate) use tau_onboarding::startup_resolution::resolve_system_prompt;
 pub(crate) use tau_onboarding::startup_skills_bootstrap::run_startup_skills_bootstrap;
 #[cfg(test)]
 pub(crate) use tau_orchestrator::parse_numbered_plan_steps;
+#[cfg(test)]
 pub(crate) use tau_provider::execute_integration_auth_command;
 #[cfg(test)]
 pub(crate) use tau_provider::provider_auth_snapshot_for_status;
@@ -403,6 +421,7 @@ pub(crate) use tau_session::format_remap_ids;
 pub(crate) use tau_session::initialize_session;
 #[cfg(test)]
 pub(crate) use tau_session::validate_session_file;
+#[cfg(test)]
 use tau_session::SessionImportMode;
 #[cfg(test)]
 pub(crate) use tau_session::{
@@ -427,7 +446,9 @@ pub(crate) use tau_session::{
     escape_graph_label, render_session_graph_dot, render_session_graph_mermaid,
     resolve_session_graph_format, SessionGraphFormat,
 };
+#[cfg(test)]
 pub(crate) use tau_session::{execute_branch_alias_command, execute_session_bookmark_command};
+#[cfg(test)]
 pub(crate) use tau_session::{session_lineage_messages, SessionRuntime};
 #[cfg(test)]
 pub(crate) use tau_session::{session_message_preview, session_message_role};
