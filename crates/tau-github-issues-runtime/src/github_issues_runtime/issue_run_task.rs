@@ -48,6 +48,7 @@ pub(super) struct CommentUpdateOutcome {
     pub(super) append_count: usize,
 }
 
+/// Executes one issue event run and posts the resulting GitHub comment updates.
 pub(super) async fn execute_issue_run_task(params: IssueRunTaskParams) -> RunTaskResult {
     let IssueRunTaskParams {
         github_client,

@@ -34,6 +34,7 @@ pub(super) struct GithubApiClient {
 }
 
 impl GithubApiClient {
+    /// Builds an authenticated GitHub API client with retry configuration.
     pub(super) fn new(
         api_base: String,
         token: String,

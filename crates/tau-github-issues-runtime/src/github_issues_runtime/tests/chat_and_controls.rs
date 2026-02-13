@@ -1,5 +1,6 @@
 use super::*;
 
+/// Validates control command responses and chat session lifecycle operations.
 #[tokio::test]
 async fn integration_bridge_commands_status_stop_and_health_produce_control_comments() {
     let server = MockServer::start();

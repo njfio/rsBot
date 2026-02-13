@@ -15,6 +15,7 @@ use tau_github_issues::issue_render::{
 use super::{DownloadedGithubAttachment, PromptRunReport, RepoRef, GITHUB_COMMENT_MAX_CHARS};
 use crate::PromptRunStatus;
 
+/// Renders the prompt payload passed to the agent for a single GitHub event.
 pub(super) fn render_event_prompt(
     repo: &RepoRef,
     event: &GithubBridgeEvent,
@@ -45,6 +46,7 @@ pub(super) fn render_event_prompt(
     )
 }
 
+/// Produces status and detail blocks for the final run response comment.
 pub(super) fn render_issue_comment_response_parts(
     event: &GithubBridgeEvent,
     run: &PromptRunReport,

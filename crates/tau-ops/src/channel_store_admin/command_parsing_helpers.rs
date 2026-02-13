@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail, Result};
 
 use super::TransportHealthInspectTarget;
 
+/// Parses CLI transport-health selectors into typed inspection targets.
 pub(super) fn parse_transport_health_inspect_target(
     raw: &str,
 ) -> Result<TransportHealthInspectTarget> {

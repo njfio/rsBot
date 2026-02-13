@@ -66,6 +66,7 @@ pub(super) struct DownloadedGithubAttachment {
     pub(super) expires_unix_ms: Option<u64>,
 }
 
+/// Runs a single GitHub issue prompt against the agent and records artifacts.
 pub(super) async fn run_prompt_for_event(
     request: RunPromptForEventRequest<'_>,
 ) -> Result<PromptRunReport> {

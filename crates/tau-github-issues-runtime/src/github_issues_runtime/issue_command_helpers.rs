@@ -63,6 +63,7 @@ pub(super) fn default_demo_index_binary_path() -> PathBuf {
     })
 }
 
+/// Parses a single issue comment body into a supported `/tau` command variant.
 pub(super) fn parse_tau_issue_command(body: &str) -> Option<TauIssueCommand> {
     let usage = tau_shared_command_usage("/tau");
     let parsed = parse_shared_issue_command(

@@ -1,5 +1,6 @@
 use super::*;
 
+/// Verifies demo-index command rendering and run/report wiring in bridge flows.
 #[tokio::test]
 async fn functional_bridge_demo_index_list_command_reports_inventory() {
     let server = MockServer::start();

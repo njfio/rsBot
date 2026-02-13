@@ -9,6 +9,7 @@ use super::{
     OperatorControlSummaryReport, TransportHealthInspectRow, VoiceStatusInspectReport,
 };
 
+/// Renders the top-level operator control summary block used by CLI status output.
 pub(super) fn render_operator_control_summary_report(
     report: &OperatorControlSummaryReport,
 ) -> String {
