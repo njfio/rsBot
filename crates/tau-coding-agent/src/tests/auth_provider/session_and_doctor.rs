@@ -1,4 +1,26 @@
-use super::*;
+use super::super::{
+    build_doctor_command_config, compute_session_entry_depths, compute_session_stats,
+    current_unix_timestamp, default_skills_lock_path, ensure_non_empty_text, escape_graph_label,
+    evaluate_multi_channel_live_readiness, execute_doctor_cli_command, execute_doctor_command,
+    execute_doctor_command_with_options, execute_session_diff_command,
+    execute_session_graph_export_command, execute_session_search_command,
+    execute_session_stats_command, handle_command_with_session_import_mode, parse_command,
+    parse_doctor_command_args, parse_session_diff_args, parse_session_search_args,
+    parse_session_stats_args, render_doctor_report, render_doctor_report_json, render_session_diff,
+    render_session_graph_dot, render_session_graph_mermaid, render_session_stats,
+    render_session_stats_json, resolve_prompt_input, resolve_session_graph_format,
+    run_doctor_checks, run_doctor_checks_with_lookup, save_credential_store,
+    search_session_entries, session_message_preview, shared_lineage_prefix_depth,
+    skills_command_config, tempdir, test_auth_command_config, test_cli, test_profile_defaults,
+    test_tool_policy_json, Agent, AgentConfig, Arc, BTreeMap, CommandAction, CredentialStoreData,
+    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
+    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
+    DoctorProviderKeyStatus, DoctorStatus, HashMap, IntegrationCredentialStoreRecord, Message,
+    ModelCatalog, ModelRef, NoopClient, Path, PathBuf, Provider, ProviderAuthMethod,
+    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionImportMode, SessionRuntime,
+    SessionSearchArgs, SessionStats, SessionStatsOutputFormat, SessionStore,
+    SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+};
 
 #[test]
 fn unit_resolve_prompt_input_uses_inline_prompt() {

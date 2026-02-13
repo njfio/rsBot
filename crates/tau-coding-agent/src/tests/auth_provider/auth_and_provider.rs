@@ -1,4 +1,26 @@
-use super::*;
+use super::super::{
+    auth_availability_counts, auth_mode_counts, auth_provider_counts, auth_revoked_counts,
+    auth_source_kind, auth_source_kind_counts, auth_state_counts, auth_status_row_for_provider,
+    build_provider_client, current_unix_timestamp, decrypt_credential_store_secret,
+    encrypt_credential_store_secret, execute_auth_command, execute_integration_auth_command,
+    format_auth_state_counts, is_retryable_provider_error, load_credential_store,
+    parse_auth_command, parse_cli_with_stack, parse_integration_auth_command,
+    provider_api_key_candidates_with_inputs, provider_auth_capability,
+    provider_auth_snapshot_for_status, refresh_provider_access_token, resolve_api_key,
+    resolve_credential_store_encryption_mode, resolve_fallback_models,
+    resolve_store_backed_provider_credential, restore_env_vars, save_credential_store,
+    set_provider_api_key, set_provider_auth_mode, snapshot_env_vars, tempdir,
+    test_auth_command_config, test_chat_request, test_cli, try_parse_cli_with_stack,
+    write_mock_claude_script, write_mock_codex_script, write_mock_gcloud_script,
+    write_mock_gemini_script, write_test_integration_credential, write_test_provider_credential,
+    Arc, AsyncMutex, AuthCommand, AuthMatrixAvailabilityFilter, AuthMatrixModeSupportFilter,
+    AuthRevokedFilter, AuthSourceKindFilter, BTreeMap, ChatResponse, ChatUsage,
+    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliProviderAuthMode, ClientRoute,
+    CredentialStoreData, CredentialStoreEncryptionMode, FallbackRoutingClient,
+    IntegrationAuthCommand, IntegrationCredentialStoreRecord, LlmClient, Message, ModelRef,
+    PathBuf, Provider, ProviderAuthMethod, ProviderCredentialStoreRecord, SequenceClient,
+    TauAiError, VecDeque, AUTH_ENV_TEST_LOCK,
+};
 
 #[test]
 fn resolve_api_key_uses_first_non_empty_candidate() {

@@ -1,4 +1,31 @@
-use super::*;
+use super::{make_script_executable, write_route_table_fixture};
+use super::super::{
+    apply_trust_root_mutations, build_tool_policy, default_skills_lock_path,
+    discover_extension_runtime_registrations, execute_rpc_capabilities_command,
+    execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
+    execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
+    execute_startup_preflight, handle_command, handle_command_with_session_import_mode,
+    initialize_session, load_multi_agent_route_table,
+    parse_numbered_plan_steps, parse_sandbox_command_tokens, parse_trust_rotation_spec,
+    parse_trusted_root_spec, pending, percentile_duration_ms, ready, register_extension_tools,
+    register_runtime_extension_tool_hook_subscriber, render_audit_summary,
+    resolve_skill_trust_roots, resolve_system_prompt, restore_env_vars, rpc_capabilities_payload,
+    run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
+    run_plan_first_prompt_with_policy_context_and_routing, run_prompt_with_cancellation,
+    set_workspace_tau_paths, skills_command_config, snapshot_env_vars, stream_text_chunks,
+    summarize_audit_file, tempdir, test_auth_command_config, test_cli, test_profile_defaults,
+    test_render_options, test_tool_policy_json, tool_audit_event_json, tool_policy_to_json,
+    validate_rpc_frame_file, validate_session_file, Agent, AgentConfig,
+    AgentEvent, Arc, AsyncMutex, BashCommandProfile, ChatResponse, ChatUsage, CliBashProfile,
+    CliDaemonProfile, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
+    CliGatewayRemoteProfile, CliMultiChannelOutboundMode, CliMultiChannelTransport,
+    CliOsSandboxMode, CliToolPolicyPreset, CommandAction, ContentBlock, Duration, HashMap, Instant,
+    Message, MessageRole, ModelCatalog, MultiAgentRouteTable, NoopClient, OsSandboxMode, Path,
+    PathBuf, PromptRunStatus, PromptTelemetryLogger, QueueClient, RenderOptions,
+    RuntimeExtensionHooksConfig, SequenceClient, SessionImportMode, SessionRuntime, SessionStore,
+    SlowClient, SuccessClient, TauAiError, ToolAuditLogger, ToolExecutionResult, ToolPolicyPreset,
+    TrustedRootRecord, VecDeque, AUTH_ENV_TEST_LOCK,
+};
 
 #[test]
 fn unit_rpc_capabilities_payload_includes_protocol_and_capabilities() {
