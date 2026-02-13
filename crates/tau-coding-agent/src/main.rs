@@ -131,6 +131,7 @@ pub(crate) use crate::macro_profile_commands::{
 pub(crate) use crate::mcp_server::execute_mcp_server_command;
 #[cfg(test)]
 pub(crate) use crate::model_catalog::default_model_catalog_cache_path;
+#[cfg(test)]
 pub(crate) use crate::model_catalog::ModelCatalog;
 #[cfg(test)]
 pub(crate) use crate::model_catalog::{

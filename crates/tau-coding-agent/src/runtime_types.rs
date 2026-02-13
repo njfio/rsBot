@@ -1,10 +1,10 @@
 use crate::extension_manifest::ExtensionRegisteredCommand;
-use crate::ModelCatalog;
 pub(crate) use tau_onboarding::startup_config::ProfileDefaults;
 #[cfg(test)]
 pub(crate) use tau_onboarding::startup_config::{
     ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
 };
+use tau_provider::ModelCatalog;
 use tau_session::SessionImportMode;
 pub(crate) use tau_startup::runtime_types::{
     AuthCommandConfig, RenderOptions, SkillsSyncCommandConfig,

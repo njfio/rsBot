@@ -2,8 +2,7 @@ use std::io::BufReader;
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
-
-use crate::Cli;
+use tau_cli::Cli;
 
 pub(crate) use tau_runtime::{
     dispatch_rpc_ndjson_input, dispatch_rpc_raw_with_error_envelope, serve_rpc_ndjson_reader,
