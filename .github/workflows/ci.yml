@@ -261,7 +261,7 @@ jobs:
 
       - name: Upload codex light demo smoke logs
         if: always() && steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: demo-smoke-logs
           path: ci-artifacts/demo-smoke
@@ -345,7 +345,7 @@ jobs:
           echo "- Minimum threshold: ${COVERAGE_MIN}%" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-report
           path: |

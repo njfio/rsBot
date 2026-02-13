@@ -94,7 +94,7 @@ jobs:
           Compress-Archive -Path "$packagedBinary" -DestinationPath "dist\\$env:APP_NAME-${{ matrix.platform }}.zip" -Force
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.platform }}
           if-no-files-found: error
@@ -130,7 +130,7 @@ jobs:
           sha256sum "${artifacts[@]}" > dist/SHA256SUMS
 
       - name: Upload checksum artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-checksums
           if-no-files-found: error

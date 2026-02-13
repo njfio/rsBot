@@ -39,7 +39,7 @@ jobs:
           cargo test -p tau-coding-agent stress_parallel_appends_high_volume_remain_consistent -- --nocapture | tee ci-artifacts/stress-tests.log
 
       - name: Upload nightly quality logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nightly-quality-logs
           path: |
@@ -77,7 +77,7 @@ jobs:
           JSON
 
       - name: Upload benchmark artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nightly-tau-tui-benchmarks
           if-no-files-found: warn
