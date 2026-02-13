@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Session storage, lineage, and runtime session command utilities for Tau.
+//!
+//! Implements session persistence, branch/merge/search/stat tooling, and
+//! session graph export helpers shared by local and bridge runtimes.
+
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},

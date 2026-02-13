@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Startup preflight and runtime wiring entrypoints for Tau.
+//!
+//! Provides startup policy/transport dispatch helpers, command-file execution,
+//! and startup-time runtime composition primitives.
+
 use anyhow::{anyhow, Context, Result};
 use tau_access::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
 use tau_cli::validation::{

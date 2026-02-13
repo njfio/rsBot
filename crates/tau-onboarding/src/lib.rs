@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Onboarding and startup bootstrap orchestration for Tau.
+//!
+//! Implements onboarding flows, startup configuration resolution, model/runtime
+//! dispatch, and transport-mode bootstrap helpers.
+
 pub mod onboarding_command;
 pub mod onboarding_daemon;
 pub mod onboarding_paths;

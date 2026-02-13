@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Deployment contracts and runtime tooling for Tau artifacts.
+//!
+//! Includes deployment fixture replay plus WASM packaging/inspection flows used
+//! for channel and control-plane deployment deliverables.
+
 pub mod deployment_contract;
 pub mod deployment_runtime;
 pub mod deployment_wasm;

@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Release-channel lookup, cache, and command runtime for Tau.
+//!
+//! Defines release metadata/cache models and runtime commands used by doctor
+//! and startup workflows for release awareness.
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

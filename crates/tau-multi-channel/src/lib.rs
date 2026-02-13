@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Multi-channel transport runtime building blocks for Tau.
+//!
+//! Provides connector, routing, lifecycle, ingress, outbound, policy, and
+//! telemetry components for Telegram/Discord/WhatsApp-style channels.
+
 pub mod multi_channel_contract;
 pub mod multi_channel_credentials;
 pub mod multi_channel_lifecycle;

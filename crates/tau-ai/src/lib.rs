@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Provider clients and shared AI transport types for Tau.
+//!
+//! Defines request/response schemas, model/provider abstractions, and retry
+//! behavior used by OpenAI-, Anthropic-, and Google-compatible backends.
+
 mod anthropic;
 mod google;
 mod openai;

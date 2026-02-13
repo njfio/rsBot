@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Foundational low-level utilities shared across Tau crates.
+//!
+//! Provides atomic file-write helpers and time utilities used by runtime state,
+//! cache persistence, and expiry calculations.
+
 pub mod atomic_io;
 pub mod time_utils;
 
