@@ -11,6 +11,6 @@ pub use google::{GoogleClient, GoogleConfig};
 pub use openai::{OpenAiAuthScheme, OpenAiClient, OpenAiConfig};
 pub use provider::{ModelRef, ModelRefParseError, Provider};
 pub use types::{
-    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
-    StreamDeltaHandler, TauAiError, ToolCall, ToolChoice, ToolDefinition,
+    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MediaSource, Message,
+    MessageRole, StreamDeltaHandler, TauAiError, ToolCall, ToolChoice, ToolDefinition,
 };

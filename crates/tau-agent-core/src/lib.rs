@@ -1445,6 +1445,14 @@ fn estimate_message_tokens(message: &Message) -> u32 {
                 total = total.saturating_add(estimate_json_tokens(arguments));
                 total = total.saturating_add(4);
             }
+            tau_ai::ContentBlock::Image { source } => {
+                total = total.saturating_add(estimate_media_source_tokens(source));
+                total = total.saturating_add(8);
+            }
+            tau_ai::ContentBlock::Audio { source } => {
+                total = total.saturating_add(estimate_media_source_tokens(source));
+                total = total.saturating_add(8);
+            }
         }
     }
     if let Some(tool_call_id) = &message.tool_call_id {
@@ -1467,6 +1475,15 @@ fn estimate_tool_definition_tokens(definition: &ToolDefinition) -> u32 {
 fn estimate_json_tokens(value: &Value) -> u32 {
     let rendered = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
     estimate_text_tokens(&rendered)
+}
+
+fn estimate_media_source_tokens(source: &tau_ai::MediaSource) -> u32 {
+    match source {
+        tau_ai::MediaSource::Url { url } => estimate_text_tokens(url),
+        tau_ai::MediaSource::Base64 { mime_type, data } => estimate_text_tokens(mime_type)
+            .saturating_add((data.len() as u32).saturating_div(3))
+            .saturating_add(2),
+    }
 }
 
 fn estimate_text_tokens(text: &str) -> u32 {
@@ -2730,6 +2747,43 @@ mod tests {
             estimate.total_tokens,
             estimate.input_tokens.saturating_add(64)
         );
+    }
+
+    #[test]
+    fn functional_estimate_chat_request_tokens_accounts_for_media_blocks() {
+        let baseline = ChatRequest {
+            model: "openai/gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: Some(32),
+            temperature: None,
+        };
+        let with_media = ChatRequest {
+            model: "openai/gpt-4o-mini".to_string(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: vec![
+                    ContentBlock::text("hello"),
+                    ContentBlock::image_base64("image/png", "aW1hZ2VEYXRh"),
+                    ContentBlock::audio_base64("audio/wav", "YXVkaW9EYXRh"),
+                ],
+                tool_call_id: None,
+                tool_name: None,
+                is_error: false,
+            }],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: Some(32),
+            temperature: None,
+        };
+
+        let baseline_estimate = estimate_chat_request_tokens(&baseline);
+        let media_estimate = estimate_chat_request_tokens(&with_media);
+        assert!(media_estimate.input_tokens > baseline_estimate.input_tokens);
+        assert!(media_estimate.total_tokens > baseline_estimate.total_tokens);
     }
 
     #[tokio::test]
