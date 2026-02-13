@@ -107,7 +107,7 @@ jobs:
       - build
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: release-*
           merge-multiple: true
@@ -146,14 +146,14 @@ jobs:
       - checksums
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: release-*
           merge-multiple: true
           path: dist
 
       - name: Download checksums
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: release-checksums
           path: dist
