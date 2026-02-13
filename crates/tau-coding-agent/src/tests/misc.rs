@@ -1,4 +1,4 @@
-use super::*;
+use crate::normalize_daemon_subcommand_args;
 
 #[test]
 fn unit_normalize_daemon_subcommand_args_maps_action_and_alias_flags() {

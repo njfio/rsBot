@@ -1,4 +1,8 @@
-use super::*;
+use std::path::PathBuf;
+
+use tau_cli::CliDeploymentWasmRuntimeProfile;
+
+use super::{parse_cli_with_stack, try_parse_cli_with_stack};
 
 #[test]
 fn unit_cli_extension_validate_flag_defaults_to_none() {
