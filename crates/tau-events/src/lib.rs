@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Event scheduling, templates, and runtime execution primitives for Tau.
+//!
+//! Defines event manifests plus scheduler/runner plumbing used by autonomous
+//! event-driven prompt execution in channel-store runtimes.
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

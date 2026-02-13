@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Skill package management, trust, and verification runtime for Tau.
+//!
+//! Handles skill manifest parsing, install/update/remove, lockfile sync, trust
+//! records, and signature verification workflows.
+
 use std::{
     collections::{HashMap, HashSet},
     fs,

@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Provider auth, credential, and fallback routing infrastructure for Tau.
+//!
+//! Includes provider client construction, credential-store operations,
+//! integration auth commands, and model fallback/circuit-breaker logic.
+
 mod auth;
 mod auth_commands_runtime;
 mod claude_cli_client;

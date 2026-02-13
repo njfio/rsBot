@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Shared runtime adapters and helpers for Tau service components.
+//!
+//! Exposes channel-store, RPC, runtime output, observability, and transport
+//! health modules reused across bridge and startup runtimes.
+
 pub mod channel_store;
 pub mod observability_loggers_runtime;
 pub mod rpc_capabilities_runtime;

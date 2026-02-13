@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Runtime diagnostics, doctor checks, and audit reporting for Tau.
+//!
+//! Implements readiness checks, structured report generation, and operator
+//! inspection commands consumed by startup and transport workflows.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

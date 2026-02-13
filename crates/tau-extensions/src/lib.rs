@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Extension manifest, command execution, and runtime hook support for Tau.
+//!
+//! Provides extension discovery/validation and process-hook dispatch used to
+//! customize runtime behavior and command surfaces.
+
 use std::{
     collections::HashSet,
     fs,

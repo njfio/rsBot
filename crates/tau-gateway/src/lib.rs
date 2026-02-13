@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Gateway contracts and HTTP/WebSocket runtime surface for Tau.
+//!
+//! Exposes gateway contract replay, OpenResponses-compatible endpoints,
+//! service-mode lifecycle helpers, and remote profile planning utilities.
+
 pub mod gateway_contract;
 pub mod gateway_openresponses;
 pub mod gateway_runtime;

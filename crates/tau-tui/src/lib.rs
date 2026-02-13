@@ -1,4 +1,8 @@
-//! Core library surface for the crates crate.
+//! Terminal UI primitives and rendering contracts for Tau interfaces.
+//!
+//! Contains reusable TUI components, view-model types, and rendering helpers
+//! used by interactive terminal surfaces.
+
 use std::{fmt, path::Path};
 
 use serde::{Deserialize, Serialize};
