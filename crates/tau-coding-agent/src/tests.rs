@@ -943,7 +943,7 @@ fn set_provider_api_key(config: &mut AuthCommandConfig, provider: Provider, valu
     }
 }
 
-#[path = "tests/auth_provider.rs"]
+#[path = "tests/auth_provider/mod.rs"]
 mod auth_provider;
 #[path = "tests/cli_validation.rs"]
 mod cli_validation;
