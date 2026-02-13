@@ -7,10 +7,11 @@ use tau_ai::MessageRole;
 use tau_orchestrator::{
     OrchestratorPromptRunStatus, OrchestratorRenderOptions, OrchestratorRuntime,
 };
+use tau_session::SessionRuntime;
 
-use crate::{
-    runtime_loop::run_prompt_with_cancellation, MultiAgentRouteTable, RenderOptions, SessionRuntime,
-};
+use crate::multi_agent_router::MultiAgentRouteTable;
+use crate::runtime_loop::run_prompt_with_cancellation;
+use crate::runtime_types::RenderOptions;
 
 struct OrchestratorRuntimeAdapter<'a> {
     agent: &'a mut Agent,

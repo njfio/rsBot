@@ -79,6 +79,7 @@ pub(crate) use crate::channel_store_admin::execute_channel_store_admin_command;
 pub(crate) use crate::commands::execute_command_file;
 #[cfg(test)]
 pub(crate) use crate::commands::handle_command;
+#[cfg(test)]
 pub(crate) use crate::commands::{
     handle_command_with_session_import_mode, CommandAction, COMMAND_NAMES,
 };
@@ -96,6 +97,7 @@ use crate::events::{
     execute_events_simulate_command, execute_events_template_write_command,
     execute_events_validate_command,
 };
+#[cfg(test)]
 pub(crate) use crate::extension_manifest::{
     apply_extension_message_transforms, dispatch_extension_runtime_hook,
 };
@@ -126,13 +128,17 @@ pub(crate) use crate::model_catalog::{
 };
 #[cfg(test)]
 pub(crate) use crate::multi_agent_router::load_multi_agent_route_table;
+#[cfg(test)]
 pub(crate) use crate::multi_agent_router::MultiAgentRouteTable;
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::tool_audit_event_json;
 #[cfg(test)]
 pub(crate) use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
+#[cfg(test)]
 pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt;
+#[cfg(test)]
 pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt_with_policy_context;
+#[cfg(test)]
 pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt_with_policy_context_and_routing;
 #[cfg(test)]
 pub(crate) use crate::package_manifest::execute_package_activate_on_startup;
@@ -172,6 +178,7 @@ pub(crate) use crate::runtime_loop::{run_prompt_with_cancellation, PromptRunStat
 pub(crate) use crate::runtime_output::event_to_json;
 #[cfg(test)]
 pub(crate) use crate::runtime_output::stream_text_chunks;
+#[cfg(test)]
 pub(crate) use crate::runtime_output::{persist_messages, print_assistant_messages};
 pub(crate) use crate::runtime_types::{
     AuthCommandConfig, CommandExecutionContext, ProfileDefaults, RenderOptions,
@@ -275,8 +282,11 @@ pub(crate) use tau_cli::validation::{
     validate_multi_channel_send_cli, validate_project_index_cli,
 };
 pub(crate) use tau_cli::Cli;
+pub(crate) use tau_cli::CliCommandFileErrorMode;
 #[cfg(test)]
 pub(crate) use tau_cli::CliEventTemplateSchedule;
+#[cfg(test)]
+pub(crate) use tau_cli::CliOrchestratorMode;
 #[cfg(test)]
 pub(crate) use tau_cli::CliProviderAuthMode;
 #[cfg(test)]
@@ -285,7 +295,6 @@ pub(crate) use tau_cli::{
     CliGatewayOpenResponsesAuthMode, CliMultiChannelLiveConnectorMode, CliMultiChannelTransport,
     CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
 };
-pub(crate) use tau_cli::{CliCommandFileErrorMode, CliOrchestratorMode};
 #[cfg(test)]
 pub(crate) use tau_cli::{CliDaemonProfile, CliGatewayRemoteProfile};
 #[cfg(test)]
@@ -333,6 +342,7 @@ pub(crate) use tau_onboarding::startup_model_resolution::{
 pub(crate) use tau_onboarding::startup_prompt_composition::compose_startup_system_prompt;
 #[cfg(test)]
 pub(crate) use tau_onboarding::startup_resolution::apply_trust_root_mutations;
+#[cfg(test)]
 pub(crate) use tau_onboarding::startup_resolution::ensure_non_empty_text;
 #[cfg(test)]
 pub(crate) use tau_onboarding::startup_resolution::resolve_skill_trust_roots;

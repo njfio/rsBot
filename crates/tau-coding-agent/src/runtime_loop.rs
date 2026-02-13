@@ -22,16 +22,22 @@ use rustyline::{
 };
 use tau_agent_core::{Agent, AgentError, CooperativeCancellationToken};
 use tau_ai::StreamDeltaHandler;
+use tau_cli::{Cli, CliOrchestratorMode};
+use tau_core::current_unix_timestamp_ms;
+use tau_extensions::{apply_extension_message_transforms, dispatch_extension_runtime_hook};
+use tau_onboarding::startup_resolution::ensure_non_empty_text;
+use tau_session::SessionRuntime;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
-use crate::{
-    apply_extension_message_transforms, current_unix_timestamp_ms, dispatch_extension_runtime_hook,
-    ensure_non_empty_text, handle_command_with_session_import_mode, persist_messages,
-    print_assistant_messages, run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
-    run_plan_first_prompt_with_policy_context_and_routing, Cli, CliOrchestratorMode, CommandAction,
-    CommandExecutionContext, MultiAgentRouteTable, RenderOptions, SessionRuntime, COMMAND_NAMES,
+use crate::commands::{handle_command_with_session_import_mode, CommandAction, COMMAND_NAMES};
+use crate::multi_agent_router::MultiAgentRouteTable;
+use crate::orchestrator_bridge::{
+    run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
+    run_plan_first_prompt_with_policy_context_and_routing,
 };
+use crate::runtime_output::{persist_messages, print_assistant_messages};
+use crate::runtime_types::{CommandExecutionContext, RenderOptions};
 
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 const REPL_PROMPT: &str = "tau> ";
@@ -1111,7 +1117,7 @@ mod tests {
 
     #[test]
     fn functional_repl_command_completer_matches_slash_commands() {
-        let completer = ReplCommandCompleter::new(crate::COMMAND_NAMES);
+        let completer = ReplCommandCompleter::new(tau_ops::COMMAND_NAMES);
         let suggestions = completer.complete_token("/session");
         assert!(suggestions.contains(&"/session".to_string()));
         assert!(suggestions.contains(&"/session-import".to_string()));
