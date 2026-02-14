@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "surfaces": [
+    {
+      "id": "voice",
+      "script": "scripts/demo/voice.sh",
+      "artifact_roots": [
+        ".tau/demo-voice"
+      ]
+    },
+    {
+      "id": "browser",
+      "script": "scripts/demo/browser-automation-live.sh",
+      "artifact_roots": [
+        ".tau/demo-browser-automation-live"
+      ]
+    },
+    {
+      "id": "dashboard",
+      "script": "scripts/demo/dashboard.sh",
+      "artifact_roots": [
+        ".tau/demo-dashboard"
+      ]
+    },
+    {
+      "id": "custom-command",
+      "script": "scripts/demo/custom-command.sh",
+      "artifact_roots": [
+        ".tau/demo-custom-command"
+      ]
+    },
+    {
+      "id": "memory",
+      "script": "scripts/demo/memory.sh",
+      "artifact_roots": [
+        ".tau/demo-memory"
+      ]
+    }
+  ]
+}

@@ -93,6 +93,28 @@ Primary outputs:
 - `.tau/demo-browser-automation-live/browser-live-report.json`
 - `.tau/demo-browser-automation-live/browser-live-transcript.log`
 
+## Unified Live-Run Harness
+
+Cross-surface validation wrapper (voice/browser/dashboard/custom-command/memory):
+
+```bash
+./scripts/demo/live-run-unified.sh
+```
+
+Deterministic inventory mode:
+
+```bash
+./scripts/demo/live-run-unified.sh --list
+./scripts/demo/live-run-unified.sh --list --json
+```
+
+Primary outputs:
+
+- `.tau/live-run-unified/manifest.json`
+- `.tau/live-run-unified/report.json`
+- `.tau/live-run-unified/surfaces/<surface>/stdout.log`
+- `.tau/live-run-unified/surfaces/<surface>/stderr.log`
+
 ## CI-light smoke notes
 
 The repository smoke manifest (`.github/demo-smoke-manifest.json`) includes lightweight
