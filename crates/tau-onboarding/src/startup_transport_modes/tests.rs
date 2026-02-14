@@ -1,15 +1,15 @@
 //! Tests for onboarding transport-mode routing and guardrails.
 
 use super::{
-    build_browser_automation_live_runner_config, build_dashboard_contract_runner_config,
-    build_deployment_contract_runner_config, build_events_runner_cli_config,
-    build_gateway_contract_runner_config, build_gateway_openresponses_server_config,
-    build_github_issues_bridge_cli_config, build_memory_contract_runner_config,
-    build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
-    build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
-    build_multi_channel_media_config, build_multi_channel_outbound_config,
-    build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
-    build_slack_bridge_cli_config, build_transport_doctor_config, build_transport_runtime_defaults,
+    build_browser_automation_live_runner_config, build_deployment_contract_runner_config,
+    build_events_runner_cli_config, build_gateway_contract_runner_config,
+    build_gateway_openresponses_server_config, build_github_issues_bridge_cli_config,
+    build_memory_contract_runner_config, build_multi_agent_contract_runner_config,
+    build_multi_channel_contract_runner_config, build_multi_channel_live_connectors_config,
+    build_multi_channel_live_runner_config, build_multi_channel_media_config,
+    build_multi_channel_outbound_config, build_multi_channel_runtime_dependencies,
+    build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
+    build_transport_doctor_config, build_transport_runtime_defaults,
     build_voice_contract_runner_config, build_voice_live_runner_config,
     execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
     resolve_bridge_transport_mode, resolve_contract_transport_mode,
@@ -180,13 +180,6 @@ impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
         self.record(
             TransportRuntimeMode::MemoryContractRunner,
             "memory-contract",
-        )
-    }
-
-    async fn run_dashboard_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::DashboardContractRunner,
-            "dashboard-contract",
         )
     }
 
@@ -869,9 +862,6 @@ fn regression_build_memory_contract_runner_config_enforces_minimums() {
 #[test]
 fn regression_build_standard_contract_runner_builders_enforce_minimums() {
     let mut cli = parse_cli_with_stack();
-    cli.dashboard_queue_limit = 0;
-    cli.dashboard_processed_case_cap = 0;
-    cli.dashboard_retry_max_attempts = 0;
     cli.deployment_queue_limit = 0;
     cli.deployment_processed_case_cap = 0;
     cli.deployment_retry_max_attempts = 0;
@@ -880,14 +870,10 @@ fn regression_build_standard_contract_runner_builders_enforce_minimums() {
     cli.voice_retry_max_attempts = 0;
     cli.voice_live_max_turns = 0;
 
-    let dashboard = build_dashboard_contract_runner_config(&cli);
     let deployment = build_deployment_contract_runner_config(&cli);
     let voice = build_voice_contract_runner_config(&cli);
     let voice_live = build_voice_live_runner_config(&cli);
 
-    assert_eq!(dashboard.queue_limit, 1);
-    assert_eq!(dashboard.processed_case_cap, 1);
-    assert_eq!(dashboard.retry_max_attempts, 1);
     assert_eq!(deployment.queue_limit, 1);
     assert_eq!(deployment.processed_case_cap, 1);
     assert_eq!(deployment.retry_max_attempts, 1);
@@ -1318,17 +1304,6 @@ async fn unit_run_memory_contract_runner_if_requested_returns_false_when_disable
 }
 
 #[tokio::test]
-async fn unit_run_dashboard_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_dashboard_contract_runner_if_requested(&cli)
-        .await
-        .expect("dashboard helper");
-
-    assert!(!handled);
-}
-
-#[tokio::test]
 async fn unit_run_deployment_contract_runner_if_requested_returns_false_when_disabled() {
     let cli = parse_cli_with_stack();
 
@@ -1575,13 +1550,6 @@ fn integration_build_memory_contract_runner_config_preserves_runtime_fields() {
 fn integration_build_standard_contract_runner_builders_preserve_runtime_fields() {
     let temp = tempdir().expect("tempdir");
     let mut cli = parse_cli_with_stack();
-    cli.dashboard_fixture = temp.path().join("dashboard-fixture.json");
-    cli.dashboard_state_dir = temp.path().join("dashboard-state");
-    cli.dashboard_queue_limit = 33;
-    cli.dashboard_processed_case_cap = 9_000;
-    cli.dashboard_retry_max_attempts = 7;
-    cli.dashboard_retry_base_delay_ms = 31;
-
     cli.deployment_fixture = temp.path().join("deployment-fixture.json");
     cli.deployment_state_dir = temp.path().join("deployment-state");
     cli.deployment_queue_limit = 19;
@@ -1600,17 +1568,9 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
     cli.voice_live_max_turns = 11;
     cli.voice_live_tts_output = false;
 
-    let dashboard = build_dashboard_contract_runner_config(&cli);
     let deployment = build_deployment_contract_runner_config(&cli);
     let voice = build_voice_contract_runner_config(&cli);
     let voice_live = build_voice_live_runner_config(&cli);
-
-    assert_eq!(dashboard.fixture_path, cli.dashboard_fixture);
-    assert_eq!(dashboard.state_dir, cli.dashboard_state_dir);
-    assert_eq!(dashboard.queue_limit, 33);
-    assert_eq!(dashboard.processed_case_cap, 9_000);
-    assert_eq!(dashboard.retry_max_attempts, 7);
-    assert_eq!(dashboard.retry_base_delay_ms, 31);
 
     assert_eq!(deployment.fixture_path, cli.deployment_fixture);
     assert_eq!(deployment.state_dir, cli.deployment_state_dir);

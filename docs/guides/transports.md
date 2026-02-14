@@ -374,24 +374,12 @@ Demo command path:
 - `./scripts/demo/browser-automation.sh`
 - `./scripts/demo/all.sh --only browser-automation --fail-fast`
 
-## Dashboard contract runner
+## Dashboard contract runner (removed)
 
-Use this fixture-driven runtime mode to validate dashboard state transitions, control actions,
-retry handling, and channel-store snapshot writes.
+`--dashboard-contract-runner` has been removed from active transport dispatch.
+Use gateway/API surfaces plus diagnostics commands against persisted state artifacts.
 
-```bash
-cargo run -p tau-coding-agent -- \
-  --model openai/gpt-4o-mini \
-  --dashboard-contract-runner \
-  --dashboard-fixture crates/tau-coding-agent/testdata/dashboard-contract/mixed-outcomes.json \
-  --dashboard-state-dir .tau/dashboard \
-  --dashboard-queue-limit 64 \
-  --dashboard-processed-case-cap 10000 \
-  --dashboard-retry-max-attempts 4 \
-  --dashboard-retry-base-delay-ms 0
-```
-
-The runner writes state and observability output under:
+Diagnostics commands read state and observability output under:
 
 - `.tau/dashboard/state.json`
 - `.tau/dashboard/runtime-events.jsonl`

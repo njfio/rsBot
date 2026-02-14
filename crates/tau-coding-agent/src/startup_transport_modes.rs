@@ -10,8 +10,7 @@ use tau_onboarding::startup_transport_modes::{
     build_transport_doctor_config as build_onboarding_transport_doctor_config,
     resolve_github_issues_bridge_repo_and_token_from_cli as resolve_onboarding_github_issues_bridge_repo_and_token_from_cli,
     resolve_slack_bridge_tokens_from_cli as resolve_onboarding_slack_bridge_tokens_from_cli,
-    run_browser_automation_live_runner_if_requested, run_dashboard_contract_runner_if_requested,
-    run_deployment_contract_runner_if_requested,
+    run_browser_automation_live_runner_if_requested, run_deployment_contract_runner_if_requested,
     run_events_runner_with_runtime_defaults_if_requested as run_onboarding_events_runner_with_runtime_defaults_if_requested,
     run_gateway_contract_runner_if_requested, run_gateway_openresponses_server_if_requested,
     run_github_issues_bridge_with_runtime_defaults_if_requested as run_onboarding_github_issues_bridge_with_runtime_defaults_if_requested,
@@ -238,11 +237,6 @@ impl TransportRuntimeExecutor for CodingAgentTransportRuntimeExecutor<'_> {
 
     async fn run_memory_contract_runner(&self) -> Result<()> {
         run_memory_contract_runner_if_requested(self.cli).await?;
-        Ok(())
-    }
-
-    async fn run_dashboard_contract_runner(&self) -> Result<()> {
-        run_dashboard_contract_runner_if_requested(self.cli).await?;
         Ok(())
     }
 
