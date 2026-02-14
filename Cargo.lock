@@ -2930,6 +2930,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "shell-words",
  "tau-contract",
  "tau-core",
  "tau-runtime",

@@ -44,6 +44,10 @@ Primary state files:
 - `case_processing_failed`
 - `command_registry_mutated`
 - `command_runs_recorded`
+- `command_run_timeout_observed`
+- `command_run_non_zero_exit_observed`
+- `command_run_spawn_failures_observed`
+- `command_run_missing_command_observed`
 
 Policy contract defaults (`--custom-command-contract-runner`):
 
