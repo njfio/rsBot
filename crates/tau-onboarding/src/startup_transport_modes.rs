@@ -1,7 +1,11 @@
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use std::future::Future;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tau_ai::{LlmClient, ModelRef};
 use tau_browser_automation::browser_automation_contract::load_browser_automation_contract_fixture;
@@ -24,6 +28,7 @@ use tau_cli::validation::{
 };
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
+use tau_core::{current_unix_timestamp_ms, write_text_atomic};
 use tau_custom_command::custom_command_policy::{
     default_custom_command_execution_policy, normalize_sandbox_profile,
     CustomCommandExecutionPolicy,
@@ -44,6 +49,7 @@ use tau_multi_channel::{
     MultiChannelMediaUnderstandingConfig, MultiChannelOutboundConfig, MultiChannelPairingEvaluator,
     MultiChannelRuntimeConfig, MultiChannelTelemetryConfig,
 };
+use tau_ops::TransportHealthSnapshot;
 use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
 use tau_provider::{
     load_credential_store, resolve_credential_store_encryption_mode, AuthCommandConfig,
@@ -555,8 +561,55 @@ pub struct BrowserAutomationContractRunnerConfig {
 /// Public struct `BrowserAutomationLiveRunnerConfig` used across Tau components.
 pub struct BrowserAutomationLiveRunnerConfig {
     pub fixture_path: PathBuf,
+    pub state_dir: PathBuf,
     pub playwright_cli: String,
     pub policy: BrowserAutomationLivePolicy,
+}
+
+const BROWSER_AUTOMATION_LIVE_STATE_SCHEMA_VERSION: u32 = 1;
+const BROWSER_AUTOMATION_LIVE_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
+
+fn browser_automation_live_state_schema_version() -> u32 {
+    BROWSER_AUTOMATION_LIVE_STATE_SCHEMA_VERSION
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct BrowserAutomationLiveStateFile {
+    #[serde(default = "browser_automation_live_state_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    fixture_path: String,
+    #[serde(default)]
+    playwright_cli: String,
+    #[serde(default)]
+    policy_action_timeout_ms: u64,
+    #[serde(default)]
+    policy_max_actions_per_case: usize,
+    #[serde(default)]
+    policy_allow_unsafe_actions: bool,
+    #[serde(default)]
+    discovered_cases: usize,
+    #[serde(default)]
+    success_cases: usize,
+    #[serde(default)]
+    malformed_cases: usize,
+    #[serde(default)]
+    retryable_failures: usize,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BrowserAutomationLiveCycleReport {
+    timestamp_unix_ms: u64,
+    health_state: String,
+    health_reason: String,
+    reason_codes: Vec<String>,
+    discovered_cases: usize,
+    success_cases: usize,
+    malformed_cases: usize,
+    retryable_failures: usize,
+    failure_streak: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -655,9 +708,121 @@ pub async fn run_browser_automation_contract_runner_if_requested(cli: &Cli) -> R
     Ok(true)
 }
 
+fn load_browser_automation_live_previous_health(state_path: &Path) -> TransportHealthSnapshot {
+    let Ok(raw) = std::fs::read_to_string(state_path) else {
+        return TransportHealthSnapshot::default();
+    };
+    serde_json::from_str::<BrowserAutomationLiveStateFile>(&raw)
+        .map(|state| state.health)
+        .unwrap_or_default()
+}
+
+fn build_browser_automation_live_health_snapshot(
+    discovered_cases: usize,
+    success_cases: usize,
+    malformed_cases: usize,
+    retryable_failures: usize,
+    cycle_duration_ms: u64,
+    previous_failure_streak: usize,
+) -> TransportHealthSnapshot {
+    let failure_streak = if retryable_failures > 0 {
+        previous_failure_streak.saturating_add(1)
+    } else {
+        0
+    };
+    TransportHealthSnapshot {
+        updated_unix_ms: current_unix_timestamp_ms(),
+        cycle_duration_ms,
+        queue_depth: 0,
+        active_runs: 0,
+        failure_streak,
+        last_cycle_discovered: discovered_cases,
+        last_cycle_processed: discovered_cases,
+        last_cycle_completed: success_cases.saturating_add(malformed_cases),
+        last_cycle_failed: retryable_failures,
+        last_cycle_duplicates: 0,
+    }
+}
+
+fn browser_automation_live_reason_codes(
+    success_cases: usize,
+    malformed_cases: usize,
+    retryable_failures: usize,
+) -> Vec<String> {
+    let mut codes = Vec::new();
+    if success_cases > 0 {
+        codes.push("live_actions_succeeded".to_string());
+    }
+    if malformed_cases > 0 {
+        codes.push("malformed_cases_observed".to_string());
+    }
+    if retryable_failures > 0 {
+        codes.push("retryable_failures_observed".to_string());
+    }
+    if codes.is_empty() {
+        codes.push("no_cases_processed".to_string());
+    }
+    codes
+}
+
+fn persist_browser_automation_live_state(
+    config: &BrowserAutomationLiveRunnerConfig,
+    discovered_cases: usize,
+    success_cases: usize,
+    malformed_cases: usize,
+    retryable_failures: usize,
+    health: &TransportHealthSnapshot,
+) -> Result<()> {
+    std::fs::create_dir_all(&config.state_dir)?;
+    let state = BrowserAutomationLiveStateFile {
+        schema_version: BROWSER_AUTOMATION_LIVE_STATE_SCHEMA_VERSION,
+        fixture_path: config.fixture_path.display().to_string(),
+        playwright_cli: config.playwright_cli.clone(),
+        policy_action_timeout_ms: config.policy.action_timeout_ms,
+        policy_max_actions_per_case: config.policy.max_actions_per_case,
+        policy_allow_unsafe_actions: config.policy.allow_unsafe_actions,
+        discovered_cases,
+        success_cases,
+        malformed_cases,
+        retryable_failures,
+        health: health.clone(),
+    };
+    let state_raw = serde_json::to_string_pretty(&state)?;
+    write_text_atomic(&config.state_dir.join("state.json"), &state_raw)?;
+
+    let classification = health.classify();
+    let report = BrowserAutomationLiveCycleReport {
+        timestamp_unix_ms: current_unix_timestamp_ms(),
+        health_state: classification.state.as_str().to_string(),
+        health_reason: classification.reason,
+        reason_codes: browser_automation_live_reason_codes(
+            success_cases,
+            malformed_cases,
+            retryable_failures,
+        ),
+        discovered_cases,
+        success_cases,
+        malformed_cases,
+        retryable_failures,
+        failure_streak: health.failure_streak,
+    };
+    let line = serde_json::to_string(&report)?;
+    let events_path = config
+        .state_dir
+        .join(BROWSER_AUTOMATION_LIVE_EVENTS_LOG_FILE);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&events_path)?;
+    writeln!(file, "{line}")?;
+    file.flush()?;
+    Ok(())
+}
+
 pub fn build_browser_automation_live_runner_config(cli: &Cli) -> BrowserAutomationLiveRunnerConfig {
     BrowserAutomationLiveRunnerConfig {
         fixture_path: cli.browser_automation_live_fixture.clone(),
+        state_dir: cli.browser_automation_state_dir.clone(),
         playwright_cli: cli.browser_automation_playwright_cli.trim().to_string(),
         policy: BrowserAutomationLivePolicy::default(),
     }
@@ -668,10 +833,31 @@ pub async fn run_browser_automation_live_runner_if_requested(cli: &Cli) -> Resul
         return Ok(false);
     }
     let config = build_browser_automation_live_runner_config(cli);
+    let cycle_started = Instant::now();
+    let previous_health =
+        load_browser_automation_live_previous_health(&config.state_dir.join("state.json"));
     let fixture = load_browser_automation_contract_fixture(&config.fixture_path)?;
-    let executor = PlaywrightCliActionExecutor::new(config.playwright_cli)?;
+    let executor = PlaywrightCliActionExecutor::new(config.playwright_cli.clone())?;
     let mut manager = BrowserSessionManager::new(executor);
     let summary = run_browser_automation_live_fixture(&fixture, &mut manager, &config.policy)?;
+    let cycle_duration_ms = u64::try_from(cycle_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let health = build_browser_automation_live_health_snapshot(
+        summary.discovered_cases,
+        summary.success_cases,
+        summary.malformed_cases,
+        summary.retryable_failures,
+        cycle_duration_ms,
+        previous_health.failure_streak,
+    );
+    persist_browser_automation_live_state(
+        &config,
+        summary.discovered_cases,
+        summary.success_cases,
+        summary.malformed_cases,
+        summary.retryable_failures,
+        &health,
+    )?;
+    let classification = health.classify();
 
     println!(
         "browser automation live summary: discovered={} success={} malformed={} retryable_failures={}",
@@ -679,6 +865,13 @@ pub async fn run_browser_automation_live_runner_if_requested(cli: &Cli) -> Resul
         summary.success_cases,
         summary.malformed_cases,
         summary.retryable_failures
+    );
+    println!(
+        "browser automation live health: state={} failure_streak={} queue_depth={} reason={}",
+        classification.state.as_str(),
+        health.failure_streak,
+        health.queue_depth,
+        classification.reason
     );
 
     Ok(true)

@@ -1300,11 +1300,46 @@ print(json.dumps({
     cli.browser_automation_live_runner = true;
     cli.browser_automation_live_fixture = fixture_path;
     cli.browser_automation_playwright_cli = script_path.display().to_string();
+    cli.browser_automation_state_dir = temp.path().join("browser-automation-state");
 
     let handled = super::run_browser_automation_live_runner_if_requested(&cli)
         .await
         .expect("live runner should execute");
     assert!(handled);
+
+    let state_raw = std::fs::read_to_string(cli.browser_automation_state_dir.join("state.json"))
+        .expect("read live browser automation state");
+    let state_json: serde_json::Value = serde_json::from_str(&state_raw).expect("parse state");
+    assert_eq!(
+        state_json["discovered_cases"].as_u64(),
+        Some(1),
+        "expected persisted discovered case count"
+    );
+    assert_eq!(
+        state_json["success_cases"].as_u64(),
+        Some(1),
+        "expected persisted success case count"
+    );
+    assert_eq!(
+        state_json["health"]["last_cycle_discovered"].as_u64(),
+        Some(1),
+        "expected persisted health discovered count"
+    );
+    assert_eq!(
+        state_json["health"]["last_cycle_failed"].as_u64(),
+        Some(0),
+        "expected no failed live cases"
+    );
+
+    let events_raw = std::fs::read_to_string(
+        cli.browser_automation_state_dir
+            .join("runtime-events.jsonl"),
+    )
+    .expect("read live browser automation events");
+    assert!(
+        events_raw.contains("live_actions_succeeded"),
+        "expected success reason code in events log"
+    );
 }
 
 #[tokio::test]
@@ -1577,10 +1612,12 @@ fn integration_build_browser_automation_live_runner_config_preserves_runtime_fie
     let temp = tempdir().expect("tempdir");
     let mut cli = parse_cli_with_stack();
     cli.browser_automation_live_fixture = temp.path().join("browser-automation-live-fixture.json");
+    cli.browser_automation_state_dir = temp.path().join("browser-automation-state");
     cli.browser_automation_playwright_cli = "  /tmp/mock-playwright-cli  ".to_string();
 
     let config = build_browser_automation_live_runner_config(&cli);
     assert_eq!(config.fixture_path, cli.browser_automation_live_fixture);
+    assert_eq!(config.state_dir, cli.browser_automation_state_dir);
     assert_eq!(config.playwright_cli, "/tmp/mock-playwright-cli");
     assert_eq!(config.policy.action_timeout_ms, 5_000);
     assert_eq!(config.policy.max_actions_per_case, 8);
