@@ -18,9 +18,10 @@ pub enum StatusTransitionError {
 }
 
 /// Lifecycle state for a rollout.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RolloutStatus {
+    #[default]
     Queuing,
     Preparing,
     Running,
@@ -75,12 +76,6 @@ impl RolloutStatus {
     /// Returns true when no further execution is expected.
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Failed | Self::Succeeded | Self::Cancelled)
-    }
-}
-
-impl Default for RolloutStatus {
-    fn default() -> Self {
-        Self::Queuing
     }
 }
 
