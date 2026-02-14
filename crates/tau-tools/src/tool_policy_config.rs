@@ -1,13 +1,15 @@
 use anyhow::{anyhow, Context, Result};
 use tau_cli::cli_args::Cli;
-use tau_cli::cli_types::{CliBashProfile, CliOsSandboxMode, CliToolPolicyPreset};
-
-use crate::tools::{
-    tool_policy_preset_name, tool_rate_limit_behavior_name, BashCommandProfile, OsSandboxMode,
-    ToolPolicy,
+use tau_cli::cli_types::{
+    CliBashProfile, CliOsSandboxMode, CliOsSandboxPolicyMode, CliToolPolicyPreset,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 4;
+use crate::tools::{
+    os_sandbox_policy_mode_name, tool_policy_preset_name, tool_rate_limit_behavior_name,
+    BashCommandProfile, OsSandboxMode, OsSandboxPolicyMode, ToolPolicy,
+};
+
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 5;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 
@@ -42,6 +44,9 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     }
     if cli.os_sandbox_mode != CliOsSandboxMode::Off {
         policy.os_sandbox_mode = map_cli_os_sandbox_mode(cli.os_sandbox_mode);
+    }
+    if let Some(policy_mode) = cli.os_sandbox_policy_mode {
+        policy.os_sandbox_policy_mode = map_cli_os_sandbox_policy_mode(policy_mode);
     }
     if !cli.os_sandbox_command.is_empty() {
         policy.os_sandbox_command = parse_sandbox_command_tokens(&cli.os_sandbox_command)?;
@@ -128,6 +133,7 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
         "bash_profile": format!("{:?}", policy.bash_profile).to_lowercase(),
         "allowed_commands": policy.allowed_commands.clone(),
         "os_sandbox_mode": format!("{:?}", policy.os_sandbox_mode).to_lowercase(),
+        "os_sandbox_policy_mode": os_sandbox_policy_mode_name(policy.os_sandbox_policy_mode),
         "os_sandbox_command": policy.os_sandbox_command.clone(),
         "enforce_regular_files": policy.enforce_regular_files,
         "bash_dry_run": policy.bash_dry_run,
@@ -211,6 +217,13 @@ fn map_cli_os_sandbox_mode(value: CliOsSandboxMode) -> OsSandboxMode {
     }
 }
 
+fn map_cli_os_sandbox_policy_mode(value: CliOsSandboxPolicyMode) -> OsSandboxPolicyMode {
+    match value {
+        CliOsSandboxPolicyMode::BestEffort => OsSandboxPolicyMode::BestEffort,
+        CliOsSandboxPolicyMode::Required => OsSandboxPolicyMode::Required,
+    }
+}
+
 fn map_cli_tool_policy_preset(value: CliToolPolicyPreset) -> crate::tools::ToolPolicyPreset {
     match value {
         CliToolPolicyPreset::Permissive => crate::tools::ToolPolicyPreset::Permissive,
@@ -233,8 +246,9 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 4);
+        assert_eq!(payload["schema_version"], 5);
         assert_eq!(payload["allow_protected_path_mutations"], true);
+        assert_eq!(payload["os_sandbox_policy_mode"], "best-effort");
         assert!(payload["protected_paths"]
             .as_array()
             .map(|paths| {

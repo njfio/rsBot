@@ -59,6 +59,10 @@ const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT: u32 = 60;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED: u32 = 30;
+const SANDBOX_REQUIRED_UNAVAILABLE_ERROR: &str =
+    "OS sandbox policy mode 'required' is enabled but command would run without a sandbox launcher";
+const SANDBOX_FORCE_UNAVAILABLE_ERROR: &str =
+    "OS sandbox mode 'force' is enabled but no sandbox launcher is configured or available";
 const DEFAULT_PROTECTED_RELATIVE_PATHS: &[&str] = &[
     "AGENTS.md",
     "SOUL.md",
@@ -151,6 +155,13 @@ pub enum OsSandboxMode {
     Off,
     Auto,
     Force,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates how bash tool sandboxing is enforced when launchers are unavailable.
+pub enum OsSandboxPolicyMode {
+    BestEffort,
+    Required,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +297,7 @@ pub struct ToolPolicy {
     pub bash_profile: BashCommandProfile,
     pub allowed_commands: Vec<String>,
     pub os_sandbox_mode: OsSandboxMode,
+    pub os_sandbox_policy_mode: OsSandboxPolicyMode,
     pub os_sandbox_command: Vec<String>,
     pub enforce_regular_files: bool,
     pub bash_dry_run: bool,
@@ -318,6 +330,7 @@ impl ToolPolicy {
                 .map(|command| (*command).to_string())
                 .collect(),
             os_sandbox_mode: OsSandboxMode::Off,
+            os_sandbox_policy_mode: OsSandboxPolicyMode::BestEffort,
             os_sandbox_command: Vec::new(),
             enforce_regular_files: true,
             bash_dry_run: false,
@@ -373,6 +386,7 @@ impl ToolPolicy {
                 self.allow_command_newlines = true;
                 self.set_bash_profile(BashCommandProfile::Permissive);
                 self.os_sandbox_mode = OsSandboxMode::Off;
+                self.os_sandbox_policy_mode = OsSandboxPolicyMode::BestEffort;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = false;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE;
@@ -388,6 +402,7 @@ impl ToolPolicy {
                 self.allow_command_newlines = false;
                 self.set_bash_profile(BashCommandProfile::Balanced);
                 self.os_sandbox_mode = OsSandboxMode::Off;
+                self.os_sandbox_policy_mode = OsSandboxPolicyMode::BestEffort;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = true;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED;
@@ -403,6 +418,7 @@ impl ToolPolicy {
                 self.allow_command_newlines = false;
                 self.set_bash_profile(BashCommandProfile::Strict);
                 self.os_sandbox_mode = OsSandboxMode::Auto;
+                self.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = true;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT;
@@ -418,6 +434,7 @@ impl ToolPolicy {
                 self.allow_command_newlines = false;
                 self.set_bash_profile(BashCommandProfile::Strict);
                 self.os_sandbox_mode = OsSandboxMode::Force;
+                self.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = true;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED;
@@ -2200,14 +2217,20 @@ impl AgentTool for BashTool {
                     "os_sandbox_mode",
                     "allow",
                     format!(
-                        "resolved sandbox mode '{}' (sandboxed={})",
+                        "resolved sandbox mode '{}' with policy '{}' (sandboxed={})",
                         os_sandbox_mode_name(self.policy.os_sandbox_mode),
+                        os_sandbox_policy_mode_name(self.policy.os_sandbox_policy_mode),
                         spec.sandboxed
                     ),
                 );
                 spec
             }
             Err(error) => {
+                let reason_code = if error == SANDBOX_REQUIRED_UNAVAILABLE_ERROR {
+                    "sandbox_policy_required"
+                } else {
+                    "sandbox_launcher_unavailable"
+                };
                 push_policy_trace(
                     &mut trace,
                     trace_enabled,
@@ -2215,15 +2238,27 @@ impl AgentTool for BashTool {
                     "deny",
                     error.clone(),
                 );
-                return bash_policy_error(
-                    Some(command),
-                    cwd.as_ref().map(|value| value.display().to_string()),
-                    "os_sandbox_mode",
-                    error,
-                    None,
-                    trace_enabled,
-                    &trace,
+                let mut payload = serde_json::Map::new();
+                payload.insert("command".to_string(), json!(command));
+                payload.insert(
+                    "cwd".to_string(),
+                    json!(cwd.as_ref().map(|value| value.display().to_string())),
                 );
+                payload.insert("policy_rule".to_string(), json!("os_sandbox_mode"));
+                payload.insert("reason_code".to_string(), json!(reason_code));
+                payload.insert(
+                    "sandbox_mode".to_string(),
+                    json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
+                );
+                payload.insert(
+                    "sandbox_policy_mode".to_string(),
+                    json!(os_sandbox_policy_mode_name(
+                        self.policy.os_sandbox_policy_mode
+                    )),
+                );
+                payload.insert("error".to_string(), json!(error));
+                attach_policy_trace(&mut payload, trace_enabled, &trace, "deny");
+                return ToolExecutionResult::error(Value::Object(payload));
             }
         };
 
@@ -2245,6 +2280,12 @@ impl AgentTool for BashTool {
             payload.insert(
                 "sandbox_mode".to_string(),
                 json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
+            );
+            payload.insert(
+                "sandbox_policy_mode".to_string(),
+                json!(os_sandbox_policy_mode_name(
+                    self.policy.os_sandbox_policy_mode
+                )),
             );
             payload.insert("dry_run".to_string(), json!(true));
             payload.insert("would_execute".to_string(), json!(true));
@@ -2328,6 +2369,12 @@ impl AgentTool for BashTool {
         payload.insert(
             "sandbox_mode".to_string(),
             json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
+        );
+        payload.insert(
+            "sandbox_policy_mode".to_string(),
+            json!(os_sandbox_policy_mode_name(
+                self.policy.os_sandbox_policy_mode
+            )),
         );
         payload.insert("dry_run".to_string(), json!(false));
         payload.insert("status".to_string(), json!(output.status.code()));
@@ -2724,35 +2771,41 @@ fn resolve_sandbox_spec(
     command: &str,
     cwd: &Path,
 ) -> Result<BashSandboxSpec, String> {
-    if !policy.os_sandbox_command.is_empty() {
-        return build_spec_from_command_template(&policy.os_sandbox_command, shell, command, cwd);
+    let spec = if !policy.os_sandbox_command.is_empty() {
+        build_spec_from_command_template(&policy.os_sandbox_command, shell, command, cwd)?
+    } else {
+        match policy.os_sandbox_mode {
+            OsSandboxMode::Off => BashSandboxSpec {
+                program: shell.to_string(),
+                args: vec!["-lc".to_string(), command.to_string()],
+                sandboxed: false,
+            },
+            OsSandboxMode::Auto => {
+                if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
+                    spec
+                } else {
+                    BashSandboxSpec {
+                        program: shell.to_string(),
+                        args: vec!["-lc".to_string(), command.to_string()],
+                        sandboxed: false,
+                    }
+                }
+            }
+            OsSandboxMode::Force => {
+                if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
+                    spec
+                } else {
+                    return Err(SANDBOX_FORCE_UNAVAILABLE_ERROR.to_string());
+                }
+            }
+        }
+    };
+
+    if matches!(policy.os_sandbox_policy_mode, OsSandboxPolicyMode::Required) && !spec.sandboxed {
+        return Err(SANDBOX_REQUIRED_UNAVAILABLE_ERROR.to_string());
     }
 
-    match policy.os_sandbox_mode {
-        OsSandboxMode::Off => Ok(BashSandboxSpec {
-            program: shell.to_string(),
-            args: vec!["-lc".to_string(), command.to_string()],
-            sandboxed: false,
-        }),
-        OsSandboxMode::Auto => {
-            if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
-                Ok(spec)
-            } else {
-                Ok(BashSandboxSpec {
-                    program: shell.to_string(),
-                    args: vec!["-lc".to_string(), command.to_string()],
-                    sandboxed: false,
-                })
-            }
-        }
-        OsSandboxMode::Force => {
-            if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
-                Ok(spec)
-            } else {
-                Err("OS sandbox mode 'force' is enabled but no sandbox launcher is configured or available".to_string())
-            }
-        }
-    }
+    Ok(spec)
 }
 
 fn build_spec_from_command_template(
@@ -2916,6 +2969,13 @@ fn os_sandbox_mode_name(mode: OsSandboxMode) -> &'static str {
         OsSandboxMode::Off => "off",
         OsSandboxMode::Auto => "auto",
         OsSandboxMode::Force => "force",
+    }
+}
+
+pub fn os_sandbox_policy_mode_name(mode: OsSandboxPolicyMode) -> &'static str {
+    match mode {
+        OsSandboxPolicyMode::BestEffort => "best-effort",
+        OsSandboxPolicyMode::Required => "required",
     }
 }
 

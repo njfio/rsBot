@@ -496,6 +496,7 @@ pub(crate) fn test_cli() -> Cli {
             telemetry_log: None,
             os_sandbox_mode: CliOsSandboxMode::Off,
             os_sandbox_command: vec![],
+            os_sandbox_policy_mode: None,
             enforce_regular_files: true,
         },
         deployment_status_inspect: false,

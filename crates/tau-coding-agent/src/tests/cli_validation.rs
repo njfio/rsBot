@@ -6,7 +6,8 @@ use tau_cli::validation::validate_project_index_cli;
 use tau_cli::{
     CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
     CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode,
-    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliProviderAuthMode,
+    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOsSandboxPolicyMode,
+    CliProviderAuthMode,
 };
 
 use super::{parse_cli_with_stack, try_parse_cli_with_stack};
@@ -147,6 +148,21 @@ fn unit_cli_provider_subscription_strict_defaults_to_disabled() {
 fn functional_cli_provider_subscription_strict_accepts_overrides() {
     let cli = parse_cli_with_stack(["tau-rs", "--provider-subscription-strict=true"]);
     assert!(cli.provider_subscription_strict);
+}
+
+#[test]
+fn unit_cli_os_sandbox_policy_mode_defaults_to_none() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert_eq!(cli.os_sandbox_policy_mode, None);
+}
+
+#[test]
+fn functional_cli_os_sandbox_policy_mode_accepts_required_override() {
+    let cli = parse_cli_with_stack(["tau-rs", "--os-sandbox-policy-mode", "required"]);
+    assert_eq!(
+        cli.os_sandbox_policy_mode,
+        Some(CliOsSandboxPolicyMode::Required)
+    );
 }
 
 #[test]

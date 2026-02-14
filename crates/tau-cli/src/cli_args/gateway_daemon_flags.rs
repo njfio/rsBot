@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args};
 
 use crate::{
-    CliBashProfile, CliDaemonProfile, CliOsSandboxMode, CliSessionImportMode, CliToolPolicyPreset,
+    CliBashProfile, CliDaemonProfile, CliOsSandboxMode, CliOsSandboxPolicyMode,
+    CliSessionImportMode, CliToolPolicyPreset,
 };
 
 /// Gateway/daemon, Slack bridge, session, and tool-policy flags flattened into `Cli`.
@@ -567,6 +568,14 @@ pub struct CliGatewayDaemonFlags {
         help = "Optional sandbox launcher command template tokens. Supports placeholders: {shell}, {command}, {cwd}"
     )]
     pub os_sandbox_command: Vec<String>,
+
+    #[arg(
+        long = "os-sandbox-policy-mode",
+        env = "TAU_OS_SANDBOX_POLICY_MODE",
+        value_enum,
+        help = "Sandbox policy mode for bash tool: best-effort (allow unsandboxed fallback) or required (fail closed)"
+    )]
+    pub os_sandbox_policy_mode: Option<CliOsSandboxPolicyMode>,
 
     #[arg(
         long,

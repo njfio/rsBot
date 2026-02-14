@@ -22,6 +22,13 @@ pub enum CliOsSandboxMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliOsSandboxPolicyMode` values.
+pub enum CliOsSandboxPolicyMode {
+    BestEffort,
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 /// Enumerates supported `CliSessionImportMode` values.
 pub enum CliSessionImportMode {
     Merge,

@@ -9,11 +9,11 @@ use super::{
     bash_profile_name, build_spec_from_command_template, builtin_agent_tool_names,
     canonicalize_best_effort, command_available, evaluate_tool_approval_gate,
     evaluate_tool_rate_limit_gate, evaluate_tool_rbac_gate, is_command_allowed,
-    is_session_candidate_path, leading_executable, os_sandbox_mode_name, redact_secrets,
-    resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool, EditTool,
-    OsSandboxMode, SessionsHistoryTool, SessionsListTool, SessionsSearchTool, SessionsSendTool,
-    SessionsStatsTool, ToolExecutionResult, ToolPolicy, ToolPolicyPreset,
-    ToolRateLimitExceededBehavior, WriteTool,
+    is_session_candidate_path, leading_executable, os_sandbox_mode_name,
+    os_sandbox_policy_mode_name, redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool,
+    BashCommandProfile, BashTool, EditTool, OsSandboxMode, OsSandboxPolicyMode,
+    SessionsHistoryTool, SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool,
+    ToolExecutionResult, ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, WriteTool,
 };
 use tau_access::ApprovalAction;
 use tau_ai::Message;
@@ -48,6 +48,7 @@ fn unit_tool_policy_hardened_preset_applies_expected_configuration() {
     assert_eq!(policy.max_command_length, 1_024);
     assert_eq!(policy.max_command_output_bytes, 4_000);
     assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Force);
+    assert_eq!(policy.os_sandbox_policy_mode, OsSandboxPolicyMode::Required);
     assert!(policy.enforce_regular_files);
     assert_eq!(policy.tool_rate_limit_max_requests, 30);
     assert_eq!(policy.tool_rate_limit_window_ms, 60_000);
@@ -55,6 +56,15 @@ fn unit_tool_policy_hardened_preset_applies_expected_configuration() {
         policy.tool_rate_limit_exceeded_behavior,
         ToolRateLimitExceededBehavior::Reject
     );
+}
+
+#[test]
+fn unit_tool_policy_strict_preset_requires_sandbox_policy_mode() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.apply_preset(ToolPolicyPreset::Strict);
+    assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Auto);
+    assert_eq!(policy.os_sandbox_policy_mode, OsSandboxPolicyMode::Required);
 }
 
 #[test]
@@ -1070,6 +1080,56 @@ async fn bash_tool_runs_command() {
 }
 
 #[tokio::test]
+async fn regression_bash_tool_required_policy_mode_fails_closed_with_reason_code() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.os_sandbox_mode = OsSandboxMode::Off;
+    policy.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
+    let tool = BashTool::new(Arc::new(policy));
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "printf 'ok'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("policy_rule")
+            .and_then(serde_json::Value::as_str),
+        Some("os_sandbox_mode")
+    );
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("sandbox_policy_required")
+    );
+    assert_eq!(
+        result
+            .content
+            .get("sandbox_mode")
+            .and_then(serde_json::Value::as_str),
+        Some("off")
+    );
+    assert_eq!(
+        result
+            .content
+            .get("sandbox_policy_mode")
+            .and_then(serde_json::Value::as_str),
+        Some("required")
+    );
+    assert!(result
+        .content
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|error| error.contains("policy mode 'required'")));
+}
+
+#[tokio::test]
 async fn regression_bash_tool_rejects_non_directory_cwd() {
     let temp = tempdir().expect("tempdir");
     let file = temp.path().join("not-a-dir.txt");
@@ -1825,6 +1885,17 @@ fn regression_resolve_sandbox_spec_force_requires_launcher_or_template() {
 }
 
 #[test]
+fn regression_resolve_sandbox_spec_required_denies_unsandboxed_fallback() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.os_sandbox_mode = OsSandboxMode::Off;
+    policy.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
+    let error = resolve_sandbox_spec(&policy, "sh", "printf 'ok'", temp.path())
+        .expect_err("required policy must fail closed without sandbox");
+    assert!(error.contains("policy mode 'required'"));
+}
+
+#[test]
 fn truncate_bytes_keeps_valid_utf8_boundaries() {
     let value = "hello🙂world";
     let truncated = truncate_bytes(value, 7);
@@ -1901,4 +1972,16 @@ fn regression_os_sandbox_mode_name_is_stable() {
     assert_eq!(os_sandbox_mode_name(OsSandboxMode::Off), "off");
     assert_eq!(os_sandbox_mode_name(OsSandboxMode::Auto), "auto");
     assert_eq!(os_sandbox_mode_name(OsSandboxMode::Force), "force");
+}
+
+#[test]
+fn regression_os_sandbox_policy_mode_name_is_stable() {
+    assert_eq!(
+        os_sandbox_policy_mode_name(OsSandboxPolicyMode::BestEffort),
+        "best-effort"
+    );
+    assert_eq!(
+        os_sandbox_policy_mode_name(OsSandboxPolicyMode::Required),
+        "required"
+    );
 }

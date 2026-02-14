@@ -694,6 +694,10 @@ fn render_orchestrator_policy_inheritance_context(
         .get("os_sandbox_mode")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| anyhow!("tool policy JSON missing string field 'os_sandbox_mode'"))?;
+    let os_sandbox_policy_mode = object
+        .get("os_sandbox_policy_mode")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("tool policy JSON missing string field 'os_sandbox_policy_mode'"))?;
     let bash_dry_run = object
         .get("bash_dry_run")
         .and_then(serde_json::Value::as_bool)
@@ -722,7 +726,7 @@ fn render_orchestrator_policy_inheritance_context(
         .ok_or_else(|| anyhow!("tool policy JSON missing array field 'allowed_commands'"))?;
 
     Ok(format!(
-        "schema_version={schema_version};preset={preset};bash_profile={bash_profile};os_sandbox_mode={os_sandbox_mode};bash_dry_run={bash_dry_run};enforce_regular_files={enforce_regular_files};max_command_length={max_command_length};max_command_output_bytes={max_command_output_bytes};allowed_roots={};allowed_commands={};extension_runtime_hooks_enabled={}",
+        "schema_version={schema_version};preset={preset};bash_profile={bash_profile};os_sandbox_mode={os_sandbox_mode};os_sandbox_policy_mode={os_sandbox_policy_mode};bash_dry_run={bash_dry_run};enforce_regular_files={enforce_regular_files};max_command_length={max_command_length};max_command_output_bytes={max_command_output_bytes};allowed_roots={};allowed_commands={};extension_runtime_hooks_enabled={}",
         allowed_roots.len(),
         allowed_commands.len(),
         extension_runtime_hooks.enabled,
@@ -1092,6 +1096,7 @@ mod tests {
             "preset": "balanced",
             "bash_profile": "balanced",
             "os_sandbox_mode": "off",
+            "os_sandbox_policy_mode": "best-effort",
             "bash_dry_run": false,
             "enforce_regular_files": true,
             "max_command_length": 4096,
@@ -1103,7 +1108,7 @@ mod tests {
             .expect("policy context should render");
         assert_eq!(
             context,
-            "schema_version=1;preset=balanced;bash_profile=balanced;os_sandbox_mode=off;bash_dry_run=false;enforce_regular_files=true;max_command_length=4096;max_command_output_bytes=16000;allowed_roots=1;allowed_commands=2;extension_runtime_hooks_enabled=true"
+            "schema_version=1;preset=balanced;bash_profile=balanced;os_sandbox_mode=off;os_sandbox_policy_mode=best-effort;bash_dry_run=false;enforce_regular_files=true;max_command_length=4096;max_command_output_bytes=16000;allowed_roots=1;allowed_commands=2;extension_runtime_hooks_enabled=true"
         );
     }
 

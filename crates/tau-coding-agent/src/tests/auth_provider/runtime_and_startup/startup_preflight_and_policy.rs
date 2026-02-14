@@ -1547,6 +1547,10 @@ fn build_tool_policy_includes_cwd_and_custom_root() {
     assert_eq!(policy.max_command_length, 4096);
     assert!(policy.allow_command_newlines);
     assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Off);
+    assert_eq!(
+        tool_policy_to_json(&policy)["os_sandbox_policy_mode"],
+        "best-effort"
+    );
     assert!(policy.os_sandbox_command.is_empty());
     assert!(policy.enforce_regular_files);
     assert_eq!(policy.policy_preset, ToolPolicyPreset::Balanced);
@@ -1566,10 +1570,11 @@ fn unit_tool_policy_to_json_includes_key_limits_and_modes() {
 
     let policy = build_tool_policy(&cli).expect("policy should build");
     let payload = tool_policy_to_json(&policy);
-    assert_eq!(payload["schema_version"], 3);
+    assert_eq!(payload["schema_version"], 5);
     assert_eq!(payload["preset"], "balanced");
     assert_eq!(payload["bash_profile"], "strict");
     assert_eq!(payload["os_sandbox_mode"], "auto");
+    assert_eq!(payload["os_sandbox_policy_mode"], "best-effort");
     assert_eq!(payload["max_file_write_bytes"], 4096);
     assert_eq!(payload["enforce_regular_files"], true);
     assert_eq!(payload["bash_dry_run"], false);
@@ -1603,6 +1608,10 @@ fn functional_build_tool_policy_hardened_preset_applies_hardened_defaults() {
     assert_eq!(policy.max_command_length, 1_024);
     assert_eq!(policy.max_command_output_bytes, 4_000);
     assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Force);
+    assert_eq!(
+        tool_policy_to_json(&policy)["os_sandbox_policy_mode"],
+        "required"
+    );
     assert_eq!(policy.tool_rate_limit_max_requests, 30);
     assert_eq!(policy.tool_rate_limit_window_ms, 60_000);
 }
