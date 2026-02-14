@@ -29,6 +29,14 @@ class LiveSmokeMatrixTests(unittest.TestCase):
         self.assertIn(".tau/demo-dashboard-live", plan.artifact_dirs)
         self.assertIn(".tau/demo-dashboard", plan.artifact_dirs)
 
+    def test_unit_resolve_surface_plan_returns_expected_custom_command_primary_and_fallback(self) -> None:
+        plan = live_smoke_matrix.resolve_surface_plan("custom-command")
+        self.assertEqual(plan.surface, "custom-command")
+        self.assertEqual(plan.primary_wrapper, "scripts/demo/custom-command-live.sh")
+        self.assertEqual(plan.fallback_wrapper, "scripts/demo/custom-command.sh")
+        self.assertIn(".tau/demo-custom-command-live", plan.artifact_dirs)
+        self.assertIn(".tau/demo-custom-command", plan.artifact_dirs)
+
     def test_functional_cli_json_output_includes_surface_plan_fields(self) -> None:
         completed = subprocess.run(
             [sys.executable, str(RUNNER_SCRIPT), "--surface", "voice", "--json"],

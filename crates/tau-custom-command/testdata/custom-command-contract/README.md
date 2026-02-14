@@ -7,6 +7,7 @@ and lifecycle operations.
 
 - `mixed-outcomes.json`: success + malformed_input + retryable_failure matrix.
 - `rollout-pass.json`: all-success fixture for deterministic demo and rollout checks.
+- `live-execution-matrix.json`: success + policy deny + retryable failure matrix for live-proof workflows.
 - `invalid-duplicate-case-id.json`: regression fixture for duplicate `case_id`.
 - `invalid-error-code.json`: regression fixture for unsupported `error_code`.
 
@@ -20,3 +21,4 @@ and lifecycle operations.
   - `custom_command_invalid_name`
   - `custom_command_invalid_template`
   - `custom_command_backend_unavailable`
+  - `custom_command_policy_denied`

@@ -6,6 +6,7 @@ Run all commands from repository root.
 
 This runbook covers the fixture-driven no-code custom command runtime
 (`--custom-command-contract-runner`).
+It also covers the live proof harness for create/update/delete/list/run execution validation.
 
 ## Health and observability signals
 
@@ -56,6 +57,26 @@ Guardrail interpretation:
 ./scripts/demo/custom-command.sh
 ```
 
+## Live proof harness
+
+```bash
+./scripts/demo/custom-command-live.sh
+```
+
+Primary proof artifacts:
+
+- `.tau/demo-custom-command-live/custom-command-live-summary.json`
+- `.tau/demo-custom-command-live/custom-command-live-report.json`
+- `.tau/demo-custom-command-live/custom-command-live-transcript.log`
+- `.tau/demo-custom-command-live/state/state.json`
+- `.tau/demo-custom-command-live/state/channel-store/channels/custom-command/**/log.jsonl`
+
+Live harness coverage includes:
+
+- real execution flow for `create`, `update`, `run`, `list`, and `delete`
+- policy deny handling (`custom_command_policy_denied`)
+- retryable failure handling (`custom_command_backend_unavailable`)
+
 ## Rollout plan with guardrails
 
 1. Validate contract fixtures and compatibility:
@@ -64,10 +85,12 @@ Guardrail interpretation:
    `cargo test -p tau-coding-agent custom_command_runtime -- --test-threads=1`
 3. Run deterministic demo:
    `./scripts/demo/custom-command.sh`
-4. Verify transport health and status gate:
+4. Run live proof harness:
+   `./scripts/demo/custom-command-live.sh`
+5. Verify transport health and status gate:
    `--transport-health-inspect custom-command --transport-health-json`
    `--custom-command-status-inspect --custom-command-status-json`
-5. Promote by increasing fixture complexity while monitoring:
+6. Promote by increasing fixture complexity while monitoring:
    `failure_streak`, `last_cycle_failed`, `queue_depth`, `rollout_gate`,
    `reason_code_counts`.
 

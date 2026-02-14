@@ -836,6 +836,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_runner_processes_live_execution_matrix_with_policy_deny_and_retryable_failure(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.fixture_path = fixture_path("live-execution-matrix.json");
+        config.retry_max_attempts = 2;
+        let fixture = load_custom_command_contract_fixture(&config.fixture_path)
+            .expect("fixture should load");
+        let mut runtime = CustomCommandRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+
+        assert_eq!(summary.discovered_cases, 7);
+        assert_eq!(summary.queued_cases, 7);
+        assert_eq!(summary.applied_cases, 5);
+        assert_eq!(summary.malformed_cases, 1);
+        assert_eq!(summary.retryable_failures, 2);
+        assert_eq!(summary.retry_attempts, 1);
+        assert_eq!(summary.failed_cases, 1);
+        assert_eq!(summary.upserted_commands, 2);
+        assert_eq!(summary.deleted_commands, 1);
+        assert_eq!(summary.executed_runs, 1);
+        assert_eq!(summary.duplicate_skips, 0);
+
+        let state = load_custom_command_runtime_state(&config.state_dir.join("state.json"))
+            .expect("load state");
+        assert_eq!(state.commands.len(), 0);
+        assert_eq!(state.processed_case_keys.len(), 6);
+        assert_eq!(state.health.last_cycle_failed, 1);
+        assert_eq!(state.health.failure_streak, 1);
+        assert_eq!(
+            state.health.classify().state,
+            TransportHealthState::Degraded
+        );
+
+        let policy_store = ChannelStore::open(
+            &config.state_dir.join("channel-store"),
+            "custom-command",
+            "admin_shutdown",
+        )
+        .expect("open policy channel store");
+        let policy_log = policy_store
+            .load_log_entries()
+            .expect("load policy log entries");
+        assert!(
+            policy_log.iter().any(|entry| entry
+                .payload
+                .to_string()
+                .contains("custom_command_policy_denied")),
+            "expected policy deny marker in log: {policy_log:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn integration_runner_skips_processed_cases_but_retries_unresolved_failures() {
         let temp = tempdir().expect("tempdir");
         let config = build_config(temp.path());
@@ -854,6 +907,24 @@ mod tests {
         assert_eq!(second.applied_cases, 0);
         assert_eq!(second.malformed_cases, 0);
         assert_eq!(second.failed_cases, 1);
+    }
+
+    #[tokio::test]
+    async fn regression_rollout_pass_fixture_preserves_all_success_runtime_behavior() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.fixture_path = fixture_path("rollout-pass.json");
+        let fixture = load_custom_command_contract_fixture(&config.fixture_path)
+            .expect("fixture should load");
+        let mut runtime = CustomCommandRuntime::new(config).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+
+        assert_eq!(summary.discovered_cases, 4);
+        assert_eq!(summary.applied_cases, 4);
+        assert_eq!(summary.malformed_cases, 0);
+        assert_eq!(summary.retryable_failures, 0);
+        assert_eq!(summary.failed_cases, 0);
+        assert_eq!(summary.deleted_commands, 0);
     }
 
     #[tokio::test]

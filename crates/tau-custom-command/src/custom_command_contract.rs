@@ -15,6 +15,7 @@ pub const CUSTOM_COMMAND_ERROR_INVALID_OPERATION: &str = "custom_command_invalid
 pub const CUSTOM_COMMAND_ERROR_INVALID_NAME: &str = "custom_command_invalid_name";
 pub const CUSTOM_COMMAND_ERROR_INVALID_TEMPLATE: &str = "custom_command_invalid_template";
 pub const CUSTOM_COMMAND_ERROR_BACKEND_UNAVAILABLE: &str = "custom_command_backend_unavailable";
+pub const CUSTOM_COMMAND_ERROR_POLICY_DENIED: &str = "custom_command_policy_denied";
 
 fn custom_command_contract_schema_version() -> u32 {
     CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION
@@ -251,6 +252,19 @@ pub fn evaluate_custom_command_case(case: &CustomCommandContractCase) -> CustomC
         };
     }
 
+    if operation == "RUN" && command_name.to_ascii_lowercase().starts_with("admin_") {
+        return CustomCommandReplayResult {
+            step: CustomCommandReplayStep::MalformedInput,
+            status_code: 403,
+            error_code: Some(CUSTOM_COMMAND_ERROR_POLICY_DENIED.to_string()),
+            response_body: json!({
+                "status":"denied",
+                "reason":"policy_denied",
+                "command_name": command_name,
+            }),
+        };
+    }
+
     let status_code = if operation == "CREATE" { 201 } else { 200 };
     let response_body = if operation == "LIST" {
         json!({
@@ -428,6 +442,7 @@ fn supported_error_codes() -> &'static [&'static str] {
         CUSTOM_COMMAND_ERROR_INVALID_NAME,
         CUSTOM_COMMAND_ERROR_INVALID_TEMPLATE,
         CUSTOM_COMMAND_ERROR_BACKEND_UNAVAILABLE,
+        CUSTOM_COMMAND_ERROR_POLICY_DENIED,
     ]
 }
 
@@ -591,6 +606,44 @@ mod tests {
         assert_eq!(
             result.error_code.as_deref(),
             Some("custom_command_invalid_operation")
+        );
+    }
+
+    #[test]
+    fn regression_custom_command_contract_evaluator_marks_admin_run_as_policy_denied() {
+        let case = CustomCommandContractCase {
+            schema_version: 1,
+            case_id: "policy-denied-run".to_string(),
+            operation: "run".to_string(),
+            command_name: "admin_shutdown".to_string(),
+            template: String::new(),
+            arguments: serde_json::json!({"scope":"global"}),
+            simulate_retryable_failure: false,
+            expected: super::CustomCommandCaseExpectation {
+                outcome: super::CustomCommandOutcomeKind::MalformedInput,
+                status_code: 403,
+                error_code: "custom_command_policy_denied".to_string(),
+                response_body: serde_json::json!({
+                    "status":"denied",
+                    "reason":"policy_denied",
+                    "command_name":"admin_shutdown"
+                }),
+            },
+        };
+        let result = evaluate_custom_command_case(&case);
+        assert_eq!(result.step, CustomCommandReplayStep::MalformedInput);
+        assert_eq!(result.status_code, 403);
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("custom_command_policy_denied")
+        );
+        assert_eq!(
+            result.response_body,
+            serde_json::json!({
+                "status":"denied",
+                "reason":"policy_denied",
+                "command_name":"admin_shutdown"
+            })
         );
     }
 }

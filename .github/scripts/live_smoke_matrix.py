@@ -41,9 +41,9 @@ SURFACE_PLANS: dict[str, SurfacePlan] = {
     ),
     "custom-command": SurfacePlan(
         surface="custom-command",
-        primary_wrapper="scripts/demo/custom-command.sh",
-        fallback_wrapper="",
-        artifact_dirs=(".tau/demo-custom-command",),
+        primary_wrapper="scripts/demo/custom-command-live.sh",
+        fallback_wrapper="scripts/demo/custom-command.sh",
+        artifact_dirs=(".tau/demo-custom-command-live", ".tau/demo-custom-command"),
         timeout_seconds=180,
     ),
     "memory": SurfacePlan(

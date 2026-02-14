@@ -108,6 +108,20 @@ Primary outputs:
 - `.tau/demo-dashboard-live/dashboard-action-audit.json`
 - `.tau/demo-dashboard-live/webchat-fallback-check.json`
 
+`custom-command-live` is a standalone wrapper (not part of `index.sh` scenario allowlist)
+used for live custom-command execution proof (create/update/run/list/delete + policy deny/retry paths):
+
+```bash
+./scripts/demo/custom-command-live.sh
+```
+
+Primary outputs:
+
+- `.tau/demo-custom-command-live/custom-command-live-summary.json`
+- `.tau/demo-custom-command-live/custom-command-live-report.json`
+- `.tau/demo-custom-command-live/custom-command-live-transcript.log`
+- `.tau/demo-custom-command-live/state/channel-store/channels/custom-command/**/log.jsonl`
+
 ## Unified Live-Run Harness
 
 Cross-surface validation wrapper (voice/browser/dashboard/custom-command/memory):
