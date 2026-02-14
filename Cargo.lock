@@ -3108,7 +3108,6 @@ dependencies = [
  "tau-browser-automation",
  "tau-cli",
  "tau-core",
- "tau-dashboard",
  "tau-deployment",
  "tau-diagnostics",
  "tau-gateway",

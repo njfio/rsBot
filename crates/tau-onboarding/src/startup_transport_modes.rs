@@ -26,7 +26,6 @@ use tau_cli::validation::{
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
 use tau_core::{current_unix_timestamp_ms, write_text_atomic};
-use tau_dashboard::dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
 use tau_deployment::deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
 use tau_diagnostics::{build_doctor_command_config, DoctorCommandConfig};
 use tau_gateway::{
@@ -73,7 +72,6 @@ pub enum ContractTransportMode {
     None,
     MultiAgent,
     BrowserAutomationLive,
-    Dashboard,
     Gateway,
     Deployment,
     Voice,
@@ -93,7 +91,6 @@ pub enum TransportRuntimeMode {
     MultiChannelLiveConnectorsRunner,
     MultiAgentContractRunner,
     BrowserAutomationLiveRunner,
-    DashboardContractRunner,
     GatewayContractRunner,
     DeploymentContractRunner,
     VoiceContractRunner,
@@ -112,7 +109,6 @@ pub trait TransportRuntimeExecutor {
     async fn run_multi_channel_live_connectors_runner(&self) -> Result<()>;
     async fn run_multi_agent_contract_runner(&self) -> Result<()>;
     async fn run_browser_automation_live_runner(&self) -> Result<()>;
-    async fn run_dashboard_contract_runner(&self) -> Result<()>;
     async fn run_gateway_contract_runner(&self) -> Result<()>;
     async fn run_deployment_contract_runner(&self) -> Result<()>;
     async fn run_voice_contract_runner(&self) -> Result<()>;
@@ -161,10 +157,6 @@ where
         }
         TransportRuntimeMode::BrowserAutomationLiveRunner => {
             executor.run_browser_automation_live_runner().await?;
-            Ok(true)
-        }
-        TransportRuntimeMode::DashboardContractRunner => {
-            executor.run_dashboard_contract_runner().await?;
             Ok(true)
         }
         TransportRuntimeMode::GatewayContractRunner => {
@@ -324,8 +316,6 @@ pub fn resolve_contract_transport_mode(cli: &Cli) -> ContractTransportMode {
         ContractTransportMode::MultiAgent
     } else if cli.browser_automation_live_runner {
         ContractTransportMode::BrowserAutomationLive
-    } else if cli.dashboard_contract_runner {
-        ContractTransportMode::Dashboard
     } else if cli.gateway_contract_runner {
         ContractTransportMode::Gateway
     } else if cli.deployment_contract_runner {
@@ -371,7 +361,6 @@ pub fn resolve_transport_runtime_mode(cli: &Cli) -> TransportRuntimeMode {
         ContractTransportMode::BrowserAutomationLive => {
             return TransportRuntimeMode::BrowserAutomationLiveRunner;
         }
-        ContractTransportMode::Dashboard => return TransportRuntimeMode::DashboardContractRunner,
         ContractTransportMode::Gateway => return TransportRuntimeMode::GatewayContractRunner,
         ContractTransportMode::Deployment => return TransportRuntimeMode::DeploymentContractRunner,
         ContractTransportMode::Voice => return TransportRuntimeMode::VoiceContractRunner,
@@ -779,34 +768,6 @@ pub async fn run_browser_automation_live_runner_if_requested(cli: &Cli) -> Resul
         classification.reason
     );
 
-    Ok(true)
-}
-
-pub fn build_dashboard_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
-    StandardContractRunnerConfig {
-        fixture_path: cli.dashboard_fixture.clone(),
-        state_dir: cli.dashboard_state_dir.clone(),
-        queue_limit: cli.dashboard_queue_limit.max(1),
-        processed_case_cap: cli.dashboard_processed_case_cap.max(1),
-        retry_max_attempts: cli.dashboard_retry_max_attempts.max(1),
-        retry_base_delay_ms: cli.dashboard_retry_base_delay_ms,
-    }
-}
-
-pub async fn run_dashboard_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
-    if !cli.dashboard_contract_runner {
-        return Ok(false);
-    }
-    let config = build_dashboard_contract_runner_config(cli);
-    run_dashboard_contract_runner(DashboardRuntimeConfig {
-        fixture_path: config.fixture_path,
-        state_dir: config.state_dir,
-        queue_limit: config.queue_limit,
-        processed_case_cap: config.processed_case_cap,
-        retry_max_attempts: config.retry_max_attempts,
-        retry_base_delay_ms: config.retry_base_delay_ms,
-    })
-    .await?;
     Ok(true)
 }
 

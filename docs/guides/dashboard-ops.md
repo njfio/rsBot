@@ -4,7 +4,8 @@ Run all commands from repository root.
 
 ## Scope
 
-This runbook covers the fixture-driven dashboard runtime (`--dashboard-contract-runner`).
+This runbook covers dashboard diagnostics and gateway-backed API surfaces for preserved state
+artifacts. The fixture-driven contract runner (`--dashboard-contract-runner`) has been removed.
 
 ## Health and observability signals
 
@@ -81,21 +82,19 @@ Stream reconnect semantics:
 
 ## Rollout plan with guardrails
 
-1. Validate fixture contract and runtime locally:
-   `cargo test -p tau-coding-agent dashboard_contract -- --test-threads=1`
-2. Validate runtime behavior coverage:
-   `cargo test -p tau-coding-agent dashboard_runtime -- --test-threads=1`
-3. Run deterministic demo:
+1. Validate diagnostics coverage:
+   `cargo test -p tau-coding-agent dashboard_status_inspect -- --test-threads=1`
+2. Run deterministic demo:
    `./scripts/demo/dashboard.sh`
-4. Verify transport health and status gate:
+3. Verify transport health and status gate:
    `--transport-health-inspect dashboard --transport-health-json`
    `--dashboard-status-inspect --dashboard-status-json`
-5. Promote by increasing fixture complexity gradually while monitoring:
+4. Promote by increasing state-artifact complexity gradually while monitoring:
    `failure_streak`, `last_cycle_failed`, `queue_depth`, `rollout_gate`.
 
 ## Rollback plan
 
-1. Stop invoking `--dashboard-contract-runner`.
+1. Do not invoke `--dashboard-contract-runner` (removed).
 2. Preserve `.tau/dashboard/` for incident analysis.
 3. Revert to last known-good revision:
    `git revert <commit>`

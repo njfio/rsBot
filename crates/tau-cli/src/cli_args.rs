@@ -3261,7 +3261,8 @@ pub struct Cli {
         long = "dashboard-contract-runner",
         env = "TAU_DASHBOARD_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven dashboard runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven dashboard contract runner (removed)"
     )]
     pub dashboard_contract_runner: bool,
 
@@ -3269,8 +3270,9 @@ pub struct Cli {
         long = "dashboard-fixture",
         env = "TAU_DASHBOARD_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/dashboard-contract/mixed-outcomes.json",
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Path to dashboard runtime contract fixture JSON"
+        help = "Deprecated: dashboard runtime contract fixture JSON"
     )]
     pub dashboard_fixture: PathBuf,
 
@@ -3286,8 +3288,9 @@ pub struct Cli {
         long = "dashboard-queue-limit",
         env = "TAU_DASHBOARD_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum dashboard fixture cases processed per runtime cycle"
+        help = "Deprecated: dashboard contract runner queue limit"
     )]
     pub dashboard_queue_limit: usize,
 
@@ -3295,8 +3298,9 @@ pub struct Cli {
         long = "dashboard-processed-case-cap",
         env = "TAU_DASHBOARD_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum processed-case keys retained for dashboard duplicate suppression"
+        help = "Deprecated: dashboard contract runner processed-case cap"
     )]
     pub dashboard_processed_case_cap: usize,
 
@@ -3304,8 +3308,9 @@ pub struct Cli {
         long = "dashboard-retry-max-attempts",
         env = "TAU_DASHBOARD_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum retry attempts for transient dashboard runtime failures"
+        help = "Deprecated: dashboard contract runner retry max attempts"
     )]
     pub dashboard_retry_max_attempts: usize,
 
@@ -3313,8 +3318,9 @@ pub struct Cli {
         long = "dashboard-retry-base-delay-ms",
         env = "TAU_DASHBOARD_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Base backoff delay in milliseconds for dashboard runtime retries (0 disables delay)"
+        help = "Deprecated: dashboard contract runner retry base delay in milliseconds"
     )]
     pub dashboard_retry_base_delay_ms: u64,
 
