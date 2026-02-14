@@ -7,7 +7,9 @@ use crate::tools::{
     ToolPolicy,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 3;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 4;
+const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
+const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 
 pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     let cwd = std::env::current_dir().context("failed to resolve current directory")?;
@@ -71,6 +73,15 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
             }
         }
     }
+
+    if let Some(allow_mutations) = parse_optional_env_bool(ALLOW_PROTECTED_PATH_MUTATIONS_ENV)? {
+        policy.allow_protected_path_mutations = allow_mutations;
+    }
+
+    for protected_path in parse_protected_paths_env(PROTECTED_PATHS_ENV)? {
+        policy.add_protected_path(protected_path);
+    }
+
     Ok(policy)
 }
 
@@ -102,6 +113,12 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
             .iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>(),
+        "protected_paths": policy
+            .protected_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>(),
+        "allow_protected_path_mutations": policy.allow_protected_path_mutations,
         "max_file_read_bytes": policy.max_file_read_bytes,
         "max_file_write_bytes": policy.max_file_write_bytes,
         "max_command_output_bytes": policy.max_command_output_bytes,
@@ -134,6 +151,50 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
     })
 }
 
+fn parse_optional_env_bool(name: &str) -> Result<Option<bool>> {
+    let Some(raw) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    let raw = raw.to_string_lossy();
+    let value = raw.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    match value.as_str() {
+        "1" | "true" | "yes" | "on" => Ok(Some(true)),
+        "0" | "false" | "no" | "off" => Ok(Some(false)),
+        _ => Err(anyhow!(
+            "invalid {} value '{}': expected one of 1,true,yes,on,0,false,no,off",
+            name,
+            raw.trim()
+        )),
+    }
+}
+
+fn parse_protected_paths_env(name: &str) -> Result<Vec<std::path::PathBuf>> {
+    let Some(raw) = std::env::var_os(name) else {
+        return Ok(Vec::new());
+    };
+    let cwd = std::env::current_dir().context("failed to resolve current directory")?;
+    let mut paths = Vec::new();
+    for token in raw.to_string_lossy().split(',') {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed = std::path::PathBuf::from(trimmed);
+        let absolute = if parsed.is_absolute() {
+            parsed
+        } else {
+            cwd.join(parsed)
+        };
+        if !paths.iter().any(|existing| existing == &absolute) {
+            paths.push(absolute);
+        }
+    }
+    Ok(paths)
+}
+
 fn map_cli_bash_profile(value: CliBashProfile) -> BashCommandProfile {
     match value {
         CliBashProfile::Permissive => BashCommandProfile::Permissive,
@@ -156,5 +217,33 @@ fn map_cli_tool_policy_preset(value: CliToolPolicyPreset) -> crate::tools::ToolP
         CliToolPolicyPreset::Balanced => crate::tools::ToolPolicyPreset::Balanced,
         CliToolPolicyPreset::Strict => crate::tools::ToolPolicyPreset::Strict,
         CliToolPolicyPreset::Hardened => crate::tools::ToolPolicyPreset::Hardened,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_policy_to_json;
+    use crate::tools::ToolPolicy;
+    use tempfile::tempdir;
+
+    #[test]
+    fn unit_tool_policy_json_exposes_protected_path_controls() {
+        let temp = tempdir().expect("tempdir");
+        let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+        policy.allow_protected_path_mutations = true;
+        let payload = tool_policy_to_json(&policy);
+
+        assert_eq!(payload["schema_version"], 4);
+        assert_eq!(payload["allow_protected_path_mutations"], true);
+        assert!(payload["protected_paths"]
+            .as_array()
+            .map(|paths| {
+                paths.iter().any(|path| {
+                    path.as_str()
+                        .map(|value| value.ends_with("AGENTS.md"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false));
     }
 }

@@ -59,6 +59,14 @@ const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT: u32 = 60;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED: u32 = 30;
+const DEFAULT_PROTECTED_RELATIVE_PATHS: &[&str] = &[
+    "AGENTS.md",
+    "SOUL.md",
+    "USER.md",
+    ".tau/rbac-policy.json",
+    ".tau/trust-roots.json",
+    ".tau/channel-policy.json",
+];
 const BUILTIN_AGENT_TOOL_NAMES: &[&str] = &[
     "read",
     "write",
@@ -266,6 +274,8 @@ impl ToolRateLimiter {
 /// Public struct `ToolPolicy` used across Tau components.
 pub struct ToolPolicy {
     pub allowed_roots: Vec<PathBuf>,
+    pub protected_paths: Vec<PathBuf>,
+    pub allow_protected_path_mutations: bool,
     pub policy_preset: ToolPolicyPreset,
     pub max_file_read_bytes: usize,
     pub max_file_write_bytes: usize,
@@ -292,6 +302,8 @@ pub struct ToolPolicy {
 impl ToolPolicy {
     pub fn new(allowed_roots: Vec<PathBuf>) -> Self {
         let mut policy = Self {
+            protected_paths: default_protected_paths(&allowed_roots),
+            allow_protected_path_mutations: false,
             allowed_roots,
             policy_preset: ToolPolicyPreset::Balanced,
             max_file_read_bytes: 1_000_000,
@@ -320,6 +332,18 @@ impl ToolPolicy {
         };
         policy.apply_preset(ToolPolicyPreset::Balanced);
         policy
+    }
+
+    pub fn add_protected_path(&mut self, path: PathBuf) {
+        let normalized = normalize_policy_path(&path);
+        if !self
+            .protected_paths
+            .iter()
+            .any(|entry| entry == &normalized)
+        {
+            self.protected_paths.push(normalized);
+            self.protected_paths.sort();
+        }
     }
 
     pub fn set_bash_profile(&mut self, profile: BashCommandProfile) {
@@ -636,6 +660,11 @@ impl AgentTool for WriteTool {
                 "error": error,
             }));
         }
+        if let Some(protected_path_result) =
+            evaluate_protected_path_gate(&self.policy, "write", &resolved)
+        {
+            return protected_path_result;
+        }
 
         if let Some(rbac_result) = evaluate_tool_rbac_gate(
             self.policy.rbac_principal.as_deref(),
@@ -758,6 +787,11 @@ impl AgentTool for EditTool {
                 "path": resolved.display().to_string(),
                 "error": error,
             }));
+        }
+        if let Some(protected_path_result) =
+            evaluate_protected_path_gate(&self.policy, "edit", &resolved)
+        {
+            return protected_path_result;
         }
 
         if let Some(rbac_result) = evaluate_tool_rbac_gate(
@@ -1637,6 +1671,35 @@ fn resolve_rate_limit_principal(policy: &ToolPolicy) -> String {
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .unwrap_or_else(resolve_local_principal)
+}
+
+fn evaluate_protected_path_gate(
+    policy: &ToolPolicy,
+    tool_name: &str,
+    path: &Path,
+) -> Option<ToolExecutionResult> {
+    if policy.allow_protected_path_mutations {
+        return None;
+    }
+
+    let normalized_path = normalize_policy_path(path);
+    let matched_protected_path = policy
+        .protected_paths
+        .iter()
+        .find(|candidate| **candidate == normalized_path)?;
+    let path_display = normalized_path.display().to_string();
+    let matched_display = matched_protected_path.display().to_string();
+
+    Some(ToolExecutionResult::error(json!({
+        "policy_rule": "protected_path",
+        "decision": "deny",
+        "reason_code": "protected_path_denied",
+        "action": format!("tool:{tool_name}"),
+        "path": path_display,
+        "protected_path": matched_display,
+        "error": "path is protected by tool policy",
+        "hint": "set TAU_ALLOW_PROTECTED_PATH_MUTATIONS=1 to allow protected path mutations for controlled maintenance windows",
+    })))
 }
 
 fn evaluate_tool_rate_limit_gate(
@@ -2544,6 +2607,27 @@ fn is_path_allowed(path: &Path, policy: &ToolPolicy) -> Result<bool, String> {
     }
 
     Ok(false)
+}
+
+fn default_protected_paths(allowed_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut paths = BTreeSet::new();
+    for root in allowed_roots {
+        let absolute_root = if root.is_absolute() {
+            root.clone()
+        } else {
+            cwd.join(root)
+        };
+        for relative_path in DEFAULT_PROTECTED_RELATIVE_PATHS {
+            let candidate = absolute_root.join(relative_path);
+            paths.insert(normalize_policy_path(&candidate));
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn normalize_policy_path(path: &Path) -> PathBuf {
+    canonicalize_best_effort(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn canonicalize_best_effort(path: &Path) -> std::io::Result<PathBuf> {

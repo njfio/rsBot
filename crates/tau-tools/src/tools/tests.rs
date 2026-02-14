@@ -72,6 +72,26 @@ fn unit_builtin_agent_tool_name_registry_includes_session_tools() {
 }
 
 #[test]
+fn unit_tool_policy_seeds_default_protected_paths() {
+    let temp = tempdir().expect("tempdir");
+    let policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    let protected_paths = policy
+        .protected_paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(protected_paths
+        .iter()
+        .any(|path| path.ends_with("AGENTS.md")));
+    assert!(protected_paths.iter().any(|path| path.ends_with("SOUL.md")));
+    assert!(protected_paths.iter().any(|path| path.ends_with("USER.md")));
+    assert!(protected_paths
+        .iter()
+        .any(|path| path.ends_with(".tau/rbac-policy.json")));
+}
+
+#[test]
 fn regression_tool_approval_gate_is_noop_when_policy_is_missing() {
     let result = evaluate_tool_approval_gate(ApprovalAction::ToolWrite {
         path: "/tmp/example.txt".to_string(),
@@ -861,6 +881,70 @@ async fn regression_edit_tool_rejects_result_larger_than_write_limit() {
 }
 
 #[tokio::test]
+async fn regression_write_tool_denies_default_protected_paths() {
+    let temp = tempdir().expect("tempdir");
+    let protected = temp.path().join("AGENTS.md");
+    let tool = WriteTool::new(test_policy(temp.path()));
+
+    let result = tool
+        .execute(serde_json::json!({
+            "path": protected,
+            "content": "blocked",
+        }))
+        .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("policy_rule")
+            .and_then(serde_json::Value::as_str),
+        Some("protected_path")
+    );
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("protected_path_denied")
+    );
+}
+
+#[tokio::test]
+async fn regression_edit_tool_denies_default_protected_paths() {
+    let temp = tempdir().expect("tempdir");
+    let protected = temp.path().join("AGENTS.md");
+    tokio::fs::write(&protected, "original")
+        .await
+        .expect("seed protected file");
+
+    let tool = EditTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": protected,
+            "find": "original",
+            "replace": "mutated",
+        }))
+        .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("policy_rule")
+            .and_then(serde_json::Value::as_str),
+        Some("protected_path")
+    );
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("protected_path_denied")
+    );
+}
+
+#[tokio::test]
 async fn write_tool_creates_parent_directory() {
     let temp = tempdir().expect("tempdir");
     let file = temp.path().join("nested/output.txt");
@@ -878,6 +962,28 @@ async fn write_tool_creates_parent_directory() {
         .await
         .expect("read file");
     assert_eq!(content, "hello");
+}
+
+#[tokio::test]
+async fn functional_write_tool_allows_protected_paths_when_override_is_enabled() {
+    let temp = tempdir().expect("tempdir");
+    let protected = temp.path().join("AGENTS.md");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.allow_protected_path_mutations = true;
+    let tool = WriteTool::new(Arc::new(policy));
+
+    let result = tool
+        .execute(serde_json::json!({
+            "path": protected,
+            "content": "allowed",
+        }))
+        .await;
+
+    assert!(!result.is_error);
+    let content = tokio::fs::read_to_string(temp.path().join("AGENTS.md"))
+        .await
+        .expect("read protected file");
+    assert_eq!(content, "allowed");
 }
 
 #[tokio::test]

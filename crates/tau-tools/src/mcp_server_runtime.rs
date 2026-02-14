@@ -1317,6 +1317,59 @@ mod tests {
     }
 
     #[test]
+    fn integration_tools_call_write_denies_protected_paths() {
+        let temp = tempdir().expect("tempdir");
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("skills")).expect("create skills");
+        std::fs::create_dir_all(tau_root.join("sessions")).expect("create sessions");
+        std::fs::create_dir_all(tau_root.join("channel-store/channels"))
+            .expect("create channel store");
+        std::fs::write(tau_root.join("sessions/default.jsonl"), "{}\n").expect("write session");
+        let state = McpServerState {
+            tool_policy: ToolPolicy::new(vec![temp.path().to_path_buf()]),
+            session_path: tau_root.join("sessions/default.jsonl"),
+            skills_dir: tau_root.join("skills"),
+            channel_store_root: tau_root.join("channel-store"),
+            context_providers: resolve_mcp_context_providers(&[])
+                .expect("providers")
+                .into_iter()
+                .collect(),
+            external_servers: Vec::new(),
+            external_tools: Vec::new(),
+        };
+        let request_frames = vec![jsonrpc_request_frame(
+            Value::String("req-write".to_string()),
+            "tools/call",
+            serde_json::json!({
+                "name": "tau.write",
+                "arguments": {
+                    "path": temp.path().join("AGENTS.md").display().to_string(),
+                    "content": "blocked"
+                }
+            }),
+        )];
+        let raw = encode_frames(&request_frames);
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(raw));
+        let mut writer = Vec::new();
+        let report = serve_mcp_jsonrpc_reader(&mut reader, &mut writer, &state)
+            .expect("serve should succeed");
+        assert_eq!(report.processed_frames, 1);
+        assert_eq!(report.error_count, 0);
+
+        let responses = decode_frames(&writer);
+        assert_eq!(responses[0]["id"], "req-write");
+        assert_eq!(responses[0]["result"]["isError"], true);
+        assert_eq!(
+            responses[0]["result"]["structuredContent"]["policy_rule"],
+            "protected_path"
+        );
+        assert_eq!(
+            responses[0]["result"]["structuredContent"]["reason_code"],
+            "protected_path_denied"
+        );
+    }
+
+    #[test]
     fn regression_invalid_request_and_unknown_method_return_jsonrpc_errors() {
         let state = test_state();
         let request_frames = vec![
