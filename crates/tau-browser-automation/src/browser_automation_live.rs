@@ -307,7 +307,20 @@ impl<E: BrowserActionExecutor> Drop for BrowserSessionManager<E> {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `BrowserAutomationLiveTimelineEntry` used across Tau components.
+pub struct BrowserAutomationLiveTimelineEntry {
+    pub case_id: String,
+    pub operation: String,
+    pub action: String,
+    pub replay_step: String,
+    pub status_code: u16,
+    pub error_code: String,
+    #[serde(default)]
+    pub artifact_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 /// Public struct `BrowserAutomationLiveRunSummary` used across Tau components.
 pub struct BrowserAutomationLiveRunSummary {
     pub discovered_cases: usize,
@@ -318,7 +331,11 @@ pub struct BrowserAutomationLiveRunSummary {
     pub denied_unsafe_actions: usize,
     pub denied_action_limit: usize,
     pub artifact_records: usize,
+    #[serde(default)]
+    pub timeline: Vec<BrowserAutomationLiveTimelineEntry>,
+    #[serde(default)]
     pub reason_codes: Vec<String>,
+    #[serde(default)]
     pub health_state: String,
 }
 
@@ -366,6 +383,16 @@ pub fn run_browser_automation_live_fixture_with_persistence<E: BrowserActionExec
             }
         }
 
+        summary.timeline.push(BrowserAutomationLiveTimelineEntry {
+            case_id: case.case_id.trim().to_string(),
+            operation: case.operation.trim().to_ascii_lowercase(),
+            action: case.action.trim().to_ascii_lowercase(),
+            replay_step: live_replay_step_label(outcome.replay_result.step).to_string(),
+            status_code: outcome.replay_result.status_code,
+            error_code: outcome.replay_result.error_code.clone().unwrap_or_default(),
+            artifact_types: artifact_types_from_bundle(&outcome.artifacts),
+        });
+
         if let Some(config) = persistence {
             summary.artifact_records = summary
                 .artifact_records
@@ -391,6 +418,28 @@ fn live_case_key(case: &BrowserAutomationContractCase) -> String {
         case.action.trim().to_ascii_lowercase(),
         case.case_id.trim()
     )
+}
+
+fn live_replay_step_label(step: BrowserAutomationReplayStep) -> &'static str {
+    match step {
+        BrowserAutomationReplayStep::Success => "success",
+        BrowserAutomationReplayStep::MalformedInput => "malformed_input",
+        BrowserAutomationReplayStep::RetryableFailure => "retryable_failure",
+    }
+}
+
+fn artifact_types_from_bundle(artifacts: &BrowserActionArtifactBundle) -> Vec<String> {
+    let mut types = Vec::new();
+    if !artifacts.dom_snapshot_html.trim().is_empty() {
+        types.push("dom_snapshot".to_string());
+    }
+    if !artifacts.screenshot_svg.trim().is_empty() {
+        types.push("screenshot".to_string());
+    }
+    if !artifacts.trace_json.trim().is_empty() {
+        types.push("trace".to_string());
+    }
+    types
 }
 
 fn persist_live_case_artifacts(
@@ -661,7 +710,8 @@ mod tests {
     };
     use crate::browser_automation_contract::{
         parse_browser_automation_contract_fixture, BrowserAutomationCaseExpectation,
-        BrowserAutomationContractCase, BrowserAutomationOutcomeKind, BrowserAutomationReplayStep,
+        BrowserAutomationContractCase, BrowserAutomationContractFixture,
+        BrowserAutomationOutcomeKind, BrowserAutomationReplayStep,
         BROWSER_AUTOMATION_ERROR_BACKEND_UNAVAILABLE, BROWSER_AUTOMATION_ERROR_TIMEOUT,
         BROWSER_AUTOMATION_ERROR_UNSAFE_OPERATION,
     };
@@ -883,7 +933,7 @@ print(json.dumps({
     }
 
     #[test]
-    fn functional_live_fixture_runner_executes_navigation_and_action_sequence() {
+    fn functional_live_fixture_runner_executes_navigation_snapshot_and_action_sequence() {
         let temp = tempdir().expect("tempdir");
         let page_path = temp.path().join("index.html");
         std::fs::write(
@@ -911,6 +961,21 @@ print(json.dumps({
           "url": "file://{}",
           "title": "Live Test Page",
           "dom_nodes": 10
+        }}
+      }}
+    }},
+    {{
+      "schema_version": 1,
+      "case_id": "snapshot-live",
+      "operation": "snapshot",
+      "expected": {{
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {{
+          "status": "ok",
+          "operation": "snapshot",
+          "snapshot_id": "snapshot-live",
+          "elements": [{{"id": "e1", "role": "button", "name": "Run"}}]
         }}
       }}
     }},
@@ -956,11 +1021,18 @@ print(json.dumps({
         )
         .expect("live run");
 
-        assert_eq!(summary.discovered_cases, 2);
-        assert_eq!(summary.success_cases, 2);
+        assert_eq!(summary.discovered_cases, 3);
+        assert_eq!(summary.success_cases, 3);
         assert_eq!(summary.malformed_cases, 0);
         assert_eq!(summary.retryable_failures, 0);
         assert_eq!(summary.health_state, "healthy");
+        assert_eq!(summary.timeline.len(), 3);
+        assert_eq!(summary.timeline[0].case_id, "navigate-live");
+        assert_eq!(summary.timeline[1].case_id, "snapshot-live");
+        assert_eq!(summary.timeline[2].case_id, "action-live");
+        assert_eq!(summary.timeline[0].artifact_types.len(), 3);
+        assert_eq!(summary.timeline[1].artifact_types.len(), 3);
+        assert_eq!(summary.timeline[2].artifact_types.len(), 2);
         assert!(!session_file.exists());
     }
 
@@ -1023,6 +1095,9 @@ print(json.dumps({
 
         assert_eq!(summary.success_cases, 1);
         assert_eq!(summary.artifact_records, 3);
+        assert_eq!(summary.timeline.len(), 1);
+        assert_eq!(summary.timeline[0].case_id, "navigate-artifacts");
+        assert_eq!(summary.timeline[0].artifact_types.len(), 3);
         assert!(summary
             .reason_codes
             .contains(&"artifact_persisted".to_string()));
@@ -1238,6 +1313,35 @@ print(json.dumps({
         let snapshot = counters.lock().expect("lock");
         assert_eq!(snapshot.starts, 0);
         assert_eq!(snapshot.executes, 0);
+    }
+
+    #[test]
+    fn regression_live_timeline_preserves_fixture_case_order_for_compatibility() {
+        let fixture = BrowserAutomationContractFixture {
+            schema_version: 1,
+            name: "timeline-order".to_string(),
+            description: "ensures summary timeline order matches fixture order".to_string(),
+            cases: vec![
+                sample_case("z-case", "file:///tmp/z.html"),
+                sample_case("a-case", "file:///tmp/a.html"),
+            ],
+        };
+
+        let counters = Arc::new(Mutex::new(ExecutorCounters::default()));
+        let mut manager = BrowserSessionManager::new(CountingExecutor::new(counters.clone()));
+        let summary = run_browser_automation_live_fixture(
+            &fixture,
+            &mut manager,
+            &BrowserAutomationLivePolicy::default(),
+        )
+        .expect("run");
+        assert_eq!(summary.timeline.len(), 2);
+        assert_eq!(summary.timeline[0].case_id, "z-case");
+        assert_eq!(summary.timeline[1].case_id, "a-case");
+
+        let snapshot = counters.lock().expect("lock");
+        assert_eq!(snapshot.starts, 1);
+        assert_eq!(snapshot.executes, 2);
     }
 
     #[test]

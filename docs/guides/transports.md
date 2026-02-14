@@ -371,6 +371,21 @@ cargo run -p tau-coding-agent -- \
   --browser-automation-preflight-json
 ```
 
+Run deterministic live harness proof (timeline + artifact summary + machine-readable report):
+
+```bash
+./scripts/demo/browser-automation-live.sh
+./scripts/demo/browser-automation-live.sh --timeout-seconds 120
+```
+
+Live harness outputs:
+
+- `.tau/demo-browser-automation-live/browser-live-summary.json`
+- `.tau/demo-browser-automation-live/browser-live-report.json`
+- `.tau/demo-browser-automation-live/browser-live-transcript.log`
+
+Operational runbook and triage playbook: `docs/guides/browser-automation-live-ops.md`.
+
 Troubleshooting:
 
 - `browser_automation.npx` not ready: install Node.js/npm and ensure `npx` is on `PATH`.
@@ -381,6 +396,7 @@ Troubleshooting:
 Demo command path:
 
 - `./scripts/demo/browser-automation.sh`
+- `./scripts/demo/browser-automation-live.sh`
 - `./scripts/demo/all.sh --only browser-automation --fail-fast`
 
 ## Dashboard contract runner

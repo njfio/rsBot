@@ -149,6 +149,7 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ./scripts/demo/multi-channel.sh
 ./scripts/demo/multi-agent.sh
 ./scripts/demo/browser-automation.sh
+./scripts/demo/browser-automation-live.sh
 ./scripts/demo/memory.sh
 ./scripts/demo/dashboard.sh
 ./scripts/demo/gateway.sh
