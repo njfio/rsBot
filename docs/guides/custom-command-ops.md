@@ -71,6 +71,17 @@ Guardrail interpretation:
    `failure_streak`, `last_cycle_failed`, `queue_depth`, `rollout_gate`,
    `reason_code_counts`.
 
+## Canary rollout profile
+
+Apply the global rollout contract in [Release Channel Ops](release-channel-ops.md#cross-surface-rollout-contract).
+
+| Phase | Canary % | Custom-command-specific gates |
+| --- | --- | --- |
+| canary-1 | 5% | `rollout_gate=pass`, `health_state=healthy`, `failure_streak=0`, `queue_depth<=1`, no new `case_processing_failed`. |
+| canary-2 | 25% | canary-1 gates hold for 60 minutes; `command_runs_recorded` continues to advance. |
+| canary-3 | 50% | canary-2 gates hold for 120 minutes; `command_registry_mutated` is present when registry changes are expected. |
+| general-availability | 100% | 24-hour monitor window passes and release sign-off checklist is complete. |
+
 ## Rollback plan
 
 1. Stop invoking `--custom-command-contract-runner`.
@@ -78,6 +89,7 @@ Guardrail interpretation:
 3. Revert to last known-good revision:
    `git revert <commit>`
 4. Re-run validation matrix before re-enable.
+5. If any rollback trigger from [Rollback Trigger Matrix](release-channel-ops.md#rollback-trigger-matrix) fires, stop promotion immediately and execute [Rollback Execution Steps](release-channel-ops.md#rollback-execution-steps).
 
 ## Troubleshooting
 

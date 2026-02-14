@@ -57,6 +57,19 @@ Common failure signals:
 - Playwright wrapper issue: validate executable path passed to `--playwright-cli`.
 - Policy denials: inspect `reason_codes` and timeline `error_code` fields.
 
+## Canary rollout profile
+
+Apply the global rollout contract in [Release Channel Ops](release-channel-ops.md#cross-surface-rollout-contract).
+
+| Phase | Canary % | Browser-specific gates |
+| --- | --- | --- |
+| canary-1 | 5% | `health_state=healthy`; no timeline item has non-`ok` `status`; all `error_code` fields are empty. |
+| canary-2 | 25% | canary-1 gates hold for 60 minutes; `artifact_records` count grows with executed cases. |
+| canary-3 | 50% | canary-2 gates hold for 120 minutes; `reason_codes` has no new hard-failure entries. |
+| general-availability | 100% | 24-hour monitor window passes and release sign-off checklist is complete. |
+
+If any rollback trigger from [Rollback Trigger Matrix](release-channel-ops.md#rollback-trigger-matrix) fires, stop promotion immediately and execute [Rollback Execution Steps](release-channel-ops.md#rollback-execution-steps).
+
 ## CI Attachment Pattern
 
 Publish these files as CI artifacts for merge evidence:

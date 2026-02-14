@@ -63,6 +63,7 @@ class DocsLinkCheckTests(unittest.TestCase):
         docs_index = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
         self.assertIn("guides/quickstart.md", docs_index)
         self.assertIn("guides/transports.md", docs_index)
+        self.assertIn("guides/release-signoff-checklist.md", docs_index)
         self.assertIn("guides/packages.md", docs_index)
         self.assertIn("guides/events.md", docs_index)
 
