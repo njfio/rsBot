@@ -2008,6 +2008,33 @@ pub struct Cli {
     pub qa_loop_changed_file_limit: Option<usize>,
 
     #[arg(
+        long = "train-config",
+        env = "TAU_TRAIN_CONFIG",
+        value_name = "path",
+        help = "Run rollout training mode from JSON config and exit"
+    )]
+    pub train_config: Option<PathBuf>,
+
+    #[arg(
+        long = "train-store-sqlite",
+        env = "TAU_TRAIN_STORE_SQLITE",
+        requires = "train_config",
+        default_value = ".tau/training/store.sqlite",
+        value_name = "path",
+        help = "SQLite file path for durable rollout/tracing state in training mode"
+    )]
+    pub train_store_sqlite: PathBuf,
+
+    #[arg(
+        long = "train-json",
+        env = "TAU_TRAIN_JSON",
+        requires = "train_config",
+        default_value_t = false,
+        help = "Emit training summary output as JSON"
+    )]
+    pub train_json: bool,
+
+    #[arg(
         long = "mcp-server",
         env = "TAU_MCP_SERVER",
         default_value_t = false,

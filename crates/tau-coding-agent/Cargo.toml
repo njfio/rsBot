@@ -45,6 +45,9 @@ tau-tools = { path = "../tau-tools" }
 tau-onboarding = { path = "../tau-onboarding" }
 tau-agent-core = { path = "../tau-agent-core" }
 tau-ai = { path = "../tau-ai" }
+tau-trainer = { path = "../tau-trainer" }
+tau-training-runner = { path = "../tau-training-runner" }
+tau-training-store = { path = "../tau-training-store" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
