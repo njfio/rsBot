@@ -180,6 +180,13 @@ jobs:
         if: steps.helper_scope.outputs.helper_tests_needed == 'true'
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py"
 
+      - name: Check rust doc density thresholds
+        if: steps.rust_scope.outputs.rust_changed == 'true'
+        run: |
+          python3 .github/scripts/rust_doc_density.py \
+            --repo-root . \
+            --targets-file docs/guides/doc-density-targets.json
+
       - name: Determine fast-validate script scope
         id: fast_validate_scope
         shell: bash
