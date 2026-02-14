@@ -73,7 +73,7 @@ Primary proof artifacts:
 
 This harness validates:
 
-- dashboard load path (fallback webchat shell)
+- dashboard load path (`/dashboard`) with `/webchat` fallback availability
 - live update snapshot collection
 - control actions (`#refreshStatus`, `#clearOutput`)
 - action-audit extraction from dashboard channel-store logs

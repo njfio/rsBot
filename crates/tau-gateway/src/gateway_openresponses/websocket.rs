@@ -195,6 +195,7 @@ fn dispatch_gateway_ws_control_text_frame(
                             "multi_channel": multi_channel_report,
                             "gateway": {
                                 "responses_endpoint": OPENRESPONSES_ENDPOINT,
+                                "dashboard_endpoint": DASHBOARD_ENDPOINT,
                                 "status_endpoint": GATEWAY_STATUS_ENDPOINT,
                                 "webchat_endpoint": WEBCHAT_ENDPOINT,
                                 "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,

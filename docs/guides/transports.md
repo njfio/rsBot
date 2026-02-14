@@ -473,7 +473,8 @@ Server endpoints:
 - `POST /gateway/auth/session` (only when `--gateway-openresponses-auth-mode=password-session`)
 - `GET /gateway/status`
 - `GET /gateway/ws` (websocket control protocol)
-- `GET /webchat`
+- `GET /dashboard` (primary operator UI)
+- `GET /webchat` (fallback shell)
 
 Websocket control methods (schema versions `0` and `1` accepted):
 

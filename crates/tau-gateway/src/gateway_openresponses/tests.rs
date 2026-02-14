@@ -331,6 +331,55 @@ fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
     assert!(html.contains("connector_channels:"));
 }
 
+#[test]
+fn unit_render_gateway_dashboard_page_includes_expected_endpoints() {
+    let html = render_gateway_dashboard_page();
+    assert!(html.contains("Tau Operator Dashboard"));
+    assert!(html.contains(OPENRESPONSES_ENDPOINT));
+    assert!(html.contains(DASHBOARD_ENDPOINT));
+    assert!(html.contains(WEBCHAT_ENDPOINT));
+    assert!(html.contains(GATEWAY_STATUS_ENDPOINT));
+    assert!(html.contains(GATEWAY_WS_ENDPOINT));
+    assert!(html.contains(DEFAULT_SESSION_KEY));
+    assert!(html.contains("Operator Controls"));
+    assert!(html.contains("Transport Table"));
+    assert!(html.contains("Reason Codes"));
+}
+
+#[tokio::test]
+async fn functional_dashboard_endpoint_returns_html_shell() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}{DASHBOARD_ENDPOINT}"))
+        .send()
+        .await
+        .expect("send request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.contains("text/html"));
+    let body = response.text().await.expect("read dashboard body");
+    assert!(body.contains("Tau Operator Dashboard"));
+    assert!(body.contains(OPENRESPONSES_ENDPOINT));
+    assert!(body.contains(WEBCHAT_ENDPOINT));
+    assert!(body.contains(GATEWAY_STATUS_ENDPOINT));
+    assert!(body.contains(GATEWAY_WS_ENDPOINT));
+    assert!(body.contains("Operator Controls"));
+    assert!(body.contains("Transport Table"));
+    assert!(body.contains("Reason Codes"));
+
+    handle.abort();
+}
+
 #[tokio::test]
 async fn functional_webchat_endpoint_returns_html_shell() {
     let temp = tempdir().expect("tempdir");
@@ -674,6 +723,10 @@ async fn regression_gateway_ws_malformed_frame_fails_closed_without_crashing_run
     let status = recv_gateway_ws_json(&mut socket).await;
     assert_eq!(status["kind"], "gateway.status.response");
     assert_eq!(
+        status["payload"]["gateway"]["dashboard_endpoint"],
+        DASHBOARD_ENDPOINT
+    );
+    assert_eq!(
         status["payload"]["gateway"]["ws_endpoint"],
         GATEWAY_WS_ENDPOINT
     );
@@ -768,6 +821,10 @@ async fn integration_gateway_status_endpoint_returns_service_snapshot() {
     assert_eq!(
         payload["gateway"]["responses_endpoint"].as_str(),
         Some(OPENRESPONSES_ENDPOINT)
+    );
+    assert_eq!(
+        payload["gateway"]["dashboard_endpoint"].as_str(),
+        Some(DASHBOARD_ENDPOINT)
     );
     assert_eq!(
         payload["gateway"]["webchat_endpoint"].as_str(),
