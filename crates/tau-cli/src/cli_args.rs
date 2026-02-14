@@ -3030,8 +3030,9 @@ pub struct Cli {
         long = "browser-automation-contract-runner",
         env = "TAU_BROWSER_AUTOMATION_CONTRACT_RUNNER",
         default_value_t = false,
+        hide = true,
         conflicts_with_all = ["browser_automation_live_runner", "browser_automation_preflight"],
-        help = "Run fixture-driven browser automation runtime contract scenarios"
+        help = "Deprecated: fixture-driven browser automation contract runner (removed)"
     )]
     pub browser_automation_contract_runner: bool,
 
@@ -3060,8 +3061,9 @@ pub struct Cli {
         long = "browser-automation-fixture",
         env = "TAU_BROWSER_AUTOMATION_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json",
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Path to browser automation runtime contract fixture JSON"
+        help = "Deprecated: browser automation runtime contract fixture JSON"
     )]
     pub browser_automation_fixture: PathBuf,
 
@@ -3077,8 +3079,9 @@ pub struct Cli {
         long = "browser-automation-queue-limit",
         env = "TAU_BROWSER_AUTOMATION_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum browser automation fixture cases processed per runtime cycle"
+        help = "Deprecated: browser automation contract runner queue limit"
     )]
     pub browser_automation_queue_limit: usize,
 
@@ -3086,8 +3089,9 @@ pub struct Cli {
         long = "browser-automation-processed-case-cap",
         env = "TAU_BROWSER_AUTOMATION_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum processed-case keys retained for browser automation duplicate suppression"
+        help = "Deprecated: browser automation contract runner processed-case cap"
     )]
     pub browser_automation_processed_case_cap: usize,
 
@@ -3095,8 +3099,9 @@ pub struct Cli {
         long = "browser-automation-retry-max-attempts",
         env = "TAU_BROWSER_AUTOMATION_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum retry attempts for transient browser automation runtime failures"
+        help = "Deprecated: browser automation contract runner retry max attempts"
     )]
     pub browser_automation_retry_max_attempts: usize,
 
@@ -3104,8 +3109,9 @@ pub struct Cli {
         long = "browser-automation-retry-base-delay-ms",
         env = "TAU_BROWSER_AUTOMATION_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Base backoff delay in milliseconds for browser automation runtime retries (0 disables delay)"
+        help = "Deprecated: browser automation contract runner retry base delay in milliseconds"
     )]
     pub browser_automation_retry_base_delay_ms: u64,
 
@@ -3113,8 +3119,9 @@ pub struct Cli {
         long = "browser-automation-action-timeout-ms",
         env = "TAU_BROWSER_AUTOMATION_ACTION_TIMEOUT_MS",
         default_value_t = 5_000,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum allowed action timeout in milliseconds for one browser automation case"
+        help = "Deprecated: browser automation contract runner action timeout in milliseconds"
     )]
     pub browser_automation_action_timeout_ms: u64,
 
@@ -3122,8 +3129,9 @@ pub struct Cli {
         long = "browser-automation-max-actions-per-case",
         env = "TAU_BROWSER_AUTOMATION_MAX_ACTIONS_PER_CASE",
         default_value_t = 8,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum allowed repeated action count for one browser automation fixture case"
+        help = "Deprecated: browser automation contract runner max actions per case"
     )]
     pub browser_automation_max_actions_per_case: usize,
 
@@ -3131,12 +3139,13 @@ pub struct Cli {
         long = "browser-automation-allow-unsafe-actions",
         env = "TAU_BROWSER_AUTOMATION_ALLOW_UNSAFE_ACTIONS",
         default_value_t = false,
+        hide = true,
         action = ArgAction::Set,
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
         requires = "browser_automation_contract_runner",
-        help = "Allow unsafe browser automation fixture operations (default deny)"
+        help = "Deprecated: allow unsafe browser automation contract fixture operations"
     )]
     pub browser_automation_allow_unsafe_actions: bool,
 
