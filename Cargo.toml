@@ -37,6 +37,7 @@ members = [
   "crates/tau-training-tracer",
   "crates/tau-training-runner",
   "crates/tau-trainer",
+  "crates/tau-algorithm",
 ]
 resolver = "2"
 

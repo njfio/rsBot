@@ -2800,6 +2800,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-algorithm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "criterion",
+ "serde_json",
+ "tau-ai",
+ "tau-trainer",
+ "tau-training-runner",
+ "tau-training-store",
+ "tau-training-tracer",
+ "tau-training-types",
+ "tokio",
+]
+
+[[package]]
 name = "tau-browser-automation"
 version = "0.1.0"
 dependencies = [
