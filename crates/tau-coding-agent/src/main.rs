@@ -150,6 +150,10 @@ pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt_with_policy_con
 #[cfg(test)]
 pub(crate) use crate::orchestrator_bridge::run_plan_first_prompt_with_policy_context_and_routing;
 #[cfg(test)]
+pub(crate) use crate::orchestrator_bridge::{
+    PlanFirstPromptPolicyRequest, PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
+};
+#[cfg(test)]
 pub(crate) use crate::package_manifest::execute_package_activate_on_startup;
 #[cfg(test)]
 pub(crate) use crate::package_manifest::{

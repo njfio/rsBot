@@ -21,11 +21,11 @@ use super::super::{
     CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
     CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOsSandboxMode, CliToolPolicyPreset,
     CommandAction, ContentBlock, Duration, HashMap, Instant, Message, MessageRole, ModelCatalog,
-    MultiAgentRouteTable, NoopClient, OsSandboxMode, Path, PathBuf, PromptRunStatus,
-    PromptTelemetryLogger, QueueClient, RenderOptions, RuntimeExtensionHooksConfig, SequenceClient,
-    SessionImportMode, SessionRuntime, SessionStore, SlowClient, SuccessClient, TauAiError,
-    ToolAuditLogger, ToolExecutionResult, ToolPolicyPreset, TrustedRootRecord, VecDeque,
-    AUTH_ENV_TEST_LOCK,
+    MultiAgentRouteTable, NoopClient, OsSandboxMode, Path, PathBuf, PlanFirstPromptPolicyRequest,
+    PlanFirstPromptRequest, PlanFirstPromptRoutingRequest, PromptRunStatus, PromptTelemetryLogger,
+    QueueClient, RenderOptions, RuntimeExtensionHooksConfig, SequenceClient, SessionImportMode,
+    SessionRuntime, SessionStore, SlowClient, SuccessClient, TauAiError, ToolAuditLogger,
+    ToolExecutionResult, ToolPolicyPreset, TrustedRootRecord, VecDeque, AUTH_ENV_TEST_LOCK,
 };
 use super::{make_script_executable, write_route_table_fixture};
 
@@ -1183,18 +1183,20 @@ async fn integration_run_plan_first_prompt_with_routing_uses_distinct_delegated_
     run_plan_first_prompt_with_policy_context_and_routing(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        true,
-        Some("preset=balanced;max_command_length=4096"),
-        &route_table,
-        None,
+        PlanFirstPromptRoutingRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+            delegated_policy_context: Some("preset=balanced;max_command_length=4096"),
+            route_table: &route_table,
+            route_trace_log_path: None,
+        },
     )
     .await
     .expect("delegated routed execution should succeed");
@@ -1273,18 +1275,20 @@ async fn functional_run_plan_first_prompt_with_routing_emits_fallback_trace_reco
     run_plan_first_prompt_with_policy_context_and_routing(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        false,
-        None,
-        &route_table,
-        Some(telemetry_log.as_path()),
+        PlanFirstPromptRoutingRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: false,
+            delegated_policy_context: None,
+            route_table: &route_table,
+            route_trace_log_path: Some(telemetry_log.as_path()),
+        },
     )
     .await
     .expect("fallback planner route should recover");
@@ -1341,33 +1345,37 @@ async fn regression_routed_orchestrator_default_profile_matches_legacy_behavior(
     run_plan_first_prompt(
         &mut legacy_agent,
         &mut legacy_runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        false,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: false,
+        },
     )
     .await
     .expect("legacy run should succeed");
     run_plan_first_prompt_with_policy_context_and_routing(
         &mut routed_agent,
         &mut routed_runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        false,
-        None,
-        &MultiAgentRouteTable::default(),
-        None,
+        PlanFirstPromptRoutingRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: false,
+            delegated_policy_context: None,
+            route_table: &MultiAgentRouteTable::default(),
+            route_trace_log_path: None,
+        },
     )
     .await
     .expect("routed default run should succeed");
@@ -1412,15 +1420,17 @@ async fn functional_run_plan_first_prompt_executes_planner_then_executor() {
     run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        2_048,
-        false,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 2_048,
+            delegate_steps: false,
+        },
     )
     .await
     .expect("plan-first prompt should succeed");
@@ -1474,15 +1484,17 @@ async fn functional_run_plan_first_prompt_delegate_steps_executes_and_consolidat
     run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        true,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+        },
     )
     .await
     .expect("delegated plan-first prompt should succeed");
@@ -1526,16 +1538,18 @@ async fn regression_run_plan_first_prompt_with_policy_context_fails_when_context
     let error = run_plan_first_prompt_with_policy_context(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        true,
-        None,
+        PlanFirstPromptPolicyRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+            delegated_policy_context: None,
+        },
     )
     .await
     .expect_err("missing delegated policy context should fail closed");
@@ -1580,15 +1594,17 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_on_empty_step_out
     let error = run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        true,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+        },
     )
     .await
     .expect_err("empty delegated output should fail");
@@ -1629,15 +1645,17 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_when_step_count_e
     let error = run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        2,
-        512,
-        512,
-        1_024,
-        true,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 2,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+        },
     )
     .await
     .expect_err("delegated step count above budget should fail");
@@ -1680,15 +1698,17 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_when_step_output_
     let error = run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        8,
-        1_024,
-        true,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 8,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+        },
     )
     .await
     .expect_err("oversized delegated output should fail");
@@ -1739,15 +1759,17 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_when_total_output
     let error = run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        64,
-        12,
-        true,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 64,
+            max_delegated_total_response_chars: 12,
+            delegate_steps: true,
+        },
     )
     .await
     .expect_err("oversized delegated cumulative output should fail");
@@ -1786,15 +1808,17 @@ async fn regression_run_plan_first_prompt_rejects_overlong_plans_before_executor
     let error = run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        2,
-        2,
-        512,
-        512,
-        1_024,
-        false,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 2,
+            max_delegated_steps: 2,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: false,
+        },
     )
     .await
     .expect_err("overlong plan should fail");
@@ -1831,15 +1855,17 @@ async fn regression_run_plan_first_prompt_fails_when_executor_output_is_empty() 
     let error = run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        512,
-        512,
-        1_024,
-        false,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: false,
+        },
     )
     .await
     .expect_err("empty executor output should fail");
@@ -1874,15 +1900,17 @@ async fn regression_run_plan_first_prompt_fails_when_executor_output_exceeds_bud
     let error = run_plan_first_prompt(
         &mut agent,
         &mut runtime,
-        "ship feature",
-        0,
-        test_render_options(),
-        4,
-        4,
-        8,
-        512,
-        1_024,
-        false,
+        PlanFirstPromptRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 8,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: false,
+        },
     )
     .await
     .expect_err("oversized executor output should fail");

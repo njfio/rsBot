@@ -108,6 +108,7 @@ use super::{
     DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
     DoctorProviderKeyStatus, DoctorStatus, FallbackRoutingClient, IntegrationAuthCommand,
     IntegrationCredentialStoreRecord, MacroCommand, MacroFile, MultiAgentRouteTable,
+    PlanFirstPromptPolicyRequest, PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
     ProfileCommand, ProfileDefaults, ProfileStoreFile, PromptRunStatus, PromptTelemetryLogger,
     ProviderAuthMethod, ProviderCredentialStoreRecord, RenderOptions, RuntimeExtensionHooksConfig,
     SessionBookmarkCommand, SessionBookmarkFile, SessionDiffEntry, SessionDiffReport,
