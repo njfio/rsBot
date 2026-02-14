@@ -100,6 +100,11 @@ Dashboard matrix lane includes fallback behavior:
 - primary: `scripts/demo/dashboard-live.sh`
 - fallback: `scripts/demo/dashboard.sh`
 
+Custom-command matrix lane includes fallback behavior:
+
+- primary: `scripts/demo/custom-command-live.sh`
+- fallback: `scripts/demo/custom-command.sh`
+
 Merge gate blocks when:
 
 - any required surface fails both primary and fallback mode, or

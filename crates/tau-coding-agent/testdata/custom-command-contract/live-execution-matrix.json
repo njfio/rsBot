@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "name": "custom-command-live-execution-matrix",
+  "description": "Live-mode custom command execution matrix covering success, policy deny, and retryable failure outcomes.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-01-create-success",
+      "operation": "create",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}}",
+      "arguments": {
+        "env": "staging"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 201,
+        "response_body": {
+          "status": "accepted",
+          "operation": "create",
+          "command_name": "deploy_release"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-02-update-success",
+      "operation": "update",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}} --safe",
+      "arguments": {
+        "env": "staging"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "accepted",
+          "operation": "update",
+          "command_name": "deploy_release"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-03-run-success",
+      "operation": "run",
+      "command_name": "deploy_release",
+      "template": "",
+      "arguments": {
+        "env": "staging",
+        "plan": "canary"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "accepted",
+          "operation": "run",
+          "command_name": "deploy_release",
+          "arguments": {
+            "env": "staging",
+            "plan": "canary"
+          }
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-04-list-success",
+      "operation": "list",
+      "command_name": "",
+      "template": "",
+      "arguments": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "accepted",
+          "operation": "list",
+          "commands": [
+            "deploy_release",
+            "triage_alerts"
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-05-delete-success",
+      "operation": "delete",
+      "command_name": "deploy_release",
+      "template": "",
+      "arguments": {},
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "accepted",
+          "operation": "delete",
+          "command_name": "deploy_release"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-06-policy-deny-admin-run",
+      "operation": "run",
+      "command_name": "admin_shutdown",
+      "template": "",
+      "arguments": {
+        "scope": "global"
+      },
+      "simulate_retryable_failure": false,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 403,
+        "error_code": "custom_command_policy_denied",
+        "response_body": {
+          "status": "denied",
+          "reason": "policy_denied",
+          "command_name": "admin_shutdown"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-07-retryable-run-backend",
+      "operation": "run",
+      "command_name": "triage_alerts",
+      "template": "",
+      "arguments": {
+        "severity": "high"
+      },
+      "simulate_retryable_failure": true,
+      "expected": {
+        "outcome": "retryable_failure",
+        "status_code": 503,
+        "error_code": "custom_command_backend_unavailable",
+        "response_body": {
+          "status": "retryable",
+          "reason": "backend_unavailable"
+        }
+      }
+    }
+  ]
+}
