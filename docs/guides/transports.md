@@ -698,6 +698,48 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/voice-ops.md`.
 
+## Voice live session replay runner
+
+Use this fixture-driven live mode to validate wake-word routing, live turn handling, and
+fallback behavior (invalid audio/provider outages).
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --voice-live-runner \
+  --voice-live-input crates/tau-coding-agent/testdata/voice-live/single-turn.json \
+  --voice-live-wake-word tau \
+  --voice-live-max-turns 64 \
+  --voice-live-tts-output \
+  --voice-state-dir .tau/voice-live
+```
+
+The runner writes state and observability output under:
+
+- `.tau/voice-live/state.json`
+- `.tau/voice-live/runtime-events.jsonl`
+- `.tau/voice-live/channel-store/voice/<speaker_id>/...`
+
+Inspect live voice transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --voice-state-dir .tau/voice-live \
+  --transport-health-inspect voice \
+  --transport-health-json
+```
+
+Inspect live voice rollout guardrail/status report:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --voice-state-dir .tau/voice-live \
+  --voice-status-inspect \
+  --voice-status-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/voice-ops.md`.
+
 ## ChannelStore inspection and repair
 
 Inspect one channel:

@@ -157,6 +157,7 @@ cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ./scripts/demo/deployment.sh
 ./scripts/demo/custom-command.sh
 ./scripts/demo/voice.sh
+./scripts/demo/voice-live.sh
 ```
 
 `all.sh --json` and report-file payloads include `duration_ms` per wrapper entry.
