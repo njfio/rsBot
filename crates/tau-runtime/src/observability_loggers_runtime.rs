@@ -317,7 +317,7 @@ pub fn tool_audit_event_json(
             let duration_ms = starts
                 .remove(tool_call_id)
                 .map(|started| started.elapsed().as_millis() as u64);
-            Some(serde_json::json!({
+            let mut payload = serde_json::json!({
                 "timestamp_unix_ms": current_unix_timestamp_ms(),
                 "event": "tool_execution_end",
                 "tool_call_id": tool_call_id,
@@ -325,7 +325,74 @@ pub fn tool_audit_event_json(
                 "duration_ms": duration_ms,
                 "is_error": result.is_error,
                 "result_bytes": result.as_text().len(),
-            }))
+            });
+
+            let mut throttled = false;
+            let mut throttle_reason_code: Option<String> = None;
+            let mut throttle_retry_after_ms: Option<u64> = None;
+            let mut throttle_events_total: Option<u64> = None;
+            let mut principal_throttle_events: Option<u64> = None;
+            let mut throttle_principal: Option<String> = None;
+
+            if let Value::Object(content) = &result.content {
+                if content
+                    .get("policy_rule")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == "rate_limit")
+                {
+                    throttled = true;
+                    throttle_reason_code = content
+                        .get("reason_code")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                    throttle_retry_after_ms = content.get("retry_after_ms").and_then(Value::as_u64);
+                    throttle_events_total =
+                        content.get("throttle_events_total").and_then(Value::as_u64);
+                    principal_throttle_events = content
+                        .get("principal_throttle_events")
+                        .and_then(Value::as_u64);
+                    throttle_principal = content
+                        .get("principal")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
+                }
+            }
+
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("throttled".to_string(), serde_json::json!(throttled));
+                if let Some(reason_code) = throttle_reason_code {
+                    object.insert(
+                        "throttle_reason_code".to_string(),
+                        serde_json::json!(reason_code),
+                    );
+                }
+                if let Some(retry_after_ms) = throttle_retry_after_ms {
+                    object.insert(
+                        "throttle_retry_after_ms".to_string(),
+                        serde_json::json!(retry_after_ms),
+                    );
+                }
+                if let Some(throttle_events_total) = throttle_events_total {
+                    object.insert(
+                        "throttle_events_total".to_string(),
+                        serde_json::json!(throttle_events_total),
+                    );
+                }
+                if let Some(principal_throttle_events) = principal_throttle_events {
+                    object.insert(
+                        "principal_throttle_events".to_string(),
+                        serde_json::json!(principal_throttle_events),
+                    );
+                }
+                if let Some(throttle_principal) = throttle_principal {
+                    object.insert(
+                        "throttle_principal".to_string(),
+                        serde_json::json!(throttle_principal),
+                    );
+                }
+            }
+
+            Some(payload)
         }
         _ => None,
     }
@@ -373,6 +440,33 @@ mod tests {
         assert!(payload["result_bytes"].as_u64().unwrap_or(0) > 0);
         assert!(payload["duration_ms"].is_number() || payload["duration_ms"].is_null());
         assert!(!starts.contains_key("call-2"));
+    }
+
+    #[test]
+    fn regression_tool_audit_event_json_marks_rate_limit_throttle_metadata() {
+        let mut starts = HashMap::new();
+        starts.insert("call-2a".to_string(), Instant::now());
+        let event = AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call-2a".to_string(),
+            tool_name: "bash".to_string(),
+            result: ToolExecutionResult::error(serde_json::json!({
+                "policy_rule": "rate_limit",
+                "reason_code": "rate_limit_rejected",
+                "retry_after_ms": 250,
+                "throttle_events_total": 5,
+                "principal_throttle_events": 2,
+                "principal": "github:octocat",
+            })),
+        };
+        let payload = tool_audit_event_json(&event, &mut starts).expect("expected payload");
+
+        assert_eq!(payload["event"], "tool_execution_end");
+        assert_eq!(payload["throttled"], true);
+        assert_eq!(payload["throttle_reason_code"], "rate_limit_rejected");
+        assert_eq!(payload["throttle_retry_after_ms"], 250);
+        assert_eq!(payload["throttle_events_total"], 5);
+        assert_eq!(payload["principal_throttle_events"], 2);
+        assert_eq!(payload["throttle_principal"], "github:octocat");
     }
 
     #[test]

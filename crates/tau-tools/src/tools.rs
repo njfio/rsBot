@@ -1,9 +1,9 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -54,6 +54,11 @@ const SESSION_STATS_SCAN_DEFAULT_LIMIT: usize = 64;
 const SESSION_STATS_SCAN_MAX_LIMIT: usize = 256;
 const SESSION_SCAN_MAX_DEPTH: usize = 8;
 const SESSION_SCAN_MAX_DIRECTORIES: usize = 2_000;
+const TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT: u64 = 60_000;
+const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
+const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
+const TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT: u32 = 60;
+const TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED: u32 = 30;
 
 #[derive(Debug, Clone, Serialize)]
 struct SessionInventoryEntry {
@@ -129,11 +134,121 @@ pub enum OsSandboxMode {
     Force,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates how the tool rate limiter responds when a principal exceeds quota.
+pub enum ToolRateLimitExceededBehavior {
+    Reject,
+    Defer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BashSandboxSpec {
     program: String,
     args: Vec<String>,
     sandboxed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Snapshot counters exposed for rate-limit observability.
+pub struct ToolRateLimitCounters {
+    pub throttle_events_total: u64,
+    pub tracked_principals: usize,
+}
+
+#[derive(Debug, Default)]
+struct ToolRateLimiterState {
+    principals: HashMap<String, ToolRateLimiterPrincipalState>,
+    throttle_events_total: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ToolRateLimiterPrincipalState {
+    window_start_unix_ms: u64,
+    requests_in_window: u32,
+    throttle_events: u64,
+}
+
+impl ToolRateLimiterPrincipalState {
+    fn new(now_unix_ms: u64) -> Self {
+        Self {
+            window_start_unix_ms: now_unix_ms,
+            requests_in_window: 0,
+            throttle_events: 0,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ToolRateLimiter {
+    state: Mutex<ToolRateLimiterState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolRateLimitDecision {
+    Allow,
+    Throttled {
+        retry_after_ms: u64,
+        principal_throttle_events: u64,
+        throttle_events_total: u64,
+    },
+}
+
+impl ToolRateLimiter {
+    fn evaluate(
+        &self,
+        principal: &str,
+        max_requests: u32,
+        window_ms: u64,
+        now_unix_ms: u64,
+    ) -> ToolRateLimitDecision {
+        if max_requests == 0 || window_ms == 0 {
+            return ToolRateLimitDecision::Allow;
+        }
+
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let entry = state
+            .principals
+            .entry(principal.to_string())
+            .or_insert_with(|| ToolRateLimiterPrincipalState::new(now_unix_ms));
+
+        if now_unix_ms.saturating_sub(entry.window_start_unix_ms) >= window_ms {
+            entry.window_start_unix_ms = now_unix_ms;
+            entry.requests_in_window = 0;
+        }
+
+        if entry.requests_in_window < max_requests {
+            entry.requests_in_window = entry.requests_in_window.saturating_add(1);
+            return ToolRateLimitDecision::Allow;
+        }
+
+        let (retry_after_ms, principal_throttle_events) = {
+            entry.throttle_events = entry.throttle_events.saturating_add(1);
+            let elapsed = now_unix_ms.saturating_sub(entry.window_start_unix_ms);
+            let retry_after_ms = window_ms.saturating_sub(elapsed);
+            (retry_after_ms, entry.throttle_events)
+        };
+        state.throttle_events_total = state.throttle_events_total.saturating_add(1);
+        let throttle_events_total = state.throttle_events_total;
+        ToolRateLimitDecision::Throttled {
+            retry_after_ms,
+            principal_throttle_events,
+            throttle_events_total,
+        }
+    }
+
+    fn counters(&self) -> ToolRateLimitCounters {
+        let state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        ToolRateLimitCounters {
+            throttle_events_total: state.throttle_events_total,
+            tracked_principals: state.principals.len(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +272,10 @@ pub struct ToolPolicy {
     pub extension_policy_override_root: Option<PathBuf>,
     pub rbac_principal: Option<String>,
     pub rbac_policy_path: Option<PathBuf>,
+    pub tool_rate_limit_max_requests: u32,
+    pub tool_rate_limit_window_ms: u64,
+    pub tool_rate_limit_exceeded_behavior: ToolRateLimitExceededBehavior,
+    rate_limiter: Arc<ToolRateLimiter>,
 }
 
 impl ToolPolicy {
@@ -183,6 +302,10 @@ impl ToolPolicy {
             extension_policy_override_root: None,
             rbac_principal: None,
             rbac_policy_path: None,
+            tool_rate_limit_max_requests: TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED,
+            tool_rate_limit_window_ms: TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT,
+            tool_rate_limit_exceeded_behavior: ToolRateLimitExceededBehavior::Reject,
+            rate_limiter: Arc::new(ToolRateLimiter::default()),
         };
         policy.apply_preset(ToolPolicyPreset::Balanced);
         policy
@@ -217,6 +340,9 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Off;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = false;
+                self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE;
+                self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
+                self.tool_rate_limit_exceeded_behavior = ToolRateLimitExceededBehavior::Defer;
             }
             ToolPolicyPreset::Balanced => {
                 self.max_file_read_bytes = 1_000_000;
@@ -229,6 +355,9 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Off;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = true;
+                self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED;
+                self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
+                self.tool_rate_limit_exceeded_behavior = ToolRateLimitExceededBehavior::Reject;
             }
             ToolPolicyPreset::Strict => {
                 self.max_file_read_bytes = 750_000;
@@ -241,6 +370,9 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Auto;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = true;
+                self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT;
+                self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
+                self.tool_rate_limit_exceeded_behavior = ToolRateLimitExceededBehavior::Reject;
             }
             ToolPolicyPreset::Hardened => {
                 self.max_file_read_bytes = 500_000;
@@ -253,8 +385,15 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Force;
                 self.os_sandbox_command.clear();
                 self.enforce_regular_files = true;
+                self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED;
+                self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
+                self.tool_rate_limit_exceeded_behavior = ToolRateLimitExceededBehavior::Reject;
             }
         }
+    }
+
+    pub fn rate_limit_counters(&self) -> ToolRateLimitCounters {
+        self.rate_limiter.counters()
     }
 }
 
@@ -264,6 +403,13 @@ pub fn tool_policy_preset_name(preset: ToolPolicyPreset) -> &'static str {
         ToolPolicyPreset::Balanced => "balanced",
         ToolPolicyPreset::Strict => "strict",
         ToolPolicyPreset::Hardened => "hardened",
+    }
+}
+
+pub fn tool_rate_limit_behavior_name(behavior: ToolRateLimitExceededBehavior) -> &'static str {
+    match behavior {
+        ToolRateLimitExceededBehavior::Reject => "reject",
+        ToolRateLimitExceededBehavior::Defer => "defer",
     }
 }
 
@@ -494,6 +640,17 @@ impl AgentTool for WriteTool {
             return approval_result;
         }
 
+        if let Some(rate_limit_result) = evaluate_tool_rate_limit_gate(
+            &self.policy,
+            "write",
+            json!({
+                "path": resolved.display().to_string(),
+                "content_bytes": content_size,
+            }),
+        ) {
+            return rate_limit_result;
+        }
+
         if let Some(parent) = resolved.parent() {
             if !parent.as_os_str().is_empty() {
                 if let Err(error) = tokio::fs::create_dir_all(parent).await {
@@ -606,6 +763,18 @@ impl AgentTool for EditTool {
             replace_bytes: replace.len(),
         }) {
             return approval_result;
+        }
+
+        if let Some(rate_limit_result) = evaluate_tool_rate_limit_gate(
+            &self.policy,
+            "edit",
+            json!({
+                "path": resolved.display().to_string(),
+                "find": find.clone(),
+                "replace_bytes": replace.len(),
+            }),
+        ) {
+            return rate_limit_result;
         }
 
         let replace_all = arguments
@@ -1437,6 +1606,80 @@ fn bash_policy_error(
     ToolExecutionResult::error(Value::Object(payload))
 }
 
+fn current_unix_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn resolve_rate_limit_principal(policy: &ToolPolicy) -> String {
+    policy
+        .rbac_principal
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(resolve_local_principal)
+}
+
+fn evaluate_tool_rate_limit_gate(
+    policy: &ToolPolicy,
+    tool_name: &str,
+    action_payload: Value,
+) -> Option<ToolExecutionResult> {
+    if policy.tool_rate_limit_max_requests == 0 || policy.tool_rate_limit_window_ms == 0 {
+        return None;
+    }
+
+    let principal = resolve_rate_limit_principal(policy);
+    let now_unix_ms = current_unix_timestamp_ms();
+    let decision = policy.rate_limiter.evaluate(
+        principal.as_str(),
+        policy.tool_rate_limit_max_requests,
+        policy.tool_rate_limit_window_ms,
+        now_unix_ms,
+    );
+    let ToolRateLimitDecision::Throttled {
+        retry_after_ms,
+        principal_throttle_events,
+        throttle_events_total,
+    } = decision
+    else {
+        return None;
+    };
+
+    let (decision_label, reason_code, error) = match policy.tool_rate_limit_exceeded_behavior {
+        ToolRateLimitExceededBehavior::Reject => (
+            "reject",
+            "rate_limit_rejected",
+            "tool rate limit exceeded for principal",
+        ),
+        ToolRateLimitExceededBehavior::Defer => (
+            "defer",
+            "rate_limit_deferred",
+            "tool execution deferred by rate limit for principal",
+        ),
+    };
+
+    Some(ToolExecutionResult::error(json!({
+        "policy_rule": "rate_limit",
+        "decision": decision_label,
+        "reason_code": reason_code,
+        "principal": principal,
+        "action": format!("tool:{tool_name}"),
+        "payload": action_payload,
+        "max_requests": policy.tool_rate_limit_max_requests,
+        "window_ms": policy.tool_rate_limit_window_ms,
+        "retry_after_ms": retry_after_ms,
+        "window_resets_unix_ms": now_unix_ms.saturating_add(retry_after_ms),
+        "principal_throttle_events": principal_throttle_events,
+        "throttle_events_total": throttle_events_total,
+        "error": format!("{error} '{principal}'"),
+        "hint": "retry after retry_after_ms or adjust tool policy rate-limit settings",
+    })))
+}
+
 fn evaluate_tool_approval_gate(action: ApprovalAction) -> Option<ToolExecutionResult> {
     let action_kind = match &action {
         ApprovalAction::ToolBash { .. } => "tool:bash",
@@ -1758,6 +2001,37 @@ impl AgentTool for BashTool {
             cwd: cwd.as_ref().map(|value| value.display().to_string()),
         }) {
             return approval_result;
+        }
+
+        if let Some(mut rate_limit_result) = evaluate_tool_rate_limit_gate(
+            &self.policy,
+            "bash",
+            json!({
+                "command": command.clone(),
+                "cwd": cwd.as_ref().map(|value| value.display().to_string()),
+            }),
+        ) {
+            let principal = rate_limit_result
+                .content
+                .get("principal")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let retry_after_ms = rate_limit_result
+                .content
+                .get("retry_after_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "rate_limit",
+                "deny",
+                format!("principal '{principal}' exceeded quota; retry after {retry_after_ms} ms"),
+            );
+            if let Value::Object(payload) = &mut rate_limit_result.content {
+                attach_policy_trace(payload, trace_enabled, &trace, "deny");
+            }
+            return rate_limit_result;
         }
 
         let override_payload = serde_json::json!({

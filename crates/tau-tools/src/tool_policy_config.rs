@@ -2,9 +2,12 @@ use anyhow::{anyhow, Context, Result};
 use tau_cli::cli_args::Cli;
 use tau_cli::cli_types::{CliBashProfile, CliOsSandboxMode, CliToolPolicyPreset};
 
-use crate::tools::{tool_policy_preset_name, BashCommandProfile, OsSandboxMode, ToolPolicy};
+use crate::tools::{
+    tool_policy_preset_name, tool_rate_limit_behavior_name, BashCommandProfile, OsSandboxMode,
+    ToolPolicy,
+};
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 2;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 3;
 
 pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     let cwd = std::env::current_dir().context("failed to resolve current directory")?;
@@ -90,6 +93,7 @@ pub fn parse_sandbox_command_tokens(raw_tokens: &[String]) -> Result<Vec<String>
 }
 
 pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
+    let rate_limit_counters = policy.rate_limit_counters();
     serde_json::json!({
         "schema_version": TOOL_POLICY_SCHEMA_VERSION,
         "preset": tool_policy_preset_name(policy.policy_preset),
@@ -120,6 +124,13 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
             .rbac_policy_path
             .as_ref()
             .map(|path| path.display().to_string()),
+        "tool_rate_limit": {
+            "max_requests": policy.tool_rate_limit_max_requests,
+            "window_ms": policy.tool_rate_limit_window_ms,
+            "exceeded_behavior": tool_rate_limit_behavior_name(policy.tool_rate_limit_exceeded_behavior),
+            "throttle_events_total": rate_limit_counters.throttle_events_total,
+            "tracked_principals": rate_limit_counters.tracked_principals,
+        },
     })
 }
 

@@ -1,17 +1,18 @@
 //! Tests for tool catalog parsing, policy wiring, and runtime edge cases.
 
-use std::{fs, sync::Arc};
+use std::{fs, sync::Arc, time::Duration};
 
 use proptest::prelude::*;
 use tempfile::tempdir;
 
 use super::{
     bash_profile_name, build_spec_from_command_template, canonicalize_best_effort,
-    command_available, evaluate_tool_approval_gate, evaluate_tool_rbac_gate, is_command_allowed,
-    is_session_candidate_path, leading_executable, os_sandbox_mode_name, redact_secrets,
-    resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool, EditTool,
-    OsSandboxMode, SessionsHistoryTool, SessionsListTool, SessionsSearchTool, SessionsSendTool,
-    SessionsStatsTool, ToolExecutionResult, ToolPolicy, ToolPolicyPreset, WriteTool,
+    command_available, evaluate_tool_approval_gate, evaluate_tool_rate_limit_gate,
+    evaluate_tool_rbac_gate, is_command_allowed, is_session_candidate_path, leading_executable,
+    os_sandbox_mode_name, redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool,
+    BashCommandProfile, BashTool, EditTool, OsSandboxMode, SessionsHistoryTool, SessionsListTool,
+    SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolExecutionResult, ToolPolicy,
+    ToolPolicyPreset, ToolRateLimitExceededBehavior, WriteTool,
 };
 use tau_access::ApprovalAction;
 use tau_ai::Message;
@@ -47,6 +48,12 @@ fn unit_tool_policy_hardened_preset_applies_expected_configuration() {
     assert_eq!(policy.max_command_output_bytes, 4_000);
     assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Force);
     assert!(policy.enforce_regular_files);
+    assert_eq!(policy.tool_rate_limit_max_requests, 30);
+    assert_eq!(policy.tool_rate_limit_window_ms, 60_000);
+    assert_eq!(
+        policy.tool_rate_limit_exceeded_behavior,
+        ToolRateLimitExceededBehavior::Reject
+    );
 }
 
 #[test]
@@ -70,6 +77,88 @@ fn regression_tool_rbac_gate_is_noop_when_policy_is_missing() {
         }),
     );
     assert!(result.is_none());
+}
+
+#[test]
+fn unit_tool_rate_limit_gate_enforces_limit_for_principal() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.tool_rate_limit_max_requests = 1;
+    policy.tool_rate_limit_window_ms = 10_000;
+    policy.rbac_principal = Some("local:rate-limit-user".to_string());
+
+    let first = evaluate_tool_rate_limit_gate(
+        &policy,
+        "write",
+        serde_json::json!({ "path": "note.txt", "content_bytes": 5 }),
+    );
+    assert!(first.is_none());
+
+    let second = evaluate_tool_rate_limit_gate(
+        &policy,
+        "write",
+        serde_json::json!({ "path": "note.txt", "content_bytes": 5 }),
+    )
+    .expect("second request should be throttled");
+    assert!(second.is_error);
+    assert_eq!(
+        second
+            .content
+            .get("policy_rule")
+            .and_then(serde_json::Value::as_str),
+        Some("rate_limit")
+    );
+    assert_eq!(
+        second
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("rate_limit_rejected")
+    );
+    assert_eq!(
+        second
+            .content
+            .get("principal")
+            .and_then(serde_json::Value::as_str),
+        Some("local:rate-limit-user")
+    );
+}
+
+#[test]
+fn unit_tool_rate_limit_gate_supports_defer_behavior() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.tool_rate_limit_max_requests = 1;
+    policy.tool_rate_limit_window_ms = 10_000;
+    policy.tool_rate_limit_exceeded_behavior = ToolRateLimitExceededBehavior::Defer;
+    policy.rbac_principal = Some("local:defer-user".to_string());
+
+    let _ = evaluate_tool_rate_limit_gate(
+        &policy,
+        "bash",
+        serde_json::json!({ "command": "printf 'ok'" }),
+    );
+    let second = evaluate_tool_rate_limit_gate(
+        &policy,
+        "bash",
+        serde_json::json!({ "command": "printf 'ok'" }),
+    )
+    .expect("second request should be deferred");
+
+    assert_eq!(
+        second
+            .content
+            .get("decision")
+            .and_then(serde_json::Value::as_str),
+        Some("defer")
+    );
+    assert_eq!(
+        second
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("rate_limit_deferred")
+    );
 }
 
 #[test]
@@ -959,6 +1048,98 @@ async fn bash_tool_times_out_long_command() {
 }
 
 #[tokio::test]
+async fn functional_bash_tool_rate_limit_resets_after_window() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.bash_dry_run = true;
+    policy.tool_rate_limit_max_requests = 1;
+    policy.tool_rate_limit_window_ms = 30;
+    policy.rbac_principal = Some("local:reset-window".to_string());
+    let tool = BashTool::new(Arc::new(policy));
+
+    let first = tool
+        .execute(serde_json::json!({
+            "command": "printf 'ok'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(!first.is_error);
+
+    let second = tool
+        .execute(serde_json::json!({
+            "command": "printf 'ok'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(second.is_error);
+    assert_eq!(
+        second
+            .content
+            .get("policy_rule")
+            .and_then(serde_json::Value::as_str),
+        Some("rate_limit")
+    );
+
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    let third = tool
+        .execute(serde_json::json!({
+            "command": "printf 'ok'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(!third.is_error);
+}
+
+#[tokio::test]
+async fn integration_bash_tool_rate_limit_isolated_per_principal() {
+    let temp = tempdir().expect("tempdir");
+    let mut base_policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    base_policy.bash_dry_run = true;
+    base_policy.tool_rate_limit_max_requests = 1;
+    base_policy.tool_rate_limit_window_ms = 10_000;
+
+    let mut alice_policy = base_policy.clone();
+    alice_policy.rbac_principal = Some("local:alice".to_string());
+    let alice_tool = BashTool::new(Arc::new(alice_policy));
+
+    let mut bob_policy = base_policy.clone();
+    bob_policy.rbac_principal = Some("local:bob".to_string());
+    let bob_tool = BashTool::new(Arc::new(bob_policy));
+
+    let alice_first = alice_tool
+        .execute(serde_json::json!({
+            "command": "printf 'a'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(!alice_first.is_error);
+
+    let alice_second = alice_tool
+        .execute(serde_json::json!({
+            "command": "printf 'a'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(alice_second.is_error);
+    assert_eq!(
+        alice_second
+            .content
+            .get("principal")
+            .and_then(serde_json::Value::as_str),
+        Some("local:alice")
+    );
+
+    let bob_first = bob_tool
+        .execute(serde_json::json!({
+            "command": "printf 'b'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(!bob_first.is_error);
+}
+
+#[tokio::test]
 async fn unit_bash_tool_rejects_multiline_commands_by_default() {
     let temp = tempdir().expect("tempdir");
     let tool = BashTool::new(test_policy(temp.path()));
@@ -1031,6 +1212,57 @@ async fn integration_bash_tool_policy_trace_emits_deny_decision_details() {
     assert!(!trace.is_empty());
     assert!(trace.iter().any(|step| {
         step.get("check").and_then(serde_json::Value::as_str) == Some("allowed_commands")
+            && step.get("outcome").and_then(serde_json::Value::as_str) == Some("deny")
+    }));
+}
+
+#[tokio::test]
+async fn regression_bash_tool_rate_limit_trace_reports_throttle_details() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.tool_policy_trace = true;
+    policy.bash_dry_run = true;
+    policy.tool_rate_limit_max_requests = 1;
+    policy.tool_rate_limit_window_ms = 10_000;
+    policy.rbac_principal = Some("local:trace-throttle".to_string());
+    let tool = BashTool::new(Arc::new(policy));
+
+    let first = tool
+        .execute(serde_json::json!({
+            "command": "printf 'ok'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(!first.is_error);
+
+    let second = tool
+        .execute(serde_json::json!({
+            "command": "printf 'ok'",
+            "cwd": temp.path().display().to_string(),
+        }))
+        .await;
+    assert!(second.is_error);
+    assert_eq!(
+        second
+            .content
+            .get("policy_rule")
+            .and_then(serde_json::Value::as_str),
+        Some("rate_limit")
+    );
+    assert_eq!(
+        second
+            .content
+            .get("policy_decision")
+            .and_then(serde_json::Value::as_str),
+        Some("deny")
+    );
+    let trace = second
+        .content
+        .get("policy_trace")
+        .and_then(serde_json::Value::as_array)
+        .expect("trace should be present for throttle");
+    assert!(trace.iter().any(|step| {
+        step.get("check").and_then(serde_json::Value::as_str) == Some("rate_limit")
             && step.get("outcome").and_then(serde_json::Value::as_str) == Some("deny")
     }));
 }
