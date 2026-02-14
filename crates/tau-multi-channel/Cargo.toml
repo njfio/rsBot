@@ -20,6 +20,9 @@ path = "../tau-core"
 [dependencies.tau-contract]
 path = "../tau-contract"
 
+[dependencies.tau-access]
+path = "../tau-access"
+
 [dependencies.tau-runtime]
 path = "../tau-runtime"
 
@@ -27,6 +30,8 @@ path = "../tau-runtime"
 path = "../tau-orchestrator"
 
 [dev-dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
 httpmock = "0.8"
 serde_json = "1"
 tempfile = "3"
