@@ -1,3 +1,5 @@
+//! File-backed state persistence for Slack bridge cursors and run metadata.
+
 use std::{
     collections::HashSet,
     io::Write,

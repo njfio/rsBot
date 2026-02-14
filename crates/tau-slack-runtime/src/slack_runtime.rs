@@ -1,3 +1,5 @@
+//! Slack bridge runtime that polls events and orchestrates agent responses.
+
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
@@ -414,7 +416,7 @@ impl SlackBridgeRuntime {
         S::Error: std::error::Error + Send + Sync + 'static,
     {
         let ack = json!({ "envelope_id": envelope_id }).to_string();
-        sink.send(WsMessage::Text(ack))
+        sink.send(WsMessage::Text(ack.into()))
             .await
             .context("failed to send slack socket ack")
     }
@@ -1413,7 +1415,8 @@ fn parse_socket_envelope(message: WsMessage) -> Result<Option<SlackSocketEnvelop
             Ok(Some(envelope))
         }
         WsMessage::Binary(bytes) => {
-            let text = String::from_utf8(bytes).context("invalid utf-8 slack socket payload")?;
+            let text =
+                String::from_utf8(bytes.to_vec()).context("invalid utf-8 slack socket payload")?;
             let envelope = serde_json::from_str::<SlackSocketEnvelope>(&text)
                 .context("failed to parse slack socket envelope")?;
             Ok(Some(envelope))
@@ -2112,7 +2115,8 @@ mod tests {
                     }
                 }
             })
-            .to_string(),
+            .to_string()
+            .into(),
         );
         let parsed = parse_socket_envelope(text).expect("parse text");
         assert!(parsed.is_some());
@@ -2136,12 +2140,13 @@ mod tests {
                 }
             })
             .to_string()
-            .into_bytes(),
+            .into_bytes()
+            .into(),
         );
         assert!(parse_socket_envelope(binary)
             .expect("parse binary")
             .is_some());
-        assert!(parse_socket_envelope(WsMessage::Ping(vec![]))
+        assert!(parse_socket_envelope(WsMessage::Ping(vec![].into()))
             .expect("ping")
             .is_none());
     }

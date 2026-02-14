@@ -1,3 +1,5 @@
+//! GitHub Issues bridge runtime and command execution orchestration.
+
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,

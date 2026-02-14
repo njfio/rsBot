@@ -1,3 +1,5 @@
+//! Command parsing and normalization helpers for issue bridge slash commands.
+
 use std::path::{Path, PathBuf};
 
 use tau_github_issues::issue_artifacts_command::{

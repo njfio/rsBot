@@ -1,3 +1,5 @@
+//! Output rendering helpers for channel-store admin status surfaces.
+
 use std::collections::BTreeMap;
 
 use tau_core::current_unix_timestamp_ms;

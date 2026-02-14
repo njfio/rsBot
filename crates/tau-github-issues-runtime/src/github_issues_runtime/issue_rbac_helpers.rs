@@ -1,3 +1,5 @@
+//! RBAC action mapping helpers for parsed GitHub issue events.
+
 use super::{EventAction, TauIssueAuthCommandKind, TauIssueCommand};
 
 /// Maps parsed issue events to RBAC action identifiers used by policy checks.

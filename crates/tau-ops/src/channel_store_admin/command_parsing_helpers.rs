@@ -1,3 +1,5 @@
+//! Parsing helpers for channel-store admin command arguments.
+
 use anyhow::{anyhow, bail, Result};
 
 use super::TransportHealthInspectTarget;

@@ -1,3 +1,5 @@
+//! Transport-health snapshot collection helpers for admin inspection commands.
+
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};

@@ -1,3 +1,5 @@
+//! Session runtime helpers for persisted issue conversation state.
+
 use std::path::Path;
 
 use anyhow::{Context, Result};

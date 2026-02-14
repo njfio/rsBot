@@ -1,3 +1,5 @@
+//! Channel-store admin command handling and transport-health reporting.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
