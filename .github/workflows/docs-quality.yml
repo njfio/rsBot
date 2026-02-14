@@ -1,0 +1,39 @@
+name: Docs Quality
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "docs/**"
+      - ".github/scripts/docs_link_check.py"
+      - ".github/scripts/test_docs_link_check.py"
+      - ".github/scripts/architecture_docs_check.py"
+      - ".github/scripts/test_architecture_docs_check.py"
+      - ".github/workflows/docs-quality.yml"
+      - "README.md"
+      - "crates/tau-startup/src/lib.rs"
+      - "crates/tau-contract/src/lib.rs"
+      - "crates/tau-multi-channel/src/lib.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-quality:
+    name: Docs Quality (links + architecture freshness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate docs helper scripts
+        run: |
+          python3 -m unittest discover -s .github/scripts -p "test_*docs*_check.py"
+
+      - name: Check markdown links
+        run: python3 .github/scripts/docs_link_check.py --repo-root .
+
+      - name: Check architecture docs freshness
+        run: python3 .github/scripts/architecture_docs_check.py --repo-root .

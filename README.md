@@ -20,6 +20,9 @@ Focused guides:
 - Gateway auth session smoke: [`docs/guides/gateway-auth-session-smoke.md`](docs/guides/gateway-auth-session-smoke.md)
 - Project index workflow: [`docs/guides/project-index.md`](docs/guides/project-index.md)
 - Transports (GitHub/Slack/RPC): [`docs/guides/transports.md`](docs/guides/transports.md)
+- Startup DI pipeline: [`docs/guides/startup-di-pipeline.md`](docs/guides/startup-di-pipeline.md)
+- Contract pattern lifecycle: [`docs/guides/contract-pattern-lifecycle.md`](docs/guides/contract-pattern-lifecycle.md)
+- Multi-channel event pipeline: [`docs/guides/multi-channel-event-pipeline.md`](docs/guides/multi-channel-event-pipeline.md)
 - Operator control summary: [`docs/guides/operator-control-summary.md`](docs/guides/operator-control-summary.md)
 - Packages and extensions: [`docs/guides/packages.md`](docs/guides/packages.md)
 - Events and scheduler: [`docs/guides/events.md`](docs/guides/events.md)
@@ -131,6 +134,7 @@ Implemented now:
 - Deterministic project index build/query/inspect workflow for local code search
 - Built-in filesystem and shell tools
 - Transport bridges for GitHub Issues and Slack Socket Mode
+- Startup DI, contract lifecycle, and multi-channel event pipeline architecture guides
 - RPC capabilities/dispatch/serve NDJSON protocol surfaces
 - Filesystem-backed scheduled events engine with webhook ingest
 - Extension and package lifecycle tooling (including signing and trust roots)

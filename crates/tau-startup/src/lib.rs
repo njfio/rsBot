@@ -2,6 +2,9 @@
 //!
 //! Provides startup policy/transport dispatch helpers, command-file execution,
 //! and startup-time runtime composition primitives.
+//!
+//! Architecture reference:
+//! - [`docs/guides/startup-di-pipeline.md`](../../../docs/guides/startup-di-pipeline.md)
 
 use anyhow::{anyhow, Context, Result};
 use tau_access::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};

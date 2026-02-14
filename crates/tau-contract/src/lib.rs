@@ -2,6 +2,37 @@
 //!
 //! This crate centralizes common parsing/loading and baseline fixture
 //! validation so contract crates keep behavior consistent.
+//!
+//! Architecture reference:
+//! - [`docs/guides/contract-pattern-lifecycle.md`](../../../docs/guides/contract-pattern-lifecycle.md)
+//!
+//! ```rust
+//! use tau_contract::{parse_fixture_with_validation, validate_fixture_header};
+//!
+//! #[derive(serde::Deserialize)]
+//! struct ExampleFixture {
+//!     schema_version: u32,
+//!     name: String,
+//!     cases: Vec<String>,
+//! }
+//!
+//! let fixture = parse_fixture_with_validation::<ExampleFixture>(
+//!     r#"{"schema_version":1,"name":"demo","cases":["case-a"]}"#,
+//!     "failed to parse demo fixture",
+//!     |parsed| {
+//!         validate_fixture_header(
+//!             "demo",
+//!             parsed.schema_version,
+//!             1,
+//!             &parsed.name,
+//!             parsed.cases.len(),
+//!         )
+//!     },
+//! )?;
+//!
+//! assert_eq!(fixture.cases.len(), 1);
+//! # Ok::<(), anyhow::Error>(())
+//! ```
 
 use std::collections::HashSet;
 use std::path::Path;
