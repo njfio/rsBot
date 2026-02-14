@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{Notify, RwLock};
 
+mod sqlite;
+
+pub use sqlite::SqliteTrainingStore;
 pub use tau_training_types::{
     Attempt, AttemptStatus, ResourcesUpdate, Rollout, RolloutQuery, RolloutStatus, TrainingSpan,
     WorkerState,
@@ -37,6 +40,16 @@ pub enum TrainingStoreError {
         from: AttemptStatus,
         to: AttemptStatus,
     },
+    #[error("invalid persisted value for '{field}': {value}")]
+    InvalidPersistedValue { field: &'static str, value: String },
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Chrono(#[from] chrono::ParseError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Result of atomically dequeuing a rollout for execution.
