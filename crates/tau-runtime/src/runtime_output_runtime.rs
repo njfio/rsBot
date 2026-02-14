@@ -162,6 +162,20 @@ pub fn event_to_json(event: &AgentEvent) -> serde_json::Value {
             "cumulative_cost_usd": cumulative_cost_usd,
             "budget_usd": budget_usd,
         }),
+        AgentEvent::SafetyPolicyApplied {
+            stage,
+            mode,
+            blocked,
+            matched_rules,
+            reason_codes,
+        } => serde_json::json!({
+            "type": "safety_policy_applied",
+            "stage": stage.as_str(),
+            "mode": mode,
+            "blocked": blocked,
+            "matched_rules": matched_rules,
+            "reason_codes": reason_codes,
+        }),
     }
 }
 
@@ -170,7 +184,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{event_to_json, print_assistant_messages, stream_text_chunks, summarize_message};
-    use tau_agent_core::{AgentEvent, ToolExecutionResult};
+    use tau_agent_core::{AgentEvent, SafetyMode, SafetyStage, ToolExecutionResult};
     use tau_ai::{ContentBlock, Message, ToolCall};
 
     #[test]
@@ -242,6 +256,26 @@ mod tests {
         assert_eq!(value["threshold_percent"], 80);
         assert_eq!(value["cumulative_cost_usd"], 1.25);
         assert_eq!(value["budget_usd"], 1.5);
+    }
+
+    #[test]
+    fn unit_event_to_json_maps_safety_policy_applied_shape() {
+        let event = AgentEvent::SafetyPolicyApplied {
+            stage: SafetyStage::ToolOutput,
+            mode: SafetyMode::Block,
+            blocked: true,
+            matched_rules: vec!["literal.ignore_previous_instructions".to_string()],
+            reason_codes: vec!["prompt_injection.ignore_instructions".to_string()],
+        };
+        let value = event_to_json(&event);
+        assert_eq!(value["type"], "safety_policy_applied");
+        assert_eq!(value["stage"], "tool_output");
+        assert_eq!(value["mode"], "block");
+        assert_eq!(value["blocked"], true);
+        assert_eq!(
+            value["reason_codes"][0],
+            "prompt_injection.ignore_instructions"
+        );
     }
 
     #[test]

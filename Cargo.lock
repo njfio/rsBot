@@ -2729,11 +2729,12 @@ name = "tau-access"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2",
  "tau-core",
- "tau-skills",
  "tempfile",
 ]
 
@@ -2747,6 +2748,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde_json",
  "tau-ai",
+ "tau-safety",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -3078,13 +3080,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
+ "ed25519-dalek",
  "hmac",
  "httpmock",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
+ "tau-access",
  "tau-contract",
  "tau-core",
  "tau-orchestrator",
@@ -3214,6 +3219,15 @@ dependencies = [
  "tau-core",
  "tau-session",
  "tempfile",
+]
+
+[[package]]
+name = "tau-safety"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "regex",
+ "serde",
 ]
 
 [[package]]

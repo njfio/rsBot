@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "name": "multi-agent-kamn-settlement",
+  "description": "Fixture coverage for escrow-backed KAMN settlement metadata.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "kamn-planner-success",
+      "phase": "planner",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "reviewer": {}
+        },
+        "planner": {
+          "role": "planner"
+        },
+        "delegated": {
+          "role": "planner"
+        },
+        "review": {
+          "role": "reviewer"
+        }
+      },
+      "economics": {
+        "escrow_reserve_micros": 12000,
+        "execution_cost_micros": 7000,
+        "settlement_reference": "kamn://escrow/root-alpha/planner-success"
+      },
+      "expected": {
+        "outcome": "success",
+        "selected_role": "planner",
+        "attempted_roles": [
+          "planner"
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "kamn-delegated-retryable",
+      "phase": "delegated_step",
+      "route_table": {
+        "schema_version": 1,
+        "roles": {
+          "planner": {},
+          "executor": {},
+          "reviewer": {}
+        },
+        "planner": {
+          "role": "planner"
+        },
+        "delegated": {
+          "role": "executor",
+          "fallback_roles": [
+            "reviewer"
+          ]
+        },
+        "review": {
+          "role": "reviewer"
+        }
+      },
+      "step_text": "triage blocked work items",
+      "simulate_retryable_failure": true,
+      "economics": {
+        "escrow_reserve_micros": 9000,
+        "settlement_reference": "kamn://escrow/root-alpha/delegated-retryable"
+      },
+      "expected": {
+        "outcome": "retryable_failure",
+        "error_code": "multi_agent_role_unavailable"
+      }
+    }
+  ]
+}

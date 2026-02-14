@@ -1,16 +1,15 @@
 //! Tests for onboarding transport-mode routing and guardrails.
 
 use super::{
-    build_browser_automation_contract_runner_config, build_browser_automation_live_runner_config,
-    build_dashboard_contract_runner_config, build_deployment_contract_runner_config,
-    build_events_runner_cli_config, build_gateway_contract_runner_config,
-    build_gateway_openresponses_server_config, build_github_issues_bridge_cli_config,
-    build_memory_contract_runner_config, build_multi_agent_contract_runner_config,
-    build_multi_channel_contract_runner_config, build_multi_channel_live_connectors_config,
-    build_multi_channel_live_runner_config, build_multi_channel_media_config,
-    build_multi_channel_outbound_config, build_multi_channel_runtime_dependencies,
-    build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
-    build_transport_doctor_config, build_transport_runtime_defaults,
+    build_browser_automation_live_runner_config, build_dashboard_contract_runner_config,
+    build_deployment_contract_runner_config, build_events_runner_cli_config,
+    build_gateway_contract_runner_config, build_gateway_openresponses_server_config,
+    build_github_issues_bridge_cli_config, build_memory_contract_runner_config,
+    build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
+    build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
+    build_multi_channel_media_config, build_multi_channel_outbound_config,
+    build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
+    build_slack_bridge_cli_config, build_transport_doctor_config, build_transport_runtime_defaults,
     build_voice_contract_runner_config, build_voice_live_runner_config,
     execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
     resolve_bridge_transport_mode, resolve_contract_transport_mode,
@@ -167,13 +166,6 @@ impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
         self.record(
             TransportRuntimeMode::MultiAgentContractRunner,
             "multi-agent-contract",
-        )
-    }
-
-    async fn run_browser_automation_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::BrowserAutomationContractRunner,
-            "browser-automation-contract",
         )
     }
 
@@ -784,6 +776,21 @@ fn regression_validate_transport_mode_cli_rejects_events_prompt_template_conflic
 }
 
 #[test]
+fn regression_validate_transport_mode_cli_rejects_removed_browser_automation_contract_runner() {
+    let mut cli = parse_cli_with_stack();
+    cli.browser_automation_contract_runner = true;
+
+    let error = validate_transport_mode_cli(&cli)
+        .expect_err("removed browser automation contract runner should fail");
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-contract-runner has been removed"));
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-live-runner"));
+}
+
+#[test]
 fn functional_resolve_gateway_openresponses_auth_trims_non_empty_values() {
     let mut cli = parse_cli_with_stack();
     cli.gateway_openresponses_auth_token = Some(" token-value ".to_string());
@@ -844,23 +851,6 @@ fn regression_build_multi_channel_contract_runner_config_enforces_minimums() {
     assert_eq!(config.queue_limit, 1);
     assert_eq!(config.processed_event_cap, 1);
     assert_eq!(config.retry_max_attempts, 1);
-}
-
-#[test]
-fn regression_build_browser_automation_contract_runner_config_enforces_minimums() {
-    let mut cli = parse_cli_with_stack();
-    cli.browser_automation_queue_limit = 0;
-    cli.browser_automation_processed_case_cap = 0;
-    cli.browser_automation_retry_max_attempts = 0;
-    cli.browser_automation_action_timeout_ms = 0;
-    cli.browser_automation_max_actions_per_case = 0;
-
-    let config = build_browser_automation_contract_runner_config(&cli);
-    assert_eq!(config.queue_limit, 1);
-    assert_eq!(config.processed_case_cap, 1);
-    assert_eq!(config.retry_max_attempts, 1);
-    assert_eq!(config.action_timeout_ms, 1);
-    assert_eq!(config.max_actions_per_case, 1);
 }
 
 #[test]
@@ -1199,17 +1189,6 @@ async fn regression_run_multi_channel_contract_runner_with_runtime_dependencies_
         error.to_string().contains("missing-contract-fixture"),
         "unexpected error: {error}"
     );
-}
-
-#[tokio::test]
-async fn unit_run_browser_automation_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_browser_automation_contract_runner_if_requested(&cli)
-        .await
-        .expect("browser automation helper");
-
-    assert!(!handled);
 }
 
 #[tokio::test]
@@ -1553,32 +1532,6 @@ fn integration_build_multi_agent_contract_runner_config_preserves_runtime_fields
     assert_eq!(config.processed_case_cap, 3_200);
     assert_eq!(config.retry_max_attempts, 8);
     assert_eq!(config.retry_base_delay_ms, 250);
-}
-
-#[test]
-fn integration_build_browser_automation_contract_runner_config_preserves_runtime_fields() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = parse_cli_with_stack();
-    cli.browser_automation_fixture = temp.path().join("browser-automation-fixture.json");
-    cli.browser_automation_state_dir = temp.path().join("browser-automation-state");
-    cli.browser_automation_queue_limit = 31;
-    cli.browser_automation_processed_case_cap = 5_500;
-    cli.browser_automation_retry_max_attempts = 7;
-    cli.browser_automation_retry_base_delay_ms = 70;
-    cli.browser_automation_action_timeout_ms = 123;
-    cli.browser_automation_max_actions_per_case = 9;
-    cli.browser_automation_allow_unsafe_actions = true;
-
-    let config = build_browser_automation_contract_runner_config(&cli);
-    assert_eq!(config.fixture_path, cli.browser_automation_fixture);
-    assert_eq!(config.state_dir, cli.browser_automation_state_dir);
-    assert_eq!(config.queue_limit, 31);
-    assert_eq!(config.processed_case_cap, 5_500);
-    assert_eq!(config.retry_max_attempts, 7);
-    assert_eq!(config.retry_base_delay_ms, 70);
-    assert_eq!(config.action_timeout_ms, 123);
-    assert_eq!(config.max_actions_per_case, 9);
-    assert!(config.allow_unsafe_actions);
 }
 
 #[test]

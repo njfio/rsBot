@@ -240,6 +240,7 @@ class DemoScriptsTests(unittest.TestCase):
                 "multi-channel.sh",
                 "multi-agent.sh",
                 "browser-automation.sh",
+                "browser-automation-live.sh",
                 "memory.sh",
                 "dashboard.sh",
                 "gateway.sh",
@@ -317,6 +318,7 @@ class DemoScriptsTests(unittest.TestCase):
                 "multi-channel.sh",
                 "multi-agent.sh",
                 "browser-automation.sh",
+                "browser-automation-live.sh",
                 "memory.sh",
                 "dashboard.sh",
                 "gateway.sh",
@@ -463,7 +465,7 @@ class DemoScriptsTests(unittest.TestCase):
                 0,
                 msg=f"all.sh failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
             )
-            self.assertIn("[demo:all] summary: total=15 passed=15 failed=0", completed.stdout)
+            self.assertIn("[demo:all] summary: total=16 passed=16 failed=0", completed.stdout)
 
             rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
             self.assertGreaterEqual(len(rows), 30)
@@ -515,11 +517,11 @@ class DemoScriptsTests(unittest.TestCase):
 
             completed = run_demo_script("all.sh", binary_path, trace_path, extra_args=["--report-file", str(report_path)])
             self.assertEqual(completed.returncode, 0, msg=completed.stderr)
-            self.assertIn("[demo:all] summary: total=15 passed=15 failed=0", completed.stdout)
+            self.assertIn("[demo:all] summary: total=16 passed=16 failed=0", completed.stdout)
             self.assertTrue(report_path.exists())
 
             payload = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["summary"], {"total": 15, "passed": 15, "failed": 0})
+            self.assertEqual(payload["summary"], {"total": 16, "passed": 16, "failed": 0})
             self.assertEqual(
                 [entry["name"] for entry in payload["demos"]],
                 [
@@ -530,6 +532,7 @@ class DemoScriptsTests(unittest.TestCase):
                     "multi-channel.sh",
                     "multi-agent.sh",
                     "browser-automation.sh",
+                    "browser-automation-live.sh",
                     "memory.sh",
                     "dashboard.sh",
                     "gateway.sh",
@@ -612,14 +615,15 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertIn("[demo:all] [5] multi-channel.sh", completed.stdout)
             self.assertIn("[demo:all] [6] multi-agent.sh", completed.stdout)
             self.assertIn("[demo:all] [7] browser-automation.sh", completed.stdout)
-            self.assertIn("[demo:all] [8] memory.sh", completed.stdout)
-            self.assertIn("[demo:all] [9] dashboard.sh", completed.stdout)
-            self.assertIn("[demo:all] [10] gateway.sh", completed.stdout)
-            self.assertIn("[demo:all] [11] gateway-auth.sh", completed.stdout)
-            self.assertIn("[demo:all] [12] gateway-remote-access.sh", completed.stdout)
-            self.assertIn("[demo:all] [13] deployment.sh", completed.stdout)
-            self.assertIn("[demo:all] [14] custom-command.sh", completed.stdout)
-            self.assertIn("[demo:all] [15] voice.sh", completed.stdout)
+            self.assertIn("[demo:all] [8] browser-automation-live.sh", completed.stdout)
+            self.assertIn("[demo:all] [9] memory.sh", completed.stdout)
+            self.assertIn("[demo:all] [10] dashboard.sh", completed.stdout)
+            self.assertIn("[demo:all] [11] gateway.sh", completed.stdout)
+            self.assertIn("[demo:all] [12] gateway-auth.sh", completed.stdout)
+            self.assertIn("[demo:all] [13] gateway-remote-access.sh", completed.stdout)
+            self.assertIn("[demo:all] [14] deployment.sh", completed.stdout)
+            self.assertIn("[demo:all] [15] custom-command.sh", completed.stdout)
+            self.assertIn("[demo:all] [16] voice.sh", completed.stdout)
 
     def test_integration_multi_channel_demo_includes_live_mode_diagnostics_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -704,6 +708,7 @@ class DemoScriptsTests(unittest.TestCase):
                 "multi-channel.sh",
                 "multi-agent.sh",
                 "browser-automation.sh",
+                "browser-automation-live.sh",
                 "memory.sh",
                 "dashboard.sh",
                 "gateway.sh",
@@ -858,8 +863,8 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertTrue(report_path.exists())
 
             payload = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["summary"]["total"], 15)
-            self.assertEqual(payload["summary"]["failed"], 15)
+            self.assertEqual(payload["summary"]["total"], 16)
+            self.assertEqual(payload["summary"]["failed"], 16)
             self.assertEqual(payload["summary"]["passed"], 0)
             for entry in payload["demos"]:
                 assert_duration_ms_field(self, entry)

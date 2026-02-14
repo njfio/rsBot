@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 const ROUTE_TABLE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_ROLE_NAME: &str = "default";
+const DEFAULT_TRUST_WEIGHT: u16 = 100;
+const DEFAULT_TRUST_STALE_AFTER_SECONDS: u64 = 3_600;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 /// Public struct `MultiAgentRoleProfile` used across Tau components.
@@ -16,6 +18,10 @@ pub struct MultiAgentRoleProfile {
     pub prompt_suffix: Option<String>,
     #[serde(default)]
     pub tool_policy_preset: Option<String>,
+    #[serde(default)]
+    pub trust_weight: Option<u16>,
+    #[serde(default)]
+    pub minimum_trust_score: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +97,22 @@ pub struct MultiAgentRouteSelection {
     pub primary_role: String,
     pub fallback_roles: Vec<String>,
     pub attempt_roles: Vec<String>,
+    pub trust_status: String,
+    pub trust_score: Option<u8>,
+    pub trust_threshold: Option<u8>,
+    pub trust_score_source: Option<String>,
+    pub trust_stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Optional trust input used for trust-aware route scoring and fallback behavior.
+pub struct MultiAgentRouteTrustInput {
+    pub global_score: Option<u8>,
+    pub role_scores: BTreeMap<String, u8>,
+    pub minimum_score: Option<u8>,
+    pub updated_unix_ms: Option<u64>,
+    pub now_unix_ms: u64,
+    pub stale_after_seconds: Option<u64>,
 }
 
 fn default_role_profiles() -> BTreeMap<String, MultiAgentRoleProfile> {
@@ -140,9 +162,10 @@ fn normalize_and_validate_route_table(
     }
 
     let mut normalized_roles = BTreeMap::new();
-    for (raw_role, profile) in std::mem::take(&mut table.roles) {
+    for (raw_role, mut profile) in std::mem::take(&mut table.roles) {
         let role = normalize_role_name(raw_role.as_str())
             .with_context(|| format!("invalid role name '{}'", raw_role))?;
+        validate_role_profile_trust(source_label, &role, &mut profile)?;
         if normalized_roles.insert(role.clone(), profile).is_some() {
             bail!("duplicate role '{}' in {}", role, source_label);
         }
@@ -239,10 +262,46 @@ fn normalize_role_name(raw: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+fn validate_role_profile_trust(
+    source_label: &str,
+    role: &str,
+    profile: &mut MultiAgentRoleProfile,
+) -> Result<()> {
+    if let Some(score) = profile.minimum_trust_score {
+        if score > 100 {
+            bail!(
+                "role '{}' minimum_trust_score {} exceeds 100 in {}",
+                role,
+                score,
+                source_label
+            );
+        }
+    }
+    if let Some(weight) = profile.trust_weight {
+        if weight == 0 {
+            bail!(
+                "role '{}' trust_weight must be greater than 0 in {}",
+                role,
+                source_label
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn select_multi_agent_route(
     table: &MultiAgentRouteTable,
     phase: MultiAgentRoutePhase,
     step_text: Option<&str>,
+) -> MultiAgentRouteSelection {
+    select_multi_agent_route_with_trust(table, phase, step_text, None)
+}
+
+pub fn select_multi_agent_route_with_trust(
+    table: &MultiAgentRouteTable,
+    phase: MultiAgentRoutePhase,
+    step_text: Option<&str>,
+    trust_input: Option<&MultiAgentRouteTrustInput>,
 ) -> MultiAgentRouteSelection {
     let (target, category) = match phase {
         MultiAgentRoutePhase::Planner => (&table.planner, None),
@@ -262,16 +321,36 @@ pub fn select_multi_agent_route(
         }
     };
 
-    let mut attempt_roles = Vec::with_capacity(target.fallback_roles.len() + 1);
-    attempt_roles.push(target.role.clone());
-    attempt_roles.extend(target.fallback_roles.clone());
+    let mut initial_attempt_roles = Vec::with_capacity(target.fallback_roles.len() + 1);
+    initial_attempt_roles.push(target.role.clone());
+    initial_attempt_roles.extend(target.fallback_roles.clone());
+
+    let trust_evaluation =
+        evaluate_trust_weighted_attempt_roles(table, &initial_attempt_roles, trust_input);
+
+    let primary_role = trust_evaluation
+        .attempt_roles
+        .first()
+        .cloned()
+        .unwrap_or_else(|| target.role.clone());
+    let fallback_roles = trust_evaluation
+        .attempt_roles
+        .iter()
+        .skip(1)
+        .cloned()
+        .collect::<Vec<_>>();
 
     MultiAgentRouteSelection {
         phase,
         category,
-        primary_role: target.role.clone(),
-        fallback_roles: target.fallback_roles.clone(),
-        attempt_roles,
+        primary_role,
+        fallback_roles,
+        attempt_roles: trust_evaluation.attempt_roles,
+        trust_status: trust_evaluation.status,
+        trust_score: trust_evaluation.selected_score,
+        trust_threshold: trust_evaluation.selected_threshold,
+        trust_score_source: trust_evaluation.selected_source,
+        trust_stale: trust_evaluation.stale,
     }
 }
 
@@ -285,6 +364,161 @@ fn select_delegated_category_target<'a>(
         (!category_match.is_empty() && normalized.contains(&category_match))
             .then_some((category.as_str(), target))
     })
+}
+
+#[derive(Debug, Clone)]
+struct TrustRouteCandidate {
+    role: String,
+    original_index: usize,
+    threshold: Option<u8>,
+    score: Option<u8>,
+    raw_score_present: bool,
+    weighted_score: u32,
+    source: Option<String>,
+    meets_threshold: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TrustRouteEvaluation {
+    attempt_roles: Vec<String>,
+    status: String,
+    selected_score: Option<u8>,
+    selected_threshold: Option<u8>,
+    selected_source: Option<String>,
+    stale: bool,
+}
+
+fn evaluate_trust_weighted_attempt_roles(
+    table: &MultiAgentRouteTable,
+    attempt_roles: &[String],
+    trust_input: Option<&MultiAgentRouteTrustInput>,
+) -> TrustRouteEvaluation {
+    let Some(trust_input) = trust_input else {
+        return TrustRouteEvaluation {
+            attempt_roles: attempt_roles.to_vec(),
+            status: "disabled".to_string(),
+            selected_score: None,
+            selected_threshold: None,
+            selected_source: None,
+            stale: false,
+        };
+    };
+
+    let stale_after_seconds = trust_input
+        .stale_after_seconds
+        .unwrap_or(DEFAULT_TRUST_STALE_AFTER_SECONDS);
+    let stale_after_ms = stale_after_seconds.saturating_mul(1_000);
+    let stale = trust_input
+        .updated_unix_ms
+        .is_some_and(|updated| trust_input.now_unix_ms.saturating_sub(updated) > stale_after_ms);
+
+    let mut candidates = Vec::with_capacity(attempt_roles.len());
+    for (index, role) in attempt_roles.iter().enumerate() {
+        let profile = resolve_multi_agent_role_profile(table, role);
+        let threshold = trust_input.minimum_score.or(profile.minimum_trust_score);
+        let weight = u32::from(profile.trust_weight.unwrap_or(DEFAULT_TRUST_WEIGHT));
+        let (raw_score, source) = resolve_candidate_score(trust_input, role.as_str());
+        let score = if stale { None } else { raw_score };
+        let weighted_score = score.map(|value| u32::from(value) * weight).unwrap_or(0);
+        let meets_threshold = threshold
+            .map(|minimum| score.is_some_and(|value| value >= minimum))
+            .unwrap_or(true);
+
+        candidates.push(TrustRouteCandidate {
+            role: role.clone(),
+            original_index: index,
+            threshold,
+            score,
+            raw_score_present: raw_score.is_some(),
+            weighted_score,
+            source,
+            meets_threshold,
+        });
+    }
+
+    let has_raw_scores = candidates
+        .iter()
+        .any(|candidate| candidate.raw_score_present);
+    let threshold_gated = candidates
+        .iter()
+        .any(|candidate| !candidate.meets_threshold);
+
+    let mut eligible = candidates
+        .iter()
+        .filter(|candidate| candidate.meets_threshold)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !eligible.is_empty() {
+        eligible.sort_by(|left, right| {
+            right
+                .weighted_score
+                .cmp(&left.weighted_score)
+                .then_with(|| right.score.cmp(&left.score))
+                .then_with(|| left.original_index.cmp(&right.original_index))
+        });
+
+        let mut ordered_roles = eligible
+            .iter()
+            .map(|candidate| candidate.role.clone())
+            .collect::<Vec<_>>();
+        for candidate in candidates
+            .iter()
+            .filter(|candidate| !candidate.meets_threshold)
+        {
+            ordered_roles.push(candidate.role.clone());
+        }
+
+        let selected = candidates
+            .iter()
+            .find(|candidate| candidate.role == ordered_roles[0])
+            .expect("selected role should exist in candidate set");
+        let status = if threshold_gated {
+            "threshold_gated".to_string()
+        } else if has_raw_scores && !stale {
+            "trust_weighted".to_string()
+        } else {
+            "trust_unweighted".to_string()
+        };
+
+        return TrustRouteEvaluation {
+            attempt_roles: ordered_roles,
+            status,
+            selected_score: selected.score,
+            selected_threshold: selected.threshold,
+            selected_source: selected.source.clone(),
+            stale,
+        };
+    }
+
+    let status = if stale {
+        "fallback_stale_trust"
+    } else if has_raw_scores {
+        "fallback_low_trust"
+    } else {
+        "fallback_missing_trust"
+    };
+    let selected = candidates.first();
+    TrustRouteEvaluation {
+        attempt_roles: attempt_roles.to_vec(),
+        status: status.to_string(),
+        selected_score: selected.and_then(|candidate| candidate.score),
+        selected_threshold: selected.and_then(|candidate| candidate.threshold),
+        selected_source: selected.and_then(|candidate| candidate.source.clone()),
+        stale,
+    }
+}
+
+fn resolve_candidate_score(
+    trust_input: &MultiAgentRouteTrustInput,
+    role: &str,
+) -> (Option<u8>, Option<String>) {
+    if let Some(score) = trust_input.role_scores.get(role) {
+        return (Some(*score), Some("role_scores".to_string()));
+    }
+    if let Some(score) = trust_input.global_score {
+        return (Some(score), Some("global_score".to_string()));
+    }
+    (None, None)
 }
 
 pub fn resolve_multi_agent_role_profile(
@@ -338,9 +572,12 @@ pub fn build_multi_agent_role_prompt(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
         build_multi_agent_role_prompt, load_multi_agent_route_table, select_multi_agent_route,
-        MultiAgentRoleProfile, MultiAgentRoutePhase,
+        select_multi_agent_route_with_trust, MultiAgentRoleProfile, MultiAgentRoutePhase,
+        MultiAgentRouteTrustInput,
     };
     use tempfile::tempdir;
 
@@ -377,6 +614,7 @@ mod tests {
         );
         assert_eq!(route.primary_role, "reviewer");
         assert_eq!(route.category.as_deref(), Some("analysis"));
+        assert_eq!(route.trust_status, "disabled");
     }
 
     #[test]
@@ -403,6 +641,113 @@ mod tests {
         let table = load_multi_agent_route_table(&path).expect("load route table");
         let route = select_multi_agent_route(&table, MultiAgentRoutePhase::Planner, None);
         assert_eq!(route.attempt_roles, vec!["planner", "executor", "reviewer"]);
+        assert_eq!(route.trust_status, "disabled");
+    }
+
+    #[test]
+    fn unit_route_selection_with_trust_weights_prefers_higher_weighted_role() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("route-table.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "schema_version": 1,
+  "roles": {
+    "primary": { "trust_weight": 100 },
+    "fallback": { "trust_weight": 160 }
+  },
+  "planner": { "role": "primary", "fallback_roles": ["fallback"] },
+  "delegated": { "role": "primary" },
+  "review": { "role": "primary" }
+}
+"#,
+        )
+        .expect("write route table");
+
+        let table = load_multi_agent_route_table(&path).expect("load route table");
+        let trust_input = MultiAgentRouteTrustInput {
+            role_scores: BTreeMap::from([
+                ("primary".to_string(), 80),
+                ("fallback".to_string(), 70),
+            ]),
+            now_unix_ms: 1_760_200_000_000,
+            ..MultiAgentRouteTrustInput::default()
+        };
+        let route = select_multi_agent_route_with_trust(
+            &table,
+            MultiAgentRoutePhase::Planner,
+            None,
+            Some(&trust_input),
+        );
+        assert_eq!(route.primary_role, "fallback");
+        assert_eq!(route.attempt_roles, vec!["fallback", "primary"]);
+        assert_eq!(route.trust_status, "trust_weighted");
+        assert_eq!(route.trust_score, Some(70));
+        assert_eq!(route.trust_score_source.as_deref(), Some("role_scores"));
+    }
+
+    #[test]
+    fn functional_route_selection_with_threshold_reorders_high_trust_role_first() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("route-table.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "schema_version": 1,
+  "roles": {
+    "primary": { "minimum_trust_score": 90 },
+    "fallback": { "minimum_trust_score": 30 }
+  },
+  "planner": { "role": "primary", "fallback_roles": ["fallback"] },
+  "delegated": { "role": "primary" },
+  "review": { "role": "primary" }
+}
+"#,
+        )
+        .expect("write route table");
+
+        let table = load_multi_agent_route_table(&path).expect("load route table");
+        let trust_input = MultiAgentRouteTrustInput {
+            role_scores: BTreeMap::from([
+                ("primary".to_string(), 60),
+                ("fallback".to_string(), 70),
+            ]),
+            now_unix_ms: 1_760_200_000_000,
+            ..MultiAgentRouteTrustInput::default()
+        };
+        let route = select_multi_agent_route_with_trust(
+            &table,
+            MultiAgentRoutePhase::Planner,
+            None,
+            Some(&trust_input),
+        );
+        assert_eq!(route.primary_role, "fallback");
+        assert_eq!(route.attempt_roles, vec!["fallback", "primary"]);
+        assert_eq!(route.trust_status, "threshold_gated");
+        assert_eq!(route.trust_threshold, Some(30));
+    }
+
+    #[test]
+    fn regression_route_selection_handles_stale_trust_with_deterministic_fallback() {
+        let table = super::MultiAgentRouteTable::default();
+        let trust_input = MultiAgentRouteTrustInput {
+            global_score: Some(20),
+            minimum_score: Some(90),
+            updated_unix_ms: Some(1_760_100_000_000),
+            now_unix_ms: 1_760_200_000_000,
+            stale_after_seconds: Some(60),
+            ..MultiAgentRouteTrustInput::default()
+        };
+        let route = select_multi_agent_route_with_trust(
+            &table,
+            MultiAgentRoutePhase::Planner,
+            None,
+            Some(&trust_input),
+        );
+        assert_eq!(route.primary_role, "default");
+        assert_eq!(route.attempt_roles, vec!["default"]);
+        assert_eq!(route.trust_status, "fallback_stale_trust");
+        assert!(route.trust_stale);
     }
 
     #[test]
@@ -451,6 +796,8 @@ mod tests {
                 model: Some("openai/gpt-4o-mini".to_string()),
                 prompt_suffix: Some("Check edge cases.".to_string()),
                 tool_policy_preset: Some("balanced".to_string()),
+                trust_weight: None,
+                minimum_trust_score: None,
             },
         );
         assert!(rendered.contains("ORCHESTRATOR_ROLE_CONTEXT"));

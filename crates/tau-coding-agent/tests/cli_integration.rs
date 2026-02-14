@@ -133,3 +133,6 @@ mod bridge_transports;
 
 #[path = "cli_integration/tooling_skills.rs"]
 mod tooling_skills;
+
+#[path = "cli_integration/repl_harness.rs"]
+mod repl_harness;

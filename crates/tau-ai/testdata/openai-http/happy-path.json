@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "happy-path",
+  "prompt": "hello fixture",
+  "steps": [
+    {
+      "status": 200,
+      "body": {
+        "choices": [
+          {
+            "message": {
+              "content": "fixture happy response"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 4,
+          "completion_tokens": 3,
+          "total_tokens": 7
+        }
+      }
+    }
+  ],
+  "expected_text": "fixture happy response"
+}

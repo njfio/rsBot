@@ -3,7 +3,9 @@
 //! Provides atomic file-write helpers and time utilities used by runtime state,
 //! cache persistence, and expiry calculations.
 
+/// Atomic file-write helpers for durable state updates.
 pub mod atomic_io;
+/// Unix timestamp utilities used across runtime policy/state logic.
 pub mod time_utils;
 
 pub use atomic_io::write_text_atomic;

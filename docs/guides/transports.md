@@ -322,30 +322,22 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/memory-ops.md`.
 
-## Browser automation contract runner
-
-Use this fixture-driven runtime mode to validate browser navigate/snapshot/action flows,
-retry handling, and policy guardrails before enabling live browser automation.
+## Browser automation live runner
 
 ```bash
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
-  --browser-automation-contract-runner \
-  --browser-automation-fixture crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json \
+  --browser-automation-live-runner \
+  --browser-automation-live-fixture crates/tau-coding-agent/testdata/browser-automation-live/live-sequence.json \
+  --browser-automation-playwright-cli playwright-cli \
   --browser-automation-state-dir .tau/browser-automation \
-  --browser-automation-queue-limit 64 \
-  --browser-automation-processed-case-cap 10000 \
-  --browser-automation-retry-max-attempts 4 \
-  --browser-automation-retry-base-delay-ms 0 \
-  --browser-automation-action-timeout-ms 4000 \
-  --browser-automation-max-actions-per-case 4
 ```
 
-The runner writes state and observability output under:
+The live runner executes fixture cases through an external Playwright-compatible CLI and writes
+state and observability output under:
 
 - `.tau/browser-automation/state.json`
 - `.tau/browser-automation/runtime-events.jsonl`
-- `.tau/browser-automation/channel-store/browser-automation/fixtures/...`
 
 Inspect browser automation transport health snapshot:
 
@@ -375,8 +367,7 @@ Troubleshooting:
 
 - `browser_automation.npx` not ready: install Node.js/npm and ensure `npx` is on `PATH`.
 - `browser_automation.playwright_cli` missing: install `@playwright/mcp` or set `--browser-automation-playwright-cli` to a valid wrapper binary.
-- Unsafe browser actions are denied by default; enable `--browser-automation-allow-unsafe-actions` only for approved fixtures.
-- Tune `--browser-automation-action-timeout-ms` and `--browser-automation-retry-max-attempts` if valid flows are timing out under policy limits.
+- `--browser-automation-contract-runner` has been removed; use the live-runner command shown above.
 
 Demo command path:
 

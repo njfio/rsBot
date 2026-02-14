@@ -33,7 +33,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
-use tau_agent_core::{Agent, AgentConfig, AgentError, AgentEvent, AgentTool, ToolExecutionResult};
+use tau_agent_core::{
+    Agent, AgentConfig, AgentError, AgentEvent, AgentTool, SafetyMode, ToolExecutionResult,
+};
 use tau_ai::{
     ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, ModelRef, TauAiError,
     ToolDefinition,
@@ -140,11 +142,48 @@ fn unit_build_local_runtime_agent_preserves_system_prompt_message() {
             model_output_cost_per_million: None,
             cost_budget_usd: None,
             cost_alert_thresholds_percent: vec![80, 100],
+            prompt_sanitizer_enabled: true,
+            prompt_sanitizer_mode: SafetyMode::Warn,
+            prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
     assert_eq!(agent.messages().len(), 1);
     assert_eq!(agent.messages()[0].text_content(), "system prompt");
+}
+
+#[test]
+fn unit_build_local_runtime_agent_applies_prompt_sanitizer_settings() {
+    let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+    let client = Arc::new(QueueClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+    });
+    let agent = build_local_runtime_agent(
+        client,
+        &model_ref,
+        "system prompt",
+        LocalRuntimeAgentSettings {
+            max_turns: 4,
+            max_parallel_tool_calls: 4,
+            max_context_messages: Some(256),
+            request_max_retries: 2,
+            request_retry_initial_backoff_ms: 200,
+            request_retry_max_backoff_ms: 2_000,
+            request_timeout_ms: Some(120_000),
+            tool_timeout_ms: Some(120_000),
+            model_input_cost_per_million: None,
+            model_output_cost_per_million: None,
+            cost_budget_usd: None,
+            cost_alert_thresholds_percent: vec![80, 100],
+            prompt_sanitizer_enabled: true,
+            prompt_sanitizer_mode: SafetyMode::Redact,
+            prompt_sanitizer_redaction_token: "[MASK]".to_string(),
+        },
+        ToolPolicy::new(vec![std::env::temp_dir()]),
+    );
+    assert!(agent.safety_policy().enabled);
+    assert_eq!(agent.safety_policy().mode, SafetyMode::Redact);
+    assert_eq!(agent.safety_policy().redaction_token, "[MASK]");
 }
 
 #[tokio::test]
@@ -178,6 +217,9 @@ async fn functional_build_local_runtime_agent_applies_cost_budget_and_pricing_se
             model_output_cost_per_million: Some(0.0),
             cost_budget_usd: Some(1.0),
             cost_alert_thresholds_percent: vec![80, 100],
+            prompt_sanitizer_enabled: true,
+            prompt_sanitizer_mode: SafetyMode::Warn,
+            prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
@@ -217,6 +259,9 @@ async fn functional_build_local_runtime_agent_registers_builtin_tools_with_model
             model_output_cost_per_million: None,
             cost_budget_usd: None,
             cost_alert_thresholds_percent: vec![80, 100],
+            prompt_sanitizer_enabled: true,
+            prompt_sanitizer_mode: SafetyMode::Warn,
+            prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
@@ -256,6 +301,9 @@ async fn integration_build_local_runtime_agent_respects_max_turns_limit() {
             model_output_cost_per_million: None,
             cost_budget_usd: None,
             cost_alert_thresholds_percent: vec![80, 100],
+            prompt_sanitizer_enabled: true,
+            prompt_sanitizer_mode: SafetyMode::Warn,
+            prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
@@ -289,6 +337,9 @@ fn regression_build_local_runtime_agent_skips_empty_system_prompt_message() {
             model_output_cost_per_million: None,
             cost_budget_usd: None,
             cost_alert_thresholds_percent: vec![80, 100],
+            prompt_sanitizer_enabled: true,
+            prompt_sanitizer_mode: SafetyMode::Warn,
+            prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );

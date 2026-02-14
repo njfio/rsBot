@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "help-and-unknown-command",
+  "args": [
+    "--model",
+    "openai/gpt-4o-mini",
+    "--openai-api-key",
+    "test-openai-key",
+    "--no-session"
+  ],
+  "stdin_script": "/help\n/sesion\n/quit\n",
+  "timeout_ms": 5000,
+  "expect": {
+    "success": true,
+    "min_prompt_count": 3,
+    "stdout_contains": [
+      "/help [command]",
+      "unknown command: /sesion",
+      "did you mean /session?",
+      "run /help for command list"
+    ],
+    "stderr_not_contains": [
+      "panic"
+    ]
+  }
+}

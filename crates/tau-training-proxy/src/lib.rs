@@ -1,4 +1,4 @@
-//! OpenAI-compatible training attribution proxy runtime.
+//! OpenAI-compatible prompt-optimization attribution proxy runtime.
 
 use anyhow::{bail, Context, Result};
 use axum::body::{Body, Bytes};
@@ -90,7 +90,7 @@ impl TrainingProxyState {
     fn from_config(config: &TrainingProxyConfig) -> Result<Self> {
         let upstream_base_url = config.upstream_base_url.trim();
         if upstream_base_url.is_empty() {
-            bail!("--training-proxy-upstream-url must be provided");
+            bail!("--prompt-optimization-proxy-upstream-url must be provided");
         }
 
         let request_timeout_ms = config.request_timeout_ms.max(1_000);
@@ -122,7 +122,7 @@ impl TrainingProxyState {
 pub async fn run_training_proxy(config: TrainingProxyConfig) -> Result<()> {
     let bind_addr: SocketAddr = config.bind.parse().with_context(|| {
         format!(
-            "invalid --training-proxy-bind '{}': expected host:port",
+            "invalid --prompt-optimization-proxy-bind '{}': expected host:port",
             config.bind
         )
     })?;

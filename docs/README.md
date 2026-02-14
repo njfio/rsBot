@@ -6,10 +6,11 @@ This index maps Tau documentation by audience and task.
 | --- | --- | --- |
 | New user / operator | [Quickstart Guide](guides/quickstart.md) | Onboarding, auth modes, first prompt, first TUI run |
 | Fresh-clone validator / demo operator | [Demo Index Guide](guides/demo-index.md) | Deterministic onboarding, gateway auth, multi-channel live ingest, and deployment WASM demos |
-| Training operator | [Training Operations Guide](guides/training-ops.md) | Rollout training mode, JSON config schema, and SQLite-backed state |
-| Training integration operator | [Training Proxy Operations Guide](guides/training-proxy-ops.md) | OpenAI-compatible proxy mode with rollout/attempt attribution logs |
+| Prompt optimization operator | [Prompt Optimization Operations Guide](guides/training-ops.md) | Rollout prompt optimization mode, JSON config schema, and SQLite-backed state |
+| Prompt optimization integration operator | [Prompt Optimization Proxy Operations Guide](guides/training-proxy-ops.md) | OpenAI-compatible proxy mode with rollout/attempt attribution logs |
 | Workspace operator | [Project Index Guide](guides/project-index.md) | Build/query/inspect deterministic local code index |
 | Runtime operator / SRE | [Operator Control Summary](guides/operator-control-summary.md) | Unified control-plane status, policy posture, daemon/release checks, triage map |
+| Runtime maintainer | [Doc Density Scorecard](guides/doc-density-scorecard.md) | Baseline/targets for public API docs coverage and CI regression guard policy |
 | Gateway auth operator | [Gateway Auth Session Smoke](guides/gateway-auth-session-smoke.md) | End-to-end password-session issuance, authorized status call, invalid/expired fail-closed checks |
 | Platform / integration engineer | [Transport Guide](guides/transports.md) | GitHub Issues bridge, Slack bridge, contract runners (multi-channel/multi-agent/memory/dashboard/gateway/deployment/voice), custom-command diagnostics, RPC, ChannelStore admin |
 | Package and extension author | [Packages Guide](guides/packages.md) | Extension manifests, package lifecycle, activation, signing |

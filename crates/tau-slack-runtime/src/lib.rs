@@ -19,6 +19,7 @@ use tau_ai::StreamDeltaHandler;
 use tau_session::SessionRuntime;
 use tokio::sync::mpsc;
 
+/// Slack bridge runtime internals and transport loop entrypoints.
 pub mod slack_runtime;
 
 pub use slack_runtime::{run_slack_bridge, SlackBridgeRuntimeConfig};
@@ -37,12 +38,14 @@ pub use tau_runtime::TransportHealthSnapshot;
 pub use tau_startup::runtime_types::RenderOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Outcome reported by prompt execution with cancellation/timeout controls.
 pub enum PromptRunStatus {
     Completed,
     Cancelled,
     TimedOut,
 }
 
+/// Runs a prompt turn with cooperative cancellation and bounded timeout handling.
 pub async fn run_prompt_with_cancellation<F>(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
