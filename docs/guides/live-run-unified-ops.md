@@ -82,3 +82,20 @@ Attach these files for rollout-signoff evidence:
 - `.tau/live-run-unified/report.json`
 - `.tau/live-run-unified/surfaces/**/stdout.log`
 - `.tau/live-run-unified/surfaces/**/stderr.log`
+
+## CI Gate Policy
+
+CI workflow `CI` includes:
+
+- `live-smoke-matrix` (surface matrix: voice/browser/dashboard/custom-command/memory)
+- `live-smoke-gate` (fails merge gate when required surface smoke fails)
+
+Browser matrix lane includes fallback behavior:
+
+- primary: `scripts/demo/browser-automation-live.sh`
+- fallback: `scripts/demo/browser-automation.sh`
+
+Merge gate blocks when:
+
+- any required surface fails both primary and fallback mode, or
+- matrix job exits non-success.

@@ -40,6 +40,7 @@ jobs:
       run_coverage: ${{ steps.quality_mode.outputs.run_coverage }}
       run_cross_platform: ${{ steps.quality_mode.outputs.run_cross_platform }}
       heavy_reason: ${{ steps.quality_mode.outputs.heavy_reason }}
+      rust_changed: ${{ steps.rust_scope.outputs.rust_changed }}
     steps:
       - name: Checkout (attempt 1)
         id: checkout_attempt_1
@@ -282,6 +283,218 @@ jobs:
         env:
           RUST_MIN_STACK: "8388608"
         run: cargo test --workspace
+
+  live-smoke-matrix:
+    name: Live smoke (${{ matrix.surface }})
+    needs: [quality-linux]
+    if: needs.quality-linux.outputs.rust_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        surface:
+          - voice
+          - browser
+          - dashboard
+          - custom-command
+          - memory
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve live-smoke surface plan
+        id: surface_plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/live_smoke_matrix.py \
+            --surface "${{ matrix.surface }}" \
+            --output "$GITHUB_OUTPUT" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build required binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p tau-coding-agent
+          if [[ "${{ matrix.surface }}" == "browser" ]]; then
+            cargo build -p tau-browser-automation --bin browser_automation_live_harness
+          fi
+
+      - name: Run live-smoke wrapper with fallback
+        id: run_live_smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          surface="${{ matrix.surface }}"
+          artifact_dir="ci-artifacts/live-smoke/${surface}"
+          mkdir -p "${artifact_dir}"
+
+          primary_wrapper="${{ steps.surface_plan.outputs.primary_wrapper }}"
+          fallback_wrapper="${{ steps.surface_plan.outputs.fallback_wrapper }}"
+          timeout_seconds="${{ steps.surface_plan.outputs.timeout_seconds }}"
+
+          primary_stdout="${artifact_dir}/primary.stdout.log"
+          primary_stderr="${artifact_dir}/primary.stderr.log"
+
+          set +e
+          "${primary_wrapper}" \
+            --repo-root . \
+            --binary target/debug/tau-coding-agent \
+            --skip-build \
+            --timeout-seconds "${timeout_seconds}" >"${primary_stdout}" 2>"${primary_stderr}"
+          primary_rc=$?
+          set -e
+
+          final_rc="${primary_rc}"
+          execution_mode="primary"
+
+          if [[ "${primary_rc}" -ne 0 && -n "${fallback_wrapper}" ]]; then
+            echo "::warning::live-smoke primary wrapper failed for '${surface}' (exit=${primary_rc}); attempting fallback wrapper '${fallback_wrapper}'"
+            fallback_stdout="${artifact_dir}/fallback.stdout.log"
+            fallback_stderr="${artifact_dir}/fallback.stderr.log"
+            set +e
+            "${fallback_wrapper}" \
+              --repo-root . \
+              --binary target/debug/tau-coding-agent \
+              --skip-build \
+              --timeout-seconds "${timeout_seconds}" >"${fallback_stdout}" 2>"${fallback_stderr}"
+            fallback_rc=$?
+            set -e
+            final_rc="${fallback_rc}"
+            execution_mode="fallback"
+          fi
+
+          echo "execution_mode=${execution_mode}" >> "$GITHUB_OUTPUT"
+          echo "surface_exit_code=${final_rc}" >> "$GITHUB_OUTPUT"
+          echo "artifact_dir=${artifact_dir}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${final_rc}" -ne 0 ]]; then
+            echo "::error::live-smoke wrapper failed for '${surface}' mode='${execution_mode}' exit='${final_rc}'"
+            exit "${final_rc}"
+          fi
+
+      - name: Copy surface artifact roots into normalized CI layout
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_DIRS_JSON: ${{ steps.surface_plan.outputs.artifact_dirs_json }}
+          TARGET_ROOT: ${{ steps.run_live_smoke.outputs.artifact_dir }}/copied-artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p "${TARGET_ROOT}"
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          artifact_dirs = json.loads(os.environ["ARTIFACT_DIRS_JSON"])
+          target_root = Path(os.environ["TARGET_ROOT"]).resolve()
+          repo_root = Path(".").resolve()
+
+          for raw in artifact_dirs:
+              source = Path(raw)
+              if not source.is_absolute():
+                  source = (repo_root / source).resolve()
+              if not source.exists():
+                  continue
+              destination = target_root / raw.lstrip("./")
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              if source.is_dir():
+                  if destination.exists():
+                      shutil.rmtree(destination)
+                  shutil.copytree(source, destination)
+              else:
+                  shutil.copy2(source, destination)
+          PY
+
+      - name: Publish live-smoke surface summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          surface="${{ matrix.surface }}"
+          execution_mode="${{ steps.run_live_smoke.outputs.execution_mode }}"
+          surface_exit_code="${{ steps.run_live_smoke.outputs.surface_exit_code }}"
+          artifact_dir="${{ steps.run_live_smoke.outputs.artifact_dir }}"
+          if [[ -z "${execution_mode}" ]]; then
+            execution_mode="unavailable"
+          fi
+          if [[ -z "${surface_exit_code}" ]]; then
+            surface_exit_code="unknown"
+          fi
+          if [[ -z "${artifact_dir}" ]]; then
+            artifact_dir="ci-artifacts/live-smoke/${surface}"
+          fi
+
+          echo "### Live Smoke Surface: ${surface}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Execution mode: ${execution_mode}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Exit code: ${surface_exit_code}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact dir: \`${artifact_dir}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f "${artifact_dir}/primary.stdout.log" ]]; then
+            summary_line=$(grep -E 'summary: total=' "${artifact_dir}/primary.stdout.log" | tail -n 1 || true)
+            if [[ -n "${summary_line}" ]]; then
+              echo "- Primary summary: \`${summary_line}\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          if [[ -f "${artifact_dir}/fallback.stdout.log" ]]; then
+            summary_line=$(grep -E 'summary: total=' "${artifact_dir}/fallback.stdout.log" | tail -n 1 || true)
+            if [[ -n "${summary_line}" ]]; then
+              echo "- Fallback summary: \`${summary_line}\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload live-smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-smoke-${{ matrix.surface }}
+          path: ci-artifacts/live-smoke/${{ matrix.surface }}
+          if-no-files-found: ignore
+
+  live-smoke-gate:
+    name: Live smoke gate
+    needs: [quality-linux, live-smoke-matrix]
+    if: always() && needs.quality-linux.outputs.rust_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download live-smoke artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ci-artifacts/live-smoke
+          pattern: live-smoke-*
+          merge-multiple: false
+
+      - name: Summarize live-smoke gate outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "### Live Smoke Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Matrix result: ${{ needs.live-smoke-matrix.result }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Required surfaces: voice, browser, dashboard, custom-command, memory" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -d "ci-artifacts/live-smoke" ]]; then
+            echo "- Downloaded artifacts:" >> "$GITHUB_STEP_SUMMARY"
+            find ci-artifacts/live-smoke -maxdepth 2 -type d | sort | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Downloaded artifacts: none" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Enforce merge gate on live-smoke failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.live-smoke-matrix.result }}" != "success" ]]; then
+            echo "::error::required live-smoke matrix failed; merge gate is blocking"
+            exit 1
+          fi
 
   cross-platform-smoke:
     name: Cross-platform compile smoke (${{ matrix.os }})
