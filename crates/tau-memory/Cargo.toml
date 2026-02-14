@@ -17,5 +17,5 @@ tau-runtime = { path = "../tau-runtime" }
 tau-session = { path = "../tau-session" }
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile = "3.25"
 tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time"] }

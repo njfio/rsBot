@@ -21,5 +21,5 @@ tau-contract = { path = "../tau-contract", optional = true }
 tau-runtime = { path = "../tau-runtime", optional = true }
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile = "3.25"
 tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time"] }
