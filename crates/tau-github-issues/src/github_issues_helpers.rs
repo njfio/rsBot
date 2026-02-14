@@ -20,6 +20,7 @@ const GITHUB_ATTACHMENT_DENIED_CONTENT_TYPES: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `AttachmentPolicyDecision` used across Tau components.
 pub struct AttachmentPolicyDecision {
     pub accepted: bool,
     pub reason_code: &'static str,

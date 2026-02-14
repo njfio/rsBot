@@ -13,4 +13,5 @@ tau-core = { path = "../tau-core" }
 tokio.workspace = true
 
 [dev-dependencies]
+httpmock = "0.8"
 tempfile = "3"

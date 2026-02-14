@@ -1,17 +1,26 @@
-#![allow(dead_code)]
-
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use crate::custom_command_policy::{
+    default_custom_command_execution_policy, is_valid_command_name,
+    validate_custom_command_execution_policy, validate_custom_command_spec,
+    validate_custom_command_template_and_arguments, CustomCommandExecutionPolicy,
+    CustomCommandSpec,
+};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 pub const CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
 pub const CUSTOM_COMMAND_ERROR_INVALID_OPERATION: &str = "custom_command_invalid_operation";
 pub const CUSTOM_COMMAND_ERROR_INVALID_NAME: &str = "custom_command_invalid_name";
 pub const CUSTOM_COMMAND_ERROR_INVALID_TEMPLATE: &str = "custom_command_invalid_template";
+pub const CUSTOM_COMMAND_ERROR_POLICY_DENIED: &str = "custom_command_policy_denied";
 pub const CUSTOM_COMMAND_ERROR_BACKEND_UNAVAILABLE: &str = "custom_command_backend_unavailable";
 
 fn custom_command_contract_schema_version() -> u32 {
@@ -20,6 +29,7 @@ fn custom_command_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `CustomCommandOutcomeKind` values.
 pub enum CustomCommandOutcomeKind {
     Success,
     MalformedInput,
@@ -27,6 +37,7 @@ pub enum CustomCommandOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `CustomCommandCaseExpectation` used across Tau components.
 pub struct CustomCommandCaseExpectation {
     pub outcome: CustomCommandOutcomeKind,
     pub status_code: u16,
@@ -37,6 +48,7 @@ pub struct CustomCommandCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `CustomCommandContractCase` used across Tau components.
 pub struct CustomCommandContractCase {
     #[serde(default = "custom_command_contract_schema_version")]
     pub schema_version: u32,
@@ -49,11 +61,16 @@ pub struct CustomCommandContractCase {
     #[serde(default)]
     pub arguments: serde_json::Value,
     #[serde(default)]
+    pub execution_policy: Option<CustomCommandExecutionPolicy>,
+    #[serde(default)]
+    pub command_spec: Option<CustomCommandSpec>,
+    #[serde(default)]
     pub simulate_retryable_failure: bool,
     pub expected: CustomCommandCaseExpectation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `CustomCommandContractFixture` used across Tau components.
 pub struct CustomCommandContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -63,6 +80,7 @@ pub struct CustomCommandContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CustomCommandContractCapabilities` used across Tau components.
 pub struct CustomCommandContractCapabilities {
     pub schema_version: u32,
     pub supported_outcomes: BTreeSet<CustomCommandOutcomeKind>,
@@ -71,6 +89,7 @@ pub struct CustomCommandContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `CustomCommandReplayStep` values.
 pub enum CustomCommandReplayStep {
     Success,
     MalformedInput,
@@ -78,6 +97,7 @@ pub enum CustomCommandReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CustomCommandReplayResult` used across Tau components.
 pub struct CustomCommandReplayResult {
     pub step: CustomCommandReplayStep,
     pub status_code: u16,
@@ -87,6 +107,7 @@ pub struct CustomCommandReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `CustomCommandReplaySummary` used across Tau components.
 pub struct CustomCommandReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -95,23 +116,22 @@ pub struct CustomCommandReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `CustomCommandContractDriver` behavior.
 pub trait CustomCommandContractDriver {
     fn apply_case(&mut self, case: &CustomCommandContractCase)
         -> Result<CustomCommandReplayResult>;
 }
 
 pub fn parse_custom_command_contract_fixture(raw: &str) -> Result<CustomCommandContractFixture> {
-    let fixture = serde_json::from_str::<CustomCommandContractFixture>(raw)
-        .context("failed to parse custom-command contract fixture")?;
-    validate_custom_command_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse custom-command contract fixture",
+        validate_custom_command_contract_fixture,
+    )
 }
 
 pub fn load_custom_command_contract_fixture(path: &Path) -> Result<CustomCommandContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_custom_command_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_custom_command_contract_fixture)
 }
 
 pub fn custom_command_contract_capabilities() -> CustomCommandContractCapabilities {
@@ -186,34 +206,31 @@ pub fn validate_custom_command_contract_compatibility(
 pub fn validate_custom_command_contract_fixture(
     fixture: &CustomCommandContractFixture,
 ) -> Result<()> {
-    if fixture.schema_version != CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported custom-command contract schema version {} (expected {})",
-            fixture.schema_version,
-            CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "custom-command",
+        fixture.schema_version,
+        CUSTOM_COMMAND_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_custom_command_case(case, index)?;
-        let case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_custom_command_contract_compatibility(fixture)?;
     Ok(())
 }
 
 pub fn evaluate_custom_command_case(case: &CustomCommandContractCase) -> CustomCommandReplayResult {
+    evaluate_custom_command_case_with_policy(case, &default_custom_command_execution_policy())
+}
+
+pub fn evaluate_custom_command_case_with_policy(
+    case: &CustomCommandContractCase,
+    default_policy: &CustomCommandExecutionPolicy,
+) -> CustomCommandReplayResult {
     if case.simulate_retryable_failure {
         return CustomCommandReplayResult {
             step: CustomCommandReplayStep::RetryableFailure,
@@ -249,6 +266,46 @@ pub fn evaluate_custom_command_case(case: &CustomCommandContractCase) -> CustomC
             status_code: 422,
             error_code: Some(CUSTOM_COMMAND_ERROR_INVALID_TEMPLATE.to_string()),
             response_body: json!({"status":"rejected","reason":"invalid_template"}),
+        };
+    }
+
+    let effective_policy = case
+        .execution_policy
+        .clone()
+        .unwrap_or_else(|| default_policy.clone());
+    if validate_custom_command_execution_policy(&effective_policy).is_err() {
+        return CustomCommandReplayResult {
+            step: CustomCommandReplayStep::MalformedInput,
+            status_code: 403,
+            error_code: Some(CUSTOM_COMMAND_ERROR_POLICY_DENIED.to_string()),
+            response_body: json!({"status":"rejected","reason":"policy_denied"}),
+        };
+    }
+
+    if let Some(spec) = &case.command_spec {
+        if validate_custom_command_spec(spec).is_err() {
+            return CustomCommandReplayResult {
+                step: CustomCommandReplayStep::MalformedInput,
+                status_code: 403,
+                error_code: Some(CUSTOM_COMMAND_ERROR_POLICY_DENIED.to_string()),
+                response_body: json!({"status":"rejected","reason":"policy_denied"}),
+            };
+        }
+    }
+
+    if (operation == "CREATE" || operation == "UPDATE")
+        && validate_custom_command_template_and_arguments(
+            case.template.as_str(),
+            &case.arguments,
+            &effective_policy,
+        )
+        .is_err()
+    {
+        return CustomCommandReplayResult {
+            step: CustomCommandReplayStep::MalformedInput,
+            status_code: 403,
+            error_code: Some(CUSTOM_COMMAND_ERROR_POLICY_DENIED.to_string()),
+            response_body: json!({"status":"rejected","reason":"policy_denied"}),
         };
     }
 
@@ -391,6 +448,48 @@ fn validate_custom_command_case(case: &CustomCommandContractCase, index: usize) 
     if case.expected.status_code == 0 {
         bail!("case '{}' has invalid expected.status_code=0", case.case_id);
     }
+
+    if let Some(policy) = &case.execution_policy {
+        validate_custom_command_execution_policy(policy)?;
+    }
+    if let Some(spec) = &case.command_spec {
+        validate_custom_command_spec(spec)?;
+    }
+
+    let operation = normalize_operation(&case.operation);
+    let effective_policy = case
+        .execution_policy
+        .clone()
+        .unwrap_or_else(default_custom_command_execution_policy);
+    if (operation == "CREATE" || operation == "UPDATE")
+        && case.expected.outcome == CustomCommandOutcomeKind::Success
+    {
+        if let Some(spec) = &case.command_spec {
+            if !case.command_name.trim().is_empty() && case.command_name.trim() != spec.name.trim()
+            {
+                bail!(
+                    "case '{}' command_spec.name '{}' does not match command_name '{}'",
+                    case.case_id,
+                    spec.name,
+                    case.command_name
+                );
+            }
+            if !case.template.trim().is_empty() && case.template.trim() != spec.template.trim() {
+                bail!(
+                    "case '{}' command_spec.template does not match template",
+                    case.case_id
+                );
+            }
+        }
+        if !case.template.trim().is_empty() {
+            validate_custom_command_template_and_arguments(
+                case.template.as_str(),
+                &case.arguments,
+                &effective_policy,
+            )?;
+        }
+    }
+
     validate_custom_command_expectation(case)?;
     Ok(())
 }
@@ -428,6 +527,7 @@ fn supported_error_codes() -> &'static [&'static str] {
         CUSTOM_COMMAND_ERROR_INVALID_OPERATION,
         CUSTOM_COMMAND_ERROR_INVALID_NAME,
         CUSTOM_COMMAND_ERROR_INVALID_TEMPLATE,
+        CUSTOM_COMMAND_ERROR_POLICY_DENIED,
         CUSTOM_COMMAND_ERROR_BACKEND_UNAVAILABLE,
     ]
 }
@@ -436,27 +536,13 @@ fn normalize_operation(raw: &str) -> String {
     raw.trim().to_ascii_uppercase()
 }
 
-fn is_valid_command_name(raw: &str) -> bool {
-    if raw.is_empty() {
-        return false;
-    }
-    let mut chars = raw.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_alphabetic() {
-        return false;
-    }
-    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         evaluate_custom_command_case, load_custom_command_contract_fixture,
         parse_custom_command_contract_fixture, run_custom_command_contract_replay,
         CustomCommandContractCase, CustomCommandContractDriver, CustomCommandReplayResult,
-        CustomCommandReplayStep,
+        CustomCommandReplayStep, CUSTOM_COMMAND_ERROR_POLICY_DENIED,
     };
     use anyhow::Result;
     use std::path::PathBuf;
@@ -593,5 +679,75 @@ mod tests {
             result.error_code.as_deref(),
             Some("custom_command_invalid_operation")
         );
+    }
+
+    #[test]
+    fn functional_custom_command_contract_evaluator_rejects_unsafe_template_by_default_policy() {
+        let fixture = parse_custom_command_contract_fixture(
+            r#"{
+  "schema_version": 1,
+  "name": "policy-denied-template",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-policy-denied",
+      "operation": "create",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}} && curl https://example.invalid",
+      "arguments": {"env":"prod"},
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 403,
+        "error_code": "custom_command_policy_denied",
+        "response_body": {"status":"rejected","reason":"policy_denied"}
+      }
+    }
+  ]
+}"#,
+        )
+        .expect("fixture should parse");
+        let result = evaluate_custom_command_case(&fixture.cases[0]);
+        assert_eq!(result.step, CustomCommandReplayStep::MalformedInput);
+        assert_eq!(result.status_code, 403);
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some(CUSTOM_COMMAND_ERROR_POLICY_DENIED)
+        );
+        assert_eq!(result.response_body["status"], "rejected");
+        assert_eq!(result.response_body["reason"], "policy_denied");
+    }
+
+    #[test]
+    fn regression_custom_command_contract_fixture_rejects_invalid_execution_policy_schema() {
+        let error = parse_custom_command_contract_fixture(
+            r#"{
+  "schema_version": 1,
+  "name": "invalid-policy",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "custom-command-invalid-policy",
+      "operation": "create",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}}",
+      "arguments": {"env":"prod"},
+      "execution_policy": {
+        "schema_version": 1,
+        "sandbox_profile": "forbidden-profile"
+      },
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 403,
+        "error_code": "custom_command_policy_denied",
+        "response_body": {"status":"rejected","reason":"policy_denied"}
+      }
+    }
+  ]
+}"#,
+        )
+        .expect_err("invalid sandbox profile should fail");
+        assert!(error
+            .to_string()
+            .contains("unsupported custom command sandbox profile"));
     }
 }

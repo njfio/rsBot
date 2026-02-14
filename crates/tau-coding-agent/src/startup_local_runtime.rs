@@ -1,7 +1,29 @@
-use super::*;
+use std::{path::Path, sync::Arc};
+
+use anyhow::Result;
+use serde_json::Value;
+#[cfg(test)]
+use tau_agent_core::Agent;
+use tau_agent_core::{AgentConfig, AgentEvent, SafetyMode};
+use tau_ai::{LlmClient, ModelRef};
+use tau_cli::{Cli, CliPromptSanitizerMode};
+use tau_session::initialize_session;
+
+use crate::commands::execute_command_file;
 use crate::extension_manifest::{
-    discover_extension_runtime_registrations, ExtensionRuntimeRegistrationSummary,
+    discover_extension_runtime_registrations, dispatch_extension_runtime_hook,
+    ExtensionRuntimeRegistrationSummary,
 };
+use crate::model_catalog::ModelCatalog;
+use crate::multi_agent_router::load_multi_agent_route_table;
+use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
+use crate::runtime_loop::{
+    resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
+    InteractiveRuntimeConfig, PlanFirstPromptRuntimeHooksConfig, RuntimeExtensionHooksConfig,
+};
+use crate::runtime_output::event_to_json;
+use crate::runtime_types::{CommandExecutionContext, RenderOptions, SkillsSyncCommandConfig};
+use crate::tools::{self, ToolPolicy};
 use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent as build_onboarding_local_runtime_agent,
     build_local_runtime_extension_startup as build_onboarding_local_runtime_extension_startup,
@@ -31,6 +53,14 @@ pub(crate) struct LocalRuntimeConfig<'a> {
     pub(crate) skills_lock_path: &'a Path,
 }
 
+fn resolve_safety_mode(mode: CliPromptSanitizerMode) -> SafetyMode {
+    match mode {
+        CliPromptSanitizerMode::Warn => SafetyMode::Warn,
+        CliPromptSanitizerMode::Redact => SafetyMode::Redact,
+        CliPromptSanitizerMode::Block => SafetyMode::Block,
+    }
+}
+
 pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<()> {
     let LocalRuntimeConfig {
         cli,
@@ -46,6 +76,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         skills_lock_path,
     } = config;
 
+    let agent_defaults = AgentConfig::default();
+    let model_catalog_entry = model_catalog.find_model_ref(model_ref);
     let mut agent = build_onboarding_local_runtime_agent(
         client,
         model_ref,
@@ -57,6 +89,17 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             request_max_retries: cli.agent_request_max_retries,
             request_retry_initial_backoff_ms: cli.agent_request_retry_initial_backoff_ms,
             request_retry_max_backoff_ms: cli.agent_request_retry_max_backoff_ms,
+            request_timeout_ms: agent_defaults.request_timeout_ms,
+            tool_timeout_ms: agent_defaults.tool_timeout_ms,
+            model_input_cost_per_million: model_catalog_entry
+                .and_then(|entry| entry.input_cost_per_million),
+            model_output_cost_per_million: model_catalog_entry
+                .and_then(|entry| entry.output_cost_per_million),
+            cost_budget_usd: cli.agent_cost_budget_usd,
+            cost_alert_thresholds_percent: cli.agent_cost_alert_threshold_percent.clone(),
+            prompt_sanitizer_enabled: cli.prompt_sanitizer_enabled,
+            prompt_sanitizer_mode: resolve_safety_mode(cli.prompt_sanitizer_mode),
+            prompt_sanitizer_redaction_token: cli.prompt_sanitizer_redaction_token.clone(),
         },
         tool_policy,
     );
@@ -201,19 +244,27 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                     run_plan_first_prompt_with_runtime_hooks(
                         &mut agent,
                         &mut session_runtime,
-                        &prompt,
-                        interactive_defaults.turn_timeout_ms,
-                        render_options,
-                        interactive_defaults.orchestrator_max_plan_steps,
-                        interactive_defaults.orchestrator_max_delegated_steps,
-                        interactive_defaults.orchestrator_max_executor_response_chars,
-                        interactive_defaults.orchestrator_max_delegated_step_response_chars,
-                        interactive_defaults.orchestrator_max_delegated_total_response_chars,
-                        interactive_defaults.orchestrator_delegate_steps,
-                        &orchestrator_route_table,
-                        orchestrator_route_trace_log,
-                        tool_policy_json,
-                        &extension_runtime_hooks,
+                        PlanFirstPromptRuntimeHooksConfig {
+                            prompt: &prompt,
+                            turn_timeout_ms: interactive_defaults.turn_timeout_ms,
+                            render_options,
+                            orchestrator_max_plan_steps: interactive_defaults
+                                .orchestrator_max_plan_steps,
+                            orchestrator_max_delegated_steps: interactive_defaults
+                                .orchestrator_max_delegated_steps,
+                            orchestrator_max_executor_response_chars: interactive_defaults
+                                .orchestrator_max_executor_response_chars,
+                            orchestrator_max_delegated_step_response_chars: interactive_defaults
+                                .orchestrator_max_delegated_step_response_chars,
+                            orchestrator_max_delegated_total_response_chars: interactive_defaults
+                                .orchestrator_max_delegated_total_response_chars,
+                            orchestrator_delegate_steps: interactive_defaults
+                                .orchestrator_delegate_steps,
+                            orchestrator_route_table: &orchestrator_route_table,
+                            orchestrator_route_trace_log,
+                            tool_policy_json,
+                            extension_runtime_hooks: &extension_runtime_hooks,
+                        },
                     )
                     .await?;
                 }

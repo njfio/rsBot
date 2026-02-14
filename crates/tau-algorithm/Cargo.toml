@@ -1,0 +1,25 @@
+[package]
+name = "tau-algorithm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+tau-ai = { path = "../tau-ai" }
+tau-training-store = { path = "../tau-training-store" }
+tau-training-types = { path = "../tau-training-types" }
+
+[dev-dependencies]
+async-trait.workspace = true
+criterion = "0.8"
+tokio.workspace = true
+tau-trainer = { path = "../tau-trainer" }
+tau-training-runner = { path = "../tau-training-runner" }
+tau-training-tracer = { path = "../tau-training-tracer" }
+
+[[bench]]
+name = "apo_throughput"
+harness = false

@@ -7,14 +7,10 @@ edition = "2021"
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-tokio = { version = "1.43", features = ["time"] }
 
 # Internal crates
 
-tau-core = { path = "../tau-core" }
-tau-runtime = { path = "../tau-runtime" }
-tau-session = { path = "../tau-session" }
+tau-contract = { path = "../tau-contract" }
 
 [dev-dependencies]
-tempfile = "3.10"
-tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time"] }
+tempfile = "3.25"

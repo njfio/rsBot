@@ -4,6 +4,10 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 use crate::multi_agent_router::{
     parse_multi_agent_route_table, select_multi_agent_route, MultiAgentRoutePhase,
@@ -21,6 +25,7 @@ fn multi_agent_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiAgentOutcomeKind` values.
 pub enum MultiAgentOutcomeKind {
     Success,
     MalformedInput,
@@ -38,6 +43,7 @@ impl MultiAgentOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiAgentContractExpectation` used across Tau components.
 pub struct MultiAgentContractExpectation {
     pub outcome: MultiAgentOutcomeKind,
     #[serde(default)]
@@ -50,7 +56,19 @@ pub struct MultiAgentContractExpectation {
     pub category: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Optional economics metadata used for escrow-backed delegation settlement.
+pub struct MultiAgentContractEconomics {
+    #[serde(default)]
+    pub escrow_reserve_micros: Option<u64>,
+    #[serde(default)]
+    pub execution_cost_micros: Option<u64>,
+    #[serde(default)]
+    pub settlement_reference: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `MultiAgentContractCase` used across Tau components.
 pub struct MultiAgentContractCase {
     #[serde(default = "multi_agent_contract_schema_version")]
     pub schema_version: u32,
@@ -61,10 +79,13 @@ pub struct MultiAgentContractCase {
     pub step_text: String,
     #[serde(default)]
     pub simulate_retryable_failure: bool,
+    #[serde(default)]
+    pub economics: MultiAgentContractEconomics,
     pub expected: MultiAgentContractExpectation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Public struct `MultiAgentContractFixture` used across Tau components.
 pub struct MultiAgentContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -74,6 +95,7 @@ pub struct MultiAgentContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiAgentContractCapabilities` used across Tau components.
 pub struct MultiAgentContractCapabilities {
     pub schema_version: u32,
     pub supported_phases: Vec<String>,
@@ -82,6 +104,7 @@ pub struct MultiAgentContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `MultiAgentReplayStep` values.
 pub enum MultiAgentReplayStep {
     Success,
     MalformedInput,
@@ -89,6 +112,7 @@ pub enum MultiAgentReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `MultiAgentReplayResult` used across Tau components.
 pub struct MultiAgentReplayResult {
     pub step: MultiAgentReplayStep,
     pub error_code: Option<String>,
@@ -112,17 +136,15 @@ pub(crate) trait MultiAgentContractDriver {
 }
 
 pub fn parse_multi_agent_contract_fixture(raw: &str) -> Result<MultiAgentContractFixture> {
-    let fixture = serde_json::from_str::<MultiAgentContractFixture>(raw)
-        .context("failed to parse multi-agent contract fixture")?;
-    validate_multi_agent_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse multi-agent contract fixture",
+        validate_multi_agent_contract_fixture,
+    )
 }
 
 pub fn load_multi_agent_contract_fixture(path: &Path) -> Result<MultiAgentContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_multi_agent_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_multi_agent_contract_fixture)
 }
 
 pub fn multi_agent_contract_capabilities() -> MultiAgentContractCapabilities {
@@ -205,28 +227,18 @@ pub fn validate_multi_agent_contract_compatibility(
 }
 
 pub fn validate_multi_agent_contract_fixture(fixture: &MultiAgentContractFixture) -> Result<()> {
-    if fixture.schema_version != MULTI_AGENT_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported multi-agent contract schema version {} (expected {})",
-            fixture.schema_version,
-            MULTI_AGENT_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "multi-agent",
+        fixture.schema_version,
+        MULTI_AGENT_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_multi_agent_contract_case(case, index)?;
-        let trimmed_case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(trimmed_case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", trimmed_case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_multi_agent_contract_compatibility(fixture)?;
     Ok(())
@@ -279,6 +291,44 @@ fn validate_multi_agent_contract_case(case: &MultiAgentContractCase, index: usiz
 
     validate_multi_agent_expectation(case)?;
     validate_case_route_table_contract(case)?;
+    validate_case_economics(case)?;
+    Ok(())
+}
+
+fn validate_case_economics(case: &MultiAgentContractCase) -> Result<()> {
+    if case
+        .economics
+        .escrow_reserve_micros
+        .is_some_and(|value| value == 0)
+    {
+        bail!(
+            "fixture case '{}' economics.escrow_reserve_micros must be greater than 0 when set",
+            case.case_id
+        );
+    }
+    if case
+        .economics
+        .execution_cost_micros
+        .is_some_and(|value| value == 0)
+    {
+        bail!(
+            "fixture case '{}' economics.execution_cost_micros must be greater than 0 when set",
+            case.case_id
+        );
+    }
+    if let (Some(reserve), Some(cost)) = (
+        case.economics.escrow_reserve_micros,
+        case.economics.execution_cost_micros,
+    ) {
+        if cost > reserve {
+            bail!(
+                "fixture case '{}' economics.execution_cost_micros {} exceeds economics.escrow_reserve_micros {}",
+                case.case_id,
+                cost,
+                reserve
+            );
+        }
+    }
     Ok(())
 }
 
@@ -742,6 +792,43 @@ mod tests {
             rendered.contains("unsupported error_code"),
             "unexpected unsupported-error-code message: {rendered}"
         );
+    }
+
+    #[test]
+    fn regression_fixture_rejects_invalid_economics_bounds() {
+        let error = parse_multi_agent_contract_fixture(
+            r#"{
+  "schema_version": 1,
+  "name": "invalid-economics",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "planner-success",
+      "phase": "planner",
+      "route_table": {
+        "schema_version": 1,
+        "roles": { "planner": {} },
+        "planner": { "role": "planner" },
+        "delegated": { "role": "planner" },
+        "review": { "role": "planner" }
+      },
+      "economics": {
+        "escrow_reserve_micros": 1000,
+        "execution_cost_micros": 2000
+      },
+      "expected": {
+        "outcome": "success",
+        "selected_role": "planner",
+        "attempted_roles": ["planner"]
+      }
+    }
+  ]
+}"#,
+        )
+        .expect_err("economics bounds should fail");
+        assert!(error
+            .to_string()
+            .contains("economics.execution_cost_micros"));
     }
 
     #[test]

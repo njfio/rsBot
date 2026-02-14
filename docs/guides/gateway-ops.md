@@ -59,6 +59,8 @@ Remote-access profile posture:
 - `--gateway-remote-profile local-only` (default)
 - `--gateway-remote-profile password-remote`
 - `--gateway-remote-profile proxy-remote`
+- `--gateway-remote-profile tailscale-serve`
+- `--gateway-remote-profile tailscale-funnel`
 
 Inspect remote-access posture without starting the gateway:
 
@@ -66,6 +68,14 @@ Inspect remote-access posture without starting the gateway:
 cargo run -p tau-coding-agent -- \
   --gateway-remote-profile-inspect \
   --gateway-remote-profile-json
+```
+
+Export remote workflow plans (fails closed when selected profile is unsafe):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-remote-plan \
+  --gateway-remote-plan-json
 ```
 
 Detailed setup and rollback guidance:
@@ -221,6 +231,7 @@ Configurable guardrail thresholds (runner flags):
 
 ```bash
 ./scripts/demo/gateway.sh
+./scripts/demo/gateway-remote-access.sh
 ```
 
 ## Rollout plan with guardrails

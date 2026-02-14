@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `DemoIndexRunCommandSpec` used across Tau components.
 pub struct DemoIndexRunCommandSpec {
     pub scenarios: Vec<String>,
     pub timeout_seconds: u64,

@@ -1,12 +1,17 @@
+//! Startup preflight and runtime wiring entrypoints for Tau.
+//!
+//! Provides startup policy/transport dispatch helpers, command-file execution,
+//! and startup-time runtime composition primitives.
+
 use anyhow::{anyhow, Context, Result};
 use tau_access::pairing::{evaluate_pairing_access, pairing_policy_for_state_dir, PairingDecision};
 use tau_cli::validation::{
     validate_browser_automation_preflight_cli, validate_deployment_wasm_inspect_cli,
     validate_deployment_wasm_package_cli, validate_event_webhook_ingest_cli,
-    validate_gateway_remote_profile_inspect_cli, validate_gateway_service_cli,
-    validate_multi_channel_channel_lifecycle_cli, validate_multi_channel_incident_timeline_cli,
-    validate_multi_channel_live_ingest_cli, validate_multi_channel_send_cli,
-    validate_project_index_cli,
+    validate_gateway_remote_plan_cli, validate_gateway_remote_profile_inspect_cli,
+    validate_gateway_service_cli, validate_multi_channel_channel_lifecycle_cli,
+    validate_multi_channel_incident_timeline_cli, validate_multi_channel_live_ingest_cli,
+    validate_multi_channel_send_cli, validate_project_index_cli,
 };
 use tau_cli::Cli;
 use tau_core::current_unix_timestamp_ms;
@@ -19,6 +24,27 @@ use tau_gateway::{
 };
 use tau_session::validate_session_file;
 
+/// Shared startup/runtime value objects used across CLI entrypoints.
+pub mod runtime_types;
+/// Command-file execution runtime helpers.
+pub mod startup_command_file_runtime;
+/// Model-catalog resolution and validation helpers for startup.
+pub mod startup_model_catalog;
+/// Multi-channel adapter factories used by startup command wiring.
+pub mod startup_multi_channel_adapters;
+/// Multi-channel command implementations executed during startup preflight.
+pub mod startup_multi_channel_commands;
+/// RPC capabilities command rendering and dispatch helpers.
+pub mod startup_rpc_capabilities_command;
+
+pub use runtime_types::*;
+pub use startup_command_file_runtime::*;
+pub use startup_model_catalog::*;
+pub use startup_multi_channel_adapters::*;
+pub use startup_multi_channel_commands::*;
+pub use startup_rpc_capabilities_command::*;
+
+/// Trait contract for `StartupPreflightActions` behavior.
 pub trait StartupPreflightActions {
     fn execute_onboarding_command(&self, cli: &Cli) -> Result<()>;
     fn execute_multi_channel_send_command(&self, cli: &Cli) -> Result<()>;
@@ -64,6 +90,7 @@ pub trait StartupPreflightActions {
     fn handle_daemon_commands(&self, cli: &Cli) -> Result<bool>;
 }
 
+/// Executes startup preflight commands and returns whether startup was handled.
 pub fn execute_startup_preflight(cli: &Cli, actions: &dyn StartupPreflightActions) -> Result<bool> {
     if cli.onboard {
         actions.execute_onboarding_command(cli)?;
@@ -182,6 +209,12 @@ pub fn execute_startup_preflight(cli: &Cli, actions: &dyn StartupPreflightAction
     if cli.gateway_remote_profile_inspect {
         validate_gateway_remote_profile_inspect_cli(cli)?;
         tau_cli::gateway_remote_profile::execute_gateway_remote_profile_inspect_command(cli)?;
+        return Ok(true);
+    }
+
+    if cli.gateway_remote_plan {
+        validate_gateway_remote_plan_cli(cli)?;
+        tau_cli::gateway_remote_profile::execute_gateway_remote_plan_command(cli)?;
         return Ok(true);
     }
 

@@ -7,14 +7,15 @@ use tokio::time::sleep;
 
 use crate::{
     retry::{
-        is_retryable_http_error, new_request_id, next_backoff_ms_with_jitter,
+        is_retryable_http_error, new_request_id, parse_retry_after_ms, provider_retry_delay_ms,
         retry_budget_allows_delay, should_retry_status,
     },
-    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
-    StreamDeltaHandler, TauAiError, ToolDefinition,
+    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MediaSource, Message,
+    MessageRole, StreamDeltaHandler, TauAiError, ToolChoice, ToolDefinition,
 };
 
 #[derive(Debug, Clone)]
+/// Public struct `AnthropicConfig` used across Tau components.
 pub struct AnthropicConfig {
     pub api_base: String,
     pub api_key: String,
@@ -25,6 +26,7 @@ pub struct AnthropicConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `AnthropicClient` used across Tau components.
 pub struct AnthropicClient {
     client: reqwest::Client,
     config: AnthropicConfig,
@@ -137,10 +139,14 @@ impl AnthropicClient {
                         return parse_messages_response(&raw);
                     }
 
+                    let retry_after_ms = parse_retry_after_ms(response.headers());
                     let raw = response.text().await?;
                     if attempt < max_retries && should_retry_status(status.as_u16()) {
-                        let backoff_ms =
-                            next_backoff_ms_with_jitter(attempt, self.config.retry_jitter);
+                        let backoff_ms = provider_retry_delay_ms(
+                            attempt,
+                            self.config.retry_jitter,
+                            retry_after_ms,
+                        );
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         if retry_budget_allows_delay(
                             elapsed_ms,
@@ -160,7 +166,7 @@ impl AnthropicClient {
                 Err(error) => {
                     if attempt < max_retries && is_retryable_http_error(&error) {
                         let backoff_ms =
-                            next_backoff_ms_with_jitter(attempt, self.config.retry_jitter);
+                            provider_retry_delay_ms(attempt, self.config.retry_jitter, None);
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         if retry_budget_allows_delay(
                             elapsed_ms,
@@ -192,12 +198,28 @@ fn build_messages_request_body(request: &ChatRequest) -> Value {
         "max_tokens": request.max_tokens.unwrap_or(1024),
     });
 
-    if !system.is_empty() {
+    if request.json_mode {
+        let mut system_segments = vec![
+            "Respond with valid JSON only. Do not include markdown code fences or commentary."
+                .to_string(),
+        ];
+        if !system.is_empty() {
+            system_segments.push(system);
+        }
+        body["system"] = json!(system_segments.join("\n\n"));
+    } else if !system.is_empty() {
         body["system"] = json!(system);
     }
 
     if !request.tools.is_empty() {
         body["tools"] = to_anthropic_tools(&request.tools);
+        if let Some(tool_choice) = request
+            .tool_choice
+            .as_ref()
+            .and_then(to_anthropic_tool_choice)
+        {
+            body["tool_choice"] = tool_choice;
+        }
     }
 
     if let Some(temperature) = request.temperature {
@@ -205,6 +227,18 @@ fn build_messages_request_body(request: &ChatRequest) -> Value {
     }
 
     body
+}
+
+fn to_anthropic_tool_choice(tool_choice: &ToolChoice) -> Option<Value> {
+    match tool_choice {
+        ToolChoice::Auto => Some(json!({ "type": "auto" })),
+        ToolChoice::None => None,
+        ToolChoice::Required => Some(json!({ "type": "any" })),
+        ToolChoice::Tool { name } => Some(json!({
+            "type": "tool",
+            "name": name,
+        })),
+    }
 }
 
 fn extract_system_text(messages: &[Message]) -> String {
@@ -239,46 +273,18 @@ fn to_anthropic_messages(messages: &[Message]) -> Value {
             .filter_map(|message| match message.role {
                 MessageRole::System => None,
                 MessageRole::User => {
-                    let text = message.text_content();
-                    if text.trim().is_empty() {
+                    let parts = to_anthropic_content_parts(message, false);
+                    if parts.is_empty() {
                         None
                     } else {
                         Some(json!({
                             "role": "user",
-                            "content": [{
-                                "type": "text",
-                                "text": text,
-                            }]
+                            "content": parts,
                         }))
                     }
                 }
                 MessageRole::Assistant => {
-                    let mut parts = Vec::new();
-                    for block in &message.content {
-                        match block {
-                            ContentBlock::Text { text } => {
-                                if !text.trim().is_empty() {
-                                    parts.push(json!({
-                                        "type": "text",
-                                        "text": text,
-                                    }));
-                                }
-                            }
-                            ContentBlock::ToolCall {
-                                id,
-                                name,
-                                arguments,
-                            } => {
-                                parts.push(json!({
-                                    "type": "tool_use",
-                                    "id": id,
-                                    "name": name,
-                                    "input": arguments,
-                                }));
-                            }
-                        }
-                    }
-
+                    let parts = to_anthropic_content_parts(message, true);
                     if parts.is_empty() {
                         None
                     } else {
@@ -314,6 +320,70 @@ fn to_anthropic_messages(messages: &[Message]) -> Value {
     )
 }
 
+fn to_anthropic_content_parts(message: &Message, allow_tool_calls: bool) -> Vec<Value> {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(json!({
+                        "type": "text",
+                        "text": text,
+                    }));
+                }
+            }
+            ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+            } if allow_tool_calls => {
+                parts.push(json!({
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": arguments,
+                }));
+            }
+            ContentBlock::ToolCall { .. } => {}
+            ContentBlock::Image { source } => match source {
+                MediaSource::Url { url } => {
+                    parts.push(json!({
+                        "type": "text",
+                        "text": format!("[tau-image:url:{url}]"),
+                    }));
+                }
+                MediaSource::Base64 { mime_type, data } => {
+                    parts.push(json!({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": data,
+                        }
+                    }));
+                }
+            },
+            ContentBlock::Audio { source } => {
+                parts.push(json!({
+                    "type": "text",
+                    "text": format!("[tau-audio:{}]", media_source_descriptor(source)),
+                }));
+            }
+        }
+    }
+
+    parts
+}
+
+fn media_source_descriptor(source: &MediaSource) -> String {
+    match source {
+        MediaSource::Url { url } => format!("url:{url}"),
+        MediaSource::Base64 { mime_type, data } => {
+            format!("base64:{mime_type}:{}bytes", data.len())
+        }
+    }
+}
+
 fn parse_messages_response(raw: &str) -> Result<ChatResponse, TauAiError> {
     let parsed: AnthropicMessageResponse = serde_json::from_str(raw)?;
 
@@ -334,6 +404,52 @@ fn parse_messages_response(raw: &str) -> Result<ChatResponse, TauAiError> {
                     arguments: input,
                 });
             }
+            AnthropicContent::Image {
+                source:
+                    AnthropicMediaSource::Base64 {
+                        media_type, data, ..
+                    },
+            } => {
+                blocks.push(ContentBlock::Image {
+                    source: MediaSource::Base64 {
+                        mime_type: media_type,
+                        data,
+                    },
+                });
+            }
+            AnthropicContent::Image {
+                source: AnthropicMediaSource::Url { url, .. },
+            } => {
+                blocks.push(ContentBlock::Image {
+                    source: MediaSource::Url { url },
+                });
+            }
+            AnthropicContent::Image {
+                source: AnthropicMediaSource::Other,
+            } => {}
+            AnthropicContent::Audio {
+                source:
+                    AnthropicMediaSource::Base64 {
+                        media_type, data, ..
+                    },
+            } => {
+                blocks.push(ContentBlock::Audio {
+                    source: MediaSource::Base64 {
+                        mime_type: media_type,
+                        data,
+                    },
+                });
+            }
+            AnthropicContent::Audio {
+                source: AnthropicMediaSource::Url { url, .. },
+            } => {
+                blocks.push(ContentBlock::Audio {
+                    source: MediaSource::Url { url },
+                });
+            }
+            AnthropicContent::Audio {
+                source: AnthropicMediaSource::Other,
+            } => {}
             AnthropicContent::Other => {}
         }
     }
@@ -627,6 +743,25 @@ enum AnthropicContent {
         name: String,
         input: Value,
     },
+    #[serde(rename = "image")]
+    Image { source: AnthropicMediaSource },
+    #[serde(rename = "audio")]
+    Audio { source: AnthropicMediaSource },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum AnthropicMediaSource {
+    #[serde(rename = "base64")]
+    Base64 {
+        #[serde(rename = "media_type")]
+        media_type: String,
+        data: String,
+    },
+    #[serde(rename = "url")]
+    Url { url: String },
     #[serde(other)]
     Other,
 }
@@ -654,7 +789,7 @@ mod tests {
         apply_anthropic_stream_event, build_messages_request_body,
         finalize_anthropic_stream_response, parse_messages_response,
     };
-    use crate::{ChatRequest, ContentBlock, Message, ToolDefinition};
+    use crate::{ChatRequest, ContentBlock, Message, MessageRole, ToolChoice, ToolDefinition};
 
     #[test]
     fn serializes_tool_messages() {
@@ -675,6 +810,8 @@ mod tests {
                 description: "Read file".to_string(),
                 parameters: json!({"type":"object"}),
             }],
+            tool_choice: Some(ToolChoice::Required),
+            json_mode: true,
             max_tokens: Some(512),
             temperature: Some(0.0),
         };
@@ -683,7 +820,55 @@ mod tests {
         assert_eq!(body["messages"][1]["content"][0]["type"], "tool_use");
         assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
         assert_eq!(body["tools"][0]["name"], "read");
-        assert_eq!(body["system"], "You are helpful");
+        assert_eq!(body["tool_choice"]["type"], "any");
+        let system = body["system"]
+            .as_str()
+            .expect("json mode system prompt should be a string");
+        assert!(system.contains("Respond with valid JSON only"));
+        assert!(system.contains("You are helpful"));
+    }
+
+    #[test]
+    fn functional_serializes_named_tool_choice_for_anthropic() {
+        let request = ChatRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: "Read file".to_string(),
+                parameters: json!({"type":"object"}),
+            }],
+            tool_choice: Some(ToolChoice::Tool {
+                name: "read".to_string(),
+            }),
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_messages_request_body(&request);
+        assert_eq!(body["tool_choice"]["type"], "tool");
+        assert_eq!(body["tool_choice"]["name"], "read");
+    }
+
+    #[test]
+    fn regression_none_tool_choice_is_not_serialized_for_anthropic() {
+        let request = ChatRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: "Read file".to_string(),
+                parameters: json!({"type":"object"}),
+            }],
+            tool_choice: Some(ToolChoice::None),
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_messages_request_body(&request);
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
@@ -701,6 +886,68 @@ mod tests {
         assert_eq!(response.message.tool_calls().len(), 1);
         assert_eq!(response.finish_reason.as_deref(), Some("tool_use"));
         assert_eq!(response.usage.total_tokens, 13);
+    }
+
+    #[test]
+    fn unit_serializes_multimodal_blocks_for_anthropic() {
+        let request = ChatRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: vec![
+                    ContentBlock::text("describe"),
+                    ContentBlock::image_base64("image/png", "aW1hZ2VEYXRh"),
+                    ContentBlock::audio_base64("audio/wav", "YXVkaW9EYXRh"),
+                ],
+                tool_call_id: None,
+                tool_name: None,
+                is_error: false,
+            }],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_messages_request_body(&request);
+        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(body["messages"][0]["content"][2]["type"], "text");
+        assert!(body["messages"][0]["content"][2]["text"]
+            .as_str()
+            .expect("audio fallback marker should be a string")
+            .contains("[tau-audio:"));
+    }
+
+    #[test]
+    fn functional_parses_multimodal_response_for_anthropic() {
+        let raw = r#"{
+            "content": [
+                {"type":"text","text":"Working..."},
+                {"type":"image","source":{"type":"url","url":"https://example.com/cat.png"}},
+                {"type":"audio","source":{"type":"base64","media_type":"audio/wav","data":"YXVkaW9EYXRh"}}
+            ],
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":10,"output_tokens":3}
+        }"#;
+
+        let response = parse_messages_response(raw).expect("response should parse");
+        assert_eq!(response.message.text_content(), "Working...");
+        assert!(response
+            .message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. })));
+        assert!(response
+            .message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Audio { .. })));
     }
 
     #[test]

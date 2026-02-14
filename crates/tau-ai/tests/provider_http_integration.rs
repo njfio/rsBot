@@ -1,10 +1,10 @@
 use httpmock::prelude::*;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tau_ai::{
     AnthropicClient, AnthropicConfig, ChatRequest, GoogleClient, GoogleConfig, LlmClient, Message,
-    OpenAiAuthScheme, OpenAiClient, OpenAiConfig, TauAiError, ToolDefinition,
+    OpenAiAuthScheme, OpenAiClient, OpenAiConfig, TauAiError, ToolChoice, ToolDefinition,
 };
 
 #[tokio::test]
@@ -20,7 +20,9 @@ async fn openai_client_sends_expected_http_request() {
                 json!({
                     "model": "gpt-4o-mini",
                     "messages": [{"role": "system"}, {"role": "user"}],
-                    "tools": [{"type": "function"}]
+                    "tools": [{"type": "function"}],
+                    "tool_choice": "auto",
+                    "response_format": {"type": "json_object"}
                 })
                 .to_string(),
             );
@@ -61,6 +63,8 @@ async fn openai_client_sends_expected_http_request() {
             description: "Read a file".to_string(),
             parameters: json!({"type":"object"}),
         }],
+        tool_choice: Some(ToolChoice::Auto),
+        json_mode: true,
         max_tokens: Some(128),
         temperature: Some(0.0),
     };
@@ -123,6 +127,8 @@ async fn integration_openai_client_supports_azure_api_key_header_and_api_version
             model: "gpt-4o-mini".to_string(),
             messages: vec![Message::user("hello")],
             tools: vec![],
+            tool_choice: None,
+            json_mode: false,
             max_tokens: None,
             temperature: None,
         })
@@ -149,7 +155,8 @@ async fn anthropic_client_sends_expected_http_request() {
                     "model": "claude-sonnet-4-20250514",
                     "system": "system",
                     "messages": [{"role": "user"}],
-                    "tools": [{"name": "read"}]
+                    "tools": [{"name": "read"}],
+                    "tool_choice": {"type": "auto"}
                 })
                 .to_string(),
             );
@@ -182,6 +189,8 @@ async fn anthropic_client_sends_expected_http_request() {
             description: "Read a file".to_string(),
             parameters: json!({"type":"object"}),
         }],
+        tool_choice: Some(ToolChoice::Auto),
+        json_mode: false,
         max_tokens: Some(128),
         temperature: Some(0.0),
     };
@@ -209,7 +218,9 @@ async fn google_client_sends_expected_http_request() {
             .json_body_includes(
                 json!({
                     "contents": [{"role": "user"}],
-                    "tools": [{"functionDeclarations": [{"name": "read"}]}]
+                    "tools": [{"functionDeclarations": [{"name": "read"}]}],
+                    "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+                    "generationConfig": {"responseMimeType": "application/json"}
                 })
                 .to_string(),
             );
@@ -250,6 +261,8 @@ async fn google_client_sends_expected_http_request() {
             description: "Read a file".to_string(),
             parameters: json!({"type":"object"}),
         }],
+        tool_choice: Some(ToolChoice::Auto),
+        json_mode: true,
         max_tokens: Some(128),
         temperature: Some(0.0),
     };
@@ -290,6 +303,8 @@ async fn openai_client_surfaces_http_status_error() {
         model: "gpt-4o-mini".to_string(),
         messages: vec![Message::user("hello")],
         tools: vec![],
+        tool_choice: None,
+        json_mode: false,
         max_tokens: None,
         temperature: None,
     };
@@ -348,6 +363,8 @@ async fn openai_client_retries_on_rate_limit_then_succeeds() {
             model: "gpt-4o-mini".to_string(),
             messages: vec![Message::user("hello")],
             tools: vec![],
+            tool_choice: None,
+            json_mode: false,
             max_tokens: None,
             temperature: None,
         })
@@ -355,6 +372,67 @@ async fn openai_client_retries_on_rate_limit_then_succeeds() {
         .expect("retry should eventually succeed");
 
     assert_eq!(response.message.text_content(), "ok after retry");
+    first.assert_calls(1);
+    second.assert_calls(1);
+}
+
+#[tokio::test]
+async fn integration_openai_client_respects_retry_after_header_floor() {
+    let server = MockServer::start();
+    let first = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("x-tau-retry-attempt", "0");
+        then.status(429)
+            .header("retry-after", "1")
+            .body("rate limited");
+    });
+    let second = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("x-tau-retry-attempt", "1");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "ok after retry-after"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }));
+    });
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: format!("{}/v1", server.base_url()),
+        api_key: "test-openai-key".to_string(),
+        organization: None,
+        request_timeout_ms: 5_000,
+        max_retries: 1,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
+    })
+    .expect("openai client should be created");
+
+    let started = Instant::now();
+    let response = client
+        .complete(ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        })
+        .await
+        .expect("retry should eventually succeed");
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    assert_eq!(response.message.text_content(), "ok after retry-after");
+    assert!(
+        elapsed_ms >= 900,
+        "Retry-After floor should dominate base backoff; elapsed={elapsed_ms}ms"
+    );
     first.assert_calls(1);
     second.assert_calls(1);
 }
@@ -399,6 +477,8 @@ async fn openai_client_retry_budget_can_block_retries() {
             model: "gpt-4o-mini".to_string(),
             messages: vec![Message::user("hello")],
             tools: vec![],
+            tool_choice: None,
+            json_mode: false,
             max_tokens: None,
             temperature: None,
         })
@@ -451,6 +531,8 @@ async fn regression_openai_client_returns_timeout_error_when_server_is_slow() {
             model: "gpt-4o-mini".to_string(),
             messages: vec![Message::user("hello")],
             tools: vec![],
+            tool_choice: None,
+            json_mode: false,
             max_tokens: None,
             temperature: None,
         })
@@ -511,6 +593,8 @@ async fn integration_openai_client_streams_incremental_text_deltas() {
                 model: "gpt-4o-mini".to_string(),
                 messages: vec![Message::user("hello")],
                 tools: vec![],
+                tool_choice: None,
+                json_mode: false,
                 max_tokens: None,
                 temperature: None,
             },
@@ -578,6 +662,8 @@ async fn integration_anthropic_client_streams_incremental_text_deltas() {
                 model: "claude-sonnet-4-20250514".to_string(),
                 messages: vec![Message::user("hello")],
                 tools: vec![],
+                tool_choice: None,
+                json_mode: false,
                 max_tokens: None,
                 temperature: None,
             },
@@ -632,6 +718,8 @@ async fn integration_google_client_streams_incremental_text_deltas() {
                 model: "gemini-2.5-pro".to_string(),
                 messages: vec![Message::user("hello")],
                 tools: vec![],
+                tool_choice: None,
+                json_mode: false,
                 max_tokens: None,
                 temperature: None,
             },

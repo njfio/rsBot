@@ -12,6 +12,7 @@ pub const MULTI_CHANNEL_POLICY_FILE_NAME: &str = "channel-policy.json";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelDmPolicy` values.
 pub enum MultiChannelDmPolicy {
     #[default]
     Allow,
@@ -29,6 +30,7 @@ impl MultiChannelDmPolicy {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelAllowFrom` values.
 pub enum MultiChannelAllowFrom {
     Any,
     #[default]
@@ -48,6 +50,7 @@ impl MultiChannelAllowFrom {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelGroupPolicy` values.
 pub enum MultiChannelGroupPolicy {
     #[default]
     Allow,
@@ -63,7 +66,63 @@ impl MultiChannelGroupPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelSecureMessagingMode` values.
+pub enum MultiChannelSecureMessagingMode {
+    Disabled,
+    #[default]
+    Preferred,
+    Required,
+}
+
+impl MultiChannelSecureMessagingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Preferred => "preferred",
+            Self::Required => "required",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelSecureMessagingPolicy` used across Tau components.
+pub struct MultiChannelSecureMessagingPolicy {
+    #[serde(default)]
+    pub mode: MultiChannelSecureMessagingMode,
+    #[serde(
+        default = "multi_channel_secure_timestamp_skew_seconds_default",
+        rename = "timestampSkewSeconds"
+    )]
+    pub timestamp_skew_seconds: u64,
+    #[serde(
+        default = "multi_channel_secure_replay_window_seconds_default",
+        rename = "replayWindowSeconds"
+    )]
+    pub replay_window_seconds: u64,
+}
+
+impl Default for MultiChannelSecureMessagingPolicy {
+    fn default() -> Self {
+        Self {
+            mode: MultiChannelSecureMessagingMode::default(),
+            timestamp_skew_seconds: multi_channel_secure_timestamp_skew_seconds_default(),
+            replay_window_seconds: multi_channel_secure_replay_window_seconds_default(),
+        }
+    }
+}
+
+fn multi_channel_secure_timestamp_skew_seconds_default() -> u64 {
+    300
+}
+
+fn multi_channel_secure_replay_window_seconds_default() -> u64 {
+    300
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `MultiChannelChannelPolicy` used across Tau components.
 pub struct MultiChannelChannelPolicy {
     #[serde(default, rename = "dmPolicy")]
     pub dm_policy: MultiChannelDmPolicy,
@@ -83,10 +142,13 @@ impl MultiChannelChannelPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelPolicyFile` used across Tau components.
 pub struct MultiChannelPolicyFile {
     pub schema_version: u32,
     #[serde(default, rename = "strictMode")]
     pub strict_mode: bool,
+    #[serde(default, rename = "secureMessaging")]
+    pub secure_messaging: MultiChannelSecureMessagingPolicy,
     #[serde(default, rename = "defaultPolicy")]
     pub default_policy: MultiChannelChannelPolicy,
     #[serde(default)]
@@ -98,6 +160,7 @@ impl Default for MultiChannelPolicyFile {
         Self {
             schema_version: MULTI_CHANNEL_POLICY_SCHEMA_VERSION,
             strict_mode: false,
+            secure_messaging: MultiChannelSecureMessagingPolicy::default(),
             default_policy: MultiChannelChannelPolicy::default(),
             channels: BTreeMap::new(),
         }
@@ -106,6 +169,7 @@ impl Default for MultiChannelPolicyFile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelConversationKind` values.
 pub enum MultiChannelConversationKind {
     Dm,
     Group,
@@ -121,6 +185,7 @@ impl MultiChannelConversationKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Enumerates supported `MultiChannelPolicyDecision` values.
 pub enum MultiChannelPolicyDecision {
     Allow { reason_code: String },
     Deny { reason_code: String },
@@ -143,6 +208,7 @@ impl MultiChannelPolicyDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Public struct `MultiChannelPolicyEvaluation` used across Tau components.
 pub struct MultiChannelPolicyEvaluation {
     pub policy_channel: String,
     pub matched_policy_key: String,

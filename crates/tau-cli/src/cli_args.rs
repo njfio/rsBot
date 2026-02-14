@@ -3,12 +3,15 @@ use std::path::PathBuf;
 use clap::{ArgAction, Parser};
 
 use crate::{
-    CliBashProfile, CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDaemonProfile,
-    CliDeploymentWasmRuntimeProfile, CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode,
-    CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
-    CliMultiChannelTransport, CliOrchestratorMode, CliOsSandboxMode, CliProviderAuthMode,
-    CliSessionImportMode, CliToolPolicyPreset, CliWebhookSignatureAlgorithm,
+    CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
+    CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
+    CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
+    CliOrchestratorMode, CliPromptSanitizerMode, CliProviderAuthMode, CliWebhookSignatureAlgorithm,
 };
+
+mod gateway_daemon_flags;
+
+pub use gateway_daemon_flags::CliGatewayDaemonFlags;
 
 const RELEASE_LOOKUP_CACHE_TTL_MS: u64 = 15 * 60 * 1_000;
 
@@ -32,12 +35,33 @@ fn parse_positive_u64(value: &str) -> Result<u64, String> {
     Ok(parsed)
 }
 
+fn parse_positive_f64(value: &str) -> Result<f64, String> {
+    let parsed = value
+        .parse::<f64>()
+        .map_err(|error| format!("failed to parse float: {error}"))?;
+    if !parsed.is_finite() || parsed <= 0.0 {
+        return Err("value must be a finite number greater than 0".to_string());
+    }
+    Ok(parsed)
+}
+
+fn parse_threshold_percent(value: &str) -> Result<u8, String> {
+    let parsed = value
+        .parse::<u8>()
+        .map_err(|error| format!("failed to parse percent: {error}"))?;
+    if !(1..=100).contains(&parsed) {
+        return Err("value must be in range 1..=100".to_string());
+    }
+    Ok(parsed)
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "tau-rs",
     about = "Pure Rust coding agent inspired by upstream mono",
     version
 )]
+/// Public struct `Cli` used across Tau components.
 pub struct Cli {
     #[arg(
         long,
@@ -549,6 +573,50 @@ pub struct Cli {
         help = "Maximum backoff delay in milliseconds for agent-level retryable request failures"
     )]
     pub agent_request_retry_max_backoff_ms: u64,
+
+    #[arg(
+        long = "agent-cost-budget-usd",
+        env = "TAU_AGENT_COST_BUDGET_USD",
+        value_parser = parse_positive_f64,
+        help = "Optional cumulative estimated model cost budget in USD that triggers alert events at configured thresholds"
+    )]
+    pub agent_cost_budget_usd: Option<f64>,
+
+    #[arg(
+        long = "agent-cost-alert-threshold-percent",
+        env = "TAU_AGENT_COST_ALERT_THRESHOLD_PERCENT",
+        value_delimiter = ',',
+        value_parser = parse_threshold_percent,
+        default_values_t = [80_u8, 100_u8],
+        help = "Comma-delimited budget alert thresholds as percentages (1-100)"
+    )]
+    pub agent_cost_alert_threshold_percent: Vec<u8>,
+
+    #[arg(
+        long = "prompt-sanitizer-enabled",
+        env = "TAU_PROMPT_SANITIZER_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Enable prompt/tool-output safety checks before model dispatch and tool-result reinjection"
+    )]
+    pub prompt_sanitizer_enabled: bool,
+
+    #[arg(
+        long = "prompt-sanitizer-mode",
+        env = "TAU_PROMPT_SANITIZER_MODE",
+        value_enum,
+        default_value_t = CliPromptSanitizerMode::Warn,
+        help = "Safety action for matched prompt-injection patterns (warn, redact, block)"
+    )]
+    pub prompt_sanitizer_mode: CliPromptSanitizerMode,
+
+    #[arg(
+        long = "prompt-sanitizer-redaction-token",
+        env = "TAU_PROMPT_SANITIZER_REDACTION_TOKEN",
+        default_value = "[TAU-SAFETY-REDACTED]",
+        help = "Replacement token used when --prompt-sanitizer-mode=redact"
+    )]
+    pub prompt_sanitizer_redaction_token: String,
 
     #[arg(
         long,
@@ -1250,206 +1318,8 @@ pub struct Cli {
     )]
     pub gateway_status_json: bool,
 
-    #[arg(
-        long = "gateway-remote-profile-inspect",
-        env = "TAU_GATEWAY_REMOTE_PROFILE_INSPECT",
-        conflicts_with = "channel_store_inspect",
-        conflicts_with = "channel_store_repair",
-        conflicts_with = "transport_health_inspect",
-        conflicts_with = "dashboard_status_inspect",
-        conflicts_with = "multi_channel_status_inspect",
-        conflicts_with = "multi_agent_status_inspect",
-        conflicts_with = "gateway_status_inspect",
-        conflicts_with = "deployment_status_inspect",
-        conflicts_with = "custom_command_status_inspect",
-        conflicts_with = "voice_status_inspect",
-        help = "Inspect gateway remote-access posture and risk reason codes without starting the gateway"
-    )]
-    pub gateway_remote_profile_inspect: bool,
-
-    #[arg(
-        long = "gateway-remote-profile-json",
-        env = "TAU_GATEWAY_REMOTE_PROFILE_JSON",
-        default_value_t = false,
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        requires = "gateway_remote_profile_inspect",
-        help = "Emit --gateway-remote-profile-inspect output as pretty JSON"
-    )]
-    pub gateway_remote_profile_json: bool,
-
-    #[arg(
-        long = "gateway-service-start",
-        env = "TAU_GATEWAY_SERVICE_START",
-        conflicts_with = "channel_store_inspect",
-        conflicts_with = "channel_store_repair",
-        conflicts_with = "transport_health_inspect",
-        conflicts_with = "dashboard_status_inspect",
-        conflicts_with = "multi_channel_status_inspect",
-        conflicts_with = "multi_agent_status_inspect",
-        conflicts_with = "gateway_status_inspect",
-        conflicts_with = "deployment_status_inspect",
-        conflicts_with = "custom_command_status_inspect",
-        conflicts_with = "voice_status_inspect",
-        conflicts_with = "gateway_service_stop",
-        conflicts_with = "gateway_service_status",
-        help = "Start gateway service mode and persist lifecycle state"
-    )]
-    pub gateway_service_start: bool,
-
-    #[arg(
-        long = "gateway-service-stop",
-        env = "TAU_GATEWAY_SERVICE_STOP",
-        conflicts_with = "channel_store_inspect",
-        conflicts_with = "channel_store_repair",
-        conflicts_with = "transport_health_inspect",
-        conflicts_with = "dashboard_status_inspect",
-        conflicts_with = "multi_channel_status_inspect",
-        conflicts_with = "multi_agent_status_inspect",
-        conflicts_with = "gateway_status_inspect",
-        conflicts_with = "deployment_status_inspect",
-        conflicts_with = "custom_command_status_inspect",
-        conflicts_with = "voice_status_inspect",
-        conflicts_with = "gateway_service_start",
-        conflicts_with = "gateway_service_status",
-        help = "Stop gateway service mode and persist lifecycle state"
-    )]
-    pub gateway_service_stop: bool,
-
-    #[arg(
-        long = "gateway-service-stop-reason",
-        env = "TAU_GATEWAY_SERVICE_STOP_REASON",
-        requires = "gateway_service_stop",
-        help = "Optional reason code/message recorded with --gateway-service-stop"
-    )]
-    pub gateway_service_stop_reason: Option<String>,
-
-    #[arg(
-        long = "gateway-service-status",
-        env = "TAU_GATEWAY_SERVICE_STATUS",
-        conflicts_with = "channel_store_inspect",
-        conflicts_with = "channel_store_repair",
-        conflicts_with = "transport_health_inspect",
-        conflicts_with = "dashboard_status_inspect",
-        conflicts_with = "multi_channel_status_inspect",
-        conflicts_with = "multi_agent_status_inspect",
-        conflicts_with = "gateway_status_inspect",
-        conflicts_with = "deployment_status_inspect",
-        conflicts_with = "custom_command_status_inspect",
-        conflicts_with = "voice_status_inspect",
-        conflicts_with = "gateway_service_start",
-        conflicts_with = "gateway_service_stop",
-        help = "Inspect gateway service lifecycle state and exit"
-    )]
-    pub gateway_service_status: bool,
-
-    #[arg(
-        long = "gateway-service-status-json",
-        env = "TAU_GATEWAY_SERVICE_STATUS_JSON",
-        default_value_t = false,
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        requires = "gateway_service_status",
-        help = "Emit --gateway-service-status output as pretty JSON"
-    )]
-    pub gateway_service_status_json: bool,
-
-    #[arg(
-        long = "daemon-install",
-        env = "TAU_DAEMON_INSTALL",
-        conflicts_with = "daemon_uninstall",
-        conflicts_with = "daemon_start",
-        conflicts_with = "daemon_stop",
-        conflicts_with = "daemon_status",
-        help = "Install Tau daemon service profile files under --daemon-state-dir"
-    )]
-    pub daemon_install: bool,
-
-    #[arg(
-        long = "daemon-uninstall",
-        env = "TAU_DAEMON_UNINSTALL",
-        conflicts_with = "daemon_install",
-        conflicts_with = "daemon_start",
-        conflicts_with = "daemon_stop",
-        conflicts_with = "daemon_status",
-        help = "Uninstall Tau daemon service profile files from --daemon-state-dir"
-    )]
-    pub daemon_uninstall: bool,
-
-    #[arg(
-        long = "daemon-start",
-        env = "TAU_DAEMON_START",
-        conflicts_with = "daemon_install",
-        conflicts_with = "daemon_uninstall",
-        conflicts_with = "daemon_stop",
-        conflicts_with = "daemon_status",
-        help = "Start Tau daemon lifecycle state and create pid metadata in --daemon-state-dir"
-    )]
-    pub daemon_start: bool,
-
-    #[arg(
-        long = "daemon-stop",
-        env = "TAU_DAEMON_STOP",
-        conflicts_with = "daemon_install",
-        conflicts_with = "daemon_uninstall",
-        conflicts_with = "daemon_start",
-        conflicts_with = "daemon_status",
-        help = "Stop Tau daemon lifecycle state and clear pid metadata in --daemon-state-dir"
-    )]
-    pub daemon_stop: bool,
-
-    #[arg(
-        long = "daemon-stop-reason",
-        env = "TAU_DAEMON_STOP_REASON",
-        requires = "daemon_stop",
-        help = "Optional reason code/message recorded with --daemon-stop"
-    )]
-    pub daemon_stop_reason: Option<String>,
-
-    #[arg(
-        long = "daemon-status",
-        env = "TAU_DAEMON_STATUS",
-        conflicts_with = "daemon_install",
-        conflicts_with = "daemon_uninstall",
-        conflicts_with = "daemon_start",
-        conflicts_with = "daemon_stop",
-        help = "Inspect Tau daemon lifecycle state and diagnostics"
-    )]
-    pub daemon_status: bool,
-
-    #[arg(
-        long = "daemon-status-json",
-        env = "TAU_DAEMON_STATUS_JSON",
-        default_value_t = false,
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        requires = "daemon_status",
-        help = "Emit --daemon-status output as pretty JSON"
-    )]
-    pub daemon_status_json: bool,
-
-    #[arg(
-        long = "daemon-profile",
-        env = "TAU_DAEMON_PROFILE",
-        value_enum,
-        default_value_t = CliDaemonProfile::Auto,
-        help = "Daemon profile target: auto, launchd, or systemd-user"
-    )]
-    pub daemon_profile: CliDaemonProfile,
-
-    #[arg(
-        long = "daemon-state-dir",
-        env = "TAU_DAEMON_STATE_DIR",
-        default_value = ".tau/daemon",
-        help = "Directory used for Tau daemon lifecycle state and generated service files"
-    )]
-    pub daemon_state_dir: PathBuf,
+    #[command(flatten)]
+    pub gateway_daemon: CliGatewayDaemonFlags,
 
     #[arg(
         long = "deployment-status-inspect",
@@ -1935,6 +1805,88 @@ pub struct Cli {
         help = "Override maximum changed files included in --qa-loop git summary"
     )]
     pub qa_loop_changed_file_limit: Option<usize>,
+
+    #[arg(
+        long = "prompt-optimization-config",
+        alias = "train-config",
+        env = "TAU_PROMPT_OPTIMIZATION_CONFIG",
+        value_name = "path",
+        help = "Run rollout prompt-optimization mode from JSON config and exit"
+    )]
+    pub prompt_optimization_config: Option<PathBuf>,
+
+    #[arg(
+        long = "prompt-optimization-store-sqlite",
+        alias = "train-store-sqlite",
+        env = "TAU_PROMPT_OPTIMIZATION_STORE_SQLITE",
+        requires = "prompt_optimization_config",
+        default_value = ".tau/training/store.sqlite",
+        value_name = "path",
+        help = "SQLite file path for durable rollout/tracing state in prompt-optimization mode"
+    )]
+    pub prompt_optimization_store_sqlite: PathBuf,
+
+    #[arg(
+        long = "prompt-optimization-json",
+        alias = "train-json",
+        env = "TAU_PROMPT_OPTIMIZATION_JSON",
+        requires = "prompt_optimization_config",
+        default_value_t = false,
+        help = "Emit prompt-optimization summary output as JSON"
+    )]
+    pub prompt_optimization_json: bool,
+
+    #[arg(
+        long = "prompt-optimization-proxy-server",
+        alias = "training-proxy-server",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_SERVER",
+        default_value_t = false,
+        help = "Run OpenAI-compatible prompt-optimization attribution proxy mode and exit"
+    )]
+    pub prompt_optimization_proxy_server: bool,
+
+    #[arg(
+        long = "prompt-optimization-proxy-bind",
+        alias = "training-proxy-bind",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_BIND",
+        requires = "prompt_optimization_proxy_server",
+        default_value = "127.0.0.1:8788",
+        value_name = "host:port",
+        help = "Bind address for prompt-optimization proxy mode"
+    )]
+    pub prompt_optimization_proxy_bind: String,
+
+    #[arg(
+        long = "prompt-optimization-proxy-upstream-url",
+        alias = "training-proxy-upstream-url",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_UPSTREAM_URL",
+        requires = "prompt_optimization_proxy_server",
+        value_name = "url",
+        help = "Upstream OpenAI-compatible base URL used by prompt-optimization proxy forwarding"
+    )]
+    pub prompt_optimization_proxy_upstream_url: Option<String>,
+
+    #[arg(
+        long = "prompt-optimization-proxy-state-dir",
+        alias = "training-proxy-state-dir",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_STATE_DIR",
+        requires = "prompt_optimization_proxy_server",
+        default_value = ".tau",
+        value_name = "path",
+        help = "State root for prompt-optimization proxy attribution logs"
+    )]
+    pub prompt_optimization_proxy_state_dir: PathBuf,
+
+    #[arg(
+        long = "prompt-optimization-proxy-timeout-ms",
+        alias = "training-proxy-timeout-ms",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_TIMEOUT_MS",
+        requires = "prompt_optimization_proxy_server",
+        default_value_t = 30_000,
+        value_parser = parse_positive_u64,
+        help = "Upstream request timeout in milliseconds for prompt-optimization proxy mode"
+    )]
+    pub prompt_optimization_proxy_timeout_ms: u64,
 
     #[arg(
         long = "mcp-server",
@@ -3086,17 +3038,40 @@ pub struct Cli {
         long = "browser-automation-contract-runner",
         env = "TAU_BROWSER_AUTOMATION_CONTRACT_RUNNER",
         default_value_t = false,
-        conflicts_with = "browser_automation_preflight",
-        help = "Run fixture-driven browser automation runtime contract scenarios"
+        hide = true,
+        conflicts_with_all = ["browser_automation_live_runner", "browser_automation_preflight"],
+        help = "Deprecated: fixture-driven browser automation contract runner (removed)"
     )]
     pub browser_automation_contract_runner: bool,
+
+    #[arg(
+        long = "browser-automation-live-runner",
+        env = "TAU_BROWSER_AUTOMATION_LIVE_RUNNER",
+        default_value_t = false,
+        conflicts_with_all = [
+            "browser_automation_contract_runner",
+            "browser_automation_preflight"
+        ],
+        help = "Run browser automation fixtures against a live Playwright CLI executor"
+    )]
+    pub browser_automation_live_runner: bool,
+
+    #[arg(
+        long = "browser-automation-live-fixture",
+        env = "TAU_BROWSER_AUTOMATION_LIVE_FIXTURE",
+        default_value = "crates/tau-coding-agent/testdata/browser-automation-live/live-sequence.json",
+        requires = "browser_automation_live_runner",
+        help = "Path to browser automation live fixture JSON"
+    )]
+    pub browser_automation_live_fixture: PathBuf,
 
     #[arg(
         long = "browser-automation-fixture",
         env = "TAU_BROWSER_AUTOMATION_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json",
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Path to browser automation runtime contract fixture JSON"
+        help = "Deprecated: browser automation runtime contract fixture JSON"
     )]
     pub browser_automation_fixture: PathBuf,
 
@@ -3112,8 +3087,9 @@ pub struct Cli {
         long = "browser-automation-queue-limit",
         env = "TAU_BROWSER_AUTOMATION_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum browser automation fixture cases processed per runtime cycle"
+        help = "Deprecated: browser automation contract runner queue limit"
     )]
     pub browser_automation_queue_limit: usize,
 
@@ -3121,8 +3097,9 @@ pub struct Cli {
         long = "browser-automation-processed-case-cap",
         env = "TAU_BROWSER_AUTOMATION_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum processed-case keys retained for browser automation duplicate suppression"
+        help = "Deprecated: browser automation contract runner processed-case cap"
     )]
     pub browser_automation_processed_case_cap: usize,
 
@@ -3130,8 +3107,9 @@ pub struct Cli {
         long = "browser-automation-retry-max-attempts",
         env = "TAU_BROWSER_AUTOMATION_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum retry attempts for transient browser automation runtime failures"
+        help = "Deprecated: browser automation contract runner retry max attempts"
     )]
     pub browser_automation_retry_max_attempts: usize,
 
@@ -3139,8 +3117,9 @@ pub struct Cli {
         long = "browser-automation-retry-base-delay-ms",
         env = "TAU_BROWSER_AUTOMATION_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Base backoff delay in milliseconds for browser automation runtime retries (0 disables delay)"
+        help = "Deprecated: browser automation contract runner retry base delay in milliseconds"
     )]
     pub browser_automation_retry_base_delay_ms: u64,
 
@@ -3148,8 +3127,9 @@ pub struct Cli {
         long = "browser-automation-action-timeout-ms",
         env = "TAU_BROWSER_AUTOMATION_ACTION_TIMEOUT_MS",
         default_value_t = 5_000,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum allowed action timeout in milliseconds for one browser automation case"
+        help = "Deprecated: browser automation contract runner action timeout in milliseconds"
     )]
     pub browser_automation_action_timeout_ms: u64,
 
@@ -3157,8 +3137,9 @@ pub struct Cli {
         long = "browser-automation-max-actions-per-case",
         env = "TAU_BROWSER_AUTOMATION_MAX_ACTIONS_PER_CASE",
         default_value_t = 8,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum allowed repeated action count for one browser automation fixture case"
+        help = "Deprecated: browser automation contract runner max actions per case"
     )]
     pub browser_automation_max_actions_per_case: usize,
 
@@ -3166,12 +3147,13 @@ pub struct Cli {
         long = "browser-automation-allow-unsafe-actions",
         env = "TAU_BROWSER_AUTOMATION_ALLOW_UNSAFE_ACTIONS",
         default_value_t = false,
+        hide = true,
         action = ArgAction::Set,
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
         requires = "browser_automation_contract_runner",
-        help = "Allow unsafe browser automation fixture operations (default deny)"
+        help = "Deprecated: allow unsafe browser automation contract fixture operations"
     )]
     pub browser_automation_allow_unsafe_actions: bool,
 
@@ -3179,7 +3161,7 @@ pub struct Cli {
         long = "browser-automation-playwright-cli",
         env = "TAU_BROWSER_AUTOMATION_PLAYWRIGHT_CLI",
         default_value = "playwright-cli",
-        help = "Playwright CLI executable used for browser automation preflight and doctor checks"
+        help = "Playwright CLI executable used for browser automation preflight, live runner, and doctor checks"
     )]
     pub browser_automation_playwright_cli: String,
 
@@ -3187,7 +3169,10 @@ pub struct Cli {
         long = "browser-automation-preflight",
         env = "TAU_BROWSER_AUTOMATION_PREFLIGHT",
         default_value_t = false,
-        conflicts_with = "browser_automation_contract_runner",
+        conflicts_with_all = [
+            "browser_automation_contract_runner",
+            "browser_automation_live_runner"
+        ],
         help = "Run browser automation prerequisite checks and exit"
     )]
     pub browser_automation_preflight: bool,
@@ -3209,16 +3194,18 @@ pub struct Cli {
         long = "memory-contract-runner",
         env = "TAU_MEMORY_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven semantic memory runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven semantic memory contract runner (removed)"
     )]
     pub memory_contract_runner: bool,
 
     #[arg(
         long = "memory-fixture",
         env = "TAU_MEMORY_FIXTURE",
-        default_value = "crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json",
+        default_value = "crates/tau-memory/testdata/memory-contract/mixed-outcomes.json",
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Path to semantic memory contract fixture JSON"
+        help = "Deprecated: semantic memory contract fixture JSON"
     )]
     pub memory_fixture: PathBuf,
 
@@ -3226,7 +3213,7 @@ pub struct Cli {
         long = "memory-state-dir",
         env = "TAU_MEMORY_STATE_DIR",
         default_value = ".tau/memory",
-        help = "Directory for semantic memory runtime state and channel-store outputs"
+        help = "Directory for semantic memory transport-health inspection artifacts"
     )]
     pub memory_state_dir: PathBuf,
 
@@ -3234,8 +3221,9 @@ pub struct Cli {
         long = "memory-queue-limit",
         env = "TAU_MEMORY_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum memory fixture cases processed per runtime cycle"
+        help = "Deprecated: memory contract runner queue limit"
     )]
     pub memory_queue_limit: usize,
 
@@ -3243,8 +3231,9 @@ pub struct Cli {
         long = "memory-processed-case-cap",
         env = "TAU_MEMORY_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum processed-case keys retained for duplicate suppression"
+        help = "Deprecated: memory contract runner processed-case cap"
     )]
     pub memory_processed_case_cap: usize,
 
@@ -3252,8 +3241,9 @@ pub struct Cli {
         long = "memory-retry-max-attempts",
         env = "TAU_MEMORY_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum retry attempts for transient semantic memory runtime failures"
+        help = "Deprecated: memory contract runner retry max attempts"
     )]
     pub memory_retry_max_attempts: usize,
 
@@ -3261,8 +3251,9 @@ pub struct Cli {
         long = "memory-retry-base-delay-ms",
         env = "TAU_MEMORY_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Base backoff delay in milliseconds for semantic memory runtime retries (0 disables delay)"
+        help = "Deprecated: memory contract runner retry base delay in milliseconds"
     )]
     pub memory_retry_base_delay_ms: u64,
 
@@ -3270,7 +3261,8 @@ pub struct Cli {
         long = "dashboard-contract-runner",
         env = "TAU_DASHBOARD_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven dashboard runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven dashboard contract runner (removed)"
     )]
     pub dashboard_contract_runner: bool,
 
@@ -3278,8 +3270,9 @@ pub struct Cli {
         long = "dashboard-fixture",
         env = "TAU_DASHBOARD_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/dashboard-contract/mixed-outcomes.json",
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Path to dashboard runtime contract fixture JSON"
+        help = "Deprecated: dashboard runtime contract fixture JSON"
     )]
     pub dashboard_fixture: PathBuf,
 
@@ -3295,8 +3288,9 @@ pub struct Cli {
         long = "dashboard-queue-limit",
         env = "TAU_DASHBOARD_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum dashboard fixture cases processed per runtime cycle"
+        help = "Deprecated: dashboard contract runner queue limit"
     )]
     pub dashboard_queue_limit: usize,
 
@@ -3304,8 +3298,9 @@ pub struct Cli {
         long = "dashboard-processed-case-cap",
         env = "TAU_DASHBOARD_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum processed-case keys retained for dashboard duplicate suppression"
+        help = "Deprecated: dashboard contract runner processed-case cap"
     )]
     pub dashboard_processed_case_cap: usize,
 
@@ -3313,8 +3308,9 @@ pub struct Cli {
         long = "dashboard-retry-max-attempts",
         env = "TAU_DASHBOARD_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum retry attempts for transient dashboard runtime failures"
+        help = "Deprecated: dashboard contract runner retry max attempts"
     )]
     pub dashboard_retry_max_attempts: usize,
 
@@ -3322,8 +3318,9 @@ pub struct Cli {
         long = "dashboard-retry-base-delay-ms",
         env = "TAU_DASHBOARD_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Base backoff delay in milliseconds for dashboard runtime retries (0 disables delay)"
+        help = "Deprecated: dashboard contract runner retry base delay in milliseconds"
     )]
     pub dashboard_retry_base_delay_ms: u64,
 
@@ -3349,7 +3346,7 @@ pub struct Cli {
         env = "TAU_GATEWAY_REMOTE_PROFILE",
         value_enum,
         default_value_t = CliGatewayRemoteProfile::LocalOnly,
-        help = "Gateway remote-access posture: local-only, password-remote, or proxy-remote"
+        help = "Gateway remote-access posture: local-only, password-remote, proxy-remote, tailscale-serve, or tailscale-funnel"
     )]
     pub gateway_remote_profile: CliGatewayRemoteProfile,
 
@@ -3598,7 +3595,8 @@ pub struct Cli {
         long = "custom-command-contract-runner",
         env = "TAU_CUSTOM_COMMAND_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven no-code custom command runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven no-code custom command contract runner (removed)"
     )]
     pub custom_command_contract_runner: bool,
 
@@ -3606,8 +3604,9 @@ pub struct Cli {
         long = "custom-command-fixture",
         env = "TAU_CUSTOM_COMMAND_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/custom-command-contract/mixed-outcomes.json",
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Path to no-code custom command runtime contract fixture JSON"
+        help = "Deprecated: no-code custom command runtime contract fixture JSON"
     )]
     pub custom_command_fixture: PathBuf,
 
@@ -3623,8 +3622,9 @@ pub struct Cli {
         long = "custom-command-queue-limit",
         env = "TAU_CUSTOM_COMMAND_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum no-code custom command fixture cases processed per runtime cycle"
+        help = "Deprecated: no-code custom command contract runner queue limit"
     )]
     pub custom_command_queue_limit: usize,
 
@@ -3632,8 +3632,9 @@ pub struct Cli {
         long = "custom-command-processed-case-cap",
         env = "TAU_CUSTOM_COMMAND_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum processed-case keys retained for no-code custom command duplicate suppression"
+        help = "Deprecated: no-code custom command contract runner processed-case cap"
     )]
     pub custom_command_processed_case_cap: usize,
 
@@ -3641,8 +3642,9 @@ pub struct Cli {
         long = "custom-command-retry-max-attempts",
         env = "TAU_CUSTOM_COMMAND_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum retry attempts for transient no-code custom command runtime failures"
+        help = "Deprecated: no-code custom command contract runner retry max attempts"
     )]
     pub custom_command_retry_max_attempts: usize,
 
@@ -3650,10 +3652,69 @@ pub struct Cli {
         long = "custom-command-retry-base-delay-ms",
         env = "TAU_CUSTOM_COMMAND_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Base backoff delay in milliseconds for no-code custom command runtime retries (0 disables delay)"
+        help = "Deprecated: no-code custom command contract runner retry base delay in milliseconds"
     )]
     pub custom_command_retry_base_delay_ms: u64,
+
+    #[arg(
+        long = "custom-command-policy-require-approval",
+        env = "TAU_CUSTOM_COMMAND_POLICY_REQUIRE_APPROVAL",
+        default_value_t = true,
+        hide = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "custom_command_contract_runner",
+        help = "Deprecated: require approval gate for custom-command contract runner RUN operations"
+    )]
+    pub custom_command_policy_require_approval: bool,
+
+    #[arg(
+        long = "custom-command-policy-allow-shell",
+        env = "TAU_CUSTOM_COMMAND_POLICY_ALLOW_SHELL",
+        default_value_t = false,
+        hide = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "custom_command_contract_runner",
+        help = "Deprecated: allow shell control operators in custom-command contract templates"
+    )]
+    pub custom_command_policy_allow_shell: bool,
+
+    #[arg(
+        long = "custom-command-policy-sandbox-profile",
+        env = "TAU_CUSTOM_COMMAND_POLICY_SANDBOX_PROFILE",
+        default_value = "restricted",
+        hide = true,
+        requires = "custom_command_contract_runner",
+        help = "Deprecated: sandbox profile for custom-command contract runner policy"
+    )]
+    pub custom_command_policy_sandbox_profile: String,
+
+    #[arg(
+        long = "custom-command-policy-allowed-env",
+        env = "TAU_CUSTOM_COMMAND_POLICY_ALLOWED_ENV",
+        value_delimiter = ',',
+        hide = true,
+        requires = "custom_command_contract_runner",
+        help = "Deprecated: allowlist of template/env keys for custom-command contract runner policy"
+    )]
+    pub custom_command_policy_allowed_env: Vec<String>,
+
+    #[arg(
+        long = "custom-command-policy-denied-env",
+        env = "TAU_CUSTOM_COMMAND_POLICY_DENIED_ENV",
+        value_delimiter = ',',
+        hide = true,
+        requires = "custom_command_contract_runner",
+        help = "Deprecated: denylist override for custom-command contract runner policy"
+    )]
+    pub custom_command_policy_denied_env: Vec<String>,
 
     #[arg(
         long = "voice-contract-runner",
@@ -3715,6 +3776,55 @@ pub struct Cli {
         help = "Base backoff delay in milliseconds for voice runtime retries (0 disables delay)"
     )]
     pub voice_retry_base_delay_ms: u64,
+
+    #[arg(
+        long = "voice-live-runner",
+        env = "TAU_VOICE_LIVE_RUNNER",
+        default_value_t = false,
+        help = "Run live voice session runtime against a test audio-frame input fixture"
+    )]
+    pub voice_live_runner: bool,
+
+    #[arg(
+        long = "voice-live-input",
+        env = "TAU_VOICE_LIVE_INPUT",
+        default_value = "crates/tau-coding-agent/testdata/voice-live/single-turn.json",
+        requires = "voice_live_runner",
+        help = "Path to live voice runtime frame input JSON fixture"
+    )]
+    pub voice_live_input: PathBuf,
+
+    #[arg(
+        long = "voice-live-wake-word",
+        env = "TAU_VOICE_LIVE_WAKE_WORD",
+        default_value = "tau",
+        requires = "voice_live_runner",
+        help = "Wake word required for live voice turn extraction"
+    )]
+    pub voice_live_wake_word: String,
+
+    #[arg(
+        long = "voice-live-max-turns",
+        env = "TAU_VOICE_LIVE_MAX_TURNS",
+        default_value_t = 64,
+        requires = "voice_live_runner",
+        value_parser = parse_positive_usize,
+        help = "Maximum voice frames consumed in one live runtime cycle"
+    )]
+    pub voice_live_max_turns: usize,
+
+    #[arg(
+        long = "voice-live-tts-output",
+        env = "TAU_VOICE_LIVE_TTS_OUTPUT",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "voice_live_runner",
+        help = "Emit synthetic TTS output events for handled live turns"
+    )]
+    pub voice_live_tts_output: bool,
 
     #[arg(
         long = "github-issues-bridge",
@@ -3870,338 +3980,18 @@ pub struct Cli {
         help = "Base backoff delay in milliseconds for github api retries"
     )]
     pub github_retry_base_delay_ms: u64,
+}
 
-    #[arg(
-        long = "slack-bridge",
-        env = "TAU_SLACK_BRIDGE",
-        default_value_t = false,
-        help = "Run as a Slack Socket Mode conversational transport loop instead of interactive prompt mode"
-    )]
-    pub slack_bridge: bool,
+impl std::ops::Deref for Cli {
+    type Target = CliGatewayDaemonFlags;
 
-    #[arg(
-        long = "slack-app-token",
-        env = "TAU_SLACK_APP_TOKEN",
-        hide_env_values = true,
-        requires = "slack_bridge",
-        help = "Slack Socket Mode app token (xapp-...)"
-    )]
-    pub slack_app_token: Option<String>,
+    fn deref(&self) -> &Self::Target {
+        &self.gateway_daemon
+    }
+}
 
-    #[arg(
-        long = "slack-app-token-id",
-        env = "TAU_SLACK_APP_TOKEN_ID",
-        requires = "slack_bridge",
-        help = "Credential-store integration id used to resolve Slack app token"
-    )]
-    pub slack_app_token_id: Option<String>,
-
-    #[arg(
-        long = "slack-bot-token",
-        env = "TAU_SLACK_BOT_TOKEN",
-        hide_env_values = true,
-        requires = "slack_bridge",
-        help = "Slack bot token for Web API (xoxb-...)"
-    )]
-    pub slack_bot_token: Option<String>,
-
-    #[arg(
-        long = "slack-bot-token-id",
-        env = "TAU_SLACK_BOT_TOKEN_ID",
-        requires = "slack_bridge",
-        help = "Credential-store integration id used to resolve Slack bot token"
-    )]
-    pub slack_bot_token_id: Option<String>,
-
-    #[arg(
-        long = "slack-bot-user-id",
-        env = "TAU_SLACK_BOT_USER_ID",
-        requires = "slack_bridge",
-        help = "Optional bot user id used to strip self-mentions and ignore self-authored events"
-    )]
-    pub slack_bot_user_id: Option<String>,
-
-    #[arg(
-        long = "slack-api-base",
-        env = "TAU_SLACK_API_BASE",
-        default_value = "https://slack.com/api",
-        requires = "slack_bridge",
-        help = "Slack Web API base URL"
-    )]
-    pub slack_api_base: String,
-
-    #[arg(
-        long = "slack-state-dir",
-        env = "TAU_SLACK_STATE_DIR",
-        default_value = ".tau/slack",
-        requires = "slack_bridge",
-        help = "Directory for slack bridge state/session/event logs"
-    )]
-    pub slack_state_dir: PathBuf,
-
-    #[arg(
-        long = "slack-artifact-retention-days",
-        env = "TAU_SLACK_ARTIFACT_RETENTION_DAYS",
-        default_value_t = 30,
-        requires = "slack_bridge",
-        help = "Retention window for Slack bridge artifacts in days (0 disables expiration)"
-    )]
-    pub slack_artifact_retention_days: u64,
-
-    #[arg(
-        long = "slack-thread-detail-output",
-        env = "TAU_SLACK_THREAD_DETAIL_OUTPUT",
-        default_value_t = true,
-        action = ArgAction::Set,
-        requires = "slack_bridge",
-        help = "When responses exceed threshold, keep summary in placeholder and post full response as a threaded detail message"
-    )]
-    pub slack_thread_detail_output: bool,
-
-    #[arg(
-        long = "slack-thread-detail-threshold-chars",
-        env = "TAU_SLACK_THREAD_DETAIL_THRESHOLD_CHARS",
-        default_value_t = 1500,
-        requires = "slack_bridge",
-        help = "Character threshold used with --slack-thread-detail-output"
-    )]
-    pub slack_thread_detail_threshold_chars: usize,
-
-    #[arg(
-        long = "slack-processed-event-cap",
-        env = "TAU_SLACK_PROCESSED_EVENT_CAP",
-        default_value_t = 10_000,
-        requires = "slack_bridge",
-        help = "Maximum processed-event keys to retain for duplicate delivery protection"
-    )]
-    pub slack_processed_event_cap: usize,
-
-    #[arg(
-        long = "slack-max-event-age-seconds",
-        env = "TAU_SLACK_MAX_EVENT_AGE_SECONDS",
-        default_value_t = 7_200,
-        requires = "slack_bridge",
-        help = "Ignore inbound Slack events older than this many seconds (0 disables age checks)"
-    )]
-    pub slack_max_event_age_seconds: u64,
-
-    #[arg(
-        long = "slack-reconnect-delay-ms",
-        env = "TAU_SLACK_RECONNECT_DELAY_MS",
-        default_value_t = 1_000,
-        requires = "slack_bridge",
-        help = "Delay before reconnecting after socket/session errors"
-    )]
-    pub slack_reconnect_delay_ms: u64,
-
-    #[arg(
-        long = "slack-retry-max-attempts",
-        env = "TAU_SLACK_RETRY_MAX_ATTEMPTS",
-        default_value_t = 4,
-        requires = "slack_bridge",
-        help = "Maximum attempts for retryable slack api failures (429/5xx/transport)"
-    )]
-    pub slack_retry_max_attempts: usize,
-
-    #[arg(
-        long = "slack-retry-base-delay-ms",
-        env = "TAU_SLACK_RETRY_BASE_DELAY_MS",
-        default_value_t = 500,
-        requires = "slack_bridge",
-        help = "Base backoff delay in milliseconds for slack api retries"
-    )]
-    pub slack_retry_base_delay_ms: u64,
-
-    #[arg(
-        long,
-        env = "TAU_SESSION",
-        default_value = ".tau/sessions/default.jsonl",
-        help = "Session JSONL file"
-    )]
-    pub session: PathBuf,
-
-    #[arg(long, help = "Disable session persistence")]
-    pub no_session: bool,
-
-    #[arg(
-        long,
-        env = "TAU_SESSION_VALIDATE",
-        default_value_t = false,
-        help = "Validate session graph integrity and exit"
-    )]
-    pub session_validate: bool,
-
-    #[arg(
-        long,
-        env = "TAU_SESSION_IMPORT_MODE",
-        value_enum,
-        default_value = "merge",
-        help = "Import mode for /session-import: merge appends with id remapping, replace overwrites the current session"
-    )]
-    pub session_import_mode: CliSessionImportMode,
-
-    #[arg(long, help = "Start from a specific session entry id")]
-    pub branch_from: Option<u64>,
-
-    #[arg(
-        long,
-        env = "TAU_SESSION_LOCK_WAIT_MS",
-        default_value_t = 5_000,
-        help = "Maximum time to wait for acquiring the session lock in milliseconds"
-    )]
-    pub session_lock_wait_ms: u64,
-
-    #[arg(
-        long,
-        env = "TAU_SESSION_LOCK_STALE_MS",
-        default_value_t = 30_000,
-        help = "Lock-file age threshold in milliseconds before stale session locks are reclaimed (0 disables reclaim)"
-    )]
-    pub session_lock_stale_ms: u64,
-
-    #[arg(
-        long = "allow-path",
-        env = "TAU_ALLOW_PATH",
-        value_delimiter = ',',
-        help = "Allowed filesystem roots for read/write/edit/bash cwd (repeatable or comma-separated)"
-    )]
-    pub allow_path: Vec<PathBuf>,
-
-    #[arg(
-        long,
-        env = "TAU_BASH_TIMEOUT_MS",
-        default_value_t = 120_000,
-        help = "Timeout for bash tool commands in milliseconds"
-    )]
-    pub bash_timeout_ms: u64,
-
-    #[arg(
-        long,
-        env = "TAU_MAX_TOOL_OUTPUT_BYTES",
-        default_value_t = 16_000,
-        help = "Maximum bytes returned from tool outputs (stdout/stderr)"
-    )]
-    pub max_tool_output_bytes: usize,
-
-    #[arg(
-        long,
-        env = "TAU_MAX_FILE_READ_BYTES",
-        default_value_t = 1_000_000,
-        help = "Maximum file size read by the read tool"
-    )]
-    pub max_file_read_bytes: usize,
-
-    #[arg(
-        long,
-        env = "TAU_MAX_FILE_WRITE_BYTES",
-        default_value_t = 1_000_000,
-        help = "Maximum file size written by write/edit tools"
-    )]
-    pub max_file_write_bytes: usize,
-
-    #[arg(
-        long,
-        env = "TAU_MAX_COMMAND_LENGTH",
-        default_value_t = 4_096,
-        help = "Maximum command length accepted by the bash tool"
-    )]
-    pub max_command_length: usize,
-
-    #[arg(
-        long,
-        env = "TAU_ALLOW_COMMAND_NEWLINES",
-        default_value_t = false,
-        help = "Allow newline characters in bash commands"
-    )]
-    pub allow_command_newlines: bool,
-
-    #[arg(
-        long,
-        env = "TAU_BASH_PROFILE",
-        value_enum,
-        default_value = "balanced",
-        help = "Command execution profile for bash tool: permissive, balanced, or strict"
-    )]
-    pub bash_profile: CliBashProfile,
-
-    #[arg(
-        long,
-        env = "TAU_TOOL_POLICY_PRESET",
-        value_enum,
-        default_value = "balanced",
-        help = "Tool policy preset: permissive, balanced, strict, or hardened"
-    )]
-    pub tool_policy_preset: CliToolPolicyPreset,
-
-    #[arg(
-        long,
-        env = "TAU_BASH_DRY_RUN",
-        default_value_t = false,
-        help = "Validate bash commands against policy without executing them"
-    )]
-    pub bash_dry_run: bool,
-
-    #[arg(
-        long,
-        env = "TAU_TOOL_POLICY_TRACE",
-        default_value_t = false,
-        help = "Include policy evaluation trace details in bash tool results"
-    )]
-    pub tool_policy_trace: bool,
-
-    #[arg(
-        long = "allow-command",
-        env = "TAU_ALLOW_COMMAND",
-        value_delimiter = ',',
-        help = "Additional command executables/prefixes to allow (supports trailing '*' wildcards)"
-    )]
-    pub allow_command: Vec<String>,
-
-    #[arg(
-        long,
-        env = "TAU_PRINT_TOOL_POLICY",
-        default_value_t = false,
-        help = "Print effective tool policy JSON before executing prompts"
-    )]
-    pub print_tool_policy: bool,
-
-    #[arg(
-        long,
-        env = "TAU_TOOL_AUDIT_LOG",
-        help = "Optional JSONL file path for tool execution audit events"
-    )]
-    pub tool_audit_log: Option<PathBuf>,
-
-    #[arg(
-        long,
-        env = "TAU_TELEMETRY_LOG",
-        help = "Optional JSONL file path for prompt-level telemetry summaries"
-    )]
-    pub telemetry_log: Option<PathBuf>,
-
-    #[arg(
-        long,
-        env = "TAU_OS_SANDBOX_MODE",
-        value_enum,
-        default_value = "off",
-        help = "OS sandbox mode for bash tool: off, auto, or force"
-    )]
-    pub os_sandbox_mode: CliOsSandboxMode,
-
-    #[arg(
-        long = "os-sandbox-command",
-        env = "TAU_OS_SANDBOX_COMMAND",
-        value_delimiter = ',',
-        help = "Optional sandbox launcher command template tokens. Supports placeholders: {shell}, {command}, {cwd}"
-    )]
-    pub os_sandbox_command: Vec<String>,
-
-    #[arg(
-        long,
-        env = "TAU_ENFORCE_REGULAR_FILES",
-        default_value_t = true,
-        action = ArgAction::Set,
-        help = "Require read/edit targets and existing write targets to be regular files (reject symlink targets)"
-    )]
-    pub enforce_regular_files: bool,
+impl std::ops::DerefMut for Cli {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.gateway_daemon
+    }
 }

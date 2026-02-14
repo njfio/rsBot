@@ -3,6 +3,7 @@ use tau_ai::ModelRef;
 use tau_cli::Cli;
 use tau_provider::resolve_fallback_models;
 
+/// Public struct `StartupModelResolution` used across Tau components.
 pub struct StartupModelResolution {
     pub model_ref: ModelRef,
     pub fallback_model_refs: Vec<ModelRef>,

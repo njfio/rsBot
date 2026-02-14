@@ -1,414 +1,87 @@
-use super::*;
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use tau_access::approvals::{
+    evaluate_approval_gate, execute_approvals_command, ApprovalAction, ApprovalGateResult,
+};
+use tau_access::pairing::{execute_pair_command, execute_unpair_command};
+use tau_access::rbac::{
+    authorize_command_for_principal, execute_rbac_command, resolve_local_principal, RbacDecision,
+};
+use tau_agent_core::Agent;
+#[cfg(test)]
+use tau_ai::Provider;
+use tau_cli::{
+    canonical_command_name, normalize_help_topic, parse_command, CliCommandFileErrorMode,
+    CommandFileReport,
+};
+use tau_diagnostics::{
+    execute_audit_summary_command, execute_doctor_cli_command, execute_policy_command,
+};
+#[cfg(test)]
+use tau_diagnostics::{
+    DoctorCommandConfig, DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
+};
+#[cfg(test)]
+use tau_onboarding::startup_config::ProfileDefaults;
+use tau_provider::{
+    execute_integration_auth_command, parse_models_list_args, render_model_show,
+    render_models_list, MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
+};
+#[cfg(test)]
+use tau_provider::{
+    AuthCommandConfig, CredentialStoreEncryptionMode, ModelCatalog, ProviderAuthMethod,
+};
+#[cfg(test)]
+use tau_session::SessionImportMode;
+use tau_session::{
+    execute_branch_alias_command, execute_branch_switch_command, execute_branches_command,
+    execute_resume_command, execute_session_bookmark_command, execute_session_compact_command,
+    execute_session_diff_runtime_command, execute_session_export_command,
+    execute_session_graph_export_runtime_command, execute_session_import_command,
+    execute_session_merge_command, execute_session_repair_command,
+    execute_session_search_runtime_command, execute_session_stats_runtime_command,
+    execute_session_status_command, session_lineage_messages, SessionRuntime,
+};
+#[cfg(test)]
+use tau_skills::default_skills_lock_path;
+use tau_skills::{
+    execute_skills_list_command, execute_skills_lock_diff_command,
+    execute_skills_lock_write_command, execute_skills_prune_command, execute_skills_search_command,
+    execute_skills_show_command, execute_skills_sync_command, execute_skills_trust_add_command,
+    execute_skills_trust_list_command, execute_skills_trust_revoke_command,
+    execute_skills_trust_rotate_command, execute_skills_verify_command,
+};
+#[cfg(test)]
+use tau_startup::SkillsSyncCommandConfig;
+use tau_startup::{execute_command_file_with_handler, CommandFileAction};
+
+use crate::auth_commands::execute_auth_command;
+use crate::canvas::{
+    execute_canvas_command, CanvasCommandConfig, CanvasEventOrigin, CanvasSessionLinkContext,
+};
 use crate::extension_manifest::{
     dispatch_extension_registered_command, ExtensionRegisteredCommandAction,
 };
+use crate::macro_profile_commands::{
+    default_macro_config_path, default_profile_store_path, execute_macro_command,
+    execute_profile_command,
+};
+use crate::qa_loop_commands::execute_qa_loop_cli_command;
+use crate::release_channel_commands::{
+    default_release_channel_path, execute_release_channel_command,
+};
+use crate::runtime_types::CommandExecutionContext;
 #[cfg(test)]
 use crate::runtime_types::{
     ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
 };
-pub(crate) use tau_cli::{CommandFileEntry, CommandFileReport, CommandSpec, ParsedCommand};
-use tau_session::{
-    execute_session_diff_command, execute_session_search_command, execute_session_stats_command,
-    parse_session_diff_args, parse_session_stats_args,
-};
+pub(crate) use tau_ops::COMMAND_NAMES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandAction {
     Continue,
     Exit,
-}
-
-pub(crate) const COMMAND_SPECS: &[CommandSpec] = &[
-    CommandSpec {
-        name: "/help",
-        usage: "/help [command]",
-        description: "Show command list or detailed command help",
-        details: "Use '/help /command' (or '/help command') for command-specific guidance.",
-        example: "/help /branch",
-    },
-    CommandSpec {
-        name: "/session",
-        usage: "/session",
-        description: "Show session path, entry count, and active head id",
-        details: "Read-only command; does not mutate session state.",
-        example: "/session",
-    },
-    CommandSpec {
-        name: "/session-search",
-        usage: "/session-search <query> [--role <role>] [--limit <n>]",
-        description: "Search session entries by role/text across all branches",
-        details:
-            "Case-insensitive search over role and message text. Optional --role scopes by message role and --limit controls displayed row count.",
-        example: "/session-search retry budget --role user --limit 10",
-    },
-    CommandSpec {
-        name: "/session-stats",
-        usage: "/session-stats [--json]",
-        description: "Summarize session size, branch tips, depth, and role counts",
-        details:
-            "Read-only session graph diagnostics including active/latest head indicators. Add --json for machine-readable output.",
-        example: "/session-stats",
-    },
-    CommandSpec {
-        name: "/session-diff",
-        usage: "/session-diff [<left-id> <right-id>]",
-        description: "Compare two session lineage heads",
-        details:
-            "Defaults to active vs latest head when ids are omitted. Includes shared and divergent lineage rows with deterministic previews.",
-        example: "/session-diff 12 24",
-    },
-    CommandSpec {
-        name: "/qa-loop",
-        usage: QA_LOOP_USAGE,
-        description: "Run staged quality checks with deterministic text/json reports",
-        details:
-            "Runs configured stages with timeout/retry controls, bounded stdout/stderr capture, and git changed-file summary.",
-        example: "/qa-loop --json",
-    },
-    CommandSpec {
-        name: "/doctor",
-        usage: "/doctor [--json] [--online]",
-        description: "Run deterministic runtime diagnostics",
-        details:
-            "Checks provider auth/session/skills/release posture. Add --json for machine-readable output and --online to include remote release checks.",
-        example: "/doctor",
-    },
-    CommandSpec {
-        name: "/release-channel",
-        usage: RELEASE_CHANNEL_USAGE,
-        description: "Show or persist release track selection",
-        details:
-            "Supports stable/beta/dev release tracks, update plan/apply with dry-run guardrails, and cache show/clear/refresh/prune operations in project-local .tau metadata.",
-        example: "/release-channel set beta",
-    },
-    CommandSpec {
-        name: "/session-graph-export",
-        usage: "/session-graph-export <path>",
-        description: "Export session graph as Mermaid or DOT file",
-        details:
-            "Uses .dot extension for Graphviz DOT; defaults to Mermaid for other destinations.",
-        example: "/session-graph-export /tmp/session-graph.mmd",
-    },
-    CommandSpec {
-        name: "/session-export",
-        usage: "/session-export <path>",
-        description: "Export active lineage snapshot to a JSONL file",
-        details: "Writes only the active lineage entries, including schema metadata.",
-        example: "/session-export /tmp/session-snapshot.jsonl",
-    },
-    CommandSpec {
-        name: "/session-import",
-        usage: "/session-import <path>",
-        description: "Import a lineage snapshot into the current session",
-        details:
-            "Uses --session-import-mode (merge or replace). Merge remaps colliding ids; replace overwrites current entries.",
-        example: "/session-import /tmp/session-snapshot.jsonl",
-    },
-    CommandSpec {
-        name: "/policy",
-        usage: "/policy",
-        description: "Print the effective tool policy JSON",
-        details: "Useful for debugging allowlists, limits, and sandbox settings.",
-        example: "/policy",
-    },
-    CommandSpec {
-        name: "/audit-summary",
-        usage: "/audit-summary <path>",
-        description: "Summarize tool and telemetry JSONL audit records",
-        details:
-            "Aggregates tool/provider counts, error rates, and p50/p95 durations from audit log files.",
-        example: "/audit-summary .tau/audit/tool-events.jsonl",
-    },
-    CommandSpec {
-        name: "/models-list",
-        usage: MODELS_LIST_USAGE,
-        description: "List/search/filter model catalog entries and capabilities",
-        details:
-            "Supports provider and capability filters (`--tools`, `--multimodal`, `--reasoning`) plus text query and result limits.",
-        example: "/models-list gpt --provider openai --tools true --limit 20",
-    },
-    CommandSpec {
-        name: "/model-show",
-        usage: MODEL_SHOW_USAGE,
-        description: "Show detailed capability metadata for one model catalog entry",
-        details:
-            "Accepts provider/model format and reports context window, capability flags, and configured cost metadata.",
-        example: "/model-show openai/gpt-4o-mini",
-    },
-    CommandSpec {
-        name: "/skills-search",
-        usage: "/skills-search <query> [max_results]",
-        description: "Search installed skills by name and content",
-        details: "Ranks name matches first, then content-only matches.",
-        example: "/skills-search checklist 10",
-    },
-    CommandSpec {
-        name: "/skills-show",
-        usage: "/skills-show <name>",
-        description: "Display installed skill content and metadata",
-        details: "Read-only command for inspecting a single skill by name.",
-        example: "/skills-show checklist",
-    },
-    CommandSpec {
-        name: "/skills-list",
-        usage: "/skills-list",
-        description: "List installed skills in the active skills directory",
-        details: "Read-only command that prints deterministic skill inventory output.",
-        example: "/skills-list",
-    },
-    CommandSpec {
-        name: "/skills-lock-diff",
-        usage: "/skills-lock-diff [lockfile_path] [--json]",
-        description: "Inspect lockfile drift without enforcing sync",
-        details: "Reports in-sync/drift/error status and supports structured JSON output.",
-        example: "/skills-lock-diff .tau/skills/skills.lock.json --json",
-    },
-    CommandSpec {
-        name: "/skills-prune",
-        usage: "/skills-prune [lockfile_path] [--dry-run|--apply]",
-        description: "Prune installed skills not tracked in lockfile",
-        details:
-            "Dry-run is default; use --apply to delete prune candidates after deterministic listing.",
-        example: "/skills-prune .tau/skills/skills.lock.json --apply",
-    },
-    CommandSpec {
-        name: "/skills-trust-list",
-        usage: "/skills-trust-list [trust_root_file]",
-        description: "List trust-root keys with revocation/expiry/rotation status",
-        details:
-            "Uses configured --skill-trust-root-file when no path argument is provided.",
-        example: "/skills-trust-list .tau/skills/trust-roots.json",
-    },
-    CommandSpec {
-        name: "/skills-trust-add",
-        usage: "/skills-trust-add <id=base64_key> [trust_root_file]",
-        description: "Add or update a trust-root key",
-        details:
-            "Mutates trust-root file atomically. Uses configured --skill-trust-root-file when path is omitted.",
-        example: "/skills-trust-add root-v2=AbC... .tau/skills/trust-roots.json",
-    },
-    CommandSpec {
-        name: "/skills-trust-revoke",
-        usage: "/skills-trust-revoke <id> [trust_root_file]",
-        description: "Revoke a trust-root key id",
-        details:
-            "Marks key as revoked in trust-root file. Uses configured --skill-trust-root-file when path is omitted.",
-        example: "/skills-trust-revoke root-v1 .tau/skills/trust-roots.json",
-    },
-    CommandSpec {
-        name: "/skills-trust-rotate",
-        usage: "/skills-trust-rotate <old_id:new_id=base64_key> [trust_root_file]",
-        description: "Rotate trust-root key id to a new key",
-        details:
-            "Revokes old id and adds/updates new id atomically. Uses configured --skill-trust-root-file when path is omitted.",
-        example: "/skills-trust-rotate root-v1:root-v2=AbC... .tau/skills/trust-roots.json",
-    },
-    CommandSpec {
-        name: "/skills-lock-write",
-        usage: "/skills-lock-write [lockfile_path]",
-        description: "Write/update skills lockfile from installed skills",
-        details:
-            "Uses <skills-dir>/skills.lock.json when path is omitted. Preserves existing source metadata when possible.",
-        example: "/skills-lock-write .tau/skills/skills.lock.json",
-    },
-    CommandSpec {
-        name: "/skills-sync",
-        usage: "/skills-sync [lockfile_path]",
-        description: "Validate installed skills against the lockfile",
-        details:
-            "Uses <skills-dir>/skills.lock.json when path is omitted. Prints drift diagnostics without exiting interactive mode.",
-        example: "/skills-sync .tau/skills/skills.lock.json",
-    },
-    CommandSpec {
-        name: "/skills-verify",
-        usage: "/skills-verify [lockfile_path] [trust_root_file] [--json]",
-        description: "Audit lockfile drift and trust/signature policy in one report",
-        details:
-            "Read-only compliance diagnostics across sync drift, signature metadata, and trust-root key status.",
-        example: "/skills-verify .tau/skills/skills.lock.json .tau/skills/trust-roots.json --json",
-    },
-    CommandSpec {
-        name: "/branches",
-        usage: "/branches",
-        description: "List branch tips in the current session graph",
-        details: "Each row includes entry id, parent id, and a short message summary.",
-        example: "/branches",
-    },
-    CommandSpec {
-        name: "/macro",
-        usage: "/macro <save|run|list|show|delete> ...",
-        description: "Manage reusable command macros",
-        details:
-            "Persists macros in project-local config and supports dry-run validation, inspection, and deletion.",
-        example: "/macro save quick-check /tmp/quick-check.commands",
-    },
-    CommandSpec {
-        name: "/auth",
-        usage: "/auth <login|reauth|status|logout|matrix> ...",
-        description: "Manage provider authentication state and credential-store sessions",
-        details:
-            "Supports login/reauth/status/logout flows plus provider-mode matrix diagnostics with optional --json output.",
-        example: "/auth reauth openai --mode oauth-token --launch --json",
-    },
-    CommandSpec {
-        name: "/canvas",
-        usage: CANVAS_USAGE,
-        description: "Manage collaborative live-canvas state backed by Yrs CRDT persistence",
-        details:
-            "Supports create/update/show/export/import flows for node and edge state with deterministic markdown/json renderers and replay-safe event envelopes.",
-        example: "/canvas update architecture node-upsert api \"API Service\" 120 64",
-    },
-    CommandSpec {
-        name: "/rbac",
-        usage: RBAC_USAGE,
-        description: "Inspect RBAC principal resolution and authorization decisions",
-        details:
-            "Use whoami to resolve principal bindings and check to evaluate one action against active role policy.",
-        example: "/rbac check command:/policy --json",
-    },
-    CommandSpec {
-        name: "/approvals",
-        usage: APPROVALS_USAGE,
-        description: "Review and decide queued HITL approval requests",
-        details:
-            "Use list for queue visibility and approve/reject to unblock or deny pending requests.",
-        example: "/approvals list --status pending",
-    },
-    CommandSpec {
-        name: "/integration-auth",
-        usage: "/integration-auth <set|status|rotate|revoke> ...",
-        description: "Manage credential-store secrets for integrations (GitHub, Slack, webhooks)",
-        details:
-            "Supports set/status/rotate/revoke flows for integration secret ids with optional --json output.",
-        example: "/integration-auth status github-token --json",
-    },
-    CommandSpec {
-        name: "/pair",
-        usage: "/pair <add|remove|status> ...",
-        description: "Manage remote channel actor pairings and allowlist visibility",
-        details:
-            "Writes `.tau/security/pairings.json` atomically. Use `/pair status` to inspect effective pairings and allowlist rows.",
-        example: "/pair add github:owner/repo alice --ttl-seconds 3600",
-    },
-    CommandSpec {
-        name: "/unpair",
-        usage: "/unpair <channel> <actor_id>",
-        description: "Remove one actor pairing from a channel",
-        details:
-            "Alias for `/pair remove` with deterministic removal count and atomic persistence.",
-        example: "/unpair github:owner/repo alice",
-    },
-    CommandSpec {
-        name: "/profile",
-        usage: "/profile <save|load|list|show|delete> ...",
-        description: "Manage model, policy, and session default profiles",
-        details:
-            "Profiles are persisted in project-local config. Load reports diffs from current defaults; list/show/delete support lifecycle management.",
-        example: "/profile save baseline",
-    },
-    CommandSpec {
-        name: "/branch-alias",
-        usage: "/branch-alias <set|list|use> ...",
-        description: "Manage persistent branch aliases for quick navigation",
-        details:
-            "Aliases are stored in a sidecar JSON file next to the active session file.",
-        example: "/branch-alias set hotfix 42",
-    },
-    CommandSpec {
-        name: "/session-bookmark",
-        usage: "/session-bookmark <set|list|use|delete> ...",
-        description: "Manage persistent session bookmarks",
-        details:
-            "Bookmarks are stored in project-local metadata and can switch active head by name.",
-        example: "/session-bookmark set investigation 42",
-    },
-    CommandSpec {
-        name: "/branch",
-        usage: "/branch <id>",
-        description: "Switch active branch head to a specific entry id",
-        details: "Reloads the agent message context to the selected lineage.",
-        example: "/branch 12",
-    },
-    CommandSpec {
-        name: "/resume",
-        usage: "/resume",
-        description: "Jump back to the latest session head",
-        details: "Resets active branch to current head and reloads lineage messages.",
-        example: "/resume",
-    },
-    CommandSpec {
-        name: "/session-repair",
-        usage: "/session-repair",
-        description: "Repair malformed session graphs",
-        details: "Removes duplicate ids, invalid parent references, and cyclic lineage entries.",
-        example: "/session-repair",
-    },
-    CommandSpec {
-        name: "/session-compact",
-        usage: "/session-compact",
-        description: "Compact session to active lineage",
-        details: "Prunes inactive branches and retains only entries reachable from active head.",
-        example: "/session-compact",
-    },
-    CommandSpec {
-        name: "/quit",
-        usage: "/quit",
-        description: "Exit interactive mode",
-        details: "Alias: /exit",
-        example: "/quit",
-    },
-];
-
-pub(crate) const COMMAND_NAMES: &[&str] = &[
-    "/help",
-    "/session",
-    "/session-search",
-    "/session-stats",
-    "/session-diff",
-    "/qa-loop",
-    "/doctor",
-    "/release-channel",
-    "/session-graph-export",
-    "/session-export",
-    "/session-import",
-    "/policy",
-    "/audit-summary",
-    "/models-list",
-    "/model-show",
-    "/skills-search",
-    "/skills-show",
-    "/skills-list",
-    "/skills-lock-diff",
-    "/skills-prune",
-    "/skills-trust-list",
-    "/skills-trust-add",
-    "/skills-trust-revoke",
-    "/skills-trust-rotate",
-    "/skills-lock-write",
-    "/skills-sync",
-    "/skills-verify",
-    "/branches",
-    "/macro",
-    "/auth",
-    "/canvas",
-    "/rbac",
-    "/approvals",
-    "/integration-auth",
-    "/pair",
-    "/unpair",
-    "/profile",
-    "/branch-alias",
-    "/session-bookmark",
-    "/branch",
-    "/resume",
-    "/session-repair",
-    "/session-compact",
-    "/quit",
-    "/exit",
-];
-
-pub(crate) fn parse_command_file(path: &Path) -> Result<Vec<CommandFileEntry>> {
-    tau_cli::parse_command_file(path)
 }
 
 pub(crate) fn execute_command_file(
@@ -418,96 +91,17 @@ pub(crate) fn execute_command_file(
     session_runtime: &mut Option<SessionRuntime>,
     command_context: CommandExecutionContext<'_>,
 ) -> Result<CommandFileReport> {
-    let entries = parse_command_file(path)?;
-    let mut report = CommandFileReport {
-        total: entries.len(),
-        executed: 0,
-        succeeded: 0,
-        failed: 0,
-        halted_early: false,
-    };
-
-    for entry in entries {
-        report.executed += 1;
-
-        if !entry.command.starts_with('/') {
-            report.failed += 1;
-            println!(
-                "command file error: path={} line={} command={} error=command must start with '/'",
-                path.display(),
-                entry.line_number,
-                entry.command
-            );
-            if mode == CliCommandFileErrorMode::FailFast {
-                report.halted_early = true;
-                break;
-            }
-            continue;
-        }
-
+    execute_command_file_with_handler(path, mode, |command| {
         match handle_command_with_session_import_mode(
-            &entry.command,
+            command,
             agent,
             session_runtime,
-            command_context.tool_policy_json,
-            command_context.session_import_mode,
-            command_context.profile_defaults,
-            command_context.skills_command_config,
-            command_context.auth_command_config,
-            command_context.model_catalog,
-            command_context.extension_commands,
-        ) {
-            Ok(CommandAction::Continue) => {
-                report.succeeded += 1;
-            }
-            Ok(CommandAction::Exit) => {
-                report.succeeded += 1;
-                report.halted_early = true;
-                println!(
-                    "command file notice: path={} line={} command={} action=exit",
-                    path.display(),
-                    entry.line_number,
-                    entry.command
-                );
-                break;
-            }
-            Err(error) => {
-                report.failed += 1;
-                println!(
-                    "command file error: path={} line={} command={} error={error}",
-                    path.display(),
-                    entry.line_number,
-                    entry.command
-                );
-                if mode == CliCommandFileErrorMode::FailFast {
-                    report.halted_early = true;
-                    break;
-                }
-            }
+            command_context,
+        )? {
+            CommandAction::Continue => Ok(CommandFileAction::Continue),
+            CommandAction::Exit => Ok(CommandFileAction::Exit),
         }
-    }
-
-    println!(
-        "command file summary: path={} mode={} total={} executed={} succeeded={} failed={} halted_early={}",
-        path.display(),
-        command_file_error_mode_label(mode),
-        report.total,
-        report.executed,
-        report.succeeded,
-        report.failed,
-        report.halted_early
-    );
-
-    if mode == CliCommandFileErrorMode::FailFast && report.failed > 0 {
-        bail!(
-            "command file execution failed: path={} failed={} mode={}",
-            path.display(),
-            report.failed,
-            command_file_error_mode_label(mode)
-        );
-    }
-
-    Ok(report)
+    })
 }
 
 #[cfg(test)]
@@ -597,29 +191,34 @@ pub(crate) fn handle_command(
         command,
         agent,
         session_runtime,
-        tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &auth_command_config,
-        &model_catalog,
-        &[],
+        CommandExecutionContext {
+            tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
+            model_catalog: &model_catalog,
+            extension_commands: &[],
+        },
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_command_with_session_import_mode(
     command: &str,
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    tool_policy_json: &serde_json::Value,
-    session_import_mode: SessionImportMode,
-    profile_defaults: &ProfileDefaults,
-    skills_command_config: &SkillsSyncCommandConfig,
-    auth_command_config: &AuthCommandConfig,
-    model_catalog: &ModelCatalog,
-    extension_commands: &[crate::extension_manifest::ExtensionRegisteredCommand],
+    command_context: CommandExecutionContext<'_>,
 ) -> Result<CommandAction> {
+    let CommandExecutionContext {
+        tool_policy_json,
+        session_import_mode,
+        profile_defaults,
+        skills_command_config,
+        auth_command_config,
+        model_catalog,
+        extension_commands,
+    } = command_context;
+
     let skills_dir = skills_command_config.skills_dir.as_path();
     let default_skills_lock_path = skills_command_config.default_lock_path.as_path();
     let default_trust_root_path = skills_command_config.default_trust_root_path.as_deref();
@@ -743,24 +342,56 @@ pub(crate) fn handle_command_with_session_import_mode(
     }
 
     if command_name == "/session" {
-        if !command_args.is_empty() {
-            println!("usage: /session");
-            return Ok(CommandAction::Continue);
-        }
-        match session_runtime.as_ref() {
-            Some(runtime) => {
-                println!(
-                    "session: path={} entries={} active_head={}",
-                    runtime.store.path().display(),
-                    runtime.store.entries().len(),
-                    runtime
-                        .active_head
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "none".to_string())
-                );
+        let Some(runtime) = session_runtime.as_ref() else {
+            if command_args.is_empty() {
+                println!("session: disabled");
+            } else {
+                println!("usage: /session");
             }
-            None => println!("session: disabled"),
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_session_status_command(command_args, runtime);
+        println!("{}", outcome.message);
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session-export" {
+        let Some(runtime) = session_runtime.as_ref() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_session_export_command(command_args, runtime)?;
+        println!("{}", outcome.message);
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session-import" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_session_import_command(command_args, runtime, session_import_mode)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
         }
+        println!("{}", outcome.message);
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/session-merge" {
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_session_merge_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -769,12 +400,8 @@ pub(crate) fn handle_command_with_session_import_mode(
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
-        if command_args.trim().is_empty() {
-            println!("usage: /session-search <query> [--role <role>] [--limit <n>]");
-            return Ok(CommandAction::Continue);
-        }
-
-        println!("{}", execute_session_search_command(runtime, command_args));
+        let outcome = execute_session_search_runtime_command(command_args, runtime);
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -783,15 +410,8 @@ pub(crate) fn handle_command_with_session_import_mode(
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
-        let format = match parse_session_stats_args(command_args) {
-            Ok(format) => format,
-            Err(_) => {
-                println!("usage: /session-stats [--json]");
-                return Ok(CommandAction::Continue);
-            }
-        };
-
-        println!("{}", execute_session_stats_command(runtime, format));
+        let outcome = execute_session_stats_runtime_command(command_args, runtime);
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -800,15 +420,8 @@ pub(crate) fn handle_command_with_session_import_mode(
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
-        let heads = match parse_session_diff_args(command_args) {
-            Ok(heads) => heads,
-            Err(_) => {
-                println!("usage: /session-diff [<left-id> <right-id>]");
-                return Ok(CommandAction::Continue);
-            }
-        };
-
-        println!("{}", execute_session_diff_command(runtime, heads));
+        let outcome = execute_session_diff_runtime_command(command_args, runtime);
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -830,74 +443,8 @@ pub(crate) fn handle_command_with_session_import_mode(
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
-        if command_args.trim().is_empty() {
-            println!("usage: /session-graph-export <path>");
-            return Ok(CommandAction::Continue);
-        }
-
-        println!(
-            "{}",
-            execute_session_graph_export_command(runtime, command_args)
-        );
-        return Ok(CommandAction::Continue);
-    }
-
-    if command_name == "/session-export" {
-        let Some(runtime) = session_runtime.as_ref() else {
-            println!("session is disabled");
-            return Ok(CommandAction::Continue);
-        };
-        if command_args.is_empty() {
-            println!("usage: /session-export <path>");
-            return Ok(CommandAction::Continue);
-        }
-
-        let destination = PathBuf::from(command_args);
-        let exported = runtime
-            .store
-            .export_lineage(runtime.active_head, &destination)?;
-        println!(
-            "session export complete: path={} entries={} head={}",
-            destination.display(),
-            exported,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
-        return Ok(CommandAction::Continue);
-    }
-
-    if command_name == "/session-import" {
-        let Some(runtime) = session_runtime.as_mut() else {
-            println!("session is disabled");
-            return Ok(CommandAction::Continue);
-        };
-        if command_args.is_empty() {
-            println!("usage: /session-import <path>");
-            return Ok(CommandAction::Continue);
-        }
-
-        let source = PathBuf::from(command_args);
-        let report = runtime
-            .store
-            .import_snapshot(&source, session_import_mode)?;
-        runtime.active_head = report.active_head;
-        agent.replace_messages(session_lineage_messages(runtime)?);
-        println!(
-            "session import complete: path={} mode={} imported_entries={} remapped_entries={} remapped_ids={} replaced_entries={} total_entries={} head={}",
-            source.display(),
-            session_import_mode_label(session_import_mode),
-            report.imported_entries,
-            report.remapped_entries,
-            format_remap_ids(&report.remapped_ids),
-            report.replaced_entries,
-            report.resulting_entries,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
+        let outcome = execute_session_graph_export_runtime_command(command_args, runtime);
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -1057,15 +604,11 @@ pub(crate) fn handle_command_with_session_import_mode(
             return Ok(CommandAction::Continue);
         };
 
-        runtime.active_head = runtime.store.head_id();
-        agent.replace_messages(session_lineage_messages(runtime)?);
-        println!(
-            "resumed at head {}",
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
+        let outcome = execute_resume_command(command_args, runtime);
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -1079,22 +622,8 @@ pub(crate) fn handle_command_with_session_import_mode(
             return Ok(CommandAction::Continue);
         };
 
-        let tips = runtime.store.branch_tips();
-        if tips.is_empty() {
-            println!("no branches");
-        } else {
-            for tip in tips {
-                println!(
-                    "id={} parent={} text={}",
-                    tip.id,
-                    tip.parent_id
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "none".to_string()),
-                    summarize_message(&tip.message)
-                );
-            }
-        }
-
+        let outcome = execute_branches_command(command_args, runtime);
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -1214,60 +743,30 @@ pub(crate) fn handle_command_with_session_import_mode(
     }
 
     if command_name == "/session-repair" {
-        if !command_args.is_empty() {
-            println!("usage: /session-repair");
-            return Ok(CommandAction::Continue);
-        }
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
 
-        let report = runtime.store.repair()?;
-        runtime.active_head = runtime
-            .active_head
-            .filter(|head| runtime.store.contains(*head))
-            .or_else(|| runtime.store.head_id());
-        agent.replace_messages(session_lineage_messages(runtime)?);
-
-        println!(
-            "repair complete: removed_duplicates={} duplicate_ids={} removed_invalid_parent={} invalid_parent_ids={} removed_cycles={} cycle_ids={}",
-            report.removed_duplicates,
-            format_id_list(&report.duplicate_ids),
-            report.removed_invalid_parent,
-            format_id_list(&report.invalid_parent_ids),
-            report.removed_cycles,
-            format_id_list(&report.cycle_ids)
-        );
+        let outcome = execute_session_repair_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
     if command_name == "/session-compact" {
-        if !command_args.is_empty() {
-            println!("usage: /session-compact");
-            return Ok(CommandAction::Continue);
-        }
         let Some(runtime) = session_runtime.as_mut() else {
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
 
-        let report = runtime.store.compact_to_lineage(runtime.active_head)?;
-        runtime.active_head = report
-            .head_id
-            .filter(|head| runtime.store.contains(*head))
-            .or_else(|| runtime.store.head_id());
-        agent.replace_messages(session_lineage_messages(runtime)?);
-
-        println!(
-            "compact complete: removed_entries={} retained_entries={} head={}",
-            report.removed_entries,
-            report.retained_entries,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        );
+        let outcome = execute_session_compact_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -1276,22 +775,12 @@ pub(crate) fn handle_command_with_session_import_mode(
             println!("session is disabled");
             return Ok(CommandAction::Continue);
         };
-        if command_args.is_empty() {
-            println!("usage: /branch <id>");
-            return Ok(CommandAction::Continue);
+
+        let outcome = execute_branch_switch_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
         }
-
-        let target = command_args
-            .parse::<u64>()
-            .map_err(|_| anyhow!("invalid branch id '{}'; expected an integer", command_args))?;
-
-        if !runtime.store.contains(target) {
-            bail!("unknown session id {}", target);
-        }
-
-        runtime.active_head = Some(target);
-        agent.replace_messages(session_lineage_messages(runtime)?);
-        println!("switched to branch id {target}");
+        println!("{}", outcome.message);
         return Ok(CommandAction::Continue);
     }
 
@@ -1316,37 +805,18 @@ pub(crate) fn handle_command_with_session_import_mode(
     Ok(CommandAction::Continue)
 }
 
-pub(crate) fn parse_command(input: &str) -> Option<ParsedCommand<'_>> {
-    tau_cli::parse_command(input)
-}
-
-pub(crate) fn canonical_command_name(name: &str) -> &str {
-    tau_cli::canonical_command_name(name)
-}
-
-pub(crate) fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
-    match mode {
-        SessionImportMode::Merge => "merge",
-        SessionImportMode::Replace => "replace",
-    }
-}
-
-pub(crate) fn normalize_help_topic(topic: &str) -> String {
-    tau_cli::normalize_help_topic(topic)
-}
-
 pub(crate) fn render_help_overview() -> String {
-    tau_cli::render_help_overview(COMMAND_SPECS)
+    tau_ops::render_help_overview()
 }
 
 pub(crate) fn render_command_help(topic: &str) -> Option<String> {
-    tau_cli::render_command_help(topic, COMMAND_SPECS)
+    tau_ops::render_command_help(topic)
 }
 
 pub(crate) fn unknown_help_topic_message(topic: &str) -> String {
-    tau_cli::unknown_help_topic_message(topic, COMMAND_NAMES)
+    tau_ops::unknown_help_topic_message(topic)
 }
 
 pub(crate) fn unknown_command_message(command: &str) -> String {
-    tau_cli::unknown_command_message(command, COMMAND_NAMES)
+    tau_ops::unknown_command_message(command)
 }

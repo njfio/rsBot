@@ -3,6 +3,7 @@ use std::{fmt, str::FromStr};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `Provider` values.
 pub enum Provider {
     OpenAi,
     Anthropic,
@@ -26,6 +27,7 @@ impl fmt::Display for Provider {
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// Enumerates supported `ModelRefParseError` values.
 pub enum ModelRefParseError {
     #[error("missing model identifier")]
     MissingModel,
@@ -50,6 +52,7 @@ impl FromStr for Provider {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ModelRef` used across Tau components.
 pub struct ModelRef {
     pub provider: Provider,
     pub model: String,

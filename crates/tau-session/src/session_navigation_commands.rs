@@ -1,3 +1,5 @@
+//! Branch alias parsing and navigation command helpers for session runtime.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +13,7 @@ pub const BRANCH_ALIAS_SCHEMA_VERSION: u32 = 1;
 pub const BRANCH_ALIAS_USAGE: &str = "usage: /branch-alias <set|list|use> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `BranchAliasCommand` values.
 pub enum BranchAliasCommand {
     List,
     Set { name: String, id: u64 },
@@ -18,6 +21,7 @@ pub enum BranchAliasCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `BranchAliasFile` used across Tau components.
 pub struct BranchAliasFile {
     pub schema_version: u32,
     pub aliases: BTreeMap<String, u64>,
@@ -147,6 +151,7 @@ fn render_branch_alias_list(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SessionNavigationOutcome` used across Tau components.
 pub struct SessionNavigationOutcome {
     pub message: String,
     pub reload_active_head: bool,
@@ -281,6 +286,7 @@ pub const SESSION_BOOKMARK_SCHEMA_VERSION: u32 = 1;
 pub const SESSION_BOOKMARK_USAGE: &str = "usage: /session-bookmark <set|list|use|delete> ...";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `SessionBookmarkCommand` values.
 pub enum SessionBookmarkCommand {
     List,
     Set { name: String, id: u64 },
@@ -289,6 +295,7 @@ pub enum SessionBookmarkCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `SessionBookmarkFile` used across Tau components.
 pub struct SessionBookmarkFile {
     pub schema_version: u32,
     pub bookmarks: BTreeMap<String, u64>,

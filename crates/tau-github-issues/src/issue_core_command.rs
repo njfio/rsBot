@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `IssueCoreCommand` values.
 pub enum IssueCoreCommand {
     Run { prompt: String },
     Stop,

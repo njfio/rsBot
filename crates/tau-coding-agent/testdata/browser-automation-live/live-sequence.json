@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "name": "live-sequence",
+  "description": "Deterministic browser automation live fixture for mock Playwright executor demos.",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "snapshot-live",
+      "operation": "snapshot",
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "ok",
+          "operation": "snapshot",
+          "snapshot_id": "snapshot-live",
+          "elements": [
+            {
+              "id": "e1",
+              "role": "button",
+              "name": "Run"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "action-click-live",
+      "operation": "action",
+      "action": "click",
+      "selector": "#run",
+      "timeout_ms": 1000,
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "ok",
+          "operation": "action",
+          "action": "click",
+          "selector": "#run",
+          "repeat_count": 1,
+          "text": "",
+          "timeout_ms": 1000
+        }
+      }
+    }
+  ]
+}

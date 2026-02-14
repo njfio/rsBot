@@ -1,9 +1,15 @@
+//! Onboarding and startup bootstrap orchestration for Tau.
+//!
+//! Implements onboarding flows, startup configuration resolution, model/runtime
+//! dispatch, and transport-mode bootstrap helpers.
+
 pub mod onboarding_command;
 pub mod onboarding_daemon;
 pub mod onboarding_paths;
 pub mod onboarding_profile_bootstrap;
 pub mod onboarding_release_channel;
 pub mod onboarding_report;
+pub mod profile_commands;
 pub mod profile_store;
 pub mod startup_config;
 pub mod startup_daemon_preflight;

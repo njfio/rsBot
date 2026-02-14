@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `IssueCommandEnvelope` used across Tau components.
 pub struct IssueCommandEnvelope<'a> {
     pub command: &'a str,
     pub remainder: &'a str,

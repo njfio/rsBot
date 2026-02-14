@@ -32,6 +32,7 @@ pub fn build_auth_command_config(cli: &Cli) -> AuthCommandConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ProfileSessionDefaults` used across Tau components.
 pub struct ProfileSessionDefaults {
     pub enabled: bool,
     pub path: Option<String>,
@@ -39,6 +40,7 @@ pub struct ProfileSessionDefaults {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ProfilePolicyDefaults` used across Tau components.
 pub struct ProfilePolicyDefaults {
     pub tool_policy_preset: String,
     pub bash_profile: String,
@@ -62,6 +64,7 @@ fn default_profile_mcp_context_providers() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ProfileMcpDefaults` used across Tau components.
 pub struct ProfileMcpDefaults {
     #[serde(default = "default_profile_mcp_context_providers")]
     pub context_providers: Vec<String>,
@@ -76,6 +79,7 @@ impl Default for ProfileMcpDefaults {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ProfileAuthDefaults` used across Tau components.
 pub struct ProfileAuthDefaults {
     #[serde(default = "default_provider_auth_method")]
     pub openai: ProviderAuthMethod,
@@ -96,6 +100,7 @@ impl Default for ProfileAuthDefaults {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ProfileDefaults` used across Tau components.
 pub struct ProfileDefaults {
     pub model: String,
     pub fallback_models: Vec<String>,

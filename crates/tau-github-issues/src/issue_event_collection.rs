@@ -2,16 +2,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Public struct `GithubUser` used across Tau components.
 pub struct GithubUser {
     pub login: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Public struct `GithubIssueLabel` used across Tau components.
 pub struct GithubIssueLabel {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Public struct `GithubIssue` used across Tau components.
 pub struct GithubIssue {
     pub id: u64,
     pub number: u64,
@@ -27,6 +30,7 @@ pub struct GithubIssue {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+/// Public struct `GithubIssueComment` used across Tau components.
 pub struct GithubIssueComment {
     pub id: u64,
     pub body: Option<String>,
@@ -36,6 +40,7 @@ pub struct GithubIssueComment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates supported `GithubBridgeEventKind` values.
 pub enum GithubBridgeEventKind {
     Opened,
     CommentCreated,
@@ -53,6 +58,7 @@ impl GithubBridgeEventKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `GithubBridgeEvent` used across Tau components.
 pub struct GithubBridgeEvent {
     pub key: String,
     pub kind: GithubBridgeEventKind,

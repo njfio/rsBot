@@ -6,11 +6,12 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use tau_ai::{
-    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
-    StreamDeltaHandler, TauAiError,
+    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MediaSource, Message,
+    MessageRole, StreamDeltaHandler, TauAiError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `GeminiCliConfig` used across Tau components.
 pub struct GeminiCliConfig {
     pub executable: String,
     pub extra_args: Vec<String>,
@@ -18,6 +19,7 @@ pub struct GeminiCliConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `GeminiCliClient` used across Tau components.
 pub struct GeminiCliClient {
     config: GeminiCliConfig,
 }
@@ -223,6 +225,12 @@ fn render_gemini_prompt(request: &ChatRequest) -> String {
                 } => lines.push(format!(
                     "{{\"tool_call\":{{\"id\":\"{id}\",\"name\":\"{name}\",\"arguments\":{arguments}}}}}"
                 )),
+                ContentBlock::Image { source } => {
+                    lines.push(format!("[tau-image:{}]", media_source_descriptor(source)))
+                }
+                ContentBlock::Audio { source } => {
+                    lines.push(format!("[tau-audio:{}]", media_source_descriptor(source)))
+                }
             }
         }
     }
@@ -243,6 +251,15 @@ fn role_label(role: MessageRole) -> &'static str {
         MessageRole::User => "user",
         MessageRole::Assistant => "assistant",
         MessageRole::Tool => "tool",
+    }
+}
+
+fn media_source_descriptor(source: &MediaSource) -> String {
+    match source {
+        MediaSource::Url { url } => format!("url:{url}"),
+        MediaSource::Base64 { mime_type, data } => {
+            format!("base64:{mime_type}:{}bytes", data.len())
+        }
     }
 }
 
@@ -277,6 +294,8 @@ mod tests {
                     "required": ["path"]
                 }),
             }],
+            tool_choice: Some(tau_ai::ToolChoice::Auto),
+            json_mode: false,
             max_tokens: None,
             temperature: None,
         }
@@ -436,6 +455,25 @@ printf '{"response":"late"}'
         assert!(prompt.contains("[assistant]"));
         assert!(prompt.contains("Tau tools available in caller runtime"));
         assert!(prompt.contains("- read: Read a file"));
+    }
+
+    #[test]
+    fn regression_render_gemini_prompt_includes_media_markers() {
+        let mut request = test_request();
+        request.messages.push(Message {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::image_url("https://example.com/cat.png"),
+                ContentBlock::audio_base64("audio/wav", "YXVkaW8="),
+            ],
+            tool_call_id: None,
+            tool_name: None,
+            is_error: false,
+        });
+
+        let prompt = render_gemini_prompt(&request);
+        assert!(prompt.contains("[tau-image:"));
+        assert!(prompt.contains("[tau-audio:"));
     }
 
     #[test]

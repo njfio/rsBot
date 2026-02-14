@@ -3,15 +3,23 @@ name = "tau-voice"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["runtime"]
+runtime = ["dep:tau-core", "dep:tau-contract", "dep:tau-runtime"]
+
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
-tau-core = { path = "../tau-core" }
-tau-runtime = { path = "../tau-runtime" }
+tau-core = { path = "../tau-core", optional = true }
+tau-contract = { path = "../tau-contract", optional = true }
+tau-runtime = { path = "../tau-runtime", optional = true }
 
 [dev-dependencies]
-tempfile = "3.10"
+tempfile = "3.25"
 tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "time"] }

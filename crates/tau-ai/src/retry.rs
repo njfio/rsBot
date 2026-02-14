@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -34,6 +35,38 @@ pub fn next_backoff_ms_with_jitter(attempt: usize, jitter_enabled: bool) -> u64 
     low.saturating_add(jitter)
 }
 
+pub fn parse_retry_after_ms(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let raw = headers.get("retry-after")?.to_str().ok()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(seconds.saturating_mul(1000));
+    }
+
+    let retry_at = DateTime::parse_from_rfc2822(raw).ok()?.with_timezone(&Utc);
+    let now = Utc::now();
+    let delay_ms = retry_at.signed_duration_since(now).num_milliseconds();
+    if delay_ms <= 0 {
+        return Some(0);
+    }
+
+    u64::try_from(delay_ms).ok()
+}
+
+pub fn provider_retry_delay_ms(
+    attempt: usize,
+    jitter_enabled: bool,
+    retry_after_ms: Option<u64>,
+) -> u64 {
+    let backoff_ms = next_backoff_ms_with_jitter(attempt, jitter_enabled);
+    match retry_after_ms {
+        Some(retry_after_ms) => backoff_ms.max(retry_after_ms),
+        None => backoff_ms,
+    }
+}
+
 pub fn retry_budget_allows_delay(elapsed_ms: u64, delay_ms: u64, retry_budget_ms: u64) -> bool {
     if retry_budget_ms == 0 {
         return true;
@@ -56,9 +89,12 @@ pub fn new_request_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{Duration, Utc};
+    use reqwest::header::{HeaderMap, HeaderValue};
+
     use super::{
-        new_request_id, next_backoff_ms, next_backoff_ms_with_jitter, retry_budget_allows_delay,
-        should_retry_status,
+        new_request_id, next_backoff_ms, next_backoff_ms_with_jitter, parse_retry_after_ms,
+        provider_retry_delay_ms, retry_budget_allows_delay, should_retry_status,
     };
 
     #[test]
@@ -86,6 +122,46 @@ mod tests {
             assert!(value >= low, "expected {value} >= {low}");
             assert!(value <= base, "expected {value} <= {base}");
         }
+    }
+
+    #[test]
+    fn unit_parse_retry_after_ms_accepts_seconds_and_rejects_invalid_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("3"));
+        assert_eq!(parse_retry_after_ms(&headers), Some(3_000));
+
+        headers.insert("retry-after", HeaderValue::from_static("not-a-number"));
+        assert_eq!(parse_retry_after_ms(&headers), None);
+    }
+
+    #[test]
+    fn functional_parse_retry_after_ms_accepts_http_dates() {
+        let mut headers = HeaderMap::new();
+        let raw = (Utc::now() + Duration::seconds(2))
+            .to_rfc2822()
+            .replace("+0000", "GMT");
+        headers.insert(
+            "retry-after",
+            HeaderValue::from_str(raw.as_str()).expect("retry-after date"),
+        );
+        let delay = parse_retry_after_ms(&headers).expect("delay from date");
+        assert!(delay <= 2_500, "delay should be close to 2s, got {delay}");
+        assert!(
+            delay >= 500,
+            "delay should be positive and non-trivial, got {delay}"
+        );
+    }
+
+    #[test]
+    fn regression_provider_retry_delay_honors_retry_after_floor() {
+        let without_header = provider_retry_delay_ms(0, false, None);
+        assert_eq!(without_header, 200);
+
+        let smaller_header = provider_retry_delay_ms(2, false, Some(100));
+        assert_eq!(smaller_header, 800);
+
+        let larger_header = provider_retry_delay_ms(0, false, Some(1_500));
+        assert_eq!(larger_header, 1_500);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+//! Session search and analysis command parsing/execution helpers.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -10,6 +12,7 @@ const SESSION_SEARCH_MAX_RESULTS: usize = 200;
 pub const SESSION_SEARCH_PREVIEW_CHARS: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SessionSearchMatch` used across Tau components.
 pub struct SessionSearchMatch {
     pub id: u64,
     pub parent_id: Option<u64>,
@@ -18,6 +21,7 @@ pub struct SessionSearchMatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SessionSearchArgs` used across Tau components.
 pub struct SessionSearchArgs {
     pub query: String,
     pub role: Option<String>,
@@ -234,6 +238,7 @@ pub fn execute_session_search_command(runtime: &SessionRuntime, command_args: &s
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SessionDiffEntry` used across Tau components.
 pub struct SessionDiffEntry {
     pub id: u64,
     pub parent_id: Option<u64>,
@@ -242,6 +247,7 @@ pub struct SessionDiffEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SessionDiffReport` used across Tau components.
 pub struct SessionDiffReport {
     pub source: &'static str,
     pub left_id: u64,
@@ -428,6 +434,7 @@ pub fn execute_session_diff_command(runtime: &SessionRuntime, heads: Option<(u64
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `SessionStats` used across Tau components.
 pub struct SessionStats {
     pub entries: usize,
     pub branch_tips: usize,
@@ -442,6 +449,7 @@ pub struct SessionStats {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `SessionStatsOutputFormat` values.
 pub enum SessionStatsOutputFormat {
     Text,
     Json,

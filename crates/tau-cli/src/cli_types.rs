@@ -6,6 +6,7 @@ use tau_multi_channel::multi_channel_outbound::MultiChannelOutboundMode;
 use tau_session::SessionImportMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliBashProfile` values.
 pub enum CliBashProfile {
     Permissive,
     Balanced,
@@ -13,6 +14,7 @@ pub enum CliBashProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliOsSandboxMode` values.
 pub enum CliOsSandboxMode {
     Off,
     Auto,
@@ -20,6 +22,7 @@ pub enum CliOsSandboxMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliSessionImportMode` values.
 pub enum CliSessionImportMode {
     Merge,
     Replace,
@@ -35,18 +38,21 @@ impl From<CliSessionImportMode> for SessionImportMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliCommandFileErrorMode` values.
 pub enum CliCommandFileErrorMode {
     FailFast,
     ContinueOnError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliWebhookSignatureAlgorithm` values.
 pub enum CliWebhookSignatureAlgorithm {
     GithubSha256,
     SlackV0,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliEventTemplateSchedule` values.
 pub enum CliEventTemplateSchedule {
     Immediate,
     At,
@@ -54,6 +60,7 @@ pub enum CliEventTemplateSchedule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliToolPolicyPreset` values.
 pub enum CliToolPolicyPreset {
     Permissive,
     Balanced,
@@ -62,6 +69,15 @@ pub enum CliToolPolicyPreset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliPromptSanitizerMode` values.
+pub enum CliPromptSanitizerMode {
+    Warn,
+    Redact,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliProviderAuthMode` values.
 pub enum CliProviderAuthMode {
     ApiKey,
     OauthToken,
@@ -70,6 +86,7 @@ pub enum CliProviderAuthMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliGatewayOpenResponsesAuthMode` values.
 pub enum CliGatewayOpenResponsesAuthMode {
     Token,
     PasswordSession,
@@ -87,6 +104,7 @@ impl CliGatewayOpenResponsesAuthMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliGatewayRemoteProfile` values.
 pub enum CliGatewayRemoteProfile {
     LocalOnly,
     PasswordRemote,
@@ -108,6 +126,7 @@ impl CliGatewayRemoteProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliDaemonProfile` values.
 pub enum CliDaemonProfile {
     Auto,
     Launchd,
@@ -142,6 +161,7 @@ impl CliDaemonProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliCredentialStoreEncryptionMode` values.
 pub enum CliCredentialStoreEncryptionMode {
     Auto,
     None,
@@ -149,12 +169,14 @@ pub enum CliCredentialStoreEncryptionMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliOrchestratorMode` values.
 pub enum CliOrchestratorMode {
     Off,
     PlanFirst,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliMultiChannelTransport` values.
 pub enum CliMultiChannelTransport {
     Telegram,
     Discord,
@@ -162,6 +184,7 @@ pub enum CliMultiChannelTransport {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliMultiChannelLiveConnectorMode` values.
 pub enum CliMultiChannelLiveConnectorMode {
     Disabled,
     Polling,
@@ -183,6 +206,7 @@ impl CliMultiChannelLiveConnectorMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliMultiChannelOutboundMode` values.
 pub enum CliMultiChannelOutboundMode {
     ChannelStore,
     DryRun,
@@ -220,6 +244,7 @@ impl From<CliMultiChannelOutboundMode> for MultiChannelOutboundMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliDeploymentWasmRuntimeProfile` values.
 pub enum CliDeploymentWasmRuntimeProfile {
     WasmWasi,
     ChannelAutomationWasi,

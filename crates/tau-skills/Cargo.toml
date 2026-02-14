@@ -11,8 +11,10 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tau-cli = { path = "../tau-cli" }
+tau-core = { path = "../tau-core" }
+tokio.workspace = true
 
 [dev-dependencies]
 httpmock = "0.8"
 tempfile = "3"
-tokio.workspace = true

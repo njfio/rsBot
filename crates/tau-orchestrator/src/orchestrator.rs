@@ -13,6 +13,7 @@ use tau_core::time_utils::current_unix_timestamp_ms;
 const ORCHESTRATOR_ROUTE_TRACE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `OrchestratorPromptRunStatus` values.
 pub enum OrchestratorPromptRunStatus {
     Completed,
     Cancelled,
@@ -20,12 +21,14 @@ pub enum OrchestratorPromptRunStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `OrchestratorRenderOptions` used across Tau components.
 pub struct OrchestratorRenderOptions {
     pub stream_output: bool,
     pub stream_delay_ms: u64,
 }
 
 #[async_trait(?Send)]
+/// Trait contract for `OrchestratorRuntime` behavior.
 pub trait OrchestratorRuntime {
     async fn run_prompt_with_cancellation(
         &mut self,
@@ -45,53 +48,104 @@ enum RoutedPromptRunState {
     Interrupted,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlanFirstPromptRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: OrchestratorRenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlanFirstPromptPolicyRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: OrchestratorRenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+    pub delegated_policy_context: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlanFirstPromptRoutingRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: OrchestratorRenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+    pub delegated_policy_context: Option<&'a str>,
+    pub route_table: &'a MultiAgentRouteTable,
+    pub route_trace_log_path: Option<&'a Path>,
+}
+
 pub async fn run_plan_first_prompt<R: OrchestratorRuntime>(
     runtime: &mut R,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: OrchestratorRenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
+    request: PlanFirstPromptRequest<'_>,
 ) -> Result<()> {
-    let fallback_policy_context = delegate_steps.then_some("legacy_policy_context=implicit");
+    let fallback_policy_context = request
+        .delegate_steps
+        .then_some("legacy_policy_context=implicit");
     run_plan_first_prompt_with_policy_context(
         runtime,
-        user_prompt,
-        turn_timeout_ms,
-        render_options,
-        max_plan_steps,
-        max_delegated_steps,
-        max_executor_response_chars,
-        max_delegated_step_response_chars,
-        max_delegated_total_response_chars,
-        delegate_steps,
-        fallback_policy_context,
+        PlanFirstPromptPolicyRequest {
+            user_prompt: request.user_prompt,
+            turn_timeout_ms: request.turn_timeout_ms,
+            render_options: request.render_options,
+            max_plan_steps: request.max_plan_steps,
+            max_delegated_steps: request.max_delegated_steps,
+            max_executor_response_chars: request.max_executor_response_chars,
+            max_delegated_step_response_chars: request.max_delegated_step_response_chars,
+            max_delegated_total_response_chars: request.max_delegated_total_response_chars,
+            delegate_steps: request.delegate_steps,
+            delegated_policy_context: fallback_policy_context,
+        },
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
     runtime: &mut R,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: OrchestratorRenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
-    delegated_policy_context: Option<&str>,
+    request: PlanFirstPromptPolicyRequest<'_>,
 ) -> Result<()> {
     let default_route_table = MultiAgentRouteTable::default();
     run_plan_first_prompt_with_policy_context_and_routing(
         runtime,
+        PlanFirstPromptRoutingRequest {
+            user_prompt: request.user_prompt,
+            turn_timeout_ms: request.turn_timeout_ms,
+            render_options: request.render_options,
+            max_plan_steps: request.max_plan_steps,
+            max_delegated_steps: request.max_delegated_steps,
+            max_executor_response_chars: request.max_executor_response_chars,
+            max_delegated_step_response_chars: request.max_delegated_step_response_chars,
+            max_delegated_total_response_chars: request.max_delegated_total_response_chars,
+            delegate_steps: request.delegate_steps,
+            delegated_policy_context: request.delegated_policy_context,
+            route_table: &default_route_table,
+            route_trace_log_path: None,
+        },
+    )
+    .await
+}
+
+pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: OrchestratorRuntime>(
+    runtime: &mut R,
+    request: PlanFirstPromptRoutingRequest<'_>,
+) -> Result<()> {
+    let PlanFirstPromptRoutingRequest {
         user_prompt,
         turn_timeout_ms,
         render_options,
@@ -102,28 +156,10 @@ pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
         max_delegated_total_response_chars,
         delegate_steps,
         delegated_policy_context,
-        &default_route_table,
-        None,
-    )
-    .await
-}
+        route_table,
+        route_trace_log_path,
+    } = request;
 
-#[allow(clippy::too_many_arguments)]
-pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: OrchestratorRuntime>(
-    runtime: &mut R,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: OrchestratorRenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
-    delegated_policy_context: Option<&str>,
-    route_table: &MultiAgentRouteTable,
-    route_trace_log_path: Option<&Path>,
-) -> Result<()> {
     let planner_prompt = build_plan_first_planner_prompt(user_prompt, max_plan_steps);
     let planner_render_options = OrchestratorRenderOptions {
         stream_output: false,
@@ -131,15 +167,17 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
     };
     let planner_state = run_routed_prompt_with_fallback(
         runtime,
-        route_table,
-        MultiAgentRoutePhase::Planner,
-        None,
-        None,
-        &planner_prompt,
-        "planner produced no text output",
-        turn_timeout_ms,
-        planner_render_options,
-        route_trace_log_path,
+        RoutedPromptRequest {
+            route_table,
+            phase: MultiAgentRoutePhase::Planner,
+            step_text: None,
+            step_index: None,
+            base_prompt: &planner_prompt,
+            empty_output_reason: "planner produced no text output",
+            turn_timeout_ms,
+            render_options: planner_render_options,
+            route_trace_log_path,
+        },
     )
     .await?;
     if planner_state == RoutedPromptRunState::Interrupted {
@@ -218,15 +256,20 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
             );
             let delegated_state = run_routed_prompt_with_fallback(
                 runtime,
-                route_table,
-                MultiAgentRoutePhase::DelegatedStep,
-                Some(step.as_str()),
-                Some(index + 1),
-                &delegated_prompt,
-                &format!("delegated step {} produced no text output", index + 1),
-                turn_timeout_ms,
-                planner_render_options,
-                route_trace_log_path,
+                RoutedPromptRequest {
+                    route_table,
+                    phase: MultiAgentRoutePhase::DelegatedStep,
+                    step_text: Some(step.as_str()),
+                    step_index: Some(index + 1),
+                    base_prompt: &delegated_prompt,
+                    empty_output_reason: &format!(
+                        "delegated step {} produced no text output",
+                        index + 1
+                    ),
+                    turn_timeout_ms,
+                    render_options: planner_render_options,
+                    route_trace_log_path,
+                },
             )
             .await?;
             if delegated_state == RoutedPromptRunState::Interrupted {
@@ -302,19 +345,21 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
 
     let execution_state = run_routed_prompt_with_fallback(
         runtime,
-        route_table,
-        MultiAgentRoutePhase::Review,
-        None,
-        None,
-        &execution_prompt,
-        if delegate_steps {
-            "consolidation produced no text output"
-        } else {
-            "executor produced no text output"
+        RoutedPromptRequest {
+            route_table,
+            phase: MultiAgentRoutePhase::Review,
+            step_text: None,
+            step_index: None,
+            base_prompt: &execution_prompt,
+            empty_output_reason: if delegate_steps {
+                "consolidation produced no text output"
+            } else {
+                "executor produced no text output"
+            },
+            turn_timeout_ms,
+            render_options,
+            route_trace_log_path,
         },
-        turn_timeout_ms,
-        render_options,
-        route_trace_log_path,
     )
     .await?;
     if execution_state == RoutedPromptRunState::Interrupted {
@@ -365,32 +410,50 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
-    runtime: &mut R,
-    route_table: &MultiAgentRouteTable,
+#[derive(Debug, Clone, Copy)]
+struct RoutedPromptRequest<'a> {
+    route_table: &'a MultiAgentRouteTable,
     phase: MultiAgentRoutePhase,
-    step_text: Option<&str>,
+    step_text: Option<&'a str>,
     step_index: Option<usize>,
-    base_prompt: &str,
-    empty_output_reason: &str,
+    base_prompt: &'a str,
+    empty_output_reason: &'a str,
     turn_timeout_ms: u64,
     render_options: OrchestratorRenderOptions,
-    route_trace_log_path: Option<&Path>,
+    route_trace_log_path: Option<&'a Path>,
+}
+
+async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
+    runtime: &mut R,
+    request: RoutedPromptRequest<'_>,
 ) -> Result<RoutedPromptRunState> {
+    let RoutedPromptRequest {
+        route_table,
+        phase,
+        step_text,
+        step_index,
+        base_prompt,
+        empty_output_reason,
+        turn_timeout_ms,
+        render_options,
+        route_trace_log_path,
+    } = request;
+
     let selection = select_multi_agent_route(route_table, phase, step_text);
     emit_route_trace(
         route_trace_log_path,
-        phase,
-        selection.category.as_deref(),
-        step_index,
-        "route-selected",
-        Some(&selection.primary_role),
-        None,
-        Some("accept"),
-        None,
-        Some(&selection.fallback_roles.join(",")),
-        None,
+        RouteTraceEvent {
+            phase,
+            category: selection.category.as_deref(),
+            step_index,
+            event: "route-selected",
+            role: Some(&selection.primary_role),
+            attempt: None,
+            decision: Some("accept"),
+            reason: None,
+            detail: Some(&selection.fallback_roles.join(",")),
+            response_chars: None,
+        },
     );
 
     for (attempt_index, role) in selection.attempt_roles.iter().enumerate() {
@@ -399,19 +462,21 @@ async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
         let tool_policy_hint = profile.tool_policy_preset.as_deref().unwrap_or("inherit");
         emit_route_trace(
             route_trace_log_path,
-            phase,
-            selection.category.as_deref(),
-            step_index,
-            "attempt-start",
-            Some(role),
-            Some((attempt_index + 1, selection.attempt_roles.len())),
-            None,
-            None,
-            Some(&format!(
-                "model_hint={};tool_policy_preset={}",
-                model_hint, tool_policy_hint
-            )),
-            None,
+            RouteTraceEvent {
+                phase,
+                category: selection.category.as_deref(),
+                step_index,
+                event: "attempt-start",
+                role: Some(role),
+                attempt: Some((attempt_index + 1, selection.attempt_roles.len())),
+                decision: None,
+                reason: None,
+                detail: Some(&format!(
+                    "model_hint={};tool_policy_preset={}",
+                    model_hint, tool_policy_hint
+                )),
+                response_chars: None,
+            },
         );
 
         let attempt_prompt = build_multi_agent_role_prompt(base_prompt, phase, role, &profile);
@@ -426,31 +491,35 @@ async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
                     let next_role = selection.attempt_roles[attempt_index + 1].as_str();
                     emit_route_trace(
                         route_trace_log_path,
-                        phase,
-                        selection.category.as_deref(),
-                        step_index,
-                        "fallback",
-                        Some(role),
-                        Some((attempt_index + 1, selection.attempt_roles.len())),
-                        Some("retry"),
-                        Some("prompt_execution_error"),
-                        Some(&format!("next_role={next_role} error={error}")),
-                        None,
+                        RouteTraceEvent {
+                            phase,
+                            category: selection.category.as_deref(),
+                            step_index,
+                            event: "fallback",
+                            role: Some(role),
+                            attempt: Some((attempt_index + 1, selection.attempt_roles.len())),
+                            decision: Some("retry"),
+                            reason: Some("prompt_execution_error"),
+                            detail: Some(&format!("next_role={next_role} error={error}")),
+                            response_chars: None,
+                        },
                     );
                     continue;
                 }
                 emit_route_trace(
                     route_trace_log_path,
-                    phase,
-                    selection.category.as_deref(),
-                    step_index,
-                    "fallback",
-                    Some(role),
-                    Some((attempt_index + 1, selection.attempt_roles.len())),
-                    Some("reject"),
-                    Some("prompt_execution_error_exhausted"),
-                    Some(&format!("error={error}")),
-                    None,
+                    RouteTraceEvent {
+                        phase,
+                        category: selection.category.as_deref(),
+                        step_index,
+                        event: "fallback",
+                        role: Some(role),
+                        attempt: Some((attempt_index + 1, selection.attempt_roles.len())),
+                        decision: Some("reject"),
+                        reason: Some("prompt_execution_error_exhausted"),
+                        detail: Some(&format!("error={error}")),
+                        response_chars: None,
+                    },
                 );
                 return Err(error).context(format!(
                     "plan-first orchestrator failed: {} route exhausted after role '{}'",
@@ -466,47 +535,53 @@ async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
         let Some(assistant_text) = runtime.latest_assistant_text() else {
             emit_route_trace(
                 route_trace_log_path,
-                phase,
-                selection.category.as_deref(),
-                step_index,
-                "attempt-complete",
-                Some(role),
-                Some((attempt_index + 1, selection.attempt_roles.len())),
-                Some("reject"),
-                Some("empty_output"),
-                None,
-                Some(0),
+                RouteTraceEvent {
+                    phase,
+                    category: selection.category.as_deref(),
+                    step_index,
+                    event: "attempt-complete",
+                    role: Some(role),
+                    attempt: Some((attempt_index + 1, selection.attempt_roles.len())),
+                    decision: Some("reject"),
+                    reason: Some("empty_output"),
+                    detail: None,
+                    response_chars: Some(0),
+                },
             );
             bail!("plan-first orchestrator failed: {empty_output_reason}");
         };
         if assistant_text.trim().is_empty() {
             emit_route_trace(
                 route_trace_log_path,
-                phase,
-                selection.category.as_deref(),
-                step_index,
-                "attempt-complete",
-                Some(role),
-                Some((attempt_index + 1, selection.attempt_roles.len())),
-                Some("reject"),
-                Some("empty_output"),
-                None,
-                Some(assistant_text.chars().count()),
+                RouteTraceEvent {
+                    phase,
+                    category: selection.category.as_deref(),
+                    step_index,
+                    event: "attempt-complete",
+                    role: Some(role),
+                    attempt: Some((attempt_index + 1, selection.attempt_roles.len())),
+                    decision: Some("reject"),
+                    reason: Some("empty_output"),
+                    detail: None,
+                    response_chars: Some(assistant_text.chars().count()),
+                },
             );
             bail!("plan-first orchestrator failed: {empty_output_reason}");
         }
         emit_route_trace(
             route_trace_log_path,
-            phase,
-            selection.category.as_deref(),
-            step_index,
-            "attempt-complete",
-            Some(role),
-            Some((attempt_index + 1, selection.attempt_roles.len())),
-            Some("accept"),
-            None,
-            None,
-            Some(assistant_text.chars().count()),
+            RouteTraceEvent {
+                phase,
+                category: selection.category.as_deref(),
+                step_index,
+                event: "attempt-complete",
+                role: Some(role),
+                attempt: Some((attempt_index + 1, selection.attempt_roles.len())),
+                decision: Some("accept"),
+                reason: None,
+                detail: None,
+                response_chars: Some(assistant_text.chars().count()),
+            },
         );
         return Ok(RoutedPromptRunState::Completed);
     }
@@ -517,20 +592,34 @@ async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_route_trace(
-    route_trace_log_path: Option<&Path>,
+// Trace payload dimensions stay explicit while avoiding a wide argument list.
+struct RouteTraceEvent<'a> {
     phase: MultiAgentRoutePhase,
-    category: Option<&str>,
+    category: Option<&'a str>,
     step_index: Option<usize>,
-    event: &str,
-    role: Option<&str>,
+    event: &'a str,
+    role: Option<&'a str>,
     attempt: Option<(usize, usize)>,
-    decision: Option<&str>,
-    reason: Option<&str>,
-    detail: Option<&str>,
+    decision: Option<&'a str>,
+    reason: Option<&'a str>,
+    detail: Option<&'a str>,
     response_chars: Option<usize>,
-) {
+}
+
+fn emit_route_trace(route_trace_log_path: Option<&Path>, trace_event: RouteTraceEvent<'_>) {
+    let RouteTraceEvent {
+        phase,
+        category,
+        step_index,
+        event,
+        role,
+        attempt,
+        decision,
+        reason,
+        detail,
+        response_chars,
+    } = trace_event;
+
     let mut parts = vec![
         "orchestrator trace: mode=plan-first".to_string(),
         format!("phase={}", phase.as_str()),

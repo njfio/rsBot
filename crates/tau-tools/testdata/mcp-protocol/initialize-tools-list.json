@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "initialize-tools-list",
+  "requests": [
+    {
+      "jsonrpc": "2.0",
+      "id": "req-init",
+      "method": "initialize",
+      "params": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "req-tools",
+      "method": "tools/list",
+      "params": {}
+    }
+  ],
+  "expected_response_ids": [
+    "req-init",
+    "req-tools"
+  ],
+  "expected_methods": [
+    "initialize",
+    "tools/list"
+  ]
+}

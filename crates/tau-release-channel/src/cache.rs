@@ -8,6 +8,7 @@ use tau_core::write_text_atomic;
 use crate::{GitHubReleaseRecord, RELEASE_LOOKUP_CACHE_SCHEMA_VERSION};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ReleaseLookupCacheFile` used across Tau components.
 pub struct ReleaseLookupCacheFile {
     pub schema_version: u32,
     pub source_url: String,
@@ -16,6 +17,7 @@ pub struct ReleaseLookupCacheFile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `ReleaseCacheAgeCounters` used across Tau components.
 pub struct ReleaseCacheAgeCounters {
     pub freshness: &'static str,
     pub next_refresh_in_ms: u64,
@@ -23,12 +25,14 @@ pub struct ReleaseCacheAgeCounters {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ReleaseCachePruneDecision` values.
 pub enum ReleaseCachePruneDecision {
     KeepFresh,
     RemoveStale,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ReleaseCachePruneRecoveryReason` values.
 pub enum ReleaseCachePruneRecoveryReason {
     InvalidPayload,
     UnsupportedSchema,
@@ -43,6 +47,7 @@ impl ReleaseCachePruneRecoveryReason {
     }
 }
 
+/// Enumerates supported `ReleaseCachePruneLoadOutcome` values.
 pub enum ReleaseCachePruneLoadOutcome {
     Missing,
     Present(ReleaseLookupCacheFile),

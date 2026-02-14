@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
-    io::{Read, Write},
+    io::{IsTerminal, Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -11,20 +11,38 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use tau_agent_core::Agent;
+use rustyline::{
+    completion::{Completer, Pair},
+    error::ReadlineError,
+    highlight::Highlighter,
+    hint::Hinter,
+    history::DefaultHistory,
+    validate::Validator,
+    Config as ReadlineConfig, Context as ReadlineContext, Editor, Helper,
+};
+use tau_agent_core::{Agent, AgentError, CooperativeCancellationToken};
 use tau_ai::StreamDeltaHandler;
+use tau_cli::{Cli, CliOrchestratorMode};
+use tau_core::current_unix_timestamp_ms;
+use tau_extensions::{apply_extension_message_transforms, dispatch_extension_runtime_hook};
+use tau_onboarding::startup_resolution::ensure_non_empty_text;
+use tau_session::SessionRuntime;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
-use crate::{
-    apply_extension_message_transforms, current_unix_timestamp_ms, dispatch_extension_runtime_hook,
-    ensure_non_empty_text, handle_command_with_session_import_mode, persist_messages,
-    print_assistant_messages, run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
-    run_plan_first_prompt_with_policy_context_and_routing, Cli, CliOrchestratorMode, CommandAction,
-    CommandExecutionContext, MultiAgentRouteTable, RenderOptions, SessionRuntime,
+use crate::commands::{handle_command_with_session_import_mode, CommandAction, COMMAND_NAMES};
+use crate::multi_agent_router::MultiAgentRouteTable;
+use crate::orchestrator_bridge::{
+    run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
+    run_plan_first_prompt_with_policy_context_and_routing, PlanFirstPromptPolicyRequest,
+    PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
 };
+use crate::runtime_output::{persist_messages, print_assistant_messages};
+use crate::runtime_types::{CommandExecutionContext, RenderOptions};
 
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
+const REPL_PROMPT: &str = "tau> ";
+const REPL_CONTINUATION_PROMPT: &str = "...> ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptRunStatus {
@@ -75,6 +93,115 @@ pub(crate) struct InteractiveRuntimeConfig<'a> {
     pub(crate) command_context: CommandExecutionContext<'a>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractiveLoopControl {
+    Continue,
+    Exit,
+}
+
+#[derive(Debug, Default)]
+struct ReplMultilineState {
+    lines: Vec<String>,
+}
+
+impl ReplMultilineState {
+    fn prompt(&self) -> &'static str {
+        if self.lines.is_empty() {
+            REPL_PROMPT
+        } else {
+            REPL_CONTINUATION_PROMPT
+        }
+    }
+
+    fn push_line(&mut self, line: String) -> Option<String> {
+        let continued = line.ends_with('\\') && !line.ends_with("\\\\");
+        if continued {
+            let mut trimmed = line;
+            trimmed.pop();
+            self.lines.push(trimmed);
+            None
+        } else {
+            self.lines.push(line);
+            let prompt = self.lines.join("\n");
+            self.lines.clear();
+            Some(prompt)
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.lines.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.lines.clear();
+    }
+}
+
+#[derive(Debug)]
+struct ReplCommandCompleter {
+    commands: Vec<String>,
+}
+
+impl ReplCommandCompleter {
+    fn new(commands: &[&str]) -> Self {
+        Self {
+            commands: commands
+                .iter()
+                .map(|command| (*command).to_string())
+                .collect(),
+        }
+    }
+
+    fn complete_token(&self, token: &str) -> Vec<String> {
+        if !token.starts_with('/') {
+            return Vec::new();
+        }
+        self.commands
+            .iter()
+            .filter(|candidate| candidate.starts_with(token))
+            .cloned()
+            .collect()
+    }
+}
+
+impl Helper for ReplCommandCompleter {}
+impl Validator for ReplCommandCompleter {}
+impl Highlighter for ReplCommandCompleter {}
+
+impl Hinter for ReplCommandCompleter {
+    type Hint = String;
+}
+
+impl Completer for ReplCommandCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &ReadlineContext<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        let safe_pos = pos.min(line.len());
+        let start = line[..safe_pos]
+            .rfind(char::is_whitespace)
+            .map_or(0, |index| index + 1);
+        let token = &line[start..safe_pos];
+        if !token.starts_with('/') {
+            return Ok((safe_pos, Vec::new()));
+        }
+
+        let matches = self
+            .complete_token(token)
+            .into_iter()
+            .map(|candidate| Pair {
+                display: candidate.clone(),
+                replacement: candidate,
+            })
+            .collect::<Vec<_>>();
+        Ok((start, matches))
+    }
+}
+
 pub(crate) async fn run_prompt(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
@@ -102,11 +229,23 @@ pub(crate) async fn run_interactive(
     mut session_runtime: Option<SessionRuntime>,
     config: InteractiveRuntimeConfig<'_>,
 ) -> Result<()> {
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        run_interactive_tty(&mut agent, &mut session_runtime, config).await
+    } else {
+        run_interactive_stdin(&mut agent, &mut session_runtime, config).await
+    }
+}
+
+async fn run_interactive_stdin(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    config: InteractiveRuntimeConfig<'_>,
+) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
 
     loop {
-        print!("tau> ");
+        print!("{REPL_PROMPT}");
         std::io::stdout()
             .flush()
             .context("failed to flush stdout")?;
@@ -115,65 +254,189 @@ pub(crate) async fn run_interactive(
             break;
         };
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if trimmed.starts_with('/') {
-            if handle_command_with_session_import_mode(
-                trimmed,
-                &mut agent,
-                &mut session_runtime,
-                config.command_context.tool_policy_json,
-                config.command_context.session_import_mode,
-                config.command_context.profile_defaults,
-                config.command_context.skills_command_config,
-                config.command_context.auth_command_config,
-                config.command_context.model_catalog,
-                config.command_context.extension_commands,
-            )? == CommandAction::Exit
-            {
-                break;
-            }
-            continue;
-        }
-
-        if config.orchestrator_mode == CliOrchestratorMode::PlanFirst {
-            run_plan_first_prompt_with_runtime_hooks(
-                &mut agent,
-                &mut session_runtime,
-                trimmed,
-                config.turn_timeout_ms,
-                config.render_options,
-                config.orchestrator_max_plan_steps,
-                config.orchestrator_max_delegated_steps,
-                config.orchestrator_max_executor_response_chars,
-                config.orchestrator_max_delegated_step_response_chars,
-                config.orchestrator_max_delegated_total_response_chars,
-                config.orchestrator_delegate_steps,
-                config.orchestrator_route_table,
-                config.orchestrator_route_trace_log,
-                config.command_context.tool_policy_json,
-                config.extension_runtime_hooks,
-            )
-            .await?;
-        } else {
-            let status = run_prompt_with_runtime_hooks(
-                &mut agent,
-                &mut session_runtime,
-                trimmed,
-                config.turn_timeout_ms,
-                tokio::signal::ctrl_c(),
-                config.render_options,
-                config.extension_runtime_hooks,
-            )
-            .await?;
-            report_prompt_status(status);
+        match dispatch_interactive_turn(agent, session_runtime, config, &line).await? {
+            InteractiveLoopControl::Continue => continue,
+            InteractiveLoopControl::Exit => break,
         }
     }
 
     Ok(())
+}
+
+async fn run_interactive_tty(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    config: InteractiveRuntimeConfig<'_>,
+) -> Result<()> {
+    let history_path = default_repl_history_path(session_runtime.as_ref());
+    let mut editor = build_repl_editor()?;
+    load_repl_history(&mut editor, &history_path);
+    let mut multiline = ReplMultilineState::default();
+
+    loop {
+        let prompt = multiline.prompt();
+        let readline = tokio::task::block_in_place(|| editor.readline(prompt));
+        let line = match readline {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                if multiline.has_pending() {
+                    multiline.clear();
+                    println!();
+                    continue;
+                }
+                break;
+            }
+            Err(ReadlineError::Eof) => break,
+            Err(error) => return Err(anyhow!("failed to read interactive input: {error}")),
+        };
+
+        let Some(input) = multiline.push_line(line) else {
+            continue;
+        };
+
+        if input.trim().is_empty() {
+            continue;
+        }
+
+        if matches!(editor.add_history_entry(input.as_str()), Ok(true)) {
+            save_repl_history(&mut editor, &history_path);
+        }
+
+        match dispatch_interactive_turn(agent, session_runtime, config, &input).await {
+            Ok(InteractiveLoopControl::Continue) => continue,
+            Ok(InteractiveLoopControl::Exit) => break,
+            Err(error) => {
+                report_interactive_turn_error(&error);
+                continue;
+            }
+        }
+    }
+
+    save_repl_history(&mut editor, &history_path);
+    Ok(())
+}
+
+async fn dispatch_interactive_turn(
+    agent: &mut Agent,
+    session_runtime: &mut Option<SessionRuntime>,
+    config: InteractiveRuntimeConfig<'_>,
+    input: &str,
+) -> Result<InteractiveLoopControl> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(InteractiveLoopControl::Continue);
+    }
+
+    if trimmed.starts_with('/') {
+        if handle_command_with_session_import_mode(
+            trimmed,
+            agent,
+            session_runtime,
+            config.command_context,
+        )? == CommandAction::Exit
+        {
+            return Ok(InteractiveLoopControl::Exit);
+        }
+        return Ok(InteractiveLoopControl::Continue);
+    }
+
+    if config.orchestrator_mode == CliOrchestratorMode::PlanFirst {
+        run_plan_first_prompt_with_runtime_hooks(
+            agent,
+            session_runtime,
+            PlanFirstPromptRuntimeHooksConfig {
+                prompt: input,
+                turn_timeout_ms: config.turn_timeout_ms,
+                render_options: config.render_options,
+                orchestrator_max_plan_steps: config.orchestrator_max_plan_steps,
+                orchestrator_max_delegated_steps: config.orchestrator_max_delegated_steps,
+                orchestrator_max_executor_response_chars: config
+                    .orchestrator_max_executor_response_chars,
+                orchestrator_max_delegated_step_response_chars: config
+                    .orchestrator_max_delegated_step_response_chars,
+                orchestrator_max_delegated_total_response_chars: config
+                    .orchestrator_max_delegated_total_response_chars,
+                orchestrator_delegate_steps: config.orchestrator_delegate_steps,
+                orchestrator_route_table: config.orchestrator_route_table,
+                orchestrator_route_trace_log: config.orchestrator_route_trace_log,
+                tool_policy_json: config.command_context.tool_policy_json,
+                extension_runtime_hooks: config.extension_runtime_hooks,
+            },
+        )
+        .await?;
+        return Ok(InteractiveLoopControl::Continue);
+    }
+
+    let status = run_prompt_with_runtime_hooks(
+        agent,
+        session_runtime,
+        input,
+        config.turn_timeout_ms,
+        tokio::signal::ctrl_c(),
+        config.render_options,
+        config.extension_runtime_hooks,
+    )
+    .await?;
+    report_prompt_status(status);
+    Ok(InteractiveLoopControl::Continue)
+}
+
+fn build_repl_editor() -> Result<Editor<ReplCommandCompleter, DefaultHistory>> {
+    let config = ReadlineConfig::builder().build();
+    let mut editor = Editor::<ReplCommandCompleter, DefaultHistory>::with_config(config)
+        .context("failed to initialize interactive editor")?;
+    editor.set_helper(Some(ReplCommandCompleter::new(COMMAND_NAMES)));
+    Ok(editor)
+}
+
+fn default_repl_history_path(session_runtime: Option<&SessionRuntime>) -> PathBuf {
+    resolve_repl_history_path(session_runtime.map(|runtime| runtime.store.path()))
+}
+
+fn resolve_repl_history_path(session_path: Option<&Path>) -> PathBuf {
+    session_path.map_or_else(
+        || PathBuf::from(".tau/repl_history.txt"),
+        |path| path.with_extension("history"),
+    )
+}
+
+fn load_repl_history(editor: &mut Editor<ReplCommandCompleter, DefaultHistory>, path: &Path) {
+    if let Err(error) = editor.load_history(path) {
+        if !matches!(
+            error,
+            ReadlineError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::NotFound
+        ) {
+            eprintln!(
+                "warning: failed to load REPL history from {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn save_repl_history(editor: &mut Editor<ReplCommandCompleter, DefaultHistory>, path: &Path) {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "warning: failed to create REPL history directory {}: {error}",
+                    parent.display()
+                );
+                return;
+            }
+        }
+    }
+
+    if let Err(error) = editor.save_history(path) {
+        eprintln!(
+            "warning: failed to persist REPL history to {}: {error}",
+            path.display()
+        );
+    }
+}
+
+fn report_interactive_turn_error(error: &anyhow::Error) {
+    eprintln!("interactive turn failed: {error:#}");
 }
 
 async fn run_prompt_with_runtime_hooks<F>(
@@ -242,24 +505,44 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(crate) struct PlanFirstPromptRuntimeHooksConfig<'a> {
+    pub(crate) prompt: &'a str,
+    pub(crate) turn_timeout_ms: u64,
+    pub(crate) render_options: RenderOptions,
+    pub(crate) orchestrator_max_plan_steps: usize,
+    pub(crate) orchestrator_max_delegated_steps: usize,
+    pub(crate) orchestrator_max_executor_response_chars: usize,
+    pub(crate) orchestrator_max_delegated_step_response_chars: usize,
+    pub(crate) orchestrator_max_delegated_total_response_chars: usize,
+    pub(crate) orchestrator_delegate_steps: bool,
+    pub(crate) orchestrator_route_table: &'a MultiAgentRouteTable,
+    pub(crate) orchestrator_route_trace_log: Option<&'a Path>,
+    pub(crate) tool_policy_json: &'a serde_json::Value,
+    pub(crate) extension_runtime_hooks: &'a RuntimeExtensionHooksConfig,
+}
+
 pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: RenderOptions,
-    orchestrator_max_plan_steps: usize,
-    orchestrator_max_delegated_steps: usize,
-    orchestrator_max_executor_response_chars: usize,
-    orchestrator_max_delegated_step_response_chars: usize,
-    orchestrator_max_delegated_total_response_chars: usize,
-    orchestrator_delegate_steps: bool,
-    orchestrator_route_table: &MultiAgentRouteTable,
-    orchestrator_route_trace_log: Option<&Path>,
-    tool_policy_json: &serde_json::Value,
-    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+    config: PlanFirstPromptRuntimeHooksConfig<'_>,
 ) -> Result<()> {
+    let PlanFirstPromptRuntimeHooksConfig {
+        prompt,
+        turn_timeout_ms,
+        render_options,
+        orchestrator_max_plan_steps,
+        orchestrator_max_delegated_steps,
+        orchestrator_max_executor_response_chars,
+        orchestrator_max_delegated_step_response_chars,
+        orchestrator_max_delegated_total_response_chars,
+        orchestrator_delegate_steps,
+        orchestrator_route_table,
+        orchestrator_route_trace_log,
+        tool_policy_json,
+        extension_runtime_hooks,
+    } = config;
+
     let effective_prompt = apply_runtime_message_transform(extension_runtime_hooks, prompt);
     dispatch_runtime_hook(
         extension_runtime_hooks,
@@ -287,31 +570,39 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
             run_plan_first_prompt_with_policy_context(
                 agent,
                 session_runtime,
-                &effective_prompt,
-                turn_timeout_ms,
-                render_options,
-                orchestrator_max_plan_steps,
-                orchestrator_max_delegated_steps,
-                orchestrator_max_executor_response_chars,
-                orchestrator_max_delegated_step_response_chars,
-                orchestrator_max_delegated_total_response_chars,
-                orchestrator_delegate_steps,
-                Some(policy_context),
+                PlanFirstPromptPolicyRequest {
+                    user_prompt: &effective_prompt,
+                    turn_timeout_ms,
+                    render_options,
+                    max_plan_steps: orchestrator_max_plan_steps,
+                    max_delegated_steps: orchestrator_max_delegated_steps,
+                    max_executor_response_chars: orchestrator_max_executor_response_chars,
+                    max_delegated_step_response_chars:
+                        orchestrator_max_delegated_step_response_chars,
+                    max_delegated_total_response_chars:
+                        orchestrator_max_delegated_total_response_chars,
+                    delegate_steps: orchestrator_delegate_steps,
+                    delegated_policy_context: Some(policy_context),
+                },
             )
             .await
         } else {
             run_plan_first_prompt(
                 agent,
                 session_runtime,
-                &effective_prompt,
-                turn_timeout_ms,
-                render_options,
-                orchestrator_max_plan_steps,
-                orchestrator_max_delegated_steps,
-                orchestrator_max_executor_response_chars,
-                orchestrator_max_delegated_step_response_chars,
-                orchestrator_max_delegated_total_response_chars,
-                orchestrator_delegate_steps,
+                PlanFirstPromptRequest {
+                    user_prompt: &effective_prompt,
+                    turn_timeout_ms,
+                    render_options,
+                    max_plan_steps: orchestrator_max_plan_steps,
+                    max_delegated_steps: orchestrator_max_delegated_steps,
+                    max_executor_response_chars: orchestrator_max_executor_response_chars,
+                    max_delegated_step_response_chars:
+                        orchestrator_max_delegated_step_response_chars,
+                    max_delegated_total_response_chars:
+                        orchestrator_max_delegated_total_response_chars,
+                    delegate_steps: orchestrator_delegate_steps,
+                },
             )
             .await
         }
@@ -319,18 +610,20 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
         run_plan_first_prompt_with_policy_context_and_routing(
             agent,
             session_runtime,
-            &effective_prompt,
-            turn_timeout_ms,
-            render_options,
-            orchestrator_max_plan_steps,
-            orchestrator_max_delegated_steps,
-            orchestrator_max_executor_response_chars,
-            orchestrator_max_delegated_step_response_chars,
-            orchestrator_max_delegated_total_response_chars,
-            orchestrator_delegate_steps,
-            policy_context.as_deref(),
-            orchestrator_route_table,
-            orchestrator_route_trace_log,
+            PlanFirstPromptRoutingRequest {
+                user_prompt: &effective_prompt,
+                turn_timeout_ms,
+                render_options,
+                max_plan_steps: orchestrator_max_plan_steps,
+                max_delegated_steps: orchestrator_max_delegated_steps,
+                max_executor_response_chars: orchestrator_max_executor_response_chars,
+                max_delegated_step_response_chars: orchestrator_max_delegated_step_response_chars,
+                max_delegated_total_response_chars: orchestrator_max_delegated_total_response_chars,
+                delegate_steps: orchestrator_delegate_steps,
+                delegated_policy_context: policy_context.as_deref(),
+                route_table: orchestrator_route_table,
+                route_trace_log_path: orchestrator_route_trace_log,
+            },
         )
         .await
     };
@@ -508,6 +801,8 @@ where
     F: Future,
 {
     let checkpoint = agent.messages().to_vec();
+    let cancellation_token = CooperativeCancellationToken::new();
+    agent.set_cancellation_token(Some(cancellation_token.clone()));
     let streamed_output = Arc::new(AtomicBool::new(false));
     let (stream_delta_handler, mut stream_task) = if render_options.stream_output {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -543,20 +838,37 @@ where
         TimedOut,
     }
 
-    let prompt_result = if turn_timeout_ms == 0 {
-        tokio::select! {
-            result = agent.prompt_with_stream(prompt, stream_delta_handler.clone()) => PromptOutcome::Result(result),
-            _ = &mut cancellation_signal => PromptOutcome::Cancelled,
-        }
-    } else {
-        let timeout = tokio::time::sleep(Duration::from_millis(turn_timeout_ms));
-        tokio::pin!(timeout);
-        tokio::select! {
-            result = agent.prompt_with_stream(prompt, stream_delta_handler.clone()) => PromptOutcome::Result(result),
-            _ = &mut cancellation_signal => PromptOutcome::Cancelled,
-            _ = &mut timeout => PromptOutcome::TimedOut,
+    let prompt_result = {
+        let mut prompt_future =
+            std::pin::pin!(agent.prompt_with_stream(prompt, stream_delta_handler.clone()));
+        if turn_timeout_ms == 0 {
+            tokio::select! {
+                result = &mut prompt_future => PromptOutcome::Result(result),
+                _ = &mut cancellation_signal => {
+                    cancellation_token.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut prompt_future).await;
+                    PromptOutcome::Cancelled
+                },
+            }
+        } else {
+            let timeout = tokio::time::sleep(Duration::from_millis(turn_timeout_ms));
+            tokio::pin!(timeout);
+            tokio::select! {
+                result = &mut prompt_future => PromptOutcome::Result(result),
+                _ = &mut cancellation_signal => {
+                    cancellation_token.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut prompt_future).await;
+                    PromptOutcome::Cancelled
+                },
+                _ = &mut timeout => {
+                    cancellation_token.cancel();
+                    let _ = tokio::time::timeout(Duration::from_secs(1), &mut prompt_future).await;
+                    PromptOutcome::TimedOut
+                },
+            }
         }
     };
+    agent.set_cancellation_token(None);
 
     drop(stream_delta_handler);
     if let Some(task) = stream_task.take() {
@@ -575,7 +887,14 @@ where
         }
     };
 
-    let new_messages = prompt_result?;
+    let new_messages = match prompt_result {
+        Ok(messages) => messages,
+        Err(AgentError::Cancelled) => {
+            agent.replace_messages(checkpoint);
+            return Ok(PromptRunStatus::Cancelled);
+        }
+        Err(error) => return Err(error.into()),
+    };
     persist_messages(session_runtime, &new_messages)?;
     print_assistant_messages(
         &new_messages,
@@ -705,7 +1024,8 @@ fn report_prompt_status(status: PromptRunStatus) {
 mod tests {
     use super::{
         apply_runtime_message_transform, build_runtime_hook_payload,
-        render_orchestrator_policy_inheritance_context, RuntimeExtensionHooksConfig,
+        render_orchestrator_policy_inheritance_context, resolve_repl_history_path,
+        ReplCommandCompleter, ReplMultilineState, RuntimeExtensionHooksConfig,
         RuntimeHookRunStatus,
     };
     use tempfile::tempdir;
@@ -804,5 +1124,49 @@ mod tests {
         assert!(error
             .to_string()
             .contains("missing numeric field 'schema_version'"));
+    }
+
+    #[test]
+    fn unit_repl_multiline_state_handles_line_continuation() {
+        let mut multiline = ReplMultilineState::default();
+        assert_eq!(multiline.prompt(), "tau> ");
+
+        assert_eq!(multiline.push_line("first line\\".to_string()), None);
+        assert_eq!(multiline.prompt(), "...> ");
+        let complete = multiline.push_line("second line".to_string());
+        assert_eq!(complete.as_deref(), Some("first line\nsecond line"));
+        assert_eq!(multiline.prompt(), "tau> ");
+    }
+
+    #[test]
+    fn regression_repl_multiline_state_preserves_escaped_backslash() {
+        let mut multiline = ReplMultilineState::default();
+        let complete = multiline.push_line("path \\\\".to_string());
+        assert_eq!(complete.as_deref(), Some("path \\\\"));
+    }
+
+    #[test]
+    fn functional_repl_command_completer_matches_slash_commands() {
+        let completer = ReplCommandCompleter::new(tau_ops::COMMAND_NAMES);
+        let suggestions = completer.complete_token("/session");
+        assert!(suggestions.contains(&"/session".to_string()));
+        assert!(suggestions.contains(&"/session-import".to_string()));
+        assert!(suggestions.contains(&"/session-search".to_string()));
+    }
+
+    #[test]
+    fn unit_resolve_repl_history_path_defaults_under_tau() {
+        let path = resolve_repl_history_path(None);
+        assert_eq!(path, std::path::PathBuf::from(".tau/repl_history.txt"));
+    }
+
+    #[test]
+    fn regression_resolve_repl_history_path_uses_session_file_stem() {
+        let session_path = std::path::Path::new("/tmp/tau/sessions/default.jsonl");
+        let history_path = resolve_repl_history_path(Some(session_path));
+        assert_eq!(
+            history_path,
+            std::path::Path::new("/tmp/tau/sessions/default.history")
+        );
     }
 }

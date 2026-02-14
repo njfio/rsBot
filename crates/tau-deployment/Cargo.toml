@@ -6,9 +6,12 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tau-cli = { path = "../tau-cli" }
+tau-contract = { path = "../tau-contract" }
 tau-core = { path = "../tau-core" }
 tau-runtime = { path = "../tau-runtime" }
 wasmparser.workspace = true

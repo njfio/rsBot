@@ -288,28 +288,14 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/multi-agent-ops.md`.
 
-## Semantic memory contract runner
+## Semantic memory diagnostics (contract runner removed)
 
-Use this fixture-driven runtime mode to validate semantic memory extraction/retrieval
-processing, retry handling, and channel-store snapshot writes.
+`--memory-contract-runner` is removed. Runtime memory ownership is in `tau-agent-core`
+(auto recall, retrieval ranking, and embedding-backed matching), while `tau-memory` only
+owns fixture schemas for contract validation.
 
-```bash
-cargo run -p tau-coding-agent -- \
-  --model openai/gpt-4o-mini \
-  --memory-contract-runner \
-  --memory-fixture crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json \
-  --memory-state-dir .tau/memory \
-  --memory-queue-limit 64 \
-  --memory-processed-case-cap 10000 \
-  --memory-retry-max-attempts 4 \
-  --memory-retry-base-delay-ms 0
-```
-
-The runner writes state and observability output under:
-
-- `.tau/memory/state.json`
-- `.tau/memory/runtime-events.jsonl`
-- `.tau/memory/channel-store/memory/<channel_id>/...`
+Use transport-health inspection for deterministic operator diagnostics against persisted
+memory health artifacts.
 
 Inspect semantic memory health snapshot:
 
@@ -320,32 +306,24 @@ cargo run -p tau-coding-agent -- \
   --transport-health-json
 ```
 
-Operational rollout and rollback guidance: `docs/guides/memory-ops.md`.
+Operational migration and diagnostics guidance: `docs/guides/memory-ops.md`.
 
-## Browser automation contract runner
-
-Use this fixture-driven runtime mode to validate browser navigate/snapshot/action flows,
-retry handling, and policy guardrails before enabling live browser automation.
+## Browser automation live runner
 
 ```bash
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
-  --browser-automation-contract-runner \
-  --browser-automation-fixture crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json \
+  --browser-automation-live-runner \
+  --browser-automation-live-fixture crates/tau-coding-agent/testdata/browser-automation-live/live-sequence.json \
+  --browser-automation-playwright-cli playwright-cli \
   --browser-automation-state-dir .tau/browser-automation \
-  --browser-automation-queue-limit 64 \
-  --browser-automation-processed-case-cap 10000 \
-  --browser-automation-retry-max-attempts 4 \
-  --browser-automation-retry-base-delay-ms 0 \
-  --browser-automation-action-timeout-ms 4000 \
-  --browser-automation-max-actions-per-case 4
 ```
 
-The runner writes state and observability output under:
+The live runner executes fixture cases through an external Playwright-compatible CLI and writes
+state and observability output under:
 
 - `.tau/browser-automation/state.json`
 - `.tau/browser-automation/runtime-events.jsonl`
-- `.tau/browser-automation/channel-store/browser-automation/fixtures/...`
 
 Inspect browser automation transport health snapshot:
 
@@ -375,32 +353,19 @@ Troubleshooting:
 
 - `browser_automation.npx` not ready: install Node.js/npm and ensure `npx` is on `PATH`.
 - `browser_automation.playwright_cli` missing: install `@playwright/mcp` or set `--browser-automation-playwright-cli` to a valid wrapper binary.
-- Unsafe browser actions are denied by default; enable `--browser-automation-allow-unsafe-actions` only for approved fixtures.
-- Tune `--browser-automation-action-timeout-ms` and `--browser-automation-retry-max-attempts` if valid flows are timing out under policy limits.
+- `--browser-automation-contract-runner` has been removed; use the live-runner command shown above.
 
 Demo command path:
 
 - `./scripts/demo/browser-automation.sh`
 - `./scripts/demo/all.sh --only browser-automation --fail-fast`
 
-## Dashboard contract runner
+## Dashboard contract runner (removed)
 
-Use this fixture-driven runtime mode to validate dashboard state transitions, control actions,
-retry handling, and channel-store snapshot writes.
+`--dashboard-contract-runner` has been removed from active transport dispatch.
+Use gateway/API surfaces plus diagnostics commands against persisted state artifacts.
 
-```bash
-cargo run -p tau-coding-agent -- \
-  --model openai/gpt-4o-mini \
-  --dashboard-contract-runner \
-  --dashboard-fixture crates/tau-coding-agent/testdata/dashboard-contract/mixed-outcomes.json \
-  --dashboard-state-dir .tau/dashboard \
-  --dashboard-queue-limit 64 \
-  --dashboard-processed-case-cap 10000 \
-  --dashboard-retry-max-attempts 4 \
-  --dashboard-retry-base-delay-ms 0
-```
-
-The runner writes state and observability output under:
+Diagnostics commands read state and observability output under:
 
 - `.tau/dashboard/state.json`
 - `.tau/dashboard/runtime-events.jsonl`
@@ -537,7 +502,7 @@ state persistence, and channel-store snapshots.
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
   --gateway-contract-runner \
-  --gateway-fixture crates/tau-coding-agent/testdata/gateway-contract/rollout-pass.json \
+  --gateway-fixture crates/tau-gateway/testdata/gateway-contract/rollout-pass.json \
   --gateway-state-dir .tau/gateway \
   --gateway-guardrail-failure-streak-threshold 2 \
   --gateway-guardrail-retryable-failures-threshold 2
@@ -612,24 +577,12 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/deployment-ops.md`.
 
-## No-code custom command contract runner
+## No-code custom command contract runner (removed)
 
-Use this fixture-driven runtime mode to validate no-code command registry lifecycle behavior,
-retry outcomes, state persistence, and channel-store snapshots.
+`--custom-command-contract-runner` has been removed from active transport dispatch.
+Preserve existing custom-command state directories and use inspection commands for diagnostics.
 
-```bash
-cargo run -p tau-coding-agent -- \
-  --model openai/gpt-4o-mini \
-  --custom-command-contract-runner \
-  --custom-command-fixture crates/tau-coding-agent/testdata/custom-command-contract/rollout-pass.json \
-  --custom-command-state-dir .tau/custom-command \
-  --custom-command-queue-limit 64 \
-  --custom-command-processed-case-cap 10000 \
-  --custom-command-retry-max-attempts 4 \
-  --custom-command-retry-base-delay-ms 0
-```
-
-The runner writes state and observability output under:
+Inspection commands read state and observability output under:
 
 - `.tau/custom-command/state.json`
 - `.tau/custom-command/runtime-events.jsonl`
@@ -692,6 +645,48 @@ Inspect voice rollout guardrail/status report:
 ```bash
 cargo run -p tau-coding-agent -- \
   --voice-state-dir .tau/voice \
+  --voice-status-inspect \
+  --voice-status-json
+```
+
+Operational rollout and rollback guidance: `docs/guides/voice-ops.md`.
+
+## Voice live session replay runner
+
+Use this fixture-driven live mode to validate wake-word routing, live turn handling, and
+fallback behavior (invalid audio/provider outages).
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --voice-live-runner \
+  --voice-live-input crates/tau-coding-agent/testdata/voice-live/single-turn.json \
+  --voice-live-wake-word tau \
+  --voice-live-max-turns 64 \
+  --voice-live-tts-output \
+  --voice-state-dir .tau/voice-live
+```
+
+The runner writes state and observability output under:
+
+- `.tau/voice-live/state.json`
+- `.tau/voice-live/runtime-events.jsonl`
+- `.tau/voice-live/channel-store/voice/<speaker_id>/...`
+
+Inspect live voice transport health snapshot:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --voice-state-dir .tau/voice-live \
+  --transport-health-inspect voice \
+  --transport-health-json
+```
+
+Inspect live voice rollout guardrail/status report:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --voice-state-dir .tau/voice-live \
   --voice-status-inspect \
   --voice-status-json
 ```

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.8", features = ["json"] }
 chrono = { version = "0.4", default-features = false, features = ["alloc", "clock", "serde"] }
 hmac = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
@@ -17,6 +17,12 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net"]
 [dependencies.tau-core]
 path = "../tau-core"
 
+[dependencies.tau-contract]
+path = "../tau-contract"
+
+[dependencies.tau-access]
+path = "../tau-access"
+
 [dependencies.tau-runtime]
 path = "../tau-runtime"
 
@@ -24,6 +30,8 @@ path = "../tau-runtime"
 path = "../tau-orchestrator"
 
 [dev-dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
 httpmock = "0.8"
 serde_json = "1"
 tempfile = "3"

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "name": "malformed-success-payload",
+  "prompt": "bad payload",
+  "steps": [
+    {
+      "status": 200,
+      "body": {
+        "unexpected": "shape"
+      }
+    }
+  ]
+}

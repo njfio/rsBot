@@ -1,9 +1,13 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 pub const GATEWAY_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
@@ -17,6 +21,7 @@ fn gateway_contract_schema_version() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `GatewayOutcomeKind` values.
 pub enum GatewayOutcomeKind {
     Success,
     MalformedInput,
@@ -24,6 +29,7 @@ pub enum GatewayOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `GatewayCaseExpectation` used across Tau components.
 pub struct GatewayCaseExpectation {
     pub outcome: GatewayOutcomeKind,
     pub status_code: u16,
@@ -34,6 +40,7 @@ pub struct GatewayCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `GatewayContractCase` used across Tau components.
 pub struct GatewayContractCase {
     #[serde(default = "gateway_contract_schema_version")]
     pub schema_version: u32,
@@ -49,6 +56,7 @@ pub struct GatewayContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `GatewayContractFixture` used across Tau components.
 pub struct GatewayContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -58,6 +66,7 @@ pub struct GatewayContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `GatewayContractCapabilities` used across Tau components.
 pub struct GatewayContractCapabilities {
     pub schema_version: u32,
     pub supported_outcomes: BTreeSet<GatewayOutcomeKind>,
@@ -66,6 +75,7 @@ pub struct GatewayContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `GatewayReplayStep` values.
 pub enum GatewayReplayStep {
     Success,
     MalformedInput,
@@ -73,6 +83,7 @@ pub enum GatewayReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `GatewayReplayResult` used across Tau components.
 pub struct GatewayReplayResult {
     pub step: GatewayReplayStep,
     pub status_code: u16,
@@ -82,6 +93,7 @@ pub struct GatewayReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `GatewayReplaySummary` used across Tau components.
 pub struct GatewayReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -90,22 +102,21 @@ pub struct GatewayReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `GatewayContractDriver` behavior.
 pub trait GatewayContractDriver {
     fn apply_case(&mut self, case: &GatewayContractCase) -> Result<GatewayReplayResult>;
 }
 
 pub fn parse_gateway_contract_fixture(raw: &str) -> Result<GatewayContractFixture> {
-    let fixture = serde_json::from_str::<GatewayContractFixture>(raw)
-        .context("failed to parse gateway contract fixture")?;
-    validate_gateway_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse gateway contract fixture",
+        validate_gateway_contract_fixture,
+    )
 }
 
 pub fn load_gateway_contract_fixture(path: &Path) -> Result<GatewayContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_gateway_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_gateway_contract_fixture)
 }
 
 pub fn gateway_contract_capabilities() -> GatewayContractCapabilities {
@@ -173,28 +184,18 @@ pub fn validate_gateway_contract_compatibility(fixture: &GatewayContractFixture)
 }
 
 pub fn validate_gateway_contract_fixture(fixture: &GatewayContractFixture) -> Result<()> {
-    if fixture.schema_version != GATEWAY_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported gateway contract schema version {} (expected {})",
-            fixture.schema_version,
-            GATEWAY_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "gateway",
+        fixture.schema_version,
+        GATEWAY_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_gateway_case(case, index)?;
-        let case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
     validate_gateway_contract_compatibility(fixture)?;
     Ok(())
 }

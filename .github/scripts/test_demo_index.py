@@ -30,11 +30,18 @@ class DemoIndexTests(unittest.TestCase):
         scenario_ids = [entry["id"] for entry in payload["scenarios"]]
         self.assertEqual(
             scenario_ids,
-            ["onboarding", "gateway-auth", "multi-channel-live", "deployment-wasm"],
+            [
+                "onboarding",
+                "gateway-auth",
+                "gateway-remote-access",
+                "multi-channel-live",
+                "deployment-wasm",
+            ],
         )
         wrappers = {entry["id"]: entry["wrapper"] for entry in payload["scenarios"]}
         self.assertEqual(wrappers["onboarding"], "local.sh")
         self.assertEqual(wrappers["gateway-auth"], "gateway-auth.sh")
+        self.assertEqual(wrappers["gateway-remote-access"], "gateway-remote-access.sh")
         self.assertEqual(wrappers["multi-channel-live"], "multi-channel.sh")
         self.assertEqual(wrappers["deployment-wasm"], "deployment.sh")
 
@@ -43,6 +50,7 @@ class DemoIndexTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("onboarding", result.stdout)
         self.assertIn("gateway-auth", result.stdout)
+        self.assertIn("gateway-remote-access", result.stdout)
         self.assertIn("multi-channel-live", result.stdout)
         self.assertIn("deployment-wasm", result.stdout)
         self.assertIn("expected_marker:", result.stdout)
@@ -73,11 +81,11 @@ class DemoIndexTests(unittest.TestCase):
                     str(DEMO_ALL_SCRIPT),
                     "--list",
                     "--only",
-                    "gateway-auth",
+                    "gateway-remote-access",
                 ]
             )
             self.assertEqual(all_list_result.returncode, 0, msg=all_list_result.stderr)
-            self.assertIn("gateway-auth.sh", all_list_result.stdout)
+            self.assertIn("gateway-remote-access.sh", all_list_result.stdout)
 
     def test_regression_demo_index_alias_filter_and_unknown_filter_handling(self):
         alias_result = run_command(
@@ -87,7 +95,7 @@ class DemoIndexTests(unittest.TestCase):
                 "--list",
                 "--json",
                 "--only",
-                "local,gatewayauth,multi-channel,deployment",
+                "local,gatewayauth,gatewayremoteaccess,multi-channel,deployment",
             ]
         )
         self.assertEqual(alias_result.returncode, 0, msg=alias_result.stderr)
@@ -95,7 +103,13 @@ class DemoIndexTests(unittest.TestCase):
         alias_ids = [entry["id"] for entry in alias_payload["scenarios"]]
         self.assertEqual(
             alias_ids,
-            ["onboarding", "gateway-auth", "multi-channel-live", "deployment-wasm"],
+            [
+                "onboarding",
+                "gateway-auth",
+                "gateway-remote-access",
+                "multi-channel-live",
+                "deployment-wasm",
+            ],
         )
 
         unknown_result = run_command(
@@ -109,6 +123,11 @@ class DemoIndexTests(unittest.TestCase):
         command_names = [entry["name"] for entry in manifest["commands"]]
         self.assertIn("onboard-non-interactive", command_names)
         self.assertIn("gateway-remote-profile-token-auth", command_names)
+        self.assertIn("gateway-remote-plan-tailscale-serve", command_names)
+        self.assertIn(
+            "gateway-remote-plan-fails-closed-missing-funnel-password",
+            command_names,
+        )
         self.assertIn("deployment-wasm-package", command_names)
         self.assertIn("deployment-channel-store-inspect-edge-wasm", command_names)
 

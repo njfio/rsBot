@@ -31,6 +31,94 @@ print("mock-ok " + " ".join(sys.argv[1:]))
     path.chmod(0o755)
 
 
+def write_voice_live_mock_binary(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+trace_path = os.environ.get("TAU_DEMO_MOCK_TRACE")
+if trace_path:
+    with open(trace_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(args))
+        handle.write("\\n")
+
+def read_flag(name: str, default: str) -> str:
+    for index, value in enumerate(args):
+        if value == name and index + 1 < len(args):
+            return args[index + 1]
+        if value.startswith(name + "="):
+            return value.split("=", 1)[1]
+    return default
+
+if "--voice-live-runner" in args:
+    state_dir = Path(read_flag("--voice-state-dir", ".tau/demo-voice-live"))
+    channel_store_dir = state_dir / "channel-store" / "voice" / "ops-live"
+    channel_store_dir.mkdir(parents=True, exist_ok=True)
+    (channel_store_dir / "memory.md").write_text(
+        "# Tau Voice Snapshot (ops-live)\\n\\n- speaker=ops-live mode=live_turn wake_word=tau status=202 utterance=open dashboard\\n",
+        encoding="utf-8",
+    )
+    state_payload = {
+        "schema_version": 1,
+        "processed_case_keys": [],
+        "interactions": [
+            {
+                "case_key": "live:ops-live-single:ops-live:single-1",
+                "case_id": "single-1",
+                "mode": "live_turn",
+                "wake_word": "tau",
+                "locale": "en-US",
+                "speaker_id": "ops-live",
+                "utterance": "open dashboard",
+                "last_status_code": 202,
+                "last_outcome": "success",
+                "run_count": 1,
+                "updated_unix_ms": 1735689600000,
+            }
+        ],
+        "health": {
+            "updated_unix_ms": 1735689600000,
+            "cycle_duration_ms": 1,
+            "queue_depth": 0,
+            "active_runs": 0,
+            "failure_streak": 0,
+            "last_cycle_discovered": 1,
+            "last_cycle_processed": 1,
+            "last_cycle_completed": 1,
+            "last_cycle_failed": 0,
+            "last_cycle_duplicates": 0,
+        },
+    }
+    (state_dir / "state.json").write_text(json.dumps(state_payload, indent=2), encoding="utf-8")
+    event_payload = {
+        "timestamp_unix_ms": 1735689600000,
+        "health_state": "healthy",
+        "health_reason": "recent cycle completed with no failures",
+        "reason_codes": ["wake_word_detected", "turns_handled", "tts_output_emitted"],
+    }
+    (state_dir / "runtime-events.jsonl").write_text(
+        json.dumps(event_payload) + "\\n", encoding="utf-8"
+    )
+
+if "--transport-health-inspect" in args and "--transport-health-json" in args:
+    print(json.dumps({"transport": "voice", "state": "healthy", "reason": "mock"}))
+elif "--voice-status-inspect" in args and "--voice-status-json" in args:
+    print(json.dumps({"transport": "voice", "rollout_gate": "pass", "state": "healthy"}))
+elif "--channel-store-inspect" in args:
+    print("mock-channel-store-inspect")
+else:
+    print("mock-ok " + " ".join(args))
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
 def write_failing_binary(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -152,10 +240,12 @@ class DemoScriptsTests(unittest.TestCase):
                 "multi-channel.sh",
                 "multi-agent.sh",
                 "browser-automation.sh",
+                "browser-automation-live.sh",
                 "memory.sh",
                 "dashboard.sh",
                 "gateway.sh",
                 "gateway-auth.sh",
+                "gateway-remote-access.sh",
                 "deployment.sh",
                 "custom-command.sh",
                 "voice.sh",
@@ -203,6 +293,16 @@ class DemoScriptsTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0)
         self.assertIn("local.sh", completed.stdout)
 
+    def test_unit_voice_live_script_argument_parser_rejects_unknown_argument(self) -> None:
+        completed = subprocess.run(
+            [str(SCRIPTS_DIR / "voice-live.sh"), "--definitely-unknown"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("unknown argument: --definitely-unknown", completed.stderr)
+
     def test_functional_demo_scripts_run_expected_command_chains(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -218,10 +318,12 @@ class DemoScriptsTests(unittest.TestCase):
                 "multi-channel.sh",
                 "multi-agent.sh",
                 "browser-automation.sh",
+                "browser-automation-live.sh",
                 "memory.sh",
                 "dashboard.sh",
                 "gateway.sh",
                 "gateway-auth.sh",
+                "gateway-remote-access.sh",
                 "deployment.sh",
                 "custom-command.sh",
                 "voice.sh",
@@ -233,10 +335,81 @@ class DemoScriptsTests(unittest.TestCase):
                     msg=f"{script_name} failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
                 )
                 self.assertIn("summary: total=", completed.stdout)
-                self.assertIn("failed=0", completed.stdout)
+                if script_name == "gateway-remote-access.sh":
+                    self.assertIn("failed=1", completed.stdout)
+                else:
+                    self.assertIn("failed=0", completed.stdout)
 
             rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
             self.assertGreaterEqual(len(rows), 30)
+
+    def test_functional_voice_live_script_writes_artifact_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            state_dir = root / "voice-live-state"
+            write_voice_live_mock_binary(binary_path)
+
+            completed = run_demo_script(
+                "voice-live.sh",
+                binary_path,
+                trace_path,
+                extra_env={"TAU_DEMO_VOICE_LIVE_STATE_DIR": str(state_dir)},
+            )
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+            self.assertIn("[demo:voice-live] summary: total=6 passed=6 failed=0", completed.stdout)
+
+            manifest_path = state_dir / "artifact-manifest.json"
+            self.assertTrue(manifest_path.exists())
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["demo"], "voice-live")
+            self.assertEqual(payload["state_dir"], str(state_dir))
+            self.assertEqual(payload["last_health_state"], "healthy")
+            self.assertIn("turns_handled", payload["last_reason_codes"])
+            self.assertIn("tts_output_emitted", payload["last_reason_codes"])
+
+            artifacts_by_name = {entry["name"]: entry for entry in payload["artifacts"]}
+            self.assertTrue(artifacts_by_name["state"]["exists"])
+            self.assertTrue(artifacts_by_name["runtime_events"]["exists"])
+            self.assertTrue(artifacts_by_name["channel_store_root"]["exists"])
+            self.assertEqual(payload["health_snapshot"]["last_cycle_completed"], 1)
+            self.assertEqual(payload["health_snapshot"]["failure_streak"], 0)
+
+    def test_integration_voice_live_script_includes_live_diagnostic_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            step_trace_path = root / "step.trace"
+            state_dir = root / "voice-live-state"
+            write_voice_live_mock_binary(binary_path)
+
+            completed = run_demo_script(
+                "voice-live.sh",
+                binary_path,
+                trace_path,
+                extra_env={
+                    "TAU_DEMO_TRACE_LOG": str(step_trace_path),
+                    "TAU_DEMO_VOICE_LIVE_STATE_DIR": str(state_dir),
+                },
+            )
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+            trace_rows = step_trace_path.read_text(encoding="utf-8").splitlines()
+            labels = [row.split("\t", 1)[0] for row in trace_rows]
+
+            self.assertEqual(
+                labels,
+                [
+                    "voice-live-runner-single-turn",
+                    "voice-live-runner-multi-turn",
+                    "voice-live-runner-fallbacks",
+                    "transport-health-inspect-voice-live",
+                    "voice-status-inspect-live",
+                    "channel-store-inspect-voice-live-ops-live",
+                ],
+            )
 
     def test_functional_all_script_builds_once_when_skip_build_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -292,7 +465,7 @@ class DemoScriptsTests(unittest.TestCase):
                 0,
                 msg=f"all.sh failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
             )
-            self.assertIn("[demo:all] summary: total=14 passed=14 failed=0", completed.stdout)
+            self.assertIn("[demo:all] summary: total=16 passed=16 failed=0", completed.stdout)
 
             rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
             self.assertGreaterEqual(len(rows), 30)
@@ -344,11 +517,11 @@ class DemoScriptsTests(unittest.TestCase):
 
             completed = run_demo_script("all.sh", binary_path, trace_path, extra_args=["--report-file", str(report_path)])
             self.assertEqual(completed.returncode, 0, msg=completed.stderr)
-            self.assertIn("[demo:all] summary: total=14 passed=14 failed=0", completed.stdout)
+            self.assertIn("[demo:all] summary: total=16 passed=16 failed=0", completed.stdout)
             self.assertTrue(report_path.exists())
 
             payload = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["summary"], {"total": 14, "passed": 14, "failed": 0})
+            self.assertEqual(payload["summary"], {"total": 16, "passed": 16, "failed": 0})
             self.assertEqual(
                 [entry["name"] for entry in payload["demos"]],
                 [
@@ -359,10 +532,12 @@ class DemoScriptsTests(unittest.TestCase):
                     "multi-channel.sh",
                     "multi-agent.sh",
                     "browser-automation.sh",
+                    "browser-automation-live.sh",
                     "memory.sh",
                     "dashboard.sh",
                     "gateway.sh",
                     "gateway-auth.sh",
+                    "gateway-remote-access.sh",
                     "deployment.sh",
                     "custom-command.sh",
                     "voice.sh",
@@ -440,13 +615,15 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertIn("[demo:all] [5] multi-channel.sh", completed.stdout)
             self.assertIn("[demo:all] [6] multi-agent.sh", completed.stdout)
             self.assertIn("[demo:all] [7] browser-automation.sh", completed.stdout)
-            self.assertIn("[demo:all] [8] memory.sh", completed.stdout)
-            self.assertIn("[demo:all] [9] dashboard.sh", completed.stdout)
-            self.assertIn("[demo:all] [10] gateway.sh", completed.stdout)
-            self.assertIn("[demo:all] [11] gateway-auth.sh", completed.stdout)
-            self.assertIn("[demo:all] [12] deployment.sh", completed.stdout)
-            self.assertIn("[demo:all] [13] custom-command.sh", completed.stdout)
-            self.assertIn("[demo:all] [14] voice.sh", completed.stdout)
+            self.assertIn("[demo:all] [8] browser-automation-live.sh", completed.stdout)
+            self.assertIn("[demo:all] [9] memory.sh", completed.stdout)
+            self.assertIn("[demo:all] [10] dashboard.sh", completed.stdout)
+            self.assertIn("[demo:all] [11] gateway.sh", completed.stdout)
+            self.assertIn("[demo:all] [12] gateway-auth.sh", completed.stdout)
+            self.assertIn("[demo:all] [13] gateway-remote-access.sh", completed.stdout)
+            self.assertIn("[demo:all] [14] deployment.sh", completed.stdout)
+            self.assertIn("[demo:all] [15] custom-command.sh", completed.stdout)
+            self.assertIn("[demo:all] [16] voice.sh", completed.stdout)
 
     def test_integration_multi_channel_demo_includes_live_mode_diagnostics_steps(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -531,10 +708,12 @@ class DemoScriptsTests(unittest.TestCase):
                 "multi-channel.sh",
                 "multi-agent.sh",
                 "browser-automation.sh",
+                "browser-automation-live.sh",
                 "memory.sh",
                 "dashboard.sh",
                 "gateway.sh",
                 "gateway-auth.sh",
+                "gateway-remote-access.sh",
                 "deployment.sh",
                 "custom-command.sh",
                 "voice.sh",
@@ -684,8 +863,8 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertTrue(report_path.exists())
 
             payload = json.loads(report_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["summary"]["total"], 14)
-            self.assertEqual(payload["summary"]["failed"], 14)
+            self.assertEqual(payload["summary"]["total"], 16)
+            self.assertEqual(payload["summary"]["failed"], 16)
             self.assertEqual(payload["summary"]["passed"], 0)
             for entry in payload["demos"]:
                 assert_duration_ms_field(self, entry)
@@ -701,6 +880,19 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2)
             self.assertIn("invalid value for --timeout-seconds", completed.stderr)
             self.assertFalse(trace_path.exists())
+
+    def test_regression_voice_contract_demo_remains_contract_runner_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            binary_path = root / "bin" / "tau-coding-agent"
+            trace_path = root / "trace.ndjson"
+            write_mock_binary(binary_path)
+
+            completed = run_demo_script("voice.sh", binary_path, trace_path)
+            self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+            rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+            self.assertTrue(any("--voice-contract-runner" in row for row in rows))
+            self.assertTrue(all("--voice-live-runner" not in row for row in rows))
 
 
 if __name__ == "__main__":

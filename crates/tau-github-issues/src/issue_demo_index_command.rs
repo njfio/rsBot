@@ -1,4 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `DemoIndexIssueCommand` values.
 pub enum DemoIndexIssueCommand<RunCommand> {
     List,
     Report,

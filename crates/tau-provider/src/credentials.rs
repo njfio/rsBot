@@ -177,6 +177,7 @@ fn resolve_env_backed_provider_credential(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ProviderAuthCredential` used across Tau components.
 pub struct ProviderAuthCredential {
     pub method: ProviderAuthMethod,
     pub secret: Option<String>,
@@ -187,6 +188,7 @@ pub struct ProviderAuthCredential {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ProviderAuthSnapshot` used across Tau components.
 pub struct ProviderAuthSnapshot {
     pub provider: Provider,
     pub method: ProviderAuthMethod,
@@ -675,6 +677,7 @@ pub fn provider_auth_snapshot_for_status(
     }
 }
 
+/// Trait contract for `ProviderCredentialResolver` behavior.
 pub trait ProviderCredentialResolver {
     fn resolve(
         &self,
@@ -683,6 +686,7 @@ pub trait ProviderCredentialResolver {
     ) -> Result<ProviderAuthCredential>;
 }
 
+/// Public struct `CliProviderCredentialResolver` used across Tau components.
 pub struct CliProviderCredentialResolver<'a> {
     pub cli: &'a Cli,
 }

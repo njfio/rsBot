@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tau-session = { path = "../tau-session" }
 tau-gateway = { path = "../tau-gateway" }

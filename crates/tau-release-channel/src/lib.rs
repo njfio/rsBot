@@ -1,9 +1,15 @@
+//! Release-channel lookup, cache, and command runtime for Tau.
+//!
+//! Defines release metadata/cache models and runtime commands used by doctor
+//! and startup workflows for release awareness.
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tau_core::write_text_atomic;
 
 pub mod cache;
+pub mod command_runtime;
 
 pub const RELEASE_LOOKUP_CACHE_SCHEMA_VERSION: u32 = 1;
 pub const RELEASE_LOOKUP_CACHE_TTL_MS: u64 = 15 * 60 * 1_000;
@@ -12,8 +18,11 @@ pub const RELEASE_LOOKUP_URL: &str = "https://api.github.com/repos/njfio/Tau/rel
 pub const RELEASE_LOOKUP_USER_AGENT: &str = "tau-coding-agent/release-channel-check";
 pub const RELEASE_LOOKUP_TIMEOUT_MS: u64 = 8_000;
 
+pub use command_runtime::{execute_release_channel_command, RELEASE_CHANNEL_USAGE};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Enumerates supported `ReleaseChannel` values.
 pub enum ReleaseChannel {
     Stable,
     Beta,
@@ -53,6 +62,7 @@ impl std::str::FromStr for ReleaseChannel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `ReleaseChannelRollbackMetadata` used across Tau components.
 pub struct ReleaseChannelRollbackMetadata {
     #[serde(default)]
     pub previous_channel: Option<ReleaseChannel>,
@@ -65,6 +75,7 @@ pub struct ReleaseChannelRollbackMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ReleaseChannelStoreFile` used across Tau components.
 pub struct ReleaseChannelStoreFile {
     pub schema_version: u32,
     pub release_channel: ReleaseChannel,
@@ -79,6 +90,7 @@ struct LegacyReleaseChannelStoreFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `GitHubReleaseRecord` used across Tau components.
 pub struct GitHubReleaseRecord {
     pub tag_name: String,
     #[serde(default)]
@@ -88,6 +100,7 @@ pub struct GitHubReleaseRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ReleaseLookupSource` values.
 pub enum ReleaseLookupSource {
     Live,
     CacheFresh,
@@ -95,6 +108,7 @@ pub enum ReleaseLookupSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `LatestChannelReleaseResolution` used across Tau components.
 pub struct LatestChannelReleaseResolution {
     pub latest: Option<String>,
     pub source: ReleaseLookupSource,

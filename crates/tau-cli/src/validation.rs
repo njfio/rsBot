@@ -4,6 +4,11 @@ use crate::{
     Cli, CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm,
 };
 
+const MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--memory-contract-runner has been removed; memory runtime ownership is in tau-agent-core. Use --transport-health-inspect memory for diagnostics and configure runtime memory behavior with agent memory flags (for example --memory-retrieval-limit).";
+const CUSTOM_COMMAND_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--custom-command-contract-runner has been removed; preserve existing state under --custom-command-state-dir and use --custom-command-status-inspect plus --transport-health-inspect custom-command for diagnostics";
+const BROWSER_AUTOMATION_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--browser-automation-contract-runner has been removed; use --browser-automation-live-runner with --browser-automation-live-fixture and --browser-automation-playwright-cli";
+const DASHBOARD_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--dashboard-contract-runner has been removed; use --gateway-openresponses-server for dashboard API/webchat surfaces and --dashboard-status-inspect plus --transport-health-inspect dashboard for diagnostics";
+
 fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -36,6 +41,10 @@ fn gateway_openresponses_mode_requested(cli: &Cli) -> bool {
 
 fn gateway_remote_profile_inspect_mode_requested(cli: &Cli) -> bool {
     cli.gateway_remote_profile_inspect
+}
+
+fn gateway_remote_plan_mode_requested(cli: &Cli) -> bool {
+    cli.gateway_remote_plan
 }
 
 fn multi_channel_channel_lifecycle_mode_requested(cli: &Cli) -> bool {
@@ -123,6 +132,7 @@ pub fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
         || cli.browser_automation_preflight
         || cli.channel_store_inspect.is_some()
         || cli.channel_store_repair.is_some()
@@ -609,6 +619,7 @@ pub fn validate_multi_channel_incident_timeline_cli(cli: &Cli) -> Result<()> {
         || project_index_mode_requested(cli)
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--multi-channel-incident-timeline cannot be combined with active transport/runtime commands");
     }
@@ -704,6 +715,7 @@ pub fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--multi-channel-channel-* commands cannot be combined with active transport/runtime commands"
@@ -797,6 +809,7 @@ pub fn validate_multi_channel_send_cli(cli: &Cli) -> Result<()> {
         || project_index_mode_requested(cli)
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--multi-channel-send cannot be combined with active transport/runtime commands");
     }
@@ -903,11 +916,19 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         return Ok(());
     }
 
+    bail!(BROWSER_AUTOMATION_CONTRACT_RUNNER_REMOVED_MESSAGE);
+}
+
+pub fn validate_browser_automation_live_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.browser_automation_live_runner {
+        return Ok(());
+    }
+
     if has_prompt_or_command_input(cli) {
-        bail!("--browser-automation-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+        bail!("--browser-automation-live-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
     }
     if cli.no_session {
-        bail!("--browser-automation-contract-runner cannot be used together with --no-session");
+        bail!("--browser-automation-live-runner cannot be used together with --no-session");
     }
     if cli.github_issues_bridge
         || cli.slack_bridge
@@ -923,34 +944,25 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
-        bail!("--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
-    }
-    if cli.browser_automation_queue_limit == 0 {
-        bail!("--browser-automation-queue-limit must be greater than 0");
-    }
-    if cli.browser_automation_processed_case_cap == 0 {
-        bail!("--browser-automation-processed-case-cap must be greater than 0");
-    }
-    if cli.browser_automation_retry_max_attempts == 0 {
-        bail!("--browser-automation-retry-max-attempts must be greater than 0");
-    }
-    if cli.browser_automation_action_timeout_ms == 0 {
-        bail!("--browser-automation-action-timeout-ms must be greater than 0");
-    }
-    if cli.browser_automation_max_actions_per_case == 0 {
-        bail!("--browser-automation-max-actions-per-case must be greater than 0");
-    }
-    if !cli.browser_automation_fixture.exists() {
         bail!(
-            "--browser-automation-fixture '{}' does not exist",
-            cli.browser_automation_fixture.display()
+            "--browser-automation-live-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --browser-automation-contract-runner, --browser-automation-preflight, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, --voice-contract-runner, or --voice-live-runner"
         );
     }
-    if !cli.browser_automation_fixture.is_file() {
+    if cli.browser_automation_playwright_cli.trim().is_empty() {
+        bail!("--browser-automation-playwright-cli cannot be empty");
+    }
+    if !cli.browser_automation_live_fixture.exists() {
         bail!(
-            "--browser-automation-fixture '{}' must point to a file",
-            cli.browser_automation_fixture.display()
+            "--browser-automation-live-fixture '{}' does not exist",
+            cli.browser_automation_live_fixture.display()
+        );
+    }
+    if !cli.browser_automation_live_fixture.is_file() {
+        bail!(
+            "--browser-automation-live-fixture '{}' must point to a file",
+            cli.browser_automation_live_fixture.display()
         );
     }
 
@@ -972,12 +984,14 @@ pub fn validate_browser_automation_preflight_cli(cli: &Cli) -> Result<()> {
         || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
         || cli.browser_automation_contract_runner
+        || cli.browser_automation_live_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--browser-automation-preflight cannot be combined with active transport/runtime flags"
@@ -995,43 +1009,7 @@ pub fn validate_memory_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--memory-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--memory-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-    {
-        bail!("--memory-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, or --multi-channel-live-runner");
-    }
-    if cli.memory_queue_limit == 0 {
-        bail!("--memory-queue-limit must be greater than 0");
-    }
-    if cli.memory_processed_case_cap == 0 {
-        bail!("--memory-processed-case-cap must be greater than 0");
-    }
-    if cli.memory_retry_max_attempts == 0 {
-        bail!("--memory-retry-max-attempts must be greater than 0");
-    }
-    if !cli.memory_fixture.exists() {
-        bail!(
-            "--memory-fixture '{}' does not exist",
-            cli.memory_fixture.display()
-        );
-    }
-    if !cli.memory_fixture.is_file() {
-        bail!(
-            "--memory-fixture '{}' must point to a file",
-            cli.memory_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
@@ -1039,44 +1017,7 @@ pub fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--dashboard-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--dashboard-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-        || cli.memory_contract_runner
-    {
-        bail!("--dashboard-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, or --memory-contract-runner");
-    }
-    if cli.dashboard_queue_limit == 0 {
-        bail!("--dashboard-queue-limit must be greater than 0");
-    }
-    if cli.dashboard_processed_case_cap == 0 {
-        bail!("--dashboard-processed-case-cap must be greater than 0");
-    }
-    if cli.dashboard_retry_max_attempts == 0 {
-        bail!("--dashboard-retry-max-attempts must be greater than 0");
-    }
-    if !cli.dashboard_fixture.exists() {
-        bail!(
-            "--dashboard-fixture '{}' does not exist",
-            cli.dashboard_fixture.display()
-        );
-    }
-    if !cli.dashboard_fixture.is_file() {
-        bail!(
-            "--dashboard-fixture '{}' must point to a file",
-            cli.dashboard_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(DASHBOARD_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_daemon_cli(cli: &Cli) -> Result<()> {
@@ -1137,6 +1078,7 @@ pub fn validate_daemon_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
         || gateway_service_mode_requested(cli)
     {
         bail!("--daemon-* commands cannot be combined with active transport/runtime flags");
@@ -1197,6 +1139,7 @@ pub fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
         || daemon_mode_requested(cli)
     {
         bail!(
@@ -1274,6 +1217,7 @@ pub fn validate_gateway_remote_profile_inspect_cli(cli: &Cli) -> Result<()> {
         || project_index_mode_requested(cli)
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--gateway-remote-profile-inspect cannot be combined with active transport/runtime commands"
@@ -1282,6 +1226,70 @@ pub fn validate_gateway_remote_profile_inspect_cli(cli: &Cli) -> Result<()> {
 
     crate::gateway_remote_profile::evaluate_gateway_remote_profile(cli)?;
     crate::gateway_remote_profile::validate_gateway_remote_profile_for_openresponses(cli)?;
+    Ok(())
+}
+
+pub fn validate_gateway_remote_plan_cli(cli: &Cli) -> Result<()> {
+    if !gateway_remote_plan_mode_requested(cli) {
+        if cli.gateway_remote_plan_json {
+            bail!("--gateway-remote-plan-json requires --gateway-remote-plan");
+        }
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!(
+            "--gateway-remote-plan cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+        );
+    }
+    if cli.channel_store_inspect.is_some()
+        || cli.channel_store_repair.is_some()
+        || cli.transport_health_inspect.is_some()
+        || cli.github_status_inspect.is_some()
+        || cli.operator_control_summary
+        || cli.multi_channel_status_inspect
+        || cli.dashboard_status_inspect
+        || cli.multi_agent_status_inspect
+        || cli.gateway_status_inspect
+        || cli.gateway_remote_profile_inspect
+        || cli.deployment_status_inspect
+        || cli.custom_command_status_inspect
+        || cli.voice_status_inspect
+    {
+        bail!("--gateway-remote-plan cannot be combined with status/inspection preflight commands");
+    }
+    if gateway_service_mode_requested(cli)
+        || daemon_mode_requested(cli)
+        || cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_channel_live_connectors_runner
+        || cli.multi_channel_live_ingest_file.is_some()
+        || cli.multi_channel_live_readiness_preflight
+        || multi_channel_channel_lifecycle_mode_requested(cli)
+        || multi_channel_send_mode_requested(cli)
+        || multi_channel_incident_timeline_mode_requested(cli)
+        || cli.multi_channel_route_inspect_file.is_some()
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.deployment_wasm_package_module.is_some()
+        || cli.deployment_wasm_inspect_manifest.is_some()
+        || project_index_mode_requested(cli)
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+        || cli.voice_live_runner
+    {
+        bail!("--gateway-remote-plan cannot be combined with active transport/runtime commands");
+    }
+
+    crate::gateway_remote_profile::evaluate_gateway_remote_plan(cli)?;
     Ok(())
 }
 
@@ -1314,6 +1322,7 @@ pub fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--gateway-openresponses-server cannot be combined with gateway service/daemon commands or other active transport runtime flags"
@@ -1436,6 +1445,7 @@ pub fn validate_deployment_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.gateway_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--deployment-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
     }
@@ -1487,6 +1497,7 @@ pub fn validate_deployment_wasm_package_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--deployment-wasm-package-module cannot be combined with active transport/runtime commands"
@@ -1554,6 +1565,7 @@ pub fn validate_deployment_wasm_inspect_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_package_module.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--deployment-wasm-inspect-manifest cannot be combined with active transport/runtime commands"
@@ -1583,47 +1595,7 @@ pub fn validate_custom_command_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--custom-command-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--custom-command-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-        || cli.multi_agent_contract_runner
-        || cli.memory_contract_runner
-        || cli.dashboard_contract_runner
-        || cli.gateway_contract_runner
-    {
-        bail!("--custom-command-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, or --gateway-contract-runner");
-    }
-    if cli.custom_command_queue_limit == 0 {
-        bail!("--custom-command-queue-limit must be greater than 0");
-    }
-    if cli.custom_command_processed_case_cap == 0 {
-        bail!("--custom-command-processed-case-cap must be greater than 0");
-    }
-    if cli.custom_command_retry_max_attempts == 0 {
-        bail!("--custom-command-retry-max-attempts must be greater than 0");
-    }
-    if !cli.custom_command_fixture.exists() {
-        bail!(
-            "--custom-command-fixture '{}' does not exist",
-            cli.custom_command_fixture.display()
-        );
-    }
-    if !cli.custom_command_fixture.is_file() {
-        bail!(
-            "--custom-command-fixture '{}' must point to a file",
-            cli.custom_command_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(CUSTOM_COMMAND_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {
@@ -1647,8 +1619,9 @@ pub fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
         || cli.custom_command_contract_runner
+        || cli.voice_live_runner
     {
-        bail!("--voice-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, or --custom-command-contract-runner");
+        bail!("--voice-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-live-runner");
     }
     if cli.voice_queue_limit == 0 {
         bail!("--voice-queue-limit must be greater than 0");
@@ -1669,6 +1642,53 @@ pub fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {
         bail!(
             "--voice-fixture '{}' must point to a file",
             cli.voice_fixture.display()
+        );
+    }
+
+    Ok(())
+}
+
+pub fn validate_voice_live_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.voice_live_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--voice-live-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--voice-live-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!("--voice-live-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
+    }
+    if cli.voice_live_wake_word.trim().is_empty() {
+        bail!("--voice-live-wake-word cannot be empty");
+    }
+    if cli.voice_live_max_turns == 0 {
+        bail!("--voice-live-max-turns must be greater than 0");
+    }
+    if !cli.voice_live_input.exists() {
+        bail!(
+            "--voice-live-input '{}' does not exist",
+            cli.voice_live_input.display()
+        );
+    }
+    if !cli.voice_live_input.is_file() {
+        bail!(
+            "--voice-live-input '{}' must point to a file",
+            cli.voice_live_input.display()
         );
     }
 

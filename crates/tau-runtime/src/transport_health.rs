@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `TransportHealthState` values.
 pub enum TransportHealthState {
     Healthy,
     Degraded,
@@ -18,6 +19,7 @@ impl TransportHealthState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TransportHealthClassification` used across Tau components.
 pub struct TransportHealthClassification {
     pub state: TransportHealthState,
     pub reason: String,
@@ -25,6 +27,7 @@ pub struct TransportHealthClassification {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+/// Public struct `TransportHealthSnapshot` used across Tau components.
 pub struct TransportHealthSnapshot {
     #[serde(default)]
     pub updated_unix_ms: u64,

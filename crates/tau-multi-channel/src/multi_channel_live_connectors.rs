@@ -35,6 +35,7 @@ const CONNECTOR_BREAKER_STATE_DISABLED: &str = "disabled";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelLiveConnectorErrorCode` values.
 pub enum MultiChannelLiveConnectorErrorCode {
     MissingConfig,
     AuthFailed,
@@ -48,6 +49,7 @@ pub enum MultiChannelLiveConnectorErrorCode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `MultiChannelLiveConnectorMode` values.
 pub enum MultiChannelLiveConnectorMode {
     Disabled,
     Polling,
@@ -92,6 +94,7 @@ impl MultiChannelLiveConnectorErrorCode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+/// Public struct `MultiChannelLiveConnectorChannelState` used across Tau components.
 pub struct MultiChannelLiveConnectorChannelState {
     #[serde(default)]
     pub mode: String,
@@ -132,6 +135,7 @@ pub struct MultiChannelLiveConnectorChannelState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelLiveConnectorStateFile` used across Tau components.
 pub struct MultiChannelLiveConnectorStateFile {
     #[serde(default = "multi_channel_live_connectors_schema_version")]
     pub schema_version: u32,
@@ -158,6 +162,7 @@ impl Default for MultiChannelLiveConnectorStateFile {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `MultiChannelLiveConnectorsStatusReport` used across Tau components.
 pub struct MultiChannelLiveConnectorsStatusReport {
     pub state_path: String,
     pub state_present: bool,
@@ -167,6 +172,7 @@ pub struct MultiChannelLiveConnectorsStatusReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+/// Public struct `MultiChannelLiveConnectorCycleSummary` used across Tau components.
 pub struct MultiChannelLiveConnectorCycleSummary {
     pub ingested_events: u64,
     pub duplicate_events: u64,
@@ -177,6 +183,7 @@ pub struct MultiChannelLiveConnectorCycleSummary {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `MultiChannelLiveConnectorsConfig` used across Tau components.
 pub struct MultiChannelLiveConnectorsConfig {
     pub state_path: PathBuf,
     pub ingress_dir: PathBuf,

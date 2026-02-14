@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "name": "serve-cancel-supported",
+  "mode": "serve_ndjson",
+  "input_lines": [
+    "{\"schema_version\":1,\"request_id\":\"req-start\",\"kind\":\"run.start\",\"payload\":{\"prompt\":\"hello\"}}",
+    "{\"schema_version\":1,\"request_id\":\"req-status-active\",\"kind\":\"run.status\",\"payload\":{\"run_id\":\"run-req-start\"}}",
+    "{\"schema_version\":1,\"request_id\":\"req-cancel\",\"kind\":\"run.cancel\",\"payload\":{\"run_id\":\"run-req-start\"}}",
+    "{\"schema_version\":1,\"request_id\":\"req-status-inactive\",\"kind\":\"run.status\",\"payload\":{\"run_id\":\"run-req-start\"}}"
+  ],
+  "expected_processed_lines": 4,
+  "expected_error_count": 0,
+  "expected_responses": [
+    {
+      "schema_version": 1,
+      "request_id": "req-start",
+      "kind": "run.accepted",
+      "payload": {
+        "status": "accepted",
+        "mode": "preflight",
+        "prompt_chars": 5,
+        "run_id": "run-req-start"
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-start",
+      "kind": "run.stream.tool_events",
+      "payload": {
+        "run_id": "run-req-start",
+        "event": "run.started",
+        "mode": "preflight",
+        "sequence": 0
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-start",
+      "kind": "run.stream.assistant_text",
+      "payload": {
+        "run_id": "run-req-start",
+        "delta": "preflight run accepted (5 prompt chars)",
+        "final": false,
+        "mode": "preflight",
+        "sequence": 1
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-status-active",
+      "kind": "run.status",
+      "payload": {
+        "status": "active",
+        "mode": "preflight",
+        "run_id": "run-req-start",
+        "active": true,
+        "known": true,
+        "terminal": false
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-cancel",
+      "kind": "run.cancelled",
+      "payload": {
+        "status": "cancelled",
+        "terminal": true,
+        "terminal_state": "cancelled",
+        "mode": "preflight",
+        "run_id": "run-req-start"
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-cancel",
+      "kind": "run.stream.tool_events",
+      "payload": {
+        "run_id": "run-req-start",
+        "event": "run.cancelled",
+        "terminal": true,
+        "terminal_state": "cancelled",
+        "mode": "preflight",
+        "sequence": 2
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-cancel",
+      "kind": "run.stream.assistant_text",
+      "payload": {
+        "run_id": "run-req-start",
+        "delta": "run cancelled",
+        "final": true,
+        "terminal": true,
+        "terminal_state": "cancelled",
+        "mode": "preflight",
+        "sequence": 3
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-status-inactive",
+      "kind": "run.status",
+      "payload": {
+        "status": "cancelled",
+        "mode": "preflight",
+        "run_id": "run-req-start",
+        "active": false,
+        "known": true,
+        "terminal": true,
+        "terminal_state": "cancelled"
+      }
+    }
+  ]
+}

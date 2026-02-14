@@ -21,7 +21,7 @@ List available scenarios without execution:
 Run only selected scenarios:
 
 ```bash
-./scripts/demo/index.sh --only onboarding,gateway-auth --fail-fast
+./scripts/demo/index.sh --only onboarding,gateway-auth,gateway-remote-access --fail-fast
 ```
 
 Write deterministic JSON summary:
@@ -50,6 +50,15 @@ Write deterministic JSON summary:
 - Troubleshooting checkpoint:
   - verify `--gateway-openresponses-auth-mode` and required token/password flags.
 
+### gateway-remote-access
+- Wrapper: `./scripts/demo/gateway-remote-access.sh`
+- Purpose: validate wave-9 profile inspect + remote-plan fail-closed guardrail behavior.
+- Expected markers:
+  - `[demo:gateway-remote-access] PASS gateway-remote-plan-export-tailscale-serve`
+  - `[demo:gateway-remote-access] PASS gateway-remote-plan-fails-closed-for-missing-password`
+- Troubleshooting checkpoint:
+  - inspect `.tau/demo-gateway-remote-access/trace.log`, then verify auth/profile flags.
+
 ### multi-channel-live
 - Wrapper: `./scripts/demo/multi-channel.sh`
 - Purpose: ingest live fixtures and verify transport health for Telegram, Discord, and WhatsApp.
@@ -75,6 +84,7 @@ The repository smoke manifest (`.github/demo-smoke-manifest.json`) includes ligh
 commands that cover the same workflow classes:
 - onboarding bootstrap
 - gateway auth posture inspect
+- gateway remote plan export + fail-closed guardrail contract
 - multi-channel live ingress (Telegram/Discord/WhatsApp)
 - deployment WASM package and inspect
 

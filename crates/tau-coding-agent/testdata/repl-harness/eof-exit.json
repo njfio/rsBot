@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "eof-exit",
+  "args": [
+    "--model",
+    "openai/gpt-4o-mini",
+    "--openai-api-key",
+    "test-openai-key",
+    "--no-session"
+  ],
+  "stdin_script": "/help\n",
+  "timeout_ms": 5000,
+  "expect": {
+    "success": true,
+    "min_prompt_count": 2,
+    "stdout_contains": [
+      "/help [command]"
+    ],
+    "stderr_not_contains": [
+      "panic"
+    ]
+  }
+}

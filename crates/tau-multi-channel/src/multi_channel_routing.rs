@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use crate::multi_channel_contract::{MultiChannelEventKind, MultiChannelInboundEvent};
@@ -7,12 +7,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tau_core::current_unix_timestamp_ms;
 use tau_orchestrator::multi_agent_router::{
-    select_multi_agent_route, MultiAgentRoutePhase, MultiAgentRouteSelection, MultiAgentRouteTable,
+    select_multi_agent_route_with_trust, MultiAgentRoutePhase, MultiAgentRouteSelection,
+    MultiAgentRouteTable, MultiAgentRouteTrustInput,
 };
 
 pub const MULTI_CHANNEL_ROUTE_BINDINGS_FILE_NAME: &str = "multi-channel-route-bindings.json";
 const MULTI_CHANNEL_ROUTE_BINDINGS_SCHEMA_VERSION: u32 = 1;
 const WILDCARD_SELECTOR: &str = "*";
+const TRUST_SCORE_KEY: &str = "trust_score";
+const TRUST_SCORES_KEY: &str = "trust_scores";
+const TRUST_UPDATED_UNIX_MS_KEY: &str = "trust_updated_unix_ms";
 
 fn multi_channel_route_bindings_schema_version() -> u32 {
     MULTI_CHANNEL_ROUTE_BINDINGS_SCHEMA_VERSION
@@ -22,7 +26,12 @@ fn default_route_binding_selector() -> String {
     WILDCARD_SELECTOR.to_string()
 }
 
+fn default_trust_score_source() -> String {
+    TRUST_SCORE_KEY.to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelRouteBindingFile` used across Tau components.
 pub struct MultiChannelRouteBindingFile {
     #[serde(default = "multi_channel_route_bindings_schema_version")]
     pub schema_version: u32,
@@ -40,6 +49,7 @@ impl Default for MultiChannelRouteBindingFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `MultiChannelRouteBinding` used across Tau components.
 pub struct MultiChannelRouteBinding {
     pub binding_id: String,
     #[serde(default = "default_route_binding_selector")]
@@ -56,9 +66,16 @@ pub struct MultiChannelRouteBinding {
     pub category_hint: String,
     #[serde(default)]
     pub session_key_template: String,
+    #[serde(default = "default_trust_score_source")]
+    pub trust_score_source: String,
+    #[serde(default)]
+    pub trust_score_threshold: Option<u8>,
+    #[serde(default)]
+    pub trust_stale_after_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `MultiChannelRouteDecision` used across Tau components.
 pub struct MultiChannelRouteDecision {
     pub binding_id: String,
     pub matched: bool,
@@ -71,6 +88,12 @@ pub struct MultiChannelRouteDecision {
     pub attempt_roles: Vec<String>,
     pub selected_category: Option<String>,
     pub session_key: String,
+    pub trust_status: String,
+    pub trust_score: Option<u8>,
+    pub trust_threshold: Option<u8>,
+    pub trust_stale: bool,
+    pub trust_score_source: Option<String>,
+    pub trust_input_source: Option<String>,
 }
 
 pub fn load_multi_channel_route_bindings_for_state_dir(
@@ -113,19 +136,39 @@ pub fn resolve_multi_channel_event_route(
     let default_phase = default_phase_for_event(event.event_kind);
     let matched_binding = select_best_binding(bindings, event, &account_id);
     let matched = matched_binding.is_some();
-    let (binding_id, requested_category, phase, specificity, session_key_template) =
-        if let Some((binding, specificity)) = matched_binding {
-            (
-                binding.binding_id.clone(),
-                normalize_optional_text(Some(binding.category_hint.as_str())),
-                binding.phase.unwrap_or(default_phase),
-                specificity,
-                normalize_optional_text(Some(binding.session_key_template.as_str()))
-                    .unwrap_or_default(),
-            )
-        } else {
-            ("default".to_string(), None, default_phase, 0, String::new())
-        };
+    let (
+        binding_id,
+        requested_category,
+        phase,
+        specificity,
+        session_key_template,
+        trust_score_source_key,
+        trust_score_threshold,
+        trust_stale_after_seconds,
+    ) = if let Some((binding, specificity)) = matched_binding {
+        (
+            binding.binding_id.clone(),
+            normalize_optional_text(Some(binding.category_hint.as_str())),
+            binding.phase.unwrap_or(default_phase),
+            specificity,
+            normalize_optional_text(Some(binding.session_key_template.as_str()))
+                .unwrap_or_default(),
+            normalize_optional_text(Some(binding.trust_score_source.as_str())),
+            binding.trust_score_threshold,
+            binding.trust_stale_after_seconds,
+        )
+    } else {
+        (
+            "default".to_string(),
+            None,
+            default_phase,
+            0,
+            String::new(),
+            None,
+            None,
+            None,
+        )
+    };
 
     let event_text_category = normalize_optional_text(Some(event.text.as_str()));
     let category_lookup = if matches!(phase, MultiAgentRoutePhase::DelegatedStep) {
@@ -135,7 +178,18 @@ pub fn resolve_multi_channel_event_route(
     } else {
         None
     };
-    let selection = select_multi_agent_route(route_table, phase, category_lookup);
+    let (trust_input, trust_input_source) = build_route_trust_input(
+        event,
+        trust_score_source_key.as_deref(),
+        trust_score_threshold,
+        trust_stale_after_seconds,
+    );
+    let selection = select_multi_agent_route_with_trust(
+        route_table,
+        phase,
+        category_lookup,
+        trust_input.as_ref(),
+    );
     let selected_category = selection
         .category
         .clone()
@@ -164,6 +218,12 @@ pub fn resolve_multi_channel_event_route(
         attempt_roles: selection.attempt_roles,
         selected_category,
         session_key,
+        trust_status: selection.trust_status,
+        trust_score: selection.trust_score,
+        trust_threshold: selection.trust_threshold,
+        trust_stale: selection.trust_stale,
+        trust_score_source: selection.trust_score_source,
+        trust_input_source,
     }
 }
 
@@ -208,6 +268,12 @@ pub fn route_decision_trace_payload(
         "fallback_roles": decision.fallback_roles,
         "attempt_roles": decision.attempt_roles,
         "session_key": decision.session_key,
+        "trust_status": decision.trust_status,
+        "trust_score": decision.trust_score,
+        "trust_threshold": decision.trust_threshold,
+        "trust_stale": decision.trust_stale,
+        "trust_score_source": decision.trust_score_source,
+        "trust_input_source": decision.trust_input_source,
     })
 }
 
@@ -239,8 +305,121 @@ fn normalize_multi_channel_route_bindings(
         binding.session_key_template =
             normalize_optional_text(Some(binding.session_key_template.as_str()))
                 .unwrap_or_default();
+        binding.trust_score_source =
+            normalize_optional_text(Some(binding.trust_score_source.as_str()))
+                .unwrap_or_else(default_trust_score_source);
+        if let Some(threshold) = binding.trust_score_threshold {
+            if threshold > 100 {
+                bail!(
+                    "binding '{}' trust_score_threshold {} exceeds 100",
+                    binding.binding_id,
+                    threshold
+                );
+            }
+        }
+        if let Some(stale_after) = binding.trust_stale_after_seconds {
+            if stale_after == 0 {
+                bail!(
+                    "binding '{}' trust_stale_after_seconds must be greater than 0",
+                    binding.binding_id
+                );
+            }
+        }
     }
     Ok(())
+}
+
+fn build_route_trust_input(
+    event: &MultiChannelInboundEvent,
+    preferred_source_key: Option<&str>,
+    minimum_score: Option<u8>,
+    stale_after_seconds: Option<u64>,
+) -> (Option<MultiAgentRouteTrustInput>, Option<String>) {
+    let mut role_scores = BTreeMap::new();
+    let mut global_score = None;
+    let mut source = None;
+
+    if let Some(source_key) = preferred_source_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(value) = event.metadata.get(source_key) {
+            source = Some(source_key.to_string());
+            if let Some(score) = parse_trust_score_u8(value) {
+                global_score = Some(score);
+            } else if let Some(parsed_map) = parse_trust_score_map(value) {
+                role_scores = parsed_map;
+            }
+        }
+    }
+
+    if role_scores.is_empty() {
+        if let Some(value) = event.metadata.get(TRUST_SCORES_KEY) {
+            if let Some(parsed_map) = parse_trust_score_map(value) {
+                if !parsed_map.is_empty() {
+                    source.get_or_insert_with(|| TRUST_SCORES_KEY.to_string());
+                    role_scores = parsed_map;
+                }
+            }
+        }
+    }
+    if global_score.is_none() {
+        if let Some(value) = event.metadata.get(TRUST_SCORE_KEY) {
+            if let Some(score) = parse_trust_score_u8(value) {
+                source.get_or_insert_with(|| TRUST_SCORE_KEY.to_string());
+                global_score = Some(score);
+            }
+        }
+    }
+
+    let updated_unix_ms = event
+        .metadata
+        .get(TRUST_UPDATED_UNIX_MS_KEY)
+        .and_then(Value::as_u64);
+
+    if role_scores.is_empty()
+        && global_score.is_none()
+        && minimum_score.is_none()
+        && stale_after_seconds.is_none()
+        && updated_unix_ms.is_none()
+    {
+        return (None, source);
+    }
+
+    (
+        Some(MultiAgentRouteTrustInput {
+            global_score,
+            role_scores,
+            minimum_score,
+            updated_unix_ms,
+            now_unix_ms: current_unix_timestamp_ms(),
+            stale_after_seconds,
+        }),
+        source,
+    )
+}
+
+fn parse_trust_score_u8(value: &Value) -> Option<u8> {
+    let parsed = value.as_u64()?;
+    if parsed > 100 {
+        return None;
+    }
+    u8::try_from(parsed).ok()
+}
+
+fn parse_trust_score_map(value: &Value) -> Option<BTreeMap<String, u8>> {
+    let object = value.as_object()?;
+    let mut scores = BTreeMap::new();
+    for (role, score) in object {
+        let role = role.trim();
+        if role.is_empty() {
+            continue;
+        }
+        if let Some(parsed_score) = parse_trust_score_u8(score) {
+            scores.insert(role.to_string(), parsed_score);
+        }
+    }
+    Some(scores)
 }
 
 fn normalize_selector(raw: &str, lowercase: bool) -> Result<String> {
@@ -388,6 +567,7 @@ mod tests {
 
     use super::*;
     use crate::multi_channel_contract::{MultiChannelEventKind, MultiChannelTransport};
+    use tau_orchestrator::multi_agent_router::MultiAgentRoleProfile;
 
     fn sample_event() -> MultiChannelInboundEvent {
         MultiChannelInboundEvent {
@@ -407,6 +587,36 @@ mod tests {
                 Value::String("discord-main".to_string()),
             )]),
         }
+    }
+
+    fn trust_weighted_route_table(
+        primary_weight: Option<u16>,
+        fallback_weight: Option<u16>,
+    ) -> MultiAgentRouteTable {
+        let mut table = MultiAgentRouteTable::default();
+        table.roles = BTreeMap::from([
+            (
+                "primary".to_string(),
+                MultiAgentRoleProfile {
+                    trust_weight: primary_weight,
+                    ..MultiAgentRoleProfile::default()
+                },
+            ),
+            (
+                "fallback".to_string(),
+                MultiAgentRoleProfile {
+                    trust_weight: fallback_weight,
+                    ..MultiAgentRoleProfile::default()
+                },
+            ),
+        ]);
+        table.planner.role = "primary".to_string();
+        table.planner.fallback_roles = vec!["fallback".to_string()];
+        table.delegated.role = "primary".to_string();
+        table.delegated.fallback_roles = vec!["fallback".to_string()];
+        table.review.role = "primary".to_string();
+        table.review.fallback_roles = vec!["fallback".to_string()];
+        table
     }
 
     #[test]
@@ -434,6 +644,34 @@ mod tests {
     }
 
     #[test]
+    fn unit_build_route_trust_input_prefers_binding_source_key() {
+        let mut event = sample_event();
+        event.metadata.insert(
+            "provider_scores".to_string(),
+            serde_json::json!({
+                "primary": 92,
+                "fallback": 31,
+                "ignored": 250
+            }),
+        );
+        event.metadata.insert(
+            "trust_scores".to_string(),
+            serde_json::json!({
+                "primary": 5
+            }),
+        );
+        let (trust_input, source) =
+            build_route_trust_input(&event, Some("provider_scores"), Some(40), Some(300));
+        let trust_input = trust_input.expect("trust input");
+        assert_eq!(source.as_deref(), Some("provider_scores"));
+        assert_eq!(trust_input.minimum_score, Some(40));
+        assert_eq!(trust_input.stale_after_seconds, Some(300));
+        assert_eq!(trust_input.role_scores.get("primary"), Some(&92));
+        assert_eq!(trust_input.role_scores.get("fallback"), Some(&31));
+        assert!(!trust_input.role_scores.contains_key("ignored"));
+    }
+
+    #[test]
     fn functional_route_binding_trace_payload_includes_routing_context() {
         let bindings = parse_multi_channel_route_bindings(
             r#"{
@@ -453,6 +691,38 @@ mod tests {
         assert_eq!(payload["binding_id"], "ops");
         assert_eq!(payload["session_key"], "discord:ops-room:default");
         assert_eq!(payload["event_key"], event_key);
+        assert_eq!(payload["trust_status"], "disabled");
+    }
+
+    #[test]
+    fn functional_route_binding_applies_trust_weighted_selection_from_role_scores() {
+        let bindings = parse_multi_channel_route_bindings(
+            r#"{
+  "schema_version": 1,
+  "bindings": [
+    { "binding_id": "ops", "transport": "discord", "account_id": "discord-main", "conversation_id": "*", "actor_id": "*", "phase": "planner", "trust_score_source": "trust_scores", "trust_score_threshold": 50 }
+  ]
+}"#,
+        )
+        .expect("parse bindings");
+        let mut event = sample_event();
+        event.metadata.insert(
+            "trust_scores".to_string(),
+            serde_json::json!({
+                "primary": 90,
+                "fallback": 60
+            }),
+        );
+        let route_table = trust_weighted_route_table(Some(100), Some(180));
+        let decision = resolve_multi_channel_event_route(&bindings, &route_table, &event);
+        assert_eq!(decision.binding_id, "ops");
+        assert_eq!(decision.selected_role, "fallback");
+        assert_eq!(decision.attempt_roles, vec!["fallback", "primary"]);
+        assert_eq!(decision.trust_status, "trust_weighted");
+        assert_eq!(decision.trust_score, Some(60));
+        assert_eq!(decision.trust_threshold, Some(50));
+        assert_eq!(decision.trust_score_source.as_deref(), Some("role_scores"));
+        assert_eq!(decision.trust_input_source.as_deref(), Some("trust_scores"));
     }
 
     #[test]
@@ -464,6 +734,35 @@ mod tests {
         assert_eq!(decision.binding_id, "default");
         assert_eq!(decision.session_key, "ops-room");
         assert_eq!(decision.selected_role, "default");
+    }
+
+    #[test]
+    fn integration_route_binding_supports_custom_trust_provider_score_key() {
+        let bindings = parse_multi_channel_route_bindings(
+            r#"{
+  "schema_version": 1,
+  "bindings": [
+    { "binding_id": "provider", "transport": "discord", "account_id": "discord-main", "conversation_id": "*", "actor_id": "*", "phase": "planner", "trust_score_source": "provider_trust", "trust_score_threshold": 70 }
+  ]
+}"#,
+        )
+        .expect("parse bindings");
+        let mut event = sample_event();
+        event
+            .metadata
+            .insert("provider_trust".to_string(), Value::from(88_u64));
+        let decision =
+            resolve_multi_channel_event_route(&bindings, &MultiAgentRouteTable::default(), &event);
+        assert_eq!(decision.binding_id, "provider");
+        assert_eq!(decision.selected_role, "default");
+        assert_eq!(decision.trust_status, "trust_weighted");
+        assert_eq!(decision.trust_score, Some(88));
+        assert_eq!(decision.trust_threshold, Some(70));
+        assert_eq!(decision.trust_score_source.as_deref(), Some("global_score"));
+        assert_eq!(
+            decision.trust_input_source.as_deref(),
+            Some("provider_trust")
+        );
     }
 
     #[test]
@@ -488,6 +787,29 @@ mod tests {
     }
 
     #[test]
+    fn regression_route_binding_low_trust_keeps_original_fallback_order() {
+        let bindings = parse_multi_channel_route_bindings(
+            r#"{
+  "schema_version": 1,
+  "bindings": [
+    { "binding_id": "ops", "transport": "discord", "account_id": "discord-main", "conversation_id": "*", "actor_id": "*", "phase": "planner", "trust_score_threshold": 95 }
+  ]
+}"#,
+        )
+        .expect("parse bindings");
+        let mut event = sample_event();
+        event
+            .metadata
+            .insert("trust_score".to_string(), Value::from(40_u64));
+        let route_table = trust_weighted_route_table(Some(100), Some(150));
+        let decision = resolve_multi_channel_event_route(&bindings, &route_table, &event);
+        assert_eq!(decision.selected_role, "primary");
+        assert_eq!(decision.attempt_roles, vec!["primary", "fallback"]);
+        assert_eq!(decision.trust_status, "fallback_low_trust");
+        assert_eq!(decision.trust_score, Some(40));
+    }
+
+    #[test]
     fn regression_parse_route_bindings_rejects_duplicate_binding_ids() {
         let error = parse_multi_channel_route_bindings(
             r#"{
@@ -500,5 +822,21 @@ mod tests {
         )
         .expect_err("duplicate binding ids should fail");
         assert!(error.to_string().contains("duplicate binding_id 'dup'"));
+    }
+
+    #[test]
+    fn regression_parse_route_bindings_rejects_invalid_trust_threshold() {
+        let error = parse_multi_channel_route_bindings(
+            r#"{
+  "schema_version": 1,
+  "bindings": [
+    { "binding_id": "invalid", "transport": "*", "account_id": "*", "conversation_id": "*", "actor_id": "*", "trust_score_threshold": 120 }
+  ]
+}"#,
+        )
+        .expect_err("threshold above 100 should fail");
+        assert!(error
+            .to_string()
+            .contains("trust_score_threshold 120 exceeds 100"));
     }
 }

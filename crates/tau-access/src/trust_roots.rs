@@ -3,9 +3,9 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tau_core::write_text_atomic;
-use tau_skills::TrustedKey;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Public struct `TrustedRootRecord` used across Tau components.
 pub struct TrustedRootRecord {
     pub id: String,
     pub public_key: String,
@@ -24,11 +24,19 @@ enum TrustedRootFileFormat {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Public struct `TrustMutationReport` used across Tau components.
 pub struct TrustMutationReport {
     pub added: usize,
     pub updated: usize,
     pub revoked: usize,
     pub rotated: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TrustedKey` used across Tau components.
+pub struct TrustedKey {
+    pub id: String,
+    pub public_key: String,
 }
 
 pub fn parse_trusted_root_spec(raw: &str) -> Result<TrustedKey> {

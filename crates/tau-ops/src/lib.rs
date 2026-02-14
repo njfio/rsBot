@@ -1,7 +1,22 @@
+//! Operator command runtime implementations for Tau.
+//!
+//! Contains command catalog and runtime handlers for canvas, daemon, macros,
+//! project indexing, QA loops, channel store admin, and transport health ops.
+
+mod canvas_commands;
 mod channel_store_admin;
+mod command_catalog;
 mod daemon_runtime;
+mod macro_commands;
+mod project_index;
+mod qa_loop_commands;
 mod transport_health;
 
+pub use canvas_commands::*;
 pub use channel_store_admin::*;
+pub use command_catalog::*;
 pub use daemon_runtime::*;
+pub use macro_commands::*;
+pub use project_index::*;
+pub use qa_loop_commands::*;
 pub use transport_health::*;

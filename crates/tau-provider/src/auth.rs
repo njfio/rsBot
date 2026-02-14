@@ -5,6 +5,7 @@ use tau_cli::Cli;
 use crate::types::{AuthCommandConfig, ProviderAuthMethod};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `ProviderAuthCapability` used across Tau components.
 pub struct ProviderAuthCapability {
     pub method: ProviderAuthMethod,
     pub supported: bool,

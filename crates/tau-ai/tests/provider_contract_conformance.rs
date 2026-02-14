@@ -3,7 +3,8 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tau_ai::{
     AnthropicClient, AnthropicConfig, ChatRequest, ChatResponse, GoogleClient, GoogleConfig,
-    LlmClient, Message, OpenAiAuthScheme, OpenAiClient, OpenAiConfig, TauAiError, ToolDefinition,
+    LlmClient, Message, OpenAiAuthScheme, OpenAiClient, OpenAiConfig, TauAiError, ToolChoice,
+    ToolDefinition,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +58,8 @@ fn tool_request(model: &str) -> ChatRequest {
             description: "Read a file".to_string(),
             parameters: json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
         }],
+        tool_choice: Some(ToolChoice::Auto),
+        json_mode: false,
         max_tokens: Some(128),
         temperature: Some(0.0),
     }
@@ -67,6 +70,8 @@ fn prompt_request(model: &str) -> ChatRequest {
         model: model.to_string(),
         messages: vec![Message::user("hello")],
         tools: vec![],
+        tool_choice: None,
+        json_mode: false,
         max_tokens: None,
         temperature: None,
     }

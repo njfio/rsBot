@@ -1,19 +1,27 @@
+//! Terminal UI primitives and rendering contracts for Tau interfaces.
+//!
+//! Contains reusable TUI components, view-model types, and rendering helpers
+//! used by interactive terminal surfaces.
+
 use std::{fmt, path::Path};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Trait contract for `Component` behavior.
 pub trait Component {
     fn render(&self, width: usize) -> Vec<String>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Public struct `Cursor` used across Tau components.
 pub struct Cursor {
     pub line: usize,
     pub column: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `EditorBuffer` used across Tau components.
 pub struct EditorBuffer {
     lines: Vec<String>,
     cursor: Cursor,
@@ -173,6 +181,7 @@ impl EditorBuffer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Public struct `Theme` used across Tau components.
 pub struct Theme {
     pub name: String,
     pub palette: ThemePalette,
@@ -219,6 +228,7 @@ impl Theme {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Public struct `ThemePalette` used across Tau components.
 pub struct ThemePalette {
     pub primary: String,
     pub secondary: String,
@@ -273,6 +283,7 @@ impl ThemePalette {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `ThemeRole` values.
 pub enum ThemeRole {
     Primary,
     Secondary,
@@ -282,6 +293,7 @@ pub enum ThemeRole {
 }
 
 #[derive(Debug, Error)]
+/// Enumerates supported `ThemeError` values.
 pub enum ThemeError {
     #[error("failed to parse theme JSON: {0}")]
     Parse(#[from] serde_json::Error),
@@ -298,6 +310,7 @@ pub enum ThemeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `Text` used across Tau components.
 pub struct Text {
     content: String,
 }
@@ -317,6 +330,7 @@ impl Component for Text {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `LumaImage` used across Tau components.
 pub struct LumaImage {
     width: usize,
     height: usize,
@@ -383,6 +397,7 @@ impl Component for LumaImage {
 }
 
 #[derive(Debug, Error)]
+/// Enumerates supported `ImageError` values.
 pub enum ImageError {
     #[error("image dimensions must be greater than zero")]
     EmptyDimensions,
@@ -393,6 +408,7 @@ pub enum ImageError {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Public struct `EditorView` used across Tau components.
 pub struct EditorView<'a> {
     buffer: &'a EditorBuffer,
     viewport_top: usize,
@@ -477,6 +493,7 @@ impl Component for EditorView<'_> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `RenderOp` values.
 pub enum RenderOp {
     Update { line: usize, content: String },
     ClearFrom { line: usize },
@@ -492,6 +509,7 @@ impl fmt::Display for RenderOp {
 }
 
 #[derive(Default, Debug, Clone)]
+/// Public struct `DiffRenderer` used across Tau components.
 pub struct DiffRenderer {
     previous: Vec<String>,
 }

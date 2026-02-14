@@ -7,14 +7,15 @@ use tokio::time::sleep;
 
 use crate::{
     retry::{
-        is_retryable_http_error, new_request_id, next_backoff_ms_with_jitter,
+        is_retryable_http_error, new_request_id, parse_retry_after_ms, provider_retry_delay_ms,
         retry_budget_allows_delay, should_retry_status,
     },
-    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
-    StreamDeltaHandler, TauAiError, ToolDefinition,
+    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MediaSource, Message,
+    MessageRole, StreamDeltaHandler, TauAiError, ToolChoice, ToolDefinition,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Enumerates supported `OpenAiAuthScheme` values.
 pub enum OpenAiAuthScheme {
     #[default]
     Bearer,
@@ -22,6 +23,7 @@ pub enum OpenAiAuthScheme {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `OpenAiConfig` used across Tau components.
 pub struct OpenAiConfig {
     pub api_base: String,
     pub api_key: String,
@@ -35,6 +37,7 @@ pub struct OpenAiConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `OpenAiClient` used across Tau components.
 pub struct OpenAiClient {
     client: reqwest::Client,
     config: OpenAiConfig,
@@ -169,10 +172,14 @@ impl OpenAiClient {
                         return parse_chat_response(&raw);
                     }
 
+                    let retry_after_ms = parse_retry_after_ms(response.headers());
                     let raw = response.text().await?;
                     if attempt < max_retries && should_retry_status(status.as_u16()) {
-                        let backoff_ms =
-                            next_backoff_ms_with_jitter(attempt, self.config.retry_jitter);
+                        let backoff_ms = provider_retry_delay_ms(
+                            attempt,
+                            self.config.retry_jitter,
+                            retry_after_ms,
+                        );
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         if retry_budget_allows_delay(
                             elapsed_ms,
@@ -192,7 +199,7 @@ impl OpenAiClient {
                 Err(error) => {
                     if attempt < max_retries && is_retryable_http_error(&error) {
                         let backoff_ms =
-                            next_backoff_ms_with_jitter(attempt, self.config.retry_jitter);
+                            provider_retry_delay_ms(attempt, self.config.retry_jitter, None);
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         if retry_budget_allows_delay(
                             elapsed_ms,
@@ -225,6 +232,18 @@ fn build_chat_request_body(request: &ChatRequest) -> Result<Value, TauAiError> {
         body["tools"] = to_openai_tools(&request.tools);
     }
 
+    if let Some(tool_choice) = request.tool_choice.as_ref() {
+        if !request.tools.is_empty() || matches!(tool_choice, ToolChoice::None) {
+            body["tool_choice"] = to_openai_tool_choice(tool_choice);
+        }
+    }
+
+    if request.json_mode {
+        body["response_format"] = json!({
+            "type": "json_object",
+        });
+    }
+
     if let Some(max_tokens) = request.max_tokens {
         body["max_tokens"] = json!(max_tokens);
     }
@@ -234,6 +253,20 @@ fn build_chat_request_body(request: &ChatRequest) -> Result<Value, TauAiError> {
     }
 
     Ok(body)
+}
+
+fn to_openai_tool_choice(tool_choice: &ToolChoice) -> Value {
+    match tool_choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Tool { name } => json!({
+            "type": "function",
+            "function": {
+                "name": name,
+            }
+        }),
+    }
 }
 
 fn to_openai_tools(tools: &[ToolDefinition]) -> Value {
@@ -261,11 +294,11 @@ fn to_openai_messages(messages: &[Message]) -> Result<Vec<Value>, TauAiError> {
         match message.role {
             MessageRole::System => serialized.push(json!({
                 "role": "system",
-                "content": message.text_content(),
+                "content": flatten_message_with_media_markers(message),
             })),
             MessageRole::User => serialized.push(json!({
                 "role": "user",
-                "content": message.text_content(),
+                "content": to_openai_user_content(message),
             })),
             MessageRole::Assistant => {
                 let tool_calls: Vec<Value> = message
@@ -283,7 +316,7 @@ fn to_openai_messages(messages: &[Message]) -> Result<Vec<Value>, TauAiError> {
                     })
                     .collect();
 
-                let text = message.text_content();
+                let text = flatten_message_with_media_markers(message);
                 let content = if text.trim().is_empty() && !tool_calls.is_empty() {
                     Value::Null
                 } else {
@@ -313,7 +346,7 @@ fn to_openai_messages(messages: &[Message]) -> Result<Vec<Value>, TauAiError> {
                 let mut tool_message = json!({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
-                    "content": message.text_content(),
+                    "content": flatten_message_with_media_markers(message),
                 });
 
                 if let Some(name) = &message.tool_name {
@@ -328,6 +361,92 @@ fn to_openai_messages(messages: &[Message]) -> Result<Vec<Value>, TauAiError> {
     Ok(serialized)
 }
 
+fn to_openai_user_content(message: &Message) -> Value {
+    let has_non_text_block = message
+        .content
+        .iter()
+        .any(|block| !matches!(block, ContentBlock::Text { .. }));
+    if !has_non_text_block {
+        return Value::String(message.text_content());
+    }
+
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(json!({
+                        "type": "text",
+                        "text": text,
+                    }));
+                }
+            }
+            ContentBlock::Image { source } => {
+                parts.push(to_openai_image_part(source));
+            }
+            ContentBlock::Audio { source } => {
+                parts.push(json!({
+                    "type": "text",
+                    "text": format!("[tau-audio:{}]", media_source_descriptor(source)),
+                }));
+            }
+            ContentBlock::ToolCall { .. } => {}
+        }
+    }
+
+    if parts.is_empty() {
+        Value::String(String::new())
+    } else {
+        Value::Array(parts)
+    }
+}
+
+fn to_openai_image_part(source: &MediaSource) -> Value {
+    match source {
+        MediaSource::Url { url } => json!({
+            "type": "image_url",
+            "image_url": { "url": url },
+        }),
+        MediaSource::Base64 { mime_type, data } => {
+            let data_url = format!("data:{mime_type};base64,{data}");
+            json!({
+                "type": "image_url",
+                "image_url": { "url": data_url },
+            })
+        }
+    }
+}
+
+fn flatten_message_with_media_markers(message: &Message) -> String {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(text.clone());
+                }
+            }
+            ContentBlock::ToolCall { .. } => {}
+            ContentBlock::Image { source } => {
+                parts.push(format!("[tau-image:{}]", media_source_descriptor(source)));
+            }
+            ContentBlock::Audio { source } => {
+                parts.push(format!("[tau-audio:{}]", media_source_descriptor(source)));
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn media_source_descriptor(source: &MediaSource) -> String {
+    match source {
+        MediaSource::Url { url } => format!("url:{url}"),
+        MediaSource::Base64 { mime_type, data } => {
+            format!("base64:{mime_type}:{}bytes", data.len())
+        }
+    }
+}
+
 fn parse_chat_response(raw: &str) -> Result<ChatResponse, TauAiError> {
     let parsed: OpenAiChatResponse = serde_json::from_str(raw)?;
     let choice =
@@ -335,11 +454,7 @@ fn parse_chat_response(raw: &str) -> Result<ChatResponse, TauAiError> {
             TauAiError::InvalidResponse("response contained no choices".to_string())
         })?;
 
-    let text = extract_text(&choice.message.content);
-    let mut content = Vec::new();
-    if !text.trim().is_empty() {
-        content.push(ContentBlock::Text { text });
-    }
+    let mut content = parse_openai_content_blocks(&choice.message.content);
 
     if let Some(tool_calls) = choice.message.tool_calls {
         for tool_call in tool_calls {
@@ -566,31 +681,127 @@ fn finalize_stream_response(
     }
 }
 
-fn extract_text(content: &Option<Value>) -> String {
+fn parse_openai_content_blocks(content: &Option<Value>) -> Vec<ContentBlock> {
     match content {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(text)) => text.clone(),
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(text)) => {
+            if text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![ContentBlock::Text { text: text.clone() }]
+            }
+        }
         Some(Value::Array(parts)) => parts
             .iter()
             .filter_map(|part| part.as_object())
-            .filter_map(|obj| {
-                if obj.get("type").and_then(Value::as_str) == Some("text") {
-                    obj.get("text")
-                } else {
-                    None
-                }
-            })
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join(""),
-        Some(other) => match other {
-            Value::Number(number) => number.to_string(),
-            Value::Bool(flag) => flag.to_string(),
-            Value::Object(_) | Value::Array(_) => other.to_string(),
-            Value::String(text) => text.clone(),
-            Value::Null => String::new(),
-        },
+            .filter_map(parse_openai_array_part)
+            .collect(),
+        Some(other) => {
+            let rendered = match other {
+                Value::Number(number) => number.to_string(),
+                Value::Bool(flag) => flag.to_string(),
+                Value::Object(_) | Value::Array(_) => other.to_string(),
+                Value::String(text) => text.clone(),
+                Value::Null => String::new(),
+            };
+            if rendered.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![ContentBlock::Text { text: rendered }]
+            }
+        }
     }
+}
+
+fn parse_openai_array_part(part: &serde_json::Map<String, Value>) -> Option<ContentBlock> {
+    match part.get("type").and_then(Value::as_str).unwrap_or("text") {
+        "text" | "output_text" | "input_text" => {
+            let text = part.get("text").and_then(Value::as_str).unwrap_or_default();
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(ContentBlock::Text {
+                    text: text.to_string(),
+                })
+            }
+        }
+        "image_url" | "input_image" => parse_openai_image_from_part(part),
+        "input_audio" => parse_openai_audio_from_part(part),
+        _ => {
+            let text = part.get("text").and_then(Value::as_str).unwrap_or_default();
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(ContentBlock::Text {
+                    text: text.to_string(),
+                })
+            }
+        }
+    }
+}
+
+fn parse_openai_image_from_part(part: &serde_json::Map<String, Value>) -> Option<ContentBlock> {
+    if let Some(url) = part
+        .get("image_url")
+        .and_then(Value::as_object)
+        .and_then(|image| image.get("url"))
+        .and_then(Value::as_str)
+    {
+        return Some(ContentBlock::Image {
+            source: MediaSource::Url {
+                url: url.to_string(),
+            },
+        });
+    }
+
+    if let Some(url) = part.get("image_url").and_then(Value::as_str) {
+        return Some(ContentBlock::Image {
+            source: MediaSource::Url {
+                url: url.to_string(),
+            },
+        });
+    }
+
+    None
+}
+
+fn parse_openai_audio_from_part(part: &serde_json::Map<String, Value>) -> Option<ContentBlock> {
+    let audio = part
+        .get("input_audio")
+        .or_else(|| part.get("audio"))
+        .and_then(Value::as_object)?;
+
+    if let Some(url) = audio
+        .get("url")
+        .or_else(|| audio.get("audio_url"))
+        .and_then(Value::as_str)
+    {
+        return Some(ContentBlock::Audio {
+            source: MediaSource::Url {
+                url: url.to_string(),
+            },
+        });
+    }
+
+    if let Some(data) = audio
+        .get("data")
+        .or_else(|| audio.get("audio_data"))
+        .and_then(Value::as_str)
+    {
+        let mime_type = audio
+            .get("mime_type")
+            .or_else(|| audio.get("format"))
+            .and_then(Value::as_str)
+            .unwrap_or("audio/wav");
+        return Some(ContentBlock::Audio {
+            source: MediaSource::Base64 {
+                mime_type: mime_type.to_string(),
+                data: data.to_string(),
+            },
+        });
+    }
+
+    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -678,7 +889,7 @@ mod tests {
     use super::{
         apply_stream_data, build_chat_request_body, finalize_stream_response, parse_chat_response,
     };
-    use crate::{ChatRequest, ContentBlock, Message, ToolDefinition};
+    use crate::{ChatRequest, ContentBlock, Message, MessageRole, ToolChoice, ToolDefinition};
 
     #[test]
     fn serializes_assistant_tool_calls_for_openai() {
@@ -705,6 +916,8 @@ mod tests {
                     "required": ["path"]
                 }),
             }],
+            tool_choice: Some(ToolChoice::Required),
+            json_mode: true,
             max_tokens: Some(512),
             temperature: Some(0.0),
         };
@@ -716,6 +929,47 @@ mod tests {
         );
         assert_eq!(body["messages"][3]["role"], "tool");
         assert_eq!(body["tools"][0]["function"]["name"], "read");
+        assert_eq!(body["tool_choice"], json!("required"));
+        assert_eq!(body["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn functional_serializes_named_tool_choice() {
+        let request = ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: "Read a file".to_string(),
+                parameters: json!({"type":"object"}),
+            }],
+            tool_choice: Some(ToolChoice::Tool {
+                name: "read".to_string(),
+            }),
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_chat_request_body(&request).expect("request body must serialize");
+        assert_eq!(body["tool_choice"]["type"], "function");
+        assert_eq!(body["tool_choice"]["function"]["name"], "read");
+    }
+
+    #[test]
+    fn regression_omits_non_none_tool_choice_when_tools_are_absent() {
+        let request = ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: Some(ToolChoice::Auto),
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_chat_request_body(&request).expect("request body must serialize");
+        assert!(body.get("tool_choice").is_none());
     }
 
     #[test]
@@ -746,6 +1000,79 @@ mod tests {
         assert_eq!(response.message.tool_calls().len(), 1);
         assert_eq!(response.usage.total_tokens, 14);
         assert_eq!(response.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn unit_serializes_user_multimodal_parts_for_openai() {
+        let multimodal_message = Message {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::text("Inspect this"),
+                ContentBlock::image_url("https://example.com/cat.png"),
+                ContentBlock::audio_base64("audio/wav", "UklGRiQAAABXQVZF"),
+            ],
+            tool_call_id: None,
+            tool_name: None,
+            is_error: false,
+        };
+        let request = ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![multimodal_message],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_chat_request_body(&request).expect("request body must serialize");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(body["messages"][0]["content"][1]["type"], "image_url");
+        assert_eq!(
+            body["messages"][0]["content"][1]["image_url"]["url"],
+            "https://example.com/cat.png"
+        );
+        assert_eq!(body["messages"][0]["content"][2]["type"], "text");
+        assert!(body["messages"][0]["content"][2]["text"]
+            .as_str()
+            .expect("audio fallback marker should be a string")
+            .contains("[tau-audio:"));
+    }
+
+    #[test]
+    fn functional_parses_multimodal_content_blocks_from_response() {
+        let raw = r#"{
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type":"text","text":"caption"},
+                        {"type":"image_url","image_url":{"url":"https://example.com/cat.png"}},
+                        {"type":"input_audio","input_audio":{"format":"audio/mpeg","data":"QUJDREVGRw=="}}
+                    ],
+                    "tool_calls": null
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14
+            }
+        }"#;
+
+        let response = parse_chat_response(raw).expect("response must parse");
+        assert_eq!(response.message.text_content(), "caption");
+        assert!(response
+            .message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. })));
+        assert!(response
+            .message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Audio { .. })));
     }
 
     #[test]

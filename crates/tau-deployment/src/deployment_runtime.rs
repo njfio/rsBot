@@ -25,6 +25,7 @@ fn deployment_runtime_state_schema_version() -> u32 {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `DeploymentRuntimeConfig` used across Tau components.
 pub struct DeploymentRuntimeConfig {
     pub fixture_path: PathBuf,
     pub state_dir: PathBuf,
@@ -35,6 +36,7 @@ pub struct DeploymentRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `DeploymentRuntimeSummary` used across Tau components.
 pub struct DeploymentRuntimeSummary {
     pub discovered_cases: usize,
     pub queued_cases: usize,

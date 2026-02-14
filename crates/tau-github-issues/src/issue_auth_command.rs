@@ -1,10 +1,12 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `TauIssueAuthCommandKind` values.
 pub enum TauIssueAuthCommandKind {
     Status,
     Matrix,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauIssueAuthCommand` used across Tau components.
 pub struct TauIssueAuthCommand {
     pub kind: TauIssueAuthCommandKind,
     pub args: String,

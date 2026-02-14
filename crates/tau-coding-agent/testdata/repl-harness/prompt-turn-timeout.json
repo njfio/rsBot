@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "name": "prompt-turn-timeout",
+  "args": [
+    "--model",
+    "openai/gpt-4o-mini",
+    "--api-base",
+    "{{API_BASE}}/v1",
+    "--openai-api-key",
+    "test-openai-key",
+    "--turn-timeout-ms",
+    "20",
+    "--no-session"
+  ],
+  "stdin_script": "slow prompt from fixture\n/quit\n",
+  "timeout_ms": 7000,
+  "expect": {
+    "success": true,
+    "min_prompt_count": 2,
+    "stdout_contains": [
+      "request timed out"
+    ],
+    "stdout_not_contains": [
+      "delayed response"
+    ],
+    "stderr_not_contains": [
+      "panic"
+    ]
+  }
+}

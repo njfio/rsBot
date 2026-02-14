@@ -1,3 +1,8 @@
+//! CLI argument models and validation utilities for Tau binaries.
+//!
+//! Exposes clap-backed command/flag types plus validation helpers shared by
+//! startup, diagnostics, and runtime command dispatch layers.
+
 pub mod cli_args;
 pub mod cli_types;
 pub mod command_file;

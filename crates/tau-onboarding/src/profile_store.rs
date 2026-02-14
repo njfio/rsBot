@@ -9,6 +9,7 @@ use crate::startup_config::ProfileDefaults;
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `ProfileStoreFile` used across Tau components.
 pub struct ProfileStoreFile {
     pub schema_version: u32,
     pub profiles: BTreeMap<String, ProfileDefaults>,

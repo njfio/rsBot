@@ -9,6 +9,7 @@ use tau_provider::is_executable_available;
 use crate::onboarding_paths::resolve_tau_root;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `OnboardingExecutableCheck` used across Tau components.
 pub struct OnboardingExecutableCheck {
     pub integration: String,
     pub executable: String,
@@ -17,6 +18,7 @@ pub struct OnboardingExecutableCheck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `OnboardingDaemonBootstrapReport` used across Tau components.
 pub struct OnboardingDaemonBootstrapReport {
     pub requested_install: bool,
     pub requested_start: bool,
@@ -28,6 +30,7 @@ pub struct OnboardingDaemonBootstrapReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `OnboardingReport` used across Tau components.
 pub struct OnboardingReport {
     pub schema_version: u32,
     pub generated_at_ms: u64,

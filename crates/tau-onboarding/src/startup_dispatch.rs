@@ -11,6 +11,7 @@ use tau_tools::tools::ToolPolicy;
 use crate::startup_policy::{resolve_startup_policy, StartupPolicyBundle};
 use crate::startup_prompt_composition::compose_startup_system_prompt;
 
+/// Public struct `StartupRuntimeDispatchContext` used across Tau components.
 pub struct StartupRuntimeDispatchContext {
     pub effective_skills_dir: PathBuf,
     pub skills_lock_path: PathBuf,
@@ -18,6 +19,7 @@ pub struct StartupRuntimeDispatchContext {
     pub startup_policy: StartupPolicyBundle,
 }
 
+/// Public struct `StartupRuntimeResolution` used across Tau components.
 pub struct StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient> {
     pub model_ref: TModelRef,
     pub fallback_model_refs: TFallbackModelRefs,
@@ -112,6 +114,7 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `StartupModelRuntimeResolution` used across Tau components.
 pub struct StartupModelRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient> {
     pub model_ref: TModelRef,
     pub fallback_model_refs: TFallbackModelRefs,
@@ -154,7 +157,83 @@ where
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+type ResolveModelsCallback<'a, TModelRef, TFallbackModelRefs> =
+    Box<dyn FnOnce(&Cli) -> Result<(TModelRef, TFallbackModelRefs)> + 'a>;
+type ResolveModelCatalogCallback<'a, TModelCatalog> = Box<
+    dyn for<'b> FnOnce(&'b Cli) -> Pin<Box<dyn Future<Output = Result<TModelCatalog>> + 'b>> + 'a,
+>;
+type ValidateModelCatalogCallback<'a, TModelRef, TFallbackModelRefs, TModelCatalog> =
+    Box<dyn FnOnce(&TModelCatalog, &TModelRef, &TFallbackModelRefs) -> Result<()> + 'a>;
+type BuildClientWithFallbacksCallback<'a, TModelRef, TFallbackModelRefs, TClient> =
+    Box<dyn FnOnce(&Cli, &TModelRef, &TFallbackModelRefs) -> Result<TClient> + 'a>;
+type RunSkillsBootstrapCallback<'a, TSkillsBootstrap> = Box<
+    dyn for<'b> FnOnce(&'b Cli) -> Pin<Box<dyn Future<Output = Result<TSkillsBootstrap>> + 'b>>
+        + 'a,
+>;
+type ExecutePackageActivateOnStartupCallback<'a, TPackageActivation> =
+    Box<dyn FnOnce(&Cli) -> Result<Option<TPackageActivation>> + 'a>;
+type ResolveBootstrapLockPathCallback<'a, TSkillsBootstrap> =
+    Box<dyn FnOnce(&TSkillsBootstrap) -> PathBuf + 'a>;
+type BuildRenderOptionsCallback<'a, TRenderOptions> = Box<dyn FnOnce(&Cli) -> TRenderOptions + 'a>;
+type RunTransportModeIfRequestedCallback<'a, TModelRef, TClient, TRenderOptions> = Box<
+    dyn for<'b> FnOnce(
+            &'b Cli,
+            &'b TClient,
+            &'b TModelRef,
+            &'b str,
+            &'b ToolPolicy,
+            TRenderOptions,
+        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'b>>
+        + 'a,
+>;
+type RunLocalRuntimeCallback<
+    'a,
+    TModelRef,
+    TFallbackModelRefs,
+    TModelCatalog,
+    TClient,
+    TRenderOptions,
+> = Box<
+    dyn for<'b> FnOnce(
+            &'b Cli,
+            TClient,
+            TModelRef,
+            TFallbackModelRefs,
+            TModelCatalog,
+            String,
+            ToolPolicy,
+            Value,
+            TRenderOptions,
+            PathBuf,
+            PathBuf,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + 'b>>
+        + 'a,
+>;
+
+/// Request payload for `resolve_startup_runtime_from_cli`.
+pub struct ResolveStartupRuntimeFromCliRequest<
+    'a,
+    TModelRef,
+    TFallbackModelRefs,
+    TModelCatalog,
+    TClient,
+    TSkillsBootstrap,
+    TPackageActivation,
+> {
+    pub cli: &'a Cli,
+    pub resolve_models: ResolveModelsCallback<'a, TModelRef, TFallbackModelRefs>,
+    pub resolve_model_catalog: ResolveModelCatalogCallback<'a, TModelCatalog>,
+    pub validate_model_catalog:
+        ValidateModelCatalogCallback<'a, TModelRef, TFallbackModelRefs, TModelCatalog>,
+    pub build_client_with_fallbacks:
+        BuildClientWithFallbacksCallback<'a, TModelRef, TFallbackModelRefs, TClient>,
+    pub run_skills_bootstrap: RunSkillsBootstrapCallback<'a, TSkillsBootstrap>,
+    pub execute_package_activate_on_startup:
+        ExecutePackageActivateOnStartupCallback<'a, TPackageActivation>,
+    pub resolve_bootstrap_lock_path: ResolveBootstrapLockPathCallback<'a, TSkillsBootstrap>,
+}
+
+// Generic resolver intentionally keeps injected dependencies explicit for deterministic tests.
 pub async fn resolve_startup_runtime_from_cli<
     TModelRef,
     TFallbackModelRefs,
@@ -162,34 +241,27 @@ pub async fn resolve_startup_runtime_from_cli<
     TClient,
     TSkillsBootstrap,
     TPackageActivation,
-    FResolveModels,
-    FResolveModelCatalog,
-    FValidateModelCatalog,
-    FBuildClientWithFallbacks,
-    FRunSkillsBootstrap,
-    FExecutePackageActivateOnStartup,
-    FResolveBootstrapLockPath,
 >(
-    cli: &Cli,
-    resolve_models: FResolveModels,
-    resolve_model_catalog: FResolveModelCatalog,
-    validate_model_catalog: FValidateModelCatalog,
-    build_client_with_fallbacks: FBuildClientWithFallbacks,
-    run_skills_bootstrap: FRunSkillsBootstrap,
-    execute_package_activate_on_startup: FExecutePackageActivateOnStartup,
-    resolve_bootstrap_lock_path: FResolveBootstrapLockPath,
-) -> Result<StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient>>
-where
-    FResolveModels: FnOnce(&Cli) -> Result<(TModelRef, TFallbackModelRefs)>,
-    FResolveModelCatalog:
-        for<'a> FnOnce(&'a Cli) -> Pin<Box<dyn Future<Output = Result<TModelCatalog>> + 'a>>,
-    FValidateModelCatalog: FnOnce(&TModelCatalog, &TModelRef, &TFallbackModelRefs) -> Result<()>,
-    FBuildClientWithFallbacks: FnOnce(&Cli, &TModelRef, &TFallbackModelRefs) -> Result<TClient>,
-    FRunSkillsBootstrap:
-        for<'a> FnOnce(&'a Cli) -> Pin<Box<dyn Future<Output = Result<TSkillsBootstrap>> + 'a>>,
-    FExecutePackageActivateOnStartup: FnOnce(&Cli) -> Result<Option<TPackageActivation>>,
-    FResolveBootstrapLockPath: FnOnce(&TSkillsBootstrap) -> PathBuf,
-{
+    request: ResolveStartupRuntimeFromCliRequest<
+        '_,
+        TModelRef,
+        TFallbackModelRefs,
+        TModelCatalog,
+        TClient,
+        TSkillsBootstrap,
+        TPackageActivation,
+    >,
+) -> Result<StartupRuntimeResolution<TModelRef, TFallbackModelRefs, TModelCatalog, TClient>> {
+    let ResolveStartupRuntimeFromCliRequest {
+        cli,
+        resolve_models,
+        resolve_model_catalog,
+        validate_model_catalog,
+        build_client_with_fallbacks,
+        run_skills_bootstrap,
+        execute_package_activate_on_startup,
+        resolve_bootstrap_lock_path,
+    } = request;
     let StartupModelRuntimeResolution {
         model_ref,
         fallback_model_refs,
@@ -219,8 +291,9 @@ where
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn execute_startup_runtime_from_cli_with_modes<
+/// Request payload for `execute_startup_runtime_from_cli_with_modes`.
+pub struct ExecuteStartupRuntimeFromCliWithModesRequest<
+    'a,
     TModelRef,
     TFallbackModelRefs,
     TModelCatalog,
@@ -228,65 +301,53 @@ pub async fn execute_startup_runtime_from_cli_with_modes<
     TSkillsBootstrap,
     TPackageActivation,
     TRenderOptions,
-    FResolveModels,
-    FResolveModelCatalog,
-    FValidateModelCatalog,
-    FBuildClientWithFallbacks,
-    FRunSkillsBootstrap,
-    FExecutePackageActivateOnStartup,
-    FResolveBootstrapLockPath,
-    FBuildRenderOptions,
-    FRunTransportModeIfRequested,
-    FRunLocalRuntime,
->(
-    cli: &Cli,
-    resolve_models: FResolveModels,
-    resolve_model_catalog: FResolveModelCatalog,
-    validate_model_catalog: FValidateModelCatalog,
-    build_client_with_fallbacks: FBuildClientWithFallbacks,
-    run_skills_bootstrap: FRunSkillsBootstrap,
-    execute_package_activate_on_startup: FExecutePackageActivateOnStartup,
-    resolve_bootstrap_lock_path: FResolveBootstrapLockPath,
-    build_render_options: FBuildRenderOptions,
-    run_transport_mode_if_requested: FRunTransportModeIfRequested,
-    run_local_runtime: FRunLocalRuntime,
-) -> Result<()>
-where
-    FResolveModels: FnOnce(&Cli) -> Result<(TModelRef, TFallbackModelRefs)>,
-    FResolveModelCatalog:
-        for<'a> FnOnce(&'a Cli) -> Pin<Box<dyn Future<Output = Result<TModelCatalog>> + 'a>>,
-    FValidateModelCatalog: FnOnce(&TModelCatalog, &TModelRef, &TFallbackModelRefs) -> Result<()>,
-    FBuildClientWithFallbacks: FnOnce(&Cli, &TModelRef, &TFallbackModelRefs) -> Result<TClient>,
-    FRunSkillsBootstrap:
-        for<'a> FnOnce(&'a Cli) -> Pin<Box<dyn Future<Output = Result<TSkillsBootstrap>> + 'a>>,
-    FExecutePackageActivateOnStartup: FnOnce(&Cli) -> Result<Option<TPackageActivation>>,
-    FResolveBootstrapLockPath: FnOnce(&TSkillsBootstrap) -> PathBuf,
-    FBuildRenderOptions: FnOnce(&Cli) -> TRenderOptions,
-    TRenderOptions: Clone,
-    FRunTransportModeIfRequested:
-        for<'a> FnOnce(
-            &'a Cli,
-            &'a TClient,
-            &'a TModelRef,
-            &'a str,
-            &'a ToolPolicy,
-            TRenderOptions,
-        ) -> Pin<Box<dyn Future<Output = Result<bool>> + 'a>>,
-    FRunLocalRuntime: for<'a> FnOnce(
-        &'a Cli,
-        TClient,
+> {
+    pub cli: &'a Cli,
+    pub resolve_models: ResolveModelsCallback<'a, TModelRef, TFallbackModelRefs>,
+    pub resolve_model_catalog: ResolveModelCatalogCallback<'a, TModelCatalog>,
+    pub validate_model_catalog:
+        ValidateModelCatalogCallback<'a, TModelRef, TFallbackModelRefs, TModelCatalog>,
+    pub build_client_with_fallbacks:
+        BuildClientWithFallbacksCallback<'a, TModelRef, TFallbackModelRefs, TClient>,
+    pub run_skills_bootstrap: RunSkillsBootstrapCallback<'a, TSkillsBootstrap>,
+    pub execute_package_activate_on_startup:
+        ExecutePackageActivateOnStartupCallback<'a, TPackageActivation>,
+    pub resolve_bootstrap_lock_path: ResolveBootstrapLockPathCallback<'a, TSkillsBootstrap>,
+    pub build_render_options: BuildRenderOptionsCallback<'a, TRenderOptions>,
+    pub run_transport_mode_if_requested:
+        RunTransportModeIfRequestedCallback<'a, TModelRef, TClient, TRenderOptions>,
+    pub run_local_runtime: RunLocalRuntimeCallback<
+        'a,
         TModelRef,
         TFallbackModelRefs,
         TModelCatalog,
-        String,
-        ToolPolicy,
-        Value,
+        TClient,
         TRenderOptions,
-        PathBuf,
-        PathBuf,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
-{
-    let runtime = resolve_startup_runtime_from_cli(
+    >,
+}
+
+// Generic resolver intentionally keeps injected dependencies explicit for deterministic tests.
+pub async fn execute_startup_runtime_from_cli_with_modes<
+    TModelRef,
+    TFallbackModelRefs,
+    TModelCatalog,
+    TClient,
+    TSkillsBootstrap,
+    TPackageActivation,
+    TRenderOptions: Clone,
+>(
+    request: ExecuteStartupRuntimeFromCliWithModesRequest<
+        '_,
+        TModelRef,
+        TFallbackModelRefs,
+        TModelCatalog,
+        TClient,
+        TSkillsBootstrap,
+        TPackageActivation,
+        TRenderOptions,
+    >,
+) -> Result<()> {
+    let ExecuteStartupRuntimeFromCliWithModesRequest {
         cli,
         resolve_models,
         resolve_model_catalog,
@@ -295,7 +356,20 @@ where
         run_skills_bootstrap,
         execute_package_activate_on_startup,
         resolve_bootstrap_lock_path,
-    )
+        build_render_options,
+        run_transport_mode_if_requested,
+        run_local_runtime,
+    } = request;
+    let runtime = resolve_startup_runtime_from_cli(ResolveStartupRuntimeFromCliRequest {
+        cli,
+        resolve_models,
+        resolve_model_catalog,
+        validate_model_catalog,
+        build_client_with_fallbacks,
+        run_skills_bootstrap,
+        execute_package_activate_on_startup,
+        resolve_bootstrap_lock_path,
+    })
     .await?;
     let render_options = build_render_options(cli);
     execute_startup_runtime_modes(
@@ -380,6 +454,7 @@ mod tests {
         execute_startup_runtime_modes, resolve_runtime_skills_dir,
         resolve_runtime_skills_lock_path, resolve_startup_model_runtime_from_cli,
         resolve_startup_runtime_dispatch_context_from_cli, resolve_startup_runtime_from_cli,
+        ExecuteStartupRuntimeFromCliWithModesRequest, ResolveStartupRuntimeFromCliRequest,
         StartupModelRuntimeResolution, StartupRuntimeResolution,
     };
     use anyhow::{anyhow, Result};
@@ -759,22 +834,26 @@ mod tests {
             model_catalog,
             client,
             runtime_dispatch_context,
-        } = resolve_startup_runtime_from_cli(
-            &cli,
-            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, model, _fallback| Ok(format!("client:{model}")),
-            |_cli| {
+        } = resolve_startup_runtime_from_cli(ResolveStartupRuntimeFromCliRequest {
+            cli: &cli,
+            resolve_models: Box::new(|_cli| {
+                Ok(("primary".to_string(), vec!["fallback".to_string()]))
+            }),
+            resolve_model_catalog: Box::new(|_cli| Box::pin(async { Ok("catalog".to_string()) })),
+            validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+            build_client_with_fallbacks: Box::new(|_cli, model, _fallback| {
+                Ok(format!("client:{model}"))
+            }),
+            run_skills_bootstrap: Box::new(|_cli| {
                 Box::pin(async move {
                     Ok(MockSkillsBootstrap {
                         skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
                     })
                 })
-            },
-            |_cli| Ok(None::<()>),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-        )
+            }),
+            execute_package_activate_on_startup: Box::new(|_cli| Ok(None::<()>)),
+            resolve_bootstrap_lock_path: Box::new(|bootstrap| bootstrap.skills_lock_path.clone()),
+        })
         .await
         .expect("runtime");
 
@@ -805,22 +884,26 @@ mod tests {
         let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
         let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
 
-        let resolution = resolve_startup_runtime_from_cli(
-            &cli,
-            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, model, fallback| Ok(format!("client:{model}+{}", fallback.len())),
-            |_cli| {
+        let resolution = resolve_startup_runtime_from_cli(ResolveStartupRuntimeFromCliRequest {
+            cli: &cli,
+            resolve_models: Box::new(|_cli| {
+                Ok(("primary".to_string(), vec!["fallback".to_string()]))
+            }),
+            resolve_model_catalog: Box::new(|_cli| Box::pin(async { Ok("catalog".to_string()) })),
+            validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+            build_client_with_fallbacks: Box::new(|_cli, model, fallback| {
+                Ok(format!("client:{model}+{}", fallback.len()))
+            }),
+            run_skills_bootstrap: Box::new(|_cli| {
                 Box::pin(async move {
                     Ok(MockSkillsBootstrap {
                         skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
                     })
                 })
-            },
-            |_cli| Ok(Some("activated".to_string())),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-        )
+            }),
+            execute_package_activate_on_startup: Box::new(|_cli| Ok(Some("activated".to_string()))),
+            resolve_bootstrap_lock_path: Box::new(|bootstrap| bootstrap.skills_lock_path.clone()),
+        })
         .await
         .expect("runtime");
 
@@ -844,32 +927,38 @@ mod tests {
         let client_builder_calls = AtomicUsize::new(0);
         let dispatch_calls = AtomicUsize::new(0);
 
-        let result = resolve_startup_runtime_from_cli(
-            &cli,
-            |_cli| -> Result<(String, Vec<String>)> { Err(anyhow!("model resolution failed")) },
-            |_cli| {
+        let result = resolve_startup_runtime_from_cli(ResolveStartupRuntimeFromCliRequest {
+            cli: &cli,
+            resolve_models: Box::new(|_cli| -> Result<(String, Vec<String>)> {
+                Err(anyhow!("model resolution failed"))
+            }),
+            resolve_model_catalog: Box::new(|_cli| {
                 model_catalog_calls.fetch_add(1, Ordering::Relaxed);
                 Box::pin(async { Ok("catalog".to_string()) })
-            },
-            |_catalog: &String, _model: &String, _fallback: &Vec<String>| {
-                model_validation_calls.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            },
-            |_cli, _model: &String, _fallback: &Vec<String>| {
-                client_builder_calls.fetch_add(1, Ordering::Relaxed);
-                Ok("client".to_string())
-            },
-            |_cli| {
+            }),
+            validate_model_catalog: Box::new(
+                |_catalog: &String, _model: &String, _fallback: &Vec<String>| {
+                    model_validation_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+            ),
+            build_client_with_fallbacks: Box::new(
+                |_cli, _model: &String, _fallback: &Vec<String>| {
+                    client_builder_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok("client".to_string())
+                },
+            ),
+            run_skills_bootstrap: Box::new(|_cli| {
                 dispatch_calls.fetch_add(1, Ordering::Relaxed);
                 Box::pin(async move {
                     Ok(MockSkillsBootstrap {
                         skills_lock_path: PathBuf::from("unused"),
                     })
                 })
-            },
-            |_cli| Ok(None::<()>),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-        )
+            }),
+            execute_package_activate_on_startup: Box::new(|_cli| Ok(None::<()>)),
+            resolve_bootstrap_lock_path: Box::new(|bootstrap| bootstrap.skills_lock_path.clone()),
+        })
         .await;
         let error = match result {
             Ok(_) => panic!("model resolution errors should propagate"),
@@ -886,18 +975,26 @@ mod tests {
     #[tokio::test]
     async fn regression_resolve_startup_runtime_from_cli_propagates_dispatch_errors() {
         let cli = parse_cli_with_stack();
-        let result = resolve_startup_runtime_from_cli(
-            &cli,
-            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, _model, _fallback| Ok("client".to_string()),
-            |_cli| Box::pin(async move { Err(anyhow!("skills bootstrap failed")) }),
-            |_cli| -> Result<Option<()>> {
+        let result = resolve_startup_runtime_from_cli(ResolveStartupRuntimeFromCliRequest {
+            cli: &cli,
+            resolve_models: Box::new(|_cli| {
+                Ok(("primary".to_string(), vec!["fallback".to_string()]))
+            }),
+            resolve_model_catalog: Box::new(|_cli| Box::pin(async { Ok("catalog".to_string()) })),
+            validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+            build_client_with_fallbacks: Box::new(|_cli, _model, _fallback| {
+                Ok("client".to_string())
+            }),
+            run_skills_bootstrap: Box::new(|_cli| {
+                Box::pin(async move { Err(anyhow!("skills bootstrap failed")) })
+            }),
+            execute_package_activate_on_startup: Box::new(|_cli| -> Result<Option<()>> {
                 panic!("activation callback should not run when skills bootstrap fails");
-            },
-            |_bootstrap: &MockSkillsBootstrap| PathBuf::from("unused"),
-        )
+            }),
+            resolve_bootstrap_lock_path: Box::new(|_bootstrap: &MockSkillsBootstrap| {
+                PathBuf::from("unused")
+            }),
+        })
         .await;
         let error = match result {
             Ok(_) => panic!("dispatch errors should propagate"),
@@ -916,22 +1013,26 @@ mod tests {
         std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
         let bootstrap_lock_path = workspace.path().join(".tau/skills.lock.json");
         let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
-        let runtime = resolve_startup_runtime_from_cli(
-            &cli,
-            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, model, _fallback| Ok(format!("client:{model}")),
-            |_cli| {
+        let runtime = resolve_startup_runtime_from_cli(ResolveStartupRuntimeFromCliRequest {
+            cli: &cli,
+            resolve_models: Box::new(|_cli| {
+                Ok(("primary".to_string(), vec!["fallback".to_string()]))
+            }),
+            resolve_model_catalog: Box::new(|_cli| Box::pin(async { Ok("catalog".to_string()) })),
+            validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+            build_client_with_fallbacks: Box::new(|_cli, model, _fallback| {
+                Ok(format!("client:{model}"))
+            }),
+            run_skills_bootstrap: Box::new(|_cli| {
                 Box::pin(async move {
                     Ok(MockSkillsBootstrap {
                         skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
                     })
                 })
-            },
-            |_cli| Ok(None::<()>),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-        )
+            }),
+            execute_package_activate_on_startup: Box::new(|_cli| Ok(None::<()>)),
+            resolve_bootstrap_lock_path: Box::new(|bootstrap| bootstrap.skills_lock_path.clone()),
+        })
         .await
         .expect("runtime");
         let expected_skills_dir = cli.skills_dir.clone();
@@ -1138,55 +1239,63 @@ mod tests {
         let bootstrap_lock_path_for_bootstrap = bootstrap_lock_path.clone();
         let transport_calls = AtomicUsize::new(0);
         let local_calls = AtomicUsize::new(0);
-        execute_startup_runtime_from_cli_with_modes(
-            &cli,
-            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, model, _fallback| Ok(format!("client:{model}")),
-            |_cli| {
+        execute_startup_runtime_from_cli_with_modes(ExecuteStartupRuntimeFromCliWithModesRequest {
+            cli: &cli,
+            resolve_models: Box::new(|_cli| {
+                Ok(("primary".to_string(), vec!["fallback".to_string()]))
+            }),
+            resolve_model_catalog: Box::new(|_cli| Box::pin(async { Ok("catalog".to_string()) })),
+            validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+            build_client_with_fallbacks: Box::new(|_cli, model, _fallback| {
+                Ok(format!("client:{model}"))
+            }),
+            run_skills_bootstrap: Box::new(|_cli| {
                 Box::pin(async move {
                     Ok(MockSkillsBootstrap {
                         skills_lock_path: bootstrap_lock_path_for_bootstrap.clone(),
                     })
                 })
-            },
-            |_cli| Ok(None::<()>),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-            |_cli| "render-v3".to_string(),
-            |_cli, _client, _model_ref, _system_prompt, _tool_policy, render_options| {
-                transport_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async move {
-                    assert_eq!(render_options, "render-v3");
-                    Ok(false)
-                })
-            },
-            |_cli,
-             client,
-             model_ref,
-             fallback_model_refs,
-             model_catalog,
-             system_prompt,
-             _tool_policy,
-             tool_policy_json,
-             render_options,
-             effective_skills_dir,
-             skills_lock_path| {
-                local_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async move {
-                    assert_eq!(client, "client:primary");
-                    assert_eq!(model_ref, "primary");
-                    assert_eq!(fallback_model_refs, vec!["fallback".to_string()]);
-                    assert_eq!(model_catalog, "catalog");
-                    assert!(system_prompt.contains("Tau system prompt"));
-                    assert_eq!(render_options, "render-v3");
-                    assert!(tool_policy_json.is_object());
-                    assert_eq!(effective_skills_dir, expected_skills_dir);
-                    assert_eq!(skills_lock_path, bootstrap_lock_path);
-                    Ok(())
-                })
-            },
-        )
+            }),
+            execute_package_activate_on_startup: Box::new(|_cli| Ok(None::<()>)),
+            resolve_bootstrap_lock_path: Box::new(|bootstrap| bootstrap.skills_lock_path.clone()),
+            build_render_options: Box::new(|_cli| "render-v3".to_string()),
+            run_transport_mode_if_requested: Box::new(
+                |_cli, _client, _model_ref, _system_prompt, _tool_policy, render_options| {
+                    transport_calls.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(async move {
+                        assert_eq!(render_options, "render-v3");
+                        Ok(false)
+                    })
+                },
+            ),
+            run_local_runtime: Box::new(
+                |_cli,
+                 client,
+                 model_ref,
+                 fallback_model_refs,
+                 model_catalog,
+                 system_prompt,
+                 _tool_policy,
+                 tool_policy_json,
+                 render_options,
+                 effective_skills_dir,
+                 skills_lock_path| {
+                    local_calls.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(async move {
+                        assert_eq!(client, "client:primary");
+                        assert_eq!(model_ref, "primary");
+                        assert_eq!(fallback_model_refs, vec!["fallback".to_string()]);
+                        assert_eq!(model_catalog, "catalog");
+                        assert!(system_prompt.contains("Tau system prompt"));
+                        assert_eq!(render_options, "render-v3");
+                        assert!(tool_policy_json.is_object());
+                        assert_eq!(effective_skills_dir, expected_skills_dir);
+                        assert_eq!(skills_lock_path, bootstrap_lock_path);
+                        Ok(())
+                    })
+                },
+            ),
+        })
         .await
         .expect("startup execution");
 
@@ -1199,40 +1308,48 @@ mod tests {
     ) {
         let cli = parse_cli_with_stack();
         let local_calls = AtomicUsize::new(0);
-        execute_startup_runtime_from_cli_with_modes(
-            &cli,
-            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, _model, _fallback| Ok("client".to_string()),
-            |_cli| {
+        execute_startup_runtime_from_cli_with_modes(ExecuteStartupRuntimeFromCliWithModesRequest {
+            cli: &cli,
+            resolve_models: Box::new(|_cli| {
+                Ok(("primary".to_string(), vec!["fallback".to_string()]))
+            }),
+            resolve_model_catalog: Box::new(|_cli| Box::pin(async { Ok("catalog".to_string()) })),
+            validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+            build_client_with_fallbacks: Box::new(|_cli, _model, _fallback| {
+                Ok("client".to_string())
+            }),
+            run_skills_bootstrap: Box::new(|_cli| {
                 Box::pin(async move {
                     Ok(MockSkillsBootstrap {
                         skills_lock_path: PathBuf::from(".tau/skills.lock.json"),
                     })
                 })
-            },
-            |_cli| Ok(None::<()>),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-            |_cli| "render-v3".to_string(),
-            |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
-                Box::pin(async { Ok(true) })
-            },
-            |_cli,
-             _client,
-             _model_ref,
-             _fallback_model_refs,
-             _model_catalog,
-             _system_prompt,
-             _tool_policy,
-             _tool_policy_json,
-             _render_options,
-             _effective_skills_dir,
-             _skills_lock_path| {
-                local_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async move { Ok(()) })
-            },
-        )
+            }),
+            execute_package_activate_on_startup: Box::new(|_cli| Ok(None::<()>)),
+            resolve_bootstrap_lock_path: Box::new(|bootstrap| bootstrap.skills_lock_path.clone()),
+            build_render_options: Box::new(|_cli| "render-v3".to_string()),
+            run_transport_mode_if_requested: Box::new(
+                |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
+                    Box::pin(async { Ok(true) })
+                },
+            ),
+            run_local_runtime: Box::new(
+                |_cli,
+                 _client,
+                 _model_ref,
+                 _fallback_model_refs,
+                 _model_catalog,
+                 _system_prompt,
+                 _tool_policy,
+                 _tool_policy_json,
+                 _render_options,
+                 _effective_skills_dir,
+                 _skills_lock_path| {
+                    local_calls.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(async move { Ok(()) })
+                },
+            ),
+        })
         .await
         .expect("startup execution");
 
@@ -1247,39 +1364,53 @@ mod tests {
         let transport_calls = AtomicUsize::new(0);
         let local_calls = AtomicUsize::new(0);
         let result = execute_startup_runtime_from_cli_with_modes(
-            &cli,
-            |_cli| -> Result<(String, Vec<String>)> { Err(anyhow!("model resolution failed")) },
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, _model, _fallback| Ok("client".to_string()),
-            |_cli| {
-                bootstrap_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async move {
-                    Ok(MockSkillsBootstrap {
-                        skills_lock_path: PathBuf::from("unused"),
+            ExecuteStartupRuntimeFromCliWithModesRequest {
+                cli: &cli,
+                resolve_models: Box::new(|_cli| -> Result<(String, Vec<String>)> {
+                    Err(anyhow!("model resolution failed"))
+                }),
+                resolve_model_catalog: Box::new(|_cli| {
+                    Box::pin(async { Ok("catalog".to_string()) })
+                }),
+                validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+                build_client_with_fallbacks: Box::new(|_cli, _model, _fallback| {
+                    Ok("client".to_string())
+                }),
+                run_skills_bootstrap: Box::new(|_cli| {
+                    bootstrap_calls.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(async move {
+                        Ok(MockSkillsBootstrap {
+                            skills_lock_path: PathBuf::from("unused"),
+                        })
                     })
-                })
-            },
-            |_cli| Ok(None::<()>),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-            |_cli| "render-v3".to_string(),
-            |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
-                transport_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async { Ok(false) })
-            },
-            |_cli,
-             _client,
-             _model_ref,
-             _fallback_model_refs,
-             _model_catalog,
-             _system_prompt,
-             _tool_policy,
-             _tool_policy_json,
-             _render_options,
-             _effective_skills_dir,
-             _skills_lock_path| {
-                local_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async move { Ok(()) })
+                }),
+                execute_package_activate_on_startup: Box::new(|_cli| Ok(None::<()>)),
+                resolve_bootstrap_lock_path: Box::new(|bootstrap| {
+                    bootstrap.skills_lock_path.clone()
+                }),
+                build_render_options: Box::new(|_cli| "render-v3".to_string()),
+                run_transport_mode_if_requested: Box::new(
+                    |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
+                        transport_calls.fetch_add(1, Ordering::Relaxed);
+                        Box::pin(async { Ok(false) })
+                    },
+                ),
+                run_local_runtime: Box::new(
+                    |_cli,
+                     _client,
+                     _model_ref,
+                     _fallback_model_refs,
+                     _model_catalog,
+                     _system_prompt,
+                     _tool_policy,
+                     _tool_policy_json,
+                     _render_options,
+                     _effective_skills_dir,
+                     _skills_lock_path| {
+                        local_calls.fetch_add(1, Ordering::Relaxed);
+                        Box::pin(async move { Ok(()) })
+                    },
+                ),
             },
         )
         .await;
@@ -1301,38 +1432,52 @@ mod tests {
         let transport_calls = AtomicUsize::new(0);
         let local_calls = AtomicUsize::new(0);
         let result = execute_startup_runtime_from_cli_with_modes(
-            &cli,
-            |_cli| Ok(("primary".to_string(), vec!["fallback".to_string()])),
-            |_cli| Box::pin(async { Ok("catalog".to_string()) }),
-            |_catalog, _model, _fallback| Ok(()),
-            |_cli, _model, _fallback| Ok("client".to_string()),
-            |_cli| {
-                Box::pin(async move {
-                    Ok(MockSkillsBootstrap {
-                        skills_lock_path: PathBuf::from(".tau/skills.lock.json"),
+            ExecuteStartupRuntimeFromCliWithModesRequest {
+                cli: &cli,
+                resolve_models: Box::new(|_cli| {
+                    Ok(("primary".to_string(), vec!["fallback".to_string()]))
+                }),
+                resolve_model_catalog: Box::new(|_cli| {
+                    Box::pin(async { Ok("catalog".to_string()) })
+                }),
+                validate_model_catalog: Box::new(|_catalog, _model, _fallback| Ok(())),
+                build_client_with_fallbacks: Box::new(|_cli, _model, _fallback| {
+                    Ok("client".to_string())
+                }),
+                run_skills_bootstrap: Box::new(|_cli| {
+                    Box::pin(async move {
+                        Ok(MockSkillsBootstrap {
+                            skills_lock_path: PathBuf::from(".tau/skills.lock.json"),
+                        })
                     })
-                })
-            },
-            |_cli| Ok(None::<()>),
-            |bootstrap| bootstrap.skills_lock_path.clone(),
-            |_cli| "render-v3".to_string(),
-            |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
-                transport_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async { Ok(false) })
-            },
-            |_cli,
-             _client,
-             _model_ref,
-             _fallback_model_refs,
-             _model_catalog,
-             _system_prompt,
-             _tool_policy,
-             _tool_policy_json,
-             _render_options,
-             _effective_skills_dir,
-             _skills_lock_path| {
-                local_calls.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async move { Err(anyhow!("local runtime failed")) })
+                }),
+                execute_package_activate_on_startup: Box::new(|_cli| Ok(None::<()>)),
+                resolve_bootstrap_lock_path: Box::new(|bootstrap| {
+                    bootstrap.skills_lock_path.clone()
+                }),
+                build_render_options: Box::new(|_cli| "render-v3".to_string()),
+                run_transport_mode_if_requested: Box::new(
+                    |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
+                        transport_calls.fetch_add(1, Ordering::Relaxed);
+                        Box::pin(async { Ok(false) })
+                    },
+                ),
+                run_local_runtime: Box::new(
+                    |_cli,
+                     _client,
+                     _model_ref,
+                     _fallback_model_refs,
+                     _model_catalog,
+                     _system_prompt,
+                     _tool_policy,
+                     _tool_policy_json,
+                     _render_options,
+                     _effective_skills_dir,
+                     _skills_lock_path| {
+                        local_calls.fetch_add(1, Ordering::Relaxed);
+                        Box::pin(async move { Err(anyhow!("local runtime failed")) })
+                    },
+                ),
             },
         )
         .await;

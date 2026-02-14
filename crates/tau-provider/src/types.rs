@@ -4,6 +4,7 @@ use tau_cli::CliProviderAuthMode;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `CredentialStoreEncryptionMode` values.
 pub enum CredentialStoreEncryptionMode {
     None,
     Keyed,
@@ -11,6 +12,7 @@ pub enum CredentialStoreEncryptionMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `ProviderAuthMethod` values.
 pub enum ProviderAuthMethod {
     ApiKey,
     OauthToken,
@@ -41,6 +43,7 @@ impl From<CliProviderAuthMode> for ProviderAuthMethod {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `AuthCommandConfig` used across Tau components.
 pub struct AuthCommandConfig {
     pub credential_store: PathBuf,
     pub credential_store_key: Option<String>,

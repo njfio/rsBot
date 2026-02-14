@@ -6,14 +6,15 @@ use tokio::time::sleep;
 
 use crate::{
     retry::{
-        is_retryable_http_error, new_request_id, next_backoff_ms_with_jitter,
+        is_retryable_http_error, new_request_id, parse_retry_after_ms, provider_retry_delay_ms,
         retry_budget_allows_delay, should_retry_status,
     },
-    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
-    StreamDeltaHandler, TauAiError, ToolDefinition,
+    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MediaSource, Message,
+    MessageRole, StreamDeltaHandler, TauAiError, ToolChoice, ToolDefinition,
 };
 
 #[derive(Debug, Clone)]
+/// Public struct `GoogleConfig` used across Tau components.
 pub struct GoogleConfig {
     pub api_base: String,
     pub api_key: String,
@@ -24,6 +25,7 @@ pub struct GoogleConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `GoogleClient` used across Tau components.
 pub struct GoogleClient {
     client: reqwest::Client,
     config: GoogleConfig,
@@ -150,10 +152,14 @@ impl GoogleClient {
                         return parse_generate_content_response(&raw);
                     }
 
+                    let retry_after_ms = parse_retry_after_ms(response.headers());
                     let raw = response.text().await?;
                     if attempt < max_retries && should_retry_status(status.as_u16()) {
-                        let backoff_ms =
-                            next_backoff_ms_with_jitter(attempt, self.config.retry_jitter);
+                        let backoff_ms = provider_retry_delay_ms(
+                            attempt,
+                            self.config.retry_jitter,
+                            retry_after_ms,
+                        );
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         if retry_budget_allows_delay(
                             elapsed_ms,
@@ -173,7 +179,7 @@ impl GoogleClient {
                 Err(error) => {
                     if attempt < max_retries && is_retryable_http_error(&error) {
                         let backoff_ms =
-                            next_backoff_ms_with_jitter(attempt, self.config.retry_jitter);
+                            provider_retry_delay_ms(attempt, self.config.retry_jitter, None);
                         let elapsed_ms = started.elapsed().as_millis() as u64;
                         if retry_budget_allows_delay(
                             elapsed_ms,
@@ -213,10 +219,18 @@ fn build_generate_content_body(request: &ChatRequest) -> Value {
         body["tools"] = json!([{
             "functionDeclarations": request.tools.iter().map(to_google_function_declaration).collect::<Vec<_>>()
         }]);
+        if let Some(tool_choice) = request.tool_choice.as_ref() {
+            body["toolConfig"] = json!({
+                "functionCallingConfig": to_google_function_calling_config(tool_choice),
+            });
+        }
     }
 
-    if request.temperature.is_some() || request.max_tokens.is_some() {
+    if request.temperature.is_some() || request.max_tokens.is_some() || request.json_mode {
         let mut generation_config = json!({});
+        if request.json_mode {
+            generation_config["responseMimeType"] = json!("application/json");
+        }
         if let Some(temperature) = request.temperature {
             generation_config["temperature"] = json!(temperature);
         }
@@ -247,6 +261,24 @@ fn to_google_function_declaration(tool: &ToolDefinition) -> Value {
     })
 }
 
+fn to_google_function_calling_config(tool_choice: &ToolChoice) -> Value {
+    match tool_choice {
+        ToolChoice::Auto => json!({
+            "mode": "AUTO",
+        }),
+        ToolChoice::None => json!({
+            "mode": "NONE",
+        }),
+        ToolChoice::Required => json!({
+            "mode": "ANY",
+        }),
+        ToolChoice::Tool { name } => json!({
+            "mode": "ANY",
+            "allowedFunctionNames": [name],
+        }),
+    }
+}
+
 fn to_google_contents(messages: &[Message]) -> Value {
     Value::Array(
         messages
@@ -254,40 +286,18 @@ fn to_google_contents(messages: &[Message]) -> Value {
             .filter_map(|message| match message.role {
                 MessageRole::System => None,
                 MessageRole::User => {
-                    let text = message.text_content();
-                    if text.trim().is_empty() {
+                    let parts = to_google_parts(message, false);
+                    if parts.is_empty() {
                         None
                     } else {
                         Some(json!({
                             "role": "user",
-                            "parts": [{ "text": text }],
+                            "parts": parts,
                         }))
                     }
                 }
                 MessageRole::Assistant => {
-                    let mut parts = Vec::new();
-                    for block in &message.content {
-                        match block {
-                            ContentBlock::Text { text } => {
-                                if !text.trim().is_empty() {
-                                    parts.push(json!({ "text": text }));
-                                }
-                            }
-                            ContentBlock::ToolCall {
-                                id: _,
-                                name,
-                                arguments,
-                            } => {
-                                parts.push(json!({
-                                    "functionCall": {
-                                        "name": name,
-                                        "args": arguments,
-                                    }
-                                }));
-                            }
-                        }
-                    }
-
+                    let parts = to_google_parts(message, true);
                     if parts.is_empty() {
                         None
                     } else {
@@ -311,7 +321,7 @@ fn to_google_contents(messages: &[Message]) -> Value {
                                 "name": name,
                                 "response": {
                                     "tool_call_id": tool_call_id,
-                                    "content": message.text_content(),
+                                    "content": flatten_message_with_media_markers(message),
                                     "is_error": message.is_error,
                                 }
                             }
@@ -321,6 +331,94 @@ fn to_google_contents(messages: &[Message]) -> Value {
             })
             .collect(),
     )
+}
+
+fn to_google_parts(message: &Message, allow_tool_calls: bool) -> Vec<Value> {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(json!({ "text": text }));
+                }
+            }
+            ContentBlock::ToolCall {
+                id: _,
+                name,
+                arguments,
+            } if allow_tool_calls => {
+                parts.push(json!({
+                    "functionCall": {
+                        "name": name,
+                        "args": arguments,
+                    }
+                }));
+            }
+            ContentBlock::ToolCall { .. } => {}
+            ContentBlock::Image { source } => {
+                parts.push(to_google_media_part(source, "image"));
+            }
+            ContentBlock::Audio { source } => {
+                parts.push(to_google_media_part(source, "audio"));
+            }
+        }
+    }
+    parts
+}
+
+fn to_google_media_part(source: &MediaSource, media_kind: &str) -> Value {
+    match source {
+        MediaSource::Url { url } => json!({
+            "fileData": {
+                "mimeType": default_mime_type(media_kind),
+                "fileUri": url,
+            }
+        }),
+        MediaSource::Base64 { mime_type, data } => json!({
+            "inlineData": {
+                "mimeType": mime_type,
+                "data": data,
+            }
+        }),
+    }
+}
+
+fn flatten_message_with_media_markers(message: &Message) -> String {
+    let mut parts = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => {
+                if !text.trim().is_empty() {
+                    parts.push(text.clone());
+                }
+            }
+            ContentBlock::ToolCall { .. } => {}
+            ContentBlock::Image { source } => {
+                parts.push(format!("[tau-image:{}]", media_source_descriptor(source)));
+            }
+            ContentBlock::Audio { source } => {
+                parts.push(format!("[tau-audio:{}]", media_source_descriptor(source)));
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn media_source_descriptor(source: &MediaSource) -> String {
+    match source {
+        MediaSource::Url { url } => format!("url:{url}"),
+        MediaSource::Base64 { mime_type, data } => {
+            format!("base64:{mime_type}:{}bytes", data.len())
+        }
+    }
+}
+
+fn default_mime_type(media_kind: &str) -> &'static str {
+    if media_kind == "audio" {
+        "audio/wav"
+    } else {
+        "image/png"
+    }
 }
 
 fn parse_generate_content_response(raw: &str) -> Result<ChatResponse, TauAiError> {
@@ -339,18 +437,22 @@ fn parse_generate_content_response(raw: &str) -> Result<ChatResponse, TauAiError
     let mut blocks = Vec::new();
 
     for (index, part) in parts.into_iter().enumerate() {
-        if let Some(text) = part.text {
+        if let Some(text) = part.text.as_ref() {
             if !text.trim().is_empty() {
-                blocks.push(ContentBlock::Text { text });
+                blocks.push(ContentBlock::Text { text: text.clone() });
             }
         }
 
-        if let Some(function_call) = part.function_call {
+        if let Some(function_call) = part.function_call.as_ref() {
             blocks.push(ContentBlock::ToolCall {
                 id: format!("google_call_{}", index + 1),
-                name: function_call.name,
-                arguments: function_call.args.unwrap_or_else(|| json!({})),
+                name: function_call.name.clone(),
+                arguments: function_call.args.clone().unwrap_or_else(|| json!({})),
             });
+        }
+
+        if let Some(media_block) = parse_google_media_part(&part) {
+            blocks.push(media_block);
         }
     }
 
@@ -461,18 +563,21 @@ fn apply_google_stream_data(
                 continue;
             };
             for part in parts {
-                if let Some(delta_text) = part.text {
+                if let Some(delta_text) = part.text.as_ref() {
                     if !delta_text.is_empty() {
-                        text.push_str(&delta_text);
-                        on_delta(delta_text);
+                        text.push_str(delta_text);
+                        on_delta(delta_text.clone());
                     }
                 }
-                if let Some(function_call) = part.function_call {
+                if let Some(function_call) = part.function_call.as_ref() {
                     tool_calls.push(ContentBlock::ToolCall {
                         id: format!("google_stream_call_{}", tool_calls.len() + 1),
-                        name: function_call.name,
-                        arguments: function_call.args.unwrap_or_else(|| json!({})),
+                        name: function_call.name.clone(),
+                        arguments: function_call.args.clone().unwrap_or_else(|| json!({})),
                     });
+                }
+                if let Some(media_block) = parse_google_media_part(&part) {
+                    tool_calls.push(media_block);
                 }
             }
         }
@@ -500,6 +605,37 @@ fn finalize_google_stream_response(
     }
 }
 
+fn parse_google_media_part(part: &GenerateContentPart) -> Option<ContentBlock> {
+    if let Some(inline_data) = &part.inline_data {
+        return Some(media_block_from_mime(
+            &inline_data.mime_type,
+            MediaSource::Base64 {
+                mime_type: inline_data.mime_type.clone(),
+                data: inline_data.data.clone(),
+            },
+        ));
+    }
+
+    if let Some(file_data) = &part.file_data {
+        return Some(media_block_from_mime(
+            &file_data.mime_type,
+            MediaSource::Url {
+                url: file_data.file_uri.clone(),
+            },
+        ));
+    }
+
+    None
+}
+
+fn media_block_from_mime(mime_type: &str, source: MediaSource) -> ContentBlock {
+    if mime_type.to_ascii_lowercase().starts_with("audio/") {
+        ContentBlock::Audio { source }
+    } else {
+        ContentBlock::Image { source }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GenerateContentResponse {
     candidates: Option<Vec<GenerateContentCandidate>>,
@@ -524,12 +660,31 @@ struct GenerateContentPart {
     text: Option<String>,
     #[serde(rename = "functionCall")]
     function_call: Option<GenerateContentFunctionCall>,
+    #[serde(rename = "inlineData")]
+    inline_data: Option<GenerateContentInlineData>,
+    #[serde(rename = "fileData")]
+    file_data: Option<GenerateContentFileData>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GenerateContentFunctionCall {
     name: String,
     args: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerateContentInlineData {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerateContentFileData {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    #[serde(rename = "fileUri")]
+    file_uri: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -551,7 +706,7 @@ mod tests {
         apply_google_stream_data, build_generate_content_body, finalize_google_stream_response,
         parse_generate_content_response,
     };
-    use crate::{ChatRequest, ContentBlock, Message, ToolDefinition};
+    use crate::{ChatRequest, ContentBlock, Message, MessageRole, ToolChoice, ToolDefinition};
 
     #[test]
     fn serializes_tool_calls_and_responses() {
@@ -572,6 +727,10 @@ mod tests {
                 description: "Read file".to_string(),
                 parameters: json!({"type":"object"}),
             }],
+            tool_choice: Some(ToolChoice::Tool {
+                name: "read".to_string(),
+            }),
+            json_mode: true,
             max_tokens: Some(256),
             temperature: Some(0.1),
         };
@@ -586,6 +745,59 @@ mod tests {
             "read"
         );
         assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "read");
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"][0],
+            "read"
+        );
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+    }
+
+    #[test]
+    fn functional_google_tool_choice_none_serializes_to_mode_none() {
+        let request = ChatRequest {
+            model: "gemini-2.5-pro".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![ToolDefinition {
+                name: "read".to_string(),
+                description: "Read file".to_string(),
+                parameters: json!({"type":"object"}),
+            }],
+            tool_choice: Some(ToolChoice::None),
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_generate_content_body(&request);
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "NONE");
+    }
+
+    #[test]
+    fn regression_google_json_mode_preserves_generation_overrides() {
+        let request = ChatRequest {
+            model: "gemini-2.5-pro".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: true,
+            max_tokens: Some(64),
+            temperature: Some(0.2),
+        };
+
+        let body = build_generate_content_body(&request);
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 64);
+        let temperature = body["generationConfig"]["temperature"]
+            .as_f64()
+            .expect("temperature should serialize as f64");
+        assert!((temperature - 0.2).abs() < 1e-6);
     }
 
     #[test]
@@ -610,6 +822,78 @@ mod tests {
         let response = parse_generate_content_response(raw).expect("response must parse");
         assert_eq!(response.message.tool_calls().len(), 1);
         assert_eq!(response.usage.total_tokens, 12);
+    }
+
+    #[test]
+    fn unit_serializes_multimodal_parts_for_google() {
+        let request = ChatRequest {
+            model: "gemini-2.5-pro".to_string(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: vec![
+                    ContentBlock::text("describe"),
+                    ContentBlock::image_base64("image/png", "aW1hZ2VEYXRh"),
+                    ContentBlock::audio_url("https://example.com/audio.wav"),
+                ],
+                tool_call_id: None,
+                tool_name: None,
+                is_error: false,
+            }],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_generate_content_body(&request);
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "describe");
+        assert_eq!(
+            body["contents"][0]["parts"][1]["inlineData"]["mimeType"],
+            "image/png"
+        );
+        assert_eq!(
+            body["contents"][0]["parts"][2]["fileData"]["fileUri"],
+            "https://example.com/audio.wav"
+        );
+        assert_eq!(
+            body["contents"][0]["parts"][2]["fileData"]["mimeType"],
+            "audio/wav"
+        );
+    }
+
+    #[test]
+    fn functional_parses_multimodal_parts_from_google_response() {
+        let raw = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "Working"},
+                        {"fileData": {"mimeType": "image/png", "fileUri": "https://example.com/cat.png"}},
+                        {"inlineData": {"mimeType": "audio/mpeg", "data": "QUJDREVGRw=="}}
+                    ]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 4,
+                "totalTokenCount": 12
+            }
+        }"#;
+
+        let response = parse_generate_content_response(raw).expect("response must parse");
+        assert_eq!(response.message.text_content(), "Working");
+        assert!(response
+            .message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. })));
+        assert!(response
+            .message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Audio { .. })));
     }
 
     #[test]
@@ -660,6 +944,32 @@ mod tests {
             response.message.tool_calls()[0].arguments,
             json!({"path":"README.md"})
         );
+    }
+
+    #[test]
+    fn regression_google_stream_data_parses_media_parts_without_error() {
+        let sink: crate::StreamDeltaHandler = Arc::new(|_delta: String| {});
+        let mut text = String::new();
+        let mut tool_calls = Vec::new();
+        let mut finish_reason = None;
+        let mut usage = crate::ChatUsage::default();
+
+        apply_google_stream_data(
+            r#"{"candidates":[{"content":{"parts":[{"fileData":{"mimeType":"image/png","fileUri":"https://example.com/cat.png"}}]},"finishReason":"STOP"}]}"#,
+            &sink,
+            &mut text,
+            &mut tool_calls,
+            &mut finish_reason,
+            &mut usage,
+        )
+        .expect("media stream chunk parses");
+
+        let response = finalize_google_stream_response(text, tool_calls, finish_reason, usage);
+        assert!(response
+            .message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. })));
     }
 
     #[test]

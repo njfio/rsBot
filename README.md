@@ -21,6 +21,7 @@ Focused guides:
 - Project index workflow: [`docs/guides/project-index.md`](docs/guides/project-index.md)
 - Transports (GitHub/Slack/RPC): [`docs/guides/transports.md`](docs/guides/transports.md)
 - Operator control summary: [`docs/guides/operator-control-summary.md`](docs/guides/operator-control-summary.md)
+- Doc density scorecard: [`docs/guides/doc-density-scorecard.md`](docs/guides/doc-density-scorecard.md)
 - Packages and extensions: [`docs/guides/packages.md`](docs/guides/packages.md)
 - Events and scheduler: [`docs/guides/events.md`](docs/guides/events.md)
 
@@ -36,9 +37,9 @@ Run all commands from repository root.
 Build/test:
 
 ```bash
-cargo fmt
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+./scripts/dev/fast-validate.sh
+# full pre-merge gate:
+./scripts/dev/fast-validate.sh --full
 ```
 
 Bootstrap Tau workspace:

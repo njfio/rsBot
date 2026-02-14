@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "name": "dispatch-mixed-supported",
+  "mode": "dispatch_ndjson",
+  "input_lines": [
+    "{\"schema_version\":0,\"request_id\":\"req-cancel-legacy\",\"kind\":\"run.cancel\",\"payload\":{\"run_id\":\"run-legacy\"}}",
+    "{\"schema_version\":1,\"request_id\":\"req-status-current\",\"kind\":\"run.status\",\"payload\":{\"run_id\":\"run-legacy\"}}",
+    "{\"schema_version\":0,\"request_id\":\"req-timeout-legacy\",\"kind\":\"run.timeout\",\"payload\":{\"run_id\":\"run-legacy\",\"reason\":\"deadline\"}}"
+  ],
+  "expected_processed_lines": 3,
+  "expected_error_count": 0,
+  "expected_responses": [
+    {
+      "schema_version": 1,
+      "request_id": "req-cancel-legacy",
+      "kind": "run.cancelled",
+      "payload": {
+        "status": "cancelled",
+        "terminal": true,
+        "terminal_state": "cancelled",
+        "mode": "preflight",
+        "run_id": "run-legacy"
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-status-current",
+      "kind": "run.status",
+      "payload": {
+        "status": "inactive",
+        "mode": "preflight",
+        "run_id": "run-legacy",
+        "active": false,
+        "known": false,
+        "terminal": false
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-timeout-legacy",
+      "kind": "run.timed_out",
+      "payload": {
+        "status": "timed_out",
+        "terminal": true,
+        "terminal_state": "timed_out",
+        "mode": "preflight",
+        "run_id": "run-legacy",
+        "reason": "deadline"
+      }
+    }
+  ]
+}

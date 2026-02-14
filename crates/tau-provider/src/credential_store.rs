@@ -45,6 +45,7 @@ struct StoredIntegrationCredential {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `ProviderCredentialStoreRecord` used across Tau components.
 pub struct ProviderCredentialStoreRecord {
     pub auth_method: ProviderAuthMethod,
     pub access_token: Option<String>,
@@ -54,6 +55,7 @@ pub struct ProviderCredentialStoreRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `IntegrationCredentialStoreRecord` used across Tau components.
 pub struct IntegrationCredentialStoreRecord {
     pub secret: Option<String>,
     pub revoked: bool,
@@ -61,6 +63,7 @@ pub struct IntegrationCredentialStoreRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CredentialStoreData` used across Tau components.
 pub struct CredentialStoreData {
     pub encryption: CredentialStoreEncryptionMode,
     pub providers: BTreeMap<String, ProviderCredentialStoreRecord>,
@@ -68,6 +71,7 @@ pub struct CredentialStoreData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `RefreshedProviderCredential` used across Tau components.
 pub struct RefreshedProviderCredential {
     pub access_token: String,
     pub refresh_token: Option<String>,

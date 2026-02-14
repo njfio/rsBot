@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "name": "serve-mixed-supported",
+  "mode": "serve_ndjson",
+  "input_lines": [
+    "{\"schema_version\":0,\"request_id\":\"req-start-legacy\",\"kind\":\"run.start\",\"payload\":{\"prompt\":\"hello\"}}",
+    "{\"schema_version\":1,\"request_id\":\"req-status-active\",\"kind\":\"run.status\",\"payload\":{\"run_id\":\"run-req-start-legacy\"}}",
+    "{\"schema_version\":0,\"request_id\":\"req-complete-legacy\",\"kind\":\"run.complete\",\"payload\":{\"run_id\":\"run-req-start-legacy\"}}",
+    "{\"schema_version\":1,\"request_id\":\"req-status-inactive\",\"kind\":\"run.status\",\"payload\":{\"run_id\":\"run-req-start-legacy\"}}"
+  ],
+  "expected_processed_lines": 4,
+  "expected_error_count": 0,
+  "expected_responses": [
+    {
+      "schema_version": 1,
+      "request_id": "req-start-legacy",
+      "kind": "run.accepted",
+      "payload": {
+        "status": "accepted",
+        "mode": "preflight",
+        "prompt_chars": 5,
+        "run_id": "run-req-start-legacy"
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-start-legacy",
+      "kind": "run.stream.tool_events",
+      "payload": {
+        "run_id": "run-req-start-legacy",
+        "event": "run.started",
+        "mode": "preflight",
+        "sequence": 0
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-start-legacy",
+      "kind": "run.stream.assistant_text",
+      "payload": {
+        "run_id": "run-req-start-legacy",
+        "delta": "preflight run accepted (5 prompt chars)",
+        "final": false,
+        "mode": "preflight",
+        "sequence": 1
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-status-active",
+      "kind": "run.status",
+      "payload": {
+        "status": "active",
+        "mode": "preflight",
+        "run_id": "run-req-start-legacy",
+        "active": true,
+        "known": true,
+        "terminal": false
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-complete-legacy",
+      "kind": "run.completed",
+      "payload": {
+        "status": "completed",
+        "terminal": true,
+        "terminal_state": "completed",
+        "mode": "preflight",
+        "run_id": "run-req-start-legacy"
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-complete-legacy",
+      "kind": "run.stream.tool_events",
+      "payload": {
+        "run_id": "run-req-start-legacy",
+        "event": "run.completed",
+        "terminal": true,
+        "terminal_state": "completed",
+        "mode": "preflight",
+        "sequence": 2
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-complete-legacy",
+      "kind": "run.stream.assistant_text",
+      "payload": {
+        "run_id": "run-req-start-legacy",
+        "delta": "run completed",
+        "final": true,
+        "terminal": true,
+        "terminal_state": "completed",
+        "mode": "preflight",
+        "sequence": 3
+      }
+    },
+    {
+      "schema_version": 1,
+      "request_id": "req-status-inactive",
+      "kind": "run.status",
+      "payload": {
+        "status": "completed",
+        "mode": "preflight",
+        "run_id": "run-req-start-legacy",
+        "active": false,
+        "known": true,
+        "terminal": true,
+        "terminal_state": "completed"
+      }
+    }
+  ]
+}

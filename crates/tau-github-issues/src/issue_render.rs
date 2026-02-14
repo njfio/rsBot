@@ -1,5 +1,6 @@
 use std::path::Path;
 
+/// Public struct `IssueEventPromptAttachmentView` used across Tau components.
 pub struct IssueEventPromptAttachmentView<'a> {
     pub source_url: &'a str,
     pub original_name: &'a str,
@@ -10,6 +11,7 @@ pub struct IssueEventPromptAttachmentView<'a> {
     pub expires_unix_ms: Option<u64>,
 }
 
+/// Public struct `IssueArtifactAttachmentView` used across Tau components.
 pub struct IssueArtifactAttachmentView<'a> {
     pub source_url: &'a str,
     pub original_name: &'a str,

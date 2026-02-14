@@ -6,15 +6,69 @@ use tau_agent_core::Agent;
 use tau_ai::MessageRole;
 use tau_orchestrator::{
     OrchestratorPromptRunStatus, OrchestratorRenderOptions, OrchestratorRuntime,
+    PlanFirstPromptPolicyRequest as OrchestratorPlanFirstPromptPolicyRequest,
+    PlanFirstPromptRequest as OrchestratorPlanFirstPromptRequest,
+    PlanFirstPromptRoutingRequest as OrchestratorPlanFirstPromptRoutingRequest,
 };
+use tau_session::SessionRuntime;
 
-use crate::{
-    runtime_loop::run_prompt_with_cancellation, MultiAgentRouteTable, RenderOptions, SessionRuntime,
-};
+use crate::multi_agent_router::MultiAgentRouteTable;
+use crate::runtime_loop::run_prompt_with_cancellation;
+use crate::runtime_types::RenderOptions;
 
 struct OrchestratorRuntimeAdapter<'a> {
     agent: &'a mut Agent,
     session_runtime: &'a mut Option<SessionRuntime>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlanFirstPromptRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: RenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlanFirstPromptPolicyRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: RenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+    pub delegated_policy_context: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlanFirstPromptRoutingRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: RenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+    pub delegated_policy_context: Option<&'a str>,
+    pub route_table: &'a MultiAgentRouteTable,
+    pub route_trace_log_path: Option<&'a Path>,
+}
+
+fn map_render_options(render_options: RenderOptions) -> OrchestratorRenderOptions {
+    OrchestratorRenderOptions {
+        stream_output: render_options.stream_output,
+        stream_delay_ms: render_options.stream_delay_ms,
+    }
 }
 
 #[async_trait(?Send)]
@@ -66,19 +120,10 @@ impl OrchestratorRuntime for OrchestratorRuntimeAdapter<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_plan_first_prompt(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: RenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
+    request: PlanFirstPromptRequest<'_>,
 ) -> Result<()> {
     let mut adapter = OrchestratorRuntimeAdapter {
         agent,
@@ -86,36 +131,25 @@ pub(crate) async fn run_plan_first_prompt(
     };
     tau_orchestrator::run_plan_first_prompt(
         &mut adapter,
-        user_prompt,
-        turn_timeout_ms,
-        OrchestratorRenderOptions {
-            stream_output: render_options.stream_output,
-            stream_delay_ms: render_options.stream_delay_ms,
+        OrchestratorPlanFirstPromptRequest {
+            user_prompt: request.user_prompt,
+            turn_timeout_ms: request.turn_timeout_ms,
+            render_options: map_render_options(request.render_options),
+            max_plan_steps: request.max_plan_steps,
+            max_delegated_steps: request.max_delegated_steps,
+            max_executor_response_chars: request.max_executor_response_chars,
+            max_delegated_step_response_chars: request.max_delegated_step_response_chars,
+            max_delegated_total_response_chars: request.max_delegated_total_response_chars,
+            delegate_steps: request.delegate_steps,
         },
-        max_plan_steps,
-        max_delegated_steps,
-        max_executor_response_chars,
-        max_delegated_step_response_chars,
-        max_delegated_total_response_chars,
-        delegate_steps,
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_plan_first_prompt_with_policy_context(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: RenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
-    delegated_policy_context: Option<&str>,
+    request: PlanFirstPromptPolicyRequest<'_>,
 ) -> Result<()> {
     let mut adapter = OrchestratorRuntimeAdapter {
         agent,
@@ -123,39 +157,26 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
     };
     tau_orchestrator::run_plan_first_prompt_with_policy_context(
         &mut adapter,
-        user_prompt,
-        turn_timeout_ms,
-        OrchestratorRenderOptions {
-            stream_output: render_options.stream_output,
-            stream_delay_ms: render_options.stream_delay_ms,
+        OrchestratorPlanFirstPromptPolicyRequest {
+            user_prompt: request.user_prompt,
+            turn_timeout_ms: request.turn_timeout_ms,
+            render_options: map_render_options(request.render_options),
+            max_plan_steps: request.max_plan_steps,
+            max_delegated_steps: request.max_delegated_steps,
+            max_executor_response_chars: request.max_executor_response_chars,
+            max_delegated_step_response_chars: request.max_delegated_step_response_chars,
+            max_delegated_total_response_chars: request.max_delegated_total_response_chars,
+            delegate_steps: request.delegate_steps,
+            delegated_policy_context: request.delegated_policy_context,
         },
-        max_plan_steps,
-        max_delegated_steps,
-        max_executor_response_chars,
-        max_delegated_step_response_chars,
-        max_delegated_total_response_chars,
-        delegate_steps,
-        delegated_policy_context,
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: RenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
-    delegated_policy_context: Option<&str>,
-    route_table: &MultiAgentRouteTable,
-    route_trace_log_path: Option<&Path>,
+    request: PlanFirstPromptRoutingRequest<'_>,
 ) -> Result<()> {
     let mut adapter = OrchestratorRuntimeAdapter {
         agent,
@@ -163,21 +184,20 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
     };
     tau_orchestrator::run_plan_first_prompt_with_policy_context_and_routing(
         &mut adapter,
-        user_prompt,
-        turn_timeout_ms,
-        OrchestratorRenderOptions {
-            stream_output: render_options.stream_output,
-            stream_delay_ms: render_options.stream_delay_ms,
+        OrchestratorPlanFirstPromptRoutingRequest {
+            user_prompt: request.user_prompt,
+            turn_timeout_ms: request.turn_timeout_ms,
+            render_options: map_render_options(request.render_options),
+            max_plan_steps: request.max_plan_steps,
+            max_delegated_steps: request.max_delegated_steps,
+            max_executor_response_chars: request.max_executor_response_chars,
+            max_delegated_step_response_chars: request.max_delegated_step_response_chars,
+            max_delegated_total_response_chars: request.max_delegated_total_response_chars,
+            delegate_steps: request.delegate_steps,
+            delegated_policy_context: request.delegated_policy_context,
+            route_table: request.route_table,
+            route_trace_log_path: request.route_trace_log_path,
         },
-        max_plan_steps,
-        max_delegated_steps,
-        max_executor_response_chars,
-        max_delegated_step_response_chars,
-        max_delegated_total_response_chars,
-        delegate_steps,
-        delegated_policy_context,
-        route_table,
-        route_trace_log_path,
     )
     .await
 }

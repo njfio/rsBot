@@ -8,8 +8,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use tau_ai::{
-    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, MessageRole,
-    StreamDeltaHandler, TauAiError,
+    ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, MediaSource, Message,
+    MessageRole, StreamDeltaHandler, TauAiError,
 };
 
 const DEFAULT_EXEC_ARGS: &[&str] = &[
@@ -23,6 +23,7 @@ const DEFAULT_EXEC_ARGS: &[&str] = &[
 static OUTPUT_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CodexCliConfig` used across Tau components.
 pub struct CodexCliConfig {
     pub executable: String,
     pub extra_args: Vec<String>,
@@ -30,6 +31,7 @@ pub struct CodexCliConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `CodexCliClient` used across Tau components.
 pub struct CodexCliClient {
     config: CodexCliConfig,
 }
@@ -241,6 +243,12 @@ fn render_codex_exec_prompt(request: &ChatRequest) -> String {
                 } => lines.push(format!(
                     "{{\"tool_call\":{{\"id\":\"{id}\",\"name\":\"{name}\",\"arguments\":{arguments}}}}}"
                 )),
+                ContentBlock::Image { source } => {
+                    lines.push(format!("[tau-image:{}]", media_source_descriptor(source)))
+                }
+                ContentBlock::Audio { source } => {
+                    lines.push(format!("[tau-audio:{}]", media_source_descriptor(source)))
+                }
             }
         }
     }
@@ -264,6 +272,15 @@ fn role_label(role: MessageRole) -> &'static str {
     }
 }
 
+fn media_source_descriptor(source: &MediaSource) -> String {
+    match source {
+        MediaSource::Url { url } => format!("url:{url}"),
+        MediaSource::Base64 { mime_type, data } => {
+            format!("base64:{mime_type}:{}bytes", data.len())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +291,8 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    const TEST_TIMEOUT_MS: u64 = 20_000;
 
     fn test_request() -> ChatRequest {
         ChatRequest {
@@ -294,6 +313,8 @@ mod tests {
                     "required": ["path"]
                 }),
             }],
+            tool_choice: Some(tau_ai::ToolChoice::Auto),
+            json_mode: false,
             max_tokens: None,
             temperature: None,
         }
@@ -333,7 +354,7 @@ printf "mock codex reply" > "$out"
         let client = CodexCliClient::new(CodexCliConfig {
             executable: script.display().to_string(),
             extra_args: vec![],
-            timeout_ms: 5_000,
+            timeout_ms: TEST_TIMEOUT_MS,
         })
         .expect("client");
 
@@ -364,7 +385,7 @@ printf "path independent reply" > "$out"
         let client = CodexCliClient::new(CodexCliConfig {
             executable: script.display().to_string(),
             extra_args: vec![],
-            timeout_ms: 5_000,
+            timeout_ms: TEST_TIMEOUT_MS,
         })
         .expect("client");
 
@@ -386,7 +407,7 @@ printf "stdout fallback reply"
         let client = CodexCliClient::new(CodexCliConfig {
             executable: script.display().to_string(),
             extra_args: vec![],
-            timeout_ms: 5_000,
+            timeout_ms: TEST_TIMEOUT_MS,
         })
         .expect("client");
 
@@ -409,7 +430,7 @@ exit 17
         let client = CodexCliClient::new(CodexCliConfig {
             executable: script.display().to_string(),
             extra_args: vec![],
-            timeout_ms: 5_000,
+            timeout_ms: TEST_TIMEOUT_MS,
         })
         .expect("client");
 
@@ -442,7 +463,7 @@ printf "streamed reply" > "$out"
         let client = CodexCliClient::new(CodexCliConfig {
             executable: script.display().to_string(),
             extra_args: vec![],
-            timeout_ms: 5_000,
+            timeout_ms: TEST_TIMEOUT_MS,
         })
         .expect("client");
         let deltas = Arc::new(Mutex::new(Vec::new()));
@@ -494,5 +515,24 @@ echo "too late"
         assert!(prompt.contains("[user]"));
         assert!(prompt.contains("Tau tools available in caller runtime"));
         assert!(prompt.contains("- read: Read a file"));
+    }
+
+    #[test]
+    fn regression_render_prompt_includes_media_markers() {
+        let mut request = test_request();
+        request.messages.push(Message {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::image_url("https://example.com/cat.png"),
+                ContentBlock::audio_base64("audio/wav", "YXVkaW8="),
+            ],
+            tool_call_id: None,
+            tool_name: None,
+            is_error: false,
+        });
+
+        let prompt = render_codex_exec_prompt(&request);
+        assert!(prompt.contains("[tau-image:"));
+        assert!(prompt.contains("[tau-audio:"));
     }
 }

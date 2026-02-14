@@ -23,6 +23,7 @@ const APPROVAL_STORE_PATH_ENV: &str = "TAU_APPROVAL_STORE_PATH";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `ApprovalRequestStatus` values.
 pub enum ApprovalRequestStatus {
     Pending,
     Approved,
@@ -143,6 +144,7 @@ fn approval_store_default_next_request_id() -> u64 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+/// Enumerates supported `ApprovalAction` values.
 pub enum ApprovalAction {
     ToolBash {
         command: String,
@@ -225,6 +227,7 @@ impl ApprovalAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Enumerates supported `ApprovalGateResult` values.
 pub enum ApprovalGateResult {
     Allowed,
     Denied {
@@ -656,9 +659,10 @@ fn normalize_decision_actor(decision_actor: Option<&str>) -> String {
 
 fn approval_store_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("approvals store lock poisoned")
+    match LOCK.get_or_init(|| Mutex::new(())).lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 fn load_approval_policy(path: &Path) -> Result<ApprovalPolicyFile> {

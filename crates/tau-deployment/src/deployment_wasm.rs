@@ -95,6 +95,7 @@ fn default_channel_automation_runtime_constraints() -> DeploymentWasmRuntimeCons
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DeploymentWasmRuntimeConstraintProfile` used across Tau components.
 pub struct DeploymentWasmRuntimeConstraintProfile {
     pub schema_version: u32,
     pub profile_id: String,
@@ -111,6 +112,7 @@ pub struct DeploymentWasmRuntimeConstraintProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `DeploymentWasmArtifactManifest` used across Tau components.
 pub struct DeploymentWasmArtifactManifest {
     #[serde(default = "deployment_wasm_manifest_schema_version")]
     pub schema_version: u32,
@@ -133,6 +135,7 @@ pub struct DeploymentWasmArtifactManifest {
 }
 
 #[derive(Debug, Clone)]
+/// Public struct `DeploymentWasmPackageConfig` used across Tau components.
 pub struct DeploymentWasmPackageConfig {
     pub module_path: PathBuf,
     pub blueprint_id: String,
@@ -142,6 +145,7 @@ pub struct DeploymentWasmPackageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `DeploymentWasmPackageReport` used across Tau components.
 pub struct DeploymentWasmPackageReport {
     pub blueprint_id: String,
     pub runtime_profile: String,
@@ -158,6 +162,7 @@ pub struct DeploymentWasmPackageReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// Public struct `DeploymentWasmInspectReport` used across Tau components.
 pub struct DeploymentWasmInspectReport {
     pub manifest_path: String,
     pub blueprint_id: String,

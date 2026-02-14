@@ -1,11 +1,13 @@
-#![allow(dead_code)]
-
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tau_contract::{
+    ensure_unique_case_ids, load_fixture_from_path, parse_fixture_with_validation,
+    validate_fixture_header,
+};
 
 pub const BROWSER_AUTOMATION_CONTRACT_SCHEMA_VERSION: u32 = 1;
 
@@ -35,6 +37,7 @@ fn default_timeout_ms() -> u64 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Enumerates supported `BrowserAutomationOutcomeKind` values.
 pub enum BrowserAutomationOutcomeKind {
     Success,
     MalformedInput,
@@ -42,6 +45,7 @@ pub enum BrowserAutomationOutcomeKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `BrowserAutomationCaseExpectation` used across Tau components.
 pub struct BrowserAutomationCaseExpectation {
     pub outcome: BrowserAutomationOutcomeKind,
     pub status_code: u16,
@@ -52,6 +56,7 @@ pub struct BrowserAutomationCaseExpectation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `BrowserAutomationContractCase` used across Tau components.
 pub struct BrowserAutomationContractCase {
     #[serde(default = "browser_automation_contract_schema_version")]
     pub schema_version: u32,
@@ -79,6 +84,7 @@ pub struct BrowserAutomationContractCase {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `BrowserAutomationContractFixture` used across Tau components.
 pub struct BrowserAutomationContractFixture {
     pub schema_version: u32,
     pub name: String,
@@ -88,6 +94,7 @@ pub struct BrowserAutomationContractFixture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `BrowserAutomationContractCapabilities` used across Tau components.
 pub struct BrowserAutomationContractCapabilities {
     pub schema_version: u32,
     pub supported_outcomes: BTreeSet<BrowserAutomationOutcomeKind>,
@@ -97,6 +104,7 @@ pub struct BrowserAutomationContractCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported `BrowserAutomationReplayStep` values.
 pub enum BrowserAutomationReplayStep {
     Success,
     MalformedInput,
@@ -104,6 +112,7 @@ pub enum BrowserAutomationReplayStep {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `BrowserAutomationReplayResult` used across Tau components.
 pub struct BrowserAutomationReplayResult {
     pub step: BrowserAutomationReplayStep,
     pub status_code: u16,
@@ -113,6 +122,7 @@ pub struct BrowserAutomationReplayResult {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `BrowserAutomationReplaySummary` used across Tau components.
 pub struct BrowserAutomationReplaySummary {
     pub discovered_cases: usize,
     pub success_cases: usize,
@@ -121,6 +131,7 @@ pub struct BrowserAutomationReplaySummary {
 }
 
 #[cfg(test)]
+/// Trait contract for `BrowserAutomationContractDriver` behavior.
 pub trait BrowserAutomationContractDriver {
     fn apply_case(
         &mut self,
@@ -131,19 +142,17 @@ pub trait BrowserAutomationContractDriver {
 pub fn parse_browser_automation_contract_fixture(
     raw: &str,
 ) -> Result<BrowserAutomationContractFixture> {
-    let fixture = serde_json::from_str::<BrowserAutomationContractFixture>(raw)
-        .context("failed to parse browser automation contract fixture")?;
-    validate_browser_automation_contract_fixture(&fixture)?;
-    Ok(fixture)
+    parse_fixture_with_validation(
+        raw,
+        "failed to parse browser automation contract fixture",
+        validate_browser_automation_contract_fixture,
+    )
 }
 
 pub fn load_browser_automation_contract_fixture(
     path: &Path,
 ) -> Result<BrowserAutomationContractFixture> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read fixture {}", path.display()))?;
-    parse_browser_automation_contract_fixture(&raw)
-        .with_context(|| format!("invalid fixture {}", path.display()))
+    load_fixture_from_path(path, parse_browser_automation_contract_fixture)
 }
 
 pub fn browser_automation_contract_capabilities() -> BrowserAutomationContractCapabilities {
@@ -235,28 +244,18 @@ pub fn validate_browser_automation_contract_compatibility(
 pub fn validate_browser_automation_contract_fixture(
     fixture: &BrowserAutomationContractFixture,
 ) -> Result<()> {
-    if fixture.schema_version != BROWSER_AUTOMATION_CONTRACT_SCHEMA_VERSION {
-        bail!(
-            "unsupported browser automation contract schema version {} (expected {})",
-            fixture.schema_version,
-            BROWSER_AUTOMATION_CONTRACT_SCHEMA_VERSION
-        );
-    }
-    if fixture.name.trim().is_empty() {
-        bail!("fixture name cannot be empty");
-    }
-    if fixture.cases.is_empty() {
-        bail!("fixture must include at least one case");
-    }
+    validate_fixture_header(
+        "browser automation",
+        fixture.schema_version,
+        BROWSER_AUTOMATION_CONTRACT_SCHEMA_VERSION,
+        &fixture.name,
+        fixture.cases.len(),
+    )?;
 
-    let mut case_ids = HashSet::new();
     for (index, case) in fixture.cases.iter().enumerate() {
         validate_browser_automation_case(case, index)?;
-        let case_id = case.case_id.trim().to_string();
-        if !case_ids.insert(case_id.clone()) {
-            bail!("fixture contains duplicate case_id '{}'", case_id);
-        }
     }
+    ensure_unique_case_ids(fixture.cases.iter().map(|case| case.case_id.as_str()))?;
 
     validate_browser_automation_contract_compatibility(fixture)?;
     Ok(())

@@ -28,6 +28,14 @@ if "--fail" in sys.argv:
     print("forced-failure", file=sys.stderr)
     raise SystemExit(7)
 
+if "--gateway-remote-plan" in sys.argv and "tailscale-funnel" in sys.argv:
+    if "--gateway-openresponses-auth-password" not in sys.argv:
+        print(
+            "gateway remote plan rejected: profile=tailscale-funnel gate=hold reason_codes=tailscale_funnel_missing_password",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
 print("mock-ok " + " ".join(sys.argv[1:]))
 """,
     )
@@ -50,6 +58,11 @@ class DemoSmokeRunnerTests(unittest.TestCase):
         self.assertIn("gateway-service-start", names)
         self.assertIn("gateway-service-status", names)
         self.assertIn("gateway-service-stop", names)
+        self.assertIn("gateway-remote-plan-tailscale-serve", names)
+        self.assertIn(
+            "gateway-remote-plan-fails-closed-missing-funnel-password",
+            names,
+        )
 
     def test_unit_load_manifest_accepts_valid_schema_and_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -118,6 +131,44 @@ class DemoSmokeRunnerTests(unittest.TestCase):
             )
             self.assertEqual(report.failed, 0)
             self.assertGreaterEqual(report.passed, 10)
+
+    def test_functional_run_commands_supports_expected_non_zero_exit_and_stderr_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "manifest.json"
+            binary_path = root / "bin" / "tau-coding-agent"
+            log_dir = root / "logs"
+            write_mock_binary(binary_path)
+            write_file(
+                manifest_path,
+                """{
+  "schema_version": 1,
+  "commands": [
+    {
+      "name": "expected-failure-contract",
+      "expected_exit_code": 7,
+      "stderr_contains": "forced-failure",
+      "args": ["--fail"]
+    }
+  ]
+}
+""",
+            )
+            commands = demo_smoke_runner.load_manifest(manifest_path)
+            report = demo_smoke_runner.run_commands(
+                commands=commands,
+                binary=binary_path,
+                repo_root=root,
+                log_dir=log_dir,
+                keep_going=False,
+            )
+            self.assertEqual(report.total, 1)
+            self.assertEqual(report.passed, 1)
+            self.assertEqual(report.failed, 0)
+            stderr_log = (log_dir / "01-expected-failure-contract.stderr.log").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("forced-failure", stderr_log)
 
     def test_integration_cli_runs_manifest_and_writes_summary(self):
         script_path = SCRIPT_DIR / "demo_smoke_runner.py"
@@ -206,6 +257,39 @@ class DemoSmokeRunnerTests(unittest.TestCase):
         commands = demo_smoke_runner.load_manifest(DEFAULT_MANIFEST)
         names = [command.name for command in commands]
         self.assertEqual(len(names), len(set(names)))
+
+    def test_regression_expected_substring_mismatch_fails_contract(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest_path = root / "manifest.json"
+            binary_path = root / "bin" / "tau-coding-agent"
+            log_dir = root / "logs"
+            write_mock_binary(binary_path)
+            write_file(
+                manifest_path,
+                """{
+  "schema_version": 1,
+  "commands": [
+    {
+      "name": "bad-contract",
+      "expected_exit_code": 7,
+      "stderr_contains": "missing-substring",
+      "args": ["--fail"]
+    }
+  ]
+}
+""",
+            )
+            commands = demo_smoke_runner.load_manifest(manifest_path)
+            report = demo_smoke_runner.run_commands(
+                commands=commands,
+                binary=binary_path,
+                repo_root=root,
+                log_dir=log_dir,
+                keep_going=False,
+            )
+            self.assertEqual(report.passed, 0)
+            self.assertEqual(report.failed, 1)
 
 
 if __name__ == "__main__":
