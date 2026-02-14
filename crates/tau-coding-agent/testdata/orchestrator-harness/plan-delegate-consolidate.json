@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "name": "plan-delegate-consolidate",
+  "prompt": "prepare release plan",
+  "planner_response": "1. implement parser\n2. verify tests",
+  "delegated_step_responses": [
+    "implemented parser",
+    "verified tests"
+  ],
+  "consolidation_response": "parser implemented and tests verified",
+  "expected_route_roles": [
+    "planner",
+    "worker",
+    "reviewer",
+    "reviewer"
+  ]
+}
