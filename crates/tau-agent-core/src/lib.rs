@@ -17,6 +17,7 @@ use tau_ai::{
     ChatRequest, ChatUsage, LlmClient, Message, MessageRole, StreamDeltaHandler, TauAiError,
     ToolCall, ToolChoice, ToolDefinition,
 };
+pub use tau_safety::{DefaultSanitizer, SafetyMode, SafetyPolicy, SafetyStage, Sanitizer};
 use thiserror::Error;
 
 /// Public struct `AgentConfig` used across Tau components.
@@ -342,6 +343,13 @@ pub enum AgentEvent {
         cumulative_cost_usd: f64,
         budget_usd: f64,
     },
+    SafetyPolicyApplied {
+        stage: SafetyStage,
+        mode: SafetyMode,
+        blocked: bool,
+        matched_rules: Vec<String>,
+        reason_codes: Vec<String>,
+    },
 }
 
 /// Enumerates supported `AgentError` values.
@@ -366,6 +374,11 @@ pub enum AgentError {
     },
     #[error("structured output error: {0}")]
     StructuredOutput(String),
+    #[error("safety policy blocked {stage}: reason_codes={reason_codes:?}")]
+    SafetyViolation {
+        stage: String,
+        reason_codes: Vec<String>,
+    },
 }
 
 /// Enumerates supported `AgentDirectMessageError` values.
@@ -387,6 +400,8 @@ pub enum AgentDirectMessageError {
         actual_chars: usize,
         max_chars: usize,
     },
+    #[error("direct message blocked by safety policy: reason_codes={reason_codes:?}")]
+    SafetyViolation { reason_codes: Vec<String> },
 }
 
 /// Public struct `AgentDirectMessagePolicy` used across Tau components.
@@ -464,6 +479,7 @@ const CONTEXT_SUMMARY_MAX_EXCERPTS: usize = 6;
 const MEMORY_RECALL_PREFIX: &str = "[Tau memory recall]";
 const DIRECT_MESSAGE_PREFIX: &str = "[Tau direct message]";
 const REPLAN_ON_TOOL_FAILURE_PROMPT: &str = "One or more tool calls failed. Replan and continue with an alternative approach using available tools. If no viable tool exists, explain what is missing and ask the user for clarification.";
+const TOOL_OUTPUT_BLOCKED_ERROR: &str = "tool output blocked by safety policy";
 const FAILURE_SIGNAL_PHRASES: &[&str] = &[
     "can't",
     "cannot",
@@ -498,6 +514,14 @@ struct MemoryRecallMatch {
     score: f32,
     role: MessageRole,
     text: String,
+}
+
+#[derive(Debug, Clone)]
+struct SafetyInspection {
+    mode: SafetyMode,
+    redacted_text: String,
+    matched_rules: Vec<String>,
+    reason_codes: Vec<String>,
 }
 
 /// Public struct `Agent` used across Tau components.
@@ -541,6 +565,8 @@ pub struct Agent {
     async_handlers: Vec<AsyncEventSender>,
     async_event_metrics: Arc<AsyncEventDispatchMetricsInner>,
     cancellation_token: Option<CooperativeCancellationToken>,
+    safety_policy: SafetyPolicy,
+    sanitizer: Arc<dyn Sanitizer>,
     cumulative_usage: ChatUsage,
     cumulative_cost_usd: f64,
     emitted_cost_alert_thresholds: HashSet<u8>,
@@ -569,6 +595,8 @@ impl Agent {
             async_handlers: Vec::new(),
             async_event_metrics: Arc::new(AsyncEventDispatchMetricsInner::default()),
             cancellation_token: None,
+            safety_policy: SafetyPolicy::default(),
+            sanitizer: Arc::new(DefaultSanitizer::new()),
             cumulative_usage: ChatUsage::default(),
             cumulative_cost_usd: 0.0,
             emitted_cost_alert_thresholds: HashSet::new(),
@@ -795,9 +823,12 @@ impl Agent {
         }
         let normalized_content =
             normalize_direct_message_content(content, policy.max_message_chars)?;
+        let sanitized_content = self
+            .sanitize_inbound_text(normalized_content)
+            .map_err(|reason_codes| AgentDirectMessageError::SafetyViolation { reason_codes })?;
         let direct_message = Message::system(format!(
             "{} from={} to={}\n{}",
-            DIRECT_MESSAGE_PREFIX, from_agent_id, to_agent_id, normalized_content
+            DIRECT_MESSAGE_PREFIX, from_agent_id, to_agent_id, sanitized_content
         ));
         self.messages.push(direct_message.clone());
         self.emit(AgentEvent::MessageAdded {
@@ -851,6 +882,21 @@ impl Agent {
     /// Installs or clears a cooperative cancellation token for subsequent runs.
     pub fn set_cancellation_token(&mut self, token: Option<CooperativeCancellationToken>) {
         self.cancellation_token = token;
+    }
+
+    /// Replaces the runtime safety policy.
+    pub fn set_safety_policy(&mut self, policy: SafetyPolicy) {
+        self.safety_policy = policy;
+    }
+
+    /// Returns the active runtime safety policy.
+    pub fn safety_policy(&self) -> &SafetyPolicy {
+        &self.safety_policy
+    }
+
+    /// Replaces the sanitizer implementation.
+    pub fn set_sanitizer(&mut self, sanitizer: Arc<dyn Sanitizer>) {
+        self.sanitizer = sanitizer;
     }
 
     /// Returns the current conversation history.
@@ -1007,6 +1053,12 @@ impl Agent {
         json_mode: bool,
     ) -> Result<Vec<Message>, AgentError> {
         let start_index = self.messages.len();
+        let text = self.sanitize_inbound_text(text).map_err(|reason_codes| {
+            AgentError::SafetyViolation {
+                stage: SafetyStage::InboundMessage.as_str().to_string(),
+                reason_codes,
+            }
+        })?;
         let user_message = Message::user(text);
         self.messages.push(user_message.clone());
         self.emit(AgentEvent::MessageAdded {
@@ -1098,6 +1150,75 @@ impl Agent {
             .as_ref()
             .map(CooperativeCancellationToken::is_cancelled)
             .unwrap_or(false)
+    }
+
+    fn safety_stage_enabled(&self, stage: SafetyStage) -> bool {
+        if !self.safety_policy.enabled {
+            return false;
+        }
+        match stage {
+            SafetyStage::InboundMessage => self.safety_policy.apply_to_inbound_messages,
+            SafetyStage::ToolOutput => self.safety_policy.apply_to_tool_outputs,
+        }
+    }
+
+    fn inspect_safety_text(&self, stage: SafetyStage, text: &str) -> Option<SafetyInspection> {
+        if !self.safety_stage_enabled(stage) || text.trim().is_empty() {
+            return None;
+        }
+        let scan = self
+            .sanitizer
+            .scan(text, self.safety_policy.redaction_token.as_str());
+        if !scan.has_matches() {
+            return None;
+        }
+        let matched_rules = scan.matched_rule_ids();
+        let reason_codes = scan.reason_codes();
+        let mode = self.safety_policy.mode;
+        self.emit(AgentEvent::SafetyPolicyApplied {
+            stage,
+            mode,
+            blocked: matches!(mode, SafetyMode::Block),
+            matched_rules: matched_rules.clone(),
+            reason_codes: reason_codes.clone(),
+        });
+        Some(SafetyInspection {
+            mode,
+            redacted_text: scan.redacted_text,
+            matched_rules,
+            reason_codes,
+        })
+    }
+
+    fn sanitize_inbound_text(&self, text: String) -> Result<String, Vec<String>> {
+        let Some(inspection) = self.inspect_safety_text(SafetyStage::InboundMessage, &text) else {
+            return Ok(text);
+        };
+        match inspection.mode {
+            SafetyMode::Warn => Ok(text),
+            SafetyMode::Redact => Ok(inspection.redacted_text),
+            SafetyMode::Block => Err(inspection.reason_codes),
+        }
+    }
+
+    fn sanitize_tool_result(&self, result: ToolExecutionResult) -> ToolExecutionResult {
+        let text = result.as_text();
+        let Some(inspection) = self.inspect_safety_text(SafetyStage::ToolOutput, &text) else {
+            return result;
+        };
+        match inspection.mode {
+            SafetyMode::Warn => result,
+            SafetyMode::Redact => ToolExecutionResult {
+                content: Value::String(inspection.redacted_text),
+                is_error: result.is_error,
+            },
+            SafetyMode::Block => ToolExecutionResult::error(json!({
+                "error": TOOL_OUTPUT_BLOCKED_ERROR,
+                "stage": SafetyStage::ToolOutput.as_str(),
+                "matched_rules": inspection.matched_rules,
+                "reason_codes": inspection.reason_codes,
+            })),
+        }
     }
 
     fn response_cache_eligible(
@@ -1734,6 +1855,7 @@ impl Agent {
     }
 
     fn record_tool_result(&mut self, call: ToolCall, result: ToolExecutionResult) -> bool {
+        let result = self.sanitize_tool_result(result);
         self.emit(AgentEvent::ToolExecutionEnd {
             tool_call_id: call.id.clone(),
             tool_name: call.name.clone(),
@@ -2630,9 +2752,9 @@ mod tests {
         estimate_usage_cost_usd, extract_json_payload, normalize_cost_alert_thresholds,
         retrieve_memory_matches, stream_retry_buffer_on_delta, truncate_chars, Agent, AgentConfig,
         AgentDirectMessageError, AgentDirectMessagePolicy, AgentError, AgentEvent, AgentTool,
-        AsyncEventDispatchMetrics, CooperativeCancellationToken, StreamingRetryBufferState,
-        ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS, CONTEXT_SUMMARY_PREFIX,
-        DIRECT_MESSAGE_PREFIX, MEMORY_RECALL_PREFIX,
+        AsyncEventDispatchMetrics, CooperativeCancellationToken, SafetyMode, SafetyPolicy,
+        SafetyStage, StreamingRetryBufferState, ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS,
+        CONTEXT_SUMMARY_PREFIX, DIRECT_MESSAGE_PREFIX, MEMORY_RECALL_PREFIX,
     };
 
     struct MockClient {
@@ -3040,4 +3162,7 @@ mod tests {
 
     #[path = "structured_output_and_parallel.rs"]
     mod structured_output_and_parallel;
+
+    #[path = "safety_pipeline.rs"]
+    mod safety_pipeline;
 }

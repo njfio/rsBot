@@ -23,11 +23,15 @@ use crate::multi_channel_outbound::{
 use crate::multi_channel_policy::{
     evaluate_multi_channel_channel_policy, load_multi_channel_policy_for_state_dir,
     MultiChannelAllowFrom, MultiChannelPolicyDecision, MultiChannelPolicyEvaluation,
-    MultiChannelPolicyFile,
+    MultiChannelPolicyFile, MultiChannelSecureMessagingMode,
 };
 use crate::multi_channel_routing::{
     load_multi_channel_route_bindings_for_state_dir, resolve_multi_channel_event_route,
     route_decision_trace_payload, MultiChannelRouteBindingFile, MultiChannelRouteDecision,
+};
+use tau_access::{
+    evaluate_signed_envelope_access, signed_envelope_policy_for_state_dir, SignedEnvelopeContext,
+    SignedEnvelopeDecision,
 };
 use tau_core::{current_unix_timestamp_ms, write_text_atomic};
 use tau_orchestrator::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTable};
@@ -43,6 +47,9 @@ const MULTI_CHANNEL_LIVE_INGRESS_SOURCES: [(&str, &str); 3] = [
 ];
 const PAIRING_REASON_ALLOW_PERMISSIVE_MODE: &str = "allow_permissive_mode";
 const PAIRING_REASON_DENY_POLICY_EVALUATION_ERROR: &str = "deny_policy_evaluation_error";
+const SECURE_REASON_DISABLED: &str = "secure_messaging_disabled";
+const SECURE_REASON_SKIPPED_POLICY_DENY: &str = "secure_messaging_skipped_channel_policy_deny";
+const SECURE_REASON_DENY_MISSING_REQUIRED: &str = "deny_signed_envelope_missing";
 const POLICY_REASON_DENY_CHANNEL_POLICY_LOAD_ERROR: &str = "deny_channel_policy_load_error";
 const POLICY_REASON_DENY_ALLOWLIST_ONLY: &str = "deny_channel_policy_allow_from_allowlist_only";
 const TELEMETRY_STATUS_TYPING_STARTED: &str = "typing_started";
@@ -325,10 +332,23 @@ impl Default for MultiChannelRuntimeState {
 struct MultiChannelAccessDecision {
     policy_channel: String,
     channel_policy: MultiChannelPolicyEvaluation,
+    secure_messaging: MultiChannelSecureMessagingDecision,
     pairing_decision: MultiChannelPairingDecision,
     final_decision: MultiChannelPairingDecision,
     pairing_checked: bool,
     policy_enforced: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MultiChannelSecureMessagingDecision {
+    mode: MultiChannelSecureMessagingMode,
+    status: &'static str,
+    reason_code: String,
+    key_id: Option<String>,
+    nonce: Option<String>,
+    checked: bool,
+    required: bool,
+    legacy_fallback: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -716,9 +736,22 @@ impl MultiChannelRuntime {
                 let denied = MultiChannelPairingDecision::Deny {
                     reason_code: reason_code.clone(),
                 };
+                let secure_mode = channel_policy_file
+                    .map(|policy| policy.secure_messaging.mode)
+                    .unwrap_or_default();
                 MultiChannelAccessDecision {
                     policy_channel,
                     channel_policy,
+                    secure_messaging: MultiChannelSecureMessagingDecision {
+                        mode: secure_mode,
+                        status: "skipped",
+                        reason_code: SECURE_REASON_SKIPPED_POLICY_DENY.to_string(),
+                        key_id: None,
+                        nonce: None,
+                        checked: false,
+                        required: secure_mode == MultiChannelSecureMessagingMode::Required,
+                        legacy_fallback: false,
+                    },
                     pairing_decision: denied.clone(),
                     final_decision: denied,
                     pairing_checked: false,
@@ -726,6 +759,40 @@ impl MultiChannelRuntime {
                 }
             }
             MultiChannelPolicyDecision::Allow { reason_code } => {
+                let secure_messaging = self.evaluate_secure_messaging_decision(
+                    event,
+                    &policy_channel,
+                    now_unix_ms,
+                    channel_policy_file,
+                );
+                if secure_messaging.status == "deny" {
+                    let denied = MultiChannelPairingDecision::Deny {
+                        reason_code: secure_messaging.reason_code.clone(),
+                    };
+                    return MultiChannelAccessDecision {
+                        policy_channel,
+                        channel_policy,
+                        secure_messaging,
+                        pairing_decision: denied.clone(),
+                        final_decision: denied,
+                        pairing_checked: false,
+                        policy_enforced: true,
+                    };
+                }
+                if secure_messaging.status == "allow" {
+                    let allow = MultiChannelPairingDecision::Allow {
+                        reason_code: secure_messaging.reason_code.clone(),
+                    };
+                    return MultiChannelAccessDecision {
+                        policy_channel,
+                        channel_policy,
+                        secure_messaging,
+                        pairing_decision: allow.clone(),
+                        final_decision: allow,
+                        pairing_checked: false,
+                        policy_enforced: true,
+                    };
+                }
                 match channel_policy.policy.allow_from {
                     MultiChannelAllowFrom::Any => {
                         let policy_enforced = channel_policy.policy.require_mention;
@@ -735,6 +802,7 @@ impl MultiChannelRuntime {
                         MultiChannelAccessDecision {
                             policy_channel,
                             channel_policy,
+                            secure_messaging,
                             pairing_decision: allow.clone(),
                             final_decision: allow,
                             pairing_checked: false,
@@ -749,6 +817,7 @@ impl MultiChannelRuntime {
                         MultiChannelAccessDecision {
                             policy_channel,
                             channel_policy,
+                            secure_messaging,
                             pairing_decision: pairing_decision.clone(),
                             final_decision: pairing_decision,
                             pairing_checked: true,
@@ -781,6 +850,7 @@ impl MultiChannelRuntime {
                         MultiChannelAccessDecision {
                             policy_channel,
                             channel_policy,
+                            secure_messaging,
                             pairing_decision,
                             final_decision,
                             pairing_checked: true,
@@ -789,6 +859,98 @@ impl MultiChannelRuntime {
                     }
                 }
             }
+        }
+    }
+
+    fn evaluate_secure_messaging_decision(
+        &self,
+        event: &MultiChannelInboundEvent,
+        policy_channel: &str,
+        now_unix_ms: u64,
+        channel_policy_file: Option<&MultiChannelPolicyFile>,
+    ) -> MultiChannelSecureMessagingDecision {
+        let policy = channel_policy_file
+            .map(|value| value.secure_messaging.clone())
+            .unwrap_or_default();
+        let mode = policy.mode;
+        if mode == MultiChannelSecureMessagingMode::Disabled {
+            return MultiChannelSecureMessagingDecision {
+                mode,
+                status: "disabled",
+                reason_code: SECURE_REASON_DISABLED.to_string(),
+                key_id: None,
+                nonce: None,
+                checked: false,
+                required: false,
+                legacy_fallback: false,
+            };
+        }
+
+        let mut secure_config = signed_envelope_policy_for_state_dir(&self.config.state_dir);
+        secure_config.timestamp_skew_seconds = policy.timestamp_skew_seconds;
+        secure_config.replay_window_seconds = policy.replay_window_seconds;
+        let decision = evaluate_signed_envelope_access(
+            &secure_config,
+            &SignedEnvelopeContext {
+                policy_channel,
+                actor_id: event.actor_id.as_str(),
+                event_id: event.event_id.as_str(),
+                event_timestamp_ms: event.timestamp_ms,
+                text: event.text.as_str(),
+                metadata: &event.metadata,
+                now_unix_ms,
+            },
+        );
+        match decision {
+            SignedEnvelopeDecision::Allow {
+                reason_code,
+                key_id,
+                nonce,
+            } => MultiChannelSecureMessagingDecision {
+                mode,
+                status: "allow",
+                reason_code,
+                key_id: Some(key_id),
+                nonce: Some(nonce),
+                checked: true,
+                required: mode == MultiChannelSecureMessagingMode::Required,
+                legacy_fallback: false,
+            },
+            SignedEnvelopeDecision::Missing { reason_code } => {
+                if mode == MultiChannelSecureMessagingMode::Required {
+                    MultiChannelSecureMessagingDecision {
+                        mode,
+                        status: "deny",
+                        reason_code: SECURE_REASON_DENY_MISSING_REQUIRED.to_string(),
+                        key_id: None,
+                        nonce: None,
+                        checked: true,
+                        required: true,
+                        legacy_fallback: false,
+                    }
+                } else {
+                    MultiChannelSecureMessagingDecision {
+                        mode,
+                        status: "missing",
+                        reason_code,
+                        key_id: None,
+                        nonce: None,
+                        checked: true,
+                        required: false,
+                        legacy_fallback: true,
+                    }
+                }
+            }
+            SignedEnvelopeDecision::Deny { reason_code } => MultiChannelSecureMessagingDecision {
+                mode,
+                status: "deny",
+                reason_code,
+                key_id: None,
+                nonce: None,
+                checked: true,
+                required: mode == MultiChannelSecureMessagingMode::Required,
+                legacy_fallback: false,
+            },
         }
     }
 
@@ -1030,6 +1192,16 @@ impl MultiChannelRuntime {
             "actor_id": event.actor_id.trim(),
             "checked": access_decision.pairing_checked,
         });
+        let secure_messaging_payload = json!({
+            "mode": access_decision.secure_messaging.mode.as_str(),
+            "status": access_decision.secure_messaging.status,
+            "reason_code": access_decision.secure_messaging.reason_code.clone(),
+            "checked": access_decision.secure_messaging.checked,
+            "required": access_decision.secure_messaging.required,
+            "legacy_fallback": access_decision.secure_messaging.legacy_fallback,
+            "key_id": access_decision.secure_messaging.key_id.clone(),
+            "nonce": access_decision.secure_messaging.nonce.clone(),
+        });
         let channel_policy_payload = json!({
             "decision": access_decision.channel_policy.decision.as_str(),
             "reason_code": access_decision.channel_policy.decision.reason_code(),
@@ -1046,6 +1218,10 @@ impl MultiChannelRuntime {
             serde_json::to_value(event).context("serialize inbound event payload")?;
         if let Value::Object(map) = &mut inbound_payload {
             map.insert("pairing".to_string(), pairing_payload.clone());
+            map.insert(
+                "secure_messaging".to_string(),
+                secure_messaging_payload.clone(),
+            );
             map.insert("channel_policy".to_string(), channel_policy_payload.clone());
             map.insert("route".to_string(), route_payload.clone());
             map.insert("media_understanding".to_string(), media_payload.clone());
@@ -1091,6 +1267,7 @@ impl MultiChannelRuntime {
                         "route": route_payload.clone(),
                         "channel_policy": channel_policy_payload,
                         "pairing": pairing_payload,
+                        "secure_messaging": secure_messaging_payload,
                         "media_understanding": media_payload,
                     }),
                 })?;
@@ -1173,6 +1350,7 @@ impl MultiChannelRuntime {
                     route_decision,
                     route_payload: &route_payload,
                     pairing_payload: &pairing_payload,
+                    secure_messaging_payload: &secure_messaging_payload,
                     channel_policy_payload: &channel_policy_payload,
                     delivery_mode: self.outbound_dispatcher.mode().as_str(),
                     command_payload: command_payload.as_ref(),
@@ -1261,6 +1439,7 @@ impl MultiChannelRuntime {
                 "route_session_key": route_decision.session_key.as_str(),
                 "route": route_payload,
                 "pairing": pairing_payload,
+                "secure_messaging": secure_messaging_payload,
                 "channel_policy": channel_policy_payload,
                 "media_understanding": media_payload,
                 "delivery": delivery_payload,
@@ -1637,6 +1816,7 @@ struct DeliveryFailureLogContext<'a> {
     route_decision: &'a MultiChannelRouteDecision,
     route_payload: &'a Value,
     pairing_payload: &'a Value,
+    secure_messaging_payload: &'a Value,
     channel_policy_payload: &'a Value,
     delivery_mode: &'a str,
     command_payload: Option<&'a Value>,
@@ -1664,6 +1844,7 @@ fn append_delivery_failure_log(
         "route_session_key": context.route_decision.session_key.as_str(),
         "route": context.route_payload,
         "pairing": context.pairing_payload,
+        "secure_messaging": context.secure_messaging_payload,
         "channel_policy": context.channel_policy_payload,
     });
     if let Some(command_payload) = context.command_payload {

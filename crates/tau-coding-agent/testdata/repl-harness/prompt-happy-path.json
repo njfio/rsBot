@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "name": "prompt-happy-path",
+  "args": [
+    "--model",
+    "openai/gpt-4o-mini",
+    "--api-base",
+    "{{API_BASE}}/v1",
+    "--openai-api-key",
+    "test-openai-key",
+    "--no-session"
+  ],
+  "stdin_script": "hello from repl harness\n/quit\n",
+  "timeout_ms": 6000,
+  "expect": {
+    "success": true,
+    "min_prompt_count": 2,
+    "stdout_contains": [
+      "repl harness integration response"
+    ],
+    "stderr_not_contains": [
+      "panic"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "global_min_percent": 35.0,
+  "crate_min_percent": {
+    "tau-core": 100.0,
+    "tau-github-issues-runtime": 100.0,
+    "tau-slack-runtime": 100.0,
+    "tau-startup": 45.0,
+    "tau-onboarding": 23.0,
+    "tau-runtime": 28.0,
+    "tau-provider": 27.0,
+    "tau-tools": 37.0,
+    "tau-multi-channel": 45.0,
+    "tau-session": 23.0
+  }
+}

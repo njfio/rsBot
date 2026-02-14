@@ -13,6 +13,8 @@ These fixtures validate the schema and replay compatibility contract for Tau mul
   - Regression fixture ensuring unsupported `expected.error_code` values are rejected.
 - `invalid-duplicate-case-id.json`
   - Regression fixture ensuring duplicate `case_id` values are rejected.
+- `kamn-settlement.json`
+  - Integration fixture for escrow reserve/cost metadata and KAMN settlement references.
 
 ## Schema Notes
 
@@ -29,3 +31,7 @@ These fixtures validate the schema and replay compatibility contract for Tau mul
   - `multi_agent_invalid_route_table`
   - `multi_agent_empty_step_text`
   - `multi_agent_role_unavailable`
+- Optional `economics` object per case:
+  - `escrow_reserve_micros`
+  - `execution_cost_micros`
+  - `settlement_reference`

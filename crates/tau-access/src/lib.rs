@@ -4,11 +4,15 @@
 //! and trust-root management shared across local and transport runtimes.
 
 pub mod approvals;
+pub mod identity;
 pub mod pairing;
 pub mod rbac;
+pub mod signed_envelope;
 pub mod trust_roots;
 
 pub use approvals::*;
+pub use identity::*;
 pub use pairing::*;
 pub use rbac::*;
+pub use signed_envelope::*;
 pub use trust_roots::*;

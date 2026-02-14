@@ -1,8 +1,7 @@
-//! Browser automation contracts and runtime execution for Tau.
+//! Browser automation schema and live runtime execution for Tau.
 //!
-//! Includes fixture-driven contract replay and live browser automation runtime
-//! components used by diagnostics and integration workflows.
+//! Includes the fixture schema used for live browser workflows and the
+//! Playwright-compatible live execution adapter.
 
 pub mod browser_automation_contract;
 pub mod browser_automation_live;
-pub mod browser_automation_runtime;

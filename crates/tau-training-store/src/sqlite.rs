@@ -438,29 +438,23 @@ impl TrainingStore for SqliteTrainingStore {
         attempt_id: Option<&str>,
     ) -> StoreResult<Vec<TrainingSpan>> {
         let connection = self.open_connection()?;
-        let (sql, bind_attempt) = if attempt_id.is_some() {
-            (
-                r#"
+        let sql = if attempt_id.is_some() {
+            r#"
                 SELECT span_json FROM spans
                 WHERE rollout_id = ?1 AND attempt_id = ?2
                 ORDER BY sequence_id ASC, span_row_id ASC
-                "#,
-                true,
-            )
+                "#
         } else {
-            (
-                r#"
+            r#"
                 SELECT span_json FROM spans
                 WHERE rollout_id = ?1
                 ORDER BY sequence_id ASC, span_row_id ASC
-                "#,
-                false,
-            )
+                "#
         };
 
         let mut statement = connection.prepare(sql)?;
-        let mut rows = if bind_attempt {
-            statement.query(params![rollout_id, attempt_id.expect("checked above")])?
+        let mut rows = if let Some(attempt_id) = attempt_id {
+            statement.query(params![rollout_id, attempt_id])?
         } else {
             statement.query(params![rollout_id])?
         };

@@ -56,6 +56,17 @@ pub struct MultiAgentContractExpectation {
     pub category: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Optional economics metadata used for escrow-backed delegation settlement.
+pub struct MultiAgentContractEconomics {
+    #[serde(default)]
+    pub escrow_reserve_micros: Option<u64>,
+    #[serde(default)]
+    pub execution_cost_micros: Option<u64>,
+    #[serde(default)]
+    pub settlement_reference: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 /// Public struct `MultiAgentContractCase` used across Tau components.
 pub struct MultiAgentContractCase {
@@ -68,6 +79,8 @@ pub struct MultiAgentContractCase {
     pub step_text: String,
     #[serde(default)]
     pub simulate_retryable_failure: bool,
+    #[serde(default)]
+    pub economics: MultiAgentContractEconomics,
     pub expected: MultiAgentContractExpectation,
 }
 
@@ -278,6 +291,44 @@ fn validate_multi_agent_contract_case(case: &MultiAgentContractCase, index: usiz
 
     validate_multi_agent_expectation(case)?;
     validate_case_route_table_contract(case)?;
+    validate_case_economics(case)?;
+    Ok(())
+}
+
+fn validate_case_economics(case: &MultiAgentContractCase) -> Result<()> {
+    if case
+        .economics
+        .escrow_reserve_micros
+        .is_some_and(|value| value == 0)
+    {
+        bail!(
+            "fixture case '{}' economics.escrow_reserve_micros must be greater than 0 when set",
+            case.case_id
+        );
+    }
+    if case
+        .economics
+        .execution_cost_micros
+        .is_some_and(|value| value == 0)
+    {
+        bail!(
+            "fixture case '{}' economics.execution_cost_micros must be greater than 0 when set",
+            case.case_id
+        );
+    }
+    if let (Some(reserve), Some(cost)) = (
+        case.economics.escrow_reserve_micros,
+        case.economics.execution_cost_micros,
+    ) {
+        if cost > reserve {
+            bail!(
+                "fixture case '{}' economics.execution_cost_micros {} exceeds economics.escrow_reserve_micros {}",
+                case.case_id,
+                cost,
+                reserve
+            );
+        }
+    }
     Ok(())
 }
 
@@ -741,6 +792,43 @@ mod tests {
             rendered.contains("unsupported error_code"),
             "unexpected unsupported-error-code message: {rendered}"
         );
+    }
+
+    #[test]
+    fn regression_fixture_rejects_invalid_economics_bounds() {
+        let error = parse_multi_agent_contract_fixture(
+            r#"{
+  "schema_version": 1,
+  "name": "invalid-economics",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "planner-success",
+      "phase": "planner",
+      "route_table": {
+        "schema_version": 1,
+        "roles": { "planner": {} },
+        "planner": { "role": "planner" },
+        "delegated": { "role": "planner" },
+        "review": { "role": "planner" }
+      },
+      "economics": {
+        "escrow_reserve_micros": 1000,
+        "execution_cost_micros": 2000
+      },
+      "expected": {
+        "outcome": "success",
+        "selected_role": "planner",
+        "attempted_roles": ["planner"]
+      }
+    }
+  ]
+}"#,
+        )
+        .expect_err("economics bounds should fail");
+        assert!(error
+            .to_string()
+            .contains("economics.execution_cost_micros"));
     }
 
     #[test]
