@@ -589,24 +589,12 @@ cargo run -p tau-coding-agent -- \
 
 Operational rollout and rollback guidance: `docs/guides/deployment-ops.md`.
 
-## No-code custom command contract runner
+## No-code custom command contract runner (removed)
 
-Use this fixture-driven runtime mode to validate no-code command registry lifecycle behavior,
-retry outcomes, state persistence, and channel-store snapshots.
+`--custom-command-contract-runner` has been removed from active transport dispatch.
+Preserve existing custom-command state directories and use inspection commands for diagnostics.
 
-```bash
-cargo run -p tau-coding-agent -- \
-  --model openai/gpt-4o-mini \
-  --custom-command-contract-runner \
-  --custom-command-fixture crates/tau-coding-agent/testdata/custom-command-contract/rollout-pass.json \
-  --custom-command-state-dir .tau/custom-command \
-  --custom-command-queue-limit 64 \
-  --custom-command-processed-case-cap 10000 \
-  --custom-command-retry-max-attempts 4 \
-  --custom-command-retry-base-delay-ms 0
-```
-
-The runner writes state and observability output under:
+Inspection commands read state and observability output under:
 
 - `.tau/custom-command/state.json`
 - `.tau/custom-command/runtime-events.jsonl`

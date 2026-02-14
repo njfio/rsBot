@@ -1,8 +1,7 @@
 //! Tests for onboarding transport-mode routing and guardrails.
 
 use super::{
-    build_browser_automation_live_runner_config, build_custom_command_contract_runner_config,
-    build_custom_command_default_execution_policy, build_dashboard_contract_runner_config,
+    build_browser_automation_live_runner_config, build_dashboard_contract_runner_config,
     build_deployment_contract_runner_config, build_events_runner_cli_config,
     build_gateway_contract_runner_config, build_gateway_openresponses_server_config,
     build_github_issues_bridge_cli_config, build_multi_agent_contract_runner_config,
@@ -195,13 +194,6 @@ impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
         self.record(
             TransportRuntimeMode::DeploymentContractRunner,
             "deployment-contract",
-        )
-    }
-
-    async fn run_custom_command_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::CustomCommandContractRunner,
-            "custom-command-contract",
         )
     }
 
@@ -862,9 +854,6 @@ fn regression_build_standard_contract_runner_builders_enforce_minimums() {
     cli.deployment_queue_limit = 0;
     cli.deployment_processed_case_cap = 0;
     cli.deployment_retry_max_attempts = 0;
-    cli.custom_command_queue_limit = 0;
-    cli.custom_command_processed_case_cap = 0;
-    cli.custom_command_retry_max_attempts = 0;
     cli.voice_queue_limit = 0;
     cli.voice_processed_case_cap = 0;
     cli.voice_retry_max_attempts = 0;
@@ -872,7 +861,6 @@ fn regression_build_standard_contract_runner_builders_enforce_minimums() {
 
     let dashboard = build_dashboard_contract_runner_config(&cli);
     let deployment = build_deployment_contract_runner_config(&cli);
-    let custom = build_custom_command_contract_runner_config(&cli);
     let voice = build_voice_contract_runner_config(&cli);
     let voice_live = build_voice_live_runner_config(&cli);
 
@@ -882,9 +870,6 @@ fn regression_build_standard_contract_runner_builders_enforce_minimums() {
     assert_eq!(deployment.queue_limit, 1);
     assert_eq!(deployment.processed_case_cap, 1);
     assert_eq!(deployment.retry_max_attempts, 1);
-    assert_eq!(custom.queue_limit, 1);
-    assert_eq!(custom.processed_case_cap, 1);
-    assert_eq!(custom.retry_max_attempts, 1);
     assert_eq!(voice.queue_limit, 1);
     assert_eq!(voice.processed_case_cap, 1);
     assert_eq!(voice.retry_max_attempts, 1);
@@ -1323,17 +1308,6 @@ async fn unit_run_deployment_contract_runner_if_requested_returns_false_when_dis
 }
 
 #[tokio::test]
-async fn unit_run_custom_command_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_custom_command_contract_runner_if_requested(&cli)
-        .await
-        .expect("custom command helper");
-
-    assert!(!handled);
-}
-
-#[tokio::test]
 async fn unit_run_voice_contract_runner_if_requested_returns_false_when_disabled() {
     let cli = parse_cli_with_stack();
 
@@ -1563,13 +1537,6 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
     cli.deployment_retry_max_attempts = 3;
     cli.deployment_retry_base_delay_ms = 8;
 
-    cli.custom_command_fixture = temp.path().join("custom-fixture.json");
-    cli.custom_command_state_dir = temp.path().join("custom-state");
-    cli.custom_command_queue_limit = 41;
-    cli.custom_command_processed_case_cap = 1_234;
-    cli.custom_command_retry_max_attempts = 5;
-    cli.custom_command_retry_base_delay_ms = 16;
-
     cli.voice_fixture = temp.path().join("voice-fixture.json");
     cli.voice_state_dir = temp.path().join("voice-state");
     cli.voice_queue_limit = 27;
@@ -1583,7 +1550,6 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
 
     let dashboard = build_dashboard_contract_runner_config(&cli);
     let deployment = build_deployment_contract_runner_config(&cli);
-    let custom = build_custom_command_contract_runner_config(&cli);
     let voice = build_voice_contract_runner_config(&cli);
     let voice_live = build_voice_live_runner_config(&cli);
 
@@ -1601,13 +1567,6 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
     assert_eq!(deployment.retry_max_attempts, 3);
     assert_eq!(deployment.retry_base_delay_ms, 8);
 
-    assert_eq!(custom.fixture_path, cli.custom_command_fixture);
-    assert_eq!(custom.state_dir, cli.custom_command_state_dir);
-    assert_eq!(custom.queue_limit, 41);
-    assert_eq!(custom.processed_case_cap, 1_234);
-    assert_eq!(custom.retry_max_attempts, 5);
-    assert_eq!(custom.retry_base_delay_ms, 16);
-
     assert_eq!(voice.fixture_path, cli.voice_fixture);
     assert_eq!(voice.state_dir, cli.voice_state_dir);
     assert_eq!(voice.queue_limit, 27);
@@ -1620,26 +1579,6 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
     assert_eq!(voice_live.wake_word, "tau".to_string());
     assert_eq!(voice_live.max_turns, 11);
     assert!(!voice_live.tts_output_enabled);
-}
-
-#[test]
-fn integration_build_custom_command_default_execution_policy_preserves_cli_overrides() {
-    let mut cli = parse_cli_with_stack();
-    cli.custom_command_policy_require_approval = false;
-    cli.custom_command_policy_allow_shell = true;
-    cli.custom_command_policy_sandbox_profile = "workspace_write".to_string();
-    cli.custom_command_policy_allowed_env = vec!["DEPLOY_ENV".to_string(), "REGION".to_string()];
-    cli.custom_command_policy_denied_env = vec!["OPENAI_API_KEY".to_string()];
-
-    let policy = build_custom_command_default_execution_policy(&cli);
-    assert!(!policy.require_approval);
-    assert!(policy.allow_shell);
-    assert_eq!(policy.sandbox_profile, "workspace_write".to_string());
-    assert_eq!(
-        policy.allowed_env,
-        vec!["DEPLOY_ENV".to_string(), "REGION".to_string()]
-    );
-    assert_eq!(policy.denied_env, vec!["OPENAI_API_KEY".to_string()]);
 }
 
 #[test]

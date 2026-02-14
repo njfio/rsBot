@@ -4,8 +4,8 @@ Run all commands from repository root.
 
 ## Scope
 
-This runbook covers the fixture-driven no-code custom command runtime
-(`--custom-command-contract-runner`).
+This runbook covers custom-command health/status diagnostics for preserved state artifacts.
+The fixture-driven contract runner (`--custom-command-contract-runner`) has been removed.
 
 ## Health and observability signals
 
@@ -49,17 +49,6 @@ Primary state files:
 - `command_run_spawn_failures_observed`
 - `command_run_missing_command_observed`
 
-Policy contract defaults (`--custom-command-contract-runner`):
-
-- `--custom-command-policy-require-approval=true`
-- `--custom-command-policy-allow-shell=false`
-- `--custom-command-policy-sandbox-profile=restricted`
-- `--custom-command-policy-allowed-env` optional allowlist
-- `--custom-command-policy-denied-env` optional denylist override
-
-By default, unsafe shell control operators in command templates are rejected
-deterministically as malformed policy-denied definitions.
-
 Guardrail interpretation:
 
 - `rollout_gate=pass`: health is `healthy`, promotion can continue.
@@ -73,22 +62,20 @@ Guardrail interpretation:
 
 ## Rollout plan with guardrails
 
-1. Validate contract fixtures and compatibility:
-   `cargo test -p tau-coding-agent custom_command_contract -- --test-threads=1`
-2. Validate runtime behavior coverage:
-   `cargo test -p tau-coding-agent custom_command_runtime -- --test-threads=1`
-3. Run deterministic demo:
+1. Validate diagnostics parsing coverage:
+   `cargo test -p tau-coding-agent custom_command_status_inspect -- --test-threads=1`
+2. Run deterministic demo:
    `./scripts/demo/custom-command.sh`
-4. Verify transport health and status gate:
+3. Verify transport health and status gate:
    `--transport-health-inspect custom-command --transport-health-json`
    `--custom-command-status-inspect --custom-command-status-json`
-5. Promote by increasing fixture complexity while monitoring:
+4. Promote by increasing state artifact complexity while monitoring:
    `failure_streak`, `last_cycle_failed`, `queue_depth`, `rollout_gate`,
    `reason_code_counts`.
 
 ## Rollback plan
 
-1. Stop invoking `--custom-command-contract-runner`.
+1. Do not invoke `--custom-command-contract-runner` (removed).
 2. Preserve `.tau/custom-command/` for incident analysis.
 3. Revert to last known-good revision:
    `git revert <commit>`
