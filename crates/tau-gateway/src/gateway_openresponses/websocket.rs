@@ -199,6 +199,14 @@ fn dispatch_gateway_ws_control_text_frame(
                                 "webchat_endpoint": WEBCHAT_ENDPOINT,
                                 "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
                                 "ws_endpoint": GATEWAY_WS_ENDPOINT,
+                                "dashboard": {
+                                    "health_endpoint": DASHBOARD_HEALTH_ENDPOINT,
+                                    "widgets_endpoint": DASHBOARD_WIDGETS_ENDPOINT,
+                                    "queue_timeline_endpoint": DASHBOARD_QUEUE_TIMELINE_ENDPOINT,
+                                    "alerts_endpoint": DASHBOARD_ALERTS_ENDPOINT,
+                                    "actions_endpoint": DASHBOARD_ACTIONS_ENDPOINT,
+                                    "stream_endpoint": DASHBOARD_STREAM_ENDPOINT
+                                },
                                 "model": state.config.model,
                                 "state_dir": state.config.state_dir.display().to_string(),
                             }

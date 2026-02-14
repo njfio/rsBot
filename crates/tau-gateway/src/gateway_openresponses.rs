@@ -29,6 +29,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
 mod auth_runtime;
+mod dashboard_status;
 mod multi_channel_status;
 mod request_translation;
 mod session_runtime;
@@ -41,6 +42,10 @@ mod websocket;
 use auth_runtime::{
     authorize_gateway_request, collect_gateway_auth_status_report, enforce_gateway_rate_limit,
     issue_gateway_session_token,
+};
+use dashboard_status::{
+    apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
+    GatewayDashboardActionRequest,
 };
 use multi_channel_status::collect_gateway_multi_channel_status_report;
 use request_translation::{sanitize_session_key, translate_openresponses_request};
@@ -62,6 +67,12 @@ const WEBCHAT_ENDPOINT: &str = "/webchat";
 const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
 const GATEWAY_WS_ENDPOINT: &str = "/gateway/ws";
 const GATEWAY_AUTH_SESSION_ENDPOINT: &str = "/gateway/auth/session";
+const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
+const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
+const DASHBOARD_QUEUE_TIMELINE_ENDPOINT: &str = "/dashboard/queue-timeline";
+const DASHBOARD_ALERTS_ENDPOINT: &str = "/dashboard/alerts";
+const DASHBOARD_ACTIONS_ENDPOINT: &str = "/dashboard/actions";
+const DASHBOARD_STREAM_ENDPOINT: &str = "/dashboard/stream";
 const DEFAULT_SESSION_KEY: &str = "default";
 const INPUT_BODY_SIZE_MULTIPLIER: usize = 8;
 const GATEWAY_WS_HEARTBEAT_REQUEST_ID: &str = "gateway-heartbeat";
@@ -348,6 +359,15 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
         )
         .route(WEBCHAT_ENDPOINT, get(handle_webchat_page))
         .route(GATEWAY_STATUS_ENDPOINT, get(handle_gateway_status))
+        .route(DASHBOARD_HEALTH_ENDPOINT, get(handle_dashboard_health))
+        .route(DASHBOARD_WIDGETS_ENDPOINT, get(handle_dashboard_widgets))
+        .route(
+            DASHBOARD_QUEUE_TIMELINE_ENDPOINT,
+            get(handle_dashboard_queue_timeline),
+        )
+        .route(DASHBOARD_ALERTS_ENDPOINT, get(handle_dashboard_alerts))
+        .route(DASHBOARD_ACTIONS_ENDPOINT, post(handle_dashboard_action))
+        .route(DASHBOARD_STREAM_ENDPOINT, get(handle_dashboard_stream))
         .route(GATEWAY_WS_ENDPOINT, get(handle_gateway_ws_upgrade))
         .with_state(state)
 }
@@ -392,11 +412,159 @@ async fn handle_gateway_status(
                 "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
                 "status_endpoint": GATEWAY_STATUS_ENDPOINT,
                 "ws_endpoint": GATEWAY_WS_ENDPOINT,
+                "dashboard": {
+                    "health_endpoint": DASHBOARD_HEALTH_ENDPOINT,
+                    "widgets_endpoint": DASHBOARD_WIDGETS_ENDPOINT,
+                    "queue_timeline_endpoint": DASHBOARD_QUEUE_TIMELINE_ENDPOINT,
+                    "alerts_endpoint": DASHBOARD_ALERTS_ENDPOINT,
+                    "actions_endpoint": DASHBOARD_ACTIONS_ENDPOINT,
+                    "stream_endpoint": DASHBOARD_STREAM_ENDPOINT,
+                },
                 "state_dir": state.config.state_dir.display().to_string(),
                 "model": state.config.model,
             }
         })),
     )
+        .into_response()
+}
+
+fn authorize_dashboard_request(
+    state: &Arc<GatewayOpenResponsesServerState>,
+    headers: &HeaderMap,
+) -> Result<String, OpenResponsesApiError> {
+    let principal = authorize_gateway_request(state, headers)?;
+    enforce_gateway_rate_limit(state, principal.as_str())?;
+    Ok(principal)
+}
+
+async fn handle_dashboard_health(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_dashboard_request(&state, &headers) {
+        return error.into_response();
+    }
+    let snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "schema_version": snapshot.schema_version,
+            "generated_unix_ms": snapshot.generated_unix_ms,
+            "health": snapshot.health,
+            "control": snapshot.control,
+            "state": snapshot.state,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_dashboard_widgets(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_dashboard_request(&state, &headers) {
+        return error.into_response();
+    }
+    let snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "schema_version": snapshot.schema_version,
+            "generated_unix_ms": snapshot.generated_unix_ms,
+            "widgets": snapshot.widgets,
+            "state": snapshot.state,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_dashboard_queue_timeline(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_dashboard_request(&state, &headers) {
+        return error.into_response();
+    }
+    let snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "schema_version": snapshot.schema_version,
+            "generated_unix_ms": snapshot.generated_unix_ms,
+            "queue_timeline": snapshot.queue_timeline,
+            "health": snapshot.health,
+            "state": snapshot.state,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_dashboard_alerts(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_dashboard_request(&state, &headers) {
+        return error.into_response();
+    }
+    let snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "schema_version": snapshot.schema_version,
+            "generated_unix_ms": snapshot.generated_unix_ms,
+            "alerts": snapshot.alerts,
+            "health": snapshot.health,
+            "state": snapshot.state,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_dashboard_action(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let principal = match authorize_dashboard_request(&state, &headers) {
+        Ok(principal) => principal,
+        Err(error) => return error.into_response(),
+    };
+
+    let request = match serde_json::from_slice::<GatewayDashboardActionRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return OpenResponsesApiError::bad_request(
+                "malformed_json",
+                format!("failed to parse request body: {error}"),
+            )
+            .into_response();
+        }
+    };
+
+    match apply_gateway_dashboard_action(&state.config.state_dir, principal.as_str(), request) {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn handle_dashboard_stream(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_dashboard_request(&state, &headers) {
+        return error.into_response();
+    }
+    let reconnect_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let (tx, rx) = mpsc::unbounded_channel::<Event>();
+    tokio::spawn(run_dashboard_stream_loop(state, tx, reconnect_event_id));
+    let stream = UnboundedReceiverStream::new(rx).map(Ok::<Event, Infallible>);
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
         .into_response()
 }
 
@@ -494,6 +662,54 @@ async fn handle_gateway_ws_upgrade(
     websocket
         .on_upgrade(move |socket| run_gateway_ws_connection(state, socket, principal))
         .into_response()
+}
+
+async fn run_dashboard_stream_loop(
+    state: Arc<GatewayOpenResponsesServerState>,
+    sender: mpsc::UnboundedSender<Event>,
+    reconnect_event_id: Option<String>,
+) {
+    if let Some(last_event_id) = reconnect_event_id {
+        let reset_payload = json!({
+            "schema_version": 1,
+            "reset": true,
+            "last_event_id": last_event_id,
+            "reason": "history_not_retained_request_full_snapshot",
+        });
+        let reset = Event::default()
+            .id(format!("dashboard-{}", state.next_sequence()))
+            .event("dashboard.reset")
+            .data(reset_payload.to_string());
+        if sender.send(reset).is_err() {
+            return;
+        }
+    }
+
+    let mut last_snapshot_payload = String::new();
+    loop {
+        let snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
+        let payload_value = match serde_json::to_value(&snapshot) {
+            Ok(payload) => payload,
+            Err(error) => json!({
+                "schema_version": 1,
+                "generated_unix_ms": current_unix_timestamp_ms(),
+                "error": "dashboard_snapshot_serialize_failed",
+                "message": error.to_string(),
+            }),
+        };
+        let payload_string = payload_value.to_string();
+        if payload_string != last_snapshot_payload {
+            let snapshot_event = Event::default()
+                .id(format!("dashboard-{}", state.next_sequence()))
+                .event("dashboard.snapshot")
+                .data(payload_string.clone());
+            if sender.send(snapshot_event).is_err() {
+                return;
+            }
+            last_snapshot_payload = payload_string;
+        }
+        tokio::time::sleep(Duration::from_millis(750)).await;
+    }
 }
 
 async fn stream_openresponses(

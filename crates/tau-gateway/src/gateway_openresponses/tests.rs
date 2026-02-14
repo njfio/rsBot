@@ -176,6 +176,62 @@ invalid-json-line
     multi_channel_root
 }
 
+fn write_dashboard_runtime_fixture(root: &Path) -> PathBuf {
+    let dashboard_root = root.join(".tau").join("dashboard");
+    std::fs::create_dir_all(&dashboard_root).expect("create dashboard root");
+    std::fs::write(
+        dashboard_root.join("state.json"),
+        r#"{
+  "schema_version": 1,
+  "processed_case_keys": ["snapshot:s1", "control:c1"],
+  "widget_views": [
+    {
+      "widget_id": "health-summary",
+      "kind": "health_summary",
+      "title": "Runtime Health",
+      "query_key": "runtime.health",
+      "refresh_interval_ms": 3000,
+      "last_case_key": "snapshot:s1",
+      "updated_unix_ms": 810
+    },
+    {
+      "widget_id": "run-timeline",
+      "kind": "run_timeline",
+      "title": "Run Timeline",
+      "query_key": "runtime.timeline",
+      "refresh_interval_ms": 7000,
+      "last_case_key": "snapshot:s1",
+      "updated_unix_ms": 811
+    }
+  ],
+  "control_audit": [{"event_key":"dashboard-control:resume:c1"}],
+  "health": {
+    "updated_unix_ms": 812,
+    "cycle_duration_ms": 21,
+    "queue_depth": 1,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 2,
+    "last_cycle_processed": 2,
+    "last_cycle_completed": 2,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+"#,
+    )
+    .expect("write dashboard state");
+    std::fs::write(
+        dashboard_root.join("runtime-events.jsonl"),
+        r#"{"timestamp_unix_ms":810,"health_state":"healthy","health_reason":"no recent transport failures observed","reason_codes":["widget_views_updated"],"discovered_cases":2,"queued_cases":2,"backlog_cases":0,"applied_cases":2,"failed_cases":0}
+invalid-json-line
+{"timestamp_unix_ms":811,"health_state":"healthy","health_reason":"no recent transport failures observed","reason_codes":["widget_views_updated","control_actions_applied"],"discovered_cases":2,"queued_cases":2,"backlog_cases":0,"applied_cases":2,"failed_cases":0}
+"#,
+    )
+    .expect("write dashboard events");
+    dashboard_root
+}
+
 async fn connect_gateway_ws(
     addr: SocketAddr,
     token: Option<&str>,
@@ -649,6 +705,10 @@ async fn regression_gateway_ws_malformed_frame_fails_closed_without_crashing_run
         GATEWAY_WS_ENDPOINT
     );
     assert_eq!(
+        status["payload"]["gateway"]["dashboard"]["actions_endpoint"],
+        DASHBOARD_ACTIONS_ENDPOINT
+    );
+    assert_eq!(
         status["payload"]["multi_channel"]["state_present"],
         Value::Bool(false)
     );
@@ -753,6 +813,14 @@ async fn integration_gateway_status_endpoint_returns_service_snapshot() {
         Some(GATEWAY_WS_ENDPOINT)
     );
     assert_eq!(
+        payload["gateway"]["dashboard"]["health_endpoint"].as_str(),
+        Some(DASHBOARD_HEALTH_ENDPOINT)
+    );
+    assert_eq!(
+        payload["gateway"]["dashboard"]["stream_endpoint"].as_str(),
+        Some(DASHBOARD_STREAM_ENDPOINT)
+    );
+    assert_eq!(
         payload["service"]["service_status"].as_str(),
         Some("running")
     );
@@ -834,6 +902,258 @@ async fn integration_gateway_status_endpoint_returns_expanded_multi_channel_heal
         payload["multi_channel"]["connectors"]["channels"]["telegram"]["provider_failures"],
         Value::Number(serde_json::Number::from(2))
     );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_dashboard_endpoints_return_state_health_widgets_timeline_and_alerts() {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+
+    let health = client
+        .get(format!("http://{addr}{DASHBOARD_HEALTH_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("send dashboard health request")
+        .json::<Value>()
+        .await
+        .expect("parse dashboard health response");
+    assert_eq!(health["schema_version"], Value::Number(1_u64.into()));
+    assert_eq!(
+        health["health"]["rollout_gate"],
+        Value::String("pass".to_string())
+    );
+    assert_eq!(health["health"]["queue_depth"], Value::Number(1_u64.into()));
+    assert_eq!(
+        health["control"]["mode"],
+        Value::String("running".to_string())
+    );
+
+    let widgets = client
+        .get(format!("http://{addr}{DASHBOARD_WIDGETS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("send dashboard widgets request")
+        .json::<Value>()
+        .await
+        .expect("parse dashboard widgets response");
+    assert_eq!(widgets["schema_version"], Value::Number(1_u64.into()));
+    assert_eq!(
+        widgets["widgets"].as_array().expect("widgets array").len(),
+        2
+    );
+    assert_eq!(
+        widgets["widgets"][0]["widget_id"],
+        Value::String("health-summary".to_string())
+    );
+
+    let queue_timeline = client
+        .get(format!("http://{addr}{DASHBOARD_QUEUE_TIMELINE_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("send dashboard queue timeline request")
+        .json::<Value>()
+        .await
+        .expect("parse dashboard queue timeline response");
+    assert_eq!(
+        queue_timeline["schema_version"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        queue_timeline["queue_timeline"]["cycle_reports"],
+        Value::Number(2_u64.into())
+    );
+    assert_eq!(
+        queue_timeline["queue_timeline"]["invalid_cycle_reports"],
+        Value::Number(1_u64.into())
+    );
+
+    let alerts = client
+        .get(format!("http://{addr}{DASHBOARD_ALERTS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("send dashboard alerts request")
+        .json::<Value>()
+        .await
+        .expect("parse dashboard alerts response");
+    assert_eq!(alerts["schema_version"], Value::Number(1_u64.into()));
+    assert_eq!(
+        alerts["alerts"][0]["code"],
+        Value::String("dashboard_queue_backlog".to_string())
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_dashboard_action_endpoint_writes_audit_and_updates_control_state() {
+    let temp = tempdir().expect("tempdir");
+    let dashboard_root = write_dashboard_runtime_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let pause = client
+        .post(format!("http://{addr}{DASHBOARD_ACTIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({"action":"pause","reason":"maintenance-window"}))
+        .send()
+        .await
+        .expect("send dashboard pause action")
+        .json::<Value>()
+        .await
+        .expect("parse dashboard pause response");
+    assert_eq!(pause["schema_version"], Value::Number(1_u64.into()));
+    assert_eq!(pause["action"], Value::String("pause".to_string()));
+    assert_eq!(pause["status"], Value::String("accepted".to_string()));
+    assert_eq!(pause["control_mode"], Value::String("paused".to_string()));
+    assert_eq!(pause["rollout_gate"], Value::String("hold".to_string()));
+
+    let actions_log = std::fs::read_to_string(dashboard_root.join("actions-audit.jsonl"))
+        .expect("read dashboard action audit log");
+    assert!(actions_log.contains("\"action\":\"pause\""));
+    assert!(actions_log.contains("\"reason\":\"maintenance-window\""));
+
+    let control_state = std::fs::read_to_string(dashboard_root.join("control-state.json"))
+        .expect("read dashboard control state");
+    assert!(control_state.contains("\"mode\": \"paused\""));
+
+    let health_after_pause = client
+        .get(format!("http://{addr}{DASHBOARD_HEALTH_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("send dashboard health after pause")
+        .json::<Value>()
+        .await
+        .expect("parse dashboard health after pause");
+    assert_eq!(
+        health_after_pause["health"]["rollout_gate"],
+        Value::String("hold".to_string())
+    );
+    assert_eq!(
+        health_after_pause["control"]["mode"],
+        Value::String("paused".to_string())
+    );
+
+    let resume = client
+        .post(format!("http://{addr}{DASHBOARD_ACTIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({"action":"resume","reason":"maintenance-complete"}))
+        .send()
+        .await
+        .expect("send dashboard resume action")
+        .json::<Value>()
+        .await
+        .expect("parse dashboard resume response");
+    assert_eq!(resume["action"], Value::String("resume".to_string()));
+    assert_eq!(resume["status"], Value::String("accepted".to_string()));
+    assert_eq!(resume["control_mode"], Value::String("running".to_string()));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_dashboard_stream_supports_reconnect_reset_and_snapshot_updates() {
+    let temp = tempdir().expect("tempdir");
+    let dashboard_root = write_dashboard_runtime_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}{DASHBOARD_STREAM_ENDPOINT}"))
+        .bearer_auth("secret")
+        .header("last-event-id", "dashboard-41")
+        .send()
+        .await
+        .expect("send dashboard stream request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.contains("text/event-stream"));
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let reconnect_deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    while tokio::time::Instant::now() < reconnect_deadline {
+        let maybe_chunk = tokio::time::timeout(Duration::from_millis(300), stream.next()).await;
+        let Ok(Some(Ok(chunk))) = maybe_chunk else {
+            continue;
+        };
+        let chunk_text = String::from_utf8_lossy(&chunk);
+        buffer.push_str(chunk_text.as_ref());
+        if buffer.contains("event: dashboard.reset") && buffer.contains("event: dashboard.snapshot")
+        {
+            break;
+        }
+    }
+    assert!(buffer.contains("event: dashboard.reset"));
+    assert!(buffer.contains("event: dashboard.snapshot"));
+
+    std::fs::write(
+        dashboard_root.join("control-state.json"),
+        r#"{
+  "schema_version": 1,
+  "mode": "paused",
+  "updated_unix_ms": 999,
+  "last_action": {
+    "schema_version": 1,
+    "request_id": "dashboard-action-999",
+    "action": "pause",
+    "actor": "ops-user-1",
+    "reason": "operator-paused",
+    "status": "accepted",
+    "timestamp_unix_ms": 999,
+    "control_mode": "paused"
+  }
+}"#,
+    )
+    .expect("write paused control state");
+
+    let update_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < update_deadline {
+        let maybe_chunk = tokio::time::timeout(Duration::from_millis(300), stream.next()).await;
+        let Ok(Some(Ok(chunk))) = maybe_chunk else {
+            continue;
+        };
+        let chunk_text = String::from_utf8_lossy(&chunk);
+        buffer.push_str(chunk_text.as_ref());
+        if buffer.contains("\"mode\":\"paused\"") {
+            break;
+        }
+    }
+    assert!(buffer.contains("\"mode\":\"paused\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_dashboard_endpoints_reject_unauthorized_requests() {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let response = Client::new()
+        .get(format!("http://{addr}{DASHBOARD_HEALTH_ENDPOINT}"))
+        .send()
+        .await
+        .expect("send unauthorized dashboard request");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     handle.abort();
 }

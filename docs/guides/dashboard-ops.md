@@ -49,6 +49,30 @@ Guardrail interpretation:
 - `rollout_gate=pass`: health is `healthy`, promotion can continue.
 - `rollout_gate=hold`: health is `degraded` or `failing`, pause promotion and investigate.
 
+## Gateway dashboard backend API (schema v1)
+
+When the gateway OpenResponses server is running, dashboard backend endpoints are available:
+
+- `GET /dashboard/health`
+- `GET /dashboard/widgets`
+- `GET /dashboard/queue-timeline`
+- `GET /dashboard/alerts`
+- `POST /dashboard/actions` (`{"action":"pause|resume|refresh","reason":"..."}`)
+- `GET /dashboard/stream` (SSE)
+
+All dashboard endpoint payloads include `schema_version=1`.
+
+Action endpoint side-effects:
+
+- appends audit events to `.tau/dashboard/actions-audit.jsonl`
+- updates `.tau/dashboard/control-state.json`
+- affects control-plane gate semantics (`pause` => `rollout_gate=hold`)
+
+Stream reconnect semantics:
+
+- send `Last-Event-ID` header to request a reset handshake
+- server emits `event: dashboard.reset`, then emits `event: dashboard.snapshot`
+
 ## Deterministic demo path
 
 ```bash
