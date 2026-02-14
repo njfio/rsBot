@@ -3324,6 +3324,70 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-trainer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tau-training-runner",
+ "tau-training-store",
+ "tau-training-tracer",
+ "tau-training-types",
+ "tokio",
+]
+
+[[package]]
+name = "tau-training-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tau-agent-core",
+ "tau-ai",
+ "tau-training-store",
+ "tau-training-tracer",
+ "tau-training-types",
+ "tokio",
+]
+
+[[package]]
+name = "tau-training-store"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde_json",
+ "tau-training-types",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "tau-training-tracer"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "tau-agent-core",
+ "tau-ai",
+ "tau-training-store",
+ "tau-training-types",
+ "tokio",
+]
+
+[[package]]
+name = "tau-training-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tau-tui"
 version = "0.1.0"
 dependencies = [
