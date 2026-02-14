@@ -78,6 +78,21 @@ Write deterministic JSON summary:
 - Troubleshooting checkpoint:
   - verify deployment fixture paths and WASM module file in `testdata/deployment-wasm`.
 
+## Standalone Live Harness
+
+`browser-automation-live` is a standalone wrapper (not part of `index.sh` scenario allowlist)
+used for live browser timeline/artifact proof runs:
+
+```bash
+./scripts/demo/browser-automation-live.sh
+```
+
+Primary outputs:
+
+- `.tau/demo-browser-automation-live/browser-live-summary.json`
+- `.tau/demo-browser-automation-live/browser-live-report.json`
+- `.tau/demo-browser-automation-live/browser-live-transcript.log`
+
 ## CI-light smoke notes
 
 The repository smoke manifest (`.github/demo-smoke-manifest.json`) includes lightweight
