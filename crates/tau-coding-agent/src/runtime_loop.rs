@@ -505,7 +505,7 @@ where
     }
 }
 
-// Startup/runtime wiring intentionally threads explicit knobs rather than hidden config.
+// Intentional explicit startup/runtime knobs keep policy inheritance and hooks testable.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
     agent: &mut Agent,

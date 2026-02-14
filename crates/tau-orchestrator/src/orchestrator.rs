@@ -48,7 +48,7 @@ enum RoutedPromptRunState {
     Interrupted,
 }
 
-// Public orchestration entrypoint keeps policy and budget controls explicit.
+// Intentional broad signature: callers set all policy/budget knobs explicitly per run.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_plan_first_prompt<R: OrchestratorRuntime>(
     runtime: &mut R,
@@ -79,7 +79,7 @@ pub async fn run_plan_first_prompt<R: OrchestratorRuntime>(
     .await
 }
 
-// Public orchestration entrypoint keeps policy and budget controls explicit.
+// Intentional broad signature: callers set all policy/budget knobs explicitly per run.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
     runtime: &mut R,
@@ -113,7 +113,7 @@ pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
     .await
 }
 
-// Public orchestration entrypoint keeps policy and budget controls explicit.
+// Intentional broad signature: callers set all policy/budget knobs explicitly per run.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: OrchestratorRuntime>(
     runtime: &mut R,
@@ -371,7 +371,7 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
     Ok(())
 }
 
-// Route tracing accepts granular optional fields to keep call sites straightforward.
+// Route execution needs explicit trace metadata and runtime controls at each call site.
 #[allow(clippy::too_many_arguments)]
 async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
     runtime: &mut R,
@@ -524,7 +524,7 @@ async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
     );
 }
 
-// Route trace emission accepts many optional dimensions to keep logs structured.
+// Trace records carry many optional dimensions; keeping them explicit avoids hidden state.
 #[allow(clippy::too_many_arguments)]
 fn emit_route_trace(
     route_trace_log_path: Option<&Path>,
