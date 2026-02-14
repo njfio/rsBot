@@ -1,8 +1,12 @@
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tau_core::current_unix_timestamp_ms;
+use tau_runtime::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
 
 use crate::browser_automation_contract::{
     assert_browser_automation_result_matches_expectation, BrowserAutomationContractCase,
@@ -10,6 +14,8 @@ use crate::browser_automation_contract::{
     BROWSER_AUTOMATION_ERROR_ACTION_LIMIT_EXCEEDED, BROWSER_AUTOMATION_ERROR_BACKEND_UNAVAILABLE,
     BROWSER_AUTOMATION_ERROR_TIMEOUT, BROWSER_AUTOMATION_ERROR_UNSAFE_OPERATION,
 };
+
+const BROWSER_AUTOMATION_LIVE_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `BrowserAutomationLivePolicy` used across Tau components.
@@ -55,6 +61,32 @@ impl From<&BrowserAutomationContractCase> for BrowserActionRequest {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `BrowserActionArtifactBundle` used across Tau components.
+pub struct BrowserActionArtifactBundle {
+    #[serde(default)]
+    pub dom_snapshot_html: String,
+    #[serde(default)]
+    pub screenshot_svg: String,
+    #[serde(default)]
+    pub trace_json: String,
+}
+
+impl BrowserActionArtifactBundle {
+    fn is_empty(&self) -> bool {
+        self.dom_snapshot_html.trim().is_empty()
+            && self.screenshot_svg.trim().is_empty()
+            && self.trace_json.trim().is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `BrowserAutomationLivePersistenceConfig` used across Tau components.
+pub struct BrowserAutomationLivePersistenceConfig {
+    pub state_dir: PathBuf,
+    pub artifact_retention_days: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Public struct `BrowserActionResult` used across Tau components.
 pub struct BrowserActionResult {
@@ -63,6 +95,8 @@ pub struct BrowserActionResult {
     pub error_code: String,
     #[serde(default)]
     pub response_body: serde_json::Value,
+    #[serde(default)]
+    pub artifacts: BrowserActionArtifactBundle,
 }
 
 impl BrowserActionResult {
@@ -78,19 +112,13 @@ impl BrowserActionResult {
         }
         BrowserAutomationReplayStep::Success
     }
+}
 
-    fn into_replay_result(self) -> BrowserAutomationReplayResult {
-        BrowserAutomationReplayResult {
-            step: self.to_replay_step(),
-            status_code: self.status_code,
-            error_code: if self.error_code.trim().is_empty() {
-                None
-            } else {
-                Some(self.error_code)
-            },
-            response_body: self.response_body,
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `BrowserLiveCaseOutcome` used across Tau components.
+pub struct BrowserLiveCaseOutcome {
+    pub replay_result: BrowserAutomationReplayResult,
+    pub artifacts: BrowserActionArtifactBundle,
 }
 
 /// Trait contract for `BrowserActionExecutor` behavior.
@@ -209,8 +237,21 @@ impl<E: BrowserActionExecutor> BrowserSessionManager<E> {
         case: &BrowserAutomationContractCase,
         policy: &BrowserAutomationLivePolicy,
     ) -> Result<BrowserAutomationReplayResult> {
+        Ok(self
+            .execute_case_with_artifacts(case, policy)?
+            .replay_result)
+    }
+
+    pub fn execute_case_with_artifacts(
+        &mut self,
+        case: &BrowserAutomationContractCase,
+        policy: &BrowserAutomationLivePolicy,
+    ) -> Result<BrowserLiveCaseOutcome> {
         if let Some(policy_result) = enforce_live_policy(case, policy) {
-            return Ok(policy_result);
+            return Ok(BrowserLiveCaseOutcome {
+                replay_result: policy_result,
+                artifacts: BrowserActionArtifactBundle::default(),
+            });
         }
 
         self.ensure_session_started()?;
@@ -225,9 +266,29 @@ impl<E: BrowserActionExecutor> BrowserSessionManager<E> {
                     "reason": "backend_unavailable",
                     "detail": error.to_string(),
                 }),
+                artifacts: BrowserActionArtifactBundle::default(),
             },
         };
-        Ok(action_result.into_replay_result())
+        let replay_step = action_result.to_replay_step();
+        let BrowserActionResult {
+            status_code,
+            error_code,
+            response_body,
+            artifacts,
+        } = action_result;
+        Ok(BrowserLiveCaseOutcome {
+            replay_result: BrowserAutomationReplayResult {
+                step: replay_step,
+                status_code,
+                error_code: if error_code.trim().is_empty() {
+                    None
+                } else {
+                    Some(error_code)
+                },
+                response_body,
+            },
+            artifacts,
+        })
     }
 
     pub fn shutdown(&mut self) -> Result<()> {
@@ -253,6 +314,12 @@ pub struct BrowserAutomationLiveRunSummary {
     pub success_cases: usize,
     pub malformed_cases: usize,
     pub retryable_failures: usize,
+    pub timeout_failures: usize,
+    pub denied_unsafe_actions: usize,
+    pub denied_action_limit: usize,
+    pub artifact_records: usize,
+    pub reason_codes: Vec<String>,
+    pub health_state: String,
 }
 
 pub fn run_browser_automation_live_fixture<E: BrowserActionExecutor>(
@@ -260,15 +327,24 @@ pub fn run_browser_automation_live_fixture<E: BrowserActionExecutor>(
     manager: &mut BrowserSessionManager<E>,
     policy: &BrowserAutomationLivePolicy,
 ) -> Result<BrowserAutomationLiveRunSummary> {
+    run_browser_automation_live_fixture_with_persistence(fixture, manager, policy, None)
+}
+
+pub fn run_browser_automation_live_fixture_with_persistence<E: BrowserActionExecutor>(
+    fixture: &BrowserAutomationContractFixture,
+    manager: &mut BrowserSessionManager<E>,
+    policy: &BrowserAutomationLivePolicy,
+    persistence: Option<&BrowserAutomationLivePersistenceConfig>,
+) -> Result<BrowserAutomationLiveRunSummary> {
     let mut summary = BrowserAutomationLiveRunSummary {
         discovered_cases: fixture.cases.len(),
         ..BrowserAutomationLiveRunSummary::default()
     };
 
     for case in &fixture.cases {
-        let result = manager.execute_case(case, policy)?;
-        assert_browser_automation_result_matches_expectation(case, &result)?;
-        match result.step {
+        let outcome = manager.execute_case_with_artifacts(case, policy)?;
+        assert_browser_automation_result_matches_expectation(case, &outcome.replay_result)?;
+        match outcome.replay_result.step {
             BrowserAutomationReplayStep::Success => {
                 summary.success_cases = summary.success_cases.saturating_add(1);
             }
@@ -279,10 +355,254 @@ pub fn run_browser_automation_live_fixture<E: BrowserActionExecutor>(
                 summary.retryable_failures = summary.retryable_failures.saturating_add(1);
             }
         }
+
+        if let Some(error_code) = outcome.replay_result.error_code.as_deref() {
+            if error_code == BROWSER_AUTOMATION_ERROR_TIMEOUT {
+                summary.timeout_failures = summary.timeout_failures.saturating_add(1);
+            } else if error_code == BROWSER_AUTOMATION_ERROR_UNSAFE_OPERATION {
+                summary.denied_unsafe_actions = summary.denied_unsafe_actions.saturating_add(1);
+            } else if error_code == BROWSER_AUTOMATION_ERROR_ACTION_LIMIT_EXCEEDED {
+                summary.denied_action_limit = summary.denied_action_limit.saturating_add(1);
+            }
+        }
+
+        if let Some(config) = persistence {
+            summary.artifact_records = summary
+                .artifact_records
+                .saturating_add(persist_live_case_artifacts(config, case, &outcome)?);
+        }
+    }
+
+    summary.reason_codes = live_reason_codes(&summary);
+    summary.health_state = live_health_state(&summary).to_string();
+
+    if let Some(config) = persistence {
+        append_live_cycle_report(config, &summary)?;
     }
 
     manager.shutdown()?;
     Ok(summary)
+}
+
+fn live_case_key(case: &BrowserAutomationContractCase) -> String {
+    format!(
+        "{}:{}:{}",
+        case.operation.trim().to_ascii_lowercase(),
+        case.action.trim().to_ascii_lowercase(),
+        case.case_id.trim()
+    )
+}
+
+fn persist_live_case_artifacts(
+    config: &BrowserAutomationLivePersistenceConfig,
+    case: &BrowserAutomationContractCase,
+    outcome: &BrowserLiveCaseOutcome,
+) -> Result<usize> {
+    let store = ChannelStore::open(
+        &config.state_dir.join("channel-store"),
+        "browser-automation",
+        "live",
+    )?;
+    let case_key = live_case_key(case);
+    let timestamp_unix_ms = current_unix_timestamp_ms();
+    let run_id = format!("live-{}", case.case_id.trim());
+    let error_code = outcome.replay_result.error_code.clone().unwrap_or_default();
+
+    store.append_log_entry(&ChannelLogEntry {
+        timestamp_unix_ms,
+        direction: "system".to_string(),
+        event_key: Some(case_key.clone()),
+        source: "tau-browser-automation-live-runner".to_string(),
+        payload: json!({
+            "case_id": case.case_id.trim(),
+            "operation": case.operation.trim().to_ascii_lowercase(),
+            "status_code": outcome.replay_result.status_code,
+            "error_code": error_code,
+            "response_body": outcome.replay_result.response_body.clone(),
+        }),
+    })?;
+    store.append_context_entry(&ChannelContextEntry {
+        timestamp_unix_ms,
+        role: "system".to_string(),
+        text: format!(
+            "browser automation live case {} operation={} status={} error_code={}",
+            case.case_id.trim(),
+            case.operation.trim().to_ascii_lowercase(),
+            outcome.replay_result.status_code,
+            outcome
+                .replay_result
+                .error_code
+                .as_deref()
+                .unwrap_or_default()
+        ),
+    })?;
+
+    let mut artifact_records = 0usize;
+    if !outcome.artifacts.dom_snapshot_html.trim().is_empty() {
+        store.write_text_artifact(
+            &run_id,
+            "dom_snapshot",
+            "private",
+            config.artifact_retention_days,
+            "html",
+            &outcome.artifacts.dom_snapshot_html,
+        )?;
+        artifact_records = artifact_records.saturating_add(1);
+    }
+    if !outcome.artifacts.screenshot_svg.trim().is_empty() {
+        store.write_text_artifact(
+            &run_id,
+            "screenshot",
+            "private",
+            config.artifact_retention_days,
+            "svg",
+            &outcome.artifacts.screenshot_svg,
+        )?;
+        artifact_records = artifact_records.saturating_add(1);
+    }
+    if !outcome.artifacts.trace_json.trim().is_empty() {
+        store.write_text_artifact(
+            &run_id,
+            "trace",
+            "private",
+            config.artifact_retention_days,
+            "json",
+            &outcome.artifacts.trace_json,
+        )?;
+        artifact_records = artifact_records.saturating_add(1);
+    }
+
+    if !outcome.artifacts.is_empty() {
+        store.write_memory(&render_live_snapshot(case, outcome))?;
+    }
+
+    Ok(artifact_records)
+}
+
+fn render_live_snapshot(
+    case: &BrowserAutomationContractCase,
+    outcome: &BrowserLiveCaseOutcome,
+) -> String {
+    let mut lines = vec![
+        "# Tau Browser Automation Live Snapshot".to_string(),
+        String::new(),
+        format!(
+            "- case_id={} operation={} status={} error_code={}",
+            case.case_id.trim(),
+            case.operation.trim().to_ascii_lowercase(),
+            outcome.replay_result.status_code,
+            outcome
+                .replay_result
+                .error_code
+                .as_deref()
+                .unwrap_or("none"),
+        ),
+    ];
+    if !outcome.artifacts.dom_snapshot_html.trim().is_empty() {
+        lines.push("- artifact=dom_snapshot".to_string());
+    }
+    if !outcome.artifacts.screenshot_svg.trim().is_empty() {
+        lines.push("- artifact=screenshot".to_string());
+    }
+    if !outcome.artifacts.trace_json.trim().is_empty() {
+        lines.push("- artifact=trace".to_string());
+    }
+    lines.join("\n")
+}
+
+fn live_reason_codes(summary: &BrowserAutomationLiveRunSummary) -> Vec<String> {
+    let mut codes = Vec::new();
+    if summary.denied_action_limit > 0 {
+        codes.push("action_limit_guardrail_denied".to_string());
+    }
+    if summary.denied_unsafe_actions > 0 {
+        codes.push("unsafe_actions_denied".to_string());
+    }
+    if summary.timeout_failures > 0 {
+        codes.push("timeout_failures_observed".to_string());
+    }
+    if summary.retryable_failures > 0 {
+        codes.push("live_executor_failures_observed".to_string());
+    }
+    if summary.artifact_records > 0 {
+        codes.push("artifact_persisted".to_string());
+    }
+    if codes.is_empty() {
+        codes.push("healthy_cycle".to_string());
+    }
+    codes
+}
+
+fn live_health_state(summary: &BrowserAutomationLiveRunSummary) -> &'static str {
+    if summary.retryable_failures > 0 || summary.timeout_failures > 0 {
+        "degraded"
+    } else {
+        "healthy"
+    }
+}
+
+fn append_live_cycle_report(
+    config: &BrowserAutomationLivePersistenceConfig,
+    summary: &BrowserAutomationLiveRunSummary,
+) -> Result<()> {
+    let path = config
+        .state_dir
+        .join(BROWSER_AUTOMATION_LIVE_EVENTS_LOG_FILE);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+
+    let previous_state = load_previous_live_health_state(&path);
+    let transition = if previous_state == summary.health_state {
+        "steady".to_string()
+    } else {
+        format!("{}->{}", previous_state, summary.health_state)
+    };
+    let payload = json!({
+        "timestamp_unix_ms": current_unix_timestamp_ms(),
+        "health_state": summary.health_state.clone(),
+        "previous_health_state": previous_state,
+        "health_transition": transition,
+        "reason_codes": summary.reason_codes.clone(),
+        "discovered_cases": summary.discovered_cases,
+        "success_cases": summary.success_cases,
+        "malformed_cases": summary.malformed_cases,
+        "retryable_failures": summary.retryable_failures,
+        "timeout_failures": summary.timeout_failures,
+        "denied_unsafe_actions": summary.denied_unsafe_actions,
+        "denied_action_limit": summary.denied_action_limit,
+        "artifact_records": summary.artifact_records,
+    });
+    let line = serde_json::to_string(&payload).context("serialize live cycle report")?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("failed to flush {}", path.display()))?;
+    Ok(())
+}
+
+fn load_previous_live_health_state(path: &Path) -> String {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return "unknown".to_string();
+    };
+    let Some(last) = raw.lines().last() else {
+        return "unknown".to_string();
+    };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(last) else {
+        return "unknown".to_string();
+    };
+    parsed
+        .get("health_state")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn enforce_live_policy(
@@ -329,12 +649,15 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use anyhow::Result;
+    use tau_runtime::channel_store::ChannelStore;
     use tempfile::tempdir;
 
     use super::{
-        run_browser_automation_live_fixture, BrowserActionExecutor, BrowserActionRequest,
-        BrowserActionResult, BrowserAutomationLivePolicy, BrowserSessionManager,
-        PlaywrightCliActionExecutor,
+        run_browser_automation_live_fixture, run_browser_automation_live_fixture_with_persistence,
+        BrowserActionArtifactBundle, BrowserActionExecutor, BrowserActionRequest,
+        BrowserActionResult, BrowserAutomationLivePersistenceConfig, BrowserAutomationLivePolicy,
+        BrowserSessionManager, PlaywrightCliActionExecutor,
+        BROWSER_AUTOMATION_LIVE_EVENTS_LOG_FILE,
     };
     use crate::browser_automation_contract::{
         parse_browser_automation_contract_fixture, BrowserAutomationCaseExpectation,
@@ -381,6 +704,7 @@ mod tests {
                     "title": "Unit fixture page",
                     "dom_nodes": 4,
                 }),
+                artifacts: BrowserActionArtifactBundle::default(),
             })
         }
 
@@ -470,6 +794,11 @@ if operation == "navigate":
             "url": url,
             "title": title,
             "dom_nodes": html.count("<")
+        },
+        "artifacts": {
+            "dom_snapshot_html": html,
+            "screenshot_svg": "<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>",
+            "trace_json": json.dumps({"events": ["navigate"], "url": url})
         }
     }))
     raise SystemExit(0)
@@ -482,6 +811,11 @@ if operation == "snapshot":
             "operation": "snapshot",
             "snapshot_id": "snapshot-live",
             "elements": [{"id": "e1", "role": "button", "name": "Run"}]
+        },
+        "artifacts": {
+            "dom_snapshot_html": "<html><body><button id='run'>Run</button></body></html>",
+            "screenshot_svg": "<svg xmlns='http://www.w3.org/2000/svg'><circle cx='5' cy='5' r='5'/></svg>",
+            "trace_json": "{\"events\":[\"snapshot\"]}"
         }
     }))
     raise SystemExit(0)
@@ -497,6 +831,11 @@ if operation == "action":
             "repeat_count": payload.get("action_repeat_count", 1),
             "text": payload.get("text", ""),
             "timeout_ms": payload.get("timeout_ms", 0)
+        },
+        "artifacts": {
+            "dom_snapshot_html": "",
+            "screenshot_svg": "<svg xmlns='http://www.w3.org/2000/svg'><line x1='0' y1='0' x2='10' y2='10'/></svg>",
+            "trace_json": "{\"events\":[\"action\"]}"
         }
     }))
     raise SystemExit(0)
@@ -621,7 +960,92 @@ print(json.dumps({
         assert_eq!(summary.success_cases, 2);
         assert_eq!(summary.malformed_cases, 0);
         assert_eq!(summary.retryable_failures, 0);
+        assert_eq!(summary.health_state, "healthy");
         assert!(!session_file.exists());
+    }
+
+    #[test]
+    fn integration_live_fixture_persists_dom_snapshot_screenshot_and_trace_artifacts() {
+        let temp = tempdir().expect("tempdir");
+        let page_path = temp.path().join("artifact-page.html");
+        std::fs::write(
+            &page_path,
+            "<html><head><title>Artifact Page</title></head><body><h1>Artifacts</h1></body></html>",
+        )
+        .expect("write page");
+        let fixture = parse_browser_automation_contract_fixture(&format!(
+            r##"{{
+  "schema_version": 1,
+  "name": "artifact-persistence",
+  "cases": [
+    {{
+      "schema_version": 1,
+      "case_id": "navigate-artifacts",
+      "operation": "navigate",
+      "url": "file://{}",
+      "expected": {{
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {{
+          "status": "ok",
+          "operation": "navigate",
+          "url": "file://{}",
+          "title": "Artifact Page",
+          "dom_nodes": 10
+        }}
+      }}
+    }}
+  ]
+}}"##,
+            page_path.display(),
+            page_path.display()
+        ))
+        .expect("fixture parse");
+
+        let script_path = temp.path().join("mock-playwright-cli.py");
+        write_mock_playwright_cli(&script_path);
+        let persistence = BrowserAutomationLivePersistenceConfig {
+            state_dir: temp.path().join(".tau/browser-live"),
+            artifact_retention_days: Some(7),
+        };
+
+        let mut manager = BrowserSessionManager::new(
+            PlaywrightCliActionExecutor::new(script_path.to_string_lossy().to_string())
+                .expect("executor"),
+        );
+        let summary = run_browser_automation_live_fixture_with_persistence(
+            &fixture,
+            &mut manager,
+            &BrowserAutomationLivePolicy::default(),
+            Some(&persistence),
+        )
+        .expect("live run with persistence");
+
+        assert_eq!(summary.success_cases, 1);
+        assert_eq!(summary.artifact_records, 3);
+        assert!(summary
+            .reason_codes
+            .contains(&"artifact_persisted".to_string()));
+
+        let store = ChannelStore::open(
+            &persistence.state_dir.join("channel-store"),
+            "browser-automation",
+            "live",
+        )
+        .expect("open channel store");
+        let loaded = store
+            .load_artifact_records_tolerant()
+            .expect("load artifacts");
+        assert_eq!(loaded.invalid_lines, 0);
+        assert_eq!(loaded.records.len(), 3);
+        let types = loaded
+            .records
+            .iter()
+            .map(|record| record.artifact_type.clone())
+            .collect::<Vec<_>>();
+        assert!(types.contains(&"dom_snapshot".to_string()));
+        assert!(types.contains(&"screenshot".to_string()));
+        assert!(types.contains(&"trace".to_string()));
     }
 
     #[test]
@@ -673,6 +1097,10 @@ print(json.dumps({
         )
         .expect("run should map command failure");
         assert_eq!(summary.retryable_failures, 1);
+        assert_eq!(summary.health_state, "degraded");
+        assert!(summary
+            .reason_codes
+            .contains(&"live_executor_failures_observed".to_string()));
     }
 
     #[test]
@@ -748,6 +1176,189 @@ print(json.dumps({
     }
 
     #[test]
+    fn regression_policy_denials_surface_reason_codes_with_deterministic_counts() {
+        let fixture = parse_browser_automation_contract_fixture(
+            r##"{
+  "schema_version": 1,
+  "name": "policy-denials",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "action-cap",
+      "operation": "action",
+      "action": "click",
+      "selector": "#go",
+      "action_repeat_count": 2,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 429,
+        "error_code": "browser_automation_action_limit_exceeded",
+        "response_body": {"status":"rejected","reason":"action_limit_exceeded"}
+      }
+    },
+    {
+      "schema_version": 1,
+      "case_id": "unsafe",
+      "operation": "action",
+      "action": "click",
+      "selector": "#delete",
+      "unsafe_operation": true,
+      "expected": {
+        "outcome": "malformed_input",
+        "status_code": 403,
+        "error_code": "browser_automation_unsafe_operation",
+        "response_body": {"status":"rejected","reason":"unsafe_operation"}
+      }
+    }
+  ]
+}"##,
+        )
+        .expect("fixture parse");
+
+        let counters = Arc::new(Mutex::new(ExecutorCounters::default()));
+        let mut manager = BrowserSessionManager::new(CountingExecutor::new(counters.clone()));
+        let policy = BrowserAutomationLivePolicy {
+            action_timeout_ms: 1000,
+            max_actions_per_case: 1,
+            allow_unsafe_actions: false,
+        };
+        let summary =
+            run_browser_automation_live_fixture(&fixture, &mut manager, &policy).expect("run");
+
+        assert_eq!(summary.malformed_cases, 2);
+        assert_eq!(summary.denied_action_limit, 1);
+        assert_eq!(summary.denied_unsafe_actions, 1);
+        assert!(summary
+            .reason_codes
+            .contains(&"action_limit_guardrail_denied".to_string()));
+        assert!(summary
+            .reason_codes
+            .contains(&"unsafe_actions_denied".to_string()));
+
+        let snapshot = counters.lock().expect("lock");
+        assert_eq!(snapshot.starts, 0);
+        assert_eq!(snapshot.executes, 0);
+    }
+
+    #[test]
+    fn integration_live_cycle_report_tracks_health_state_transitions() {
+        let temp = tempdir().expect("tempdir");
+        let persistence = BrowserAutomationLivePersistenceConfig {
+            state_dir: temp.path().join(".tau/browser-live-transition"),
+            artifact_retention_days: Some(1),
+        };
+        let failing_script = temp.path().join("failing-playwright-cli.sh");
+        std::fs::write(
+            &failing_script,
+            "#!/usr/bin/env bash\nset -euo pipefail\nif [[ \"$1\" == \"execute-action\" ]]; then exit 9; fi\nexit 0\n",
+        )
+        .expect("write failing script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&failing_script)
+                .expect("stat")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&failing_script, perms).expect("chmod");
+        }
+
+        let failure_fixture = parse_browser_automation_contract_fixture(
+            r##"{
+  "schema_version": 1,
+  "name": "fail-first",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "backend-fail",
+      "operation": "navigate",
+      "url": "file:///tmp/missing.html",
+      "expected": {
+        "outcome": "retryable_failure",
+        "status_code": 503,
+        "error_code": "browser_automation_backend_unavailable",
+        "response_body": null
+      }
+    }
+  ]
+}"##,
+        )
+        .expect("failure fixture parse");
+
+        let mut fail_manager = BrowserSessionManager::new(
+            PlaywrightCliActionExecutor::new(failing_script.to_string_lossy().to_string())
+                .expect("executor"),
+        );
+        let failed = run_browser_automation_live_fixture_with_persistence(
+            &failure_fixture,
+            &mut fail_manager,
+            &BrowserAutomationLivePolicy::default(),
+            Some(&persistence),
+        )
+        .expect("failed live run");
+        assert_eq!(failed.health_state, "degraded");
+
+        let success_page = temp.path().join("success.html");
+        std::fs::write(
+            &success_page,
+            "<html><head><title>Recovery Page</title></head><body></body></html>",
+        )
+        .expect("write success page");
+        let success_fixture = parse_browser_automation_contract_fixture(&format!(
+            r##"{{
+  "schema_version": 1,
+  "name": "recovery",
+  "cases": [
+    {{
+      "schema_version": 1,
+      "case_id": "navigate-recovery",
+      "operation": "navigate",
+      "url": "file://{}",
+      "expected": {{
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {{
+          "status": "ok",
+          "operation": "navigate",
+          "url": "file://{}",
+          "title": "Recovery Page",
+          "dom_nodes": 8
+        }}
+      }}
+    }}
+  ]
+}}"##,
+            success_page.display(),
+            success_page.display()
+        ))
+        .expect("success fixture parse");
+
+        let success_script = temp.path().join("mock-playwright-cli.py");
+        write_mock_playwright_cli(&success_script);
+        let mut success_manager = BrowserSessionManager::new(
+            PlaywrightCliActionExecutor::new(success_script.to_string_lossy().to_string())
+                .expect("executor"),
+        );
+        let recovered = run_browser_automation_live_fixture_with_persistence(
+            &success_fixture,
+            &mut success_manager,
+            &BrowserAutomationLivePolicy::default(),
+            Some(&persistence),
+        )
+        .expect("recovery run");
+        assert_eq!(recovered.health_state, "healthy");
+
+        let events_log = std::fs::read_to_string(
+            persistence
+                .state_dir
+                .join(BROWSER_AUTOMATION_LIVE_EVENTS_LOG_FILE),
+        )
+        .expect("events log");
+        let last = events_log.lines().last().expect("last event");
+        assert!(last.contains("\"health_transition\":\"degraded->healthy\""));
+    }
+
+    #[test]
     fn unit_playwright_executor_rejects_empty_cli_path() {
         let error = PlaywrightCliActionExecutor::new("  ").expect_err("empty path should fail");
         assert!(error.to_string().contains("cannot be empty"));
@@ -759,12 +1370,15 @@ print(json.dumps({
             status_code: 503,
             error_code: BROWSER_AUTOMATION_ERROR_BACKEND_UNAVAILABLE.to_string(),
             response_body: serde_json::json!({"status":"retryable","reason":"backend_unavailable"}),
-        }
-        .into_replay_result();
-        assert_eq!(result.step, BrowserAutomationReplayStep::RetryableFailure);
+            artifacts: BrowserActionArtifactBundle::default(),
+        };
         assert_eq!(
-            result.error_code.as_deref(),
-            Some(BROWSER_AUTOMATION_ERROR_BACKEND_UNAVAILABLE)
+            result.to_replay_step(),
+            BrowserAutomationReplayStep::RetryableFailure
+        );
+        assert_eq!(
+            result.error_code,
+            BROWSER_AUTOMATION_ERROR_BACKEND_UNAVAILABLE
         );
     }
 }
