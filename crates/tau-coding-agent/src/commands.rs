@@ -22,13 +22,18 @@ use tau_diagnostics::{
 use tau_diagnostics::{
     DoctorCommandConfig, DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
 };
+#[cfg(test)]
 use tau_onboarding::startup_config::ProfileDefaults;
 use tau_provider::{
     execute_integration_auth_command, parse_models_list_args, render_model_show,
-    render_models_list, AuthCommandConfig, ModelCatalog, MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
+    render_models_list, MODELS_LIST_USAGE, MODEL_SHOW_USAGE,
 };
 #[cfg(test)]
-use tau_provider::{CredentialStoreEncryptionMode, ProviderAuthMethod};
+use tau_provider::{
+    AuthCommandConfig, CredentialStoreEncryptionMode, ModelCatalog, ProviderAuthMethod,
+};
+#[cfg(test)]
+use tau_session::SessionImportMode;
 use tau_session::{
     execute_branch_alias_command, execute_branch_switch_command, execute_branches_command,
     execute_resume_command, execute_session_bookmark_command, execute_session_compact_command,
@@ -36,7 +41,7 @@ use tau_session::{
     execute_session_graph_export_runtime_command, execute_session_import_command,
     execute_session_merge_command, execute_session_repair_command,
     execute_session_search_runtime_command, execute_session_stats_runtime_command,
-    execute_session_status_command, session_lineage_messages, SessionImportMode, SessionRuntime,
+    execute_session_status_command, session_lineage_messages, SessionRuntime,
 };
 #[cfg(test)]
 use tau_skills::default_skills_lock_path;
@@ -47,7 +52,9 @@ use tau_skills::{
     execute_skills_trust_list_command, execute_skills_trust_revoke_command,
     execute_skills_trust_rotate_command, execute_skills_verify_command,
 };
-use tau_startup::{execute_command_file_with_handler, CommandFileAction, SkillsSyncCommandConfig};
+#[cfg(test)]
+use tau_startup::SkillsSyncCommandConfig;
+use tau_startup::{execute_command_file_with_handler, CommandFileAction};
 
 use crate::auth_commands::execute_auth_command;
 use crate::canvas::{
@@ -89,13 +96,7 @@ pub(crate) fn execute_command_file(
             command,
             agent,
             session_runtime,
-            command_context.tool_policy_json,
-            command_context.session_import_mode,
-            command_context.profile_defaults,
-            command_context.skills_command_config,
-            command_context.auth_command_config,
-            command_context.model_catalog,
-            command_context.extension_commands,
+            command_context,
         )? {
             CommandAction::Continue => Ok(CommandFileAction::Continue),
             CommandAction::Exit => Ok(CommandFileAction::Exit),
@@ -190,30 +191,34 @@ pub(crate) fn handle_command(
         command,
         agent,
         session_runtime,
-        tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &auth_command_config,
-        &model_catalog,
-        &[],
+        CommandExecutionContext {
+            tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
+            model_catalog: &model_catalog,
+            extension_commands: &[],
+        },
     )
 }
 
-// Intentional explicit dependency list keeps command execution deterministic in tests/runtime.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_command_with_session_import_mode(
     command: &str,
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    tool_policy_json: &serde_json::Value,
-    session_import_mode: SessionImportMode,
-    profile_defaults: &ProfileDefaults,
-    skills_command_config: &SkillsSyncCommandConfig,
-    auth_command_config: &AuthCommandConfig,
-    model_catalog: &ModelCatalog,
-    extension_commands: &[crate::extension_manifest::ExtensionRegisteredCommand],
+    command_context: CommandExecutionContext<'_>,
 ) -> Result<CommandAction> {
+    let CommandExecutionContext {
+        tool_policy_json,
+        session_import_mode,
+        profile_defaults,
+        skills_command_config,
+        auth_command_config,
+        model_catalog,
+        extension_commands,
+    } = command_context;
+
     let skills_dir = skills_command_config.skills_dir.as_path();
     let default_skills_lock_path = skills_command_config.default_lock_path.as_path();
     let default_trust_root_path = skills_command_config.default_trust_root_path.as_deref();

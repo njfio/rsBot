@@ -2651,13 +2651,15 @@ fn integration_skills_sync_command_preserves_session_runtime_on_drift() {
         "/skills-sync",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills sync command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -2704,13 +2706,15 @@ fn integration_skills_lock_write_command_preserves_session_runtime_on_error() {
         &format!("/skills-lock-write {}", blocking_path.display()),
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills lock write command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -2756,13 +2760,15 @@ fn integration_skills_list_command_preserves_session_runtime() {
         "/skills-list",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills list command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -2807,13 +2813,15 @@ fn integration_skills_show_command_preserves_session_runtime_on_unknown_skill() 
         "/skills-show missing",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills show command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -2858,13 +2866,15 @@ fn integration_skills_search_command_preserves_session_runtime_on_invalid_args()
         "/skills-search alpha 0",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills search command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -2909,13 +2919,15 @@ fn integration_skills_lock_diff_command_preserves_session_runtime_on_error() {
         "/skills-lock-diff /tmp/missing.lock.json",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills lock diff command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -2960,13 +2972,15 @@ fn integration_skills_verify_command_preserves_session_runtime_on_error() {
         "/skills-verify /tmp/missing.lock.json",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills verify command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -3011,13 +3025,15 @@ fn integration_skills_prune_command_preserves_session_runtime_on_error() {
         "/skills-prune /tmp/missing.lock.json --apply",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills prune command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -3065,13 +3081,15 @@ fn integration_skills_trust_list_command_preserves_session_runtime_on_error() {
         "/skills-trust-list",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills trust list command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -3119,13 +3137,15 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         "/skills-trust-add root=YQ==",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills trust add command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -3134,13 +3154,15 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         "/skills-trust-revoke root",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills trust revoke command should continue");
     assert_eq!(action, CommandAction::Continue);
@@ -3149,13 +3171,15 @@ fn integration_skills_trust_mutation_commands_update_store_and_preserve_runtime(
         "/skills-trust-rotate root:new=Yg==",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("skills trust rotate command should continue");
     assert_eq!(action, CommandAction::Continue);

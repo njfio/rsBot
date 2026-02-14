@@ -19,7 +19,7 @@ use crate::multi_agent_router::load_multi_agent_route_table;
 use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
 use crate::runtime_loop::{
     resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
-    InteractiveRuntimeConfig, RuntimeExtensionHooksConfig,
+    InteractiveRuntimeConfig, PlanFirstPromptRuntimeHooksConfig, RuntimeExtensionHooksConfig,
 };
 use crate::runtime_output::event_to_json;
 use crate::runtime_types::{CommandExecutionContext, RenderOptions, SkillsSyncCommandConfig};
@@ -233,19 +233,27 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                     run_plan_first_prompt_with_runtime_hooks(
                         &mut agent,
                         &mut session_runtime,
-                        &prompt,
-                        interactive_defaults.turn_timeout_ms,
-                        render_options,
-                        interactive_defaults.orchestrator_max_plan_steps,
-                        interactive_defaults.orchestrator_max_delegated_steps,
-                        interactive_defaults.orchestrator_max_executor_response_chars,
-                        interactive_defaults.orchestrator_max_delegated_step_response_chars,
-                        interactive_defaults.orchestrator_max_delegated_total_response_chars,
-                        interactive_defaults.orchestrator_delegate_steps,
-                        &orchestrator_route_table,
-                        orchestrator_route_trace_log,
-                        tool_policy_json,
-                        &extension_runtime_hooks,
+                        PlanFirstPromptRuntimeHooksConfig {
+                            prompt: &prompt,
+                            turn_timeout_ms: interactive_defaults.turn_timeout_ms,
+                            render_options,
+                            orchestrator_max_plan_steps: interactive_defaults
+                                .orchestrator_max_plan_steps,
+                            orchestrator_max_delegated_steps: interactive_defaults
+                                .orchestrator_max_delegated_steps,
+                            orchestrator_max_executor_response_chars: interactive_defaults
+                                .orchestrator_max_executor_response_chars,
+                            orchestrator_max_delegated_step_response_chars: interactive_defaults
+                                .orchestrator_max_delegated_step_response_chars,
+                            orchestrator_max_delegated_total_response_chars: interactive_defaults
+                                .orchestrator_max_delegated_total_response_chars,
+                            orchestrator_delegate_steps: interactive_defaults
+                                .orchestrator_delegate_steps,
+                            orchestrator_route_table: &orchestrator_route_table,
+                            orchestrator_route_trace_log,
+                            tool_policy_json,
+                            extension_runtime_hooks: &extension_runtime_hooks,
+                        },
                     )
                     .await?;
                 }

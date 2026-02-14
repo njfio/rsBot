@@ -20,12 +20,13 @@ use super::super::{
     AsyncMutex, BashCommandProfile, ChatResponse, ChatUsage, CliBashProfile, CliDaemonProfile,
     CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
     CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOsSandboxMode, CliToolPolicyPreset,
-    CommandAction, ContentBlock, Duration, HashMap, Instant, Message, MessageRole, ModelCatalog,
-    MultiAgentRouteTable, NoopClient, OsSandboxMode, Path, PathBuf, PlanFirstPromptPolicyRequest,
-    PlanFirstPromptRequest, PlanFirstPromptRoutingRequest, PromptRunStatus, PromptTelemetryLogger,
-    QueueClient, RenderOptions, RuntimeExtensionHooksConfig, SequenceClient, SessionImportMode,
-    SessionRuntime, SessionStore, SlowClient, SuccessClient, TauAiError, ToolAuditLogger,
-    ToolExecutionResult, ToolPolicyPreset, TrustedRootRecord, VecDeque, AUTH_ENV_TEST_LOCK,
+    CommandAction, CommandExecutionContext, ContentBlock, Duration, HashMap, Instant, Message,
+    MessageRole, ModelCatalog, MultiAgentRouteTable, NoopClient, OsSandboxMode, Path, PathBuf,
+    PlanFirstPromptPolicyRequest, PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
+    PromptRunStatus, PromptTelemetryLogger, QueueClient, RenderOptions,
+    RuntimeExtensionHooksConfig, SequenceClient, SessionImportMode, SessionRuntime, SessionStore,
+    SlowClient, SuccessClient, TauAiError, ToolAuditLogger, ToolExecutionResult, ToolPolicyPreset,
+    TrustedRootRecord, VecDeque, AUTH_ENV_TEST_LOCK,
 };
 use super::{make_script_executable, write_route_table_fixture};
 
@@ -1033,13 +1034,15 @@ fn integration_handle_command_dispatches_extension_registered_command() {
         "/triage-now 42",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &auth_command_config,
-        &ModelCatalog::built_in(),
-        &registrations.registered_commands,
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &registrations.registered_commands,
+        },
     )
     .expect("command should execute");
     assert_eq!(action, CommandAction::Continue);
@@ -1103,13 +1106,15 @@ fn regression_handle_command_extension_failure_is_fail_isolated() {
         "/triage-now 42",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &auth_command_config,
-        &ModelCatalog::built_in(),
-        &registrations.registered_commands,
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &registrations.registered_commands,
+        },
     )
     .expect("errors should be fail-isolated");
     assert_eq!(action, CommandAction::Continue);
@@ -2461,13 +2466,15 @@ fn integration_session_import_command_replace_mode_overwrites_runtime_state() {
         &format!("/session-import {}", import_path.display()),
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Replace,
-        &profile_defaults,
-        &skills_command_config,
-        &test_auth_command_config(),
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Replace,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &test_auth_command_config(),
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("session replace import should succeed");
     assert_eq!(action, CommandAction::Continue);

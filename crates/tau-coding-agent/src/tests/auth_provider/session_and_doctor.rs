@@ -14,14 +14,15 @@ use super::super::{
     run_doctor_checks, run_doctor_checks_with_lookup, save_credential_store,
     search_session_entries, session_message_preview, shared_lineage_prefix_depth,
     skills_command_config, tempdir, test_auth_command_config, test_cli, test_profile_defaults,
-    test_tool_policy_json, Agent, AgentConfig, Arc, BTreeMap, CommandAction, CredentialStoreData,
-    CredentialStoreEncryptionMode, DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs,
-    DoctorCommandConfig, DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig,
-    DoctorProviderKeyStatus, DoctorStatus, HashMap, IntegrationCredentialStoreRecord, Message,
-    ModelCatalog, ModelRef, NoopClient, Path, PathBuf, Provider, ProviderAuthMethod,
-    SessionDiffEntry, SessionDiffReport, SessionGraphFormat, SessionImportMode, SessionRuntime,
-    SessionSearchArgs, SessionStats, SessionStatsOutputFormat, SessionStore,
-    SESSION_SEARCH_DEFAULT_RESULTS, SESSION_SEARCH_PREVIEW_CHARS,
+    test_tool_policy_json, Agent, AgentConfig, Arc, BTreeMap, CommandAction,
+    CommandExecutionContext, CredentialStoreData, CredentialStoreEncryptionMode,
+    DoctorCheckOptions, DoctorCheckResult, DoctorCommandArgs, DoctorCommandConfig,
+    DoctorCommandOutputFormat, DoctorMultiChannelReadinessConfig, DoctorProviderKeyStatus,
+    DoctorStatus, HashMap, IntegrationCredentialStoreRecord, Message, ModelCatalog, ModelRef,
+    NoopClient, Path, PathBuf, Provider, ProviderAuthMethod, SessionDiffEntry, SessionDiffReport,
+    SessionGraphFormat, SessionImportMode, SessionRuntime, SessionSearchArgs, SessionStats,
+    SessionStatsOutputFormat, SessionStore, SESSION_SEARCH_DEFAULT_RESULTS,
+    SESSION_SEARCH_PREVIEW_CHARS,
 };
 
 #[test]
@@ -1325,13 +1326,15 @@ fn integration_doctor_command_preserves_session_runtime() {
         "/doctor",
         &mut agent,
         &mut runtime,
-        &tool_policy_json,
-        SessionImportMode::Merge,
-        &profile_defaults,
-        &skills_command_config,
-        &auth_command_config,
-        &ModelCatalog::built_in(),
-        &[],
+        CommandExecutionContext {
+            tool_policy_json: &tool_policy_json,
+            session_import_mode: SessionImportMode::Merge,
+            profile_defaults: &profile_defaults,
+            skills_command_config: &skills_command_config,
+            auth_command_config: &auth_command_config,
+            model_catalog: &ModelCatalog::built_in(),
+            extension_commands: &[],
+        },
     )
     .expect("doctor command should continue");
     assert_eq!(action, CommandAction::Continue);

@@ -332,13 +332,7 @@ async fn dispatch_interactive_turn(
             trimmed,
             agent,
             session_runtime,
-            config.command_context.tool_policy_json,
-            config.command_context.session_import_mode,
-            config.command_context.profile_defaults,
-            config.command_context.skills_command_config,
-            config.command_context.auth_command_config,
-            config.command_context.model_catalog,
-            config.command_context.extension_commands,
+            config.command_context,
         )? == CommandAction::Exit
         {
             return Ok(InteractiveLoopControl::Exit);
@@ -350,19 +344,24 @@ async fn dispatch_interactive_turn(
         run_plan_first_prompt_with_runtime_hooks(
             agent,
             session_runtime,
-            input,
-            config.turn_timeout_ms,
-            config.render_options,
-            config.orchestrator_max_plan_steps,
-            config.orchestrator_max_delegated_steps,
-            config.orchestrator_max_executor_response_chars,
-            config.orchestrator_max_delegated_step_response_chars,
-            config.orchestrator_max_delegated_total_response_chars,
-            config.orchestrator_delegate_steps,
-            config.orchestrator_route_table,
-            config.orchestrator_route_trace_log,
-            config.command_context.tool_policy_json,
-            config.extension_runtime_hooks,
+            PlanFirstPromptRuntimeHooksConfig {
+                prompt: input,
+                turn_timeout_ms: config.turn_timeout_ms,
+                render_options: config.render_options,
+                orchestrator_max_plan_steps: config.orchestrator_max_plan_steps,
+                orchestrator_max_delegated_steps: config.orchestrator_max_delegated_steps,
+                orchestrator_max_executor_response_chars: config
+                    .orchestrator_max_executor_response_chars,
+                orchestrator_max_delegated_step_response_chars: config
+                    .orchestrator_max_delegated_step_response_chars,
+                orchestrator_max_delegated_total_response_chars: config
+                    .orchestrator_max_delegated_total_response_chars,
+                orchestrator_delegate_steps: config.orchestrator_delegate_steps,
+                orchestrator_route_table: config.orchestrator_route_table,
+                orchestrator_route_trace_log: config.orchestrator_route_trace_log,
+                tool_policy_json: config.command_context.tool_policy_json,
+                extension_runtime_hooks: config.extension_runtime_hooks,
+            },
         )
         .await?;
         return Ok(InteractiveLoopControl::Continue);
@@ -506,25 +505,44 @@ where
     }
 }
 
-// Intentional explicit startup/runtime knobs keep policy inheritance and hooks testable.
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+pub(crate) struct PlanFirstPromptRuntimeHooksConfig<'a> {
+    pub(crate) prompt: &'a str,
+    pub(crate) turn_timeout_ms: u64,
+    pub(crate) render_options: RenderOptions,
+    pub(crate) orchestrator_max_plan_steps: usize,
+    pub(crate) orchestrator_max_delegated_steps: usize,
+    pub(crate) orchestrator_max_executor_response_chars: usize,
+    pub(crate) orchestrator_max_delegated_step_response_chars: usize,
+    pub(crate) orchestrator_max_delegated_total_response_chars: usize,
+    pub(crate) orchestrator_delegate_steps: bool,
+    pub(crate) orchestrator_route_table: &'a MultiAgentRouteTable,
+    pub(crate) orchestrator_route_trace_log: Option<&'a Path>,
+    pub(crate) tool_policy_json: &'a serde_json::Value,
+    pub(crate) extension_runtime_hooks: &'a RuntimeExtensionHooksConfig,
+}
+
 pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
-    prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: RenderOptions,
-    orchestrator_max_plan_steps: usize,
-    orchestrator_max_delegated_steps: usize,
-    orchestrator_max_executor_response_chars: usize,
-    orchestrator_max_delegated_step_response_chars: usize,
-    orchestrator_max_delegated_total_response_chars: usize,
-    orchestrator_delegate_steps: bool,
-    orchestrator_route_table: &MultiAgentRouteTable,
-    orchestrator_route_trace_log: Option<&Path>,
-    tool_policy_json: &serde_json::Value,
-    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+    config: PlanFirstPromptRuntimeHooksConfig<'_>,
 ) -> Result<()> {
+    let PlanFirstPromptRuntimeHooksConfig {
+        prompt,
+        turn_timeout_ms,
+        render_options,
+        orchestrator_max_plan_steps,
+        orchestrator_max_delegated_steps,
+        orchestrator_max_executor_response_chars,
+        orchestrator_max_delegated_step_response_chars,
+        orchestrator_max_delegated_total_response_chars,
+        orchestrator_delegate_steps,
+        orchestrator_route_table,
+        orchestrator_route_trace_log,
+        tool_policy_json,
+        extension_runtime_hooks,
+    } = config;
+
     let effective_prompt = apply_runtime_message_transform(extension_runtime_hooks, prompt);
     dispatch_runtime_hook(
         extension_runtime_hooks,
