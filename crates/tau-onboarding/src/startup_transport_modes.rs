@@ -2491,6 +2491,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_run_voice_contract_runner_if_requested_executes_runtime() {
+        let temp = tempdir().expect("tempdir");
+        let fixture_path = temp.path().join("voice-contract.json");
+        std::fs::write(
+            &fixture_path,
+            r#"{
+  "schema_version": 1,
+  "name": "voice-contract-test",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "voice-turn-contract",
+      "mode": "turn",
+      "wake_word": "tau",
+      "transcript": "tau open dashboard",
+      "locale": "en-US",
+      "speaker_id": "ops-voice",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "turn",
+          "wake_word": "tau",
+          "utterance": "open dashboard",
+          "locale": "en-US",
+          "speaker_id": "ops-voice"
+        }
+      }
+    }
+  ]
+}"#,
+        )
+        .expect("write fixture");
+
+        let mut cli = parse_cli_with_stack();
+        cli.voice_contract_runner = true;
+        cli.voice_fixture = fixture_path;
+        cli.voice_state_dir = temp.path().join("voice-state");
+
+        let handled = super::run_voice_contract_runner_if_requested(&cli)
+            .await
+            .expect("voice contract runner");
+
+        assert!(handled);
+        assert!(cli.voice_state_dir.join("state.json").exists());
+        assert!(cli.voice_state_dir.join("runtime-events.jsonl").exists());
+    }
+
+    #[tokio::test]
     async fn integration_run_voice_live_runner_if_requested_executes_runtime() {
         let temp = tempdir().expect("tempdir");
         let fixture_path = temp.path().join("voice-live.json");
@@ -2522,6 +2572,56 @@ mod tests {
 
         assert!(handled);
         assert!(cli.voice_state_dir.join("state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn regression_run_voice_contract_runner_if_requested_ignores_live_fixture_when_disabled()
+    {
+        let temp = tempdir().expect("tempdir");
+        let fixture_path = temp.path().join("voice-contract.json");
+        std::fs::write(
+            &fixture_path,
+            r#"{
+  "schema_version": 1,
+  "name": "voice-contract-only",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "voice-wake-word-only",
+      "mode": "wake_word",
+      "wake_word": "tau",
+      "transcript": "tau are you online",
+      "locale": "en-US",
+      "speaker_id": "ops-voice",
+      "expected": {
+        "outcome": "success",
+        "status_code": 202,
+        "response_body": {
+          "status": "accepted",
+          "mode": "wake_word",
+          "wake_word": "tau",
+          "wake_detected": true
+        }
+      }
+    }
+  ]
+}"#,
+        )
+        .expect("write fixture");
+
+        let mut cli = parse_cli_with_stack();
+        cli.voice_contract_runner = true;
+        cli.voice_fixture = fixture_path;
+        cli.voice_state_dir = temp.path().join("voice-state");
+        cli.voice_live_input = temp.path().join("missing-live-input.json");
+
+        let handled = super::run_voice_contract_runner_if_requested(&cli)
+            .await
+            .expect("voice contract runner should ignore live fixture when live mode is disabled");
+
+        assert!(handled);
+        assert!(cli.voice_state_dir.join("state.json").exists());
+        assert!(cli.voice_state_dir.join("runtime-events.jsonl").exists());
     }
 
     #[test]
