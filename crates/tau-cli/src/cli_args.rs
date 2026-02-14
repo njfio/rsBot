@@ -3583,7 +3583,8 @@ pub struct Cli {
         long = "custom-command-contract-runner",
         env = "TAU_CUSTOM_COMMAND_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven no-code custom command runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven no-code custom command contract runner (removed)"
     )]
     pub custom_command_contract_runner: bool,
 
@@ -3591,8 +3592,9 @@ pub struct Cli {
         long = "custom-command-fixture",
         env = "TAU_CUSTOM_COMMAND_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/custom-command-contract/mixed-outcomes.json",
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Path to no-code custom command runtime contract fixture JSON"
+        help = "Deprecated: no-code custom command runtime contract fixture JSON"
     )]
     pub custom_command_fixture: PathBuf,
 
@@ -3608,8 +3610,9 @@ pub struct Cli {
         long = "custom-command-queue-limit",
         env = "TAU_CUSTOM_COMMAND_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum no-code custom command fixture cases processed per runtime cycle"
+        help = "Deprecated: no-code custom command contract runner queue limit"
     )]
     pub custom_command_queue_limit: usize,
 
@@ -3617,8 +3620,9 @@ pub struct Cli {
         long = "custom-command-processed-case-cap",
         env = "TAU_CUSTOM_COMMAND_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum processed-case keys retained for no-code custom command duplicate suppression"
+        help = "Deprecated: no-code custom command contract runner processed-case cap"
     )]
     pub custom_command_processed_case_cap: usize,
 
@@ -3626,8 +3630,9 @@ pub struct Cli {
         long = "custom-command-retry-max-attempts",
         env = "TAU_CUSTOM_COMMAND_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum retry attempts for transient no-code custom command runtime failures"
+        help = "Deprecated: no-code custom command contract runner retry max attempts"
     )]
     pub custom_command_retry_max_attempts: usize,
 
@@ -3635,8 +3640,9 @@ pub struct Cli {
         long = "custom-command-retry-base-delay-ms",
         env = "TAU_CUSTOM_COMMAND_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Base backoff delay in milliseconds for no-code custom command runtime retries (0 disables delay)"
+        help = "Deprecated: no-code custom command contract runner retry base delay in milliseconds"
     )]
     pub custom_command_retry_base_delay_ms: u64,
 
@@ -3644,12 +3650,13 @@ pub struct Cli {
         long = "custom-command-policy-require-approval",
         env = "TAU_CUSTOM_COMMAND_POLICY_REQUIRE_APPROVAL",
         default_value_t = true,
+        hide = true,
         action = ArgAction::Set,
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
         requires = "custom_command_contract_runner",
-        help = "Require approval gate for custom-command RUN operations in policy contract"
+        help = "Deprecated: require approval gate for custom-command contract runner RUN operations"
     )]
     pub custom_command_policy_require_approval: bool,
 
@@ -3657,12 +3664,13 @@ pub struct Cli {
         long = "custom-command-policy-allow-shell",
         env = "TAU_CUSTOM_COMMAND_POLICY_ALLOW_SHELL",
         default_value_t = false,
+        hide = true,
         action = ArgAction::Set,
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
         requires = "custom_command_contract_runner",
-        help = "Allow shell control operators in command templates (disabled by default)"
+        help = "Deprecated: allow shell control operators in custom-command contract templates"
     )]
     pub custom_command_policy_allow_shell: bool,
 
@@ -3670,8 +3678,9 @@ pub struct Cli {
         long = "custom-command-policy-sandbox-profile",
         env = "TAU_CUSTOM_COMMAND_POLICY_SANDBOX_PROFILE",
         default_value = "restricted",
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Default sandbox profile for custom-command policy (restricted|workspace_write|unrestricted)"
+        help = "Deprecated: sandbox profile for custom-command contract runner policy"
     )]
     pub custom_command_policy_sandbox_profile: String,
 
@@ -3679,8 +3688,9 @@ pub struct Cli {
         long = "custom-command-policy-allowed-env",
         env = "TAU_CUSTOM_COMMAND_POLICY_ALLOWED_ENV",
         value_delimiter = ',',
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Optional allowlist of template/env variable keys for custom command specs"
+        help = "Deprecated: allowlist of template/env keys for custom-command contract runner policy"
     )]
     pub custom_command_policy_allowed_env: Vec<String>,
 
@@ -3688,8 +3698,9 @@ pub struct Cli {
         long = "custom-command-policy-denied-env",
         env = "TAU_CUSTOM_COMMAND_POLICY_DENIED_ENV",
         value_delimiter = ',',
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Optional denylist override for template/env variable keys in custom command policy"
+        help = "Deprecated: denylist override for custom-command contract runner policy"
     )]
     pub custom_command_policy_denied_env: Vec<String>,
 

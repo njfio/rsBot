@@ -137,5 +137,8 @@ mod tooling_skills;
 #[path = "cli_integration/orchestrator_harness.rs"]
 mod orchestrator_harness;
 
+#[path = "cli_integration/mcp_server.rs"]
+mod mcp_server;
+
 #[path = "cli_integration/repl_harness.rs"]
 mod repl_harness;

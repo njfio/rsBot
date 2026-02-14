@@ -26,13 +26,6 @@ use tau_cli::validation::{
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
 use tau_core::{current_unix_timestamp_ms, write_text_atomic};
-use tau_custom_command::custom_command_policy::{
-    default_custom_command_execution_policy, normalize_sandbox_profile,
-    CustomCommandExecutionPolicy,
-};
-use tau_custom_command::custom_command_runtime::{
-    run_custom_command_contract_runner, CustomCommandRuntimeConfig,
-};
 use tau_dashboard::dashboard_runtime::{run_dashboard_contract_runner, DashboardRuntimeConfig};
 use tau_deployment::deployment_runtime::{run_deployment_contract_runner, DeploymentRuntimeConfig};
 use tau_diagnostics::{build_doctor_command_config, DoctorCommandConfig};
@@ -85,7 +78,6 @@ pub enum ContractTransportMode {
     Dashboard,
     Gateway,
     Deployment,
-    CustomCommand,
     Voice,
     VoiceLive,
 }
@@ -107,7 +99,6 @@ pub enum TransportRuntimeMode {
     DashboardContractRunner,
     GatewayContractRunner,
     DeploymentContractRunner,
-    CustomCommandContractRunner,
     VoiceContractRunner,
     VoiceLiveRunner,
 }
@@ -128,7 +119,6 @@ pub trait TransportRuntimeExecutor {
     async fn run_dashboard_contract_runner(&self) -> Result<()>;
     async fn run_gateway_contract_runner(&self) -> Result<()>;
     async fn run_deployment_contract_runner(&self) -> Result<()>;
-    async fn run_custom_command_contract_runner(&self) -> Result<()>;
     async fn run_voice_contract_runner(&self) -> Result<()>;
     async fn run_voice_live_runner(&self) -> Result<()>;
 }
@@ -191,10 +181,6 @@ where
         }
         TransportRuntimeMode::DeploymentContractRunner => {
             executor.run_deployment_contract_runner().await?;
-            Ok(true)
-        }
-        TransportRuntimeMode::CustomCommandContractRunner => {
-            executor.run_custom_command_contract_runner().await?;
             Ok(true)
         }
         TransportRuntimeMode::VoiceContractRunner => {
@@ -354,8 +340,6 @@ pub fn resolve_contract_transport_mode(cli: &Cli) -> ContractTransportMode {
         ContractTransportMode::Gateway
     } else if cli.deployment_contract_runner {
         ContractTransportMode::Deployment
-    } else if cli.custom_command_contract_runner {
-        ContractTransportMode::CustomCommand
     } else if cli.voice_contract_runner {
         ContractTransportMode::Voice
     } else if cli.voice_live_runner {
@@ -401,9 +385,6 @@ pub fn resolve_transport_runtime_mode(cli: &Cli) -> TransportRuntimeMode {
         ContractTransportMode::Dashboard => return TransportRuntimeMode::DashboardContractRunner,
         ContractTransportMode::Gateway => return TransportRuntimeMode::GatewayContractRunner,
         ContractTransportMode::Deployment => return TransportRuntimeMode::DeploymentContractRunner,
-        ContractTransportMode::CustomCommand => {
-            return TransportRuntimeMode::CustomCommandContractRunner;
-        }
         ContractTransportMode::Voice => return TransportRuntimeMode::VoiceContractRunner,
         ContractTransportMode::VoiceLive => return TransportRuntimeMode::VoiceLiveRunner,
         ContractTransportMode::None => {}
@@ -891,51 +872,6 @@ pub async fn run_deployment_contract_runner_if_requested(cli: &Cli) -> Result<bo
         processed_case_cap: config.processed_case_cap,
         retry_max_attempts: config.retry_max_attempts,
         retry_base_delay_ms: config.retry_base_delay_ms,
-    })
-    .await?;
-    Ok(true)
-}
-
-pub fn build_custom_command_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
-    StandardContractRunnerConfig {
-        fixture_path: cli.custom_command_fixture.clone(),
-        state_dir: cli.custom_command_state_dir.clone(),
-        queue_limit: cli.custom_command_queue_limit.max(1),
-        processed_case_cap: cli.custom_command_processed_case_cap.max(1),
-        retry_max_attempts: cli.custom_command_retry_max_attempts.max(1),
-        retry_base_delay_ms: cli.custom_command_retry_base_delay_ms,
-    }
-}
-
-fn build_custom_command_default_execution_policy(cli: &Cli) -> CustomCommandExecutionPolicy {
-    let mut policy = default_custom_command_execution_policy();
-    policy.require_approval = cli.custom_command_policy_require_approval;
-    policy.allow_shell = cli.custom_command_policy_allow_shell;
-    policy.sandbox_profile =
-        normalize_sandbox_profile(cli.custom_command_policy_sandbox_profile.as_str());
-    if !cli.custom_command_policy_allowed_env.is_empty() {
-        policy.allowed_env = cli.custom_command_policy_allowed_env.clone();
-    }
-    if !cli.custom_command_policy_denied_env.is_empty() {
-        policy.denied_env = cli.custom_command_policy_denied_env.clone();
-    }
-    policy
-}
-
-pub async fn run_custom_command_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
-    if !cli.custom_command_contract_runner {
-        return Ok(false);
-    }
-    let config = build_custom_command_contract_runner_config(cli);
-    run_custom_command_contract_runner(CustomCommandRuntimeConfig {
-        fixture_path: config.fixture_path,
-        state_dir: config.state_dir,
-        queue_limit: config.queue_limit,
-        processed_case_cap: config.processed_case_cap,
-        retry_max_attempts: config.retry_max_attempts,
-        retry_base_delay_ms: config.retry_base_delay_ms,
-        run_timeout_ms: 30_000,
-        default_execution_policy: build_custom_command_default_execution_policy(cli),
     })
     .await?;
     Ok(true)

@@ -6,7 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/common.sh"
 
 init_rc=0
-tau_demo_common_init "custom-command" "Run deterministic no-code custom command runtime, health, and status-inspection demo commands against checked-in fixtures." "$@" || init_rc=$?
+tau_demo_common_init "custom-command" "Seed deterministic custom-command state artifacts and run health/status inspection demo commands." "$@" || init_rc=$?
 if [[ "${init_rc}" -eq 64 ]]; then
   exit 0
 fi
@@ -14,19 +14,49 @@ if [[ "${init_rc}" -ne 0 ]]; then
   exit "${init_rc}"
 fi
 
-fixture_path="${TAU_DEMO_REPO_ROOT}/crates/tau-coding-agent/testdata/custom-command-contract/rollout-pass.json"
 demo_state_dir=".tau/demo-custom-command"
+demo_state_dir_abs="${TAU_DEMO_REPO_ROOT}/${demo_state_dir}"
 
-tau_demo_common_require_file "${fixture_path}"
 tau_demo_common_prepare_binary
 
-rm -rf "${TAU_DEMO_REPO_ROOT}/${demo_state_dir}"
+rm -rf "${demo_state_dir_abs}"
+mkdir -p "${demo_state_dir_abs}"
 
-tau_demo_common_run_step \
-  "custom-command-runner" \
-  --custom-command-contract-runner \
-  --custom-command-fixture ./crates/tau-coding-agent/testdata/custom-command-contract/rollout-pass.json \
-  --custom-command-state-dir "${demo_state_dir}"
+cat > "${demo_state_dir_abs}/state.json" <<'JSON'
+{
+  "schema_version": 1,
+  "processed_case_keys": ["CREATE:deploy_release:create-1"],
+  "commands": [
+    {
+      "case_key": "CREATE:deploy_release:create-1",
+      "case_id": "create-1",
+      "command_name": "deploy_release",
+      "template": "deploy {{env}}",
+      "operation": "CREATE",
+      "last_status_code": 201,
+      "last_outcome": "success",
+      "run_count": 1,
+      "updated_unix_ms": 1
+    }
+  ],
+  "health": {
+    "updated_unix_ms": 710,
+    "cycle_duration_ms": 14,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 1,
+    "last_cycle_processed": 1,
+    "last_cycle_completed": 1,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+JSON
+
+cat > "${demo_state_dir_abs}/runtime-events.jsonl" <<'JSONL'
+{"reason_codes":["command_registry_mutated"],"health_reason":"no recent transport failures observed"}
+JSONL
 
 tau_demo_common_run_step \
   "transport-health-inspect-custom-command" \
@@ -39,10 +69,5 @@ tau_demo_common_run_step \
   --custom-command-state-dir "${demo_state_dir}" \
   --custom-command-status-inspect \
   --custom-command-status-json
-
-tau_demo_common_run_step \
-  "channel-store-inspect-custom-command-deploy-release" \
-  --channel-store-root "${demo_state_dir}/channel-store" \
-  --channel-store-inspect custom-command/deploy_release
 
 tau_demo_common_finish
