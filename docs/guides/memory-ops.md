@@ -52,6 +52,17 @@ Primary state files:
 5. Promote by increasing fixture complexity gradually while monitoring:
    `failure_streak`, `last_cycle_failed`, `queue_depth`.
 
+## Canary rollout profile
+
+Apply the global rollout contract in [Release Channel Ops](release-channel-ops.md#cross-surface-rollout-contract).
+
+| Phase | Canary % | Memory-specific gates |
+| --- | --- | --- |
+| canary-1 | 5% | `health_state=healthy`, `failure_streak=0`, `last_cycle_failed=false`, `queue_depth<=1`, no new `case_processing_failed`. |
+| canary-2 | 25% | canary-1 gates hold for 60 minutes; duplicate and malformed counts remain flat. |
+| canary-3 | 50% | canary-2 gates hold for 120 minutes; retry-related reason codes remain flat. |
+| general-availability | 100% | 24-hour monitor window passes and release sign-off checklist is complete. |
+
 ## Rollback plan
 
 1. Stop invoking `--memory-contract-runner`.
@@ -59,6 +70,7 @@ Primary state files:
 3. Revert to last known-good revision:
    `git revert <commit>`
 4. Re-run validation matrix before re-enable.
+5. If any rollback trigger from [Rollback Trigger Matrix](release-channel-ops.md#rollback-trigger-matrix) fires, stop promotion immediately and execute [Rollback Execution Steps](release-channel-ops.md#rollback-execution-steps).
 
 ## Troubleshooting
 

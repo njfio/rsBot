@@ -99,3 +99,9 @@ Merge gate blocks when:
 
 - any required surface fails both primary and fallback mode, or
 - matrix job exits non-success.
+
+## Release Sign-Off Usage
+
+Use unified harness outputs as mandatory evidence in:
+
+- [Release Sign-Off Checklist](release-signoff-checklist.md)
