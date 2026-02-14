@@ -386,6 +386,15 @@ Live harness outputs:
 
 Operational runbook and triage playbook: `docs/guides/browser-automation-live-ops.md`.
 
+Cross-surface unified live-run harness:
+
+```bash
+./scripts/demo/live-run-unified.sh
+./scripts/demo/live-run-unified.sh --list --json
+```
+
+Unified manifest/report runbook: `docs/guides/live-run-unified-ops.md`.
+
 Troubleshooting:
 
 - `browser_automation.npx` not ready: install Node.js/npm and ensure `npx` is on `PATH`.
