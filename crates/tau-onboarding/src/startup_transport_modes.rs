@@ -751,6 +751,7 @@ pub async fn run_custom_command_contract_runner_if_requested(cli: &Cli) -> Resul
         processed_case_cap: config.processed_case_cap,
         retry_max_attempts: config.retry_max_attempts,
         retry_base_delay_ms: config.retry_base_delay_ms,
+        run_timeout_ms: 30_000,
         default_execution_policy: build_custom_command_default_execution_policy(cli),
     })
     .await?;
