@@ -33,7 +33,6 @@ tau-provider = { path = "../tau-provider" }
 tau-diagnostics = { path = "../tau-diagnostics" }
 tau-release-channel = { path = "../tau-release-channel" }
 tau-ops = { path = "../tau-ops" }
-tau-memory = { path = "../tau-memory" }
 tau-github-issues = { path = "../tau-github-issues" }
 tau-github-issues-runtime = { path = "../tau-github-issues-runtime" }
 tau-dashboard = { path = "../tau-dashboard" }

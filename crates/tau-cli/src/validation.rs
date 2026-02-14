@@ -4,6 +4,8 @@ use crate::{
     Cli, CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm,
 };
 
+const MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--memory-contract-runner has been removed; memory runtime ownership is in tau-agent-core. Use --transport-health-inspect memory for diagnostics and configure runtime memory behavior with agent memory flags (for example --memory-retrieval-limit).";
+
 fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -1058,43 +1060,7 @@ pub fn validate_memory_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--memory-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--memory-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-    {
-        bail!("--memory-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, or --multi-channel-live-runner");
-    }
-    if cli.memory_queue_limit == 0 {
-        bail!("--memory-queue-limit must be greater than 0");
-    }
-    if cli.memory_processed_case_cap == 0 {
-        bail!("--memory-processed-case-cap must be greater than 0");
-    }
-    if cli.memory_retry_max_attempts == 0 {
-        bail!("--memory-retry-max-attempts must be greater than 0");
-    }
-    if !cli.memory_fixture.exists() {
-        bail!(
-            "--memory-fixture '{}' does not exist",
-            cli.memory_fixture.display()
-        );
-    }
-    if !cli.memory_fixture.is_file() {
-        bail!(
-            "--memory-fixture '{}' must point to a file",
-            cli.memory_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
