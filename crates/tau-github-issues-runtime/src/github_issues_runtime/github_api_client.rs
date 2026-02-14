@@ -1,3 +1,5 @@
+//! GitHub REST client helpers used by bridge polling and command workflows.
+
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};

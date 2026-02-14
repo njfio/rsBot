@@ -1,3 +1,5 @@
+//! Run-task execution flow that wires command handling to issue updates.
+
 use std::{path::PathBuf, time::Instant};
 
 use tokio::sync::watch;

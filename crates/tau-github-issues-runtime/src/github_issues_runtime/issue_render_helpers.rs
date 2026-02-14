@@ -1,3 +1,5 @@
+//! Rendering helpers for issue comments, run summaries, and status output.
+
 use tau_diagnostics::DoctorStatus;
 use tau_github_issues::issue_comment::{
     render_issue_comment_chunks_with_footer,

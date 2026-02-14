@@ -2,7 +2,6 @@
 
 mod auth_commands;
 mod bootstrap_helpers;
-mod browser_automation_contract;
 mod canvas;
 mod channel_adapters;
 mod channel_lifecycle;
@@ -10,13 +9,10 @@ mod channel_send;
 mod channel_store;
 mod channel_store_admin;
 mod commands;
-mod custom_command_contract;
-mod dashboard_contract;
 mod deployment_wasm;
 mod events;
 mod macro_profile_commands;
 mod mcp_server;
-mod memory_contract;
 mod model_catalog;
 mod multi_agent_router;
 mod observability_loggers;
@@ -29,12 +25,12 @@ mod rpc_protocol;
 mod runtime_loop;
 mod runtime_output;
 mod runtime_types;
-mod slack_helpers;
 mod startup_dispatch;
 mod startup_local_runtime;
 mod startup_model_catalog;
 mod startup_preflight;
 mod startup_transport_modes;
+#[cfg(test)]
 mod tool_policy_config;
 mod tools;
 mod training_proxy_runtime;
@@ -43,7 +39,6 @@ mod training_runtime;
 mod transport_conformance;
 #[cfg(test)]
 mod transport_health;
-mod voice_contract;
 
 #[cfg(test)]
 use std::path::{Path, PathBuf};

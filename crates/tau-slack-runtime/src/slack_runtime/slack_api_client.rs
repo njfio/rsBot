@@ -1,3 +1,5 @@
+//! Slack Web API client helpers used by bridge polling and posting flows.
+
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};

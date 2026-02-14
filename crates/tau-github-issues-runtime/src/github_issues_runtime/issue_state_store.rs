@@ -1,3 +1,5 @@
+//! State-file persistence for issue bridge checkpoints and run metadata.
+
 use std::{
     collections::{BTreeMap, HashSet},
     io::Write,
