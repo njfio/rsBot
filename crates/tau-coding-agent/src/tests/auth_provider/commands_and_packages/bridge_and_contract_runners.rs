@@ -1006,133 +1006,29 @@ fn regression_validate_browser_automation_live_runner_cli_requires_existing_fixt
 }
 
 #[test]
-fn unit_validate_memory_contract_runner_cli_accepts_minimum_configuration() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("memory-fixture.json");
-    std::fs::write(
-        &fixture_path,
-        r#"{
-  "schema_version": 1,
-  "name": "single-case",
-  "cases": [
-    {
-      "schema_version": 1,
-      "case_id": "extract-basic",
-      "mode": "extract",
-      "scope": { "workspace_id": "tau-core" },
-      "input_text": "Remember release checklist",
-      "expected": {
-        "outcome": "success",
-        "entries": [
-          {
-            "memory_id": "mem-extract-basic",
-            "summary": "Remember release checklist",
-            "tags": [ "remember", "release", "checklist" ],
-            "facts": [ "scope=tau-core" ],
-            "source_event_key": "tau-core:extract:extract-basic",
-            "recency_weight_bps": 9000,
-            "confidence_bps": 8200
-          }
-        ]
-      }
-    }
-  ]
-}"#,
-    )
-    .expect("write fixture");
-
+fn unit_validate_memory_contract_runner_cli_is_removed() {
     let mut cli = test_cli();
     cli.memory_contract_runner = true;
-    cli.memory_fixture = fixture_path;
+    cli.memory_fixture = PathBuf::from("fixture.json");
 
-    validate_memory_contract_runner_cli(&cli).expect("memory runner config should validate");
-}
-
-#[test]
-fn functional_validate_memory_contract_runner_cli_rejects_prompt_conflicts() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("fixture.json");
-    std::fs::write(&fixture_path, "{}").expect("write fixture");
-
-    let mut cli = test_cli();
-    cli.memory_contract_runner = true;
-    cli.memory_fixture = fixture_path;
-    cli.prompt = Some("conflict".to_string());
-
-    let error = validate_memory_contract_runner_cli(&cli).expect_err("prompt conflict");
+    let error = validate_memory_contract_runner_cli(&cli).expect_err("runner should be removed");
     assert!(error
         .to_string()
-        .contains("--memory-contract-runner cannot be combined"));
+        .contains("--memory-contract-runner has been removed"));
+    assert!(error.to_string().contains("tau-agent-core"));
 }
 
 #[test]
-fn integration_validate_memory_contract_runner_cli_rejects_transport_conflicts() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("fixture.json");
-    std::fs::write(&fixture_path, "{}").expect("write fixture");
-
+fn regression_validate_memory_contract_runner_cli_reports_migration_even_with_conflicts() {
     let mut cli = test_cli();
     cli.memory_contract_runner = true;
-    cli.memory_fixture = fixture_path;
+    cli.prompt = Some("conflict".to_string());
     cli.multi_channel_contract_runner = true;
-
-    let error = validate_memory_contract_runner_cli(&cli).expect_err("transport conflict");
-    assert!(error.to_string().contains(
-        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, or --multi-channel-live-runner"
-    ));
-}
-
-#[test]
-fn regression_validate_memory_contract_runner_cli_rejects_zero_limits() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("fixture.json");
-    std::fs::write(&fixture_path, "{}").expect("write fixture");
-
-    let mut cli = test_cli();
-    cli.memory_contract_runner = true;
-    cli.memory_fixture = fixture_path.clone();
     cli.memory_queue_limit = 0;
-    let queue_error = validate_memory_contract_runner_cli(&cli).expect_err("zero queue limit");
-    assert!(queue_error
-        .to_string()
-        .contains("--memory-queue-limit must be greater than 0"));
 
-    cli.memory_queue_limit = 1;
-    cli.memory_processed_case_cap = 0;
-    let processed_case_error =
-        validate_memory_contract_runner_cli(&cli).expect_err("zero processed case cap");
-    assert!(processed_case_error
-        .to_string()
-        .contains("--memory-processed-case-cap must be greater than 0"));
-
-    cli.memory_processed_case_cap = 1;
-    cli.memory_retry_max_attempts = 0;
-    let retry_error =
-        validate_memory_contract_runner_cli(&cli).expect_err("zero retry max attempts");
-    assert!(retry_error
-        .to_string()
-        .contains("--memory-retry-max-attempts must be greater than 0"));
-}
-
-#[test]
-fn regression_validate_memory_contract_runner_cli_requires_existing_fixture() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = test_cli();
-    cli.memory_contract_runner = true;
-    cli.memory_fixture = temp.path().join("missing.json");
-
-    let error = validate_memory_contract_runner_cli(&cli).expect_err("missing fixture should fail");
-    assert!(error.to_string().contains("does not exist"));
-}
-
-#[test]
-fn regression_validate_memory_contract_runner_cli_requires_fixture_file() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = test_cli();
-    cli.memory_contract_runner = true;
-    cli.memory_fixture = temp.path().to_path_buf();
-
-    let error =
-        validate_memory_contract_runner_cli(&cli).expect_err("directory fixture should fail");
-    assert!(error.to_string().contains("must point to a file"));
+    let error = validate_memory_contract_runner_cli(&cli)
+        .expect_err("removed runner should report migration guidance");
+    let message = error.to_string();
+    assert!(message.contains("--memory-contract-runner has been removed"));
+    assert!(message.contains("--transport-health-inspect memory"));
 }

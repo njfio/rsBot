@@ -2851,7 +2851,6 @@ dependencies = [
  "tau-gateway",
  "tau-github-issues",
  "tau-github-issues-runtime",
- "tau-memory",
  "tau-multi-channel",
  "tau-onboarding",
  "tau-ops",
@@ -3067,11 +3066,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tau-contract",
- "tau-core",
- "tau-runtime",
- "tau-session",
  "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -3116,7 +3111,6 @@ dependencies = [
  "tau-deployment",
  "tau-diagnostics",
  "tau-gateway",
- "tau-memory",
  "tau-multi-channel",
  "tau-ops",
  "tau-orchestrator",

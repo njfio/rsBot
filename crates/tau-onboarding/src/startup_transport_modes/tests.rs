@@ -4,12 +4,11 @@ use super::{
     build_browser_automation_live_runner_config, build_deployment_contract_runner_config,
     build_events_runner_cli_config, build_gateway_contract_runner_config,
     build_gateway_openresponses_server_config, build_github_issues_bridge_cli_config,
-    build_memory_contract_runner_config, build_multi_agent_contract_runner_config,
-    build_multi_channel_contract_runner_config, build_multi_channel_live_connectors_config,
-    build_multi_channel_live_runner_config, build_multi_channel_media_config,
-    build_multi_channel_outbound_config, build_multi_channel_runtime_dependencies,
-    build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
-    build_transport_doctor_config, build_transport_runtime_defaults,
+    build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
+    build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
+    build_multi_channel_media_config, build_multi_channel_outbound_config,
+    build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
+    build_slack_bridge_cli_config, build_transport_doctor_config, build_transport_runtime_defaults,
     build_voice_contract_runner_config, build_voice_live_runner_config,
     execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
     resolve_bridge_transport_mode, resolve_contract_transport_mode,
@@ -173,13 +172,6 @@ impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
         self.record(
             TransportRuntimeMode::BrowserAutomationLiveRunner,
             "browser-automation-live",
-        )
-    }
-
-    async fn run_memory_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::MemoryContractRunner,
-            "memory-contract",
         )
     }
 
@@ -705,7 +697,6 @@ fn functional_resolve_contract_transport_mode_prefers_multi_agent() {
     cli.multi_agent_contract_runner = true;
     cli.browser_automation_contract_runner = true;
     cli.browser_automation_live_runner = true;
-    cli.memory_contract_runner = true;
     cli.dashboard_contract_runner = true;
     cli.gateway_contract_runner = true;
     cli.deployment_contract_runner = true;
@@ -729,12 +720,12 @@ fn integration_resolve_contract_transport_mode_selects_browser_automation_live()
 }
 
 #[test]
-fn integration_resolve_contract_transport_mode_selects_memory() {
+fn integration_resolve_contract_transport_mode_ignores_removed_memory_runner() {
     let mut cli = parse_cli_with_stack();
     cli.memory_contract_runner = true;
     assert_eq!(
         resolve_contract_transport_mode(&cli),
-        ContractTransportMode::Memory
+        ContractTransportMode::None
     );
 }
 
@@ -843,19 +834,6 @@ fn regression_build_multi_channel_contract_runner_config_enforces_minimums() {
     );
     assert_eq!(config.queue_limit, 1);
     assert_eq!(config.processed_event_cap, 1);
-    assert_eq!(config.retry_max_attempts, 1);
-}
-
-#[test]
-fn regression_build_memory_contract_runner_config_enforces_minimums() {
-    let mut cli = parse_cli_with_stack();
-    cli.memory_queue_limit = 0;
-    cli.memory_processed_case_cap = 0;
-    cli.memory_retry_max_attempts = 0;
-
-    let config = build_memory_contract_runner_config(&cli);
-    assert_eq!(config.queue_limit, 1);
-    assert_eq!(config.processed_case_cap, 1);
     assert_eq!(config.retry_max_attempts, 1);
 }
 
@@ -1293,17 +1271,6 @@ print(json.dumps({
 }
 
 #[tokio::test]
-async fn unit_run_memory_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_memory_contract_runner_if_requested(&cli)
-        .await
-        .expect("memory helper");
-
-    assert!(!handled);
-}
-
-#[tokio::test]
 async fn unit_run_deployment_contract_runner_if_requested_returns_false_when_disabled() {
     let cli = parse_cli_with_stack();
 
@@ -1524,26 +1491,6 @@ fn integration_build_browser_automation_live_runner_config_preserves_runtime_fie
     assert_eq!(config.policy.action_timeout_ms, 5_000);
     assert_eq!(config.policy.max_actions_per_case, 8);
     assert!(!config.policy.allow_unsafe_actions);
-}
-
-#[test]
-fn integration_build_memory_contract_runner_config_preserves_runtime_fields() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = parse_cli_with_stack();
-    cli.memory_fixture = temp.path().join("memory-fixture.json");
-    cli.memory_state_dir = temp.path().join("memory-state");
-    cli.memory_queue_limit = 37;
-    cli.memory_processed_case_cap = 9_100;
-    cli.memory_retry_max_attempts = 6;
-    cli.memory_retry_base_delay_ms = 45;
-
-    let config = build_memory_contract_runner_config(&cli);
-    assert_eq!(config.fixture_path, cli.memory_fixture);
-    assert_eq!(config.state_dir, cli.memory_state_dir);
-    assert_eq!(config.queue_limit, 37);
-    assert_eq!(config.processed_case_cap, 9_100);
-    assert_eq!(config.retry_max_attempts, 6);
-    assert_eq!(config.retry_base_delay_ms, 45);
 }
 
 #[test]

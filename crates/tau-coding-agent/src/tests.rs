@@ -687,7 +687,7 @@ pub(crate) fn test_cli() -> Cli {
         browser_automation_preflight_json: false,
         memory_contract_runner: false,
         memory_fixture: PathBuf::from(
-            "crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json",
+            "crates/tau-memory/testdata/memory-contract/mixed-outcomes.json",
         ),
         memory_state_dir: PathBuf::from(".tau/memory"),
         memory_queue_limit: 64,

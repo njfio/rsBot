@@ -4,6 +4,7 @@ use crate::{
     Cli, CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm,
 };
 
+const MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--memory-contract-runner has been removed; memory runtime ownership is in tau-agent-core. Use --transport-health-inspect memory for diagnostics and configure runtime memory behavior with agent memory flags (for example --memory-retrieval-limit).";
 const CUSTOM_COMMAND_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--custom-command-contract-runner has been removed; preserve existing state under --custom-command-state-dir and use --custom-command-status-inspect plus --transport-health-inspect custom-command for diagnostics";
 const BROWSER_AUTOMATION_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--browser-automation-contract-runner has been removed; use --browser-automation-live-runner with --browser-automation-live-fixture and --browser-automation-playwright-cli";
 const DASHBOARD_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--dashboard-contract-runner has been removed; use --gateway-openresponses-server for dashboard API/webchat surfaces and --dashboard-status-inspect plus --transport-health-inspect dashboard for diagnostics";
@@ -1008,43 +1009,7 @@ pub fn validate_memory_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--memory-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--memory-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-    {
-        bail!("--memory-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, or --multi-channel-live-runner");
-    }
-    if cli.memory_queue_limit == 0 {
-        bail!("--memory-queue-limit must be greater than 0");
-    }
-    if cli.memory_processed_case_cap == 0 {
-        bail!("--memory-processed-case-cap must be greater than 0");
-    }
-    if cli.memory_retry_max_attempts == 0 {
-        bail!("--memory-retry-max-attempts must be greater than 0");
-    }
-    if !cli.memory_fixture.exists() {
-        bail!(
-            "--memory-fixture '{}' does not exist",
-            cli.memory_fixture.display()
-        );
-    }
-    if !cli.memory_fixture.is_file() {
-        bail!(
-            "--memory-fixture '{}' must point to a file",
-            cli.memory_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {

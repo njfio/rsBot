@@ -32,7 +32,6 @@ use tau_gateway::{
     GatewayOpenResponsesAuthMode, GatewayOpenResponsesServerConfig, GatewayRuntimeConfig,
     GatewayToolRegistrarFn,
 };
-use tau_memory::memory_runtime::{run_memory_contract_runner, MemoryRuntimeConfig};
 use tau_multi_channel::{
     MultiChannelCommandHandlers, MultiChannelLiveConnectorsConfig, MultiChannelLiveRuntimeConfig,
     MultiChannelMediaUnderstandingConfig, MultiChannelOutboundConfig, MultiChannelPairingEvaluator,
@@ -73,7 +72,6 @@ pub enum ContractTransportMode {
     None,
     MultiAgent,
     BrowserAutomationLive,
-    Memory,
     Gateway,
     Deployment,
     Voice,
@@ -93,7 +91,6 @@ pub enum TransportRuntimeMode {
     MultiChannelLiveConnectorsRunner,
     MultiAgentContractRunner,
     BrowserAutomationLiveRunner,
-    MemoryContractRunner,
     GatewayContractRunner,
     DeploymentContractRunner,
     VoiceContractRunner,
@@ -112,7 +109,6 @@ pub trait TransportRuntimeExecutor {
     async fn run_multi_channel_live_connectors_runner(&self) -> Result<()>;
     async fn run_multi_agent_contract_runner(&self) -> Result<()>;
     async fn run_browser_automation_live_runner(&self) -> Result<()>;
-    async fn run_memory_contract_runner(&self) -> Result<()>;
     async fn run_gateway_contract_runner(&self) -> Result<()>;
     async fn run_deployment_contract_runner(&self) -> Result<()>;
     async fn run_voice_contract_runner(&self) -> Result<()>;
@@ -161,10 +157,6 @@ where
         }
         TransportRuntimeMode::BrowserAutomationLiveRunner => {
             executor.run_browser_automation_live_runner().await?;
-            Ok(true)
-        }
-        TransportRuntimeMode::MemoryContractRunner => {
-            executor.run_memory_contract_runner().await?;
             Ok(true)
         }
         TransportRuntimeMode::GatewayContractRunner => {
@@ -324,8 +316,6 @@ pub fn resolve_contract_transport_mode(cli: &Cli) -> ContractTransportMode {
         ContractTransportMode::MultiAgent
     } else if cli.browser_automation_live_runner {
         ContractTransportMode::BrowserAutomationLive
-    } else if cli.memory_contract_runner {
-        ContractTransportMode::Memory
     } else if cli.gateway_contract_runner {
         ContractTransportMode::Gateway
     } else if cli.deployment_contract_runner {
@@ -371,7 +361,6 @@ pub fn resolve_transport_runtime_mode(cli: &Cli) -> TransportRuntimeMode {
         ContractTransportMode::BrowserAutomationLive => {
             return TransportRuntimeMode::BrowserAutomationLiveRunner;
         }
-        ContractTransportMode::Memory => return TransportRuntimeMode::MemoryContractRunner,
         ContractTransportMode::Gateway => return TransportRuntimeMode::GatewayContractRunner,
         ContractTransportMode::Deployment => return TransportRuntimeMode::DeploymentContractRunner,
         ContractTransportMode::Voice => return TransportRuntimeMode::VoiceContractRunner,
@@ -779,34 +768,6 @@ pub async fn run_browser_automation_live_runner_if_requested(cli: &Cli) -> Resul
         classification.reason
     );
 
-    Ok(true)
-}
-
-pub fn build_memory_contract_runner_config(cli: &Cli) -> StandardContractRunnerConfig {
-    StandardContractRunnerConfig {
-        fixture_path: cli.memory_fixture.clone(),
-        state_dir: cli.memory_state_dir.clone(),
-        queue_limit: cli.memory_queue_limit.max(1),
-        processed_case_cap: cli.memory_processed_case_cap.max(1),
-        retry_max_attempts: cli.memory_retry_max_attempts.max(1),
-        retry_base_delay_ms: cli.memory_retry_base_delay_ms,
-    }
-}
-
-pub async fn run_memory_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
-    if !cli.memory_contract_runner {
-        return Ok(false);
-    }
-    let config = build_memory_contract_runner_config(cli);
-    run_memory_contract_runner(MemoryRuntimeConfig {
-        fixture_path: config.fixture_path,
-        state_dir: config.state_dir,
-        queue_limit: config.queue_limit,
-        processed_case_cap: config.processed_case_cap,
-        retry_max_attempts: config.retry_max_attempts,
-        retry_base_delay_ms: config.retry_base_delay_ms,
-    })
-    .await?;
     Ok(true)
 }
 

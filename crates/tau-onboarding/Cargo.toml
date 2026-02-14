@@ -18,7 +18,6 @@ tau-core = { path = "../tau-core" }
 tau-diagnostics = { path = "../tau-diagnostics" }
 tau-deployment = { path = "../tau-deployment" }
 tau-gateway = { path = "../tau-gateway" }
-tau-memory = { path = "../tau-memory" }
 tau-multi-channel = { path = "../tau-multi-channel" }
 tau-provider = { path = "../tau-provider" }
 tau-release-channel = { path = "../tau-release-channel" }

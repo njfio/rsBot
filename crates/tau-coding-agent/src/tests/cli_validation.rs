@@ -1030,7 +1030,7 @@ fn unit_cli_memory_runner_flags_default_to_disabled() {
     assert!(!cli.memory_contract_runner);
     assert_eq!(
         cli.memory_fixture,
-        PathBuf::from("crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json")
+        PathBuf::from("crates/tau-memory/testdata/memory-contract/mixed-outcomes.json")
     );
     assert_eq!(cli.memory_state_dir, PathBuf::from(".tau/memory"));
     assert_eq!(cli.memory_queue_limit, 64);

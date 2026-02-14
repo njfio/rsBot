@@ -3194,16 +3194,18 @@ pub struct Cli {
         long = "memory-contract-runner",
         env = "TAU_MEMORY_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven semantic memory runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven semantic memory contract runner (removed)"
     )]
     pub memory_contract_runner: bool,
 
     #[arg(
         long = "memory-fixture",
         env = "TAU_MEMORY_FIXTURE",
-        default_value = "crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json",
+        default_value = "crates/tau-memory/testdata/memory-contract/mixed-outcomes.json",
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Path to semantic memory contract fixture JSON"
+        help = "Deprecated: semantic memory contract fixture JSON"
     )]
     pub memory_fixture: PathBuf,
 
@@ -3211,7 +3213,7 @@ pub struct Cli {
         long = "memory-state-dir",
         env = "TAU_MEMORY_STATE_DIR",
         default_value = ".tau/memory",
-        help = "Directory for semantic memory runtime state and channel-store outputs"
+        help = "Directory for semantic memory transport-health inspection artifacts"
     )]
     pub memory_state_dir: PathBuf,
 
@@ -3219,8 +3221,9 @@ pub struct Cli {
         long = "memory-queue-limit",
         env = "TAU_MEMORY_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum memory fixture cases processed per runtime cycle"
+        help = "Deprecated: memory contract runner queue limit"
     )]
     pub memory_queue_limit: usize,
 
@@ -3228,8 +3231,9 @@ pub struct Cli {
         long = "memory-processed-case-cap",
         env = "TAU_MEMORY_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum processed-case keys retained for duplicate suppression"
+        help = "Deprecated: memory contract runner processed-case cap"
     )]
     pub memory_processed_case_cap: usize,
 
@@ -3237,8 +3241,9 @@ pub struct Cli {
         long = "memory-retry-max-attempts",
         env = "TAU_MEMORY_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum retry attempts for transient semantic memory runtime failures"
+        help = "Deprecated: memory contract runner retry max attempts"
     )]
     pub memory_retry_max_attempts: usize,
 
@@ -3246,8 +3251,9 @@ pub struct Cli {
         long = "memory-retry-base-delay-ms",
         env = "TAU_MEMORY_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Base backoff delay in milliseconds for semantic memory runtime retries (0 disables delay)"
+        help = "Deprecated: memory contract runner retry base delay in milliseconds"
     )]
     pub memory_retry_base_delay_ms: u64,
 
