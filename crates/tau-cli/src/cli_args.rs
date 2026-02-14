@@ -620,6 +620,32 @@ pub struct Cli {
     pub prompt_sanitizer_redaction_token: String,
 
     #[arg(
+        long = "secret-leak-detector-enabled",
+        env = "TAU_SECRET_LEAK_DETECTOR_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Enable secret-leak detection for tool results and outbound request payloads"
+    )]
+    pub secret_leak_detector_enabled: bool,
+
+    #[arg(
+        long = "secret-leak-detector-mode",
+        env = "TAU_SECRET_LEAK_DETECTOR_MODE",
+        value_enum,
+        default_value_t = CliPromptSanitizerMode::Warn,
+        help = "Action for detected secret leaks (warn, redact, block)"
+    )]
+    pub secret_leak_detector_mode: CliPromptSanitizerMode,
+
+    #[arg(
+        long = "secret-leak-redaction-token",
+        env = "TAU_SECRET_LEAK_REDACTION_TOKEN",
+        default_value = "[TAU-SECRET-REDACTED]",
+        help = "Replacement token used when --secret-leak-detector-mode=redact"
+    )]
+    pub secret_leak_redaction_token: String,
+
+    #[arg(
         long,
         env = "TAU_REQUEST_TIMEOUT_MS",
         default_value_t = 120_000,

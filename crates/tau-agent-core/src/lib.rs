@@ -17,7 +17,10 @@ use tau_ai::{
     ChatRequest, ChatUsage, LlmClient, Message, MessageRole, StreamDeltaHandler, TauAiError,
     ToolCall, ToolChoice, ToolDefinition,
 };
-pub use tau_safety::{DefaultSanitizer, SafetyMode, SafetyPolicy, SafetyStage, Sanitizer};
+pub use tau_safety::{
+    DefaultLeakDetector, DefaultSanitizer, LeakDetector, SafetyMode, SafetyPolicy, SafetyStage,
+    Sanitizer,
+};
 use thiserror::Error;
 
 /// Public struct `AgentConfig` used across Tau components.
@@ -567,6 +570,7 @@ pub struct Agent {
     cancellation_token: Option<CooperativeCancellationToken>,
     safety_policy: SafetyPolicy,
     sanitizer: Arc<dyn Sanitizer>,
+    leak_detector: Arc<dyn LeakDetector>,
     cumulative_usage: ChatUsage,
     cumulative_cost_usd: f64,
     emitted_cost_alert_thresholds: HashSet<u8>,
@@ -597,6 +601,7 @@ impl Agent {
             cancellation_token: None,
             safety_policy: SafetyPolicy::default(),
             sanitizer: Arc::new(DefaultSanitizer::new()),
+            leak_detector: Arc::new(DefaultLeakDetector::new()),
             cumulative_usage: ChatUsage::default(),
             cumulative_cost_usd: 0.0,
             emitted_cost_alert_thresholds: HashSet::new(),
@@ -899,6 +904,11 @@ impl Agent {
         self.sanitizer = sanitizer;
     }
 
+    /// Replaces the leak detector implementation.
+    pub fn set_leak_detector(&mut self, detector: Arc<dyn LeakDetector>) {
+        self.leak_detector = detector;
+    }
+
     /// Returns the current conversation history.
     ///
     /// # Examples
@@ -1152,18 +1162,34 @@ impl Agent {
             .unwrap_or(false)
     }
 
-    fn safety_stage_enabled(&self, stage: SafetyStage) -> bool {
+    fn prompt_safety_stage_enabled(&self, stage: SafetyStage) -> bool {
         if !self.safety_policy.enabled {
             return false;
         }
         match stage {
             SafetyStage::InboundMessage => self.safety_policy.apply_to_inbound_messages,
             SafetyStage::ToolOutput => self.safety_policy.apply_to_tool_outputs,
+            SafetyStage::OutboundHttpPayload => false,
         }
     }
 
-    fn inspect_safety_text(&self, stage: SafetyStage, text: &str) -> Option<SafetyInspection> {
-        if !self.safety_stage_enabled(stage) || text.trim().is_empty() {
+    fn leak_stage_enabled(&self, stage: SafetyStage) -> bool {
+        if !self.safety_policy.secret_leak_detection_enabled {
+            return false;
+        }
+        match stage {
+            SafetyStage::InboundMessage => false,
+            SafetyStage::ToolOutput => self.safety_policy.apply_to_tool_outputs,
+            SafetyStage::OutboundHttpPayload => self.safety_policy.apply_to_outbound_http_payloads,
+        }
+    }
+
+    fn inspect_prompt_safety_text(
+        &self,
+        stage: SafetyStage,
+        text: &str,
+    ) -> Option<SafetyInspection> {
+        if !self.prompt_safety_stage_enabled(stage) || text.trim().is_empty() {
             return None;
         }
         let scan = self
@@ -1190,35 +1216,129 @@ impl Agent {
         })
     }
 
-    fn sanitize_inbound_text(&self, text: String) -> Result<String, Vec<String>> {
-        let Some(inspection) = self.inspect_safety_text(SafetyStage::InboundMessage, &text) else {
-            return Ok(text);
-        };
+    fn inspect_secret_leak_text(&self, stage: SafetyStage, text: &str) -> Option<SafetyInspection> {
+        if !self.leak_stage_enabled(stage) || text.trim().is_empty() {
+            return None;
+        }
+        let scan = self.leak_detector.scan(
+            text,
+            self.safety_policy.secret_leak_redaction_token.as_str(),
+        );
+        if !scan.has_matches() {
+            return None;
+        }
+        let matched_rules = scan.matched_rule_ids();
+        let reason_codes = scan.reason_codes();
+        let mode = self.safety_policy.secret_leak_mode;
+        self.emit(AgentEvent::SafetyPolicyApplied {
+            stage,
+            mode,
+            blocked: matches!(mode, SafetyMode::Block),
+            matched_rules: matched_rules.clone(),
+            reason_codes: reason_codes.clone(),
+        });
+        Some(SafetyInspection {
+            mode,
+            redacted_text: scan.redacted_text,
+            matched_rules,
+            reason_codes,
+        })
+    }
+
+    fn apply_safety_mode_to_text(
+        text: String,
+        inspection: &SafetyInspection,
+    ) -> Result<String, Vec<String>> {
         match inspection.mode {
             SafetyMode::Warn => Ok(text),
-            SafetyMode::Redact => Ok(inspection.redacted_text),
-            SafetyMode::Block => Err(inspection.reason_codes),
+            SafetyMode::Redact => Ok(inspection.redacted_text.clone()),
+            SafetyMode::Block => Err(inspection.reason_codes.clone()),
+        }
+    }
+
+    fn sanitize_inbound_text(&self, text: String) -> Result<String, Vec<String>> {
+        let Some(inspection) = self.inspect_prompt_safety_text(SafetyStage::InboundMessage, &text)
+        else {
+            return Ok(text);
+        };
+        Self::apply_safety_mode_to_text(text, &inspection)
+    }
+
+    fn sanitize_outbound_http_request(&self, request: &mut ChatRequest) -> Result<(), AgentError> {
+        let payload = match serde_json::to_string(request) {
+            Ok(payload) => payload,
+            Err(_) => return Ok(()),
+        };
+        let Some(inspection) =
+            self.inspect_secret_leak_text(SafetyStage::OutboundHttpPayload, &payload)
+        else {
+            return Ok(());
+        };
+        match inspection.mode {
+            SafetyMode::Warn => Ok(()),
+            SafetyMode::Redact => {
+                let mut reason_codes = inspection.reason_codes.clone();
+                let parsed = serde_json::from_str::<ChatRequest>(&inspection.redacted_text)
+                    .map_err(|_| {
+                        reason_codes.push("secret_leak.redaction_failed".to_string());
+                        AgentError::SafetyViolation {
+                            stage: SafetyStage::OutboundHttpPayload.as_str().to_string(),
+                            reason_codes,
+                        }
+                    })?;
+                *request = parsed;
+                Ok(())
+            }
+            SafetyMode::Block => Err(AgentError::SafetyViolation {
+                stage: SafetyStage::OutboundHttpPayload.as_str().to_string(),
+                reason_codes: inspection.reason_codes,
+            }),
         }
     }
 
     fn sanitize_tool_result(&self, result: ToolExecutionResult) -> ToolExecutionResult {
-        let text = result.as_text();
-        let Some(inspection) = self.inspect_safety_text(SafetyStage::ToolOutput, &text) else {
-            return result;
-        };
-        match inspection.mode {
-            SafetyMode::Warn => result,
-            SafetyMode::Redact => ToolExecutionResult {
-                content: Value::String(inspection.redacted_text),
-                is_error: result.is_error,
-            },
-            SafetyMode::Block => ToolExecutionResult::error(json!({
-                "error": TOOL_OUTPUT_BLOCKED_ERROR,
-                "stage": SafetyStage::ToolOutput.as_str(),
-                "matched_rules": inspection.matched_rules,
-                "reason_codes": inspection.reason_codes,
-            })),
+        let original_text = result.as_text();
+        let mut text = original_text.clone();
+
+        if let Some(inspection) = self.inspect_prompt_safety_text(SafetyStage::ToolOutput, &text) {
+            match Self::apply_safety_mode_to_text(text, &inspection) {
+                Ok(updated) => {
+                    text = updated;
+                }
+                Err(reason_codes) => {
+                    return ToolExecutionResult::error(json!({
+                        "error": TOOL_OUTPUT_BLOCKED_ERROR,
+                        "stage": SafetyStage::ToolOutput.as_str(),
+                        "matched_rules": inspection.matched_rules,
+                        "reason_codes": reason_codes,
+                    }));
+                }
+            }
         }
+
+        if let Some(inspection) = self.inspect_secret_leak_text(SafetyStage::ToolOutput, &text) {
+            match Self::apply_safety_mode_to_text(text, &inspection) {
+                Ok(updated) => {
+                    text = updated;
+                }
+                Err(reason_codes) => {
+                    return ToolExecutionResult::error(json!({
+                        "error": TOOL_OUTPUT_BLOCKED_ERROR,
+                        "stage": SafetyStage::ToolOutput.as_str(),
+                        "matched_rules": inspection.matched_rules,
+                        "reason_codes": reason_codes,
+                    }));
+                }
+            }
+        }
+
+        if text != original_text {
+            return ToolExecutionResult {
+                content: Value::String(text),
+                is_error: result.is_error,
+            };
+        }
+        result
     }
 
     fn response_cache_eligible(
@@ -1452,7 +1572,7 @@ impl Agent {
             self.emit(AgentEvent::TurnStart { turn });
 
             let tools = self.tool_definitions();
-            let request = ChatRequest {
+            let mut request = ChatRequest {
                 model: self.config.model.clone(),
                 messages: self.request_messages().await,
                 tool_choice: if tools.is_empty() {
@@ -1465,6 +1585,7 @@ impl Agent {
                 max_tokens: self.config.max_tokens,
                 temperature: self.config.temperature,
             };
+            self.sanitize_outbound_http_request(&mut request)?;
             self.enforce_token_budget(&request)?;
 
             let request_started = std::time::Instant::now();

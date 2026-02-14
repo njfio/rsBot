@@ -95,6 +95,8 @@ struct PromptTelemetryRunState {
     budget_alerts: u64,
     tool_calls: u64,
     tool_errors: u64,
+    secret_leak_detections: u64,
+    secret_leak_pattern_class_counts: HashMap<String, u64>,
     finish_reason: Option<String>,
 }
 
@@ -173,6 +175,10 @@ impl PromptTelemetryLogger {
             },
             "tool_calls": active.tool_calls,
             "tool_errors": active.tool_errors,
+            "secret_leak": {
+                "detections_total": active.secret_leak_detections,
+                "pattern_class_counts": active.secret_leak_pattern_class_counts,
+            },
             "redaction_policy": {
                 "prompt_content": "omitted",
                 "tool_arguments": "omitted",
@@ -209,6 +215,8 @@ impl PromptTelemetryLogger {
                         budget_alerts: 0,
                         tool_calls: 0,
                         tool_errors: 0,
+                        secret_leak_detections: 0,
+                        secret_leak_pattern_class_counts: HashMap::new(),
                         finish_reason: None,
                     });
                 }
@@ -255,6 +263,22 @@ impl PromptTelemetryLogger {
                         }
                     }
                 }
+                AgentEvent::SafetyPolicyApplied { reason_codes, .. } => {
+                    if let Some(active) = state.active.as_mut() {
+                        for reason_code in reason_codes {
+                            let Some(pattern_class) = secret_leak_pattern_class(reason_code) else {
+                                continue;
+                            };
+                            active.secret_leak_detections =
+                                active.secret_leak_detections.saturating_add(1);
+                            let count = active
+                                .secret_leak_pattern_class_counts
+                                .entry(pattern_class.to_string())
+                                .or_insert(0);
+                            *count = count.saturating_add(1);
+                        }
+                    }
+                }
                 AgentEvent::AgentEnd { .. } => {
                     if let Some(active) = state.active.take() {
                         let success = active.tool_errors == 0;
@@ -288,6 +312,10 @@ impl PromptTelemetryLogger {
             .with_context(|| format!("failed to flush telemetry log {}", self.path.display()))?;
         Ok(())
     }
+}
+
+fn secret_leak_pattern_class(reason_code: &str) -> Option<&str> {
+    reason_code.strip_prefix("secret_leak.")
 }
 
 pub fn tool_audit_event_json(
@@ -402,7 +430,7 @@ pub fn tool_audit_event_json(
 mod tests {
     use super::{tool_audit_event_json, PromptTelemetryLogger, ToolAuditLogger};
     use std::{collections::HashMap, time::Instant};
-    use tau_agent_core::{AgentEvent, ToolExecutionResult};
+    use tau_agent_core::{AgentEvent, SafetyMode, SafetyStage, ToolExecutionResult};
     use tau_ai::ChatUsage;
     use tempfile::tempdir;
 
@@ -593,5 +621,58 @@ mod tests {
         assert_eq!(record["cost"]["budget_usd"], 0.2);
         assert_eq!(record["cost"]["budget_alerts"], 1);
         assert!(record["cost"]["budget_utilization"].as_f64().unwrap_or(0.0) > 0.0);
+    }
+
+    #[test]
+    fn functional_prompt_telemetry_logger_records_secret_leak_counters_by_pattern_class() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("prompt-telemetry-secret-leak.jsonl");
+        let logger = PromptTelemetryLogger::open(log_path.clone(), "openai", "gpt-4o-mini")
+            .expect("logger open");
+
+        logger
+            .log_event(&AgentEvent::AgentStart)
+            .expect("start prompt");
+        logger
+            .log_event(&AgentEvent::SafetyPolicyApplied {
+                stage: SafetyStage::ToolOutput,
+                mode: SafetyMode::Redact,
+                blocked: false,
+                matched_rules: vec!["leak.openai_api_key".to_string()],
+                reason_codes: vec!["secret_leak.openai_api_key".to_string()],
+            })
+            .expect("leak event one");
+        logger
+            .log_event(&AgentEvent::SafetyPolicyApplied {
+                stage: SafetyStage::ToolOutput,
+                mode: SafetyMode::Block,
+                blocked: true,
+                matched_rules: vec![
+                    "leak.openai_api_key".to_string(),
+                    "leak.github_classic_pat".to_string(),
+                ],
+                reason_codes: vec![
+                    "secret_leak.openai_api_key".to_string(),
+                    "secret_leak.github_token".to_string(),
+                ],
+            })
+            .expect("leak event two");
+        logger
+            .log_event(&AgentEvent::AgentEnd { new_messages: 1 })
+            .expect("end prompt");
+
+        let raw = std::fs::read_to_string(log_path).expect("read telemetry log");
+        let lines = raw.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+        let record: serde_json::Value = serde_json::from_str(lines[0]).expect("record");
+        assert_eq!(record["secret_leak"]["detections_total"], 3);
+        assert_eq!(
+            record["secret_leak"]["pattern_class_counts"]["openai_api_key"],
+            2
+        );
+        assert_eq!(
+            record["secret_leak"]["pattern_class_counts"]["github_token"],
+            1
+        );
     }
 }
