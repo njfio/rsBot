@@ -142,6 +142,9 @@ jobs:
             helpers:
               - ".github/workflows/**"
               - ".github/scripts/**"
+            fast_validate:
+              - "scripts/dev/fast-validate.sh"
+              - "scripts/dev/test-fast-validate.sh"
 
       - name: Determine rust scope
         id: rust_scope
@@ -176,6 +179,25 @@ jobs:
       - name: Validate CI helper scripts
         if: steps.helper_scope.outputs.helper_tests_needed == 'true'
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py"
+
+      - name: Determine fast-validate script scope
+        id: fast_validate_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          fast_validate_tests_needed="${{ steps.change_scope.outputs.fast_validate }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            fast_validate_tests_needed="true"
+          elif [[ -z "${fast_validate_tests_needed}" ]]; then
+            fast_validate_tests_needed="false"
+          fi
+          echo "fast_validate_tests_needed=${fast_validate_tests_needed}" >> "$GITHUB_OUTPUT"
+          echo "### fast-validate Scope" >> "$GITHUB_STEP_SUMMARY"
+          echo "- fast-validate tests needed: ${fast_validate_tests_needed}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate fast-validate script
+        if: steps.fast_validate_scope.outputs.fast_validate_tests_needed == 'true'
+        run: ./scripts/dev/test-fast-validate.sh
 
       - name: Determine quality mode
         id: quality_mode
@@ -220,7 +242,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        if: steps.rust_scope.outputs.rust_changed == 'true'
+        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light'
         run: cargo fmt --all --check
 
       - name: Verify unsafe-free policy
@@ -233,9 +255,19 @@ jobs:
             exit 1
           fi
 
-      - name: Lint (full lane)
+      - name: Validate Rust scope (full lane)
         if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode != 'codex-light'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        env:
+          RUST_MIN_STACK: "8388608"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}" || true
+            ./scripts/dev/fast-validate.sh --base "${{ github.event.pull_request.base.sha }}"
+          else
+            ./scripts/dev/fast-validate.sh --full
+          fi
 
       - name: Lint (codex-light lane)
         if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light'
@@ -253,7 +285,13 @@ jobs:
             echo "- Command: cargo check -p tau-coding-agent --all-targets" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- Mode: full" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Command: cargo clippy --workspace --all-targets -- -D warnings" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "- Command: ./scripts/dev/fast-validate.sh --base <pull_request.base.sha>" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Scope: impacted crates (changed crates + workspace reverse dependencies)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- Command: ./scripts/dev/fast-validate.sh --full" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Scope: full workspace" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
       - name: Run codex light demo smoke
@@ -276,12 +314,6 @@ jobs:
           name: demo-smoke-logs
           path: ci-artifacts/demo-smoke
           if-no-files-found: ignore
-
-      - name: Run workspace tests
-        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode != 'codex-light'
-        env:
-          RUST_MIN_STACK: "8388608"
-        run: cargo test --workspace
 
   cross-platform-smoke:
     name: Cross-platform compile smoke (${{ matrix.os }})

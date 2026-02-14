@@ -5,9 +5,11 @@ Run all commands from repository root.
 ## Build and test
 
 ```bash
-cargo fmt
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+# fast changed-crate loop
+./scripts/dev/fast-validate.sh
+
+# full pre-merge validation
+./scripts/dev/fast-validate.sh --full
 ```
 
 ## Onboarding

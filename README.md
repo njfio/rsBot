@@ -36,9 +36,9 @@ Run all commands from repository root.
 Build/test:
 
 ```bash
-cargo fmt
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+./scripts/dev/fast-validate.sh
+# full pre-merge gate:
+./scripts/dev/fast-validate.sh --full
 ```
 
 Bootstrap Tau workspace:
