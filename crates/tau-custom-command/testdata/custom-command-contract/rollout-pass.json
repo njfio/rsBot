@@ -8,7 +8,7 @@
       "case_id": "custom-command-create-pass",
       "operation": "create",
       "command_name": "deploy_release",
-      "template": "deploy {{env}}",
+      "template": "echo deploy {{env}}",
       "arguments": {
         "env": "staging"
       },
@@ -28,7 +28,7 @@
       "case_id": "custom-command-update-pass",
       "operation": "update",
       "command_name": "deploy_release",
-      "template": "deploy {{env}} --safe",
+      "template": "echo deploy {{env}} --safe",
       "arguments": {
         "env": "staging"
       },

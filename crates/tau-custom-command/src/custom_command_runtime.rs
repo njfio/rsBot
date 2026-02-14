@@ -1458,6 +1458,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_runner_rollout_pass_fixture_executes_all_cases_successfully() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_config(temp.path());
+        config.fixture_path = fixture_path("rollout-pass.json");
+        let fixture = load_custom_command_contract_fixture(&config.fixture_path)
+            .expect("fixture should load");
+        let mut runtime = CustomCommandRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+
+        assert_eq!(summary.discovered_cases, 4);
+        assert_eq!(summary.queued_cases, 4);
+        assert_eq!(summary.applied_cases, 4);
+        assert_eq!(summary.malformed_cases, 0);
+        assert_eq!(summary.retryable_failures, 0);
+        assert_eq!(summary.retry_attempts, 0);
+        assert_eq!(summary.failed_cases, 0);
+        assert_eq!(summary.upserted_commands, 2);
+        assert_eq!(summary.deleted_commands, 0);
+        assert_eq!(summary.executed_runs, 1);
+        assert_eq!(summary.run_timeout_failures, 0);
+        assert_eq!(summary.run_non_zero_exit_failures, 0);
+        assert_eq!(summary.run_spawn_failures, 0);
+        assert_eq!(summary.run_missing_command_failures, 0);
+        assert_eq!(summary.duplicate_skips, 0);
+
+        let state = load_custom_command_runtime_state(&config.state_dir.join("state.json"))
+            .expect("load state");
+        assert_eq!(state.commands.len(), 1);
+        assert_eq!(state.processed_case_keys.len(), 4);
+        assert_eq!(state.health.last_cycle_discovered, 4);
+        assert_eq!(state.health.last_cycle_failed, 0);
+        assert_eq!(state.health.failure_streak, 0);
+        assert_eq!(state.health.classify().state, TransportHealthState::Healthy);
+
+        let record = state.commands.first().expect("command record");
+        assert_eq!(record.command_name, "deploy_release");
+        assert_eq!(record.run_count, 1);
+        assert_eq!(record.last_outcome, "success");
+        assert_eq!(record.last_error_code, "");
+    }
+
+    #[tokio::test]
     async fn integration_runner_respects_queue_limit_for_backpressure() {
         let temp = tempdir().expect("tempdir");
         let mut config = build_config(temp.path());

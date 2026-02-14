@@ -923,7 +923,6 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         || cli.multi_channel_contract_runner
         || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
-        || cli.browser_automation_contract_runner
         || cli.browser_automation_preflight
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
@@ -933,7 +932,9 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         || cli.voice_contract_runner
         || cli.voice_live_runner
     {
-        bail!("--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
+        bail!(
+            "--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --browser-automation-preflight, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, --voice-contract-runner, or --voice-live-runner"
+        );
     }
     if cli.browser_automation_queue_limit == 0 {
         bail!("--browser-automation-queue-limit must be greater than 0");

@@ -1,6 +1,7 @@
 //! Tests for bridge and contract-runner CLI validation surfaces.
 
 use super::*;
+use tau_cli::validate_browser_automation_contract_runner_cli;
 
 #[test]
 fn unit_validate_github_issues_bridge_cli_accepts_minimum_configuration() {
@@ -899,6 +900,39 @@ fn regression_validate_multi_agent_contract_runner_cli_requires_fixture_file() {
     let error =
         validate_multi_agent_contract_runner_cli(&cli).expect_err("directory fixture should fail");
     assert!(error.to_string().contains("must point to a file"));
+}
+
+#[test]
+fn unit_validate_browser_automation_contract_runner_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("browser-automation-fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.browser_automation_contract_runner = true;
+    cli.browser_automation_fixture = fixture_path;
+
+    validate_browser_automation_contract_runner_cli(&cli)
+        .expect("browser automation runner config should validate");
+}
+
+#[test]
+fn integration_validate_browser_automation_contract_runner_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.browser_automation_contract_runner = true;
+    cli.browser_automation_fixture = fixture_path;
+    cli.dashboard_contract_runner = true;
+
+    let error =
+        validate_browser_automation_contract_runner_cli(&cli).expect_err("transport conflict");
+    assert!(error.to_string().contains(
+        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner"
+    ));
+    assert!(error.to_string().contains("--browser-automation-preflight"));
 }
 
 #[test]
