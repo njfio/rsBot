@@ -4,7 +4,10 @@ Run all commands from repository root.
 
 ## Scope
 
-This runbook covers the fixture-driven semantic memory runtime (`--memory-contract-runner`).
+This runbook covers:
+
+- fixture-driven semantic memory runtime (`--memory-contract-runner`)
+- live backend recall quality proof (`scripts/demo/memory-live.sh`)
 
 ## Health and observability signals
 
@@ -39,17 +42,34 @@ Primary state files:
 ./scripts/demo/memory.sh
 ```
 
+## Live backend quality proof
+
+```bash
+./scripts/demo/memory-live.sh
+```
+
+Primary proof artifacts:
+
+- `.tau/demo-memory-live/memory-live-summary.json`
+- `.tau/demo-memory-live/memory-live-quality-report.json`
+- `.tau/demo-memory-live/memory-live-artifact-manifest.json`
+- `.tau/demo-memory-live/memory-live-report.json`
+- `.tau/demo-memory-live/memory-live-request-captures.json`
+- `.tau/demo-memory-live/state/live-backend/<workspace>.jsonl`
+
 ## Rollout plan with guardrails
 
 1. Validate fixture contract and runtime locally:
    `cargo test -p tau-coding-agent memory_contract -- --test-threads=1`
 2. Validate runtime coverage:
    `cargo test -p tau-coding-agent memory_runtime -- --test-threads=1`
-3. Run deterministic demo:
+3. Validate live memory backend retrieval quality and artifact manifest generation:
+   `./scripts/demo/memory-live.sh --skip-build --timeout-seconds 120`
+4. Run deterministic fixture demo:
    `./scripts/demo/memory.sh`
-4. Confirm health snapshot is `healthy` before promotion:
+5. Confirm health snapshot is `healthy` before promotion:
    `--transport-health-inspect memory --transport-health-json`
-5. Promote by increasing fixture complexity gradually while monitoring:
+6. Promote by increasing fixture complexity gradually while monitoring:
    `failure_streak`, `last_cycle_failed`, `queue_depth`.
 
 ## Canary rollout profile
@@ -82,3 +102,5 @@ Apply the global rollout contract in [Release Channel Ops](release-channel-ops.m
   Action: treat as rollout gate failure; pause promotion and investigate repeated runtime failures.
 - Symptom: non-zero `queue_depth`.
   Action: increase `--memory-queue-limit` or reduce per-cycle fixture volume.
+- Symptom: `memory-live` report fails quality gate.
+  Action: inspect `.tau/demo-memory-live/memory-live-quality-report.json` and request captures to verify recall ordering drift.

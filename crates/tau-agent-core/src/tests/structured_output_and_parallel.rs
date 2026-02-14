@@ -1453,6 +1453,93 @@ async fn functional_memory_backend_persists_entries_and_recalls_across_sessions(
 }
 
 #[tokio::test]
+async fn integration_memory_backend_recall_orders_relevant_entries_for_multiturn_topics() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let memory_state_dir = temp.path().join("memory-state");
+    let config = AgentConfig {
+        max_context_messages: Some(2),
+        memory_retrieval_limit: 2,
+        memory_min_similarity: 0.0,
+        memory_backend_state_dir: Some(memory_state_dir.clone()),
+        memory_backend_workspace_id: "workspace-quality".to_string(),
+        memory_backend_max_entries: 128,
+        ..AgentConfig::default()
+    };
+
+    let mut writer = Agent::new(
+        Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: Message::assistant_text("postgres failover uses promote + lag checks"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("redis warmup uses hot-key preload"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("kafka lag response uses rebalance"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        }),
+        config.clone(),
+    );
+    writer
+        .prompt("postgres failover checklist with replication lag verification")
+        .await
+        .expect("writer prompt postgres");
+    writer
+        .prompt("redis warmup checklist with key preload")
+        .await
+        .expect("writer prompt redis");
+    writer
+        .prompt("kafka lag remediation for consumer backlog")
+        .await
+        .expect("writer prompt kafka");
+
+    let reader_client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("ack"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+    let mut reader = Agent::new(reader_client.clone(), config);
+    reader
+        .prompt("how do we handle postgres failover lag checks?")
+        .await
+        .expect("reader prompt should succeed");
+
+    let requests = reader_client.requests.lock().await;
+    let request = requests.first().expect("captured request");
+    let memory_recall = request
+        .messages
+        .iter()
+        .find(|message| {
+            message.role == MessageRole::System
+                && message.text_content().contains(MEMORY_RECALL_PREFIX)
+        })
+        .expect("memory recall system message");
+    let recall_text = memory_recall.text_content();
+    let recall_lines = recall_text.lines().skip(1).collect::<Vec<_>>();
+    assert_eq!(recall_lines.len(), 2, "expected top-2 recall entries");
+    assert!(
+        recall_lines[0].contains("postgres"),
+        "top recall item should prioritize postgres context: {}",
+        recall_lines[0]
+    );
+    assert!(
+        !recall_lines[0].contains("redis warmup"),
+        "top recall item should not rank redis warmup first for postgres query"
+    );
+}
+
+#[tokio::test]
 async fn integration_memory_backend_unavailable_falls_back_to_context_history_recall() {
     let temp = tempfile::tempdir().expect("tempdir");
     let memory_state_path = temp.path().join("memory-state-as-file");
@@ -1513,6 +1600,85 @@ async fn integration_memory_backend_unavailable_falls_back_to_context_history_re
     assert!(
         !memory_state_path.join("live-backend").exists(),
         "backend path should stay disabled when state dir is not usable"
+    );
+}
+
+#[tokio::test]
+async fn regression_memory_backend_respects_max_entries_cap() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let memory_state_dir = temp.path().join("memory-state");
+    let config = AgentConfig {
+        memory_retrieval_limit: 1,
+        memory_min_similarity: 0.0,
+        memory_backend_state_dir: Some(memory_state_dir.clone()),
+        memory_backend_workspace_id: "workspace-cap".to_string(),
+        memory_backend_max_entries: 2,
+        ..AgentConfig::default()
+    };
+
+    let mut writer = Agent::new(
+        Arc::new(MockClient {
+            responses: AsyncMutex::new(VecDeque::from([
+                ChatResponse {
+                    message: Message::assistant_text("postgres ack"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("redis ack"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+                ChatResponse {
+                    message: Message::assistant_text("kafka ack"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                },
+            ])),
+        }),
+        config,
+    );
+
+    writer
+        .prompt("postgres failover prompt")
+        .await
+        .expect("prompt postgres");
+    writer
+        .prompt("redis warmup prompt")
+        .await
+        .expect("prompt redis");
+    writer
+        .prompt("kafka lag prompt")
+        .await
+        .expect("prompt kafka");
+
+    let backend_file = memory_state_dir
+        .join("live-backend")
+        .join("workspace-cap.jsonl");
+    let persisted_lines = std::fs::read_to_string(&backend_file)
+        .expect("read persisted backend")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        persisted_lines.len(),
+        2,
+        "backend file should keep only the most recent capped entries"
+    );
+    let persisted_joined = persisted_lines.join("\n");
+    assert!(
+        persisted_joined.contains("kafka lag prompt"),
+        "newest user prompt should remain after cap"
+    );
+    assert!(
+        persisted_joined.contains("kafka ack"),
+        "newest assistant response should remain after cap"
+    );
+    assert!(
+        !persisted_joined.contains("postgres failover prompt"),
+        "oldest entries should be evicted when max_entries is reached"
     );
 }
 

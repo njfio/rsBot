@@ -108,6 +108,21 @@ Primary outputs:
 - `.tau/demo-dashboard-live/dashboard-action-audit.json`
 - `.tau/demo-dashboard-live/webchat-fallback-check.json`
 
+`memory-live` is a standalone wrapper (not part of `index.sh` scenario allowlist)
+used for live memory backend recall quality proof with persisted snapshot artifacts:
+
+```bash
+./scripts/demo/memory-live.sh
+```
+
+Primary outputs:
+
+- `.tau/demo-memory-live/memory-live-summary.json`
+- `.tau/demo-memory-live/memory-live-quality-report.json`
+- `.tau/demo-memory-live/memory-live-artifact-manifest.json`
+- `.tau/demo-memory-live/memory-live-report.json`
+- `.tau/demo-memory-live/memory-live-request-captures.json`
+
 ## Unified Live-Run Harness
 
 Cross-surface validation wrapper (voice/browser/dashboard/custom-command/memory):
