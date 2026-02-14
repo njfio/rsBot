@@ -1781,78 +1781,86 @@ pub struct Cli {
     pub qa_loop_changed_file_limit: Option<usize>,
 
     #[arg(
-        long = "train-config",
-        env = "TAU_TRAIN_CONFIG",
+        long = "prompt-optimization-config",
+        alias = "train-config",
+        env = "TAU_PROMPT_OPTIMIZATION_CONFIG",
         value_name = "path",
-        help = "Run rollout training mode from JSON config and exit"
+        help = "Run rollout prompt-optimization mode from JSON config and exit"
     )]
-    pub train_config: Option<PathBuf>,
+    pub prompt_optimization_config: Option<PathBuf>,
 
     #[arg(
-        long = "train-store-sqlite",
-        env = "TAU_TRAIN_STORE_SQLITE",
-        requires = "train_config",
+        long = "prompt-optimization-store-sqlite",
+        alias = "train-store-sqlite",
+        env = "TAU_PROMPT_OPTIMIZATION_STORE_SQLITE",
+        requires = "prompt_optimization_config",
         default_value = ".tau/training/store.sqlite",
         value_name = "path",
-        help = "SQLite file path for durable rollout/tracing state in training mode"
+        help = "SQLite file path for durable rollout/tracing state in prompt-optimization mode"
     )]
-    pub train_store_sqlite: PathBuf,
+    pub prompt_optimization_store_sqlite: PathBuf,
 
     #[arg(
-        long = "train-json",
-        env = "TAU_TRAIN_JSON",
-        requires = "train_config",
+        long = "prompt-optimization-json",
+        alias = "train-json",
+        env = "TAU_PROMPT_OPTIMIZATION_JSON",
+        requires = "prompt_optimization_config",
         default_value_t = false,
-        help = "Emit training summary output as JSON"
+        help = "Emit prompt-optimization summary output as JSON"
     )]
-    pub train_json: bool,
+    pub prompt_optimization_json: bool,
 
     #[arg(
-        long = "training-proxy-server",
-        env = "TAU_TRAINING_PROXY_SERVER",
+        long = "prompt-optimization-proxy-server",
+        alias = "training-proxy-server",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_SERVER",
         default_value_t = false,
-        help = "Run OpenAI-compatible training attribution proxy mode and exit"
+        help = "Run OpenAI-compatible prompt-optimization attribution proxy mode and exit"
     )]
-    pub training_proxy_server: bool,
+    pub prompt_optimization_proxy_server: bool,
 
     #[arg(
-        long = "training-proxy-bind",
-        env = "TAU_TRAINING_PROXY_BIND",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-bind",
+        alias = "training-proxy-bind",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_BIND",
+        requires = "prompt_optimization_proxy_server",
         default_value = "127.0.0.1:8788",
         value_name = "host:port",
-        help = "Bind address for training proxy mode"
+        help = "Bind address for prompt-optimization proxy mode"
     )]
-    pub training_proxy_bind: String,
+    pub prompt_optimization_proxy_bind: String,
 
     #[arg(
-        long = "training-proxy-upstream-url",
-        env = "TAU_TRAINING_PROXY_UPSTREAM_URL",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-upstream-url",
+        alias = "training-proxy-upstream-url",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_UPSTREAM_URL",
+        requires = "prompt_optimization_proxy_server",
         value_name = "url",
-        help = "Upstream OpenAI-compatible base URL used by training proxy forwarding"
+        help = "Upstream OpenAI-compatible base URL used by prompt-optimization proxy forwarding"
     )]
-    pub training_proxy_upstream_url: Option<String>,
+    pub prompt_optimization_proxy_upstream_url: Option<String>,
 
     #[arg(
-        long = "training-proxy-state-dir",
-        env = "TAU_TRAINING_PROXY_STATE_DIR",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-state-dir",
+        alias = "training-proxy-state-dir",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_STATE_DIR",
+        requires = "prompt_optimization_proxy_server",
         default_value = ".tau",
         value_name = "path",
-        help = "State root for training proxy attribution logs"
+        help = "State root for prompt-optimization proxy attribution logs"
     )]
-    pub training_proxy_state_dir: PathBuf,
+    pub prompt_optimization_proxy_state_dir: PathBuf,
 
     #[arg(
-        long = "training-proxy-timeout-ms",
-        env = "TAU_TRAINING_PROXY_TIMEOUT_MS",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-timeout-ms",
+        alias = "training-proxy-timeout-ms",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_TIMEOUT_MS",
+        requires = "prompt_optimization_proxy_server",
         default_value_t = 30_000,
         value_parser = parse_positive_u64,
-        help = "Upstream request timeout in milliseconds for training proxy mode"
+        help = "Upstream request timeout in milliseconds for prompt-optimization proxy mode"
     )]
-    pub training_proxy_timeout_ms: u64,
+    pub prompt_optimization_proxy_timeout_ms: u64,
 
     #[arg(
         long = "mcp-server",

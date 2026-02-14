@@ -1,4 +1,4 @@
-//! Training-mode runtime wiring for rollout execution and SQLite persistence.
+//! Prompt-optimization runtime wiring for rollout execution and SQLite persistence.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -24,9 +24,11 @@ const TRAINING_STATUS_FILE: &str = "status.json";
 #[derive(Debug, Deserialize)]
 struct TrainingConfigFile {
     #[serde(default)]
-    train: Vec<Value>,
+    #[serde(alias = "train")]
+    optimize: Vec<Value>,
     #[serde(default)]
-    val: Vec<Value>,
+    #[serde(alias = "val")]
+    validate: Vec<Value>,
     #[serde(default)]
     resources: HashMap<String, Value>,
     #[serde(default)]
@@ -64,7 +66,7 @@ struct TrainingStatusFile {
     cancelled: usize,
 }
 
-pub(crate) async fn run_training_mode_if_requested(
+pub(crate) async fn run_prompt_optimization_mode_if_requested(
     cli: &Cli,
     client: Arc<dyn LlmClient>,
     model_ref: &ModelRef,
@@ -72,20 +74,20 @@ pub(crate) async fn run_training_mode_if_requested(
     system_prompt: &str,
     tool_policy: &ToolPolicy,
 ) -> Result<bool> {
-    let Some(config_path) = cli.train_config.as_ref() else {
+    let Some(config_path) = cli.prompt_optimization_config.as_ref() else {
         return Ok(false);
     };
 
     validate_training_cli_request(cli)?;
     let config = load_training_config(config_path)?;
-    if config.train.is_empty() && config.val.is_empty() {
+    if config.optimize.is_empty() && config.validate.is_empty() {
         bail!(
-            "training config '{}' must contain at least one rollout in 'train' or 'val'",
+            "prompt-optimization config '{}' must contain at least one rollout in 'optimize' or 'validate'",
             config_path.display()
         );
     }
 
-    let store_path = cli.train_store_sqlite.clone();
+    let store_path = cli.prompt_optimization_store_sqlite.clone();
     let store: Arc<dyn TrainingStore> =
         Arc::new(SqliteTrainingStore::new(&store_path).with_context(|| {
             format!(
@@ -111,12 +113,12 @@ pub(crate) async fn run_training_mode_if_requested(
         tool_policy,
     );
 
-    let train_dataset = (!config.train.is_empty()).then_some(config.train);
-    let val_dataset = (!config.val.is_empty()).then_some(config.val);
+    let train_dataset = (!config.optimize.is_empty()).then_some(config.optimize);
+    let val_dataset = (!config.validate.is_empty()).then_some(config.validate);
     let summary = trainer
         .fit(executor, train_dataset, val_dataset)
         .await
-        .context("training run failed")?;
+        .context("prompt-optimization run failed")?;
 
     let report = TrainingRunReport {
         model_ref: format!("{}/{}", model_ref.provider.as_str(), model_ref.model),
@@ -127,7 +129,7 @@ pub(crate) async fn run_training_mode_if_requested(
         cancelled: summary.cancelled,
     };
     persist_training_status_report(&report, &store_path)?;
-    print_training_report(&report, cli.train_json)?;
+    print_training_report(&report, cli.prompt_optimization_json)?;
     Ok(true)
 }
 
@@ -167,11 +169,15 @@ fn persist_training_status_report(report: &TrainingRunReport, store_path: &Path)
 }
 
 fn load_training_config(path: &Path) -> Result<TrainingConfigFile> {
-    let payload = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read training config '{}'", path.display()))?;
+    let payload = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read prompt-optimization config '{}'",
+            path.display()
+        )
+    })?;
     serde_json::from_str::<TrainingConfigFile>(&payload).with_context(|| {
         format!(
-            "failed to parse training config '{}': expected JSON object",
+            "failed to parse prompt-optimization config '{}': expected JSON object",
             path.display()
         )
     })
@@ -184,7 +190,7 @@ fn validate_training_cli_request(cli: &Cli) -> Result<()> {
         || cli.command_file.is_some();
     if has_prompt_or_command_input {
         bail!(
-            "--train-config cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+            "--prompt-optimization-config cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
         );
     }
 
@@ -204,7 +210,9 @@ fn validate_training_cli_request(cli: &Cli) -> Result<()> {
         || cli.voice_contract_runner
         || cli.gateway_openresponses_server;
     if has_transport_mode {
-        bail!("--train-config cannot be combined with transport or contract runner modes");
+        bail!(
+            "--prompt-optimization-config cannot be combined with transport or contract runner modes"
+        );
     }
 
     let has_preflight_mode = cli.onboard
@@ -228,7 +236,9 @@ fn validate_training_cli_request(cli: &Cli) -> Result<()> {
         || cli.project_index_query.is_some()
         || cli.project_index_inspect;
     if has_preflight_mode {
-        bail!("--train-config cannot be combined with preflight/maintenance command modes");
+        bail!(
+            "--prompt-optimization-config cannot be combined with preflight/maintenance command modes"
+        );
     }
 
     Ok(())
@@ -332,7 +342,7 @@ fn print_training_report(report: &TrainingRunReport, as_json: bool) -> Result<()
         );
     } else {
         println!(
-            "training complete: model={} store={} total={} succeeded={} failed={} cancelled={}",
+            "prompt optimization complete: model={} store={} total={} succeeded={} failed={} cancelled={}",
             report.model_ref,
             report.store_path,
             report.total_rollouts,
@@ -346,7 +356,9 @@ fn print_training_report(report: &TrainingRunReport, as_json: bool) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::{build_trainer_config, run_training_mode_if_requested, TrainingConfigFile};
+    use super::{
+        build_trainer_config, run_prompt_optimization_mode_if_requested, TrainingConfigFile,
+    };
     use crate::model_catalog::ModelCatalog;
     use crate::tools::ToolPolicy;
     use async_trait::async_trait;
@@ -402,8 +414,8 @@ mod tests {
     #[test]
     fn unit_build_trainer_config_applies_overrides() {
         let config = TrainingConfigFile {
-            train: vec![json!({ "prompt": "one" })],
-            val: Vec::new(),
+            optimize: vec![json!({ "prompt": "one" })],
+            validate: Vec::new(),
             resources: HashMap::new(),
             worker_count: Some(3),
             poll_interval_ms: Some(25),
@@ -421,12 +433,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn integration_training_mode_executes_rollouts_and_persists_sqlite() {
+    async fn integration_prompt_optimization_mode_executes_rollouts_and_persists_sqlite() {
         let temp = tempdir().expect("create tempdir");
-        let config_path = temp.path().join("train.json");
+        let config_path = temp.path().join("prompt-optimization.json");
         let store_path = temp.path().join("train.sqlite");
         let config_payload = json!({
-            "train": [
+            "optimize": [
                 { "prompt": "hello", "expected": "mock-response" }
             ],
             "worker_count": 1,
@@ -439,11 +451,11 @@ mod tests {
         .expect("write config");
 
         let mut cli = parse_cli_with_stack(&["tau-rs"]);
-        cli.train_config = Some(config_path.clone());
-        cli.train_store_sqlite = store_path.clone();
-        cli.train_json = true;
+        cli.prompt_optimization_config = Some(config_path.clone());
+        cli.prompt_optimization_store_sqlite = store_path.clone();
+        cli.prompt_optimization_json = true;
 
-        let handled = run_training_mode_if_requested(
+        let handled = run_prompt_optimization_mode_if_requested(
             &cli,
             Arc::new(MockClient),
             &ModelRef::parse("openai/gpt-4o-mini").expect("parse model"),
@@ -452,7 +464,7 @@ mod tests {
             &ToolPolicy::new(vec![temp.path().to_path_buf()]),
         )
         .await
-        .expect("run training mode");
+        .expect("run prompt optimization mode");
         assert!(handled);
 
         let store = SqliteTrainingStore::new(&store_path).expect("open sqlite store");
@@ -488,25 +500,25 @@ mod tests {
     }
 
     #[test]
-    fn regression_training_mode_rejects_prompt_conflicts() {
+    fn regression_prompt_optimization_mode_rejects_prompt_conflicts() {
         let mut cli = parse_cli_with_stack(&["tau-rs"]);
-        cli.train_config = Some(std::path::PathBuf::from("train.json"));
+        cli.prompt_optimization_config = Some(std::path::PathBuf::from("train.json"));
         cli.prompt = Some("hello".to_string());
 
         let error = super::validate_training_cli_request(&cli)
             .expect_err("prompt + train-config must fail");
         assert!(error
             .to_string()
-            .contains("--train-config cannot be combined"));
+            .contains("--prompt-optimization-config cannot be combined"));
     }
 
     #[tokio::test]
-    async fn regression_training_mode_surfaces_timeout_failures() {
+    async fn regression_prompt_optimization_mode_surfaces_timeout_failures() {
         let temp = tempdir().expect("create tempdir");
         let config_path = temp.path().join("train-timeout.json");
         let store_path = temp.path().join("train-timeout.sqlite");
         let config_payload = json!({
-            "train": [
+            "optimize": [
                 { "prompt": "timeout" }
             ],
             "worker_count": 1,
@@ -519,10 +531,10 @@ mod tests {
         .expect("write timeout config");
 
         let mut cli = parse_cli_with_stack(&["tau-rs"]);
-        cli.train_config = Some(config_path);
-        cli.train_store_sqlite = store_path;
+        cli.prompt_optimization_config = Some(config_path);
+        cli.prompt_optimization_store_sqlite = store_path;
 
-        let error = run_training_mode_if_requested(
+        let error = run_prompt_optimization_mode_if_requested(
             &cli,
             Arc::new(SlowClient),
             &ModelRef::parse("openai/gpt-4o-mini").expect("parse model"),
@@ -531,9 +543,21 @@ mod tests {
             &ToolPolicy::new(vec![temp.path().to_path_buf()]),
         )
         .await
-        .expect_err("slow training should hit completion timeout");
+        .expect_err("slow prompt optimization should hit completion timeout");
         let message = format!("{error:#}");
-        assert!(message.contains("training run failed"));
+        assert!(message.contains("prompt-optimization run failed"));
         assert!(message.contains("timeout waiting for rollouts"));
+    }
+
+    #[test]
+    fn regression_training_config_supports_legacy_train_val_keys() {
+        let config = serde_json::json!({
+            "train": [{"prompt": "legacy-train"}],
+            "val": [{"prompt": "legacy-val"}],
+        });
+        let parsed: TrainingConfigFile =
+            serde_json::from_value(config).expect("parse legacy train/val config");
+        assert_eq!(parsed.optimize.len(), 1);
+        assert_eq!(parsed.validate.len(), 1);
     }
 }
