@@ -34,7 +34,8 @@ use crate::commands::{handle_command_with_session_import_mode, CommandAction, CO
 use crate::multi_agent_router::MultiAgentRouteTable;
 use crate::orchestrator_bridge::{
     run_plan_first_prompt, run_plan_first_prompt_with_policy_context,
-    run_plan_first_prompt_with_policy_context_and_routing,
+    run_plan_first_prompt_with_policy_context_and_routing, PlanFirstPromptPolicyRequest,
+    PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
 };
 use crate::runtime_output::{persist_messages, print_assistant_messages};
 use crate::runtime_types::{CommandExecutionContext, RenderOptions};
@@ -551,31 +552,39 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
             run_plan_first_prompt_with_policy_context(
                 agent,
                 session_runtime,
-                &effective_prompt,
-                turn_timeout_ms,
-                render_options,
-                orchestrator_max_plan_steps,
-                orchestrator_max_delegated_steps,
-                orchestrator_max_executor_response_chars,
-                orchestrator_max_delegated_step_response_chars,
-                orchestrator_max_delegated_total_response_chars,
-                orchestrator_delegate_steps,
-                Some(policy_context),
+                PlanFirstPromptPolicyRequest {
+                    user_prompt: &effective_prompt,
+                    turn_timeout_ms,
+                    render_options,
+                    max_plan_steps: orchestrator_max_plan_steps,
+                    max_delegated_steps: orchestrator_max_delegated_steps,
+                    max_executor_response_chars: orchestrator_max_executor_response_chars,
+                    max_delegated_step_response_chars:
+                        orchestrator_max_delegated_step_response_chars,
+                    max_delegated_total_response_chars:
+                        orchestrator_max_delegated_total_response_chars,
+                    delegate_steps: orchestrator_delegate_steps,
+                    delegated_policy_context: Some(policy_context),
+                },
             )
             .await
         } else {
             run_plan_first_prompt(
                 agent,
                 session_runtime,
-                &effective_prompt,
-                turn_timeout_ms,
-                render_options,
-                orchestrator_max_plan_steps,
-                orchestrator_max_delegated_steps,
-                orchestrator_max_executor_response_chars,
-                orchestrator_max_delegated_step_response_chars,
-                orchestrator_max_delegated_total_response_chars,
-                orchestrator_delegate_steps,
+                PlanFirstPromptRequest {
+                    user_prompt: &effective_prompt,
+                    turn_timeout_ms,
+                    render_options,
+                    max_plan_steps: orchestrator_max_plan_steps,
+                    max_delegated_steps: orchestrator_max_delegated_steps,
+                    max_executor_response_chars: orchestrator_max_executor_response_chars,
+                    max_delegated_step_response_chars:
+                        orchestrator_max_delegated_step_response_chars,
+                    max_delegated_total_response_chars:
+                        orchestrator_max_delegated_total_response_chars,
+                    delegate_steps: orchestrator_delegate_steps,
+                },
             )
             .await
         }
@@ -583,18 +592,20 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
         run_plan_first_prompt_with_policy_context_and_routing(
             agent,
             session_runtime,
-            &effective_prompt,
-            turn_timeout_ms,
-            render_options,
-            orchestrator_max_plan_steps,
-            orchestrator_max_delegated_steps,
-            orchestrator_max_executor_response_chars,
-            orchestrator_max_delegated_step_response_chars,
-            orchestrator_max_delegated_total_response_chars,
-            orchestrator_delegate_steps,
-            policy_context.as_deref(),
-            orchestrator_route_table,
-            orchestrator_route_trace_log,
+            PlanFirstPromptRoutingRequest {
+                user_prompt: &effective_prompt,
+                turn_timeout_ms,
+                render_options,
+                max_plan_steps: orchestrator_max_plan_steps,
+                max_delegated_steps: orchestrator_max_delegated_steps,
+                max_executor_response_chars: orchestrator_max_executor_response_chars,
+                max_delegated_step_response_chars: orchestrator_max_delegated_step_response_chars,
+                max_delegated_total_response_chars: orchestrator_max_delegated_total_response_chars,
+                delegate_steps: orchestrator_delegate_steps,
+                delegated_policy_context: policy_context.as_deref(),
+                route_table: orchestrator_route_table,
+                route_trace_log_path: orchestrator_route_trace_log,
+            },
         )
         .await
     };

@@ -48,55 +48,104 @@ enum RoutedPromptRunState {
     Interrupted,
 }
 
-// Intentional broad signature: callers set all policy/budget knobs explicitly per run.
-#[allow(clippy::too_many_arguments)]
+#[derive(Debug, Clone, Copy)]
+pub struct PlanFirstPromptRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: OrchestratorRenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlanFirstPromptPolicyRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: OrchestratorRenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+    pub delegated_policy_context: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlanFirstPromptRoutingRequest<'a> {
+    pub user_prompt: &'a str,
+    pub turn_timeout_ms: u64,
+    pub render_options: OrchestratorRenderOptions,
+    pub max_plan_steps: usize,
+    pub max_delegated_steps: usize,
+    pub max_executor_response_chars: usize,
+    pub max_delegated_step_response_chars: usize,
+    pub max_delegated_total_response_chars: usize,
+    pub delegate_steps: bool,
+    pub delegated_policy_context: Option<&'a str>,
+    pub route_table: &'a MultiAgentRouteTable,
+    pub route_trace_log_path: Option<&'a Path>,
+}
+
 pub async fn run_plan_first_prompt<R: OrchestratorRuntime>(
     runtime: &mut R,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: OrchestratorRenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
+    request: PlanFirstPromptRequest<'_>,
 ) -> Result<()> {
-    let fallback_policy_context = delegate_steps.then_some("legacy_policy_context=implicit");
+    let fallback_policy_context = request
+        .delegate_steps
+        .then_some("legacy_policy_context=implicit");
     run_plan_first_prompt_with_policy_context(
         runtime,
-        user_prompt,
-        turn_timeout_ms,
-        render_options,
-        max_plan_steps,
-        max_delegated_steps,
-        max_executor_response_chars,
-        max_delegated_step_response_chars,
-        max_delegated_total_response_chars,
-        delegate_steps,
-        fallback_policy_context,
+        PlanFirstPromptPolicyRequest {
+            user_prompt: request.user_prompt,
+            turn_timeout_ms: request.turn_timeout_ms,
+            render_options: request.render_options,
+            max_plan_steps: request.max_plan_steps,
+            max_delegated_steps: request.max_delegated_steps,
+            max_executor_response_chars: request.max_executor_response_chars,
+            max_delegated_step_response_chars: request.max_delegated_step_response_chars,
+            max_delegated_total_response_chars: request.max_delegated_total_response_chars,
+            delegate_steps: request.delegate_steps,
+            delegated_policy_context: fallback_policy_context,
+        },
     )
     .await
 }
 
-// Intentional broad signature: callers set all policy/budget knobs explicitly per run.
-#[allow(clippy::too_many_arguments)]
 pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
     runtime: &mut R,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: OrchestratorRenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
-    delegated_policy_context: Option<&str>,
+    request: PlanFirstPromptPolicyRequest<'_>,
 ) -> Result<()> {
     let default_route_table = MultiAgentRouteTable::default();
     run_plan_first_prompt_with_policy_context_and_routing(
         runtime,
+        PlanFirstPromptRoutingRequest {
+            user_prompt: request.user_prompt,
+            turn_timeout_ms: request.turn_timeout_ms,
+            render_options: request.render_options,
+            max_plan_steps: request.max_plan_steps,
+            max_delegated_steps: request.max_delegated_steps,
+            max_executor_response_chars: request.max_executor_response_chars,
+            max_delegated_step_response_chars: request.max_delegated_step_response_chars,
+            max_delegated_total_response_chars: request.max_delegated_total_response_chars,
+            delegate_steps: request.delegate_steps,
+            delegated_policy_context: request.delegated_policy_context,
+            route_table: &default_route_table,
+            route_trace_log_path: None,
+        },
+    )
+    .await
+}
+
+pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: OrchestratorRuntime>(
+    runtime: &mut R,
+    request: PlanFirstPromptRoutingRequest<'_>,
+) -> Result<()> {
+    let PlanFirstPromptRoutingRequest {
         user_prompt,
         turn_timeout_ms,
         render_options,
@@ -107,29 +156,10 @@ pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
         max_delegated_total_response_chars,
         delegate_steps,
         delegated_policy_context,
-        &default_route_table,
-        None,
-    )
-    .await
-}
+        route_table,
+        route_trace_log_path,
+    } = request;
 
-// Intentional broad signature: callers set all policy/budget knobs explicitly per run.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: OrchestratorRuntime>(
-    runtime: &mut R,
-    user_prompt: &str,
-    turn_timeout_ms: u64,
-    render_options: OrchestratorRenderOptions,
-    max_plan_steps: usize,
-    max_delegated_steps: usize,
-    max_executor_response_chars: usize,
-    max_delegated_step_response_chars: usize,
-    max_delegated_total_response_chars: usize,
-    delegate_steps: bool,
-    delegated_policy_context: Option<&str>,
-    route_table: &MultiAgentRouteTable,
-    route_trace_log_path: Option<&Path>,
-) -> Result<()> {
     let planner_prompt = build_plan_first_planner_prompt(user_prompt, max_plan_steps);
     let planner_render_options = OrchestratorRenderOptions {
         stream_output: false,
@@ -137,15 +167,17 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
     };
     let planner_state = run_routed_prompt_with_fallback(
         runtime,
-        route_table,
-        MultiAgentRoutePhase::Planner,
-        None,
-        None,
-        &planner_prompt,
-        "planner produced no text output",
-        turn_timeout_ms,
-        planner_render_options,
-        route_trace_log_path,
+        RoutedPromptRequest {
+            route_table,
+            phase: MultiAgentRoutePhase::Planner,
+            step_text: None,
+            step_index: None,
+            base_prompt: &planner_prompt,
+            empty_output_reason: "planner produced no text output",
+            turn_timeout_ms,
+            render_options: planner_render_options,
+            route_trace_log_path,
+        },
     )
     .await?;
     if planner_state == RoutedPromptRunState::Interrupted {
@@ -224,15 +256,20 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
             );
             let delegated_state = run_routed_prompt_with_fallback(
                 runtime,
-                route_table,
-                MultiAgentRoutePhase::DelegatedStep,
-                Some(step.as_str()),
-                Some(index + 1),
-                &delegated_prompt,
-                &format!("delegated step {} produced no text output", index + 1),
-                turn_timeout_ms,
-                planner_render_options,
-                route_trace_log_path,
+                RoutedPromptRequest {
+                    route_table,
+                    phase: MultiAgentRoutePhase::DelegatedStep,
+                    step_text: Some(step.as_str()),
+                    step_index: Some(index + 1),
+                    base_prompt: &delegated_prompt,
+                    empty_output_reason: &format!(
+                        "delegated step {} produced no text output",
+                        index + 1
+                    ),
+                    turn_timeout_ms,
+                    render_options: planner_render_options,
+                    route_trace_log_path,
+                },
             )
             .await?;
             if delegated_state == RoutedPromptRunState::Interrupted {
@@ -308,19 +345,21 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
 
     let execution_state = run_routed_prompt_with_fallback(
         runtime,
-        route_table,
-        MultiAgentRoutePhase::Review,
-        None,
-        None,
-        &execution_prompt,
-        if delegate_steps {
-            "consolidation produced no text output"
-        } else {
-            "executor produced no text output"
+        RoutedPromptRequest {
+            route_table,
+            phase: MultiAgentRoutePhase::Review,
+            step_text: None,
+            step_index: None,
+            base_prompt: &execution_prompt,
+            empty_output_reason: if delegate_steps {
+                "consolidation produced no text output"
+            } else {
+                "executor produced no text output"
+            },
+            turn_timeout_ms,
+            render_options,
+            route_trace_log_path,
         },
-        turn_timeout_ms,
-        render_options,
-        route_trace_log_path,
     )
     .await?;
     if execution_state == RoutedPromptRunState::Interrupted {
@@ -371,20 +410,35 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
     Ok(())
 }
 
-// Route execution needs explicit trace metadata and runtime controls at each call site.
-#[allow(clippy::too_many_arguments)]
-async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
-    runtime: &mut R,
-    route_table: &MultiAgentRouteTable,
+#[derive(Debug, Clone, Copy)]
+struct RoutedPromptRequest<'a> {
+    route_table: &'a MultiAgentRouteTable,
     phase: MultiAgentRoutePhase,
-    step_text: Option<&str>,
+    step_text: Option<&'a str>,
     step_index: Option<usize>,
-    base_prompt: &str,
-    empty_output_reason: &str,
+    base_prompt: &'a str,
+    empty_output_reason: &'a str,
     turn_timeout_ms: u64,
     render_options: OrchestratorRenderOptions,
-    route_trace_log_path: Option<&Path>,
+    route_trace_log_path: Option<&'a Path>,
+}
+
+async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
+    runtime: &mut R,
+    request: RoutedPromptRequest<'_>,
 ) -> Result<RoutedPromptRunState> {
+    let RoutedPromptRequest {
+        route_table,
+        phase,
+        step_text,
+        step_index,
+        base_prompt,
+        empty_output_reason,
+        turn_timeout_ms,
+        render_options,
+        route_trace_log_path,
+    } = request;
+
     let selection = select_multi_agent_route(route_table, phase, step_text);
     emit_route_trace(
         route_trace_log_path,
