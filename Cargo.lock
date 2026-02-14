@@ -3061,6 +3061,8 @@ dependencies = [
  "tau-ai",
  "tau-core",
  "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]

@@ -2967,6 +2967,50 @@ pub struct Cli {
     pub multi_channel_outbound_http_timeout_ms: u64,
 
     #[arg(
+        long = "multi-channel-outbound-ssrf-protection",
+        env = "TAU_MULTI_CHANNEL_OUTBOUND_SSRF_PROTECTION",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Enable SSRF guardrails for outbound provider URLs (scheme, DNS, and private-network checks)"
+    )]
+    pub multi_channel_outbound_ssrf_protection: bool,
+
+    #[arg(
+        long = "multi-channel-outbound-ssrf-allow-http",
+        env = "TAU_MULTI_CHANNEL_OUTBOUND_SSRF_ALLOW_HTTP",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Allow http:// outbound provider URLs when SSRF protection is enabled (default requires https://)"
+    )]
+    pub multi_channel_outbound_ssrf_allow_http: bool,
+
+    #[arg(
+        long = "multi-channel-outbound-ssrf-allow-private-network",
+        env = "TAU_MULTI_CHANNEL_OUTBOUND_SSRF_ALLOW_PRIVATE_NETWORK",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Allow loopback/private/link-local outbound targets when SSRF protection is enabled"
+    )]
+    pub multi_channel_outbound_ssrf_allow_private_network: bool,
+
+    #[arg(
+        long = "multi-channel-outbound-max-redirects",
+        env = "TAU_MULTI_CHANNEL_OUTBOUND_MAX_REDIRECTS",
+        default_value_t = 5,
+        help = "Maximum provider HTTP redirects followed per outbound delivery request (0 disables redirects)"
+    )]
+    pub multi_channel_outbound_max_redirects: usize,
+
+    #[arg(
         long = "multi-channel-telegram-api-base",
         env = "TAU_MULTI_CHANNEL_TELEGRAM_API_BASE",
         default_value = "https://api.telegram.org",

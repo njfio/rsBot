@@ -495,8 +495,19 @@ cargo run -p tau-coding-agent -- \
   --multi-channel-state-dir .tau/multi-channel \
   --multi-channel-outbound-mode provider \
   --multi-channel-outbound-max-chars 1200 \
-  --multi-channel-outbound-http-timeout-ms 5000
+  --multi-channel-outbound-http-timeout-ms 5000 \
+  --multi-channel-outbound-ssrf-protection=true \
+  --multi-channel-outbound-ssrf-allow-http=false \
+  --multi-channel-outbound-ssrf-allow-private-network=false \
+  --multi-channel-outbound-max-redirects 5
 ```
+
+Outbound SSRF guardrail flags:
+
+- `--multi-channel-outbound-ssrf-protection` (default `true`)
+- `--multi-channel-outbound-ssrf-allow-http` (default `false`, HTTPS-only by default)
+- `--multi-channel-outbound-ssrf-allow-private-network` (default `false`)
+- `--multi-channel-outbound-max-redirects` (default `5`, set `0` to disable redirect following)
 
 Outbound delivery failure reason codes surfaced in channel-store outbound logs:
 
@@ -508,6 +519,16 @@ Outbound delivery failure reason codes surfaced in channel-store outbound logs:
 - `delivery_provider_unavailable`
 - `delivery_request_rejected`
 - `delivery_transport_error`
+- `delivery_redirect_missing_location`
+- `delivery_redirect_invalid_location`
+- `delivery_redirect_limit_exceeded`
+- `delivery_ssrf_invalid_url`
+- `delivery_ssrf_dns_resolution_failed`
+- `delivery_ssrf_blocked_scheme`
+- `delivery_ssrf_blocked_private_network`
+- `delivery_ssrf_blocked_metadata_endpoint`
+- `delivery_ssrf_blocked_unspecified_ip`
+- `delivery_ssrf_blocked_multicast`
 
 ## Live readiness preflight
 

@@ -1,9 +1,10 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use reqwest::StatusCode;
+use reqwest::{redirect::Policy, StatusCode};
 use serde::Serialize;
 use serde_json::{json, Value};
+use tau_runtime::{SsrfGuard, SsrfProtectionConfig, SsrfViolation};
 
 use crate::multi_channel_contract::{MultiChannelInboundEvent, MultiChannelTransport};
 
@@ -33,6 +34,10 @@ pub struct MultiChannelOutboundConfig {
     pub mode: MultiChannelOutboundMode,
     pub max_chars: usize,
     pub http_timeout_ms: u64,
+    pub ssrf_protection_enabled: bool,
+    pub ssrf_allow_http: bool,
+    pub ssrf_allow_private_network: bool,
+    pub max_redirects: usize,
     pub telegram_api_base: String,
     pub discord_api_base: String,
     pub whatsapp_api_base: String,
@@ -48,6 +53,10 @@ impl Default for MultiChannelOutboundConfig {
             mode: MultiChannelOutboundMode::ChannelStore,
             max_chars: 1200,
             http_timeout_ms: 5000,
+            ssrf_protection_enabled: true,
+            ssrf_allow_http: false,
+            ssrf_allow_private_network: false,
+            max_redirects: 5,
             telegram_api_base: "https://api.telegram.org".to_string(),
             discord_api_base: "https://discord.com/api/v10".to_string(),
             whatsapp_api_base: "https://graph.facebook.com/v20.0".to_string(),
@@ -125,6 +134,7 @@ struct MultiChannelOutboundRequest {
 pub struct MultiChannelOutboundDispatcher {
     config: MultiChannelOutboundConfig,
     client: Option<reqwest::Client>,
+    ssrf_guard: SsrfGuard,
 }
 
 impl MultiChannelOutboundDispatcher {
@@ -139,17 +149,27 @@ impl MultiChannelOutboundDispatcher {
                 "multi-channel outbound provider mode requires http timeout > 0"
             ));
         }
+        let ssrf_guard = SsrfGuard::new(SsrfProtectionConfig {
+            enabled: config.ssrf_protection_enabled,
+            allow_http: config.ssrf_allow_http,
+            allow_private_network: config.ssrf_allow_private_network,
+        });
         let client = if config.mode == MultiChannelOutboundMode::Provider {
             Some(
                 reqwest::Client::builder()
                     .timeout(Duration::from_millis(config.http_timeout_ms))
+                    .redirect(Policy::none())
                     .build()
                     .context("failed to build multi-channel outbound http client")?,
             )
         } else {
             None
         };
-        Ok(Self { config, client })
+        Ok(Self {
+            config,
+            client,
+            ssrf_guard,
+        })
     }
 
     pub fn mode(&self) -> MultiChannelOutboundMode {
@@ -464,55 +484,156 @@ impl MultiChannelOutboundDispatcher {
                 request_body: Some(compact_request_body(&request.body)),
                 http_status: None,
             })?;
-        let mut http_request = client.post(request.endpoint.as_str());
-        for (header, value) in &request.headers {
-            http_request = http_request.header(header, value);
-        }
-        let response = http_request
-            .json(&request.body)
-            .send()
+        let mut endpoint = self
+            .ssrf_guard
+            .parse_and_validate_url(request.endpoint.as_str())
             .await
-            .map_err(|error| MultiChannelOutboundDeliveryError {
-                reason_code: "delivery_transport_error".to_string(),
-                detail: error.to_string(),
-                retryable: true,
-                chunk_index: request.chunk_index,
-                chunk_count: request.chunk_count,
-                endpoint: request.endpoint.clone(),
-                request_body: Some(compact_request_body(&request.body)),
-                http_status: None,
+            .map_err(|violation| {
+                self.map_ssrf_violation(request, request.endpoint.as_str(), violation)
             })?;
-        let status = response.status();
-        let body_raw = response.text().await.unwrap_or_default();
-        let body_json = serde_json::from_str::<Value>(&body_raw).unwrap_or(Value::Null);
-        if status.is_success() {
-            return Ok(MultiChannelOutboundDeliveryReceipt {
-                transport: request.transport.as_str().to_string(),
-                mode: self.config.mode.as_str().to_string(),
-                status: "sent".to_string(),
+        let mut redirect_count = 0usize;
+
+        loop {
+            let mut http_request = client.post(endpoint.as_str());
+            for (header, value) in &request.headers {
+                http_request = http_request.header(header, value);
+            }
+            let response = http_request
+                .json(&request.body)
+                .send()
+                .await
+                .map_err(|error| MultiChannelOutboundDeliveryError {
+                    reason_code: "delivery_transport_error".to_string(),
+                    detail: error.to_string(),
+                    retryable: true,
+                    chunk_index: request.chunk_index,
+                    chunk_count: request.chunk_count,
+                    endpoint: endpoint.as_str().to_string(),
+                    request_body: Some(compact_request_body(&request.body)),
+                    http_status: None,
+                })?;
+            let status = response.status();
+            if status.is_redirection() {
+                if redirect_count >= self.config.max_redirects {
+                    return Err(MultiChannelOutboundDeliveryError {
+                        reason_code: "delivery_redirect_limit_exceeded".to_string(),
+                        detail: format!(
+                            "redirect count exceeded configured max_redirects={} for endpoint '{}'",
+                            self.config.max_redirects, endpoint
+                        ),
+                        retryable: false,
+                        chunk_index: request.chunk_index,
+                        chunk_count: request.chunk_count,
+                        endpoint: endpoint.as_str().to_string(),
+                        request_body: Some(compact_request_body(&request.body)),
+                        http_status: Some(status.as_u16()),
+                    });
+                }
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .ok_or_else(|| MultiChannelOutboundDeliveryError {
+                        reason_code: "delivery_redirect_missing_location".to_string(),
+                        detail: format!(
+                            "provider returned redirect status {} without Location header",
+                            status
+                        ),
+                        retryable: false,
+                        chunk_index: request.chunk_index,
+                        chunk_count: request.chunk_count,
+                        endpoint: endpoint.as_str().to_string(),
+                        request_body: Some(compact_request_body(&request.body)),
+                        http_status: Some(status.as_u16()),
+                    })?;
+                let location =
+                    location
+                        .to_str()
+                        .map_err(|error| MultiChannelOutboundDeliveryError {
+                            reason_code: "delivery_redirect_invalid_location".to_string(),
+                            detail: format!("provider returned invalid Location header: {error}"),
+                            retryable: false,
+                            chunk_index: request.chunk_index,
+                            chunk_count: request.chunk_count,
+                            endpoint: endpoint.as_str().to_string(),
+                            request_body: Some(compact_request_body(&request.body)),
+                            http_status: Some(status.as_u16()),
+                        })?;
+                let next_url = endpoint.join(location).map_err(|error| MultiChannelOutboundDeliveryError {
+                    reason_code: "delivery_redirect_invalid_location".to_string(),
+                    detail: format!(
+                        "provider redirect location '{}' could not be resolved against '{}': {error}",
+                        location,
+                        endpoint
+                    ),
+                    retryable: false,
+                    chunk_index: request.chunk_index,
+                    chunk_count: request.chunk_count,
+                    endpoint: endpoint.as_str().to_string(),
+                    request_body: Some(compact_request_body(&request.body)),
+                    http_status: Some(status.as_u16()),
+                })?;
+                self.ssrf_guard
+                    .validate_url(&next_url)
+                    .await
+                    .map_err(|violation| {
+                        self.map_ssrf_violation(request, next_url.as_str(), violation)
+                    })?;
+                endpoint = next_url;
+                redirect_count = redirect_count.saturating_add(1);
+                continue;
+            }
+
+            let endpoint_string = endpoint.as_str().to_string();
+            let body_raw = response.text().await.unwrap_or_default();
+            let body_json = serde_json::from_str::<Value>(&body_raw).unwrap_or(Value::Null);
+            if status.is_success() {
+                return Ok(MultiChannelOutboundDeliveryReceipt {
+                    transport: request.transport.as_str().to_string(),
+                    mode: self.config.mode.as_str().to_string(),
+                    status: "sent".to_string(),
+                    chunk_index: request.chunk_index,
+                    chunk_count: request.chunk_count,
+                    endpoint: endpoint_string,
+                    request_body: request.body.clone(),
+                    reason_code: None,
+                    detail: None,
+                    retryable: false,
+                    http_status: Some(status.as_u16()),
+                    provider_message_id: extract_provider_message_id(request.transport, &body_json),
+                });
+            }
+
+            let (reason_code, retryable) = classify_provider_status(status);
+            return Err(MultiChannelOutboundDeliveryError {
+                reason_code: reason_code.to_string(),
+                detail: truncate_detail(&body_raw),
+                retryable,
                 chunk_index: request.chunk_index,
                 chunk_count: request.chunk_count,
-                endpoint: request.endpoint.clone(),
-                request_body: request.body.clone(),
-                reason_code: None,
-                detail: None,
-                retryable: false,
+                endpoint: endpoint_string,
+                request_body: Some(compact_request_body(&request.body)),
                 http_status: Some(status.as_u16()),
-                provider_message_id: extract_provider_message_id(request.transport, &body_json),
             });
         }
+    }
 
-        let (reason_code, retryable) = classify_provider_status(status);
-        Err(MultiChannelOutboundDeliveryError {
-            reason_code: reason_code.to_string(),
-            detail: truncate_detail(&body_raw),
+    fn map_ssrf_violation(
+        &self,
+        request: &MultiChannelOutboundRequest,
+        endpoint: &str,
+        violation: SsrfViolation,
+    ) -> MultiChannelOutboundDeliveryError {
+        let retryable = violation.reason_code == "delivery_ssrf_dns_resolution_failed";
+        MultiChannelOutboundDeliveryError {
+            reason_code: violation.reason_code,
+            detail: violation.detail,
             retryable,
             chunk_index: request.chunk_index,
             chunk_count: request.chunk_count,
-            endpoint: request.endpoint.clone(),
+            endpoint: endpoint.to_string(),
             request_body: Some(compact_request_body(&request.body)),
-            http_status: Some(status.as_u16()),
-        })
+            http_status: None,
+        }
     }
 }
 
@@ -683,6 +804,8 @@ mod tests {
             max_chars: 100,
             telegram_api_base: server.base_url(),
             telegram_bot_token: Some("test-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
             ..MultiChannelOutboundConfig::default()
         })
         .expect("dispatcher");
@@ -700,6 +823,127 @@ mod tests {
             result.receipts[0].provider_message_id.as_deref(),
             Some("55")
         );
+    }
+
+    #[tokio::test]
+    async fn functional_provider_mode_follows_redirects_with_per_hop_validation() {
+        let server = MockServer::start();
+        let redirect = server.mock(|when, then| {
+            when.method(POST).path("/bottest-token/sendMessage");
+            then.status(307).header(
+                "Location",
+                format!("{}/redirected", server.base_url()).as_str(),
+            );
+        });
+        let final_target = server.mock(|when, then| {
+            when.method(POST).path("/redirected");
+            then.status(200)
+                .json_body(json!({"ok": true, "result": {"message_id": 77}}));
+        });
+
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            telegram_api_base: server.base_url(),
+            telegram_bot_token: Some("test-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
+            max_redirects: 3,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let result = dispatcher
+            .deliver(
+                &sample_event(MultiChannelTransport::Telegram),
+                "hello telegram with redirect",
+            )
+            .await
+            .expect("provider send should follow redirect");
+
+        redirect.assert_calls(1);
+        final_target.assert_calls(1);
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "sent");
+        assert_eq!(
+            result.receipts[0].provider_message_id.as_deref(),
+            Some("77")
+        );
+        assert!(result.receipts[0].endpoint.ends_with("/redirected"));
+    }
+
+    #[tokio::test]
+    async fn regression_provider_mode_blocks_http_without_override() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            telegram_api_base: "http://example.com".to_string(),
+            telegram_bot_token: Some("test-token".to_string()),
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver(&sample_event(MultiChannelTransport::Telegram), "hello")
+            .await
+            .expect_err("http should be blocked");
+        assert_eq!(error.reason_code, "delivery_ssrf_blocked_scheme");
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn regression_provider_mode_blocks_metadata_redirect_even_with_private_override() {
+        let server = MockServer::start();
+        let redirect = server.mock(|when, then| {
+            when.method(POST).path("/bottest-token/sendMessage");
+            then.status(302)
+                .header("Location", "http://169.254.169.254/latest/meta-data");
+        });
+
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            telegram_api_base: server.base_url(),
+            telegram_bot_token: Some("test-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver(&sample_event(MultiChannelTransport::Telegram), "hello")
+            .await
+            .expect_err("metadata redirect should be blocked");
+        redirect.assert_calls(1);
+        assert_eq!(error.reason_code, "delivery_ssrf_blocked_metadata_endpoint");
+    }
+
+    #[tokio::test]
+    async fn regression_provider_mode_enforces_redirect_limit() {
+        let server = MockServer::start();
+        let redirect = server.mock(|when, then| {
+            when.method(POST).path("/bottest-token/sendMessage");
+            then.status(302).header(
+                "Location",
+                format!("{}/bottest-token/sendMessage", server.base_url()).as_str(),
+            );
+        });
+
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            telegram_api_base: server.base_url(),
+            telegram_bot_token: Some("test-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
+            max_redirects: 0,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver(&sample_event(MultiChannelTransport::Telegram), "hello")
+            .await
+            .expect_err("redirects should stop at configured limit");
+        redirect.assert_calls(1);
+        assert_eq!(error.reason_code, "delivery_redirect_limit_exceeded");
     }
 
     #[tokio::test]

@@ -1137,6 +1137,10 @@ pub fn build_multi_channel_outbound_config(cli: &Cli) -> MultiChannelOutboundCon
         mode: cli.multi_channel_outbound_mode.into(),
         max_chars: cli.multi_channel_outbound_max_chars.max(1),
         http_timeout_ms: cli.multi_channel_outbound_http_timeout_ms.max(1),
+        ssrf_protection_enabled: cli.multi_channel_outbound_ssrf_protection,
+        ssrf_allow_http: cli.multi_channel_outbound_ssrf_allow_http,
+        ssrf_allow_private_network: cli.multi_channel_outbound_ssrf_allow_private_network,
+        max_redirects: cli.multi_channel_outbound_max_redirects,
         telegram_api_base: cli.multi_channel_telegram_api_base.trim().to_string(),
         discord_api_base: cli.multi_channel_discord_api_base.trim().to_string(),
         whatsapp_api_base: cli.multi_channel_whatsapp_api_base.trim().to_string(),
@@ -2807,6 +2811,10 @@ mod tests {
         cli.multi_channel_whatsapp_api_base = " https://whatsapp.example ".to_string();
         cli.multi_channel_outbound_max_chars = 0;
         cli.multi_channel_outbound_http_timeout_ms = 0;
+        cli.multi_channel_outbound_ssrf_protection = false;
+        cli.multi_channel_outbound_ssrf_allow_http = true;
+        cli.multi_channel_outbound_ssrf_allow_private_network = true;
+        cli.multi_channel_outbound_max_redirects = 0;
         write_integration_secret(
             &cli.credential_store,
             "discord-bot-token",
@@ -2845,6 +2853,10 @@ mod tests {
         assert_eq!(config.whatsapp_api_base, "https://whatsapp.example");
         assert_eq!(config.max_chars, 1);
         assert_eq!(config.http_timeout_ms, 1);
+        assert!(!config.ssrf_protection_enabled);
+        assert!(config.ssrf_allow_http);
+        assert!(config.ssrf_allow_private_network);
+        assert_eq!(config.max_redirects, 0);
     }
 
     #[test]

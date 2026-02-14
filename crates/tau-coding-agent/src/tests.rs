@@ -587,6 +587,10 @@ pub(crate) fn test_cli() -> Cli {
         multi_channel_outbound_mode: CliMultiChannelOutboundMode::ChannelStore,
         multi_channel_outbound_max_chars: 1200,
         multi_channel_outbound_http_timeout_ms: 5000,
+        multi_channel_outbound_ssrf_protection: true,
+        multi_channel_outbound_ssrf_allow_http: false,
+        multi_channel_outbound_ssrf_allow_private_network: false,
+        multi_channel_outbound_max_redirects: 5,
         multi_channel_telegram_api_base: "https://api.telegram.org".to_string(),
         multi_channel_discord_api_base: "https://discord.com/api/v10".to_string(),
         multi_channel_whatsapp_api_base: "https://graph.facebook.com/v20.0".to_string(),
@@ -1603,6 +1607,10 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
     );
     assert_eq!(cli.multi_channel_outbound_max_chars, 1200);
     assert_eq!(cli.multi_channel_outbound_http_timeout_ms, 5000);
+    assert!(cli.multi_channel_outbound_ssrf_protection);
+    assert!(!cli.multi_channel_outbound_ssrf_allow_http);
+    assert!(!cli.multi_channel_outbound_ssrf_allow_private_network);
+    assert_eq!(cli.multi_channel_outbound_max_redirects, 5);
     assert_eq!(
         cli.multi_channel_telegram_api_base,
         "https://api.telegram.org".to_string()
@@ -1762,6 +1770,11 @@ fn functional_cli_multi_channel_runner_flags_accept_explicit_overrides() {
         "333",
         "--multi-channel-outbound-http-timeout-ms",
         "8000",
+        "--multi-channel-outbound-ssrf-protection=false",
+        "--multi-channel-outbound-ssrf-allow-http=true",
+        "--multi-channel-outbound-ssrf-allow-private-network=true",
+        "--multi-channel-outbound-max-redirects",
+        "0",
         "--multi-channel-telegram-api-base",
         "https://telegram.internal",
         "--multi-channel-discord-api-base",
@@ -1793,6 +1806,10 @@ fn functional_cli_multi_channel_runner_flags_accept_explicit_overrides() {
     );
     assert_eq!(cli.multi_channel_outbound_max_chars, 333);
     assert_eq!(cli.multi_channel_outbound_http_timeout_ms, 8000);
+    assert!(!cli.multi_channel_outbound_ssrf_protection);
+    assert!(cli.multi_channel_outbound_ssrf_allow_http);
+    assert!(cli.multi_channel_outbound_ssrf_allow_private_network);
+    assert_eq!(cli.multi_channel_outbound_max_redirects, 0);
     assert_eq!(
         cli.multi_channel_telegram_api_base,
         "https://telegram.internal".to_string()
