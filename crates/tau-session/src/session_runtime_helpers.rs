@@ -1,3 +1,5 @@
+//! Session initialization and validation helpers shared by runtime entrypoints.
+
 use std::path::Path;
 
 use anyhow::{bail, Result};

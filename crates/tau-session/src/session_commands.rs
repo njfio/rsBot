@@ -1,3 +1,5 @@
+//! Session search and analysis command parsing/execution helpers.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{anyhow, bail, Context, Result};

@@ -1,3 +1,5 @@
+//! Chat/session lifecycle and control-command coverage for runtime tests.
+
 use super::*;
 
 /// Validates control command responses and chat session lifecycle operations.

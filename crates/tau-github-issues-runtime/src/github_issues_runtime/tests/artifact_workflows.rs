@@ -1,3 +1,5 @@
+//! Artifact list/read workflow coverage for GitHub Issues runtime tests.
+
 use super::*;
 
 /// Confirms artifact listing and retrieval behavior across run and TTL states.

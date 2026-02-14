@@ -1,3 +1,5 @@
+//! Session graph rendering and export helpers for runtime commands.
+
 use std::path::{Path, PathBuf};
 
 use tau_core::write_text_atomic;

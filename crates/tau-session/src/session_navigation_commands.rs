@@ -1,3 +1,5 @@
+//! Branch alias parsing and navigation command helpers for session runtime.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

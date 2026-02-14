@@ -1,3 +1,5 @@
+//! Polling retry, replay safety, and update path coverage for runtime tests.
+
 use super::*;
 
 /// Exercises polling retry and replay-safe comment update behavior.

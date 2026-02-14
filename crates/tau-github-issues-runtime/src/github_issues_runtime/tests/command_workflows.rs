@@ -1,3 +1,5 @@
+//! Command workflow and report wiring coverage for runtime tests.
+
 use super::*;
 
 /// Verifies demo-index command rendering and run/report wiring in bridge flows.

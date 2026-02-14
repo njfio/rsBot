@@ -1,3 +1,5 @@
+//! Core parsing and helper coverage for GitHub Issues runtime tests.
+
 use super::*;
 
 /// Covers baseline parsing and filtering helpers for issue event ingestion.

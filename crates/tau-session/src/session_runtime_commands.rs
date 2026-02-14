@@ -1,3 +1,5 @@
+//! Runtime-facing session command dispatcher and outcome formatting helpers.
+
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Result};
