@@ -1506,6 +1506,12 @@ fn redact_secrets_replaces_sensitive_env_values() {
 }
 
 #[test]
+fn redact_secrets_replaces_known_secret_token_patterns() {
+    let redacted = redact_secrets("openai=sk-abc123abc123abc123abc123");
+    assert_eq!(redacted, "openai=[REDACTED]");
+}
+
+#[test]
 fn canonicalize_best_effort_handles_non_existing_child() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("a/b/c.txt");

@@ -6,7 +6,8 @@ use tau_cli::validation::validate_project_index_cli;
 use tau_cli::{
     CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
     CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode,
-    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliProviderAuthMode,
+    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliPromptSanitizerMode,
+    CliProviderAuthMode,
 };
 
 use super::{parse_cli_with_stack, try_parse_cli_with_stack};
@@ -78,6 +79,30 @@ fn regression_cli_agent_cost_threshold_rejects_out_of_range_values() {
         try_parse_cli_with_stack(["tau-rs", "--agent-cost-alert-threshold-percent", "0,101"])
             .expect_err("out-of-range threshold should be rejected");
     assert!(error.to_string().contains("value must be in range 1..=100"));
+}
+
+#[test]
+fn unit_cli_secret_leak_detector_flags_default_values_are_stable() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(cli.secret_leak_detector_enabled);
+    assert_eq!(cli.secret_leak_detector_mode, CliPromptSanitizerMode::Warn);
+    assert_eq!(cli.secret_leak_redaction_token, "[TAU-SECRET-REDACTED]");
+}
+
+#[test]
+fn functional_cli_secret_leak_detector_flags_accept_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--secret-leak-detector-enabled",
+        "false",
+        "--secret-leak-detector-mode",
+        "block",
+        "--secret-leak-redaction-token",
+        "[MASKED-SECRET]",
+    ]);
+    assert!(!cli.secret_leak_detector_enabled);
+    assert_eq!(cli.secret_leak_detector_mode, CliPromptSanitizerMode::Block);
+    assert_eq!(cli.secret_leak_redaction_token, "[MASKED-SECRET]");
 }
 
 #[test]

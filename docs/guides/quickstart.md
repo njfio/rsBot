@@ -96,6 +96,27 @@ cargo run -p tau-coding-agent -- \
   --prompt-sanitizer-mode block
 ```
 
+Secret-leak detection controls:
+
+```bash
+# telemetry-only leak detection (default)
+cargo run -p tau-coding-agent -- \
+  --prompt "show environment diagnostics" \
+  --secret-leak-detector-mode warn \
+  --json-events
+
+# redact detected secret material in tool outputs/outbound request payloads
+cargo run -p tau-coding-agent -- \
+  --prompt "show environment diagnostics" \
+  --secret-leak-detector-mode redact \
+  --secret-leak-redaction-token "[MASKED-SECRET]"
+
+# fail closed if secret-like material would be reinjected or sent outbound
+cargo run -p tau-coding-agent -- \
+  --prompt "show environment diagnostics" \
+  --secret-leak-detector-mode block
+```
+
 Plan-first orchestration mode:
 
 ```bash

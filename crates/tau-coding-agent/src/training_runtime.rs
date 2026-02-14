@@ -312,6 +312,9 @@ fn build_executor(
         prompt_sanitizer_enabled: cli.prompt_sanitizer_enabled,
         prompt_sanitizer_mode: resolve_safety_mode(cli.prompt_sanitizer_mode),
         prompt_sanitizer_redaction_token: cli.prompt_sanitizer_redaction_token.clone(),
+        secret_leak_detector_enabled: cli.secret_leak_detector_enabled,
+        secret_leak_detector_mode: resolve_safety_mode(cli.secret_leak_detector_mode),
+        secret_leak_redaction_token: cli.secret_leak_redaction_token.clone(),
     };
 
     let base_system_prompt = system_prompt.to_string();

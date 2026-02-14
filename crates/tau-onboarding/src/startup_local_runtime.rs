@@ -34,6 +34,9 @@ pub struct LocalRuntimeAgentSettings {
     pub prompt_sanitizer_enabled: bool,
     pub prompt_sanitizer_mode: SafetyMode,
     pub prompt_sanitizer_redaction_token: String,
+    pub secret_leak_detector_enabled: bool,
+    pub secret_leak_detector_mode: SafetyMode,
+    pub secret_leak_redaction_token: String,
 }
 
 pub fn build_local_runtime_agent(
@@ -71,6 +74,10 @@ pub fn build_local_runtime_agent(
         apply_to_inbound_messages: true,
         apply_to_tool_outputs: true,
         redaction_token: settings.prompt_sanitizer_redaction_token,
+        secret_leak_detection_enabled: settings.secret_leak_detector_enabled,
+        secret_leak_mode: settings.secret_leak_detector_mode,
+        secret_leak_redaction_token: settings.secret_leak_redaction_token,
+        apply_to_outbound_http_payloads: true,
     });
     register_builtin_tools(&mut agent, tool_policy);
     agent
