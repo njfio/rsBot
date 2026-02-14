@@ -37,6 +37,7 @@ mod startup_preflight;
 mod startup_transport_modes;
 mod tool_policy_config;
 mod tools;
+mod training_proxy_runtime;
 mod training_runtime;
 #[cfg(test)]
 mod transport_conformance;

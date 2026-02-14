@@ -1,0 +1,19 @@
+[package]
+name = "tau-training-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tau-core = { path = "../tau-core" }
+
+[dev-dependencies]
+httpmock = "0.8"
+tempfile = "3"
+tower = "0.5"

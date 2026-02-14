@@ -186,6 +186,8 @@ fn dispatch_gateway_ws_control_text_frame(
                 Ok(service_report) => {
                     let multi_channel_report =
                         collect_gateway_multi_channel_status_report(&state.config.state_dir);
+                    let dashboard_snapshot =
+                        collect_gateway_dashboard_snapshot(&state.config.state_dir);
                     crate::gateway_ws_protocol::build_gateway_ws_response_frame(
                         &request_frame.request_id,
                         "gateway.status.response",
@@ -193,6 +195,7 @@ fn dispatch_gateway_ws_control_text_frame(
                             "service": service_report,
                             "auth": collect_gateway_auth_status_report(state),
                             "multi_channel": multi_channel_report,
+                            "training": dashboard_snapshot.training,
                             "gateway": {
                                 "responses_endpoint": OPENRESPONSES_ENDPOINT,
                                 "status_endpoint": GATEWAY_STATUS_ENDPOINT,

@@ -6,6 +6,7 @@ const DASHBOARD_STATE_FILE: &str = "state.json";
 const DASHBOARD_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
 const DASHBOARD_ACTIONS_LOG_FILE: &str = "actions-audit.jsonl";
 const DASHBOARD_CONTROL_STATE_FILE: &str = "control-state.json";
+const TRAINING_STATUS_FILE: &str = "status.json";
 const DASHBOARD_TIMELINE_CAP: usize = 64;
 const DASHBOARD_ACTIONS_TAIL_CAP: usize = 5;
 const DASHBOARD_CONTROL_MODE_RUNNING: &str = "running";
@@ -17,6 +18,7 @@ pub(super) struct GatewayDashboardSnapshot {
     pub(super) generated_unix_ms: u64,
     pub(super) state: GatewayDashboardStateMeta,
     pub(super) health: GatewayDashboardHealthReport,
+    pub(super) training: GatewayDashboardTrainingReport,
     pub(super) widgets: Vec<GatewayDashboardWidgetView>,
     pub(super) queue_timeline: GatewayDashboardQueueTimelineReport,
     pub(super) alerts: Vec<GatewayDashboardAlert>,
@@ -53,6 +55,21 @@ pub(super) struct GatewayDashboardHealthReport {
     pub(super) last_cycle_completed: usize,
     pub(super) processed_case_count: usize,
     pub(super) control_audit_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct GatewayDashboardTrainingReport {
+    pub(super) status_path: String,
+    pub(super) status_present: bool,
+    pub(super) updated_unix_ms: u64,
+    pub(super) run_state: String,
+    pub(super) model_ref: String,
+    pub(super) store_path: String,
+    pub(super) total_rollouts: usize,
+    pub(super) succeeded: usize,
+    pub(super) failed: usize,
+    pub(super) cancelled: usize,
+    pub(super) diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -209,6 +226,26 @@ struct GatewayDashboardRuntimeStateFile {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayDashboardTrainingStatusFile {
+    #[serde(default)]
+    updated_unix_ms: u64,
+    #[serde(default)]
+    run_state: String,
+    #[serde(default)]
+    model_ref: String,
+    #[serde(default)]
+    store_path: String,
+    #[serde(default)]
+    total_rollouts: usize,
+    #[serde(default)]
+    succeeded: usize,
+    #[serde(default)]
+    failed: usize,
+    #[serde(default)]
+    cancelled: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct GatewayDashboardCycleReportLine {
     #[serde(default)]
     timestamp_unix_ms: u64,
@@ -280,20 +317,31 @@ fn resolve_dashboard_root(gateway_state_dir: &Path) -> PathBuf {
     tau_root.join("dashboard")
 }
 
+fn resolve_training_root(gateway_state_dir: &Path) -> PathBuf {
+    let tau_root = gateway_state_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| gateway_state_dir.to_path_buf());
+    tau_root.join("training")
+}
+
 pub(super) fn collect_gateway_dashboard_snapshot(
     gateway_state_dir: &Path,
 ) -> GatewayDashboardSnapshot {
     let dashboard_root = resolve_dashboard_root(gateway_state_dir);
+    let training_root = resolve_training_root(gateway_state_dir);
     let state_path = dashboard_root.join(DASHBOARD_STATE_FILE);
     let events_log_path = dashboard_root.join(DASHBOARD_EVENTS_LOG_FILE);
     let actions_log_path = dashboard_root.join(DASHBOARD_ACTIONS_LOG_FILE);
     let control_state_path = dashboard_root.join(DASHBOARD_CONTROL_STATE_FILE);
+    let training_status_path = training_root.join(TRAINING_STATUS_FILE);
 
     let mut diagnostics = Vec::new();
     let runtime_state = load_dashboard_runtime_state(&state_path, &mut diagnostics);
     let events_summary = load_dashboard_events_summary(&events_log_path, &mut diagnostics);
     let action_log_summary = load_dashboard_action_log_summary(&actions_log_path, &mut diagnostics);
     let control_state = load_dashboard_control_state(&control_state_path, &mut diagnostics);
+    let training = load_dashboard_training_report(&training_status_path, &mut diagnostics);
 
     let state_present = runtime_state.is_some();
     let parsed_runtime = runtime_state.unwrap_or_default();
@@ -396,6 +444,16 @@ pub(super) fn collect_gateway_dashboard_snapshot(
             message: "operator pause is active; rollout gate is held".to_string(),
         });
     }
+    if training.status_present && (training.failed > 0 || training.run_state == "failed") {
+        alerts.push(GatewayDashboardAlert {
+            code: "dashboard_training_failures".to_string(),
+            severity: "warning".to_string(),
+            message: format!(
+                "latest training run recorded failures (failed={}, cancelled={}, state={})",
+                training.failed, training.cancelled, training.run_state
+            ),
+        });
+    }
     if alerts.is_empty() {
         alerts.push(GatewayDashboardAlert {
             code: "dashboard_healthy".to_string(),
@@ -438,6 +496,7 @@ pub(super) fn collect_gateway_dashboard_snapshot(
                 .len()
                 .saturating_add(action_log_summary.records),
         },
+        training,
         widgets: parsed_runtime.widget_views,
         queue_timeline: GatewayDashboardQueueTimelineReport {
             cycle_reports: events_summary.cycle_reports,
@@ -570,6 +629,87 @@ fn load_dashboard_runtime_state(
         Err(error) => {
             diagnostics.push(format!("state_parse_failed:{}:{error}", path.display()));
             None
+        }
+    }
+}
+
+fn load_dashboard_training_report(
+    path: &Path,
+    diagnostics: &mut Vec<String>,
+) -> GatewayDashboardTrainingReport {
+    let mut training_diagnostics = Vec::new();
+    if !path.exists() {
+        let message = format!("training_status_missing:{}", path.display());
+        diagnostics.push(message.clone());
+        training_diagnostics.push(message);
+        return GatewayDashboardTrainingReport {
+            status_path: path.display().to_string(),
+            status_present: false,
+            updated_unix_ms: 0,
+            run_state: "unknown".to_string(),
+            model_ref: String::new(),
+            store_path: String::new(),
+            total_rollouts: 0,
+            succeeded: 0,
+            failed: 0,
+            cancelled: 0,
+            diagnostics: training_diagnostics,
+        };
+    }
+
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            let message = format!("training_status_read_failed:{}:{error}", path.display());
+            diagnostics.push(message.clone());
+            training_diagnostics.push(message);
+            return GatewayDashboardTrainingReport {
+                status_path: path.display().to_string(),
+                status_present: false,
+                updated_unix_ms: 0,
+                run_state: "unknown".to_string(),
+                model_ref: String::new(),
+                store_path: String::new(),
+                total_rollouts: 0,
+                succeeded: 0,
+                failed: 0,
+                cancelled: 0,
+                diagnostics: training_diagnostics,
+            };
+        }
+    };
+
+    match serde_json::from_str::<GatewayDashboardTrainingStatusFile>(&raw) {
+        Ok(parsed) => GatewayDashboardTrainingReport {
+            status_path: path.display().to_string(),
+            status_present: true,
+            updated_unix_ms: parsed.updated_unix_ms,
+            run_state: normalize_non_empty_string(parsed.run_state.as_str(), "completed"),
+            model_ref: parsed.model_ref,
+            store_path: parsed.store_path,
+            total_rollouts: parsed.total_rollouts,
+            succeeded: parsed.succeeded,
+            failed: parsed.failed,
+            cancelled: parsed.cancelled,
+            diagnostics: training_diagnostics,
+        },
+        Err(error) => {
+            let message = format!("training_status_parse_failed:{}:{error}", path.display());
+            diagnostics.push(message.clone());
+            training_diagnostics.push(message);
+            GatewayDashboardTrainingReport {
+                status_path: path.display().to_string(),
+                status_present: false,
+                updated_unix_ms: 0,
+                run_state: "unknown".to_string(),
+                model_ref: String::new(),
+                store_path: String::new(),
+                total_rollouts: 0,
+                succeeded: 0,
+                failed: 0,
+                cancelled: 0,
+                diagnostics: training_diagnostics,
+            }
         }
     }
 }
@@ -797,7 +937,9 @@ mod tests {
 
     fn write_dashboard_state(root: &Path) -> PathBuf {
         let dashboard_root = root.join(".tau").join("dashboard");
+        let training_root = root.join(".tau").join("training");
         std::fs::create_dir_all(&dashboard_root).expect("create dashboard root");
+        std::fs::create_dir_all(&training_root).expect("create training root");
         std::fs::write(
             dashboard_root.join(DASHBOARD_STATE_FILE),
             r#"{
@@ -838,6 +980,22 @@ invalid-json-line
 "#,
         )
         .expect("write dashboard events");
+        std::fs::write(
+            training_root.join(TRAINING_STATUS_FILE),
+            r#"{
+  "schema_version": 1,
+  "updated_unix_ms": 701,
+  "run_state": "completed",
+  "model_ref": "openai/gpt-4o-mini",
+  "store_path": ".tau/training/store.sqlite",
+  "total_rollouts": 3,
+  "succeeded": 2,
+  "failed": 1,
+  "cancelled": 0
+}
+"#,
+        )
+        .expect("write training status");
         dashboard_root
     }
 
@@ -854,12 +1012,19 @@ invalid-json-line
         assert!(snapshot.state.events_log_present);
         assert_eq!(snapshot.widgets.len(), 1);
         assert_eq!(snapshot.health.rollout_gate, "pass");
+        assert!(snapshot.training.status_present);
+        assert_eq!(snapshot.training.total_rollouts, 3);
+        assert_eq!(snapshot.training.failed, 1);
         assert_eq!(snapshot.queue_timeline.cycle_reports, 1);
         assert_eq!(snapshot.queue_timeline.invalid_cycle_reports, 1);
         assert!(snapshot
             .queue_timeline
             .reason_code_counts
             .contains_key("widget_views_updated"));
+        assert!(snapshot
+            .alerts
+            .iter()
+            .any(|alert| alert.code == "dashboard_training_failures"));
     }
 
     #[test]

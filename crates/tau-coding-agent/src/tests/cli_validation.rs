@@ -2479,3 +2479,46 @@ fn regression_cli_mcp_context_provider_requires_mcp_server_flag() {
         .to_string()
         .contains("required arguments were not provided"));
 }
+
+#[test]
+fn unit_cli_training_proxy_flags_default_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.training_proxy_server);
+    assert_eq!(cli.training_proxy_bind, "127.0.0.1:8788");
+    assert!(cli.training_proxy_upstream_url.is_none());
+    assert_eq!(cli.training_proxy_state_dir, PathBuf::from(".tau"));
+    assert_eq!(cli.training_proxy_timeout_ms, 30_000);
+}
+
+#[test]
+fn functional_cli_training_proxy_flags_accept_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--training-proxy-server",
+        "--training-proxy-bind",
+        "127.0.0.1:8899",
+        "--training-proxy-upstream-url",
+        "http://127.0.0.1:4000",
+        "--training-proxy-state-dir",
+        ".tau-alt",
+        "--training-proxy-timeout-ms",
+        "45000",
+    ]);
+    assert!(cli.training_proxy_server);
+    assert_eq!(cli.training_proxy_bind, "127.0.0.1:8899");
+    assert_eq!(
+        cli.training_proxy_upstream_url.as_deref(),
+        Some("http://127.0.0.1:4000")
+    );
+    assert_eq!(cli.training_proxy_state_dir, PathBuf::from(".tau-alt"));
+    assert_eq!(cli.training_proxy_timeout_ms, 45_000);
+}
+
+#[test]
+fn regression_cli_training_proxy_bind_requires_training_proxy_server_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--training-proxy-bind", "127.0.0.1:8899"]);
+    let error = parse.expect_err("proxy bind should require proxy server mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}

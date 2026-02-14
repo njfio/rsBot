@@ -36,6 +36,7 @@ members = [
   "crates/tau-training-store",
   "crates/tau-training-tracer",
   "crates/tau-training-runner",
+  "crates/tau-training-proxy",
   "crates/tau-trainer",
   "crates/tau-algorithm",
 ]

@@ -18,6 +18,9 @@ use tau_training_store::{SqliteTrainingStore, TrainingStore};
 use crate::model_catalog::ModelCatalog;
 use crate::tools::ToolPolicy;
 
+const TRAINING_STATUS_SCHEMA_VERSION: u32 = 1;
+const TRAINING_STATUS_FILE: &str = "status.json";
+
 #[derive(Debug, Deserialize)]
 struct TrainingConfigFile {
     #[serde(default)]
@@ -40,6 +43,19 @@ struct TrainingConfigFile {
 
 #[derive(Debug, Serialize)]
 struct TrainingRunReport {
+    model_ref: String,
+    store_path: String,
+    total_rollouts: usize,
+    succeeded: usize,
+    failed: usize,
+    cancelled: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TrainingStatusFile {
+    schema_version: u32,
+    updated_unix_ms: u64,
+    run_state: String,
     model_ref: String,
     store_path: String,
     total_rollouts: usize,
@@ -110,8 +126,44 @@ pub(crate) async fn run_training_mode_if_requested(
         failed: summary.failed,
         cancelled: summary.cancelled,
     };
+    persist_training_status_report(&report, &store_path)?;
     print_training_report(&report, cli.train_json)?;
     Ok(true)
+}
+
+fn persist_training_status_report(report: &TrainingRunReport, store_path: &Path) -> Result<()> {
+    let training_root = store_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Path::new(".").to_path_buf());
+    std::fs::create_dir_all(&training_root).with_context(|| {
+        format!(
+            "failed to create training status directory '{}'",
+            training_root.display()
+        )
+    })?;
+
+    let status_payload = TrainingStatusFile {
+        schema_version: TRAINING_STATUS_SCHEMA_VERSION,
+        updated_unix_ms: tau_core::current_unix_timestamp_ms(),
+        run_state: "completed".to_string(),
+        model_ref: report.model_ref.clone(),
+        store_path: report.store_path.clone(),
+        total_rollouts: report.total_rollouts,
+        succeeded: report.succeeded,
+        failed: report.failed,
+        cancelled: report.cancelled,
+    };
+    let status_path = training_root.join(TRAINING_STATUS_FILE);
+    let encoded = serde_json::to_string_pretty(&status_payload)
+        .context("failed to serialize training status payload")?;
+    std::fs::write(&status_path, encoded).with_context(|| {
+        format!(
+            "failed to write training status file '{}'",
+            status_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn load_training_config(path: &Path) -> Result<TrainingConfigFile> {
@@ -412,6 +464,27 @@ mod tests {
             .await
             .expect("query succeeded rollouts");
         assert_eq!(rollouts.len(), 1);
+
+        let status_path = store_path
+            .parent()
+            .expect("store path parent")
+            .join("status.json");
+        let status_raw = std::fs::read_to_string(&status_path).expect("read status file");
+        let status_json: serde_json::Value =
+            serde_json::from_str(&status_raw).expect("parse status payload");
+        assert_eq!(
+            status_json["schema_version"],
+            serde_json::Value::from(1_u64)
+        );
+        assert_eq!(
+            status_json["run_state"],
+            serde_json::Value::String("completed".to_string())
+        );
+        assert_eq!(
+            status_json["total_rollouts"],
+            serde_json::Value::from(1_u64)
+        );
+        assert_eq!(status_json["succeeded"], serde_json::Value::from(1_u64));
     }
 
     #[test]

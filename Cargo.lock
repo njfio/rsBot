@@ -2951,6 +2951,7 @@ dependencies = [
  "tau-startup",
  "tau-tools",
  "tau-trainer",
+ "tau-training-proxy",
  "tau-training-runner",
  "tau-training-store",
  "tau-voice",
@@ -3411,6 +3412,22 @@ dependencies = [
  "tau-training-tracer",
  "tau-training-types",
  "tokio",
+]
+
+[[package]]
+name = "tau-training-proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum 0.8.8",
+ "httpmock",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tau-core",
+ "tempfile",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

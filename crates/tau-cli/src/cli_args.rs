@@ -2035,6 +2035,53 @@ pub struct Cli {
     pub train_json: bool,
 
     #[arg(
+        long = "training-proxy-server",
+        env = "TAU_TRAINING_PROXY_SERVER",
+        default_value_t = false,
+        help = "Run OpenAI-compatible training attribution proxy mode and exit"
+    )]
+    pub training_proxy_server: bool,
+
+    #[arg(
+        long = "training-proxy-bind",
+        env = "TAU_TRAINING_PROXY_BIND",
+        requires = "training_proxy_server",
+        default_value = "127.0.0.1:8788",
+        value_name = "host:port",
+        help = "Bind address for training proxy mode"
+    )]
+    pub training_proxy_bind: String,
+
+    #[arg(
+        long = "training-proxy-upstream-url",
+        env = "TAU_TRAINING_PROXY_UPSTREAM_URL",
+        requires = "training_proxy_server",
+        value_name = "url",
+        help = "Upstream OpenAI-compatible base URL used by training proxy forwarding"
+    )]
+    pub training_proxy_upstream_url: Option<String>,
+
+    #[arg(
+        long = "training-proxy-state-dir",
+        env = "TAU_TRAINING_PROXY_STATE_DIR",
+        requires = "training_proxy_server",
+        default_value = ".tau",
+        value_name = "path",
+        help = "State root for training proxy attribution logs"
+    )]
+    pub training_proxy_state_dir: PathBuf,
+
+    #[arg(
+        long = "training-proxy-timeout-ms",
+        env = "TAU_TRAINING_PROXY_TIMEOUT_MS",
+        requires = "training_proxy_server",
+        default_value_t = 30_000,
+        value_parser = parse_positive_u64,
+        help = "Upstream request timeout in milliseconds for training proxy mode"
+    )]
+    pub training_proxy_timeout_ms: u64,
+
+    #[arg(
         long = "mcp-server",
         env = "TAU_MCP_SERVER",
         default_value_t = false,

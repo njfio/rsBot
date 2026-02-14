@@ -62,3 +62,13 @@ At least one of `train` or `val` must be non-empty.
 - immutable resource versions
 
 Re-running with the same SQLite path keeps prior state for audit/inspection.
+
+## Dashboard Metrics Export
+
+After each successful training run, Tau writes `.tau/training/status.json` next to the SQLite
+store. This status file includes model identity and rollout outcome counters (`total_rollouts`,
+`succeeded`, `failed`, `cancelled`) for dashboard/gateway status surfaces.
+
+Gateway dashboard endpoints (`/dashboard/health`, `/dashboard/widgets`,
+`/dashboard/queue-timeline`, `/dashboard/alerts`) include this status under a `training` field
+when present.

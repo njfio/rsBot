@@ -12,6 +12,7 @@ use crate::startup_local_runtime::{run_local_runtime, LocalRuntimeConfig};
 use crate::startup_model_catalog::{resolve_startup_model_catalog, validate_startup_model_catalog};
 use crate::startup_preflight::execute_startup_preflight;
 use crate::startup_transport_modes::run_transport_mode_if_requested;
+use crate::training_proxy_runtime::run_training_proxy_mode_if_requested;
 use crate::training_runtime::run_training_mode_if_requested;
 
 pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
@@ -40,14 +41,20 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
         |skills_bootstrap| skills_bootstrap.skills_lock_path.clone(),
         RenderOptions::from_cli,
         |cli, client, model_ref, system_prompt, tool_policy, render_options| {
-            Box::pin(run_transport_mode_if_requested(
-                cli,
-                client,
-                model_ref,
-                system_prompt,
-                tool_policy,
-                render_options,
-            ))
+            Box::pin(async move {
+                if cli.training_proxy_server {
+                    return Ok(false);
+                }
+                run_transport_mode_if_requested(
+                    cli,
+                    client,
+                    model_ref,
+                    system_prompt,
+                    tool_policy,
+                    render_options,
+                )
+                .await
+            })
         },
         |cli,
          client,
@@ -61,6 +68,10 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
          effective_skills_dir,
          skills_lock_path| {
             Box::pin(async move {
+                if run_training_proxy_mode_if_requested(cli).await? {
+                    return Ok(());
+                }
+
                 if run_training_mode_if_requested(
                     cli,
                     client.clone(),

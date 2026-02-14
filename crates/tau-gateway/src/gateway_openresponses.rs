@@ -399,6 +399,7 @@ async fn handle_gateway_status(
             }
         };
     let multi_channel_report = collect_gateway_multi_channel_status_report(&state.config.state_dir);
+    let dashboard_snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
 
     (
         StatusCode::OK,
@@ -406,6 +407,7 @@ async fn handle_gateway_status(
             "service": service_report,
             "auth": collect_gateway_auth_status_report(&state),
             "multi_channel": multi_channel_report,
+            "training": dashboard_snapshot.training,
             "gateway": {
                 "responses_endpoint": OPENRESPONSES_ENDPOINT,
                 "webchat_endpoint": WEBCHAT_ENDPOINT,
@@ -451,6 +453,7 @@ async fn handle_dashboard_health(
             "schema_version": snapshot.schema_version,
             "generated_unix_ms": snapshot.generated_unix_ms,
             "health": snapshot.health,
+            "training": snapshot.training,
             "control": snapshot.control,
             "state": snapshot.state,
         })),
@@ -472,6 +475,7 @@ async fn handle_dashboard_widgets(
             "schema_version": snapshot.schema_version,
             "generated_unix_ms": snapshot.generated_unix_ms,
             "widgets": snapshot.widgets,
+            "training": snapshot.training,
             "state": snapshot.state,
         })),
     )
@@ -493,6 +497,7 @@ async fn handle_dashboard_queue_timeline(
             "generated_unix_ms": snapshot.generated_unix_ms,
             "queue_timeline": snapshot.queue_timeline,
             "health": snapshot.health,
+            "training": snapshot.training,
             "state": snapshot.state,
         })),
     )
@@ -514,6 +519,7 @@ async fn handle_dashboard_alerts(
             "generated_unix_ms": snapshot.generated_unix_ms,
             "alerts": snapshot.alerts,
             "health": snapshot.health,
+            "training": snapshot.training,
             "state": snapshot.state,
         })),
     )

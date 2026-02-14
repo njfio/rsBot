@@ -232,6 +232,32 @@ invalid-json-line
     dashboard_root
 }
 
+fn write_training_runtime_fixture(root: &Path, failed: usize) -> PathBuf {
+    let training_root = root.join(".tau").join("training");
+    std::fs::create_dir_all(&training_root).expect("create training root");
+    std::fs::write(
+        training_root.join("status.json"),
+        format!(
+            r#"{{
+  "schema_version": 1,
+  "updated_unix_ms": 900,
+  "run_state": "completed",
+  "model_ref": "openai/gpt-4o-mini",
+  "store_path": ".tau/training/store.sqlite",
+  "total_rollouts": 4,
+  "succeeded": {succeeded},
+  "failed": {failed},
+  "cancelled": 0
+}}
+"#,
+            succeeded = 4usize.saturating_sub(failed),
+            failed = failed
+        ),
+    )
+    .expect("write training status");
+    training_root
+}
+
 async fn connect_gateway_ws(
     addr: SocketAddr,
     token: Option<&str>,
@@ -712,6 +738,10 @@ async fn regression_gateway_ws_malformed_frame_fails_closed_without_crashing_run
         status["payload"]["multi_channel"]["state_present"],
         Value::Bool(false)
     );
+    assert_eq!(
+        status["payload"]["training"]["status_present"],
+        Value::Bool(false)
+    );
 
     socket.close(None).await.expect("close websocket");
     handle.abort();
@@ -844,6 +874,7 @@ async fn integration_gateway_status_endpoint_returns_service_snapshot() {
         payload["multi_channel"]["processed_event_count"],
         Value::Number(serde_json::Number::from(0))
     );
+    assert_eq!(payload["training"]["status_present"], Value::Bool(false));
 
     handle.abort();
 }
@@ -902,6 +933,7 @@ async fn integration_gateway_status_endpoint_returns_expanded_multi_channel_heal
         payload["multi_channel"]["connectors"]["channels"]["telegram"]["provider_failures"],
         Value::Number(serde_json::Number::from(2))
     );
+    assert_eq!(payload["training"]["status_present"], Value::Bool(false));
 
     handle.abort();
 }
@@ -910,6 +942,7 @@ async fn integration_gateway_status_endpoint_returns_expanded_multi_channel_heal
 async fn integration_dashboard_endpoints_return_state_health_widgets_timeline_and_alerts() {
     let temp = tempdir().expect("tempdir");
     write_dashboard_runtime_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
     let state = test_state(temp.path(), 10_000, "secret");
     let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
 
@@ -934,6 +967,11 @@ async fn integration_dashboard_endpoints_return_state_health_widgets_timeline_an
         health["control"]["mode"],
         Value::String("running".to_string())
     );
+    assert_eq!(health["training"]["status_present"], Value::Bool(true));
+    assert_eq!(
+        health["training"]["model_ref"],
+        Value::String("openai/gpt-4o-mini".to_string())
+    );
 
     let widgets = client
         .get(format!("http://{addr}{DASHBOARD_WIDGETS_ENDPOINT}"))
@@ -953,6 +991,7 @@ async fn integration_dashboard_endpoints_return_state_health_widgets_timeline_an
         widgets["widgets"][0]["widget_id"],
         Value::String("health-summary".to_string())
     );
+    assert_eq!(widgets["training"]["status_present"], Value::Bool(true));
 
     let queue_timeline = client
         .get(format!("http://{addr}{DASHBOARD_QUEUE_TIMELINE_ENDPOINT}"))
@@ -975,6 +1014,10 @@ async fn integration_dashboard_endpoints_return_state_health_widgets_timeline_an
         queue_timeline["queue_timeline"]["invalid_cycle_reports"],
         Value::Number(1_u64.into())
     );
+    assert_eq!(
+        queue_timeline["training"]["status_present"],
+        Value::Bool(true)
+    );
 
     let alerts = client
         .get(format!("http://{addr}{DASHBOARD_ALERTS_ENDPOINT}"))
@@ -990,6 +1033,7 @@ async fn integration_dashboard_endpoints_return_state_health_widgets_timeline_an
         alerts["alerts"][0]["code"],
         Value::String("dashboard_queue_backlog".to_string())
     );
+    assert_eq!(alerts["training"]["status_present"], Value::Bool(true));
 
     handle.abort();
 }
