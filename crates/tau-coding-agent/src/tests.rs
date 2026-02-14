@@ -17,6 +17,7 @@ use tau_ai::{
     Provider, TauAiError,
 };
 use tau_cli::cli_args::CliGatewayDaemonFlags;
+use tau_cli::CliPromptSanitizerMode;
 use tempfile::tempdir;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::sleep;
@@ -368,6 +369,9 @@ pub(crate) fn test_cli() -> Cli {
         agent_request_retry_max_backoff_ms: 2_000,
         agent_cost_budget_usd: None,
         agent_cost_alert_threshold_percent: vec![80, 100],
+        prompt_sanitizer_enabled: true,
+        prompt_sanitizer_mode: CliPromptSanitizerMode::Warn,
+        prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
         request_timeout_ms: 120_000,
         provider_max_retries: 2,
         provider_retry_budget_ms: 0,
@@ -534,14 +538,14 @@ pub(crate) fn test_cli() -> Cli {
         qa_loop_retry_failures: None,
         qa_loop_max_output_bytes: None,
         qa_loop_changed_file_limit: None,
-        train_config: None,
-        train_store_sqlite: PathBuf::from(".tau/training/store.sqlite"),
-        train_json: false,
-        training_proxy_server: false,
-        training_proxy_bind: "127.0.0.1:8788".to_string(),
-        training_proxy_upstream_url: None,
-        training_proxy_state_dir: PathBuf::from(".tau"),
-        training_proxy_timeout_ms: 30_000,
+        prompt_optimization_config: None,
+        prompt_optimization_store_sqlite: PathBuf::from(".tau/training/store.sqlite"),
+        prompt_optimization_json: false,
+        prompt_optimization_proxy_server: false,
+        prompt_optimization_proxy_bind: "127.0.0.1:8788".to_string(),
+        prompt_optimization_proxy_upstream_url: None,
+        prompt_optimization_proxy_state_dir: PathBuf::from(".tau"),
+        prompt_optimization_proxy_timeout_ms: 30_000,
         mcp_server: false,
         mcp_external_server_config: None,
         mcp_context_provider: vec![],
@@ -683,7 +687,7 @@ pub(crate) fn test_cli() -> Cli {
         browser_automation_preflight_json: false,
         memory_contract_runner: false,
         memory_fixture: PathBuf::from(
-            "crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json",
+            "crates/tau-memory/testdata/memory-contract/mixed-outcomes.json",
         ),
         memory_state_dir: PathBuf::from(".tau/memory"),
         memory_queue_limit: 64,

@@ -646,64 +646,27 @@ fn regression_validate_deployment_wasm_inspect_cli_rejects_directory_manifest_pa
 }
 
 #[test]
-fn unit_validate_custom_command_contract_runner_cli_accepts_minimum_configuration() {
+fn unit_validate_custom_command_contract_runner_cli_is_removed() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("custom-command-fixture.json");
-    std::fs::write(
-        &fixture_path,
-        r#"{
-  "schema_version": 1,
-  "name": "single-case",
-  "cases": [
-    {
-      "schema_version": 1,
-      "case_id": "create-command",
-      "operation": "create",
-      "command_name": "deploy_release",
-      "template": "deploy {{env}}",
-      "arguments": { "env": "prod" },
-      "expected": {
-        "outcome": "success",
-        "status_code": 201,
-        "response_body": {
-          "status": "accepted",
-          "operation": "create",
-          "command_name": "deploy_release"
-        }
-      }
-    }
-  ]
-}"#,
-    )
-    .expect("write fixture");
-
-    let mut cli = test_cli();
-    cli.custom_command_contract_runner = true;
-    cli.custom_command_fixture = fixture_path;
-
-    validate_custom_command_contract_runner_cli(&cli)
-        .expect("custom command runner config should validate");
-}
-
-#[test]
-fn functional_validate_custom_command_contract_runner_cli_rejects_prompt_conflicts() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("fixture.json");
     std::fs::write(&fixture_path, "{}").expect("write fixture");
 
     let mut cli = test_cli();
     cli.custom_command_contract_runner = true;
     cli.custom_command_fixture = fixture_path;
-    cli.prompt = Some("conflict".to_string());
 
-    let error = validate_custom_command_contract_runner_cli(&cli).expect_err("prompt conflict");
+    let error = validate_custom_command_contract_runner_cli(&cli)
+        .expect_err("contract runner should be rejected");
     assert!(error
         .to_string()
-        .contains("--custom-command-contract-runner cannot be combined"));
+        .contains("--custom-command-contract-runner has been removed"));
+    assert!(error
+        .to_string()
+        .contains("--custom-command-status-inspect"));
 }
 
 #[test]
-fn integration_validate_custom_command_contract_runner_cli_rejects_transport_conflicts() {
+fn regression_validate_custom_command_contract_runner_cli_reports_migration_even_with_conflicts() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("fixture.json");
     std::fs::write(&fixture_path, "{}").expect("write fixture");
@@ -713,104 +676,11 @@ fn integration_validate_custom_command_contract_runner_cli_rejects_transport_con
     cli.custom_command_fixture = fixture_path;
     cli.gateway_contract_runner = true;
 
-    let error = validate_custom_command_contract_runner_cli(&cli).expect_err("transport conflict");
-    assert!(error.to_string().contains(
-        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, or --gateway-contract-runner"
-    ));
-}
-
-#[test]
-fn regression_validate_custom_command_contract_runner_cli_rejects_zero_limits() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("fixture.json");
-    std::fs::write(&fixture_path, "{}").expect("write fixture");
-
-    let mut cli = test_cli();
-    cli.custom_command_contract_runner = true;
-    cli.custom_command_fixture = fixture_path.clone();
-    cli.custom_command_queue_limit = 0;
-    let queue_error =
-        validate_custom_command_contract_runner_cli(&cli).expect_err("zero queue limit");
-    assert!(queue_error
-        .to_string()
-        .contains("--custom-command-queue-limit must be greater than 0"));
-
-    cli.custom_command_queue_limit = 1;
-    cli.custom_command_processed_case_cap = 0;
-    let processed_error =
-        validate_custom_command_contract_runner_cli(&cli).expect_err("zero processed case cap");
-    assert!(processed_error
-        .to_string()
-        .contains("--custom-command-processed-case-cap must be greater than 0"));
-
-    cli.custom_command_processed_case_cap = 1;
-    cli.custom_command_retry_max_attempts = 0;
-    let retry_error =
-        validate_custom_command_contract_runner_cli(&cli).expect_err("zero retry max attempts");
-    assert!(retry_error
-        .to_string()
-        .contains("--custom-command-retry-max-attempts must be greater than 0"));
-}
-
-#[test]
-fn regression_validate_custom_command_contract_runner_cli_requires_existing_fixture() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = test_cli();
-    cli.custom_command_contract_runner = true;
-    cli.custom_command_fixture = temp.path().join("missing.json");
-
     let error =
-        validate_custom_command_contract_runner_cli(&cli).expect_err("missing fixture should fail");
-    assert!(error.to_string().contains("does not exist"));
-}
-
-#[test]
-fn regression_validate_custom_command_contract_runner_cli_requires_fixture_file() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = test_cli();
-    cli.custom_command_contract_runner = true;
-    cli.custom_command_fixture = temp.path().to_path_buf();
-
-    let error = validate_custom_command_contract_runner_cli(&cli)
-        .expect_err("directory fixture should fail");
-    assert!(error.to_string().contains("must point to a file"));
-}
-
-#[test]
-fn regression_validate_custom_command_contract_runner_cli_rejects_invalid_policy_sandbox_profile() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("fixture.json");
-    std::fs::write(&fixture_path, "{}").expect("write fixture");
-
-    let mut cli = test_cli();
-    cli.custom_command_contract_runner = true;
-    cli.custom_command_fixture = fixture_path;
-    cli.custom_command_policy_sandbox_profile = "forbidden-profile".to_string();
-
-    let error = validate_custom_command_contract_runner_cli(&cli)
-        .expect_err("invalid sandbox profile should fail");
+        validate_custom_command_contract_runner_cli(&cli).expect_err("contract runner removal");
     assert!(error
         .to_string()
-        .contains("--custom-command-policy-sandbox-profile must be one of"));
-}
-
-#[test]
-fn regression_validate_custom_command_contract_runner_cli_rejects_policy_allow_deny_overlap() {
-    let temp = tempdir().expect("tempdir");
-    let fixture_path = temp.path().join("fixture.json");
-    std::fs::write(&fixture_path, "{}").expect("write fixture");
-
-    let mut cli = test_cli();
-    cli.custom_command_contract_runner = true;
-    cli.custom_command_fixture = fixture_path;
-    cli.custom_command_policy_allowed_env = vec!["DEPLOY_ENV".to_string()];
-    cli.custom_command_policy_denied_env = vec!["deploy_env".to_string()];
-
-    let error = validate_custom_command_contract_runner_cli(&cli)
-        .expect_err("allow/deny overlap should fail");
-    assert!(error
-        .to_string()
-        .contains("cannot appear in both allow and deny lists"));
+        .contains("--custom-command-contract-runner has been removed"));
 }
 
 #[test]

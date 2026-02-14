@@ -1,17 +1,14 @@
 //! Tests for onboarding transport-mode routing and guardrails.
 
 use super::{
-    build_browser_automation_contract_runner_config, build_browser_automation_live_runner_config,
-    build_custom_command_contract_runner_config, build_custom_command_default_execution_policy,
-    build_dashboard_contract_runner_config, build_deployment_contract_runner_config,
+    build_browser_automation_live_runner_config, build_deployment_contract_runner_config,
     build_events_runner_cli_config, build_gateway_contract_runner_config,
     build_gateway_openresponses_server_config, build_github_issues_bridge_cli_config,
-    build_memory_contract_runner_config, build_multi_agent_contract_runner_config,
-    build_multi_channel_contract_runner_config, build_multi_channel_live_connectors_config,
-    build_multi_channel_live_runner_config, build_multi_channel_media_config,
-    build_multi_channel_outbound_config, build_multi_channel_runtime_dependencies,
-    build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
-    build_transport_doctor_config, build_transport_runtime_defaults,
+    build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
+    build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
+    build_multi_channel_media_config, build_multi_channel_outbound_config,
+    build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
+    build_slack_bridge_cli_config, build_transport_doctor_config, build_transport_runtime_defaults,
     build_voice_contract_runner_config, build_voice_live_runner_config,
     execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
     resolve_bridge_transport_mode, resolve_contract_transport_mode,
@@ -171,31 +168,10 @@ impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
         )
     }
 
-    async fn run_browser_automation_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::BrowserAutomationContractRunner,
-            "browser-automation-contract",
-        )
-    }
-
     async fn run_browser_automation_live_runner(&self) -> anyhow::Result<()> {
         self.record(
             TransportRuntimeMode::BrowserAutomationLiveRunner,
             "browser-automation-live",
-        )
-    }
-
-    async fn run_memory_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::MemoryContractRunner,
-            "memory-contract",
-        )
-    }
-
-    async fn run_dashboard_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::DashboardContractRunner,
-            "dashboard-contract",
         )
     }
 
@@ -210,13 +186,6 @@ impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
         self.record(
             TransportRuntimeMode::DeploymentContractRunner,
             "deployment-contract",
-        )
-    }
-
-    async fn run_custom_command_contract_runner(&self) -> anyhow::Result<()> {
-        self.record(
-            TransportRuntimeMode::CustomCommandContractRunner,
-            "custom-command-contract",
         )
     }
 
@@ -728,7 +697,6 @@ fn functional_resolve_contract_transport_mode_prefers_multi_agent() {
     cli.multi_agent_contract_runner = true;
     cli.browser_automation_contract_runner = true;
     cli.browser_automation_live_runner = true;
-    cli.memory_contract_runner = true;
     cli.dashboard_contract_runner = true;
     cli.gateway_contract_runner = true;
     cli.deployment_contract_runner = true;
@@ -752,12 +720,12 @@ fn integration_resolve_contract_transport_mode_selects_browser_automation_live()
 }
 
 #[test]
-fn integration_resolve_contract_transport_mode_selects_memory() {
+fn integration_resolve_contract_transport_mode_ignores_removed_memory_runner() {
     let mut cli = parse_cli_with_stack();
     cli.memory_contract_runner = true;
     assert_eq!(
         resolve_contract_transport_mode(&cli),
-        ContractTransportMode::Memory
+        ContractTransportMode::None
     );
 }
 
@@ -789,6 +757,21 @@ fn regression_validate_transport_mode_cli_rejects_events_prompt_template_conflic
 
     let error = validate_transport_mode_cli(&cli).expect_err("conflicting flags should fail");
     assert!(error.to_string().contains("--prompt-template-file"));
+}
+
+#[test]
+fn regression_validate_transport_mode_cli_rejects_removed_browser_automation_contract_runner() {
+    let mut cli = parse_cli_with_stack();
+    cli.browser_automation_contract_runner = true;
+
+    let error = validate_transport_mode_cli(&cli)
+        .expect_err("removed browser automation contract runner should fail");
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-contract-runner has been removed"));
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-live-runner"));
 }
 
 #[test]
@@ -855,67 +838,23 @@ fn regression_build_multi_channel_contract_runner_config_enforces_minimums() {
 }
 
 #[test]
-fn regression_build_browser_automation_contract_runner_config_enforces_minimums() {
-    let mut cli = parse_cli_with_stack();
-    cli.browser_automation_queue_limit = 0;
-    cli.browser_automation_processed_case_cap = 0;
-    cli.browser_automation_retry_max_attempts = 0;
-    cli.browser_automation_action_timeout_ms = 0;
-    cli.browser_automation_max_actions_per_case = 0;
-
-    let config = build_browser_automation_contract_runner_config(&cli);
-    assert_eq!(config.queue_limit, 1);
-    assert_eq!(config.processed_case_cap, 1);
-    assert_eq!(config.retry_max_attempts, 1);
-    assert_eq!(config.action_timeout_ms, 1);
-    assert_eq!(config.max_actions_per_case, 1);
-}
-
-#[test]
-fn regression_build_memory_contract_runner_config_enforces_minimums() {
-    let mut cli = parse_cli_with_stack();
-    cli.memory_queue_limit = 0;
-    cli.memory_processed_case_cap = 0;
-    cli.memory_retry_max_attempts = 0;
-
-    let config = build_memory_contract_runner_config(&cli);
-    assert_eq!(config.queue_limit, 1);
-    assert_eq!(config.processed_case_cap, 1);
-    assert_eq!(config.retry_max_attempts, 1);
-}
-
-#[test]
 fn regression_build_standard_contract_runner_builders_enforce_minimums() {
     let mut cli = parse_cli_with_stack();
-    cli.dashboard_queue_limit = 0;
-    cli.dashboard_processed_case_cap = 0;
-    cli.dashboard_retry_max_attempts = 0;
     cli.deployment_queue_limit = 0;
     cli.deployment_processed_case_cap = 0;
     cli.deployment_retry_max_attempts = 0;
-    cli.custom_command_queue_limit = 0;
-    cli.custom_command_processed_case_cap = 0;
-    cli.custom_command_retry_max_attempts = 0;
     cli.voice_queue_limit = 0;
     cli.voice_processed_case_cap = 0;
     cli.voice_retry_max_attempts = 0;
     cli.voice_live_max_turns = 0;
 
-    let dashboard = build_dashboard_contract_runner_config(&cli);
     let deployment = build_deployment_contract_runner_config(&cli);
-    let custom = build_custom_command_contract_runner_config(&cli);
     let voice = build_voice_contract_runner_config(&cli);
     let voice_live = build_voice_live_runner_config(&cli);
 
-    assert_eq!(dashboard.queue_limit, 1);
-    assert_eq!(dashboard.processed_case_cap, 1);
-    assert_eq!(dashboard.retry_max_attempts, 1);
     assert_eq!(deployment.queue_limit, 1);
     assert_eq!(deployment.processed_case_cap, 1);
     assert_eq!(deployment.retry_max_attempts, 1);
-    assert_eq!(custom.queue_limit, 1);
-    assert_eq!(custom.processed_case_cap, 1);
-    assert_eq!(custom.retry_max_attempts, 1);
     assert_eq!(voice.queue_limit, 1);
     assert_eq!(voice.processed_case_cap, 1);
     assert_eq!(voice.retry_max_attempts, 1);
@@ -1217,17 +1156,6 @@ async fn regression_run_multi_channel_contract_runner_with_runtime_dependencies_
 }
 
 #[tokio::test]
-async fn unit_run_browser_automation_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_browser_automation_contract_runner_if_requested(&cli)
-        .await
-        .expect("browser automation helper");
-
-    assert!(!handled);
-}
-
-#[tokio::test]
 async fn unit_run_browser_automation_live_runner_if_requested_returns_false_when_disabled() {
     let cli = parse_cli_with_stack();
 
@@ -1343,45 +1271,12 @@ print(json.dumps({
 }
 
 #[tokio::test]
-async fn unit_run_memory_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_memory_contract_runner_if_requested(&cli)
-        .await
-        .expect("memory helper");
-
-    assert!(!handled);
-}
-
-#[tokio::test]
-async fn unit_run_dashboard_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_dashboard_contract_runner_if_requested(&cli)
-        .await
-        .expect("dashboard helper");
-
-    assert!(!handled);
-}
-
-#[tokio::test]
 async fn unit_run_deployment_contract_runner_if_requested_returns_false_when_disabled() {
     let cli = parse_cli_with_stack();
 
     let handled = super::run_deployment_contract_runner_if_requested(&cli)
         .await
         .expect("deployment helper");
-
-    assert!(!handled);
-}
-
-#[tokio::test]
-async fn unit_run_custom_command_contract_runner_if_requested_returns_false_when_disabled() {
-    let cli = parse_cli_with_stack();
-
-    let handled = super::run_custom_command_contract_runner_if_requested(&cli)
-        .await
-        .expect("custom command helper");
 
     assert!(!handled);
 }
@@ -1582,32 +1477,6 @@ fn integration_build_multi_agent_contract_runner_config_preserves_runtime_fields
 }
 
 #[test]
-fn integration_build_browser_automation_contract_runner_config_preserves_runtime_fields() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = parse_cli_with_stack();
-    cli.browser_automation_fixture = temp.path().join("browser-automation-fixture.json");
-    cli.browser_automation_state_dir = temp.path().join("browser-automation-state");
-    cli.browser_automation_queue_limit = 31;
-    cli.browser_automation_processed_case_cap = 5_500;
-    cli.browser_automation_retry_max_attempts = 7;
-    cli.browser_automation_retry_base_delay_ms = 70;
-    cli.browser_automation_action_timeout_ms = 123;
-    cli.browser_automation_max_actions_per_case = 9;
-    cli.browser_automation_allow_unsafe_actions = true;
-
-    let config = build_browser_automation_contract_runner_config(&cli);
-    assert_eq!(config.fixture_path, cli.browser_automation_fixture);
-    assert_eq!(config.state_dir, cli.browser_automation_state_dir);
-    assert_eq!(config.queue_limit, 31);
-    assert_eq!(config.processed_case_cap, 5_500);
-    assert_eq!(config.retry_max_attempts, 7);
-    assert_eq!(config.retry_base_delay_ms, 70);
-    assert_eq!(config.action_timeout_ms, 123);
-    assert_eq!(config.max_actions_per_case, 9);
-    assert!(config.allow_unsafe_actions);
-}
-
-#[test]
 fn integration_build_browser_automation_live_runner_config_preserves_runtime_fields() {
     let temp = tempdir().expect("tempdir");
     let mut cli = parse_cli_with_stack();
@@ -1625,49 +1494,15 @@ fn integration_build_browser_automation_live_runner_config_preserves_runtime_fie
 }
 
 #[test]
-fn integration_build_memory_contract_runner_config_preserves_runtime_fields() {
-    let temp = tempdir().expect("tempdir");
-    let mut cli = parse_cli_with_stack();
-    cli.memory_fixture = temp.path().join("memory-fixture.json");
-    cli.memory_state_dir = temp.path().join("memory-state");
-    cli.memory_queue_limit = 37;
-    cli.memory_processed_case_cap = 9_100;
-    cli.memory_retry_max_attempts = 6;
-    cli.memory_retry_base_delay_ms = 45;
-
-    let config = build_memory_contract_runner_config(&cli);
-    assert_eq!(config.fixture_path, cli.memory_fixture);
-    assert_eq!(config.state_dir, cli.memory_state_dir);
-    assert_eq!(config.queue_limit, 37);
-    assert_eq!(config.processed_case_cap, 9_100);
-    assert_eq!(config.retry_max_attempts, 6);
-    assert_eq!(config.retry_base_delay_ms, 45);
-}
-
-#[test]
 fn integration_build_standard_contract_runner_builders_preserve_runtime_fields() {
     let temp = tempdir().expect("tempdir");
     let mut cli = parse_cli_with_stack();
-    cli.dashboard_fixture = temp.path().join("dashboard-fixture.json");
-    cli.dashboard_state_dir = temp.path().join("dashboard-state");
-    cli.dashboard_queue_limit = 33;
-    cli.dashboard_processed_case_cap = 9_000;
-    cli.dashboard_retry_max_attempts = 7;
-    cli.dashboard_retry_base_delay_ms = 31;
-
     cli.deployment_fixture = temp.path().join("deployment-fixture.json");
     cli.deployment_state_dir = temp.path().join("deployment-state");
     cli.deployment_queue_limit = 19;
     cli.deployment_processed_case_cap = 2_000;
     cli.deployment_retry_max_attempts = 3;
     cli.deployment_retry_base_delay_ms = 8;
-
-    cli.custom_command_fixture = temp.path().join("custom-fixture.json");
-    cli.custom_command_state_dir = temp.path().join("custom-state");
-    cli.custom_command_queue_limit = 41;
-    cli.custom_command_processed_case_cap = 1_234;
-    cli.custom_command_retry_max_attempts = 5;
-    cli.custom_command_retry_base_delay_ms = 16;
 
     cli.voice_fixture = temp.path().join("voice-fixture.json");
     cli.voice_state_dir = temp.path().join("voice-state");
@@ -1680,18 +1515,9 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
     cli.voice_live_max_turns = 11;
     cli.voice_live_tts_output = false;
 
-    let dashboard = build_dashboard_contract_runner_config(&cli);
     let deployment = build_deployment_contract_runner_config(&cli);
-    let custom = build_custom_command_contract_runner_config(&cli);
     let voice = build_voice_contract_runner_config(&cli);
     let voice_live = build_voice_live_runner_config(&cli);
-
-    assert_eq!(dashboard.fixture_path, cli.dashboard_fixture);
-    assert_eq!(dashboard.state_dir, cli.dashboard_state_dir);
-    assert_eq!(dashboard.queue_limit, 33);
-    assert_eq!(dashboard.processed_case_cap, 9_000);
-    assert_eq!(dashboard.retry_max_attempts, 7);
-    assert_eq!(dashboard.retry_base_delay_ms, 31);
 
     assert_eq!(deployment.fixture_path, cli.deployment_fixture);
     assert_eq!(deployment.state_dir, cli.deployment_state_dir);
@@ -1699,13 +1525,6 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
     assert_eq!(deployment.processed_case_cap, 2_000);
     assert_eq!(deployment.retry_max_attempts, 3);
     assert_eq!(deployment.retry_base_delay_ms, 8);
-
-    assert_eq!(custom.fixture_path, cli.custom_command_fixture);
-    assert_eq!(custom.state_dir, cli.custom_command_state_dir);
-    assert_eq!(custom.queue_limit, 41);
-    assert_eq!(custom.processed_case_cap, 1_234);
-    assert_eq!(custom.retry_max_attempts, 5);
-    assert_eq!(custom.retry_base_delay_ms, 16);
 
     assert_eq!(voice.fixture_path, cli.voice_fixture);
     assert_eq!(voice.state_dir, cli.voice_state_dir);
@@ -1719,26 +1538,6 @@ fn integration_build_standard_contract_runner_builders_preserve_runtime_fields()
     assert_eq!(voice_live.wake_word, "tau".to_string());
     assert_eq!(voice_live.max_turns, 11);
     assert!(!voice_live.tts_output_enabled);
-}
-
-#[test]
-fn integration_build_custom_command_default_execution_policy_preserves_cli_overrides() {
-    let mut cli = parse_cli_with_stack();
-    cli.custom_command_policy_require_approval = false;
-    cli.custom_command_policy_allow_shell = true;
-    cli.custom_command_policy_sandbox_profile = "workspace_write".to_string();
-    cli.custom_command_policy_allowed_env = vec!["DEPLOY_ENV".to_string(), "REGION".to_string()];
-    cli.custom_command_policy_denied_env = vec!["OPENAI_API_KEY".to_string()];
-
-    let policy = build_custom_command_default_execution_policy(&cli);
-    assert!(!policy.require_approval);
-    assert!(policy.allow_shell);
-    assert_eq!(policy.sandbox_profile, "workspace_write".to_string());
-    assert_eq!(
-        policy.allowed_env,
-        vec!["DEPLOY_ENV".to_string(), "REGION".to_string()]
-    );
-    assert_eq!(policy.denied_env, vec!["OPENAI_API_KEY".to_string()]);
 }
 
 #[test]

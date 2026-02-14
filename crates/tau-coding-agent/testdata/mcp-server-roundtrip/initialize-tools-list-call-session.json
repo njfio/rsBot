@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "initialize-tools-list-call-session",
+  "requests": [
+    {
+      "jsonrpc": "2.0",
+      "id": "req-init",
+      "method": "initialize",
+      "params": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "req-tools",
+      "method": "tools/list",
+      "params": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "req-call-session",
+      "method": "tools/call",
+      "params": {
+        "name": "tau.context.session",
+        "arguments": {}
+      }
+    }
+  ],
+  "expected_response_ids": [
+    "req-init",
+    "req-tools",
+    "req-call-session"
+  ],
+  "expected_methods": [
+    "initialize",
+    "tools/list",
+    "tools/call"
+  ]
+}

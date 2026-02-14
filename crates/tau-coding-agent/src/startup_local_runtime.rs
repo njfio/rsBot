@@ -4,9 +4,9 @@ use anyhow::Result;
 use serde_json::Value;
 #[cfg(test)]
 use tau_agent_core::Agent;
-use tau_agent_core::{AgentConfig, AgentEvent};
+use tau_agent_core::{AgentConfig, AgentEvent, SafetyMode};
 use tau_ai::{LlmClient, ModelRef};
-use tau_cli::Cli;
+use tau_cli::{Cli, CliPromptSanitizerMode};
 use tau_session::initialize_session;
 
 use crate::commands::execute_command_file;
@@ -53,6 +53,14 @@ pub(crate) struct LocalRuntimeConfig<'a> {
     pub(crate) skills_lock_path: &'a Path,
 }
 
+fn resolve_safety_mode(mode: CliPromptSanitizerMode) -> SafetyMode {
+    match mode {
+        CliPromptSanitizerMode::Warn => SafetyMode::Warn,
+        CliPromptSanitizerMode::Redact => SafetyMode::Redact,
+        CliPromptSanitizerMode::Block => SafetyMode::Block,
+    }
+}
+
 pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<()> {
     let LocalRuntimeConfig {
         cli,
@@ -89,6 +97,9 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                 .and_then(|entry| entry.output_cost_per_million),
             cost_budget_usd: cli.agent_cost_budget_usd,
             cost_alert_thresholds_percent: cli.agent_cost_alert_threshold_percent.clone(),
+            prompt_sanitizer_enabled: cli.prompt_sanitizer_enabled,
+            prompt_sanitizer_mode: resolve_safety_mode(cli.prompt_sanitizer_mode),
+            prompt_sanitizer_redaction_token: cli.prompt_sanitizer_redaction_token.clone(),
         },
         tool_policy,
     );

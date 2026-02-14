@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value;
-use tau_agent_core::{Agent, AgentConfig, AgentEvent};
+use tau_agent_core::{Agent, AgentConfig, AgentEvent, SafetyMode, SafetyPolicy};
 use tau_ai::{LlmClient, ModelRef};
 use tau_cli::{Cli, CliOrchestratorMode};
 use tau_core::current_unix_timestamp_ms;
@@ -31,6 +31,9 @@ pub struct LocalRuntimeAgentSettings {
     pub model_output_cost_per_million: Option<f64>,
     pub cost_budget_usd: Option<f64>,
     pub cost_alert_thresholds_percent: Vec<u8>,
+    pub prompt_sanitizer_enabled: bool,
+    pub prompt_sanitizer_mode: SafetyMode,
+    pub prompt_sanitizer_redaction_token: String,
 }
 
 pub fn build_local_runtime_agent(
@@ -62,6 +65,13 @@ pub fn build_local_runtime_agent(
             ..AgentConfig::default()
         },
     );
+    agent.set_safety_policy(SafetyPolicy {
+        enabled: settings.prompt_sanitizer_enabled,
+        mode: settings.prompt_sanitizer_mode,
+        apply_to_inbound_messages: true,
+        apply_to_tool_outputs: true,
+        redaction_token: settings.prompt_sanitizer_redaction_token,
+    });
     register_builtin_tools(&mut agent, tool_policy);
     agent
 }

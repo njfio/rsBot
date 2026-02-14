@@ -1,19 +1,21 @@
-# Training Proxy Operations Guide
+# Prompt Optimization Proxy Operations Guide
 
-This guide covers the optional OpenAI-compatible training attribution proxy mode.
+This guide covers the optional OpenAI-compatible prompt optimization attribution proxy mode.
 
-## Run Training Proxy
+## Run Prompt Optimization Proxy
 
 From repository root:
 
 ```bash
 cargo run -p tau-coding-agent -- \
-  --training-proxy-server \
-  --training-proxy-bind 127.0.0.1:8788 \
-  --training-proxy-upstream-url http://127.0.0.1:4000 \
-  --training-proxy-state-dir .tau \
-  --training-proxy-timeout-ms 30000
+  --prompt-optimization-proxy-server \
+  --prompt-optimization-proxy-bind 127.0.0.1:8788 \
+  --prompt-optimization-proxy-upstream-url http://127.0.0.1:4000 \
+  --prompt-optimization-proxy-state-dir .tau \
+  --prompt-optimization-proxy-timeout-ms 30000
 ```
+
+Legacy `--training-proxy-*` flags remain accepted as aliases.
 
 ## Required Attribution Headers
 
@@ -45,3 +47,11 @@ The proxy appends JSONL records to:
 
 Each record includes rollout/attempt IDs, optional sequence/trace IDs, request and response byte
 counts, latency, and upstream status/error outcome.
+
+## Migration Notes
+
+- `--training-proxy-server` -> `--prompt-optimization-proxy-server`
+- `--training-proxy-bind` -> `--prompt-optimization-proxy-bind`
+- `--training-proxy-upstream-url` -> `--prompt-optimization-proxy-upstream-url`
+- `--training-proxy-state-dir` -> `--prompt-optimization-proxy-state-dir`
+- `--training-proxy-timeout-ms` -> `--prompt-optimization-proxy-timeout-ms`

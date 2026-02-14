@@ -4,6 +4,11 @@ use crate::{
     Cli, CliGatewayOpenResponsesAuthMode, CliMultiChannelOutboundMode, CliWebhookSignatureAlgorithm,
 };
 
+const MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--memory-contract-runner has been removed; memory runtime ownership is in tau-agent-core. Use --transport-health-inspect memory for diagnostics and configure runtime memory behavior with agent memory flags (for example --memory-retrieval-limit).";
+const CUSTOM_COMMAND_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--custom-command-contract-runner has been removed; preserve existing state under --custom-command-state-dir and use --custom-command-status-inspect plus --transport-health-inspect custom-command for diagnostics";
+const BROWSER_AUTOMATION_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--browser-automation-contract-runner has been removed; use --browser-automation-live-runner with --browser-automation-live-fixture and --browser-automation-playwright-cli";
+const DASHBOARD_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--dashboard-contract-runner has been removed; use --gateway-openresponses-server for dashboard API/webchat surfaces and --dashboard-status-inspect plus --transport-health-inspect dashboard for diagnostics";
+
 fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -911,61 +916,7 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--browser-automation-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--browser-automation-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-        || cli.multi_agent_contract_runner
-        || cli.browser_automation_live_runner
-        || cli.browser_automation_preflight
-        || cli.memory_contract_runner
-        || cli.dashboard_contract_runner
-        || cli.gateway_contract_runner
-        || cli.deployment_contract_runner
-        || cli.custom_command_contract_runner
-        || cli.voice_contract_runner
-        || cli.voice_live_runner
-    {
-        bail!(
-            "--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --browser-automation-live-runner, --browser-automation-preflight, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, --voice-contract-runner, or --voice-live-runner"
-        );
-    }
-    if cli.browser_automation_queue_limit == 0 {
-        bail!("--browser-automation-queue-limit must be greater than 0");
-    }
-    if cli.browser_automation_processed_case_cap == 0 {
-        bail!("--browser-automation-processed-case-cap must be greater than 0");
-    }
-    if cli.browser_automation_retry_max_attempts == 0 {
-        bail!("--browser-automation-retry-max-attempts must be greater than 0");
-    }
-    if cli.browser_automation_action_timeout_ms == 0 {
-        bail!("--browser-automation-action-timeout-ms must be greater than 0");
-    }
-    if cli.browser_automation_max_actions_per_case == 0 {
-        bail!("--browser-automation-max-actions-per-case must be greater than 0");
-    }
-    if !cli.browser_automation_fixture.exists() {
-        bail!(
-            "--browser-automation-fixture '{}' does not exist",
-            cli.browser_automation_fixture.display()
-        );
-    }
-    if !cli.browser_automation_fixture.is_file() {
-        bail!(
-            "--browser-automation-fixture '{}' must point to a file",
-            cli.browser_automation_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(BROWSER_AUTOMATION_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_browser_automation_live_runner_cli(cli: &Cli) -> Result<()> {
@@ -1058,43 +1009,7 @@ pub fn validate_memory_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--memory-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--memory-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-    {
-        bail!("--memory-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, or --multi-channel-live-runner");
-    }
-    if cli.memory_queue_limit == 0 {
-        bail!("--memory-queue-limit must be greater than 0");
-    }
-    if cli.memory_processed_case_cap == 0 {
-        bail!("--memory-processed-case-cap must be greater than 0");
-    }
-    if cli.memory_retry_max_attempts == 0 {
-        bail!("--memory-retry-max-attempts must be greater than 0");
-    }
-    if !cli.memory_fixture.exists() {
-        bail!(
-            "--memory-fixture '{}' does not exist",
-            cli.memory_fixture.display()
-        );
-    }
-    if !cli.memory_fixture.is_file() {
-        bail!(
-            "--memory-fixture '{}' must point to a file",
-            cli.memory_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(MEMORY_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
@@ -1102,44 +1017,7 @@ pub fn validate_dashboard_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--dashboard-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--dashboard-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-        || cli.memory_contract_runner
-    {
-        bail!("--dashboard-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, or --memory-contract-runner");
-    }
-    if cli.dashboard_queue_limit == 0 {
-        bail!("--dashboard-queue-limit must be greater than 0");
-    }
-    if cli.dashboard_processed_case_cap == 0 {
-        bail!("--dashboard-processed-case-cap must be greater than 0");
-    }
-    if cli.dashboard_retry_max_attempts == 0 {
-        bail!("--dashboard-retry-max-attempts must be greater than 0");
-    }
-    if !cli.dashboard_fixture.exists() {
-        bail!(
-            "--dashboard-fixture '{}' does not exist",
-            cli.dashboard_fixture.display()
-        );
-    }
-    if !cli.dashboard_fixture.is_file() {
-        bail!(
-            "--dashboard-fixture '{}' must point to a file",
-            cli.dashboard_fixture.display()
-        );
-    }
-
-    Ok(())
+    bail!(DASHBOARD_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_daemon_cli(cli: &Cli) -> Result<()> {
@@ -1717,117 +1595,7 @@ pub fn validate_custom_command_contract_runner_cli(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if has_prompt_or_command_input(cli) {
-        bail!("--custom-command-contract-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
-    }
-    if cli.no_session {
-        bail!("--custom-command-contract-runner cannot be used together with --no-session");
-    }
-    if cli.github_issues_bridge
-        || cli.slack_bridge
-        || cli.events_runner
-        || cli.multi_channel_contract_runner
-        || cli.multi_channel_live_runner
-        || cli.multi_agent_contract_runner
-        || cli.memory_contract_runner
-        || cli.dashboard_contract_runner
-        || cli.gateway_contract_runner
-    {
-        bail!("--custom-command-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, or --gateway-contract-runner");
-    }
-    if cli.custom_command_queue_limit == 0 {
-        bail!("--custom-command-queue-limit must be greater than 0");
-    }
-    if cli.custom_command_processed_case_cap == 0 {
-        bail!("--custom-command-processed-case-cap must be greater than 0");
-    }
-    if cli.custom_command_retry_max_attempts == 0 {
-        bail!("--custom-command-retry-max-attempts must be greater than 0");
-    }
-    if !cli.custom_command_fixture.exists() {
-        bail!(
-            "--custom-command-fixture '{}' does not exist",
-            cli.custom_command_fixture.display()
-        );
-    }
-    if !cli.custom_command_fixture.is_file() {
-        bail!(
-            "--custom-command-fixture '{}' must point to a file",
-            cli.custom_command_fixture.display()
-        );
-    }
-
-    let sandbox_profile = normalize_custom_command_policy_sandbox_profile(
-        cli.custom_command_policy_sandbox_profile.as_str(),
-    );
-    if sandbox_profile != "restricted"
-        && sandbox_profile != "workspace_write"
-        && sandbox_profile != "unrestricted"
-    {
-        bail!(
-            "--custom-command-policy-sandbox-profile must be one of restricted, workspace_write, unrestricted"
-        );
-    }
-
-    let mut allowed = std::collections::BTreeSet::new();
-    for key in &cli.custom_command_policy_allowed_env {
-        if !is_valid_custom_command_policy_env_key(key) {
-            bail!(
-                "--custom-command-policy-allowed-env contains invalid key '{}'",
-                key
-            );
-        }
-        let normalized = key.trim().to_ascii_lowercase();
-        if !allowed.insert(normalized.clone()) {
-            bail!(
-                "--custom-command-policy-allowed-env contains duplicate key '{}'",
-                key
-            );
-        }
-    }
-
-    let mut denied = std::collections::BTreeSet::new();
-    for key in &cli.custom_command_policy_denied_env {
-        if !is_valid_custom_command_policy_env_key(key) {
-            bail!(
-                "--custom-command-policy-denied-env contains invalid key '{}'",
-                key
-            );
-        }
-        let normalized = key.trim().to_ascii_lowercase();
-        if !denied.insert(normalized.clone()) {
-            bail!(
-                "--custom-command-policy-denied-env contains duplicate key '{}'",
-                key
-            );
-        }
-        if allowed.contains(&normalized) {
-            bail!(
-                "custom command policy key '{}' cannot appear in both allow and deny lists",
-                key
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn normalize_custom_command_policy_sandbox_profile(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase()
-}
-
-fn is_valid_custom_command_policy_env_key(raw: &str) -> bool {
-    if raw.trim().is_empty() {
-        return false;
-    }
-    let mut chars = raw.trim().chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_alphabetic() && first != '_' {
-        return false;
-    }
-    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    bail!(CUSTOM_COMMAND_CONTRACT_RUNNER_REMOVED_MESSAGE);
 }
 
 pub fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {

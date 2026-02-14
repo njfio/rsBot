@@ -137,6 +137,7 @@ const DEMO_INDEX_SCENARIOS: [&str; 4] = [
 ];
 
 #[derive(Clone)]
+/// Runtime configuration for the GitHub Issues bridge transport loop.
 pub struct GithubIssuesBridgeRuntimeConfig {
     pub client: Arc<dyn LlmClient>,
     pub model: String,
@@ -380,6 +381,7 @@ pub(crate) struct PollCycleReport {
     pub failed_events: usize,
 }
 
+/// Runs the GitHub Issues bridge using polling + command/event processing.
 pub async fn run_github_issues_bridge(config: GithubIssuesBridgeRuntimeConfig) -> Result<()> {
     let mut runtime = GithubIssuesBridgeRuntime::new(config).await?;
     runtime.run().await

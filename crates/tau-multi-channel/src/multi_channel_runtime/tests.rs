@@ -5,10 +5,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+use ed25519_dalek::{Signer, SigningKey};
 use httpmock::Method::POST;
 use httpmock::MockServer;
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
+use tau_access::{
+    save_trust_root_records, signed_envelope_message_bytes, TrustedRootRecord,
+    SIGNED_ENVELOPE_METADATA_KEY,
+};
 use tempfile::tempdir;
 
 use super::{
@@ -515,6 +522,61 @@ fn write_pairing_registry(root: &Path, payload: &str) {
     let security_dir = root.join(".tau/security");
     std::fs::create_dir_all(&security_dir).expect("create security dir");
     std::fs::write(security_dir.join("pairings.json"), payload).expect("write pairings");
+}
+
+fn secure_signing_key() -> SigningKey {
+    SigningKey::from_bytes(&[17; 32])
+}
+
+fn write_signed_envelope_trust_root(root: &Path, key_id: &str, signer: &SigningKey) {
+    let security_dir = root.join(".tau/security");
+    std::fs::create_dir_all(&security_dir).expect("create security dir");
+    save_trust_root_records(
+        &security_dir.join("trust-roots.json"),
+        &[TrustedRootRecord {
+            id: key_id.to_string(),
+            public_key: BASE64.encode(signer.verifying_key().to_bytes()),
+            revoked: false,
+            expires_unix: None,
+            rotated_from: None,
+        }],
+    )
+    .expect("write trust roots");
+}
+
+fn attach_signed_envelope(
+    event: &mut MultiChannelInboundEvent,
+    key_id: &str,
+    nonce: &str,
+    signer: &SigningKey,
+) {
+    let policy_channel = format!(
+        "{}:{}",
+        event.transport.as_str(),
+        event.conversation_id.trim()
+    );
+    let message = signed_envelope_message_bytes(
+        &policy_channel,
+        event.actor_id.as_str(),
+        event.event_id.as_str(),
+        event.timestamp_ms,
+        nonce,
+        event.text.as_str(),
+    );
+    let signature = BASE64.encode(signer.sign(&message).to_bytes());
+    event.metadata.insert(
+        SIGNED_ENVELOPE_METADATA_KEY.to_string(),
+        json!({
+            "schema_version": 1,
+            "key_id": key_id,
+            "nonce": nonce,
+            "timestamp_ms": event.timestamp_ms,
+            "channel": policy_channel,
+            "actor_id": event.actor_id.clone(),
+            "event_id": event.event_id.clone(),
+            "signature": signature,
+        }),
+    );
 }
 
 fn write_channel_policy(root: &Path, payload: &str) {
@@ -1635,6 +1697,283 @@ async fn integration_runner_denies_unpaired_actor_in_strict_mode() {
     )
     .expect("read events log");
     assert!(events_log.contains("pairing_policy_denied_events"));
+}
+
+#[tokio::test]
+async fn functional_runner_secure_messaging_preferred_falls_back_to_legacy_pairing_on_missing_envelope(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_channel_policy(
+        temp.path(),
+        r#"{
+  "schema_version": 1,
+  "strictMode": false,
+  "secureMessaging": {
+    "mode": "preferred",
+    "timestampSkewSeconds": 300,
+    "replayWindowSeconds": 300
+  },
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {}
+}
+"#,
+    );
+    let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Discord,
+        "dc-secure-fallback-1",
+        "secure-fallback-room",
+        "discord-user-fallback",
+        "legacy fallback path",
+    );
+
+    let summary = runtime
+        .run_once_events(std::slice::from_ref(&event))
+        .await
+        .expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.policy_allowed_events, 1);
+    assert_eq!(summary.policy_denied_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "discord",
+        "secure-fallback-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    assert_eq!(logs.len(), 2);
+    assert_eq!(
+        logs[0].payload["secure_messaging"]["status"].as_str(),
+        Some("missing")
+    );
+    assert_eq!(
+        logs[0].payload["secure_messaging"]["legacy_fallback"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        logs[0].payload["pairing"]["reason_code"].as_str(),
+        Some("allow_permissive_mode")
+    );
+}
+
+#[tokio::test]
+async fn integration_runner_secure_messaging_required_allows_valid_signed_envelope() {
+    let temp = tempdir().expect("tempdir");
+    write_channel_policy(
+        temp.path(),
+        r#"{
+  "schema_version": 1,
+  "strictMode": true,
+  "secureMessaging": {
+    "mode": "required",
+    "timestampSkewSeconds": 300,
+    "replayWindowSeconds": 300
+  },
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {}
+}
+"#,
+    );
+    let signer = secure_signing_key();
+    write_signed_envelope_trust_root(temp.path(), "secure-root-v1", &signer);
+
+    let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+    let mut event = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-secure-allow-1",
+        "secure-allow-room",
+        "telegram-secure-user",
+        "signed message",
+    );
+    event.timestamp_ms = current_unix_timestamp_ms();
+    attach_signed_envelope(
+        &mut event,
+        "secure-root-v1",
+        "nonce-secure-allow-1",
+        &signer,
+    );
+
+    let summary = runtime
+        .run_once_events(std::slice::from_ref(&event))
+        .await
+        .expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.policy_allowed_events, 1);
+    assert_eq!(summary.policy_denied_events, 0);
+    assert_eq!(summary.policy_enforced_events, 1);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "telegram",
+        "secure-allow-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    assert_eq!(logs.len(), 2);
+    assert_eq!(
+        logs[0].payload["secure_messaging"]["status"].as_str(),
+        Some("allow")
+    );
+    assert_eq!(
+        logs[0].payload["secure_messaging"]["reason_code"].as_str(),
+        Some("allow_signed_envelope_verified")
+    );
+    assert_eq!(
+        logs[0].payload["secure_messaging"]["mode"].as_str(),
+        Some("required")
+    );
+}
+
+#[tokio::test]
+async fn regression_runner_secure_messaging_required_rejects_forged_signature() {
+    let temp = tempdir().expect("tempdir");
+    write_channel_policy(
+        temp.path(),
+        r#"{
+  "schema_version": 1,
+  "strictMode": true,
+  "secureMessaging": {
+    "mode": "required",
+    "timestampSkewSeconds": 300,
+    "replayWindowSeconds": 300
+  },
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {}
+}
+"#,
+    );
+    let signer = secure_signing_key();
+    write_signed_envelope_trust_root(temp.path(), "secure-root-v1", &signer);
+
+    let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+    let mut event = sample_event(
+        MultiChannelTransport::Discord,
+        "dc-secure-forged-1",
+        "secure-forged-room",
+        "discord-secure-user",
+        "original signed body",
+    );
+    event.timestamp_ms = current_unix_timestamp_ms();
+    attach_signed_envelope(
+        &mut event,
+        "secure-root-v1",
+        "nonce-secure-forged-1",
+        &signer,
+    );
+    event.text = "tampered body".to_string();
+
+    let summary = runtime
+        .run_once_events(std::slice::from_ref(&event))
+        .await
+        .expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.policy_allowed_events, 0);
+    assert_eq!(summary.policy_denied_events, 1);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "discord",
+        "secure-forged-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[1].payload["status"].as_str(), Some("denied"));
+    assert_eq!(
+        logs[1].payload["reason_code"].as_str(),
+        Some("deny_signed_envelope_invalid_signature")
+    );
+}
+
+#[tokio::test]
+async fn regression_runner_secure_messaging_required_rejects_replayed_nonce() {
+    let temp = tempdir().expect("tempdir");
+    write_channel_policy(
+        temp.path(),
+        r#"{
+  "schema_version": 1,
+  "strictMode": true,
+  "secureMessaging": {
+    "mode": "required",
+    "timestampSkewSeconds": 300,
+    "replayWindowSeconds": 300
+  },
+  "defaultPolicy": {
+    "dmPolicy": "allow",
+    "allowFrom": "allowlist_or_pairing",
+    "groupPolicy": "allow",
+    "requireMention": false
+  },
+  "channels": {}
+}
+"#,
+    );
+    let signer = secure_signing_key();
+    write_signed_envelope_trust_root(temp.path(), "secure-root-v1", &signer);
+
+    let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+    let timestamp_ms = current_unix_timestamp_ms();
+    let mut first = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-secure-replay-1",
+        "secure-replay-room",
+        "telegram-secure-user",
+        "first signed message",
+    );
+    first.timestamp_ms = timestamp_ms;
+    attach_signed_envelope(&mut first, "secure-root-v1", "nonce-shared-replay", &signer);
+
+    let mut second = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-secure-replay-2",
+        "secure-replay-room",
+        "telegram-secure-user",
+        "second signed message",
+    );
+    second.timestamp_ms = timestamp_ms.saturating_add(1);
+    attach_signed_envelope(
+        &mut second,
+        "secure-root-v1",
+        "nonce-shared-replay",
+        &signer,
+    );
+
+    let summary = runtime
+        .run_once_events(&[first, second])
+        .await
+        .expect("run once");
+    assert_eq!(summary.completed_events, 2);
+    assert_eq!(summary.policy_allowed_events, 1);
+    assert_eq!(summary.policy_denied_events, 1);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "telegram",
+        "secure-replay-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    assert!(logs.iter().any(|entry| {
+        entry.direction == "outbound"
+            && entry.payload["status"].as_str() == Some("denied")
+            && entry.payload["reason_code"].as_str() == Some("deny_signed_envelope_replay")
+    }));
 }
 
 #[tokio::test]

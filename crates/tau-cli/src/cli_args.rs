@@ -6,7 +6,7 @@ use crate::{
     CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
     CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
     CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
-    CliOrchestratorMode, CliProviderAuthMode, CliWebhookSignatureAlgorithm,
+    CliOrchestratorMode, CliPromptSanitizerMode, CliProviderAuthMode, CliWebhookSignatureAlgorithm,
 };
 
 mod gateway_daemon_flags;
@@ -591,6 +591,32 @@ pub struct Cli {
         help = "Comma-delimited budget alert thresholds as percentages (1-100)"
     )]
     pub agent_cost_alert_threshold_percent: Vec<u8>,
+
+    #[arg(
+        long = "prompt-sanitizer-enabled",
+        env = "TAU_PROMPT_SANITIZER_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Enable prompt/tool-output safety checks before model dispatch and tool-result reinjection"
+    )]
+    pub prompt_sanitizer_enabled: bool,
+
+    #[arg(
+        long = "prompt-sanitizer-mode",
+        env = "TAU_PROMPT_SANITIZER_MODE",
+        value_enum,
+        default_value_t = CliPromptSanitizerMode::Warn,
+        help = "Safety action for matched prompt-injection patterns (warn, redact, block)"
+    )]
+    pub prompt_sanitizer_mode: CliPromptSanitizerMode,
+
+    #[arg(
+        long = "prompt-sanitizer-redaction-token",
+        env = "TAU_PROMPT_SANITIZER_REDACTION_TOKEN",
+        default_value = "[TAU-SAFETY-REDACTED]",
+        help = "Replacement token used when --prompt-sanitizer-mode=redact"
+    )]
+    pub prompt_sanitizer_redaction_token: String,
 
     #[arg(
         long,
@@ -1781,78 +1807,86 @@ pub struct Cli {
     pub qa_loop_changed_file_limit: Option<usize>,
 
     #[arg(
-        long = "train-config",
-        env = "TAU_TRAIN_CONFIG",
+        long = "prompt-optimization-config",
+        alias = "train-config",
+        env = "TAU_PROMPT_OPTIMIZATION_CONFIG",
         value_name = "path",
-        help = "Run rollout training mode from JSON config and exit"
+        help = "Run rollout prompt-optimization mode from JSON config and exit"
     )]
-    pub train_config: Option<PathBuf>,
+    pub prompt_optimization_config: Option<PathBuf>,
 
     #[arg(
-        long = "train-store-sqlite",
-        env = "TAU_TRAIN_STORE_SQLITE",
-        requires = "train_config",
+        long = "prompt-optimization-store-sqlite",
+        alias = "train-store-sqlite",
+        env = "TAU_PROMPT_OPTIMIZATION_STORE_SQLITE",
+        requires = "prompt_optimization_config",
         default_value = ".tau/training/store.sqlite",
         value_name = "path",
-        help = "SQLite file path for durable rollout/tracing state in training mode"
+        help = "SQLite file path for durable rollout/tracing state in prompt-optimization mode"
     )]
-    pub train_store_sqlite: PathBuf,
+    pub prompt_optimization_store_sqlite: PathBuf,
 
     #[arg(
-        long = "train-json",
-        env = "TAU_TRAIN_JSON",
-        requires = "train_config",
+        long = "prompt-optimization-json",
+        alias = "train-json",
+        env = "TAU_PROMPT_OPTIMIZATION_JSON",
+        requires = "prompt_optimization_config",
         default_value_t = false,
-        help = "Emit training summary output as JSON"
+        help = "Emit prompt-optimization summary output as JSON"
     )]
-    pub train_json: bool,
+    pub prompt_optimization_json: bool,
 
     #[arg(
-        long = "training-proxy-server",
-        env = "TAU_TRAINING_PROXY_SERVER",
+        long = "prompt-optimization-proxy-server",
+        alias = "training-proxy-server",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_SERVER",
         default_value_t = false,
-        help = "Run OpenAI-compatible training attribution proxy mode and exit"
+        help = "Run OpenAI-compatible prompt-optimization attribution proxy mode and exit"
     )]
-    pub training_proxy_server: bool,
+    pub prompt_optimization_proxy_server: bool,
 
     #[arg(
-        long = "training-proxy-bind",
-        env = "TAU_TRAINING_PROXY_BIND",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-bind",
+        alias = "training-proxy-bind",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_BIND",
+        requires = "prompt_optimization_proxy_server",
         default_value = "127.0.0.1:8788",
         value_name = "host:port",
-        help = "Bind address for training proxy mode"
+        help = "Bind address for prompt-optimization proxy mode"
     )]
-    pub training_proxy_bind: String,
+    pub prompt_optimization_proxy_bind: String,
 
     #[arg(
-        long = "training-proxy-upstream-url",
-        env = "TAU_TRAINING_PROXY_UPSTREAM_URL",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-upstream-url",
+        alias = "training-proxy-upstream-url",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_UPSTREAM_URL",
+        requires = "prompt_optimization_proxy_server",
         value_name = "url",
-        help = "Upstream OpenAI-compatible base URL used by training proxy forwarding"
+        help = "Upstream OpenAI-compatible base URL used by prompt-optimization proxy forwarding"
     )]
-    pub training_proxy_upstream_url: Option<String>,
+    pub prompt_optimization_proxy_upstream_url: Option<String>,
 
     #[arg(
-        long = "training-proxy-state-dir",
-        env = "TAU_TRAINING_PROXY_STATE_DIR",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-state-dir",
+        alias = "training-proxy-state-dir",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_STATE_DIR",
+        requires = "prompt_optimization_proxy_server",
         default_value = ".tau",
         value_name = "path",
-        help = "State root for training proxy attribution logs"
+        help = "State root for prompt-optimization proxy attribution logs"
     )]
-    pub training_proxy_state_dir: PathBuf,
+    pub prompt_optimization_proxy_state_dir: PathBuf,
 
     #[arg(
-        long = "training-proxy-timeout-ms",
-        env = "TAU_TRAINING_PROXY_TIMEOUT_MS",
-        requires = "training_proxy_server",
+        long = "prompt-optimization-proxy-timeout-ms",
+        alias = "training-proxy-timeout-ms",
+        env = "TAU_PROMPT_OPTIMIZATION_PROXY_TIMEOUT_MS",
+        requires = "prompt_optimization_proxy_server",
         default_value_t = 30_000,
         value_parser = parse_positive_u64,
-        help = "Upstream request timeout in milliseconds for training proxy mode"
+        help = "Upstream request timeout in milliseconds for prompt-optimization proxy mode"
     )]
-    pub training_proxy_timeout_ms: u64,
+    pub prompt_optimization_proxy_timeout_ms: u64,
 
     #[arg(
         long = "mcp-server",
@@ -3004,8 +3038,9 @@ pub struct Cli {
         long = "browser-automation-contract-runner",
         env = "TAU_BROWSER_AUTOMATION_CONTRACT_RUNNER",
         default_value_t = false,
+        hide = true,
         conflicts_with_all = ["browser_automation_live_runner", "browser_automation_preflight"],
-        help = "Run fixture-driven browser automation runtime contract scenarios"
+        help = "Deprecated: fixture-driven browser automation contract runner (removed)"
     )]
     pub browser_automation_contract_runner: bool,
 
@@ -3034,8 +3069,9 @@ pub struct Cli {
         long = "browser-automation-fixture",
         env = "TAU_BROWSER_AUTOMATION_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json",
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Path to browser automation runtime contract fixture JSON"
+        help = "Deprecated: browser automation runtime contract fixture JSON"
     )]
     pub browser_automation_fixture: PathBuf,
 
@@ -3051,8 +3087,9 @@ pub struct Cli {
         long = "browser-automation-queue-limit",
         env = "TAU_BROWSER_AUTOMATION_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum browser automation fixture cases processed per runtime cycle"
+        help = "Deprecated: browser automation contract runner queue limit"
     )]
     pub browser_automation_queue_limit: usize,
 
@@ -3060,8 +3097,9 @@ pub struct Cli {
         long = "browser-automation-processed-case-cap",
         env = "TAU_BROWSER_AUTOMATION_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum processed-case keys retained for browser automation duplicate suppression"
+        help = "Deprecated: browser automation contract runner processed-case cap"
     )]
     pub browser_automation_processed_case_cap: usize,
 
@@ -3069,8 +3107,9 @@ pub struct Cli {
         long = "browser-automation-retry-max-attempts",
         env = "TAU_BROWSER_AUTOMATION_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum retry attempts for transient browser automation runtime failures"
+        help = "Deprecated: browser automation contract runner retry max attempts"
     )]
     pub browser_automation_retry_max_attempts: usize,
 
@@ -3078,8 +3117,9 @@ pub struct Cli {
         long = "browser-automation-retry-base-delay-ms",
         env = "TAU_BROWSER_AUTOMATION_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Base backoff delay in milliseconds for browser automation runtime retries (0 disables delay)"
+        help = "Deprecated: browser automation contract runner retry base delay in milliseconds"
     )]
     pub browser_automation_retry_base_delay_ms: u64,
 
@@ -3087,8 +3127,9 @@ pub struct Cli {
         long = "browser-automation-action-timeout-ms",
         env = "TAU_BROWSER_AUTOMATION_ACTION_TIMEOUT_MS",
         default_value_t = 5_000,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum allowed action timeout in milliseconds for one browser automation case"
+        help = "Deprecated: browser automation contract runner action timeout in milliseconds"
     )]
     pub browser_automation_action_timeout_ms: u64,
 
@@ -3096,8 +3137,9 @@ pub struct Cli {
         long = "browser-automation-max-actions-per-case",
         env = "TAU_BROWSER_AUTOMATION_MAX_ACTIONS_PER_CASE",
         default_value_t = 8,
+        hide = true,
         requires = "browser_automation_contract_runner",
-        help = "Maximum allowed repeated action count for one browser automation fixture case"
+        help = "Deprecated: browser automation contract runner max actions per case"
     )]
     pub browser_automation_max_actions_per_case: usize,
 
@@ -3105,12 +3147,13 @@ pub struct Cli {
         long = "browser-automation-allow-unsafe-actions",
         env = "TAU_BROWSER_AUTOMATION_ALLOW_UNSAFE_ACTIONS",
         default_value_t = false,
+        hide = true,
         action = ArgAction::Set,
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
         requires = "browser_automation_contract_runner",
-        help = "Allow unsafe browser automation fixture operations (default deny)"
+        help = "Deprecated: allow unsafe browser automation contract fixture operations"
     )]
     pub browser_automation_allow_unsafe_actions: bool,
 
@@ -3151,16 +3194,18 @@ pub struct Cli {
         long = "memory-contract-runner",
         env = "TAU_MEMORY_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven semantic memory runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven semantic memory contract runner (removed)"
     )]
     pub memory_contract_runner: bool,
 
     #[arg(
         long = "memory-fixture",
         env = "TAU_MEMORY_FIXTURE",
-        default_value = "crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json",
+        default_value = "crates/tau-memory/testdata/memory-contract/mixed-outcomes.json",
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Path to semantic memory contract fixture JSON"
+        help = "Deprecated: semantic memory contract fixture JSON"
     )]
     pub memory_fixture: PathBuf,
 
@@ -3168,7 +3213,7 @@ pub struct Cli {
         long = "memory-state-dir",
         env = "TAU_MEMORY_STATE_DIR",
         default_value = ".tau/memory",
-        help = "Directory for semantic memory runtime state and channel-store outputs"
+        help = "Directory for semantic memory transport-health inspection artifacts"
     )]
     pub memory_state_dir: PathBuf,
 
@@ -3176,8 +3221,9 @@ pub struct Cli {
         long = "memory-queue-limit",
         env = "TAU_MEMORY_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum memory fixture cases processed per runtime cycle"
+        help = "Deprecated: memory contract runner queue limit"
     )]
     pub memory_queue_limit: usize,
 
@@ -3185,8 +3231,9 @@ pub struct Cli {
         long = "memory-processed-case-cap",
         env = "TAU_MEMORY_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum processed-case keys retained for duplicate suppression"
+        help = "Deprecated: memory contract runner processed-case cap"
     )]
     pub memory_processed_case_cap: usize,
 
@@ -3194,8 +3241,9 @@ pub struct Cli {
         long = "memory-retry-max-attempts",
         env = "TAU_MEMORY_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Maximum retry attempts for transient semantic memory runtime failures"
+        help = "Deprecated: memory contract runner retry max attempts"
     )]
     pub memory_retry_max_attempts: usize,
 
@@ -3203,8 +3251,9 @@ pub struct Cli {
         long = "memory-retry-base-delay-ms",
         env = "TAU_MEMORY_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "memory_contract_runner",
-        help = "Base backoff delay in milliseconds for semantic memory runtime retries (0 disables delay)"
+        help = "Deprecated: memory contract runner retry base delay in milliseconds"
     )]
     pub memory_retry_base_delay_ms: u64,
 
@@ -3212,7 +3261,8 @@ pub struct Cli {
         long = "dashboard-contract-runner",
         env = "TAU_DASHBOARD_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven dashboard runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven dashboard contract runner (removed)"
     )]
     pub dashboard_contract_runner: bool,
 
@@ -3220,8 +3270,9 @@ pub struct Cli {
         long = "dashboard-fixture",
         env = "TAU_DASHBOARD_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/dashboard-contract/mixed-outcomes.json",
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Path to dashboard runtime contract fixture JSON"
+        help = "Deprecated: dashboard runtime contract fixture JSON"
     )]
     pub dashboard_fixture: PathBuf,
 
@@ -3237,8 +3288,9 @@ pub struct Cli {
         long = "dashboard-queue-limit",
         env = "TAU_DASHBOARD_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum dashboard fixture cases processed per runtime cycle"
+        help = "Deprecated: dashboard contract runner queue limit"
     )]
     pub dashboard_queue_limit: usize,
 
@@ -3246,8 +3298,9 @@ pub struct Cli {
         long = "dashboard-processed-case-cap",
         env = "TAU_DASHBOARD_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum processed-case keys retained for dashboard duplicate suppression"
+        help = "Deprecated: dashboard contract runner processed-case cap"
     )]
     pub dashboard_processed_case_cap: usize,
 
@@ -3255,8 +3308,9 @@ pub struct Cli {
         long = "dashboard-retry-max-attempts",
         env = "TAU_DASHBOARD_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Maximum retry attempts for transient dashboard runtime failures"
+        help = "Deprecated: dashboard contract runner retry max attempts"
     )]
     pub dashboard_retry_max_attempts: usize,
 
@@ -3264,8 +3318,9 @@ pub struct Cli {
         long = "dashboard-retry-base-delay-ms",
         env = "TAU_DASHBOARD_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "dashboard_contract_runner",
-        help = "Base backoff delay in milliseconds for dashboard runtime retries (0 disables delay)"
+        help = "Deprecated: dashboard contract runner retry base delay in milliseconds"
     )]
     pub dashboard_retry_base_delay_ms: u64,
 
@@ -3540,7 +3595,8 @@ pub struct Cli {
         long = "custom-command-contract-runner",
         env = "TAU_CUSTOM_COMMAND_CONTRACT_RUNNER",
         default_value_t = false,
-        help = "Run fixture-driven no-code custom command runtime contract scenarios"
+        hide = true,
+        help = "Deprecated: fixture-driven no-code custom command contract runner (removed)"
     )]
     pub custom_command_contract_runner: bool,
 
@@ -3548,8 +3604,9 @@ pub struct Cli {
         long = "custom-command-fixture",
         env = "TAU_CUSTOM_COMMAND_FIXTURE",
         default_value = "crates/tau-coding-agent/testdata/custom-command-contract/mixed-outcomes.json",
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Path to no-code custom command runtime contract fixture JSON"
+        help = "Deprecated: no-code custom command runtime contract fixture JSON"
     )]
     pub custom_command_fixture: PathBuf,
 
@@ -3565,8 +3622,9 @@ pub struct Cli {
         long = "custom-command-queue-limit",
         env = "TAU_CUSTOM_COMMAND_QUEUE_LIMIT",
         default_value_t = 64,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum no-code custom command fixture cases processed per runtime cycle"
+        help = "Deprecated: no-code custom command contract runner queue limit"
     )]
     pub custom_command_queue_limit: usize,
 
@@ -3574,8 +3632,9 @@ pub struct Cli {
         long = "custom-command-processed-case-cap",
         env = "TAU_CUSTOM_COMMAND_PROCESSED_CASE_CAP",
         default_value_t = 10_000,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum processed-case keys retained for no-code custom command duplicate suppression"
+        help = "Deprecated: no-code custom command contract runner processed-case cap"
     )]
     pub custom_command_processed_case_cap: usize,
 
@@ -3583,8 +3642,9 @@ pub struct Cli {
         long = "custom-command-retry-max-attempts",
         env = "TAU_CUSTOM_COMMAND_RETRY_MAX_ATTEMPTS",
         default_value_t = 4,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Maximum retry attempts for transient no-code custom command runtime failures"
+        help = "Deprecated: no-code custom command contract runner retry max attempts"
     )]
     pub custom_command_retry_max_attempts: usize,
 
@@ -3592,8 +3652,9 @@ pub struct Cli {
         long = "custom-command-retry-base-delay-ms",
         env = "TAU_CUSTOM_COMMAND_RETRY_BASE_DELAY_MS",
         default_value_t = 0,
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Base backoff delay in milliseconds for no-code custom command runtime retries (0 disables delay)"
+        help = "Deprecated: no-code custom command contract runner retry base delay in milliseconds"
     )]
     pub custom_command_retry_base_delay_ms: u64,
 
@@ -3601,12 +3662,13 @@ pub struct Cli {
         long = "custom-command-policy-require-approval",
         env = "TAU_CUSTOM_COMMAND_POLICY_REQUIRE_APPROVAL",
         default_value_t = true,
+        hide = true,
         action = ArgAction::Set,
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
         requires = "custom_command_contract_runner",
-        help = "Require approval gate for custom-command RUN operations in policy contract"
+        help = "Deprecated: require approval gate for custom-command contract runner RUN operations"
     )]
     pub custom_command_policy_require_approval: bool,
 
@@ -3614,12 +3676,13 @@ pub struct Cli {
         long = "custom-command-policy-allow-shell",
         env = "TAU_CUSTOM_COMMAND_POLICY_ALLOW_SHELL",
         default_value_t = false,
+        hide = true,
         action = ArgAction::Set,
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
         requires = "custom_command_contract_runner",
-        help = "Allow shell control operators in command templates (disabled by default)"
+        help = "Deprecated: allow shell control operators in custom-command contract templates"
     )]
     pub custom_command_policy_allow_shell: bool,
 
@@ -3627,8 +3690,9 @@ pub struct Cli {
         long = "custom-command-policy-sandbox-profile",
         env = "TAU_CUSTOM_COMMAND_POLICY_SANDBOX_PROFILE",
         default_value = "restricted",
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Default sandbox profile for custom-command policy (restricted|workspace_write|unrestricted)"
+        help = "Deprecated: sandbox profile for custom-command contract runner policy"
     )]
     pub custom_command_policy_sandbox_profile: String,
 
@@ -3636,8 +3700,9 @@ pub struct Cli {
         long = "custom-command-policy-allowed-env",
         env = "TAU_CUSTOM_COMMAND_POLICY_ALLOWED_ENV",
         value_delimiter = ',',
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Optional allowlist of template/env variable keys for custom command specs"
+        help = "Deprecated: allowlist of template/env keys for custom-command contract runner policy"
     )]
     pub custom_command_policy_allowed_env: Vec<String>,
 
@@ -3645,8 +3710,9 @@ pub struct Cli {
         long = "custom-command-policy-denied-env",
         env = "TAU_CUSTOM_COMMAND_POLICY_DENIED_ENV",
         value_delimiter = ',',
+        hide = true,
         requires = "custom_command_contract_runner",
-        help = "Optional denylist override for template/env variable keys in custom command policy"
+        help = "Deprecated: denylist override for custom-command contract runner policy"
     )]
     pub custom_command_policy_denied_env: Vec<String>,
 

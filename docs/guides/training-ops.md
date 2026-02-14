@@ -1,31 +1,35 @@
-# Training Operations Guide
+# Prompt Optimization Operations Guide
 
-This guide covers rollout-based training mode with durable SQLite state.
+This guide covers rollout-based prompt optimization mode with durable SQLite state.
 
-## Run Training Mode
+This mode executes and evaluates rollouts. It is not a full reinforcement learning policy-training
+pipeline.
+
+## Run Prompt Optimization Mode
 
 From repository root:
 
 ```bash
 cargo run -p tau-coding-agent -- \
   --model openai/gpt-4o-mini \
-  --train-config examples/training/train.json \
-  --train-store-sqlite .tau/training/store.sqlite \
-  --train-json
+  --prompt-optimization-config .tau/prompt-optimization.json \
+  --prompt-optimization-store-sqlite .tau/training/store.sqlite \
+  --prompt-optimization-json
 ```
 
-`--train-config` switches Tau into training mode and exits after completion.
+`--prompt-optimization-config` switches Tau into prompt optimization mode and exits after
+completion.
 
-## Training Config JSON
+## Prompt Optimization Config JSON
 
-Training mode expects a JSON object:
+Prompt optimization mode expects a JSON object:
 
 ```json
 {
-  "train": [
+  "optimize": [
     { "prompt": "What is 2 + 2?", "expected": "4" }
   ],
-  "val": [
+  "validate": [
     { "prompt": "What is 3 + 3?", "expected": "6" }
   ],
   "resources": {
@@ -41,8 +45,8 @@ Training mode expects a JSON object:
 
 Fields:
 
-- `train`: training rollout inputs (array of JSON objects)
-- `val`: validation rollout inputs (array of JSON objects)
+- `optimize`: optimization rollout inputs (array of JSON objects)
+- `validate`: validation rollout inputs (array of JSON objects)
 - `resources`: optional initial resource snapshot persisted before execution
 - `worker_count`: optional runner worker count (`> 0`)
 - `poll_interval_ms`: optional rollout dequeue polling interval (`> 0`)
@@ -50,11 +54,16 @@ Fields:
 - `completion_poll_interval_ms`: optional trainer completion poll interval (`> 0`)
 - `completion_timeout_secs`: optional trainer timeout (`> 0`)
 
-At least one of `train` or `val` must be non-empty.
+At least one of `optimize` or `validate` must be non-empty.
+
+Legacy config keys remain accepted for compatibility:
+
+- `train` aliases `optimize`
+- `val` aliases `validate`
 
 ## SQLite Store
 
-`--train-store-sqlite` controls persistent state location. The store records:
+`--prompt-optimization-store-sqlite` controls persistent state location. The store records:
 
 - rollout queue + lifecycle status
 - attempts and worker heartbeats
@@ -65,10 +74,15 @@ Re-running with the same SQLite path keeps prior state for audit/inspection.
 
 ## Dashboard Metrics Export
 
-After each successful training run, Tau writes `.tau/training/status.json` next to the SQLite
-store. This status file includes model identity and rollout outcome counters (`total_rollouts`,
-`succeeded`, `failed`, `cancelled`) for dashboard/gateway status surfaces.
+After each successful prompt optimization run, Tau writes `.tau/training/status.json` next to the
+SQLite store. This status file includes model identity and rollout outcome counters
+(`total_rollouts`, `succeeded`, `failed`, `cancelled`) for dashboard/gateway status surfaces.
 
 Gateway dashboard endpoints (`/dashboard/health`, `/dashboard/widgets`,
-`/dashboard/queue-timeline`, `/dashboard/alerts`) include this status under a `training` field
-when present.
+`/dashboard/queue-timeline`, `/dashboard/alerts`) include this status under the `training` field.
+
+## Migration Notes
+
+- `--train-config` -> `--prompt-optimization-config`
+- `--train-store-sqlite` -> `--prompt-optimization-store-sqlite`
+- `--train-json` -> `--prompt-optimization-json`

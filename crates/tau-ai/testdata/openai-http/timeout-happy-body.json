@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "timeout-happy-body",
+  "prompt": "slow request",
+  "steps": [
+    {
+      "status": 200,
+      "delay_ms": 200,
+      "body": {
+        "choices": [
+          {
+            "message": {
+              "content": "delayed response"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 4,
+          "completion_tokens": 2,
+          "total_tokens": 6
+        }
+      }
+    }
+  ]
+}

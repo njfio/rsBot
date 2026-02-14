@@ -1030,7 +1030,7 @@ fn unit_cli_memory_runner_flags_default_to_disabled() {
     assert!(!cli.memory_contract_runner);
     assert_eq!(
         cli.memory_fixture,
-        PathBuf::from("crates/tau-coding-agent/testdata/memory-contract/mixed-outcomes.json")
+        PathBuf::from("crates/tau-memory/testdata/memory-contract/mixed-outcomes.json")
     );
     assert_eq!(cli.memory_state_dir, PathBuf::from(".tau/memory"));
     assert_eq!(cli.memory_queue_limit, 64);
@@ -2542,42 +2542,127 @@ fn regression_cli_mcp_context_provider_requires_mcp_server_flag() {
 }
 
 #[test]
-fn unit_cli_training_proxy_flags_default_to_disabled() {
+fn unit_cli_prompt_optimization_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
-    assert!(!cli.training_proxy_server);
-    assert_eq!(cli.training_proxy_bind, "127.0.0.1:8788");
-    assert!(cli.training_proxy_upstream_url.is_none());
-    assert_eq!(cli.training_proxy_state_dir, PathBuf::from(".tau"));
-    assert_eq!(cli.training_proxy_timeout_ms, 30_000);
+    assert!(cli.prompt_optimization_config.is_none());
+    assert_eq!(
+        cli.prompt_optimization_store_sqlite,
+        PathBuf::from(".tau/training/store.sqlite")
+    );
+    assert!(!cli.prompt_optimization_json);
+    assert!(!cli.prompt_optimization_proxy_server);
+    assert_eq!(cli.prompt_optimization_proxy_bind, "127.0.0.1:8788");
+    assert!(cli.prompt_optimization_proxy_upstream_url.is_none());
+    assert_eq!(
+        cli.prompt_optimization_proxy_state_dir,
+        PathBuf::from(".tau")
+    );
+    assert_eq!(cli.prompt_optimization_proxy_timeout_ms, 30_000);
 }
 
 #[test]
-fn functional_cli_training_proxy_flags_accept_overrides() {
+fn functional_cli_prompt_optimization_flags_accept_canonical_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--prompt-optimization-config",
+        ".tau/prompt-optimization.json",
+        "--prompt-optimization-store-sqlite",
+        ".tau/training/alt.sqlite",
+        "--prompt-optimization-json",
+    ]);
+    assert_eq!(
+        cli.prompt_optimization_config.as_deref(),
+        Some(Path::new(".tau/prompt-optimization.json"))
+    );
+    assert_eq!(
+        cli.prompt_optimization_store_sqlite,
+        PathBuf::from(".tau/training/alt.sqlite")
+    );
+    assert!(cli.prompt_optimization_json);
+}
+
+#[test]
+fn regression_cli_prompt_optimization_flags_accept_legacy_train_aliases() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--train-config",
+        ".tau/train-legacy.json",
+        "--train-store-sqlite",
+        ".tau/training/legacy.sqlite",
+        "--train-json",
+    ]);
+    assert_eq!(
+        cli.prompt_optimization_config.as_deref(),
+        Some(Path::new(".tau/train-legacy.json"))
+    );
+    assert_eq!(
+        cli.prompt_optimization_store_sqlite,
+        PathBuf::from(".tau/training/legacy.sqlite")
+    );
+    assert!(cli.prompt_optimization_json);
+}
+
+#[test]
+fn functional_cli_prompt_optimization_proxy_flags_accept_canonical_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--prompt-optimization-proxy-server",
+        "--prompt-optimization-proxy-bind",
+        "127.0.0.1:8899",
+        "--prompt-optimization-proxy-upstream-url",
+        "http://127.0.0.1:4000",
+        "--prompt-optimization-proxy-state-dir",
+        ".tau-alt",
+        "--prompt-optimization-proxy-timeout-ms",
+        "45000",
+    ]);
+    assert!(cli.prompt_optimization_proxy_server);
+    assert_eq!(cli.prompt_optimization_proxy_bind, "127.0.0.1:8899");
+    assert_eq!(
+        cli.prompt_optimization_proxy_upstream_url.as_deref(),
+        Some("http://127.0.0.1:4000")
+    );
+    assert_eq!(
+        cli.prompt_optimization_proxy_state_dir,
+        PathBuf::from(".tau-alt")
+    );
+    assert_eq!(cli.prompt_optimization_proxy_timeout_ms, 45_000);
+}
+
+#[test]
+fn regression_cli_prompt_optimization_proxy_flags_accept_legacy_training_aliases() {
     let cli = parse_cli_with_stack([
         "tau-rs",
         "--training-proxy-server",
         "--training-proxy-bind",
-        "127.0.0.1:8899",
+        "127.0.0.1:8866",
         "--training-proxy-upstream-url",
-        "http://127.0.0.1:4000",
+        "http://127.0.0.1:5000",
         "--training-proxy-state-dir",
-        ".tau-alt",
+        ".tau-legacy",
         "--training-proxy-timeout-ms",
-        "45000",
+        "42000",
     ]);
-    assert!(cli.training_proxy_server);
-    assert_eq!(cli.training_proxy_bind, "127.0.0.1:8899");
+    assert!(cli.prompt_optimization_proxy_server);
+    assert_eq!(cli.prompt_optimization_proxy_bind, "127.0.0.1:8866");
     assert_eq!(
-        cli.training_proxy_upstream_url.as_deref(),
-        Some("http://127.0.0.1:4000")
+        cli.prompt_optimization_proxy_upstream_url.as_deref(),
+        Some("http://127.0.0.1:5000")
     );
-    assert_eq!(cli.training_proxy_state_dir, PathBuf::from(".tau-alt"));
-    assert_eq!(cli.training_proxy_timeout_ms, 45_000);
+    assert_eq!(
+        cli.prompt_optimization_proxy_state_dir,
+        PathBuf::from(".tau-legacy")
+    );
+    assert_eq!(cli.prompt_optimization_proxy_timeout_ms, 42_000);
 }
 
 #[test]
-fn regression_cli_training_proxy_bind_requires_training_proxy_server_flag() {
-    let parse = try_parse_cli_with_stack(["tau-rs", "--training-proxy-bind", "127.0.0.1:8899"]);
+fn regression_cli_prompt_optimization_proxy_bind_requires_proxy_server_flag() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--prompt-optimization-proxy-bind",
+        "127.0.0.1:8899",
+    ]);
     let error = parse.expect_err("proxy bind should require proxy server mode");
     assert!(error
         .to_string()

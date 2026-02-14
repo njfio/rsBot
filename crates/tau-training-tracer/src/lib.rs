@@ -223,13 +223,31 @@ impl TrainingTracer {
                     ]),
                 );
             }
+            AgentEvent::SafetyPolicyApplied {
+                stage,
+                mode,
+                blocked,
+                matched_rules,
+                reason_codes,
+            } => {
+                self.instant_span(
+                    "agent.safety_policy_applied".to_string(),
+                    HashMap::from([
+                        ("stage".to_string(), json!(stage.as_str())),
+                        ("mode".to_string(), json!(mode)),
+                        ("blocked".to_string(), json!(blocked)),
+                        ("matched_rules".to_string(), json!(matched_rules)),
+                        ("reason_codes".to_string(), json!(reason_codes)),
+                    ]),
+                );
+            }
         }
     }
 
     /// Flushes completed spans to the backing store.
     pub async fn flush(&self, store: &(dyn TrainingStore + Send + Sync)) -> StoreResult<usize> {
         let spans = {
-            let mut inner = self.inner.lock().expect("training tracer mutex poisoned");
+            let mut inner = self.lock_inner();
             let now = Utc::now();
 
             let open_ids: Vec<String> = inner.open_spans.keys().cloned().collect();
@@ -270,7 +288,7 @@ impl TrainingTracer {
 
     /// Returns an in-memory snapshot of completed spans.
     pub fn completed_spans(&self) -> Vec<TrainingSpan> {
-        let inner = self.inner.lock().expect("training tracer mutex poisoned");
+        let inner = self.lock_inner();
         let mut spans = inner.completed_spans.clone();
         spans.sort_by_key(|span| span.sequence_id);
         spans
@@ -278,13 +296,13 @@ impl TrainingTracer {
 
     fn start_managed_span(&self, key: String, name: String, attributes: HashMap<String, Value>) {
         let span_id = self.start_span(name, None, attributes);
-        let mut inner = self.inner.lock().expect("training tracer mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.managed_keys.insert(key, span_id);
     }
 
     fn end_managed_span(&self, key: &str, extra_attributes: HashMap<String, Value>) {
         let span_id = {
-            let mut inner = self.inner.lock().expect("training tracer mutex poisoned");
+            let mut inner = self.lock_inner();
             inner.managed_keys.remove(key)
         };
         if let Some(span_id) = span_id {
@@ -300,7 +318,7 @@ impl TrainingTracer {
         parent_id: Option<String>,
         attributes: HashMap<String, Value>,
     ) -> String {
-        let mut inner = self.inner.lock().expect("training tracer mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.next_sequence_id += 1;
         let sequence_id = inner.next_sequence_id;
         let span_id = next_id("span");
@@ -319,7 +337,7 @@ impl TrainingTracer {
     }
 
     fn end_span(&self, span_id: &str, extra_attributes: HashMap<String, Value>) {
-        let mut inner = self.inner.lock().expect("training tracer mutex poisoned");
+        let mut inner = self.lock_inner();
         let Some(mut open) = inner.open_spans.remove(span_id) else {
             return;
         };
@@ -345,7 +363,7 @@ impl TrainingTracer {
     }
 
     fn instant_span(&self, name: String, attributes: HashMap<String, Value>) {
-        let mut inner = self.inner.lock().expect("training tracer mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.next_sequence_id += 1;
         let sequence_id = inner.next_sequence_id;
         let now = Utc::now();
@@ -364,6 +382,13 @@ impl TrainingTracer {
             end_time: Some(now),
         });
     }
+
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, TrainingTracerInner> {
+        match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 }
 
 fn next_id(prefix: &str) -> String {
@@ -377,7 +402,7 @@ fn next_id(prefix: &str) -> String {
 mod tests {
     use super::TrainingTracer;
     use serde_json::json;
-    use tau_agent_core::AgentEvent;
+    use tau_agent_core::{AgentEvent, SafetyMode, SafetyStage};
     use tau_ai::ChatUsage;
     use tau_training_store::{InMemoryTrainingStore, TrainingStore};
     use tau_training_types::Reward;
@@ -406,6 +431,25 @@ mod tests {
         assert_eq!(spans[0].attributes.get("reward_value"), Some(&json!(1.0)));
     }
 
+    #[test]
+    fn regression_poisoned_mutex_does_not_panic_or_drop_spans() {
+        let tracer = TrainingTracer::new("r-1", "a-1");
+        let poisoned = tracer.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned
+                .inner
+                .lock()
+                .unwrap_or_else(|inner| inner.into_inner());
+            panic!("intentional poison");
+        })
+        .join();
+
+        tracer.emit_reward(Reward::new("recovered", 1.0));
+        let spans = tracer.completed_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].name, "reward.emit");
+    }
+
     #[tokio::test]
     async fn maps_agent_events_and_flushes_to_store() {
         let tracer = TrainingTracer::new("r-1", "a-1");
@@ -425,5 +469,25 @@ mod tests {
         let spans = store.query_spans("r-1", Some("a-1")).await.expect("query");
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].name, "agent.turn.1");
+    }
+
+    #[test]
+    fn maps_safety_policy_events_into_spans() {
+        let tracer = TrainingTracer::new("r-1", "a-1");
+        tracer.on_agent_event(&AgentEvent::SafetyPolicyApplied {
+            stage: SafetyStage::InboundMessage,
+            mode: SafetyMode::Redact,
+            blocked: false,
+            matched_rules: vec!["literal.ignore_previous_instructions".to_string()],
+            reason_codes: vec!["prompt_injection.ignore_instructions".to_string()],
+        });
+        let spans = tracer.completed_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].name, "agent.safety_policy_applied");
+        assert_eq!(
+            spans[0].attributes.get("stage"),
+            Some(&json!("inbound_message"))
+        );
+        assert_eq!(spans[0].attributes.get("mode"), Some(&json!("redact")));
     }
 }

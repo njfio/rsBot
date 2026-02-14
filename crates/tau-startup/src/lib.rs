@@ -24,11 +24,17 @@ use tau_gateway::{
 };
 use tau_session::validate_session_file;
 
+/// Shared startup/runtime value objects used across CLI entrypoints.
 pub mod runtime_types;
+/// Command-file execution runtime helpers.
 pub mod startup_command_file_runtime;
+/// Model-catalog resolution and validation helpers for startup.
 pub mod startup_model_catalog;
+/// Multi-channel adapter factories used by startup command wiring.
 pub mod startup_multi_channel_adapters;
+/// Multi-channel command implementations executed during startup preflight.
 pub mod startup_multi_channel_commands;
+/// RPC capabilities command rendering and dispatch helpers.
 pub mod startup_rpc_capabilities_command;
 
 pub use runtime_types::*;
@@ -84,6 +90,7 @@ pub trait StartupPreflightActions {
     fn handle_daemon_commands(&self, cli: &Cli) -> Result<bool>;
 }
 
+/// Executes startup preflight commands and returns whether startup was handled.
 pub fn execute_startup_preflight(cli: &Cli, actions: &dyn StartupPreflightActions) -> Result<bool> {
     if cli.onboard {
         actions.execute_onboarding_command(cli)?;

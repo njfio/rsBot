@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::time_utils::current_unix_timestamp;
 
+/// Writes text using a temp file + rename so readers never observe partial data.
 pub fn write_text_atomic(path: &Path, content: &str) -> Result<()> {
     if path.as_os_str().is_empty() {
         bail!("destination path cannot be empty");

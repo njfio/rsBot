@@ -19,6 +19,7 @@ use tau_ai::StreamDeltaHandler;
 use tau_session::SessionRuntime;
 use tokio::sync::mpsc;
 
+/// GitHub Issues bridge runtime internals and transport loop entrypoints.
 pub mod github_issues_runtime;
 
 pub use github_issues_runtime::{run_github_issues_bridge, GithubIssuesBridgeRuntimeConfig};
@@ -40,12 +41,14 @@ pub use tau_startup::runtime_types::RenderOptions;
 pub use tau_startup::runtime_types::{DoctorCommandConfig, DoctorMultiChannelReadinessConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Outcome reported by prompt execution with cancellation/timeout controls.
 pub enum PromptRunStatus {
     Completed,
     Cancelled,
     TimedOut,
 }
 
+/// Runs a prompt turn with cooperative cancellation and bounded timeout handling.
 pub async fn run_prompt_with_cancellation<F>(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,

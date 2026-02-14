@@ -37,6 +37,7 @@ const SLACK_METADATA_MARKER_PREFIX: &str = "<!-- tau-slack-event:";
 const SLACK_METADATA_MARKER_SUFFIX: &str = " -->";
 
 #[derive(Clone)]
+/// Runtime configuration for the Slack bridge transport loop.
 pub struct SlackBridgeRuntimeConfig {
     pub client: Arc<dyn LlmClient>,
     pub model: String,
@@ -212,6 +213,7 @@ pub(crate) struct PollCycleReport {
     pub failed_events: usize,
 }
 
+/// Runs the Slack bridge transport loop and processes incoming events.
 pub async fn run_slack_bridge(config: SlackBridgeRuntimeConfig) -> Result<()> {
     let mut runtime = SlackBridgeRuntime::new(config).await?;
     runtime.run().await
