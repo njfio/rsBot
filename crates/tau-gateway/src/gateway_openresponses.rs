@@ -54,10 +54,11 @@ use types::{
     OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage,
     OpenResponsesUsageSummary, SseFrame,
 };
-use webchat_page::render_gateway_webchat_page;
+use webchat_page::{render_gateway_dashboard_page, render_gateway_webchat_page};
 use websocket::run_gateway_ws_connection;
 
 const OPENRESPONSES_ENDPOINT: &str = "/v1/responses";
+const DASHBOARD_ENDPOINT: &str = "/dashboard";
 const WEBCHAT_ENDPOINT: &str = "/webchat";
 const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
 const GATEWAY_WS_ENDPOINT: &str = "/gateway/ws";
@@ -346,10 +347,15 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             GATEWAY_AUTH_SESSION_ENDPOINT,
             post(handle_gateway_auth_session),
         )
+        .route(DASHBOARD_ENDPOINT, get(handle_dashboard_page))
         .route(WEBCHAT_ENDPOINT, get(handle_webchat_page))
         .route(GATEWAY_STATUS_ENDPOINT, get(handle_gateway_status))
         .route(GATEWAY_WS_ENDPOINT, get(handle_gateway_ws_upgrade))
         .with_state(state)
+}
+
+async fn handle_dashboard_page() -> Html<String> {
+    Html(render_gateway_dashboard_page())
 }
 
 async fn handle_webchat_page() -> Html<String> {
@@ -388,6 +394,7 @@ async fn handle_gateway_status(
             "multi_channel": multi_channel_report,
             "gateway": {
                 "responses_endpoint": OPENRESPONSES_ENDPOINT,
+                "dashboard_endpoint": DASHBOARD_ENDPOINT,
                 "webchat_endpoint": WEBCHAT_ENDPOINT,
                 "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
                 "status_endpoint": GATEWAY_STATUS_ENDPOINT,
