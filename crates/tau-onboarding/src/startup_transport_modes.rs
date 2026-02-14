@@ -4,18 +4,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tau_ai::{LlmClient, ModelRef};
+use tau_browser_automation::browser_automation_contract::load_browser_automation_contract_fixture;
+use tau_browser_automation::browser_automation_live::{
+    run_browser_automation_live_fixture, BrowserAutomationLivePolicy, BrowserSessionManager,
+    PlaywrightCliActionExecutor,
+};
 use tau_browser_automation::browser_automation_runtime::{
     run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
 };
 use tau_cli::validation::{
-    validate_browser_automation_contract_runner_cli, validate_custom_command_contract_runner_cli,
-    validate_dashboard_contract_runner_cli, validate_deployment_contract_runner_cli,
-    validate_events_runner_cli, validate_gateway_contract_runner_cli,
-    validate_gateway_openresponses_server_cli, validate_github_issues_bridge_cli,
-    validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
-    validate_multi_channel_contract_runner_cli, validate_multi_channel_live_connectors_runner_cli,
-    validate_multi_channel_live_runner_cli, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli, validate_voice_live_runner_cli,
+    validate_browser_automation_contract_runner_cli, validate_browser_automation_live_runner_cli,
+    validate_custom_command_contract_runner_cli, validate_dashboard_contract_runner_cli,
+    validate_deployment_contract_runner_cli, validate_events_runner_cli,
+    validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
+    validate_github_issues_bridge_cli, validate_memory_contract_runner_cli,
+    validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
+    validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_runner_cli,
+    validate_slack_bridge_cli, validate_voice_contract_runner_cli, validate_voice_live_runner_cli,
 };
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
@@ -73,6 +78,7 @@ pub enum ContractTransportMode {
     None,
     MultiAgent,
     BrowserAutomation,
+    BrowserAutomationLive,
     Memory,
     Dashboard,
     Gateway,
@@ -95,6 +101,7 @@ pub enum TransportRuntimeMode {
     MultiChannelLiveConnectorsRunner,
     MultiAgentContractRunner,
     BrowserAutomationContractRunner,
+    BrowserAutomationLiveRunner,
     MemoryContractRunner,
     DashboardContractRunner,
     GatewayContractRunner,
@@ -116,6 +123,7 @@ pub trait TransportRuntimeExecutor {
     async fn run_multi_channel_live_connectors_runner(&self) -> Result<()>;
     async fn run_multi_agent_contract_runner(&self) -> Result<()>;
     async fn run_browser_automation_contract_runner(&self) -> Result<()>;
+    async fn run_browser_automation_live_runner(&self) -> Result<()>;
     async fn run_memory_contract_runner(&self) -> Result<()>;
     async fn run_dashboard_contract_runner(&self) -> Result<()>;
     async fn run_gateway_contract_runner(&self) -> Result<()>;
@@ -169,6 +177,10 @@ where
             executor.run_browser_automation_contract_runner().await?;
             Ok(true)
         }
+        TransportRuntimeMode::BrowserAutomationLiveRunner => {
+            executor.run_browser_automation_live_runner().await?;
+            Ok(true)
+        }
         TransportRuntimeMode::MemoryContractRunner => {
             executor.run_memory_contract_runner().await?;
             Ok(true)
@@ -218,6 +230,7 @@ pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_multi_channel_live_connectors_runner_cli(cli)?;
     validate_multi_agent_contract_runner_cli(cli)?;
     validate_browser_automation_contract_runner_cli(cli)?;
+    validate_browser_automation_live_runner_cli(cli)?;
     validate_memory_contract_runner_cli(cli)?;
     validate_dashboard_contract_runner_cli(cli)?;
     validate_gateway_openresponses_server_cli(cli)?;
@@ -337,6 +350,8 @@ pub fn resolve_contract_transport_mode(cli: &Cli) -> ContractTransportMode {
         ContractTransportMode::MultiAgent
     } else if cli.browser_automation_contract_runner {
         ContractTransportMode::BrowserAutomation
+    } else if cli.browser_automation_live_runner {
+        ContractTransportMode::BrowserAutomationLive
     } else if cli.memory_contract_runner {
         ContractTransportMode::Memory
     } else if cli.dashboard_contract_runner {
@@ -387,6 +402,9 @@ pub fn resolve_transport_runtime_mode(cli: &Cli) -> TransportRuntimeMode {
         ContractTransportMode::MultiAgent => return TransportRuntimeMode::MultiAgentContractRunner,
         ContractTransportMode::BrowserAutomation => {
             return TransportRuntimeMode::BrowserAutomationContractRunner;
+        }
+        ContractTransportMode::BrowserAutomationLive => {
+            return TransportRuntimeMode::BrowserAutomationLiveRunner;
         }
         ContractTransportMode::Memory => return TransportRuntimeMode::MemoryContractRunner,
         ContractTransportMode::Dashboard => return TransportRuntimeMode::DashboardContractRunner,
@@ -534,6 +552,14 @@ pub struct BrowserAutomationContractRunnerConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `BrowserAutomationLiveRunnerConfig` used across Tau components.
+pub struct BrowserAutomationLiveRunnerConfig {
+    pub fixture_path: PathBuf,
+    pub playwright_cli: String,
+    pub policy: BrowserAutomationLivePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `StandardContractRunnerConfig` used across Tau components.
 pub struct StandardContractRunnerConfig {
     pub fixture_path: PathBuf,
@@ -626,6 +652,35 @@ pub async fn run_browser_automation_contract_runner_if_requested(cli: &Cli) -> R
         allow_unsafe_actions: config.allow_unsafe_actions,
     })
     .await?;
+    Ok(true)
+}
+
+pub fn build_browser_automation_live_runner_config(cli: &Cli) -> BrowserAutomationLiveRunnerConfig {
+    BrowserAutomationLiveRunnerConfig {
+        fixture_path: cli.browser_automation_live_fixture.clone(),
+        playwright_cli: cli.browser_automation_playwright_cli.trim().to_string(),
+        policy: BrowserAutomationLivePolicy::default(),
+    }
+}
+
+pub async fn run_browser_automation_live_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.browser_automation_live_runner {
+        return Ok(false);
+    }
+    let config = build_browser_automation_live_runner_config(cli);
+    let fixture = load_browser_automation_contract_fixture(&config.fixture_path)?;
+    let executor = PlaywrightCliActionExecutor::new(config.playwright_cli)?;
+    let mut manager = BrowserSessionManager::new(executor);
+    let summary = run_browser_automation_live_fixture(&fixture, &mut manager, &config.policy)?;
+
+    println!(
+        "browser automation live summary: discovered={} success={} malformed={} retryable_failures={}",
+        summary.discovered_cases,
+        summary.success_cases,
+        summary.malformed_cases,
+        summary.retryable_failures
+    );
+
     Ok(true)
 }
 

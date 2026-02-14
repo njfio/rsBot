@@ -3004,10 +3004,31 @@ pub struct Cli {
         long = "browser-automation-contract-runner",
         env = "TAU_BROWSER_AUTOMATION_CONTRACT_RUNNER",
         default_value_t = false,
-        conflicts_with = "browser_automation_preflight",
+        conflicts_with_all = ["browser_automation_live_runner", "browser_automation_preflight"],
         help = "Run fixture-driven browser automation runtime contract scenarios"
     )]
     pub browser_automation_contract_runner: bool,
+
+    #[arg(
+        long = "browser-automation-live-runner",
+        env = "TAU_BROWSER_AUTOMATION_LIVE_RUNNER",
+        default_value_t = false,
+        conflicts_with_all = [
+            "browser_automation_contract_runner",
+            "browser_automation_preflight"
+        ],
+        help = "Run browser automation fixtures against a live Playwright CLI executor"
+    )]
+    pub browser_automation_live_runner: bool,
+
+    #[arg(
+        long = "browser-automation-live-fixture",
+        env = "TAU_BROWSER_AUTOMATION_LIVE_FIXTURE",
+        default_value = "crates/tau-coding-agent/testdata/browser-automation-live/live-sequence.json",
+        requires = "browser_automation_live_runner",
+        help = "Path to browser automation live fixture JSON"
+    )]
+    pub browser_automation_live_fixture: PathBuf,
 
     #[arg(
         long = "browser-automation-fixture",
@@ -3097,7 +3118,7 @@ pub struct Cli {
         long = "browser-automation-playwright-cli",
         env = "TAU_BROWSER_AUTOMATION_PLAYWRIGHT_CLI",
         default_value = "playwright-cli",
-        help = "Playwright CLI executable used for browser automation preflight and doctor checks"
+        help = "Playwright CLI executable used for browser automation preflight, live runner, and doctor checks"
     )]
     pub browser_automation_playwright_cli: String,
 
@@ -3105,7 +3126,10 @@ pub struct Cli {
         long = "browser-automation-preflight",
         env = "TAU_BROWSER_AUTOMATION_PREFLIGHT",
         default_value_t = false,
-        conflicts_with = "browser_automation_contract_runner",
+        conflicts_with_all = [
+            "browser_automation_contract_runner",
+            "browser_automation_live_runner"
+        ],
         help = "Run browser automation prerequisite checks and exit"
     )]
     pub browser_automation_preflight: bool,

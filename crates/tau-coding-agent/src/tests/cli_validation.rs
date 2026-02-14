@@ -1260,6 +1260,65 @@ fn regression_cli_gateway_guardrail_flags_require_gateway_runner_flag() {
 }
 
 #[test]
+fn unit_cli_browser_automation_live_runner_flags_default_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.browser_automation_contract_runner);
+    assert!(!cli.browser_automation_live_runner);
+    assert_eq!(
+        cli.browser_automation_live_fixture,
+        PathBuf::from(
+            "crates/tau-coding-agent/testdata/browser-automation-live/live-sequence.json"
+        )
+    );
+    assert_eq!(cli.browser_automation_playwright_cli, "playwright-cli");
+}
+
+#[test]
+fn functional_cli_browser_automation_live_runner_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--browser-automation-live-runner",
+        "--browser-automation-live-fixture",
+        "fixtures/browser-live.json",
+        "--browser-automation-playwright-cli",
+        "./bin/mock-playwright-cli",
+    ]);
+    assert!(cli.browser_automation_live_runner);
+    assert_eq!(
+        cli.browser_automation_live_fixture,
+        PathBuf::from("fixtures/browser-live.json")
+    );
+    assert_eq!(
+        cli.browser_automation_playwright_cli,
+        "./bin/mock-playwright-cli"
+    );
+}
+
+#[test]
+fn regression_cli_browser_automation_live_fixture_requires_live_runner_flag() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--browser-automation-live-fixture",
+        "fixtures/browser-live.json",
+    ]);
+    let error = parse.expect_err("fixture flag should require live runner mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_browser_automation_live_runner_conflicts_with_contract_runner() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--browser-automation-live-runner",
+        "--browser-automation-contract-runner",
+    ]);
+    let error = parse.expect_err("live runner should conflict with contract runner");
+    assert!(error.to_string().contains("cannot be used with"));
+}
+
+#[test]
 fn unit_cli_deployment_runner_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.deployment_contract_runner);

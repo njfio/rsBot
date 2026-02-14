@@ -663,6 +663,10 @@ pub(crate) fn test_cli() -> Cli {
         multi_agent_retry_max_attempts: 4,
         multi_agent_retry_base_delay_ms: 0,
         browser_automation_contract_runner: false,
+        browser_automation_live_runner: false,
+        browser_automation_live_fixture: PathBuf::from(
+            "crates/tau-coding-agent/testdata/browser-automation-live/live-sequence.json",
+        ),
         browser_automation_fixture: PathBuf::from(
             "crates/tau-coding-agent/testdata/browser-automation-contract/mixed-outcomes.json",
         ),

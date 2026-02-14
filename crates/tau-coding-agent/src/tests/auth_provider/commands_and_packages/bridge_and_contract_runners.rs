@@ -1,7 +1,9 @@
 //! Tests for bridge and contract-runner CLI validation surfaces.
 
 use super::*;
-use tau_cli::validate_browser_automation_contract_runner_cli;
+use tau_cli::{
+    validate_browser_automation_contract_runner_cli, validate_browser_automation_live_runner_cli,
+};
 
 #[test]
 fn unit_validate_github_issues_bridge_cli_accepts_minimum_configuration() {
@@ -933,6 +935,68 @@ fn integration_validate_browser_automation_contract_runner_cli_rejects_transport
         "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner"
     ));
     assert!(error.to_string().contains("--browser-automation-preflight"));
+}
+
+#[test]
+fn unit_validate_browser_automation_live_runner_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("browser-automation-live-fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.browser_automation_live_runner = true;
+    cli.browser_automation_live_fixture = fixture_path;
+
+    validate_browser_automation_live_runner_cli(&cli)
+        .expect("browser automation live runner config should validate");
+}
+
+#[test]
+fn integration_validate_browser_automation_live_runner_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("browser-automation-live-fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.browser_automation_live_runner = true;
+    cli.browser_automation_live_fixture = fixture_path;
+    cli.voice_live_runner = true;
+
+    let error = validate_browser_automation_live_runner_cli(&cli).expect_err("transport conflict");
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-contract-runner"));
+    assert!(error.to_string().contains("--voice-live-runner"));
+}
+
+#[test]
+fn regression_validate_browser_automation_live_runner_cli_requires_non_empty_playwright_cli() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("browser-automation-live-fixture.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.browser_automation_live_runner = true;
+    cli.browser_automation_live_fixture = fixture_path;
+    cli.browser_automation_playwright_cli = "   ".to_string();
+
+    let error = validate_browser_automation_live_runner_cli(&cli)
+        .expect_err("empty playwright cli should fail");
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-playwright-cli"));
+}
+
+#[test]
+fn regression_validate_browser_automation_live_runner_cli_requires_existing_fixture() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.browser_automation_live_runner = true;
+    cli.browser_automation_live_fixture = temp.path().join("missing-live-fixture.json");
+
+    let error =
+        validate_browser_automation_live_runner_cli(&cli).expect_err("missing fixture should fail");
+    assert!(error.to_string().contains("does not exist"));
 }
 
 #[test]

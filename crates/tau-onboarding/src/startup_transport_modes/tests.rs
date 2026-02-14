@@ -1,16 +1,17 @@
 //! Tests for onboarding transport-mode routing and guardrails.
 
 use super::{
-    build_browser_automation_contract_runner_config, build_custom_command_contract_runner_config,
-    build_custom_command_default_execution_policy, build_dashboard_contract_runner_config,
-    build_deployment_contract_runner_config, build_events_runner_cli_config,
-    build_gateway_contract_runner_config, build_gateway_openresponses_server_config,
-    build_github_issues_bridge_cli_config, build_memory_contract_runner_config,
-    build_multi_agent_contract_runner_config, build_multi_channel_contract_runner_config,
-    build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
-    build_multi_channel_media_config, build_multi_channel_outbound_config,
-    build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
-    build_slack_bridge_cli_config, build_transport_doctor_config, build_transport_runtime_defaults,
+    build_browser_automation_contract_runner_config, build_browser_automation_live_runner_config,
+    build_custom_command_contract_runner_config, build_custom_command_default_execution_policy,
+    build_dashboard_contract_runner_config, build_deployment_contract_runner_config,
+    build_events_runner_cli_config, build_gateway_contract_runner_config,
+    build_gateway_openresponses_server_config, build_github_issues_bridge_cli_config,
+    build_memory_contract_runner_config, build_multi_agent_contract_runner_config,
+    build_multi_channel_contract_runner_config, build_multi_channel_live_connectors_config,
+    build_multi_channel_live_runner_config, build_multi_channel_media_config,
+    build_multi_channel_outbound_config, build_multi_channel_runtime_dependencies,
+    build_multi_channel_telemetry_config, build_slack_bridge_cli_config,
+    build_transport_doctor_config, build_transport_runtime_defaults,
     build_voice_contract_runner_config, build_voice_live_runner_config,
     execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
     resolve_bridge_transport_mode, resolve_contract_transport_mode,
@@ -54,6 +55,16 @@ fn parse_cli_with_stack() -> Cli {
         .expect("spawn cli parse thread")
         .join()
         .expect("join cli parse thread")
+}
+
+fn make_script_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("set executable permissions");
+    }
 }
 
 struct NoopClient;
@@ -164,6 +175,13 @@ impl TransportRuntimeExecutor for RecordingTransportRuntimeExecutor {
         self.record(
             TransportRuntimeMode::BrowserAutomationContractRunner,
             "browser-automation-contract",
+        )
+    }
+
+    async fn run_browser_automation_live_runner(&self) -> anyhow::Result<()> {
+        self.record(
+            TransportRuntimeMode::BrowserAutomationLiveRunner,
+            "browser-automation-live",
         )
     }
 
@@ -502,6 +520,7 @@ fn functional_resolve_transport_runtime_mode_prefers_gateway_openresponses_serve
     cli.multi_channel_live_connectors_runner = true;
     cli.multi_agent_contract_runner = true;
     cli.browser_automation_contract_runner = true;
+    cli.browser_automation_live_runner = true;
     cli.memory_contract_runner = true;
     cli.dashboard_contract_runner = true;
     cli.gateway_contract_runner = true;
@@ -559,6 +578,16 @@ fn regression_resolve_transport_runtime_mode_selects_voice_live_runner() {
     );
 }
 
+#[test]
+fn regression_resolve_transport_runtime_mode_selects_browser_automation_live_runner() {
+    let mut cli = parse_cli_with_stack();
+    cli.browser_automation_live_runner = true;
+    assert_eq!(
+        resolve_transport_runtime_mode(&cli),
+        TransportRuntimeMode::BrowserAutomationLiveRunner
+    );
+}
+
 #[tokio::test]
 async fn unit_execute_transport_runtime_mode_returns_false_for_none() {
     let executor = RecordingTransportRuntimeExecutor::new(None);
@@ -599,6 +628,19 @@ async fn integration_execute_transport_runtime_mode_dispatches_voice_live_runner
         .expect("dispatch succeeds");
     assert!(handled);
     assert_eq!(executor.calls(), vec!["voice-live"]);
+}
+
+#[tokio::test]
+async fn integration_execute_transport_runtime_mode_dispatches_browser_automation_live_runner() {
+    let executor = RecordingTransportRuntimeExecutor::new(None);
+    let handled = execute_transport_runtime_mode(
+        TransportRuntimeMode::BrowserAutomationLiveRunner,
+        &executor,
+    )
+    .await
+    .expect("dispatch succeeds");
+    assert!(handled);
+    assert_eq!(executor.calls(), vec!["browser-automation-live"]);
 }
 
 #[tokio::test]
@@ -685,6 +727,7 @@ fn functional_resolve_contract_transport_mode_prefers_multi_agent() {
     let mut cli = parse_cli_with_stack();
     cli.multi_agent_contract_runner = true;
     cli.browser_automation_contract_runner = true;
+    cli.browser_automation_live_runner = true;
     cli.memory_contract_runner = true;
     cli.dashboard_contract_runner = true;
     cli.gateway_contract_runner = true;
@@ -695,6 +738,16 @@ fn functional_resolve_contract_transport_mode_prefers_multi_agent() {
     assert_eq!(
         resolve_contract_transport_mode(&cli),
         ContractTransportMode::MultiAgent
+    );
+}
+
+#[test]
+fn integration_resolve_contract_transport_mode_selects_browser_automation_live() {
+    let mut cli = parse_cli_with_stack();
+    cli.browser_automation_live_runner = true;
+    assert_eq!(
+        resolve_contract_transport_mode(&cli),
+        ContractTransportMode::BrowserAutomationLive
     );
 }
 
@@ -1175,6 +1228,86 @@ async fn unit_run_browser_automation_contract_runner_if_requested_returns_false_
 }
 
 #[tokio::test]
+async fn unit_run_browser_automation_live_runner_if_requested_returns_false_when_disabled() {
+    let cli = parse_cli_with_stack();
+
+    let handled = super::run_browser_automation_live_runner_if_requested(&cli)
+        .await
+        .expect("browser automation live helper");
+
+    assert!(!handled);
+}
+
+#[tokio::test]
+async fn integration_run_browser_automation_live_runner_if_requested_executes_runtime() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("browser-live-fixture.json");
+    std::fs::write(
+        &fixture_path,
+        r#"{
+  "schema_version": 1,
+  "name": "browser-live",
+  "cases": [
+    {
+      "schema_version": 1,
+      "case_id": "snapshot-live",
+      "operation": "snapshot",
+      "expected": {
+        "outcome": "success",
+        "status_code": 200,
+        "response_body": {
+          "status": "ok",
+          "operation": "snapshot",
+          "snapshot_id": "snapshot-live",
+          "elements": [{ "id": "e1", "role": "button", "name": "Run" }]
+        }
+      }
+    }
+  ]
+}"#,
+    )
+    .expect("write fixture");
+
+    let script_path = temp.path().join("mock-playwright-cli.py");
+    std::fs::write(
+        &script_path,
+        r#"#!/usr/bin/env python3
+import json
+import sys
+
+command = sys.argv[1] if len(sys.argv) > 1 else ""
+if command in ("start-session", "shutdown-session"):
+    print(json.dumps({"status": "ok"}))
+    raise SystemExit(0)
+if command != "execute-action":
+    raise SystemExit(2)
+payload = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+print(json.dumps({
+  "status_code": 200,
+  "response_body": {
+    "status": "ok",
+    "operation": payload.get("operation", ""),
+    "snapshot_id": "snapshot-live",
+    "elements": [{"id": "e1", "role": "button", "name": "Run"}]
+  }
+}))
+"#,
+    )
+    .expect("write script");
+    make_script_executable(&script_path);
+
+    let mut cli = parse_cli_with_stack();
+    cli.browser_automation_live_runner = true;
+    cli.browser_automation_live_fixture = fixture_path;
+    cli.browser_automation_playwright_cli = script_path.display().to_string();
+
+    let handled = super::run_browser_automation_live_runner_if_requested(&cli)
+        .await
+        .expect("live runner should execute");
+    assert!(handled);
+}
+
+#[tokio::test]
 async fn unit_run_memory_contract_runner_if_requested_returns_false_when_disabled() {
     let cli = parse_cli_with_stack();
 
@@ -1437,6 +1570,21 @@ fn integration_build_browser_automation_contract_runner_config_preserves_runtime
     assert_eq!(config.action_timeout_ms, 123);
     assert_eq!(config.max_actions_per_case, 9);
     assert!(config.allow_unsafe_actions);
+}
+
+#[test]
+fn integration_build_browser_automation_live_runner_config_preserves_runtime_fields() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = parse_cli_with_stack();
+    cli.browser_automation_live_fixture = temp.path().join("browser-automation-live-fixture.json");
+    cli.browser_automation_playwright_cli = "  /tmp/mock-playwright-cli  ".to_string();
+
+    let config = build_browser_automation_live_runner_config(&cli);
+    assert_eq!(config.fixture_path, cli.browser_automation_live_fixture);
+    assert_eq!(config.playwright_cli, "/tmp/mock-playwright-cli");
+    assert_eq!(config.policy.action_timeout_ms, 5_000);
+    assert_eq!(config.policy.max_actions_per_case, 8);
+    assert!(!config.policy.allow_unsafe_actions);
 }
 
 #[test]

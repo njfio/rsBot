@@ -923,6 +923,7 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         || cli.multi_channel_contract_runner
         || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
+        || cli.browser_automation_live_runner
         || cli.browser_automation_preflight
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
@@ -933,7 +934,7 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         || cli.voice_live_runner
     {
         bail!(
-            "--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --browser-automation-preflight, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, --voice-contract-runner, or --voice-live-runner"
+            "--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --browser-automation-live-runner, --browser-automation-preflight, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, --voice-contract-runner, or --voice-live-runner"
         );
     }
     if cli.browser_automation_queue_limit == 0 {
@@ -967,6 +968,56 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
     Ok(())
 }
 
+pub fn validate_browser_automation_live_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.browser_automation_live_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--browser-automation-live-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--browser-automation-live-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.browser_automation_preflight
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+        || cli.voice_live_runner
+    {
+        bail!(
+            "--browser-automation-live-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --browser-automation-contract-runner, --browser-automation-preflight, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, --voice-contract-runner, or --voice-live-runner"
+        );
+    }
+    if cli.browser_automation_playwright_cli.trim().is_empty() {
+        bail!("--browser-automation-playwright-cli cannot be empty");
+    }
+    if !cli.browser_automation_live_fixture.exists() {
+        bail!(
+            "--browser-automation-live-fixture '{}' does not exist",
+            cli.browser_automation_live_fixture.display()
+        );
+    }
+    if !cli.browser_automation_live_fixture.is_file() {
+        bail!(
+            "--browser-automation-live-fixture '{}' must point to a file",
+            cli.browser_automation_live_fixture.display()
+        );
+    }
+
+    Ok(())
+}
+
 pub fn validate_browser_automation_preflight_cli(cli: &Cli) -> Result<()> {
     if !cli.browser_automation_preflight {
         return Ok(());
@@ -982,6 +1033,7 @@ pub fn validate_browser_automation_preflight_cli(cli: &Cli) -> Result<()> {
         || cli.multi_channel_live_runner
         || cli.multi_agent_contract_runner
         || cli.browser_automation_contract_runner
+        || cli.browser_automation_live_runner
         || cli.memory_contract_runner
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
