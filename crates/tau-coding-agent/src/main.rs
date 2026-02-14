@@ -293,7 +293,7 @@ pub(crate) use tau_cli::validation::{
     validate_github_issues_bridge_cli, validate_memory_contract_runner_cli,
     validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
     validate_multi_channel_live_runner_cli, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli,
+    validate_voice_contract_runner_cli, validate_voice_live_runner_cli,
 };
 #[cfg(test)]
 pub(crate) use tau_cli::validation::{

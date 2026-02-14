@@ -16,10 +16,15 @@ use tau_runtime::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelSt
 use tau_runtime::transport_health::TransportHealthSnapshot;
 
 const VOICE_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
+const VOICE_LIVE_INPUT_SCHEMA_VERSION: u32 = 1;
 const VOICE_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
 
 fn voice_runtime_state_schema_version() -> u32 {
     VOICE_RUNTIME_STATE_SCHEMA_VERSION
+}
+
+fn voice_live_input_schema_version() -> u32 {
+    VOICE_LIVE_INPUT_SCHEMA_VERSION
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +36,16 @@ pub struct VoiceRuntimeConfig {
     pub processed_case_cap: usize,
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+/// Public struct `VoiceLiveRuntimeConfig` used across Tau components.
+pub struct VoiceLiveRuntimeConfig {
+    pub input_path: PathBuf,
+    pub state_dir: PathBuf,
+    pub wake_word: String,
+    pub max_turns: usize,
+    pub tts_output_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -46,6 +61,54 @@ pub struct VoiceRuntimeSummary {
     pub failed_cases: usize,
     pub wake_word_detections: usize,
     pub handled_turns: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Public struct `VoiceLiveRuntimeSummary` used across Tau components.
+pub struct VoiceLiveRuntimeSummary {
+    pub discovered_frames: usize,
+    pub queued_frames: usize,
+    pub wake_word_detections: usize,
+    pub handled_turns: usize,
+    pub ignored_frames: usize,
+    pub invalid_audio_frames: usize,
+    pub provider_outages: usize,
+    pub tts_outputs: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum VoiceLiveSessionState {
+    Idle,
+    Listening,
+    Processing,
+    Responding,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceLiveInputFixture {
+    #[serde(default = "voice_live_input_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    frames: Vec<VoiceLiveFrame>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VoiceLiveFrame {
+    #[serde(default)]
+    frame_id: String,
+    #[serde(default)]
+    transcript: String,
+    #[serde(default)]
+    speaker_id: String,
+    #[serde(default = "default_voice_locale")]
+    locale: String,
+    #[serde(default)]
+    invalid_audio: bool,
+    #[serde(default)]
+    provider_outage: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +129,33 @@ struct VoiceRuntimeCycleReport {
     handled_turns: usize,
     backlog_cases: usize,
     failure_streak: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VoiceLiveCycleReport {
+    timestamp_unix_ms: u64,
+    health_state: String,
+    health_reason: String,
+    reason_codes: Vec<String>,
+    session_id: String,
+    session_state: String,
+    wake_word: String,
+    discovered_frames: usize,
+    queued_frames: usize,
+    wake_word_detections: usize,
+    handled_turns: usize,
+    ignored_frames: usize,
+    invalid_audio_frames: usize,
+    provider_outages: usize,
+    tts_outputs: usize,
+    backlog_frames: usize,
+    failure_streak: usize,
+}
+
+struct VoiceLiveReportMetadata<'a> {
+    session_id: &'a str,
+    session_state: VoiceLiveSessionState,
+    wake_word: &'a str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -141,6 +231,343 @@ pub async fn run_voice_contract_runner(config: VoiceRuntimeConfig) -> Result<()>
     );
 
     Ok(())
+}
+
+pub async fn run_voice_live_runner(config: VoiceLiveRuntimeConfig) -> Result<()> {
+    let fixture = load_voice_live_input_fixture(&config.input_path)?;
+    let mut runtime = VoiceLiveRuntime::new(config)?;
+    let summary = runtime.run_once(&fixture).await?;
+    let health = runtime.transport_health().clone();
+    let classification = health.classify();
+
+    println!(
+        "voice live runner summary: discovered={} queued={} wake_word_detections={} handled_turns={} ignored={} invalid_audio={} provider_outages={} tts_outputs={}",
+        summary.discovered_frames,
+        summary.queued_frames,
+        summary.wake_word_detections,
+        summary.handled_turns,
+        summary.ignored_frames,
+        summary.invalid_audio_frames,
+        summary.provider_outages,
+        summary.tts_outputs
+    );
+    println!(
+        "voice live runner health: state={} failure_streak={} queue_depth={} reason={}",
+        classification.state.as_str(),
+        health.failure_streak,
+        health.queue_depth,
+        classification.reason
+    );
+
+    Ok(())
+}
+
+struct VoiceLiveRuntime {
+    config: VoiceLiveRuntimeConfig,
+    state: VoiceRuntimeState,
+    session_state: VoiceLiveSessionState,
+}
+
+impl VoiceLiveRuntime {
+    fn new(config: VoiceLiveRuntimeConfig) -> Result<Self> {
+        std::fs::create_dir_all(&config.state_dir)
+            .with_context(|| format!("failed to create {}", config.state_dir.display()))?;
+        let mut state = load_voice_runtime_state(&config.state_dir.join("state.json"))?;
+        state
+            .interactions
+            .sort_by(|left, right| left.speaker_id.cmp(&right.speaker_id));
+        Ok(Self {
+            config,
+            state,
+            session_state: VoiceLiveSessionState::Idle,
+        })
+    }
+
+    fn state_path(&self) -> PathBuf {
+        self.config.state_dir.join("state.json")
+    }
+
+    fn transport_health(&self) -> &TransportHealthSnapshot {
+        &self.state.health
+    }
+
+    fn transition(&mut self, next_state: VoiceLiveSessionState) {
+        self.session_state = next_state;
+    }
+
+    async fn run_once(
+        &mut self,
+        fixture: &VoiceLiveInputFixture,
+    ) -> Result<VoiceLiveRuntimeSummary> {
+        let cycle_started = Instant::now();
+        let mut summary = VoiceLiveRuntimeSummary {
+            discovered_frames: fixture.frames.len(),
+            ..VoiceLiveRuntimeSummary::default()
+        };
+        let mut buffered_frames = fixture.frames.clone();
+        buffered_frames.truncate(self.config.max_turns.max(1));
+        summary.queued_frames = buffered_frames.len();
+
+        let session_id = normalized_live_session_id(&fixture.session_id);
+        let wake_word = self.config.wake_word.trim().to_ascii_lowercase();
+
+        for (index, frame) in buffered_frames.iter().enumerate() {
+            let frame_id = normalized_live_frame_id(frame, index);
+            let frame_key = live_frame_runtime_key(&session_id, frame, &frame_id);
+            self.transition(VoiceLiveSessionState::Listening);
+
+            if frame.invalid_audio || frame.transcript.trim().is_empty() {
+                summary.invalid_audio_frames = summary.invalid_audio_frames.saturating_add(1);
+                self.persist_live_non_success_result(
+                    &frame_key,
+                    frame,
+                    "invalid_audio",
+                    422,
+                    "invalid_audio_frame",
+                    false,
+                )?;
+                self.transition(VoiceLiveSessionState::Idle);
+                continue;
+            }
+
+            let utterance = extract_live_utterance(&wake_word, frame.transcript.as_str());
+            if utterance.is_none() {
+                summary.ignored_frames = summary.ignored_frames.saturating_add(1);
+                self.persist_live_non_success_result(
+                    &frame_key,
+                    frame,
+                    "ignored_no_wake_word",
+                    204,
+                    "",
+                    false,
+                )?;
+                self.transition(VoiceLiveSessionState::Idle);
+                continue;
+            }
+
+            summary.wake_word_detections = summary.wake_word_detections.saturating_add(1);
+            let utterance = utterance.unwrap_or_default();
+            if frame.provider_outage {
+                self.transition(VoiceLiveSessionState::Processing);
+                summary.provider_outages = summary.provider_outages.saturating_add(1);
+                self.persist_live_non_success_result(
+                    &frame_key,
+                    frame,
+                    "provider_outage",
+                    503,
+                    "voice_backend_unavailable",
+                    true,
+                )?;
+                self.transition(VoiceLiveSessionState::Idle);
+                continue;
+            }
+
+            if utterance.is_empty() {
+                self.persist_live_non_success_result(
+                    &frame_key,
+                    frame,
+                    "wake_word_only",
+                    202,
+                    "",
+                    true,
+                )?;
+                self.transition(VoiceLiveSessionState::Idle);
+                continue;
+            }
+
+            self.transition(VoiceLiveSessionState::Processing);
+            let response_text = format!("acknowledged: {utterance}");
+            self.transition(VoiceLiveSessionState::Responding);
+            if self.persist_live_success_result(
+                &frame_key,
+                &frame_id,
+                frame,
+                utterance.as_str(),
+                response_text.as_str(),
+            )? {
+                summary.tts_outputs = summary.tts_outputs.saturating_add(1);
+            }
+            summary.handled_turns = summary.handled_turns.saturating_add(1);
+            self.transition(VoiceLiveSessionState::Idle);
+        }
+
+        let cycle_duration_ms =
+            u64::try_from(cycle_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let health = build_voice_live_transport_health_snapshot(
+            &summary,
+            cycle_duration_ms,
+            self.state.health.failure_streak,
+        );
+        let classification = health.classify();
+        let reason_codes = cycle_reason_codes_live(&summary);
+        self.state.health = health.clone();
+        let report_metadata = VoiceLiveReportMetadata {
+            session_id: &session_id,
+            session_state: self.session_state,
+            wake_word: &wake_word,
+        };
+
+        save_voice_runtime_state(&self.state_path(), &self.state)?;
+        append_voice_live_cycle_report(
+            &self.config.state_dir.join(VOICE_RUNTIME_EVENTS_LOG_FILE),
+            &summary,
+            &health,
+            &classification.reason,
+            &reason_codes,
+            &report_metadata,
+        )?;
+        Ok(summary)
+    }
+
+    fn persist_live_success_result(
+        &mut self,
+        frame_key: &str,
+        frame_id: &str,
+        frame: &VoiceLiveFrame,
+        utterance: &str,
+        response_text: &str,
+    ) -> Result<bool> {
+        let speaker_id = normalize_live_speaker_id(frame.speaker_id.as_str());
+        let locale = normalize_live_locale(frame.locale.as_str());
+        let timestamp_unix_ms = current_unix_timestamp_ms();
+        let wake_word = self.config.wake_word.trim().to_ascii_lowercase();
+        let run_count = self
+            .state
+            .interactions
+            .iter()
+            .find(|existing| existing.case_key == frame_key)
+            .map_or(0, |existing| existing.run_count)
+            .saturating_add(1);
+
+        let record = VoiceInteractionRecord {
+            case_key: frame_key.to_string(),
+            case_id: frame_id.to_string(),
+            mode: "live_turn".to_string(),
+            wake_word: wake_word.clone(),
+            locale: locale.clone(),
+            speaker_id: speaker_id.clone(),
+            utterance: utterance.to_string(),
+            last_status_code: 202,
+            last_outcome: "success".to_string(),
+            run_count,
+            updated_unix_ms: timestamp_unix_ms,
+        };
+
+        if let Some(existing) = self
+            .state
+            .interactions
+            .iter_mut()
+            .find(|existing| existing.case_key == frame_key)
+        {
+            *existing = record;
+        } else {
+            self.state.interactions.push(record);
+        }
+        self.state
+            .interactions
+            .sort_by(|left, right| left.speaker_id.cmp(&right.speaker_id));
+
+        let store = ChannelStore::open(
+            &self.config.state_dir.join("channel-store"),
+            "voice",
+            &speaker_id,
+        )?;
+        store.append_log_entry(&ChannelLogEntry {
+            timestamp_unix_ms,
+            direction: "system".to_string(),
+            event_key: Some(frame_key.to_string()),
+            source: "tau-voice-live-runner".to_string(),
+            payload: json!({
+                "outcome":"success",
+                "mode":"live_turn",
+                "frame_id": frame_id,
+                "speaker_id": speaker_id,
+                "wake_word": wake_word,
+                "locale": locale,
+                "utterance": utterance,
+                "response_text": response_text,
+                "status_code": 202,
+            }),
+        })?;
+        store.append_context_entry(&ChannelContextEntry {
+            timestamp_unix_ms,
+            role: "system".to_string(),
+            text: format!(
+                "voice live frame {} handled speaker={} utterance={}",
+                frame_id,
+                normalize_live_speaker_id(frame.speaker_id.as_str()),
+                utterance
+            ),
+        })?;
+
+        let mut tts_written = false;
+        if self.config.tts_output_enabled {
+            store.append_log_entry(&ChannelLogEntry {
+                timestamp_unix_ms,
+                direction: "assistant".to_string(),
+                event_key: Some(frame_key.to_string()),
+                source: "tau-voice-live-runner".to_string(),
+                payload: json!({
+                    "outcome":"tts_output",
+                    "text": response_text,
+                    "voice_id":"default",
+                    "mime_type":"audio/wav",
+                }),
+            })?;
+            tts_written = true;
+        }
+
+        store.write_memory(&render_voice_snapshot(
+            &self.state.interactions,
+            &speaker_id,
+        ))?;
+        Ok(tts_written)
+    }
+
+    fn persist_live_non_success_result(
+        &self,
+        frame_key: &str,
+        frame: &VoiceLiveFrame,
+        outcome: &str,
+        status_code: u16,
+        error_code: &str,
+        wake_word_detected: bool,
+    ) -> Result<()> {
+        let speaker_id = normalize_live_speaker_id(frame.speaker_id.as_str());
+        let locale = normalize_live_locale(frame.locale.as_str());
+        let timestamp_unix_ms = current_unix_timestamp_ms();
+        let store = ChannelStore::open(
+            &self.config.state_dir.join("channel-store"),
+            "voice",
+            &speaker_id,
+        )?;
+        store.append_log_entry(&ChannelLogEntry {
+            timestamp_unix_ms,
+            direction: "system".to_string(),
+            event_key: Some(frame_key.to_string()),
+            source: "tau-voice-live-runner".to_string(),
+            payload: json!({
+                "outcome": outcome,
+                "frame_id": frame.frame_id,
+                "speaker_id": speaker_id,
+                "wake_word": self.config.wake_word.trim().to_ascii_lowercase(),
+                "wake_word_detected": wake_word_detected,
+                "locale": locale,
+                "transcript": frame.transcript.trim(),
+                "status_code": status_code,
+                "error_code": error_code,
+            }),
+        })?;
+        store.append_context_entry(&ChannelContextEntry {
+            timestamp_unix_ms,
+            role: "system".to_string(),
+            text: format!(
+                "voice live frame {} outcome={} error_code={} status={}",
+                frame.frame_id, outcome, error_code, status_code
+            ),
+        })?;
+        Ok(())
+    }
 }
 
 struct VoiceRuntime {
@@ -425,6 +852,97 @@ impl VoiceRuntime {
     }
 }
 
+fn default_voice_locale() -> String {
+    "en-US".to_string()
+}
+
+fn normalize_live_locale(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return default_voice_locale();
+    }
+    trimmed.to_string()
+}
+
+fn normalize_live_speaker_id(raw: &str) -> String {
+    let speaker_id = raw.trim();
+    if speaker_id.is_empty() {
+        return "voice".to_string();
+    }
+    if speaker_id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    {
+        return speaker_id.to_string();
+    }
+    "voice".to_string()
+}
+
+fn normalized_live_session_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "voice-live".to_string();
+    }
+    trimmed.to_string()
+}
+
+fn normalized_live_frame_id(frame: &VoiceLiveFrame, index: usize) -> String {
+    let trimmed = frame.frame_id.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    format!("frame-{}", index.saturating_add(1))
+}
+
+fn live_frame_runtime_key(session_id: &str, frame: &VoiceLiveFrame, frame_id: &str) -> String {
+    format!(
+        "live:{}:{}:{}",
+        session_id.trim(),
+        normalize_live_speaker_id(frame.speaker_id.as_str()),
+        frame_id
+    )
+}
+
+fn extract_live_utterance(wake_word: &str, transcript: &str) -> Option<String> {
+    let trimmed = transcript.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut parts = trimmed.split_whitespace();
+    let first_token = parts.next()?.to_ascii_lowercase();
+    let normalized_wake_word = wake_word.trim().to_ascii_lowercase();
+    if first_token != normalized_wake_word {
+        return None;
+    }
+    Some(parts.collect::<Vec<_>>().join(" ").trim().to_string())
+}
+
+fn load_voice_live_input_fixture(path: &Path) -> Result<VoiceLiveInputFixture> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let mut parsed = serde_json::from_str::<VoiceLiveInputFixture>(&raw)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if parsed.schema_version != VOICE_LIVE_INPUT_SCHEMA_VERSION {
+        anyhow::bail!(
+            "unsupported voice live schema_version={} in {}",
+            parsed.schema_version,
+            path.display()
+        );
+    }
+    if parsed.session_id.trim().is_empty() {
+        parsed.session_id = "voice-live".to_string();
+    }
+    for (index, frame) in parsed.frames.iter_mut().enumerate() {
+        if frame.frame_id.trim().is_empty() {
+            frame.frame_id = format!("frame-{}", index.saturating_add(1));
+        }
+        frame.locale = normalize_live_locale(frame.locale.as_str());
+        frame.speaker_id = normalize_live_speaker_id(frame.speaker_id.as_str());
+        frame.transcript = frame.transcript.trim().to_string();
+    }
+    Ok(parsed)
+}
+
 fn normalized_speaker_id(case: &VoiceContractCase) -> String {
     let speaker_id = case.speaker_id.trim();
     if speaker_id.is_empty() {
@@ -495,6 +1013,41 @@ fn build_transport_health_snapshot(
     }
 }
 
+fn build_voice_live_transport_health_snapshot(
+    summary: &VoiceLiveRuntimeSummary,
+    cycle_duration_ms: u64,
+    previous_failure_streak: usize,
+) -> TransportHealthSnapshot {
+    let backlog_frames = summary
+        .discovered_frames
+        .saturating_sub(summary.queued_frames);
+    let failed = summary
+        .invalid_audio_frames
+        .saturating_add(summary.provider_outages);
+    let failure_streak = if failed > 0 {
+        previous_failure_streak.saturating_add(1)
+    } else {
+        0
+    };
+
+    TransportHealthSnapshot {
+        updated_unix_ms: current_unix_timestamp_ms(),
+        cycle_duration_ms,
+        queue_depth: backlog_frames,
+        active_runs: 0,
+        failure_streak,
+        last_cycle_discovered: summary.discovered_frames,
+        last_cycle_processed: summary
+            .handled_turns
+            .saturating_add(summary.ignored_frames)
+            .saturating_add(summary.invalid_audio_frames)
+            .saturating_add(summary.provider_outages),
+        last_cycle_completed: summary.handled_turns,
+        last_cycle_failed: failed,
+        last_cycle_duplicates: 0,
+    }
+}
+
 fn cycle_reason_codes(summary: &VoiceRuntimeSummary) -> Vec<String> {
     let mut codes = Vec::new();
     if summary.discovered_cases > summary.queued_cases {
@@ -520,6 +1073,35 @@ fn cycle_reason_codes(summary: &VoiceRuntimeSummary) -> Vec<String> {
     }
     if summary.handled_turns > 0 {
         codes.push("turns_handled".to_string());
+    }
+    if codes.is_empty() {
+        codes.push("healthy_cycle".to_string());
+    }
+    codes
+}
+
+fn cycle_reason_codes_live(summary: &VoiceLiveRuntimeSummary) -> Vec<String> {
+    let mut codes = Vec::new();
+    if summary.discovered_frames > summary.queued_frames {
+        codes.push("queue_backpressure_applied".to_string());
+    }
+    if summary.wake_word_detections > 0 {
+        codes.push("wake_word_detected".to_string());
+    }
+    if summary.handled_turns > 0 {
+        codes.push("turns_handled".to_string());
+    }
+    if summary.ignored_frames > 0 {
+        codes.push("frames_ignored_no_wake_word".to_string());
+    }
+    if summary.invalid_audio_frames > 0 {
+        codes.push("invalid_audio_frames_observed".to_string());
+    }
+    if summary.provider_outages > 0 {
+        codes.push("provider_outage_observed".to_string());
+    }
+    if summary.tts_outputs > 0 {
+        codes.push("tts_output_emitted".to_string());
     }
     if codes.is_empty() {
         codes.push("healthy_cycle".to_string());
@@ -561,6 +1143,59 @@ fn append_voice_cycle_report(
         failure_streak: health.failure_streak,
     };
     let line = serde_json::to_string(&payload).context("serialize voice runtime report")?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("failed to flush {}", path.display()))?;
+    Ok(())
+}
+
+fn append_voice_live_cycle_report(
+    path: &Path,
+    summary: &VoiceLiveRuntimeSummary,
+    health: &TransportHealthSnapshot,
+    health_reason: &str,
+    reason_codes: &[String],
+    metadata: &VoiceLiveReportMetadata<'_>,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    let payload = VoiceLiveCycleReport {
+        timestamp_unix_ms: current_unix_timestamp_ms(),
+        health_state: health.classify().state.as_str().to_string(),
+        health_reason: health_reason.to_string(),
+        reason_codes: reason_codes.to_vec(),
+        session_id: metadata.session_id.to_string(),
+        session_state: match metadata.session_state {
+            VoiceLiveSessionState::Idle => "idle",
+            VoiceLiveSessionState::Listening => "listening",
+            VoiceLiveSessionState::Processing => "processing",
+            VoiceLiveSessionState::Responding => "responding",
+        }
+        .to_string(),
+        wake_word: metadata.wake_word.to_string(),
+        discovered_frames: summary.discovered_frames,
+        queued_frames: summary.queued_frames,
+        wake_word_detections: summary.wake_word_detections,
+        handled_turns: summary.handled_turns,
+        ignored_frames: summary.ignored_frames,
+        invalid_audio_frames: summary.invalid_audio_frames,
+        provider_outages: summary.provider_outages,
+        tts_outputs: summary.tts_outputs,
+        backlog_frames: summary
+            .discovered_frames
+            .saturating_sub(summary.queued_frames),
+        failure_streak: health.failure_streak,
+    };
+    let line = serde_json::to_string(&payload).context("serialize voice live runtime report")?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -684,8 +1319,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        load_voice_runtime_state, retry_delay_ms, VoiceRuntime, VoiceRuntimeConfig,
-        VOICE_RUNTIME_EVENTS_LOG_FILE,
+        load_voice_live_input_fixture, load_voice_runtime_state, retry_delay_ms,
+        run_voice_live_runner, VoiceLiveRuntime, VoiceLiveRuntimeConfig, VoiceRuntime,
+        VoiceRuntimeConfig, VOICE_RUNTIME_EVENTS_LOG_FILE,
     };
     use crate::voice_contract::{load_voice_contract_fixture, parse_voice_contract_fixture};
     use tau_runtime::channel_store::ChannelStore;
@@ -698,6 +1334,13 @@ mod tests {
             .join(name)
     }
 
+    fn live_fixture_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("voice-live")
+            .join(name)
+    }
+
     fn build_config(root: &Path) -> VoiceRuntimeConfig {
         VoiceRuntimeConfig {
             fixture_path: fixture_path("mixed-outcomes.json"),
@@ -706,6 +1349,16 @@ mod tests {
             processed_case_cap: 10_000,
             retry_max_attempts: 2,
             retry_base_delay_ms: 0,
+        }
+    }
+
+    fn build_live_config(root: &Path, fixture_name: &str) -> VoiceLiveRuntimeConfig {
+        VoiceLiveRuntimeConfig {
+            input_path: live_fixture_path(fixture_name),
+            state_dir: root.join(".tau/voice-live"),
+            wake_word: "tau".to_string(),
+            max_turns: 64,
+            tts_output_enabled: true,
         }
     }
 
@@ -764,6 +1417,127 @@ mod tests {
             .expect("memory should exist");
         assert!(memory.contains("Tau Voice Snapshot (ops-1)"));
         assert!(memory.contains("open dashboard"));
+    }
+
+    #[tokio::test]
+    async fn functional_live_runner_handles_single_turn_and_emits_tts() {
+        let temp = tempdir().expect("tempdir");
+        let config = build_live_config(temp.path(), "single-turn.json");
+        let fixture =
+            load_voice_live_input_fixture(&config.input_path).expect("fixture should load");
+        let mut runtime = VoiceLiveRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+
+        assert_eq!(summary.discovered_frames, 1);
+        assert_eq!(summary.queued_frames, 1);
+        assert_eq!(summary.wake_word_detections, 1);
+        assert_eq!(summary.handled_turns, 1);
+        assert_eq!(summary.ignored_frames, 0);
+        assert_eq!(summary.invalid_audio_frames, 0);
+        assert_eq!(summary.provider_outages, 0);
+        assert_eq!(summary.tts_outputs, 1);
+
+        let state =
+            load_voice_runtime_state(&config.state_dir.join("state.json")).expect("load state");
+        assert_eq!(state.interactions.len(), 1);
+        assert_eq!(state.interactions[0].utterance, "open dashboard");
+        assert_eq!(state.health.last_cycle_completed, 1);
+        assert_eq!(state.health.classify().state, TransportHealthState::Healthy);
+
+        let events_log =
+            std::fs::read_to_string(config.state_dir.join(VOICE_RUNTIME_EVENTS_LOG_FILE))
+                .expect("read runtime events");
+        assert!(events_log.contains("tts_output_emitted"));
+        assert!(events_log.contains("wake_word_detected"));
+
+        let store =
+            ChannelStore::open(&config.state_dir.join("channel-store"), "voice", "ops-live")
+                .expect("open channel store");
+        let memory = store
+            .load_memory()
+            .expect("load memory")
+            .expect("memory should exist");
+        assert!(memory.contains("open dashboard"));
+    }
+
+    #[tokio::test]
+    async fn functional_live_runner_handles_multi_turn_with_wake_word_routing() {
+        let temp = tempdir().expect("tempdir");
+        let mut config = build_live_config(temp.path(), "multi-turn.json");
+        config.tts_output_enabled = false;
+        let fixture =
+            load_voice_live_input_fixture(&config.input_path).expect("fixture should load");
+        let mut runtime = VoiceLiveRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+
+        assert_eq!(summary.discovered_frames, 3);
+        assert_eq!(summary.queued_frames, 3);
+        assert_eq!(summary.wake_word_detections, 2);
+        assert_eq!(summary.handled_turns, 2);
+        assert_eq!(summary.ignored_frames, 1);
+        assert_eq!(summary.provider_outages, 0);
+        assert_eq!(summary.invalid_audio_frames, 0);
+        assert_eq!(summary.tts_outputs, 0);
+
+        let state =
+            load_voice_runtime_state(&config.state_dir.join("state.json")).expect("load state");
+        assert_eq!(state.interactions.len(), 2);
+        assert_eq!(state.health.last_cycle_discovered, 3);
+        assert_eq!(state.health.last_cycle_completed, 2);
+    }
+
+    #[tokio::test]
+    async fn integration_run_voice_live_runner_entrypoint_processes_test_audio_input() {
+        let temp = tempdir().expect("tempdir");
+        let config = build_live_config(temp.path(), "single-turn.json");
+        run_voice_live_runner(config.clone())
+            .await
+            .expect("live entrypoint should succeed");
+
+        let state =
+            load_voice_runtime_state(&config.state_dir.join("state.json")).expect("load state");
+        assert_eq!(state.interactions.len(), 1);
+        assert_eq!(state.interactions[0].speaker_id, "ops-live");
+        assert_eq!(state.interactions[0].last_outcome, "success");
+
+        let events_log =
+            std::fs::read_to_string(config.state_dir.join(VOICE_RUNTIME_EVENTS_LOG_FILE))
+                .expect("read runtime events");
+        assert!(events_log.contains("ops-live-single"));
+    }
+
+    #[tokio::test]
+    async fn regression_live_runner_handles_provider_outage_and_invalid_audio_fallback() {
+        let temp = tempdir().expect("tempdir");
+        let config = build_live_config(temp.path(), "fallbacks.json");
+        let fixture =
+            load_voice_live_input_fixture(&config.input_path).expect("fixture should load");
+        let mut runtime = VoiceLiveRuntime::new(config.clone()).expect("runtime");
+        let summary = runtime.run_once(&fixture).await.expect("run once");
+
+        assert_eq!(summary.discovered_frames, 3);
+        assert_eq!(summary.queued_frames, 3);
+        assert_eq!(summary.wake_word_detections, 2);
+        assert_eq!(summary.handled_turns, 1);
+        assert_eq!(summary.invalid_audio_frames, 1);
+        assert_eq!(summary.provider_outages, 1);
+        assert_eq!(summary.tts_outputs, 1);
+
+        let state =
+            load_voice_runtime_state(&config.state_dir.join("state.json")).expect("load state");
+        assert_eq!(state.interactions.len(), 1);
+        assert_eq!(state.health.last_cycle_failed, 2);
+        assert_eq!(state.health.failure_streak, 1);
+        assert_eq!(
+            state.health.classify().state,
+            TransportHealthState::Degraded
+        );
+
+        let events_log =
+            std::fs::read_to_string(config.state_dir.join(VOICE_RUNTIME_EVENTS_LOG_FILE))
+                .expect("read runtime events");
+        assert!(events_log.contains("provider_outage_observed"));
+        assert!(events_log.contains("invalid_audio_frames_observed"));
     }
 
     #[tokio::test]

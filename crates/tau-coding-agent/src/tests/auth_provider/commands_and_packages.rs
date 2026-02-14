@@ -44,20 +44,20 @@ use super::super::{
     validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_ingest_cli,
     validate_multi_channel_live_runner_cli, validate_multi_channel_send_cli, validate_profile_name,
     validate_skills_prune_file_name, validate_slack_bridge_cli, validate_voice_contract_runner_cli,
-    write_test_integration_credential, Agent, AgentConfig, Arc, BTreeMap, BranchAliasCommand,
-    BranchAliasFile, CliCommandFileErrorMode, CliGatewayOpenResponsesAuthMode,
-    CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode,
-    CliMultiChannelTransport, CliWebhookSignatureAlgorithm, CommandAction, CommandExecutionContext,
-    CommandFileEntry, CommandFileReport, CredentialStoreEncryptionMode, Digest, HashSet,
-    IntegrationCredentialStoreRecord, MacroCommand, MacroFile, Message, MockServer, ModelCatalog,
-    NoopClient, Path, PathBuf, ProfileCommand, ProfileStoreFile, ProviderAuthMethod,
-    SessionBookmarkCommand, SessionBookmarkFile, SessionImportMode, SessionRuntime, SessionStore,
-    Sha256, SkillsPruneMode, SkillsVerifyEntry, SkillsVerifyReport, SkillsVerifyStatus,
-    SkillsVerifySummary, SkillsVerifyTrustSummary, TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION,
-    BRANCH_ALIAS_USAGE, GET, MACRO_SCHEMA_VERSION, MACRO_USAGE, MODELS_LIST_USAGE,
-    MODEL_SHOW_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE, SESSION_BOOKMARK_SCHEMA_VERSION,
-    SESSION_BOOKMARK_USAGE, SKILLS_PRUNE_USAGE, SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE,
-    SKILLS_VERIFY_USAGE,
+    validate_voice_live_runner_cli, write_test_integration_credential, Agent, AgentConfig, Arc,
+    BTreeMap, BranchAliasCommand, BranchAliasFile, CliCommandFileErrorMode,
+    CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode,
+    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliWebhookSignatureAlgorithm,
+    CommandAction, CommandExecutionContext, CommandFileEntry, CommandFileReport,
+    CredentialStoreEncryptionMode, Digest, HashSet, IntegrationCredentialStoreRecord, MacroCommand,
+    MacroFile, Message, MockServer, ModelCatalog, NoopClient, Path, PathBuf, ProfileCommand,
+    ProfileStoreFile, ProviderAuthMethod, SessionBookmarkCommand, SessionBookmarkFile,
+    SessionImportMode, SessionRuntime, SessionStore, Sha256, SkillsPruneMode, SkillsVerifyEntry,
+    SkillsVerifyReport, SkillsVerifyStatus, SkillsVerifySummary, SkillsVerifyTrustSummary,
+    TrustedRootRecord, BRANCH_ALIAS_SCHEMA_VERSION, BRANCH_ALIAS_USAGE, GET, MACRO_SCHEMA_VERSION,
+    MACRO_USAGE, MODELS_LIST_USAGE, MODEL_SHOW_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
+    SESSION_BOOKMARK_SCHEMA_VERSION, SESSION_BOOKMARK_USAGE, SKILLS_PRUNE_USAGE,
+    SKILLS_TRUST_ADD_USAGE, SKILLS_TRUST_LIST_USAGE, SKILLS_VERIFY_USAGE,
 };
 use super::make_script_executable;
 
@@ -5483,7 +5483,7 @@ fn integration_validate_voice_contract_runner_cli_rejects_transport_conflicts() 
 
     let error = validate_voice_contract_runner_cli(&cli).expect_err("transport conflict");
     assert!(error.to_string().contains(
-        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, or --custom-command-contract-runner"
+        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-live-runner"
     ));
 }
 
@@ -5540,6 +5540,60 @@ fn regression_validate_voice_contract_runner_cli_requires_fixture_file() {
     let error =
         validate_voice_contract_runner_cli(&cli).expect_err("directory fixture should fail");
     assert!(error.to_string().contains("must point to a file"));
+}
+
+#[test]
+fn unit_validate_voice_live_runner_cli_accepts_minimum_configuration() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("voice-live.json");
+    std::fs::write(
+        &fixture_path,
+        r#"{
+  "schema_version": 1,
+  "session_id": "ops-live",
+  "frames": [
+    {
+      "frame_id": "f-1",
+      "transcript": "tau open dashboard",
+      "speaker_id": "ops-live",
+      "locale": "en-US"
+    }
+  ]
+}"#,
+    )
+    .expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.voice_live_runner = true;
+    cli.voice_live_input = fixture_path;
+
+    validate_voice_live_runner_cli(&cli).expect("voice live config should validate");
+}
+
+#[test]
+fn functional_validate_voice_live_runner_cli_rejects_transport_conflicts() {
+    let temp = tempdir().expect("tempdir");
+    let fixture_path = temp.path().join("voice-live.json");
+    std::fs::write(&fixture_path, "{}").expect("write fixture");
+
+    let mut cli = test_cli();
+    cli.voice_live_runner = true;
+    cli.voice_live_input = fixture_path;
+    cli.voice_contract_runner = true;
+
+    let error = validate_voice_live_runner_cli(&cli).expect_err("transport conflict");
+    assert!(error.to_string().contains("--voice-contract-runner"));
+}
+
+#[test]
+fn regression_validate_voice_live_runner_cli_requires_existing_fixture() {
+    let temp = tempdir().expect("tempdir");
+    let mut cli = test_cli();
+    cli.voice_live_runner = true;
+    cli.voice_live_input = temp.path().join("missing.json");
+
+    let error = validate_voice_live_runner_cli(&cli).expect_err("missing fixture should fail");
+    assert!(error.to_string().contains("does not exist"));
 }
 
 #[test]

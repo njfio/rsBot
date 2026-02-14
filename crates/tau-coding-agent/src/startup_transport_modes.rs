@@ -22,7 +22,8 @@ use tau_onboarding::startup_transport_modes::{
     run_multi_channel_live_runner_with_runtime_dependencies_if_requested as run_onboarding_multi_channel_live_runner_with_runtime_dependencies_if_requested,
     run_slack_bridge_with_runtime_defaults_if_requested as run_onboarding_slack_bridge_with_runtime_defaults_if_requested,
     run_transport_mode_if_requested as run_onboarding_transport_mode_if_requested,
-    run_voice_contract_runner_if_requested, TransportRuntimeExecutor,
+    run_voice_contract_runner_if_requested, run_voice_live_runner_if_requested,
+    TransportRuntimeExecutor,
 };
 use tau_provider::resolve_secret_from_cli_or_store_id;
 use tau_slack_runtime::{run_slack_bridge, SlackBridgeRuntimeConfig};
@@ -263,6 +264,11 @@ impl TransportRuntimeExecutor for CodingAgentTransportRuntimeExecutor<'_> {
 
     async fn run_voice_contract_runner(&self) -> Result<()> {
         run_voice_contract_runner_if_requested(self.cli).await?;
+        Ok(())
+    }
+
+    async fn run_voice_live_runner(&self) -> Result<()> {
+        run_voice_live_runner_if_requested(self.cli).await?;
         Ok(())
     }
 }

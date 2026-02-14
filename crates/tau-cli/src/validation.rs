@@ -127,6 +127,7 @@ pub fn validate_project_index_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
         || cli.browser_automation_preflight
         || cli.channel_store_inspect.is_some()
         || cli.channel_store_repair.is_some()
@@ -613,6 +614,7 @@ pub fn validate_multi_channel_incident_timeline_cli(cli: &Cli) -> Result<()> {
         || project_index_mode_requested(cli)
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--multi-channel-incident-timeline cannot be combined with active transport/runtime commands");
     }
@@ -708,6 +710,7 @@ pub fn validate_multi_channel_channel_lifecycle_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--multi-channel-channel-* commands cannot be combined with active transport/runtime commands"
@@ -801,6 +804,7 @@ pub fn validate_multi_channel_send_cli(cli: &Cli) -> Result<()> {
         || project_index_mode_requested(cli)
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--multi-channel-send cannot be combined with active transport/runtime commands");
     }
@@ -927,6 +931,7 @@ pub fn validate_browser_automation_contract_runner_cli(cli: &Cli) -> Result<()> 
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--browser-automation-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --deployment-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
     }
@@ -982,6 +987,7 @@ pub fn validate_browser_automation_preflight_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--browser-automation-preflight cannot be combined with active transport/runtime flags"
@@ -1141,6 +1147,7 @@ pub fn validate_daemon_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_inspect_manifest.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
         || gateway_service_mode_requested(cli)
     {
         bail!("--daemon-* commands cannot be combined with active transport/runtime flags");
@@ -1201,6 +1208,7 @@ pub fn validate_gateway_service_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
         || daemon_mode_requested(cli)
     {
         bail!(
@@ -1278,6 +1286,7 @@ pub fn validate_gateway_remote_profile_inspect_cli(cli: &Cli) -> Result<()> {
         || project_index_mode_requested(cli)
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--gateway-remote-profile-inspect cannot be combined with active transport/runtime commands"
@@ -1344,6 +1353,7 @@ pub fn validate_gateway_remote_plan_cli(cli: &Cli) -> Result<()> {
         || project_index_mode_requested(cli)
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--gateway-remote-plan cannot be combined with active transport/runtime commands");
     }
@@ -1381,6 +1391,7 @@ pub fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--gateway-openresponses-server cannot be combined with gateway service/daemon commands or other active transport runtime flags"
@@ -1503,6 +1514,7 @@ pub fn validate_deployment_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.gateway_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!("--deployment-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
     }
@@ -1554,6 +1566,7 @@ pub fn validate_deployment_wasm_package_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_contract_runner
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--deployment-wasm-package-module cannot be combined with active transport/runtime commands"
@@ -1621,6 +1634,7 @@ pub fn validate_deployment_wasm_inspect_cli(cli: &Cli) -> Result<()> {
         || cli.deployment_wasm_package_module.is_some()
         || cli.custom_command_contract_runner
         || cli.voice_contract_runner
+        || cli.voice_live_runner
     {
         bail!(
             "--deployment-wasm-inspect-manifest cannot be combined with active transport/runtime commands"
@@ -1714,8 +1728,9 @@ pub fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {
         || cli.dashboard_contract_runner
         || cli.gateway_contract_runner
         || cli.custom_command_contract_runner
+        || cli.voice_live_runner
     {
-        bail!("--voice-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, or --custom-command-contract-runner");
+        bail!("--voice-contract-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-live-runner");
     }
     if cli.voice_queue_limit == 0 {
         bail!("--voice-queue-limit must be greater than 0");
@@ -1736,6 +1751,53 @@ pub fn validate_voice_contract_runner_cli(cli: &Cli) -> Result<()> {
         bail!(
             "--voice-fixture '{}' must point to a file",
             cli.voice_fixture.display()
+        );
+    }
+
+    Ok(())
+}
+
+pub fn validate_voice_live_runner_cli(cli: &Cli) -> Result<()> {
+    if !cli.voice_live_runner {
+        return Ok(());
+    }
+
+    if has_prompt_or_command_input(cli) {
+        bail!("--voice-live-runner cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file");
+    }
+    if cli.no_session {
+        bail!("--voice-live-runner cannot be used together with --no-session");
+    }
+    if cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_agent_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+    {
+        bail!("--voice-live-runner cannot be combined with --github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner, --multi-agent-contract-runner, --memory-contract-runner, --dashboard-contract-runner, --gateway-contract-runner, --custom-command-contract-runner, or --voice-contract-runner");
+    }
+    if cli.voice_live_wake_word.trim().is_empty() {
+        bail!("--voice-live-wake-word cannot be empty");
+    }
+    if cli.voice_live_max_turns == 0 {
+        bail!("--voice-live-max-turns must be greater than 0");
+    }
+    if !cli.voice_live_input.exists() {
+        bail!(
+            "--voice-live-input '{}' does not exist",
+            cli.voice_live_input.display()
+        );
+    }
+    if !cli.voice_live_input.is_file() {
+        bail!(
+            "--voice-live-input '{}' must point to a file",
+            cli.voice_live_input.display()
         );
     }
 

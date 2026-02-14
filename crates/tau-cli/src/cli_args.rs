@@ -3788,6 +3788,55 @@ pub struct Cli {
     pub voice_retry_base_delay_ms: u64,
 
     #[arg(
+        long = "voice-live-runner",
+        env = "TAU_VOICE_LIVE_RUNNER",
+        default_value_t = false,
+        help = "Run live voice session runtime against a test audio-frame input fixture"
+    )]
+    pub voice_live_runner: bool,
+
+    #[arg(
+        long = "voice-live-input",
+        env = "TAU_VOICE_LIVE_INPUT",
+        default_value = "crates/tau-coding-agent/testdata/voice-live/single-turn.json",
+        requires = "voice_live_runner",
+        help = "Path to live voice runtime frame input JSON fixture"
+    )]
+    pub voice_live_input: PathBuf,
+
+    #[arg(
+        long = "voice-live-wake-word",
+        env = "TAU_VOICE_LIVE_WAKE_WORD",
+        default_value = "tau",
+        requires = "voice_live_runner",
+        help = "Wake word required for live voice turn extraction"
+    )]
+    pub voice_live_wake_word: String,
+
+    #[arg(
+        long = "voice-live-max-turns",
+        env = "TAU_VOICE_LIVE_MAX_TURNS",
+        default_value_t = 64,
+        requires = "voice_live_runner",
+        value_parser = parse_positive_usize,
+        help = "Maximum voice frames consumed in one live runtime cycle"
+    )]
+    pub voice_live_max_turns: usize,
+
+    #[arg(
+        long = "voice-live-tts-output",
+        env = "TAU_VOICE_LIVE_TTS_OUTPUT",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        requires = "voice_live_runner",
+        help = "Emit synthetic TTS output events for handled live turns"
+    )]
+    pub voice_live_tts_output: bool,
+
+    #[arg(
         long = "github-issues-bridge",
         env = "TAU_GITHUB_ISSUES_BRIDGE",
         default_value_t = false,

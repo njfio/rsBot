@@ -15,7 +15,7 @@ use tau_cli::validation::{
     validate_memory_contract_runner_cli, validate_multi_agent_contract_runner_cli,
     validate_multi_channel_contract_runner_cli, validate_multi_channel_live_connectors_runner_cli,
     validate_multi_channel_live_runner_cli, validate_slack_bridge_cli,
-    validate_voice_contract_runner_cli,
+    validate_voice_contract_runner_cli, validate_voice_live_runner_cli,
 };
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
@@ -41,7 +41,9 @@ use tau_provider::{
 };
 use tau_skills::default_skills_lock_path;
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
-use tau_voice::voice_runtime::{run_voice_contract_runner, VoiceRuntimeConfig};
+use tau_voice::voice_runtime::{
+    run_voice_contract_runner, run_voice_live_runner, VoiceLiveRuntimeConfig, VoiceRuntimeConfig,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Enumerates supported `MultiChannelTransportMode` values.
@@ -73,6 +75,7 @@ pub enum ContractTransportMode {
     Deployment,
     CustomCommand,
     Voice,
+    VoiceLive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +97,7 @@ pub enum TransportRuntimeMode {
     DeploymentContractRunner,
     CustomCommandContractRunner,
     VoiceContractRunner,
+    VoiceLiveRunner,
 }
 
 #[async_trait::async_trait]
@@ -114,6 +118,7 @@ pub trait TransportRuntimeExecutor {
     async fn run_deployment_contract_runner(&self) -> Result<()>;
     async fn run_custom_command_contract_runner(&self) -> Result<()>;
     async fn run_voice_contract_runner(&self) -> Result<()>;
+    async fn run_voice_live_runner(&self) -> Result<()>;
 }
 
 pub async fn execute_transport_runtime_mode<E>(
@@ -184,6 +189,10 @@ where
             executor.run_voice_contract_runner().await?;
             Ok(true)
         }
+        TransportRuntimeMode::VoiceLiveRunner => {
+            executor.run_voice_live_runner().await?;
+            Ok(true)
+        }
         TransportRuntimeMode::None => Ok(false),
     }
 }
@@ -212,6 +221,7 @@ pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_deployment_contract_runner_cli(cli)?;
     validate_custom_command_contract_runner_cli(cli)?;
     validate_voice_contract_runner_cli(cli)?;
+    validate_voice_live_runner_cli(cli)?;
     Ok(())
 }
 
@@ -335,6 +345,8 @@ pub fn resolve_contract_transport_mode(cli: &Cli) -> ContractTransportMode {
         ContractTransportMode::CustomCommand
     } else if cli.voice_contract_runner {
         ContractTransportMode::Voice
+    } else if cli.voice_live_runner {
+        ContractTransportMode::VoiceLive
     } else {
         ContractTransportMode::None
     }
@@ -380,6 +392,7 @@ pub fn resolve_transport_runtime_mode(cli: &Cli) -> TransportRuntimeMode {
             return TransportRuntimeMode::CustomCommandContractRunner;
         }
         ContractTransportMode::Voice => return TransportRuntimeMode::VoiceContractRunner,
+        ContractTransportMode::VoiceLive => return TransportRuntimeMode::VoiceLiveRunner,
         ContractTransportMode::None => {}
     }
 
@@ -749,6 +762,25 @@ pub async fn run_voice_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
         retry_base_delay_ms: config.retry_base_delay_ms,
     })
     .await?;
+    Ok(true)
+}
+
+pub fn build_voice_live_runner_config(cli: &Cli) -> VoiceLiveRuntimeConfig {
+    VoiceLiveRuntimeConfig {
+        input_path: cli.voice_live_input.clone(),
+        state_dir: cli.voice_state_dir.clone(),
+        wake_word: cli.voice_live_wake_word.trim().to_ascii_lowercase(),
+        max_turns: cli.voice_live_max_turns.max(1),
+        tts_output_enabled: cli.voice_live_tts_output,
+    }
+}
+
+pub async fn run_voice_live_runner_if_requested(cli: &Cli) -> Result<bool> {
+    if !cli.voice_live_runner {
+        return Ok(false);
+    }
+    let config = build_voice_live_runner_config(cli);
+    run_voice_live_runner(config).await?;
     Ok(true)
 }
 
@@ -1212,9 +1244,10 @@ mod tests {
         build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
         build_slack_bridge_cli_config, build_transport_doctor_config,
         build_transport_runtime_defaults, build_voice_contract_runner_config,
-        execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
-        resolve_bridge_transport_mode, resolve_contract_transport_mode,
-        resolve_gateway_openresponses_auth, resolve_github_issues_bridge_repo_and_token_from_cli,
+        build_voice_live_runner_config, execute_transport_runtime_mode,
+        map_gateway_openresponses_auth_mode, resolve_bridge_transport_mode,
+        resolve_contract_transport_mode, resolve_gateway_openresponses_auth,
+        resolve_github_issues_bridge_repo_and_token_from_cli,
         resolve_multi_channel_outbound_secret, resolve_multi_channel_transport_mode,
         resolve_slack_bridge_tokens_from_cli, resolve_transport_runtime_mode,
         run_events_runner_if_requested, run_events_runner_with_runtime_defaults_if_requested,
@@ -1405,6 +1438,10 @@ mod tests {
 
         async fn run_voice_contract_runner(&self) -> anyhow::Result<()> {
             self.record(TransportRuntimeMode::VoiceContractRunner, "voice-contract")
+        }
+
+        async fn run_voice_live_runner(&self) -> anyhow::Result<()> {
+            self.record(TransportRuntimeMode::VoiceLiveRunner, "voice-live")
         }
     }
 
@@ -1708,6 +1745,7 @@ mod tests {
         cli.deployment_contract_runner = true;
         cli.custom_command_contract_runner = true;
         cli.voice_contract_runner = true;
+        cli.voice_live_runner = true;
         assert_eq!(
             resolve_transport_runtime_mode(&cli),
             TransportRuntimeMode::GatewayOpenResponsesServer
@@ -1732,6 +1770,7 @@ mod tests {
         let mut cli = parse_cli_with_stack();
         cli.multi_channel_live_runner = true;
         cli.voice_contract_runner = true;
+        cli.voice_live_runner = true;
         assert_eq!(
             resolve_transport_runtime_mode(&cli),
             TransportRuntimeMode::MultiChannelLiveRunner
@@ -1745,6 +1784,16 @@ mod tests {
         assert_eq!(
             resolve_transport_runtime_mode(&cli),
             TransportRuntimeMode::VoiceContractRunner
+        );
+    }
+
+    #[test]
+    fn regression_resolve_transport_runtime_mode_selects_voice_live_runner() {
+        let mut cli = parse_cli_with_stack();
+        cli.voice_live_runner = true;
+        assert_eq!(
+            resolve_transport_runtime_mode(&cli),
+            TransportRuntimeMode::VoiceLiveRunner
         );
     }
 
@@ -1780,6 +1829,17 @@ mod tests {
                 .expect("dispatch succeeds");
         assert!(handled);
         assert_eq!(executor.calls(), vec!["multi-channel-live"]);
+    }
+
+    #[tokio::test]
+    async fn integration_execute_transport_runtime_mode_dispatches_voice_live_runner() {
+        let executor = RecordingTransportRuntimeExecutor::new(None);
+        let handled =
+            execute_transport_runtime_mode(TransportRuntimeMode::VoiceLiveRunner, &executor)
+                .await
+                .expect("dispatch succeeds");
+        assert!(handled);
+        assert_eq!(executor.calls(), vec!["voice-live"]);
     }
 
     #[tokio::test]
@@ -1872,6 +1932,7 @@ mod tests {
         cli.deployment_contract_runner = true;
         cli.custom_command_contract_runner = true;
         cli.voice_contract_runner = true;
+        cli.voice_live_runner = true;
         assert_eq!(
             resolve_contract_transport_mode(&cli),
             ContractTransportMode::MultiAgent
@@ -1895,6 +1956,16 @@ mod tests {
         assert_eq!(
             resolve_contract_transport_mode(&cli),
             ContractTransportMode::Voice
+        );
+    }
+
+    #[test]
+    fn regression_resolve_contract_transport_mode_selects_voice_live() {
+        let mut cli = parse_cli_with_stack();
+        cli.voice_live_runner = true;
+        assert_eq!(
+            resolve_contract_transport_mode(&cli),
+            ContractTransportMode::VoiceLive
         );
     }
 
@@ -2016,11 +2087,13 @@ mod tests {
         cli.voice_queue_limit = 0;
         cli.voice_processed_case_cap = 0;
         cli.voice_retry_max_attempts = 0;
+        cli.voice_live_max_turns = 0;
 
         let dashboard = build_dashboard_contract_runner_config(&cli);
         let deployment = build_deployment_contract_runner_config(&cli);
         let custom = build_custom_command_contract_runner_config(&cli);
         let voice = build_voice_contract_runner_config(&cli);
+        let voice_live = build_voice_live_runner_config(&cli);
 
         assert_eq!(dashboard.queue_limit, 1);
         assert_eq!(dashboard.processed_case_cap, 1);
@@ -2034,6 +2107,7 @@ mod tests {
         assert_eq!(voice.queue_limit, 1);
         assert_eq!(voice.processed_case_cap, 1);
         assert_eq!(voice.retry_max_attempts, 1);
+        assert_eq!(voice_live.max_turns, 1);
     }
 
     #[test]
@@ -2405,6 +2479,51 @@ mod tests {
         assert!(!handled);
     }
 
+    #[tokio::test]
+    async fn unit_run_voice_live_runner_if_requested_returns_false_when_disabled() {
+        let cli = parse_cli_with_stack();
+
+        let handled = super::run_voice_live_runner_if_requested(&cli)
+            .await
+            .expect("voice live helper");
+
+        assert!(!handled);
+    }
+
+    #[tokio::test]
+    async fn integration_run_voice_live_runner_if_requested_executes_runtime() {
+        let temp = tempdir().expect("tempdir");
+        let fixture_path = temp.path().join("voice-live.json");
+        std::fs::write(
+            &fixture_path,
+            r#"{
+  "schema_version": 1,
+  "session_id": "voice-live-test",
+  "frames": [
+    {
+      "frame_id": "frame-1",
+      "transcript": "tau open dashboard",
+      "speaker_id": "ops-live",
+      "locale": "en-US"
+    }
+  ]
+}"#,
+        )
+        .expect("write fixture");
+
+        let mut cli = parse_cli_with_stack();
+        cli.voice_live_runner = true;
+        cli.voice_live_input = fixture_path;
+        cli.voice_state_dir = temp.path().join("voice-state");
+
+        let handled = super::run_voice_live_runner_if_requested(&cli)
+            .await
+            .expect("voice live runner");
+
+        assert!(handled);
+        assert!(cli.voice_state_dir.join("state.json").exists());
+    }
+
     #[test]
     fn integration_build_gateway_contract_runner_config_preserves_runtime_fields() {
         let temp = tempdir().expect("tempdir");
@@ -2522,11 +2641,16 @@ mod tests {
         cli.voice_processed_case_cap = 4_444;
         cli.voice_retry_max_attempts = 9;
         cli.voice_retry_base_delay_ms = 12;
+        cli.voice_live_input = temp.path().join("voice-live.json");
+        cli.voice_live_wake_word = "Tau".to_string();
+        cli.voice_live_max_turns = 11;
+        cli.voice_live_tts_output = false;
 
         let dashboard = build_dashboard_contract_runner_config(&cli);
         let deployment = build_deployment_contract_runner_config(&cli);
         let custom = build_custom_command_contract_runner_config(&cli);
         let voice = build_voice_contract_runner_config(&cli);
+        let voice_live = build_voice_live_runner_config(&cli);
 
         assert_eq!(dashboard.fixture_path, cli.dashboard_fixture);
         assert_eq!(dashboard.state_dir, cli.dashboard_state_dir);
@@ -2555,6 +2679,12 @@ mod tests {
         assert_eq!(voice.processed_case_cap, 4_444);
         assert_eq!(voice.retry_max_attempts, 9);
         assert_eq!(voice.retry_base_delay_ms, 12);
+
+        assert_eq!(voice_live.input_path, cli.voice_live_input);
+        assert_eq!(voice_live.state_dir, cli.voice_state_dir);
+        assert_eq!(voice_live.wake_word, "tau".to_string());
+        assert_eq!(voice_live.max_turns, 11);
+        assert!(!voice_live.tts_output_enabled);
     }
 
     #[test]

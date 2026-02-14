@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "session_id": "ops-live-fallback",
+  "frames": [
+    {
+      "frame_id": "fallback-1",
+      "transcript": "tau run checks",
+      "speaker_id": "ops-live",
+      "locale": "en-US",
+      "provider_outage": true
+    },
+    {
+      "frame_id": "fallback-2",
+      "transcript": "",
+      "speaker_id": "ops-live",
+      "locale": "en-US",
+      "invalid_audio": true
+    },
+    {
+      "frame_id": "fallback-3",
+      "transcript": "tau open health report",
+      "speaker_id": "ops-live",
+      "locale": "en-US"
+    }
+  ]
+}

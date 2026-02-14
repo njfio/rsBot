@@ -1425,15 +1425,23 @@ fn regression_cli_custom_command_fixture_requires_runner_flag() {
 fn unit_cli_voice_runner_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.voice_contract_runner);
+    assert!(!cli.voice_live_runner);
     assert_eq!(
         cli.voice_fixture,
         PathBuf::from("crates/tau-coding-agent/testdata/voice-contract/mixed-outcomes.json")
+    );
+    assert_eq!(
+        cli.voice_live_input,
+        PathBuf::from("crates/tau-coding-agent/testdata/voice-live/single-turn.json")
     );
     assert_eq!(cli.voice_state_dir, PathBuf::from(".tau/voice"));
     assert_eq!(cli.voice_queue_limit, 64);
     assert_eq!(cli.voice_processed_case_cap, 10_000);
     assert_eq!(cli.voice_retry_max_attempts, 4);
     assert_eq!(cli.voice_retry_base_delay_ms, 0);
+    assert_eq!(cli.voice_live_wake_word, "tau");
+    assert_eq!(cli.voice_live_max_turns, 64);
+    assert!(cli.voice_live_tts_output);
 }
 
 #[test]
@@ -1467,6 +1475,42 @@ fn functional_cli_voice_runner_flags_accept_explicit_overrides() {
 fn regression_cli_voice_fixture_requires_runner_flag() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--voice-fixture", "fixtures/voice.json"]);
     let error = parse.expect_err("fixture flag should require voice runner mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn functional_cli_voice_live_runner_flags_accept_explicit_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--voice-live-runner",
+        "--voice-live-input",
+        "fixtures/voice-live.json",
+        "--voice-live-wake-word",
+        "hello",
+        "--voice-live-max-turns",
+        "7",
+        "--voice-live-tts-output=false",
+        "--voice-state-dir",
+        ".tau/voice-live-custom",
+    ]);
+    assert!(cli.voice_live_runner);
+    assert_eq!(
+        cli.voice_live_input,
+        PathBuf::from("fixtures/voice-live.json")
+    );
+    assert_eq!(cli.voice_live_wake_word, "hello");
+    assert_eq!(cli.voice_live_max_turns, 7);
+    assert!(!cli.voice_live_tts_output);
+    assert_eq!(cli.voice_state_dir, PathBuf::from(".tau/voice-live-custom"));
+}
+
+#[test]
+fn regression_cli_voice_live_input_requires_runner_flag() {
+    let parse =
+        try_parse_cli_with_stack(["tau-rs", "--voice-live-input", "fixtures/voice-live.json"]);
+    let error = parse.expect_err("live input should require live runner mode");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
