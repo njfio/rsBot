@@ -409,6 +409,11 @@ fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
     assert!(html.contains(GATEWAY_STATUS_ENDPOINT));
     assert!(html.contains(GATEWAY_WS_ENDPOINT));
     assert!(html.contains(DEFAULT_SESSION_KEY));
+    assert!(html.contains("Health State"));
+    assert!(html.contains("Rollout Gate"));
+    assert!(html.contains("id=\"connectorTableBody\""));
+    assert!(html.contains("id=\"reasonCodeTableBody\""));
+    assert!(html.contains("renderStatusDashboard(payload)"));
     assert!(html.contains("multi_channel_lifecycle: state_present="));
     assert!(html.contains("connector_channels:"));
 }
@@ -439,6 +444,9 @@ async fn functional_webchat_endpoint_returns_html_shell() {
     assert!(body.contains(OPENRESPONSES_ENDPOINT));
     assert!(body.contains(GATEWAY_STATUS_ENDPOINT));
     assert!(body.contains(GATEWAY_WS_ENDPOINT));
+    assert!(body.contains("Connector Channels"));
+    assert!(body.contains("Reason Code Counts"));
+    assert!(body.contains("id=\"healthStateValue\""));
     assert!(body.contains("multi-channel lifecycle summary"));
     assert!(body.contains("connector counters"));
     assert!(body.contains("recent reason codes"));
@@ -616,7 +624,7 @@ async fn functional_gateway_ws_endpoint_supports_capabilities_and_ping_pong() {
     assert_eq!(response["payload"]["protocol_version"], "0.1.0");
 
     socket
-        .send(ClientWsMessage::Ping(vec![7, 3, 1]))
+        .send(ClientWsMessage::Ping(vec![7, 3, 1].into()))
         .await
         .expect("send ping");
     let pong = tokio::time::timeout(Duration::from_secs(2), async {

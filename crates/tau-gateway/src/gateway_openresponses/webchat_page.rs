@@ -112,6 +112,76 @@ pub(super) fn render_gateway_webchat_page() -> String {
       word-break: break-word;
       font-size: 0.85rem;
     }}
+    .status-dashboard {{
+      display: grid;
+      gap: 0.8rem;
+      margin-bottom: 0.8rem;
+    }}
+    .status-cards {{
+      display: grid;
+      gap: 0.6rem;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    }}
+    .metric-card {{
+      border: 1px solid #cfdae4;
+      border-radius: 10px;
+      padding: 0.55rem 0.65rem;
+      background: linear-gradient(180deg, #fdfefe 0%, #f4f8fb 100%);
+    }}
+    .metric-label {{
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #4a667a;
+      margin-bottom: 0.2rem;
+    }}
+    .metric-value {{
+      display: inline-block;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #173142;
+    }}
+    .metric-value.ok {{
+      color: #0f7d5f;
+    }}
+    .metric-value.warn {{
+      color: #ad6700;
+    }}
+    .metric-value.bad {{
+      color: #b42318;
+    }}
+    .table-scroll {{
+      overflow: auto;
+      border: 1px solid #d2dde6;
+      border-radius: 10px;
+      background: #f9fbfd;
+    }}
+    table.status-table {{
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 420px;
+    }}
+    table.status-table th {{
+      text-align: left;
+      font-size: 0.75rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #486275;
+      background: #edf3f8;
+      border-bottom: 1px solid #cfdae4;
+      padding: 0.45rem 0.5rem;
+      white-space: nowrap;
+    }}
+    table.status-table td {{
+      border-bottom: 1px solid #dde6ed;
+      padding: 0.4rem 0.5rem;
+      font-size: 0.82rem;
+      color: #1f3a4b;
+      white-space: nowrap;
+    }}
+    table.status-table tbody tr:last-child td {{
+      border-bottom: none;
+    }}
     @media (min-width: 900px) {{
       .grid {{
         grid-template-columns: 1.4fr 1fr;
@@ -151,6 +221,65 @@ pub(super) fn render_gateway_webchat_page() -> String {
       </section>
       <section class="panel">
         <h2 style="margin: 0 0 0.5rem 0; font-size: 1rem;">Gateway status</h2>
+        <div class="status-dashboard">
+          <div class="status-cards">
+            <article class="metric-card">
+              <div class="metric-label">Health State</div>
+              <div id="healthStateValue" class="metric-value">unknown</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Rollout Gate</div>
+              <div id="rolloutGateValue" class="metric-value">unknown</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Queue Depth</div>
+              <div id="queueDepthValue" class="metric-value">0</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Failure Streak</div>
+              <div id="failureStreakValue" class="metric-value">0</div>
+            </article>
+          </div>
+          <div>
+            <label style="margin-bottom: 0.35rem;">Connector Channels</label>
+            <div class="table-scroll">
+              <table class="status-table" aria-label="Connector channels table">
+                <thead>
+                  <tr>
+                    <th>Channel</th>
+                    <th>Liveness</th>
+                    <th>Breaker</th>
+                    <th>Ingested</th>
+                    <th>Dup</th>
+                    <th>Retry</th>
+                    <th>Auth Fail</th>
+                    <th>Parse Fail</th>
+                    <th>Provider Fail</th>
+                  </tr>
+                </thead>
+                <tbody id="connectorTableBody">
+                  <tr><td colspan="9">No connector data yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <label style="margin-bottom: 0.35rem;">Reason Code Counts</label>
+            <div class="table-scroll">
+              <table class="status-table" aria-label="Reason code table">
+                <thead>
+                  <tr>
+                    <th>Reason Code</th>
+                    <th>Count</th>
+                  </tr>
+                </thead>
+                <tbody id="reasonCodeTableBody">
+                  <tr><td colspan="2">No reason-code samples yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
         <pre id="status">Press "Refresh status" to inspect gateway service state, multi-channel lifecycle summary, connector counters, and recent reason codes.</pre>
       </section>
     </div>
@@ -171,6 +300,12 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const promptInput = document.getElementById("prompt");
     const outputPre = document.getElementById("output");
     const statusPre = document.getElementById("status");
+    const healthStateValue = document.getElementById("healthStateValue");
+    const rolloutGateValue = document.getElementById("rolloutGateValue");
+    const queueDepthValue = document.getElementById("queueDepthValue");
+    const failureStreakValue = document.getElementById("failureStreakValue");
+    const connectorTableBody = document.getElementById("connectorTableBody");
+    const reasonCodeTableBody = document.getElementById("reasonCodeTableBody");
     const sendButton = document.getElementById("send");
     const refreshButton = document.getElementById("refreshStatus");
     const clearButton = document.getElementById("clearOutput");
@@ -275,6 +410,110 @@ pub(super) fn render_gateway_webchat_page() -> String {
       }}
     }}
 
+    function toSafeInteger(value) {{
+      if (typeof value === "number" && Number.isFinite(value)) {{
+        return Math.max(0, Math.trunc(value));
+      }}
+      if (typeof value === "string" && value.trim().length > 0) {{
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {{
+          return Math.max(0, Math.trunc(parsed));
+        }}
+      }}
+      return 0;
+    }}
+
+    function applyMetricValue(node, value, tone) {{
+      node.textContent = String(value);
+      node.classList.remove("ok", "warn", "bad");
+      if (tone) {{
+        node.classList.add(tone);
+      }}
+    }}
+
+    function escapeHtml(value) {{
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
+    }}
+
+    function sortedCounterEntries(counter) {{
+      return Object.entries(counter || {{}})
+        .sort((left, right) => {{
+          const countDelta = toSafeInteger(right[1]) - toSafeInteger(left[1]);
+          if (countDelta !== 0) {{
+            return countDelta;
+          }}
+          return String(left[0]).localeCompare(String(right[0]));
+        }});
+    }}
+
+    function renderReasonCodeTable(reasonCodeCounts) {{
+      const entries = sortedCounterEntries(reasonCodeCounts);
+      if (entries.length === 0) {{
+        reasonCodeTableBody.innerHTML = "<tr><td colspan=\"2\">No reason-code samples yet.</td></tr>";
+        return;
+      }}
+      reasonCodeTableBody.innerHTML = entries.map(([code, count]) =>
+        "<tr><td>" + escapeHtml(code) + "</td><td>" + String(toSafeInteger(count)) + "</td></tr>"
+      ).join("");
+    }}
+
+    function renderConnectorTable(connectors) {{
+      const entries = Object.entries((connectors && connectors.channels) || {{}})
+        .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+      if (entries.length === 0) {{
+        connectorTableBody.innerHTML = "<tr><td colspan=\"9\">No connector data yet.</td></tr>";
+        return;
+      }}
+      connectorTableBody.innerHTML = entries.map(([channel, status]) => {{
+        const row = status || {{}};
+        return [
+          "<tr>",
+          "<td>" + escapeHtml(channel) + "</td>",
+          "<td>" + escapeHtml(row.liveness || "unknown") + "</td>",
+          "<td>" + escapeHtml(row.breaker_state || "unknown") + "</td>",
+          "<td>" + String(toSafeInteger(row.events_ingested)) + "</td>",
+          "<td>" + String(toSafeInteger(row.duplicates_skipped)) + "</td>",
+          "<td>" + String(toSafeInteger(row.retry_attempts)) + "</td>",
+          "<td>" + String(toSafeInteger(row.auth_failures)) + "</td>",
+          "<td>" + String(toSafeInteger(row.parse_failures)) + "</td>",
+          "<td>" + String(toSafeInteger(row.provider_failures)) + "</td>",
+          "</tr>",
+        ].join("");
+      }}).join("");
+    }}
+
+    function renderStatusDashboard(payload) {{
+      const service = payload && payload.service ? payload.service : {{}};
+      const mc = payload && payload.multi_channel ? payload.multi_channel : {{}};
+      const connectors = mc.connectors || {{}};
+
+      const healthState = String(mc.health_state || "unknown");
+      const gateState = String(mc.rollout_gate || service.rollout_gate || "unknown");
+      const queueDepth = toSafeInteger(mc.queue_depth);
+      const failureStreak = toSafeInteger(mc.failure_streak);
+
+      const healthTone = healthState === "healthy"
+        ? "ok"
+        : (healthState === "degraded" ? "warn" : "bad");
+      const gateTone = gateState === "pass"
+        ? "ok"
+        : (gateState === "hold" ? "warn" : "bad");
+      const streakTone = failureStreak === 0 ? "ok" : "warn";
+
+      applyMetricValue(healthStateValue, healthState, healthTone);
+      applyMetricValue(rolloutGateValue, gateState, gateTone);
+      applyMetricValue(queueDepthValue, queueDepth, queueDepth === 0 ? "ok" : "warn");
+      applyMetricValue(failureStreakValue, failureStreak, streakTone);
+
+      renderConnectorTable(connectors);
+      renderReasonCodeTable(mc.reason_code_counts || {{}});
+    }}
+
     function renderMultiChannelChannelRows(connectors) {{
       if (!connectors || !connectors.channels) {{
         return "none";
@@ -343,13 +582,16 @@ pub(super) fn render_gateway_webchat_page() -> String {
         }});
         const raw = await response.text();
         if (!response.ok) {{
+          renderStatusDashboard(null);
           statusPre.textContent = "status " + response.status + "\n" + raw;
           return;
         }}
         const payload = JSON.parse(raw);
+        renderStatusDashboard(payload);
         const summary = formatGatewayStatusSummary(payload);
         statusPre.textContent = summary + "\n\nraw_payload:\n" + JSON.stringify(payload, null, 2);
       }} catch (error) {{
+        renderStatusDashboard(null);
         statusPre.textContent = "status request failed: " + String(error);
       }}
     }}
@@ -407,6 +649,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
     sessionInput.addEventListener("change", saveLocalValues);
 
     loadLocalValues();
+    refreshStatus();
   </script>
 </body>
 </html>
