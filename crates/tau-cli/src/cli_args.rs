@@ -6,7 +6,7 @@ use crate::{
     CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDeploymentWasmRuntimeProfile,
     CliEventTemplateSchedule, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
     CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
-    CliOrchestratorMode, CliProviderAuthMode, CliWebhookSignatureAlgorithm,
+    CliOrchestratorMode, CliPromptSanitizerMode, CliProviderAuthMode, CliWebhookSignatureAlgorithm,
 };
 
 mod gateway_daemon_flags;
@@ -591,6 +591,32 @@ pub struct Cli {
         help = "Comma-delimited budget alert thresholds as percentages (1-100)"
     )]
     pub agent_cost_alert_threshold_percent: Vec<u8>,
+
+    #[arg(
+        long = "prompt-sanitizer-enabled",
+        env = "TAU_PROMPT_SANITIZER_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set,
+        help = "Enable prompt/tool-output safety checks before model dispatch and tool-result reinjection"
+    )]
+    pub prompt_sanitizer_enabled: bool,
+
+    #[arg(
+        long = "prompt-sanitizer-mode",
+        env = "TAU_PROMPT_SANITIZER_MODE",
+        value_enum,
+        default_value_t = CliPromptSanitizerMode::Warn,
+        help = "Safety action for matched prompt-injection patterns (warn, redact, block)"
+    )]
+    pub prompt_sanitizer_mode: CliPromptSanitizerMode,
+
+    #[arg(
+        long = "prompt-sanitizer-redaction-token",
+        env = "TAU_PROMPT_SANITIZER_REDACTION_TOKEN",
+        default_value = "[TAU-SAFETY-REDACTED]",
+        help = "Replacement token used when --prompt-sanitizer-mode=redact"
+    )]
+    pub prompt_sanitizer_redaction_token: String,
 
     #[arg(
         long,

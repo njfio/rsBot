@@ -1,0 +1,10 @@
+[package]
+name = "tau-safety"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aho-corasick.workspace = true
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }

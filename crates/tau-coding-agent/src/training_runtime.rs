@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tau_agent_core::AgentConfig;
+use tau_agent_core::{AgentConfig, SafetyMode};
 use tau_ai::{LlmClient, ModelRef};
-use tau_cli::Cli;
+use tau_cli::{Cli, CliPromptSanitizerMode};
 use tau_onboarding::startup_local_runtime::{build_local_runtime_agent, LocalRuntimeAgentSettings};
 use tau_trainer::{Trainer, TrainerConfig};
 use tau_training_runner::TauAgentExecutor;
@@ -20,6 +20,14 @@ use crate::tools::ToolPolicy;
 
 const TRAINING_STATUS_SCHEMA_VERSION: u32 = 1;
 const TRAINING_STATUS_FILE: &str = "status.json";
+
+fn resolve_safety_mode(mode: CliPromptSanitizerMode) -> SafetyMode {
+    match mode {
+        CliPromptSanitizerMode::Warn => SafetyMode::Warn,
+        CliPromptSanitizerMode::Redact => SafetyMode::Redact,
+        CliPromptSanitizerMode::Block => SafetyMode::Block,
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct TrainingConfigFile {
@@ -301,6 +309,9 @@ fn build_executor(
             .and_then(|entry| entry.output_cost_per_million),
         cost_budget_usd: cli.agent_cost_budget_usd,
         cost_alert_thresholds_percent: cli.agent_cost_alert_threshold_percent.clone(),
+        prompt_sanitizer_enabled: cli.prompt_sanitizer_enabled,
+        prompt_sanitizer_mode: resolve_safety_mode(cli.prompt_sanitizer_mode),
+        prompt_sanitizer_redaction_token: cli.prompt_sanitizer_redaction_token.clone(),
     };
 
     let base_system_prompt = system_prompt.to_string();

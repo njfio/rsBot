@@ -223,6 +223,24 @@ impl TrainingTracer {
                     ]),
                 );
             }
+            AgentEvent::SafetyPolicyApplied {
+                stage,
+                mode,
+                blocked,
+                matched_rules,
+                reason_codes,
+            } => {
+                self.instant_span(
+                    "agent.safety_policy_applied".to_string(),
+                    HashMap::from([
+                        ("stage".to_string(), json!(stage.as_str())),
+                        ("mode".to_string(), json!(mode)),
+                        ("blocked".to_string(), json!(blocked)),
+                        ("matched_rules".to_string(), json!(matched_rules)),
+                        ("reason_codes".to_string(), json!(reason_codes)),
+                    ]),
+                );
+            }
         }
     }
 
@@ -377,7 +395,7 @@ fn next_id(prefix: &str) -> String {
 mod tests {
     use super::TrainingTracer;
     use serde_json::json;
-    use tau_agent_core::AgentEvent;
+    use tau_agent_core::{AgentEvent, SafetyMode, SafetyStage};
     use tau_ai::ChatUsage;
     use tau_training_store::{InMemoryTrainingStore, TrainingStore};
     use tau_training_types::Reward;
@@ -425,5 +443,25 @@ mod tests {
         let spans = store.query_spans("r-1", Some("a-1")).await.expect("query");
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].name, "agent.turn.1");
+    }
+
+    #[test]
+    fn maps_safety_policy_events_into_spans() {
+        let tracer = TrainingTracer::new("r-1", "a-1");
+        tracer.on_agent_event(&AgentEvent::SafetyPolicyApplied {
+            stage: SafetyStage::InboundMessage,
+            mode: SafetyMode::Redact,
+            blocked: false,
+            matched_rules: vec!["literal.ignore_previous_instructions".to_string()],
+            reason_codes: vec!["prompt_injection.ignore_instructions".to_string()],
+        });
+        let spans = tracer.completed_spans();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].name, "agent.safety_policy_applied");
+        assert_eq!(
+            spans[0].attributes.get("stage"),
+            Some(&json!("inbound_message"))
+        );
+        assert_eq!(spans[0].attributes.get("mode"), Some(&json!("redact")));
     }
 }

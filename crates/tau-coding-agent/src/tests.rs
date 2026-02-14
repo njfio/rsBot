@@ -17,6 +17,7 @@ use tau_ai::{
     Provider, TauAiError,
 };
 use tau_cli::cli_args::CliGatewayDaemonFlags;
+use tau_cli::CliPromptSanitizerMode;
 use tempfile::tempdir;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::sleep;
@@ -368,6 +369,9 @@ pub(crate) fn test_cli() -> Cli {
         agent_request_retry_max_backoff_ms: 2_000,
         agent_cost_budget_usd: None,
         agent_cost_alert_threshold_percent: vec![80, 100],
+        prompt_sanitizer_enabled: true,
+        prompt_sanitizer_mode: CliPromptSanitizerMode::Warn,
+        prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
         request_timeout_ms: 120_000,
         provider_max_retries: 2,
         provider_retry_budget_ms: 0,
