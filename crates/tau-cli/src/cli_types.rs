@@ -69,6 +69,14 @@ pub enum CliToolPolicyPreset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliPromptSanitizerMode` values.
+pub enum CliPromptSanitizerMode {
+    Warn,
+    Redact,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 /// Enumerates supported `CliProviderAuthMode` values.
 pub enum CliProviderAuthMode {
     ApiKey,

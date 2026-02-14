@@ -13,9 +13,6 @@ use tau_browser_automation::browser_automation_live::{
     run_browser_automation_live_fixture, BrowserAutomationLivePolicy, BrowserSessionManager,
     PlaywrightCliActionExecutor,
 };
-use tau_browser_automation::browser_automation_runtime::{
-    run_browser_automation_contract_runner, BrowserAutomationRuntimeConfig,
-};
 use tau_cli::validation::{
     validate_browser_automation_contract_runner_cli, validate_browser_automation_live_runner_cli,
     validate_custom_command_contract_runner_cli, validate_dashboard_contract_runner_cli,
@@ -83,7 +80,6 @@ pub enum BridgeTransportMode {
 pub enum ContractTransportMode {
     None,
     MultiAgent,
-    BrowserAutomation,
     BrowserAutomationLive,
     Memory,
     Dashboard,
@@ -106,7 +102,6 @@ pub enum TransportRuntimeMode {
     MultiChannelLiveRunner,
     MultiChannelLiveConnectorsRunner,
     MultiAgentContractRunner,
-    BrowserAutomationContractRunner,
     BrowserAutomationLiveRunner,
     MemoryContractRunner,
     DashboardContractRunner,
@@ -128,7 +123,6 @@ pub trait TransportRuntimeExecutor {
     async fn run_multi_channel_live_runner(&self) -> Result<()>;
     async fn run_multi_channel_live_connectors_runner(&self) -> Result<()>;
     async fn run_multi_agent_contract_runner(&self) -> Result<()>;
-    async fn run_browser_automation_contract_runner(&self) -> Result<()>;
     async fn run_browser_automation_live_runner(&self) -> Result<()>;
     async fn run_memory_contract_runner(&self) -> Result<()>;
     async fn run_dashboard_contract_runner(&self) -> Result<()>;
@@ -177,10 +171,6 @@ where
         }
         TransportRuntimeMode::MultiAgentContractRunner => {
             executor.run_multi_agent_contract_runner().await?;
-            Ok(true)
-        }
-        TransportRuntimeMode::BrowserAutomationContractRunner => {
-            executor.run_browser_automation_contract_runner().await?;
             Ok(true)
         }
         TransportRuntimeMode::BrowserAutomationLiveRunner => {
@@ -354,8 +344,6 @@ pub fn resolve_bridge_transport_mode(cli: &Cli) -> BridgeTransportMode {
 pub fn resolve_contract_transport_mode(cli: &Cli) -> ContractTransportMode {
     if cli.multi_agent_contract_runner {
         ContractTransportMode::MultiAgent
-    } else if cli.browser_automation_contract_runner {
-        ContractTransportMode::BrowserAutomation
     } else if cli.browser_automation_live_runner {
         ContractTransportMode::BrowserAutomationLive
     } else if cli.memory_contract_runner {
@@ -406,9 +394,6 @@ pub fn resolve_transport_runtime_mode(cli: &Cli) -> TransportRuntimeMode {
 
     match resolve_contract_transport_mode(cli) {
         ContractTransportMode::MultiAgent => return TransportRuntimeMode::MultiAgentContractRunner,
-        ContractTransportMode::BrowserAutomation => {
-            return TransportRuntimeMode::BrowserAutomationContractRunner;
-        }
         ContractTransportMode::BrowserAutomationLive => {
             return TransportRuntimeMode::BrowserAutomationLiveRunner;
         }
@@ -544,20 +529,6 @@ pub async fn run_multi_agent_contract_runner_if_requested(cli: &Cli) -> Result<b
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Public struct `BrowserAutomationContractRunnerConfig` used across Tau components.
-pub struct BrowserAutomationContractRunnerConfig {
-    pub fixture_path: PathBuf,
-    pub state_dir: PathBuf,
-    pub queue_limit: usize,
-    pub processed_case_cap: usize,
-    pub retry_max_attempts: usize,
-    pub retry_base_delay_ms: u64,
-    pub action_timeout_ms: u64,
-    pub max_actions_per_case: usize,
-    pub allow_unsafe_actions: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `BrowserAutomationLiveRunnerConfig` used across Tau components.
 pub struct BrowserAutomationLiveRunnerConfig {
     pub fixture_path: PathBuf,
@@ -670,42 +641,6 @@ pub struct GithubIssuesBridgeCliConfig {
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
     pub artifact_retention_days: u64,
-}
-
-pub fn build_browser_automation_contract_runner_config(
-    cli: &Cli,
-) -> BrowserAutomationContractRunnerConfig {
-    BrowserAutomationContractRunnerConfig {
-        fixture_path: cli.browser_automation_fixture.clone(),
-        state_dir: cli.browser_automation_state_dir.clone(),
-        queue_limit: cli.browser_automation_queue_limit.max(1),
-        processed_case_cap: cli.browser_automation_processed_case_cap.max(1),
-        retry_max_attempts: cli.browser_automation_retry_max_attempts.max(1),
-        retry_base_delay_ms: cli.browser_automation_retry_base_delay_ms,
-        action_timeout_ms: cli.browser_automation_action_timeout_ms.max(1),
-        max_actions_per_case: cli.browser_automation_max_actions_per_case.max(1),
-        allow_unsafe_actions: cli.browser_automation_allow_unsafe_actions,
-    }
-}
-
-pub async fn run_browser_automation_contract_runner_if_requested(cli: &Cli) -> Result<bool> {
-    if !cli.browser_automation_contract_runner {
-        return Ok(false);
-    }
-    let config = build_browser_automation_contract_runner_config(cli);
-    run_browser_automation_contract_runner(BrowserAutomationRuntimeConfig {
-        fixture_path: config.fixture_path,
-        state_dir: config.state_dir,
-        queue_limit: config.queue_limit,
-        processed_case_cap: config.processed_case_cap,
-        retry_max_attempts: config.retry_max_attempts,
-        retry_base_delay_ms: config.retry_base_delay_ms,
-        action_timeout_ms: config.action_timeout_ms,
-        max_actions_per_case: config.max_actions_per_case,
-        allow_unsafe_actions: config.allow_unsafe_actions,
-    })
-    .await?;
-    Ok(true)
 }
 
 fn load_browser_automation_live_previous_health(state_path: &Path) -> TransportHealthSnapshot {

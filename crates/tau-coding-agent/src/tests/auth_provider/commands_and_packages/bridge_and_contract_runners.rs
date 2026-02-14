@@ -905,7 +905,7 @@ fn regression_validate_multi_agent_contract_runner_cli_requires_fixture_file() {
 }
 
 #[test]
-fn unit_validate_browser_automation_contract_runner_cli_accepts_minimum_configuration() {
+fn unit_validate_browser_automation_contract_runner_cli_is_removed() {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("browser-automation-fixture.json");
     std::fs::write(&fixture_path, "{}").expect("write fixture");
@@ -914,12 +914,19 @@ fn unit_validate_browser_automation_contract_runner_cli_accepts_minimum_configur
     cli.browser_automation_contract_runner = true;
     cli.browser_automation_fixture = fixture_path;
 
-    validate_browser_automation_contract_runner_cli(&cli)
-        .expect("browser automation runner config should validate");
+    let error = validate_browser_automation_contract_runner_cli(&cli)
+        .expect_err("contract runner should be rejected");
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-contract-runner has been removed"));
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-live-runner"));
 }
 
 #[test]
-fn integration_validate_browser_automation_contract_runner_cli_rejects_transport_conflicts() {
+fn regression_validate_browser_automation_contract_runner_cli_reports_migration_even_with_conflicts(
+) {
     let temp = tempdir().expect("tempdir");
     let fixture_path = temp.path().join("fixture.json");
     std::fs::write(&fixture_path, "{}").expect("write fixture");
@@ -930,11 +937,10 @@ fn integration_validate_browser_automation_contract_runner_cli_rejects_transport
     cli.dashboard_contract_runner = true;
 
     let error =
-        validate_browser_automation_contract_runner_cli(&cli).expect_err("transport conflict");
-    assert!(error.to_string().contains(
-        "--github-issues-bridge, --slack-bridge, --events-runner, --multi-channel-contract-runner, --multi-channel-live-runner"
-    ));
-    assert!(error.to_string().contains("--browser-automation-preflight"));
+        validate_browser_automation_contract_runner_cli(&cli).expect_err("contract runner removal");
+    assert!(error
+        .to_string()
+        .contains("--browser-automation-contract-runner has been removed"));
 }
 
 #[test]

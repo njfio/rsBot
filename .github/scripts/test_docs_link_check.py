@@ -43,13 +43,15 @@ class DocsLinkCheckTests(unittest.TestCase):
                 "docs/README.md",
                 "--file",
                 "docs/guides/quickstart.md",
+                "--file",
+                "docs/guides/doc-density-scorecard.md",
             ],
             text=True,
             capture_output=True,
             check=False,
         )
         self.assertEqual(completed.returncode, 0, msg=completed.stderr)
-        self.assertIn("checked_files=3", completed.stdout)
+        self.assertIn("checked_files=4", completed.stdout)
         self.assertIn("issues=0", completed.stdout)
 
     def test_integration_docs_index_and_readme_links_stay_valid(self):
@@ -65,6 +67,10 @@ class DocsLinkCheckTests(unittest.TestCase):
         self.assertIn("guides/transports.md", docs_index)
         self.assertIn("guides/packages.md", docs_index)
         self.assertIn("guides/events.md", docs_index)
+        self.assertIn("guides/doc-density-scorecard.md", docs_index)
+
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("docs/guides/doc-density-scorecard.md", readme)
 
     def test_regression_cli_reports_missing_link_and_fails(self):
         script_path = SCRIPT_DIR / "docs_link_check.py"

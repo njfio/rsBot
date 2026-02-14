@@ -606,6 +606,9 @@ async fn emits_expected_event_sequence_for_tool_turn() {
             AgentEvent::CostBudgetAlert {
                 threshold_percent, ..
             } => format!("cost_alert:{threshold_percent}"),
+            AgentEvent::SafetyPolicyApplied { stage, .. } => {
+                format!("safety:{}", stage.as_str())
+            }
             AgentEvent::AgentStart => "agent_start".to_string(),
             AgentEvent::AgentEnd { .. } => "agent_end".to_string(),
         };

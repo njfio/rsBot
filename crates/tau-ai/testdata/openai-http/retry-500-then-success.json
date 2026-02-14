@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "name": "retry-500-then-success",
+  "prompt": "please retry",
+  "steps": [
+    {
+      "status": 500,
+      "body": {
+        "error": {
+          "message": "upstream temporary failure"
+        }
+      }
+    },
+    {
+      "status": 200,
+      "body": {
+        "choices": [
+          {
+            "message": {
+              "content": "retry recovered response"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 5,
+          "completion_tokens": 4,
+          "total_tokens": 9
+        }
+      }
+    }
+  ],
+  "expected_text": "retry recovered response"
+}
