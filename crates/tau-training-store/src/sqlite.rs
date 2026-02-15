@@ -769,6 +769,28 @@ impl TrainingStore for SqliteTrainingStore {
             return Err(TrainingStoreError::WorkerNotFound(worker_id.to_string()));
         }
 
+        let now = Utc::now();
+        let mut effective_rollout_id: Option<String> = None;
+        let mut effective_attempt_id: Option<String> = None;
+        if let (Some(rollout_id), Some(attempt_id)) = (active_rollout_id, active_attempt_id) {
+            let updated_attempts = connection.execute(
+                r#"
+                UPDATE attempts
+                SET last_heartbeat_at = ?1
+                WHERE attempt_id = ?2 AND status = ?3
+                "#,
+                params![
+                    timestamp_to_db(now),
+                    attempt_id,
+                    attempt_status_to_db(AttemptStatus::Running)
+                ],
+            )?;
+            if updated_attempts > 0 {
+                effective_rollout_id = Some(rollout_id);
+                effective_attempt_id = Some(attempt_id);
+            }
+        }
+
         connection.execute(
             r#"
             UPDATE workers
@@ -776,9 +798,9 @@ impl TrainingStore for SqliteTrainingStore {
             WHERE worker_id = ?4
             "#,
             params![
-                timestamp_to_db(Utc::now()),
-                active_rollout_id,
-                active_attempt_id,
+                timestamp_to_db(now),
+                effective_rollout_id,
+                effective_attempt_id,
                 worker_id
             ],
         )?;
@@ -1310,5 +1332,59 @@ mod tests {
             .expect("second attempt");
         assert_eq!(second.rollout.rollout_id, "r-chaos-1");
         assert_eq!(second.attempt.sequence_id, 2);
+    }
+
+    #[tokio::test]
+    async fn regression_active_worker_heartbeat_refresh_prevents_false_timeout() {
+        let temp = tempdir().expect("create tempdir");
+        let db_path = temp.path().join("training.sqlite");
+        let store = SqliteTrainingStore::new(&db_path).expect("create sqlite store");
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-heartbeat-1",
+                json!({ "prompt": "hello" }),
+                None,
+            ))
+            .await
+            .expect("enqueue rollout");
+
+        let dequeued = store
+            .dequeue_rollout("worker-heartbeat")
+            .await
+            .expect("dequeue")
+            .expect("attempt");
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        store
+            .update_worker_heartbeat(
+                "worker-heartbeat",
+                Some(dequeued.rollout.rollout_id.clone()),
+                Some(dequeued.attempt.attempt_id.clone()),
+            )
+            .await
+            .expect("refresh heartbeat");
+
+        let requeued = store
+            .reassign_timed_out_rollouts(Duration::from_millis(5))
+            .await
+            .expect("reassign");
+        assert!(
+            requeued.is_empty(),
+            "healthy attempt should not be requeued on refreshed heartbeat"
+        );
+
+        let attempt = store
+            .get_attempt(&dequeued.attempt.attempt_id)
+            .await
+            .expect("get attempt")
+            .expect("attempt exists");
+        assert_eq!(attempt.status, AttemptStatus::Running);
+
+        let workers = store.query_workers().await.expect("workers");
+        let worker = workers
+            .iter()
+            .find(|candidate| candidate.worker_id == "worker-heartbeat")
+            .expect("worker present");
+        assert_eq!(worker.active_attempt_id, Some(dequeued.attempt.attempt_id));
     }
 }
