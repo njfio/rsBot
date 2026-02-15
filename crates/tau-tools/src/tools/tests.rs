@@ -231,6 +231,15 @@ fn unit_tool_policy_seeds_default_protected_paths() {
     assert!(protected_paths.iter().any(|path| path.ends_with("USER.md")));
     assert!(protected_paths
         .iter()
+        .any(|path| path.ends_with(".tau/AGENTS.md")));
+    assert!(protected_paths
+        .iter()
+        .any(|path| path.ends_with(".tau/SOUL.md")));
+    assert!(protected_paths
+        .iter()
+        .any(|path| path.ends_with(".tau/USER.md")));
+    assert!(protected_paths
+        .iter()
         .any(|path| path.ends_with(".tau/rbac-policy.json")));
 }
 
@@ -1552,6 +1561,36 @@ async fn regression_edit_tool_rejects_result_larger_than_write_limit() {
 async fn regression_write_tool_denies_default_protected_paths() {
     let temp = tempdir().expect("tempdir");
     let protected = temp.path().join("AGENTS.md");
+    let tool = WriteTool::new(test_policy(temp.path()));
+
+    let result = tool
+        .execute(serde_json::json!({
+            "path": protected,
+            "content": "blocked",
+        }))
+        .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("policy_rule")
+            .and_then(serde_json::Value::as_str),
+        Some("protected_path")
+    );
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("protected_path_denied")
+    );
+}
+
+#[tokio::test]
+async fn regression_write_tool_denies_tau_identity_protected_paths() {
+    let temp = tempdir().expect("tempdir");
+    let protected = temp.path().join(".tau/AGENTS.md");
     let tool = WriteTool::new(test_policy(temp.path()));
 
     let result = tool

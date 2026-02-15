@@ -59,6 +59,9 @@ fn integration_execute_startup_preflight_runs_onboarding_and_generates_report() 
     assert_eq!(report_json["daemon_bootstrap"]["ready"], true);
     assert_eq!(report_json["daemon_bootstrap"]["status"]["installed"], true);
     assert_eq!(report_json["daemon_bootstrap"]["status"]["running"], true);
+    assert_eq!(report_json["identity_composition"]["schema_version"], 1);
+    assert_eq!(report_json["identity_composition"]["loaded_count"], 0);
+    assert_eq!(report_json["identity_composition"]["missing_count"], 3);
     let daemon_state_path = report_json["daemon_bootstrap"]["status"]["state_path"]
         .as_str()
         .expect("daemon state path string");

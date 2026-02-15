@@ -13,6 +13,9 @@ Default protected paths (per allowed root):
 - `AGENTS.md`
 - `SOUL.md`
 - `USER.md`
+- `.tau/AGENTS.md`
+- `.tau/SOUL.md`
+- `.tau/USER.md`
 - `.tau/rbac-policy.json`
 - `.tau/trust-roots.json`
 - `.tau/channel-policy.json`
@@ -49,4 +52,3 @@ export TAU_PROTECTED_PATHS=\"/abs/path/one,/abs/path/two\"
 - `allow_protected_path_mutations`
 
 Use existing `--print-tool-policy` workflow to verify effective configuration.
-

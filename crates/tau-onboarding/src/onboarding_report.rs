@@ -7,6 +7,7 @@ use tau_ops::TauDaemonStatusReport;
 use tau_provider::is_executable_available;
 
 use crate::onboarding_paths::resolve_tau_root;
+use crate::startup_prompt_composition::StartupIdentityCompositionReport;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Public struct `OnboardingExecutableCheck` used across Tau components.
@@ -48,6 +49,7 @@ pub struct OnboardingReport {
     pub files_created: Vec<String>,
     pub files_existing: Vec<String>,
     pub executable_checks: Vec<OnboardingExecutableCheck>,
+    pub identity_composition: StartupIdentityCompositionReport,
     pub daemon_bootstrap: OnboardingDaemonBootstrapReport,
     pub next_steps: Vec<String>,
 }
@@ -99,6 +101,7 @@ pub fn build_onboarding_next_steps(
     cli: &Cli,
     executable_checks: &[OnboardingExecutableCheck],
     daemon_bootstrap: &OnboardingDaemonBootstrapReport,
+    identity_composition: &StartupIdentityCompositionReport,
 ) -> Vec<String> {
     let mut next_steps = Vec::new();
     for check in executable_checks {
@@ -125,6 +128,12 @@ pub fn build_onboarding_next_steps(
         next_steps.push(format!(
             "Inspect daemon diagnostics: cargo run -p tau-coding-agent -- --daemon-status --daemon-status-json --daemon-state-dir {}",
             cli.daemon_state_dir.display()
+        ));
+    }
+    if identity_composition.missing_count > 0 {
+        next_steps.push(format!(
+            "Create identity files under {} (SOUL.md, AGENTS.md, USER.md) to customize startup composition.",
+            identity_composition.tau_root
         ));
     }
     next_steps.push("/auth status".to_string());
@@ -195,9 +204,26 @@ pub fn render_onboarding_summary(report: &OnboardingReport, report_path: &Path) 
             report.daemon_bootstrap.status.profile,
             report.daemon_bootstrap.status.diagnostics.len()
         ),
+        format!(
+            "identity: loaded={} missing={} skipped={} tau_root={}",
+            report.identity_composition.loaded_count,
+            report.identity_composition.missing_count,
+            report.identity_composition.skipped_count,
+            report.identity_composition.tau_root
+        ),
     ];
     for reason in &report.daemon_bootstrap.readiness_reason_codes {
         lines.push(format!("daemon_reason: {reason}"));
+    }
+    for identity in &report.identity_composition.entries {
+        lines.push(format!(
+            "identity_file: key={} file={} status={} code={} path={}",
+            identity.key,
+            identity.file_name,
+            identity.status.as_str(),
+            identity.reason_code,
+            identity.path
+        ));
     }
     for next_step in &report.next_steps {
         lines.push(format!("next: {next_step}"));
@@ -211,6 +237,9 @@ mod tests {
         build_onboarding_next_steps, collect_executable_checks, render_onboarding_summary,
         resolve_onboarding_report_path, write_onboarding_report, OnboardingDaemonBootstrapReport,
         OnboardingReport,
+    };
+    use crate::startup_prompt_composition::{
+        StartupIdentityCompositionReport, StartupIdentityFileReportEntry, StartupIdentityFileStatus,
     };
     use clap::Parser;
     use std::path::Path;
@@ -284,7 +313,7 @@ mod tests {
 
     fn sample_report() -> OnboardingReport {
         OnboardingReport {
-            schema_version: 2,
+            schema_version: 3,
             generated_at_ms: 123,
             mode: "non-interactive".to_string(),
             tau_root: ".tau".to_string(),
@@ -300,6 +329,39 @@ mod tests {
             files_created: vec![".tau/profiles.json".to_string()],
             files_existing: vec![],
             executable_checks: vec![],
+            identity_composition: StartupIdentityCompositionReport {
+                schema_version: 1,
+                tau_root: ".tau".to_string(),
+                loaded_count: 1,
+                missing_count: 2,
+                skipped_count: 0,
+                entries: vec![
+                    StartupIdentityFileReportEntry {
+                        key: "soul".to_string(),
+                        file_name: "SOUL.md".to_string(),
+                        path: ".tau/SOUL.md".to_string(),
+                        status: StartupIdentityFileStatus::Loaded,
+                        reason_code: "identity_file_loaded".to_string(),
+                        bytes: 12,
+                    },
+                    StartupIdentityFileReportEntry {
+                        key: "agents".to_string(),
+                        file_name: "AGENTS.md".to_string(),
+                        path: ".tau/AGENTS.md".to_string(),
+                        status: StartupIdentityFileStatus::Missing,
+                        reason_code: "identity_file_missing".to_string(),
+                        bytes: 0,
+                    },
+                    StartupIdentityFileReportEntry {
+                        key: "user".to_string(),
+                        file_name: "USER.md".to_string(),
+                        path: ".tau/USER.md".to_string(),
+                        status: StartupIdentityFileStatus::Missing,
+                        reason_code: "identity_file_missing".to_string(),
+                        bytes: 0,
+                    },
+                ],
+            },
             daemon_bootstrap: OnboardingDaemonBootstrapReport {
                 requested_install: false,
                 requested_start: true,
@@ -365,6 +427,10 @@ mod tests {
         let report = sample_report();
         let summary = render_onboarding_summary(&report, Path::new(".tau/reports/test.json"));
         assert!(summary.contains("daemon_reason: daemon_start_expected_running"));
+        assert!(summary.contains("identity: loaded=1 missing=2 skipped=0 tau_root=.tau"));
+        assert!(summary.contains(
+            "identity_file: key=soul file=SOUL.md status=loaded code=identity_file_loaded path=.tau/SOUL.md"
+        ));
         assert!(summary.contains("next: /auth status"));
     }
 
@@ -387,7 +453,12 @@ mod tests {
             status,
         };
 
-        let next_steps = build_onboarding_next_steps(&cli, &checks, &daemon_bootstrap);
+        let next_steps = build_onboarding_next_steps(
+            &cli,
+            &checks,
+            &daemon_bootstrap,
+            &sample_report().identity_composition,
+        );
         let joined = next_steps.join("\n");
         assert!(joined.contains("--daemon-install"));
         assert!(joined.contains("--daemon-start"));

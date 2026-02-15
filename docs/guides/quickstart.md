@@ -44,6 +44,15 @@ Release channel planning/apply workflow runbook:
 cat docs/guides/release-channel-ops.md
 ```
 
+Startup identity composition (optional but recommended):
+
+- `.tau/SOUL.md`
+- `.tau/AGENTS.md`
+- `.tau/USER.md`
+
+When present, these files are loaded during startup and appended to deterministic
+identity sections in the runtime system prompt.
+
 ## Auth modes
 
 | Provider | Local/dev recommended | CI/automation recommended |

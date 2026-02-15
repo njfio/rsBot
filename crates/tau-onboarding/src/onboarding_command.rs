@@ -15,8 +15,9 @@ use crate::onboarding_report::{
     build_onboarding_next_steps, collect_executable_checks, render_onboarding_summary,
     resolve_onboarding_report_path, write_onboarding_report, OnboardingReport,
 };
+use crate::startup_prompt_composition::resolve_startup_identity_report;
 
-const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 2;
+const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardingMode {
@@ -88,7 +89,13 @@ fn build_onboarding_report(
     }
 
     let executable_checks = collect_executable_checks(cli);
-    let next_steps = build_onboarding_next_steps(cli, &executable_checks, &daemon_bootstrap);
+    let identity_composition = resolve_startup_identity_report(cli);
+    let next_steps = build_onboarding_next_steps(
+        cli,
+        &executable_checks,
+        &daemon_bootstrap,
+        &identity_composition,
+    );
 
     Ok(OnboardingReport {
         schema_version: ONBOARDING_REPORT_SCHEMA_VERSION,
@@ -107,6 +114,7 @@ fn build_onboarding_report(
         files_created,
         files_existing,
         executable_checks,
+        identity_composition,
         daemon_bootstrap,
         next_steps,
     })

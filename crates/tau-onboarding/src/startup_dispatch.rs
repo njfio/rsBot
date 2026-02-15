@@ -9,13 +9,16 @@ use tau_skills::default_skills_lock_path;
 use tau_tools::tools::ToolPolicy;
 
 use crate::startup_policy::{resolve_startup_policy, StartupPolicyBundle};
-use crate::startup_prompt_composition::compose_startup_system_prompt;
+use crate::startup_prompt_composition::{
+    compose_startup_system_prompt_with_report, StartupIdentityCompositionReport,
+};
 
 /// Public struct `StartupRuntimeDispatchContext` used across Tau components.
 pub struct StartupRuntimeDispatchContext {
     pub effective_skills_dir: PathBuf,
     pub skills_lock_path: PathBuf,
     pub system_prompt: String,
+    pub identity_composition: StartupIdentityCompositionReport,
     pub startup_policy: StartupPolicyBundle,
 }
 
@@ -78,6 +81,7 @@ where
                 effective_skills_dir,
                 skills_lock_path,
                 system_prompt,
+                identity_composition: _identity_composition,
                 startup_policy,
             },
     } = runtime;
@@ -414,12 +418,13 @@ pub fn build_startup_runtime_dispatch_context(
     let effective_skills_dir = resolve_runtime_skills_dir(cli, activation_applied);
     let skills_lock_path =
         resolve_runtime_skills_lock_path(cli, bootstrap_lock_path, &effective_skills_dir);
-    let system_prompt = compose_startup_system_prompt(cli, &effective_skills_dir)?;
+    let prompt_composition = compose_startup_system_prompt_with_report(cli, &effective_skills_dir)?;
     let startup_policy = resolve_startup_policy(cli)?;
     Ok(StartupRuntimeDispatchContext {
         effective_skills_dir,
         skills_lock_path,
-        system_prompt,
+        system_prompt: prompt_composition.system_prompt,
+        identity_composition: prompt_composition.identity_report,
         startup_policy,
     })
 }
@@ -554,6 +559,8 @@ mod tests {
             default_skills_lock_path(&context.effective_skills_dir)
         );
         assert!(context.system_prompt.contains("You are Tau."));
+        assert_eq!(context.identity_composition.loaded_count, 0);
+        assert_eq!(context.identity_composition.missing_count, 3);
         assert!(context.startup_policy.tool_policy_json.is_object());
     }
 
@@ -572,6 +579,8 @@ mod tests {
             build_startup_runtime_dispatch_context(&cli, &bootstrap_lock_path, false).expect("ok");
 
         assert!(context.system_prompt.contains("System prompt from file."));
+        assert_eq!(context.identity_composition.loaded_count, 0);
+        assert_eq!(context.identity_composition.missing_count, 3);
         assert_eq!(context.skills_lock_path, bootstrap_lock_path);
     }
 
@@ -590,6 +599,8 @@ mod tests {
         assert_eq!(context.effective_skills_dir, cli.skills_dir);
         assert_eq!(context.skills_lock_path, bootstrap_lock_path);
         assert!(context.system_prompt.contains("Tau system prompt"));
+        assert_eq!(context.identity_composition.loaded_count, 0);
+        assert_eq!(context.identity_composition.missing_count, 3);
     }
 
     #[tokio::test]
