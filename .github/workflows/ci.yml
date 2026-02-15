@@ -162,7 +162,6 @@ jobs:
               - "scripts/dev/wasm-smoke.sh"
               - "scripts/dev/test-wasm-smoke.sh"
               - "scripts/edge/**"
-              - ".github/workflows/ci.yml"
             demo_smoke:
               - "crates/tau-coding-agent/**"
               - ".github/demo-smoke-manifest.json"
