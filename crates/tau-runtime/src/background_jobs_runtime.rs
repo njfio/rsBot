@@ -57,14 +57,20 @@ fn background_job_state_schema_version() -> u32 {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BackgroundJobStatus {
+    /// Job is persisted and waiting for worker execution.
     Queued,
+    /// Job command has started and is currently active.
     Running,
+    /// Job finished successfully with zero exit status.
     Succeeded,
+    /// Job finished with a runtime/spawn/exit failure.
     Failed,
+    /// Job was cancelled before completion.
     Cancelled,
 }
 
 impl BackgroundJobStatus {
+    /// Returns the stable snake_case wire representation.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
@@ -75,6 +81,7 @@ impl BackgroundJobStatus {
         }
     }
 
+    /// Returns true when the job cannot transition any further.
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
     }
@@ -83,15 +90,22 @@ impl BackgroundJobStatus {
 /// Enumerates list filters used by the background jobs query APIs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundJobStatusFilter {
+    /// Matches queued jobs only.
     Queued,
+    /// Matches running jobs only.
     Running,
+    /// Matches succeeded jobs only.
     Succeeded,
+    /// Matches failed jobs only.
     Failed,
+    /// Matches cancelled jobs only.
     Cancelled,
+    /// Matches any terminal job (`succeeded`, `failed`, `cancelled`).
     Terminal,
 }
 
 impl BackgroundJobStatusFilter {
+    /// Parses a filter token used by runtime/tool list APIs.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "queued" => Some(Self::Queued),
@@ -104,6 +118,7 @@ impl BackgroundJobStatusFilter {
         }
     }
 
+    /// Evaluates whether a status satisfies this filter.
     pub fn matches(self, status: BackgroundJobStatus) -> bool {
         match self {
             Self::Queued => status == BackgroundJobStatus::Queued,
@@ -272,6 +287,7 @@ pub struct BackgroundJobRuntime {
 }
 
 impl BackgroundJobRuntime {
+    /// Creates a runtime bound to one persisted state directory.
     pub fn new(config: BackgroundJobRuntimeConfig) -> Result<Self> {
         ensure_background_job_layout(&config.state_dir)?;
         let state_path = background_job_state_path(&config.state_dir);
@@ -289,22 +305,27 @@ impl BackgroundJobRuntime {
         Ok(runtime)
     }
 
+    /// Returns the configured runtime state directory.
     pub fn state_dir(&self) -> &Path {
         self.inner.config.state_dir.as_path()
     }
 
+    /// Returns the persisted health snapshot path.
     pub fn state_path(&self) -> PathBuf {
         background_job_state_path(&self.inner.config.state_dir)
     }
 
+    /// Returns the append-only event log path.
     pub fn events_path(&self) -> PathBuf {
         background_job_events_path(&self.inner.config.state_dir)
     }
 
+    /// Returns the directory containing per-job manifests and outputs.
     pub fn jobs_dir(&self) -> PathBuf {
         background_job_manifests_dir(&self.inner.config.state_dir)
     }
 
+    /// Persists and queues a new background job for asynchronous execution.
     pub async fn create_job(
         &self,
         request: BackgroundJobCreateRequest,
@@ -382,6 +403,7 @@ impl BackgroundJobRuntime {
         Ok(record)
     }
 
+    /// Lists persisted jobs with optional status filter and result cap.
     pub async fn list_jobs(
         &self,
         limit: usize,
@@ -402,14 +424,17 @@ impl BackgroundJobRuntime {
         Ok(jobs)
     }
 
+    /// Loads a single persisted job record by id.
     pub async fn get_job(&self, job_id: &str) -> Result<Option<BackgroundJobRecord>> {
         load_background_job_record(self.state_dir(), job_id)
     }
 
+    /// Returns the latest runtime health counters snapshot.
     pub async fn inspect_health(&self) -> BackgroundJobHealthSnapshot {
         lock_unpoisoned(&self.inner.health).clone()
     }
 
+    /// Requests cancellation for a queued or running job.
     pub async fn cancel_job(&self, job_id: &str) -> Result<Option<BackgroundJobRecord>> {
         let mut record = match load_background_job_record(self.state_dir(), job_id)? {
             Some(record) => record,
