@@ -4,8 +4,8 @@ use clap::{ArgAction, Args};
 
 use super::{parse_positive_u64, parse_positive_usize};
 use crate::{
-    CliBashProfile, CliDaemonProfile, CliOsSandboxMode, CliOsSandboxPolicyMode,
-    CliSessionImportMode, CliToolPolicyPreset,
+    CliBashProfile, CliDaemonProfile, CliOsSandboxDockerNetwork, CliOsSandboxMode,
+    CliOsSandboxPolicyMode, CliSessionImportMode, CliToolPolicyPreset,
 };
 
 /// Gateway/daemon, Slack bridge, session, and tool-policy flags flattened into `Cli`.
@@ -653,6 +653,81 @@ pub struct CliGatewayDaemonFlags {
         help = "Sandbox policy mode for bash tool: best-effort (allow unsandboxed fallback) or required (fail closed)"
     )]
     pub os_sandbox_policy_mode: Option<CliOsSandboxPolicyMode>,
+
+    #[arg(
+        long = "os-sandbox-docker-enabled",
+        env = "TAU_OS_SANDBOX_DOCKER_ENABLED",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Enable Docker launcher fallback for bash tool sandbox resolution"
+    )]
+    pub os_sandbox_docker_enabled: bool,
+
+    #[arg(
+        long = "os-sandbox-docker-image",
+        env = "TAU_OS_SANDBOX_DOCKER_IMAGE",
+        default_value = "debian:stable-slim",
+        help = "Docker image used by the Docker sandbox backend"
+    )]
+    pub os_sandbox_docker_image: String,
+
+    #[arg(
+        long = "os-sandbox-docker-network",
+        env = "TAU_OS_SANDBOX_DOCKER_NETWORK",
+        value_enum,
+        default_value = "none",
+        help = "Docker network mode for sandbox containers: none, bridge, or host"
+    )]
+    pub os_sandbox_docker_network: CliOsSandboxDockerNetwork,
+
+    #[arg(
+        long = "os-sandbox-docker-memory-mb",
+        env = "TAU_OS_SANDBOX_DOCKER_MEMORY_MB",
+        default_value_t = 256,
+        value_parser = parse_positive_u64,
+        help = "Docker sandbox memory limit in megabytes"
+    )]
+    pub os_sandbox_docker_memory_mb: u64,
+
+    #[arg(
+        long = "os-sandbox-docker-cpus",
+        env = "TAU_OS_SANDBOX_DOCKER_CPUS",
+        default_value = "1.0",
+        help = "Docker sandbox CPU quota value passed to --cpus"
+    )]
+    pub os_sandbox_docker_cpus: String,
+
+    #[arg(
+        long = "os-sandbox-docker-pids-limit",
+        env = "TAU_OS_SANDBOX_DOCKER_PIDS_LIMIT",
+        default_value_t = 256,
+        value_parser = parse_positive_u64,
+        help = "Docker sandbox PID limit"
+    )]
+    pub os_sandbox_docker_pids_limit: u64,
+
+    #[arg(
+        long = "os-sandbox-docker-read-only-rootfs",
+        env = "TAU_OS_SANDBOX_DOCKER_READ_ONLY_ROOTFS",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Run Docker sandbox containers with read-only root filesystem"
+    )]
+    pub os_sandbox_docker_read_only_rootfs: bool,
+
+    #[arg(
+        long = "os-sandbox-docker-env",
+        env = "TAU_OS_SANDBOX_DOCKER_ENV",
+        value_delimiter = ',',
+        help = "Explicit host env var allowlist injected into Docker sandbox containers"
+    )]
+    pub os_sandbox_docker_env: Vec<String>,
 
     #[arg(
         long = "http-timeout-ms",

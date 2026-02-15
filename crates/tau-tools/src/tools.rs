@@ -109,10 +109,17 @@ const TOOL_HTTP_MAX_REDIRECTS_PERMISSIVE: usize = 8;
 const TOOL_HTTP_MAX_REDIRECTS_BALANCED: usize = 5;
 const TOOL_HTTP_MAX_REDIRECTS_STRICT: usize = 3;
 const TOOL_HTTP_MAX_REDIRECTS_HARDENED: usize = 2;
+const DOCKER_SANDBOX_DEFAULT_IMAGE: &str = "debian:stable-slim";
+const DOCKER_SANDBOX_DEFAULT_MEMORY_MB: u64 = 256;
+const DOCKER_SANDBOX_DEFAULT_CPUS: f32 = 1.0;
+const DOCKER_SANDBOX_DEFAULT_PIDS_LIMIT: u64 = 256;
+const DOCKER_SANDBOX_TMPFS_SIZE_MB: u64 = 64;
 const SANDBOX_REQUIRED_UNAVAILABLE_ERROR: &str =
     "OS sandbox policy mode 'required' is enabled but command would run without a sandbox launcher";
 const SANDBOX_FORCE_UNAVAILABLE_ERROR: &str =
     "OS sandbox mode 'force' is enabled but no sandbox launcher is configured or available";
+const SANDBOX_DOCKER_UNAVAILABLE_ERROR: &str =
+    "OS sandbox Docker backend is enabled but Docker CLI is unavailable";
 static MEMORY_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static BACKGROUND_JOB_RUNTIME_REGISTRY: OnceLock<
     Mutex<HashMap<PathBuf, Arc<BackgroundJobRuntime>>>,
@@ -235,6 +242,14 @@ pub enum OsSandboxPolicyMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Enumerates supported Docker network modes for sandbox execution.
+pub enum OsSandboxDockerNetwork {
+    None,
+    Bridge,
+    Host,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Enumerates how the tool rate limiter responds when a principal exceeds quota.
 pub enum ToolRateLimitExceededBehavior {
     Reject,
@@ -246,6 +261,7 @@ struct BashSandboxSpec {
     program: String,
     args: Vec<String>,
     sandboxed: bool,
+    backend: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -402,6 +418,14 @@ pub struct ToolPolicy {
     pub os_sandbox_mode: OsSandboxMode,
     pub os_sandbox_policy_mode: OsSandboxPolicyMode,
     pub os_sandbox_command: Vec<String>,
+    pub os_sandbox_docker_enabled: bool,
+    pub os_sandbox_docker_image: String,
+    pub os_sandbox_docker_network: OsSandboxDockerNetwork,
+    pub os_sandbox_docker_memory_mb: u64,
+    pub os_sandbox_docker_cpu_limit: f32,
+    pub os_sandbox_docker_pids_limit: u64,
+    pub os_sandbox_docker_read_only_rootfs: bool,
+    pub os_sandbox_docker_env_allowlist: Vec<String>,
     pub http_timeout_ms: u64,
     pub http_max_response_bytes: usize,
     pub http_max_redirects: usize,
@@ -473,6 +497,14 @@ impl ToolPolicy {
             os_sandbox_mode: OsSandboxMode::Off,
             os_sandbox_policy_mode: OsSandboxPolicyMode::BestEffort,
             os_sandbox_command: Vec::new(),
+            os_sandbox_docker_enabled: false,
+            os_sandbox_docker_image: DOCKER_SANDBOX_DEFAULT_IMAGE.to_string(),
+            os_sandbox_docker_network: OsSandboxDockerNetwork::None,
+            os_sandbox_docker_memory_mb: DOCKER_SANDBOX_DEFAULT_MEMORY_MB,
+            os_sandbox_docker_cpu_limit: DOCKER_SANDBOX_DEFAULT_CPUS,
+            os_sandbox_docker_pids_limit: DOCKER_SANDBOX_DEFAULT_PIDS_LIMIT,
+            os_sandbox_docker_read_only_rootfs: true,
+            os_sandbox_docker_env_allowlist: Vec::new(),
             http_timeout_ms: TOOL_HTTP_TIMEOUT_MS_BALANCED,
             http_max_response_bytes: TOOL_HTTP_MAX_RESPONSE_BYTES_BALANCED,
             http_max_redirects: TOOL_HTTP_MAX_REDIRECTS_BALANCED,
@@ -534,6 +566,14 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Off;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::BestEffort;
                 self.os_sandbox_command.clear();
+                self.os_sandbox_docker_enabled = false;
+                self.os_sandbox_docker_image = DOCKER_SANDBOX_DEFAULT_IMAGE.to_string();
+                self.os_sandbox_docker_network = OsSandboxDockerNetwork::None;
+                self.os_sandbox_docker_memory_mb = DOCKER_SANDBOX_DEFAULT_MEMORY_MB;
+                self.os_sandbox_docker_cpu_limit = DOCKER_SANDBOX_DEFAULT_CPUS;
+                self.os_sandbox_docker_pids_limit = DOCKER_SANDBOX_DEFAULT_PIDS_LIMIT;
+                self.os_sandbox_docker_read_only_rootfs = true;
+                self.os_sandbox_docker_env_allowlist.clear();
                 self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_PERMISSIVE;
                 self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_PERMISSIVE;
                 self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_PERMISSIVE;
@@ -555,6 +595,14 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Off;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::BestEffort;
                 self.os_sandbox_command.clear();
+                self.os_sandbox_docker_enabled = false;
+                self.os_sandbox_docker_image = DOCKER_SANDBOX_DEFAULT_IMAGE.to_string();
+                self.os_sandbox_docker_network = OsSandboxDockerNetwork::None;
+                self.os_sandbox_docker_memory_mb = DOCKER_SANDBOX_DEFAULT_MEMORY_MB;
+                self.os_sandbox_docker_cpu_limit = DOCKER_SANDBOX_DEFAULT_CPUS;
+                self.os_sandbox_docker_pids_limit = DOCKER_SANDBOX_DEFAULT_PIDS_LIMIT;
+                self.os_sandbox_docker_read_only_rootfs = true;
+                self.os_sandbox_docker_env_allowlist.clear();
                 self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_BALANCED;
                 self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_BALANCED;
                 self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_BALANCED;
@@ -576,6 +624,14 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Auto;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
                 self.os_sandbox_command.clear();
+                self.os_sandbox_docker_enabled = false;
+                self.os_sandbox_docker_image = DOCKER_SANDBOX_DEFAULT_IMAGE.to_string();
+                self.os_sandbox_docker_network = OsSandboxDockerNetwork::None;
+                self.os_sandbox_docker_memory_mb = DOCKER_SANDBOX_DEFAULT_MEMORY_MB;
+                self.os_sandbox_docker_cpu_limit = DOCKER_SANDBOX_DEFAULT_CPUS;
+                self.os_sandbox_docker_pids_limit = DOCKER_SANDBOX_DEFAULT_PIDS_LIMIT;
+                self.os_sandbox_docker_read_only_rootfs = true;
+                self.os_sandbox_docker_env_allowlist.clear();
                 self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_STRICT;
                 self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_STRICT;
                 self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_STRICT;
@@ -597,6 +653,14 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Force;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
                 self.os_sandbox_command.clear();
+                self.os_sandbox_docker_enabled = false;
+                self.os_sandbox_docker_image = DOCKER_SANDBOX_DEFAULT_IMAGE.to_string();
+                self.os_sandbox_docker_network = OsSandboxDockerNetwork::None;
+                self.os_sandbox_docker_memory_mb = DOCKER_SANDBOX_DEFAULT_MEMORY_MB;
+                self.os_sandbox_docker_cpu_limit = DOCKER_SANDBOX_DEFAULT_CPUS;
+                self.os_sandbox_docker_pids_limit = DOCKER_SANDBOX_DEFAULT_PIDS_LIMIT;
+                self.os_sandbox_docker_read_only_rootfs = true;
+                self.os_sandbox_docker_env_allowlist.clear();
                 self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_HARDENED;
                 self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_HARDENED;
                 self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_HARDENED;
@@ -4444,6 +4508,8 @@ impl AgentTool for BashTool {
             Err(error) => {
                 let reason_code = if error == SANDBOX_REQUIRED_UNAVAILABLE_ERROR {
                     "sandbox_policy_required"
+                } else if error == SANDBOX_DOCKER_UNAVAILABLE_ERROR {
+                    "sandbox_docker_unavailable"
                 } else {
                     "sandbox_launcher_unavailable"
                 };
@@ -4472,6 +4538,18 @@ impl AgentTool for BashTool {
                         self.policy.os_sandbox_policy_mode
                     )),
                 );
+                payload.insert(
+                    "sandbox_launcher_bwrap_available".to_string(),
+                    json!(cfg!(target_os = "linux") && command_available("bwrap")),
+                );
+                payload.insert(
+                    "sandbox_launcher_docker_enabled".to_string(),
+                    json!(self.policy.os_sandbox_docker_enabled),
+                );
+                payload.insert(
+                    "sandbox_launcher_docker_available".to_string(),
+                    json!(command_available("docker")),
+                );
                 payload.insert("error".to_string(), json!(error));
                 attach_policy_trace(&mut payload, trace_enabled, &trace, "deny");
                 return ToolExecutionResult::error(Value::Object(payload));
@@ -4493,6 +4571,10 @@ impl AgentTool for BashTool {
                 json!(cwd.map(|value| value.display().to_string())),
             );
             payload.insert("sandboxed".to_string(), json!(sandbox_spec.sandboxed));
+            payload.insert(
+                "sandbox_backend".to_string(),
+                json!(sandbox_spec.backend.clone()),
+            );
             payload.insert(
                 "sandbox_mode".to_string(),
                 json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
@@ -4582,6 +4664,10 @@ impl AgentTool for BashTool {
             json!(cwd.map(|value| value.display().to_string())),
         );
         payload.insert("sandboxed".to_string(), json!(sandbox_spec.sandboxed));
+        payload.insert(
+            "sandbox_backend".to_string(),
+            json!(sandbox_spec.backend.clone()),
+        );
         payload.insert(
             "sandbox_mode".to_string(),
             json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
@@ -5328,6 +5414,8 @@ fn resolve_sandbox_spec(
     command: &str,
     cwd: &Path,
 ) -> Result<BashSandboxSpec, String> {
+    let bwrap_available = cfg!(target_os = "linux") && command_available("bwrap");
+    let docker_available = policy.os_sandbox_docker_enabled && command_available("docker");
     let spec = if !policy.os_sandbox_command.is_empty() {
         build_spec_from_command_template(&policy.os_sandbox_command, shell, command, cwd)?
     } else {
@@ -5336,22 +5424,27 @@ fn resolve_sandbox_spec(
                 program: shell.to_string(),
                 args: vec!["-lc".to_string(), command.to_string()],
                 sandboxed: false,
+                backend: "none".to_string(),
             },
             OsSandboxMode::Auto => {
-                if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
+                if let Some(spec) = auto_sandbox_spec(policy, shell, command, cwd) {
                     spec
                 } else {
                     BashSandboxSpec {
                         program: shell.to_string(),
                         args: vec!["-lc".to_string(), command.to_string()],
                         sandboxed: false,
+                        backend: "none".to_string(),
                     }
                 }
             }
             OsSandboxMode::Force => {
-                if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
+                if let Some(spec) = auto_sandbox_spec(policy, shell, command, cwd) {
                     spec
                 } else {
+                    if policy.os_sandbox_docker_enabled && !docker_available && !bwrap_available {
+                        return Err(SANDBOX_DOCKER_UNAVAILABLE_ERROR.to_string());
+                    }
                     return Err(SANDBOX_FORCE_UNAVAILABLE_ERROR.to_string());
                 }
             }
@@ -5359,6 +5452,16 @@ fn resolve_sandbox_spec(
     };
 
     if matches!(policy.os_sandbox_policy_mode, OsSandboxPolicyMode::Required) && !spec.sandboxed {
+        if policy.os_sandbox_docker_enabled
+            && matches!(
+                policy.os_sandbox_mode,
+                OsSandboxMode::Auto | OsSandboxMode::Force
+            )
+            && !docker_available
+            && !bwrap_available
+        {
+            return Err(SANDBOX_DOCKER_UNAVAILABLE_ERROR.to_string());
+        }
         return Err(SANDBOX_REQUIRED_UNAVAILABLE_ERROR.to_string());
     }
 
@@ -5404,12 +5507,18 @@ fn build_spec_from_command_template(
         program,
         args,
         sandboxed: true,
+        backend: "template".to_string(),
     })
 }
 
-fn auto_sandbox_spec(shell: &str, command: &str, cwd: &Path) -> Option<BashSandboxSpec> {
+fn auto_sandbox_spec(
+    policy: &ToolPolicy,
+    shell: &str,
+    command: &str,
+    cwd: &Path,
+) -> Option<BashSandboxSpec> {
     #[cfg(not(target_os = "linux"))]
-    let _ = (shell, command, cwd);
+    let _ = shell;
 
     #[cfg(target_os = "linux")]
     {
@@ -5448,14 +5557,18 @@ fn auto_sandbox_spec(shell: &str, command: &str, cwd: &Path) -> Option<BashSandb
                 program: "bwrap".to_string(),
                 args,
                 sandboxed: true,
+                backend: "bwrap".to_string(),
             });
         }
+    }
+
+    if policy.os_sandbox_docker_enabled && command_available("docker") {
+        return Some(build_docker_sandbox_spec(policy, command, cwd));
     }
 
     None
 }
 
-#[cfg(any(test, target_os = "linux"))]
 fn command_available(command: &str) -> bool {
     let path = std::env::var_os("PATH");
     let Some(path) = path else {
@@ -5468,6 +5581,56 @@ fn command_available(command: &str) -> bool {
         }
     }
     false
+}
+
+fn build_docker_sandbox_spec(policy: &ToolPolicy, command: &str, cwd: &Path) -> BashSandboxSpec {
+    let image = policy.os_sandbox_docker_image.trim();
+    let cwd_display = cwd.display().to_string();
+    let mut args = vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        "--init".to_string(),
+        "--network".to_string(),
+        os_sandbox_docker_network_name(policy.os_sandbox_docker_network).to_string(),
+        "--pids-limit".to_string(),
+        policy.os_sandbox_docker_pids_limit.to_string(),
+        "--memory".to_string(),
+        format!("{}m", policy.os_sandbox_docker_memory_mb),
+        "--cpus".to_string(),
+        format!("{:.3}", policy.os_sandbox_docker_cpu_limit),
+        "--security-opt".to_string(),
+        "no-new-privileges".to_string(),
+        "--cap-drop".to_string(),
+        "ALL".to_string(),
+        "--tmpfs".to_string(),
+        format!(
+            "/tmp:rw,nosuid,nodev,noexec,size={}m",
+            DOCKER_SANDBOX_TMPFS_SIZE_MB
+        ),
+        "--volume".to_string(),
+        format!("{cwd_display}:{cwd_display}:rw"),
+        "--workdir".to_string(),
+        cwd_display,
+    ];
+    if policy.os_sandbox_docker_read_only_rootfs {
+        args.push("--read-only".to_string());
+    }
+    for env_name in &policy.os_sandbox_docker_env_allowlist {
+        if let Ok(value) = std::env::var(env_name) {
+            args.push("--env".to_string());
+            args.push(format!("{env_name}={value}"));
+        }
+    }
+    args.push(image.to_string());
+    args.push("sh".to_string());
+    args.push("-lc".to_string());
+    args.push(command.to_string());
+    BashSandboxSpec {
+        program: "docker".to_string(),
+        args,
+        sandboxed: true,
+        backend: "docker".to_string(),
+    }
 }
 
 fn leading_executable(command: &str) -> Option<String> {
@@ -5533,6 +5696,14 @@ pub fn os_sandbox_policy_mode_name(mode: OsSandboxPolicyMode) -> &'static str {
     match mode {
         OsSandboxPolicyMode::BestEffort => "best-effort",
         OsSandboxPolicyMode::Required => "required",
+    }
+}
+
+pub fn os_sandbox_docker_network_name(mode: OsSandboxDockerNetwork) -> &'static str {
+    match mode {
+        OsSandboxDockerNetwork::None => "none",
+        OsSandboxDockerNetwork::Bridge => "bridge",
+        OsSandboxDockerNetwork::Host => "host",
     }
 }
 

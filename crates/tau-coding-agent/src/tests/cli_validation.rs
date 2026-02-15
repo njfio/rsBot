@@ -6,8 +6,8 @@ use tau_cli::validation::validate_project_index_cli;
 use tau_cli::{
     CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
     CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode,
-    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOsSandboxPolicyMode,
-    CliPromptSanitizerMode, CliProviderAuthMode,
+    CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOsSandboxDockerNetwork,
+    CliOsSandboxPolicyMode, CliPromptSanitizerMode, CliProviderAuthMode,
 };
 
 use super::{parse_cli_with_stack, try_parse_cli_with_stack};
@@ -186,6 +186,56 @@ fn functional_cli_os_sandbox_policy_mode_accepts_required_override() {
     assert_eq!(
         cli.os_sandbox_policy_mode,
         Some(CliOsSandboxPolicyMode::Required)
+    );
+}
+
+#[test]
+fn unit_cli_os_sandbox_docker_flags_default_values_are_stable() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.os_sandbox_docker_enabled);
+    assert_eq!(cli.os_sandbox_docker_image, "debian:stable-slim");
+    assert_eq!(
+        cli.os_sandbox_docker_network,
+        CliOsSandboxDockerNetwork::None
+    );
+    assert_eq!(cli.os_sandbox_docker_memory_mb, 256);
+    assert_eq!(cli.os_sandbox_docker_cpus, "1.0");
+    assert_eq!(cli.os_sandbox_docker_pids_limit, 256);
+    assert!(cli.os_sandbox_docker_read_only_rootfs);
+    assert!(cli.os_sandbox_docker_env.is_empty());
+}
+
+#[test]
+fn functional_cli_os_sandbox_docker_flags_accept_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--os-sandbox-docker-enabled=true",
+        "--os-sandbox-docker-image",
+        "ubuntu:24.04",
+        "--os-sandbox-docker-network",
+        "bridge",
+        "--os-sandbox-docker-memory-mb",
+        "512",
+        "--os-sandbox-docker-cpus",
+        "2.5",
+        "--os-sandbox-docker-pids-limit",
+        "128",
+        "--os-sandbox-docker-read-only-rootfs=false",
+        "--os-sandbox-docker-env=OPENAI_API_KEY,TAU_TOKEN",
+    ]);
+    assert!(cli.os_sandbox_docker_enabled);
+    assert_eq!(cli.os_sandbox_docker_image, "ubuntu:24.04");
+    assert_eq!(
+        cli.os_sandbox_docker_network,
+        CliOsSandboxDockerNetwork::Bridge
+    );
+    assert_eq!(cli.os_sandbox_docker_memory_mb, 512);
+    assert_eq!(cli.os_sandbox_docker_cpus, "2.5");
+    assert_eq!(cli.os_sandbox_docker_pids_limit, 128);
+    assert!(!cli.os_sandbox_docker_read_only_rootfs);
+    assert_eq!(
+        cli.os_sandbox_docker_env,
+        vec!["OPENAI_API_KEY".to_string(), "TAU_TOKEN".to_string()]
     );
 }
 

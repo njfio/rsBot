@@ -1578,11 +1578,13 @@ fn unit_tool_policy_to_json_includes_key_limits_and_modes() {
 
     let policy = build_tool_policy(&cli).expect("policy should build");
     let payload = tool_policy_to_json(&policy);
-    assert_eq!(payload["schema_version"], 7);
+    assert_eq!(payload["schema_version"], 11);
     assert_eq!(payload["preset"], "balanced");
     assert_eq!(payload["bash_profile"], "strict");
     assert_eq!(payload["os_sandbox_mode"], "auto");
     assert_eq!(payload["os_sandbox_policy_mode"], "best-effort");
+    assert_eq!(payload["os_sandbox_docker_enabled"], false);
+    assert_eq!(payload["os_sandbox_docker_network"], "none");
     assert_eq!(payload["memory_search_default_limit"], 5);
     assert_eq!(payload["memory_search_max_limit"], 50);
     assert_eq!(payload["memory_embedding_dimensions"], 128);

@@ -29,6 +29,14 @@ pub enum CliOsSandboxPolicyMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliOsSandboxDockerNetwork` values.
+pub enum CliOsSandboxDockerNetwork {
+    None,
+    Bridge,
+    Host,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 /// Enumerates supported `CliSessionImportMode` values.
 pub enum CliSessionImportMode {
     Merge,

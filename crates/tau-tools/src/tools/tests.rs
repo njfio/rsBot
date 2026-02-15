@@ -13,13 +13,14 @@ use proptest::prelude::*;
 use tempfile::tempdir;
 
 use super::{
-    bash_profile_name, build_spec_from_command_template, builtin_agent_tool_names,
-    canonicalize_best_effort, command_available, evaluate_tool_approval_gate,
-    evaluate_tool_rate_limit_gate, evaluate_tool_rbac_gate, is_command_allowed,
-    is_session_candidate_path, leading_executable, os_sandbox_mode_name,
-    os_sandbox_policy_mode_name, redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool,
-    BashCommandProfile, BashTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool,
-    JobsStatusTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
+    bash_profile_name, build_docker_sandbox_spec, build_spec_from_command_template,
+    builtin_agent_tool_names, canonicalize_best_effort, command_available,
+    evaluate_tool_approval_gate, evaluate_tool_rate_limit_gate, evaluate_tool_rbac_gate,
+    is_command_allowed, is_session_candidate_path, leading_executable,
+    os_sandbox_docker_network_name, os_sandbox_mode_name, os_sandbox_policy_mode_name,
+    redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool,
+    EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool,
+    MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool, OsSandboxDockerNetwork,
     OsSandboxMode, OsSandboxPolicyMode, RedoTool, SessionsHistoryTool, SessionsListTool,
     SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolExecutionResult, ToolPolicy,
     ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool, WriteTool,
@@ -1956,6 +1957,13 @@ async fn bash_tool_runs_command() {
             .and_then(serde_json::Value::as_bool),
         Some(false)
     );
+    assert_eq!(
+        result
+            .content
+            .get("sandbox_backend")
+            .and_then(serde_json::Value::as_str),
+        Some("none")
+    );
 }
 
 #[tokio::test]
@@ -2743,6 +2751,45 @@ fn unit_build_spec_from_template_injects_shell_and_command_defaults() {
         ]
     );
     assert!(spec.sandboxed);
+    assert_eq!(spec.backend, "template");
+}
+
+#[test]
+fn unit_build_docker_sandbox_spec_wires_limits_mounts_and_env_allowlist() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.os_sandbox_docker_enabled = true;
+    policy.os_sandbox_docker_image = "debian:stable-slim".to_string();
+    policy.os_sandbox_docker_network = OsSandboxDockerNetwork::Bridge;
+    policy.os_sandbox_docker_memory_mb = 384;
+    policy.os_sandbox_docker_cpu_limit = 1.5;
+    policy.os_sandbox_docker_pids_limit = 64;
+    policy.os_sandbox_docker_read_only_rootfs = true;
+    policy.os_sandbox_docker_env_allowlist = vec!["TAU_TEST_INJECT".to_string()];
+    std::env::set_var("TAU_TEST_INJECT", "value-1");
+    let spec = build_docker_sandbox_spec(&policy, "printf 'ok'", temp.path());
+    std::env::remove_var("TAU_TEST_INJECT");
+
+    assert_eq!(spec.program, "docker");
+    assert!(spec.sandboxed);
+    assert_eq!(spec.backend, "docker");
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|pair| { pair[0] == "--network" && pair[1] == "bridge" }));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|pair| { pair[0] == "--memory" && pair[1] == "384m" }));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|pair| { pair[0] == "--cpus" && pair[1] == "1.500" }));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|pair| { pair[0] == "--env" && pair[1] == "TAU_TEST_INJECT=value-1" }));
+    assert!(spec.args.iter().any(|value| value == "--read-only"));
 }
 
 #[test]
@@ -2756,11 +2803,39 @@ fn regression_resolve_sandbox_spec_force_requires_launcher_or_template() {
         let spec = result.expect("expected bwrap sandbox spec");
         assert_eq!(spec.program, "bwrap");
         assert!(spec.sandboxed);
+        assert_eq!(spec.backend, "bwrap");
         return;
     }
 
     let error = result.expect_err("force mode should fail without a launcher");
     assert!(error.contains("mode 'force'"));
+}
+
+#[test]
+fn functional_resolve_sandbox_spec_force_uses_docker_when_bwrap_missing_and_docker_enabled() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.os_sandbox_mode = OsSandboxMode::Force;
+    policy.os_sandbox_docker_enabled = true;
+
+    let result = resolve_sandbox_spec(&policy, "sh", "printf 'ok'", temp.path());
+
+    if cfg!(target_os = "linux") && command_available("bwrap") {
+        let spec = result.expect("bwrap should still satisfy force mode");
+        assert_eq!(spec.backend, "bwrap");
+        return;
+    }
+    if command_available("docker") {
+        let spec = result.expect("docker backend should satisfy force mode");
+        assert_eq!(spec.backend, "docker");
+        return;
+    }
+
+    let error = result.expect_err("force mode should fail when no launcher is available");
+    assert!(
+        error.contains("Docker backend is enabled") || error.contains("mode 'force'"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -2868,5 +2943,21 @@ fn regression_os_sandbox_policy_mode_name_is_stable() {
     assert_eq!(
         os_sandbox_policy_mode_name(OsSandboxPolicyMode::Required),
         "required"
+    );
+}
+
+#[test]
+fn regression_os_sandbox_docker_network_name_is_stable() {
+    assert_eq!(
+        os_sandbox_docker_network_name(OsSandboxDockerNetwork::None),
+        "none"
+    );
+    assert_eq!(
+        os_sandbox_docker_network_name(OsSandboxDockerNetwork::Bridge),
+        "bridge"
+    );
+    assert_eq!(
+        os_sandbox_docker_network_name(OsSandboxDockerNetwork::Host),
+        "host"
     );
 }

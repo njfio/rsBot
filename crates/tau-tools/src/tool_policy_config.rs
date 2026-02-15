@@ -1,15 +1,17 @@
 use anyhow::{anyhow, Context, Result};
 use tau_cli::cli_args::Cli;
 use tau_cli::cli_types::{
-    CliBashProfile, CliOsSandboxMode, CliOsSandboxPolicyMode, CliToolPolicyPreset,
+    CliBashProfile, CliOsSandboxDockerNetwork, CliOsSandboxMode, CliOsSandboxPolicyMode,
+    CliToolPolicyPreset,
 };
 
 use crate::tools::{
-    os_sandbox_policy_mode_name, tool_policy_preset_name, tool_rate_limit_behavior_name,
-    BashCommandProfile, OsSandboxMode, OsSandboxPolicyMode, ToolPolicy,
+    os_sandbox_docker_network_name, os_sandbox_policy_mode_name, tool_policy_preset_name,
+    tool_rate_limit_behavior_name, BashCommandProfile, OsSandboxDockerNetwork, OsSandboxMode,
+    OsSandboxPolicyMode, ToolPolicy,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 10;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 11;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 const MEMORY_EMBEDDING_PROVIDER_ENV: &str = "TAU_MEMORY_EMBEDDING_PROVIDER";
@@ -66,6 +68,21 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     if !cli.os_sandbox_command.is_empty() {
         policy.os_sandbox_command = parse_sandbox_command_tokens(&cli.os_sandbox_command)?;
     }
+    policy.os_sandbox_docker_enabled = cli.os_sandbox_docker_enabled;
+    policy.os_sandbox_docker_image = cli.os_sandbox_docker_image.trim().to_string();
+    if policy.os_sandbox_docker_enabled && policy.os_sandbox_docker_image.is_empty() {
+        return Err(anyhow!(
+            "--os-sandbox-docker-image cannot be empty when --os-sandbox-docker-enabled is true"
+        ));
+    }
+    policy.os_sandbox_docker_network =
+        map_cli_os_sandbox_docker_network(cli.os_sandbox_docker_network);
+    policy.os_sandbox_docker_memory_mb = cli.os_sandbox_docker_memory_mb.max(32);
+    policy.os_sandbox_docker_cpu_limit = parse_docker_cpu_limit(&cli.os_sandbox_docker_cpus)?;
+    policy.os_sandbox_docker_pids_limit = cli.os_sandbox_docker_pids_limit.max(16);
+    policy.os_sandbox_docker_read_only_rootfs = cli.os_sandbox_docker_read_only_rootfs;
+    policy.os_sandbox_docker_env_allowlist =
+        parse_docker_env_allowlist(&cli.os_sandbox_docker_env)?;
     if cli.http_timeout_ms != 20_000 {
         policy.http_timeout_ms = cli.http_timeout_ms.max(1);
     }
@@ -438,6 +455,40 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
         serde_json::json!(policy.os_sandbox_command.clone()),
     );
     payload.insert(
+        "os_sandbox_docker_enabled".to_string(),
+        serde_json::json!(policy.os_sandbox_docker_enabled),
+    );
+    payload.insert(
+        "os_sandbox_docker_image".to_string(),
+        serde_json::json!(policy.os_sandbox_docker_image.clone()),
+    );
+    payload.insert(
+        "os_sandbox_docker_network".to_string(),
+        serde_json::json!(os_sandbox_docker_network_name(
+            policy.os_sandbox_docker_network
+        )),
+    );
+    payload.insert(
+        "os_sandbox_docker_memory_mb".to_string(),
+        serde_json::json!(policy.os_sandbox_docker_memory_mb),
+    );
+    payload.insert(
+        "os_sandbox_docker_cpu_limit".to_string(),
+        serde_json::json!(policy.os_sandbox_docker_cpu_limit),
+    );
+    payload.insert(
+        "os_sandbox_docker_pids_limit".to_string(),
+        serde_json::json!(policy.os_sandbox_docker_pids_limit),
+    );
+    payload.insert(
+        "os_sandbox_docker_read_only_rootfs".to_string(),
+        serde_json::json!(policy.os_sandbox_docker_read_only_rootfs),
+    );
+    payload.insert(
+        "os_sandbox_docker_env_allowlist".to_string(),
+        serde_json::json!(policy.os_sandbox_docker_env_allowlist.clone()),
+    );
+    payload.insert(
         "http_timeout_ms".to_string(),
         serde_json::json!(policy.http_timeout_ms),
     );
@@ -617,6 +668,75 @@ fn map_cli_os_sandbox_policy_mode(value: CliOsSandboxPolicyMode) -> OsSandboxPol
     }
 }
 
+fn map_cli_os_sandbox_docker_network(value: CliOsSandboxDockerNetwork) -> OsSandboxDockerNetwork {
+    match value {
+        CliOsSandboxDockerNetwork::None => OsSandboxDockerNetwork::None,
+        CliOsSandboxDockerNetwork::Bridge => OsSandboxDockerNetwork::Bridge,
+        CliOsSandboxDockerNetwork::Host => OsSandboxDockerNetwork::Host,
+    }
+}
+
+fn parse_docker_cpu_limit(raw: &str) -> Result<f32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("--os-sandbox-docker-cpus cannot be empty"));
+    }
+    let value = trimmed.parse::<f32>().map_err(|error| {
+        anyhow!(
+            "invalid --os-sandbox-docker-cpus value '{}': {}",
+            trimmed,
+            error
+        )
+    })?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(anyhow!(
+            "--os-sandbox-docker-cpus must be a finite number greater than 0"
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_docker_env_allowlist(raw: &[String]) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    for item in raw {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        for token in trimmed.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            validate_env_name(token)?;
+            if !values.iter().any(|existing| existing == token) {
+                values.push(token.to_string());
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn validate_env_name(value: &str) -> Result<()> {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return Err(anyhow!("environment variable name cannot be empty"));
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return Err(anyhow!(
+            "invalid environment variable name '{}': first character must be [A-Za-z_]",
+            value
+        ));
+    }
+    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
+        return Err(anyhow!(
+            "invalid environment variable name '{}': only [A-Za-z0-9_] characters are supported",
+            value
+        ));
+    }
+    Ok(())
+}
+
 fn map_cli_tool_policy_preset(value: CliToolPolicyPreset) -> crate::tools::ToolPolicyPreset {
     match value {
         CliToolPolicyPreset::Permissive => crate::tools::ToolPolicyPreset::Permissive,
@@ -643,7 +763,7 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 10);
+        assert_eq!(payload["schema_version"], 11);
         assert_eq!(payload["allow_protected_path_mutations"], true);
         assert_eq!(payload["memory_search_default_limit"], 5);
         assert_eq!(payload["memory_search_max_limit"], 50);
@@ -705,6 +825,19 @@ mod tests {
             .map(|value| value.ends_with(".tau/channel-store"))
             .unwrap_or(false));
         assert_eq!(payload["os_sandbox_policy_mode"], "best-effort");
+        assert_eq!(payload["os_sandbox_docker_enabled"], false);
+        assert_eq!(payload["os_sandbox_docker_image"], "debian:stable-slim");
+        assert_eq!(payload["os_sandbox_docker_network"], "none");
+        assert_eq!(payload["os_sandbox_docker_memory_mb"], 256);
+        assert_eq!(payload["os_sandbox_docker_cpu_limit"], 1.0);
+        assert_eq!(payload["os_sandbox_docker_pids_limit"], 256);
+        assert_eq!(payload["os_sandbox_docker_read_only_rootfs"], true);
+        assert_eq!(
+            payload["os_sandbox_docker_env_allowlist"]
+                .as_array()
+                .map(std::vec::Vec::len),
+            Some(0)
+        );
         assert_eq!(payload["http_timeout_ms"], 20_000);
         assert_eq!(payload["http_max_response_bytes"], 256_000);
         assert_eq!(payload["http_max_redirects"], 5);
@@ -812,6 +945,99 @@ mod tests {
             .unwrap_or(false));
     }
 
+    #[test]
+    fn functional_build_tool_policy_applies_docker_sandbox_settings() {
+        let cli = parse_cli_with_stack_args(vec![
+            "tau-rs",
+            "--os-sandbox-docker-enabled=true",
+            "--os-sandbox-docker-image",
+            "ubuntu:24.04",
+            "--os-sandbox-docker-network",
+            "bridge",
+            "--os-sandbox-docker-memory-mb",
+            "640",
+            "--os-sandbox-docker-cpus",
+            "2.25",
+            "--os-sandbox-docker-pids-limit",
+            "96",
+            "--os-sandbox-docker-read-only-rootfs=false",
+            "--os-sandbox-docker-env=OPENAI_API_KEY,TAU_TOKEN",
+        ]);
+        let policy = build_tool_policy(&cli).expect("build tool policy");
+        assert!(policy.os_sandbox_docker_enabled);
+        assert_eq!(policy.os_sandbox_docker_image, "ubuntu:24.04");
+        assert_eq!(
+            policy.os_sandbox_docker_network,
+            crate::tools::OsSandboxDockerNetwork::Bridge
+        );
+        assert_eq!(policy.os_sandbox_docker_memory_mb, 640);
+        assert!((policy.os_sandbox_docker_cpu_limit - 2.25).abs() < 1e-6);
+        assert_eq!(policy.os_sandbox_docker_pids_limit, 96);
+        assert!(!policy.os_sandbox_docker_read_only_rootfs);
+        assert_eq!(
+            policy.os_sandbox_docker_env_allowlist,
+            vec!["OPENAI_API_KEY".to_string(), "TAU_TOKEN".to_string()]
+        );
+    }
+
+    #[test]
+    fn integration_tool_policy_json_exposes_docker_sandbox_settings() {
+        let cli = parse_cli_with_stack_args(vec![
+            "tau-rs",
+            "--os-sandbox-docker-enabled=true",
+            "--os-sandbox-docker-image",
+            "ubuntu:24.04",
+            "--os-sandbox-docker-network",
+            "host",
+            "--os-sandbox-docker-memory-mb",
+            "768",
+            "--os-sandbox-docker-cpus",
+            "3.0",
+            "--os-sandbox-docker-pids-limit",
+            "144",
+            "--os-sandbox-docker-env",
+            "OPENAI_API_KEY",
+        ]);
+        let policy = build_tool_policy(&cli).expect("build tool policy");
+        let payload = tool_policy_to_json(&policy);
+        assert_eq!(payload["os_sandbox_docker_enabled"], true);
+        assert_eq!(payload["os_sandbox_docker_image"], "ubuntu:24.04");
+        assert_eq!(payload["os_sandbox_docker_network"], "host");
+        assert_eq!(payload["os_sandbox_docker_memory_mb"], 768);
+        assert_eq!(payload["os_sandbox_docker_cpu_limit"], 3.0);
+        assert_eq!(payload["os_sandbox_docker_pids_limit"], 144);
+        assert_eq!(
+            payload["os_sandbox_docker_env_allowlist"],
+            serde_json::json!(["OPENAI_API_KEY"])
+        );
+    }
+
+    #[test]
+    fn regression_build_tool_policy_rejects_invalid_docker_cpu_limit() {
+        let cli = parse_cli_with_stack_args(vec![
+            "tau-rs",
+            "--os-sandbox-docker-enabled=true",
+            "--os-sandbox-docker-cpus",
+            "0",
+        ]);
+        let error = build_tool_policy(&cli).expect_err("invalid docker cpus should fail");
+        assert!(error.to_string().contains("--os-sandbox-docker-cpus"));
+    }
+
+    #[test]
+    fn regression_build_tool_policy_rejects_invalid_docker_env_allowlist_name() {
+        let cli = parse_cli_with_stack_args(vec![
+            "tau-rs",
+            "--os-sandbox-docker-enabled=true",
+            "--os-sandbox-docker-env",
+            "BAD-NAME",
+        ]);
+        let error = build_tool_policy(&cli).expect_err("invalid docker env name should fail");
+        assert!(error
+            .to_string()
+            .contains("invalid environment variable name"));
+    }
+
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -825,6 +1051,16 @@ mod tests {
             .expect("spawn cli parse thread")
             .join()
             .expect("join cli parse thread")
+    }
+
+    fn parse_cli_with_stack_args(args: Vec<&'static str>) -> Cli {
+        std::thread::Builder::new()
+            .name("tau-cli-parse-args".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || Cli::parse_from(args))
+            .expect("spawn cli parse args thread")
+            .join()
+            .expect("join cli parse args thread")
     }
 
     struct EnvSnapshot {
