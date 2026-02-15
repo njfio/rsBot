@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-02-15T18:30:01Z",
+  "generated_at": "2026-02-15T17:37:34Z",
   "repo_root": ".",
   "scan_root": "crates",
-  "total_markers": 1964,
+  "total_markers": 1486,
   "crates": [
     {
       "crate": "kamn-core",
@@ -47,7 +47,7 @@
     },
     {
       "crate": "tau-coding-agent",
-      "markers": 166,
+      "markers": 21,
       "files_scanned": 57
     },
     {
@@ -92,7 +92,7 @@
     },
     {
       "crate": "tau-gateway",
-      "markers": 62,
+      "markers": 37,
       "files_scanned": 16
     },
     {
@@ -112,17 +112,17 @@
     },
     {
       "crate": "tau-multi-channel",
-      "markers": 160,
+      "markers": 105,
       "files_scanned": 15
     },
     {
       "crate": "tau-onboarding",
-      "markers": 170,
+      "markers": 66,
       "files_scanned": 23
     },
     {
       "crate": "tau-ops",
-      "markers": 54,
+      "markers": 20,
       "files_scanned": 13
     },
     {
@@ -132,7 +132,7 @@
     },
     {
       "crate": "tau-provider",
-      "markers": 104,
+      "markers": 39,
       "files_scanned": 14
     },
     {
@@ -142,7 +142,7 @@
     },
     {
       "crate": "tau-runtime",
-      "markers": 136,
+      "markers": 111,
       "files_scanned": 14
     },
     {
@@ -172,7 +172,7 @@
     },
     {
       "crate": "tau-tools",
-      "markers": 70,
+      "markers": 45,
       "files_scanned": 10
     },
     {

@@ -1,11 +1,11 @@
 # M23 Rustdoc Marker Count
 
-Generated at: 2026-02-15T18:30:01Z
+Generated at: 2026-02-15T17:37:34Z
 
 ## Summary
 
 - Scan root: `crates`
-- Total markers: `1964`
+- Total markers: `1486`
 - Crates scanned: `42`
 
 ## Per-Crate Breakdown
@@ -20,7 +20,7 @@ Generated at: 2026-02-15T18:30:01Z
 | tau-algorithm | 17 | 3 |
 | tau-browser-automation | 20 | 3 |
 | tau-cli | 36 | 9 |
-| tau-coding-agent | 166 | 57 |
+| tau-coding-agent | 21 | 57 |
 | tau-contract | 40 | 1 |
 | tau-core | 10 | 3 |
 | tau-custom-command | 17 | 4 |
@@ -29,23 +29,23 @@ Generated at: 2026-02-15T18:30:01Z
 | tau-diagnostics | 22 | 1 |
 | tau-events | 27 | 3 |
 | tau-extensions | 20 | 2 |
-| tau-gateway | 62 | 16 |
+| tau-gateway | 37 | 16 |
 | tau-github-issues | 29 | 23 |
 | tau-github-issues-runtime | 39 | 17 |
 | tau-memory | 48 | 3 |
-| tau-multi-channel | 160 | 15 |
-| tau-onboarding | 170 | 23 |
-| tau-ops | 54 | 13 |
+| tau-multi-channel | 105 | 15 |
+| tau-onboarding | 66 | 23 |
+| tau-ops | 20 | 13 |
 | tau-orchestrator | 23 | 5 |
-| tau-provider | 104 | 14 |
+| tau-provider | 39 | 14 |
 | tau-release-channel | 15 | 4 |
-| tau-runtime | 136 | 14 |
+| tau-runtime | 111 | 14 |
 | tau-safety | 13 | 1 |
 | tau-session | 41 | 11 |
 | tau-skills | 43 | 4 |
 | tau-slack-runtime | 15 | 7 |
 | tau-startup | 22 | 8 |
-| tau-tools | 70 | 10 |
+| tau-tools | 45 | 10 |
 | tau-trainer | 8 | 1 |
 | tau-training-proxy | 5 | 1 |
 | tau-training-runner | 10 | 1 |
