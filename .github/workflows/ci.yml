@@ -153,6 +153,8 @@ jobs:
               - "crates/tau-tools/src/tools/**"
               - "scripts/dev/tool-split-performance-smoke.sh"
               - "scripts/dev/test-tool-split-performance-smoke.sh"
+              - "scripts/demo/tool-dispatch-parity.sh"
+              - "scripts/demo/test-tool-dispatch-parity.sh"
             release_helpers:
               - "scripts/release/**"
               - ".github/workflows/release.yml"
@@ -283,6 +285,10 @@ jobs:
       - name: Validate tool split performance smoke script
         if: steps.tool_perf_scope.outputs.tool_perf_smoke_needed == 'true'
         run: ./scripts/dev/test-tool-split-performance-smoke.sh
+
+      - name: Validate tool dispatch parity script
+        if: steps.tool_perf_scope.outputs.tool_perf_smoke_needed == 'true'
+        run: ./scripts/demo/test-tool-dispatch-parity.sh
 
       - name: Determine release-helper scope
         id: release_helper_scope
@@ -473,6 +479,26 @@ jobs:
         with:
           name: tool-split-performance-smoke
           path: ci-artifacts/tool-split-performance-smoke.json
+          if-no-files-found: error
+
+      - name: Run tool dispatch parity checklist
+        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.tool_perf_scope.outputs.tool_perf_smoke_needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/demo/tool-dispatch-parity.sh \
+            --output-md ci-artifacts/tool-dispatch-parity.md \
+            --output-json ci-artifacts/tool-dispatch-parity.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload tool dispatch parity artifact
+        if: always() && steps.rust_scope.outputs.rust_changed == 'true' && steps.tool_perf_scope.outputs.tool_perf_smoke_needed == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: tool-dispatch-parity
+          path: |
+            ci-artifacts/tool-dispatch-parity.md
+            ci-artifacts/tool-dispatch-parity.json
           if-no-files-found: error
 
       - name: Run codex light demo smoke
