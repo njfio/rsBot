@@ -1,0 +1,29 @@
+{
+  "suite_id": "reasoning-suite-v1",
+  "family": "reasoning",
+  "description": "Deterministic multi-step reasoning tasks for RL benchmark stability checks.",
+  "cases": [
+    {
+      "case_id": "reasoning_chain_of_thought_001",
+      "seed": 10101,
+      "prompt": "Given an incident timeline with four events, identify the first causal break and explain it in two steps.",
+      "expected_outcome": "Outcome should identify the incorrect dependency edge and provide a two-step causal explanation.",
+      "scoring_rubric": {
+        "task_accuracy": 0.5,
+        "reasoning_trace_quality": 0.35,
+        "constraint_compliance": 0.15
+      }
+    },
+    {
+      "case_id": "reasoning_multi_step_002",
+      "seed": 20202,
+      "prompt": "Plan a three-step remediation sequence for a failed deployment while minimizing service disruption.",
+      "expected_outcome": "Outcome should include rollback, validation, and staged redeploy with explicit ordering.",
+      "scoring_rubric": {
+        "task_accuracy": 0.45,
+        "reasoning_trace_quality": 0.4,
+        "constraint_compliance": 0.15
+      }
+    }
+  ]
+}

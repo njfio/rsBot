@@ -1,0 +1,27 @@
+{
+  "suite_id": "invalid-duplicate-case-id-v1",
+  "family": "reasoning",
+  "description": "Negative fixture with duplicate case_id entries.",
+  "cases": [
+    {
+      "case_id": "duplicate_case",
+      "seed": 11111,
+      "prompt": "First case with duplicate ID.",
+      "expected_outcome": "Any deterministic output.",
+      "scoring_rubric": {
+        "task_accuracy": 0.5,
+        "reasoning_trace_quality": 0.5
+      }
+    },
+    {
+      "case_id": "duplicate_case",
+      "seed": 22222,
+      "prompt": "Second case with duplicate ID.",
+      "expected_outcome": "Any deterministic output.",
+      "scoring_rubric": {
+        "task_accuracy": 0.6,
+        "reasoning_trace_quality": 0.4
+      }
+    }
+  ]
+}

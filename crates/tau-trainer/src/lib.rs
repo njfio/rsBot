@@ -1,5 +1,6 @@
 //! Top-level orchestrator for rollout-based training jobs.
 
+pub mod benchmark_fixtures;
 pub mod benchmark_significance;
 
 use anyhow::Result;

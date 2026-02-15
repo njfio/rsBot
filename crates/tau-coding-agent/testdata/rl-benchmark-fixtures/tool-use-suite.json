@@ -1,0 +1,29 @@
+{
+  "suite_id": "tool-use-suite-v1",
+  "family": "tool_use",
+  "description": "Deterministic tool-use tasks for repository inspection and patching workflows.",
+  "cases": [
+    {
+      "case_id": "tool_use_repository_search_001",
+      "seed": 30303,
+      "prompt": "Use repository search and file-read operations to locate where rollout statuses are transitioned.",
+      "expected_outcome": "Outcome should cite the correct module and summarize valid status transitions.",
+      "scoring_rubric": {
+        "task_completion": 0.5,
+        "tool_safety": 0.2,
+        "tool_efficiency": 0.3
+      }
+    },
+    {
+      "case_id": "tool_use_patch_workflow_002",
+      "seed": 40404,
+      "prompt": "Propose and apply a minimal code patch for a failing conformance test while preserving behavior.",
+      "expected_outcome": "Outcome should show a targeted patch and passing scoped tests without unrelated changes.",
+      "scoring_rubric": {
+        "task_completion": 0.45,
+        "tool_safety": 0.25,
+        "tool_efficiency": 0.3
+      }
+    }
+  ]
+}

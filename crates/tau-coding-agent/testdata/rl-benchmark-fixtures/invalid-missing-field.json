@@ -1,0 +1,16 @@
+{
+  "suite_id": "invalid-missing-field-v1",
+  "family": "reasoning",
+  "description": "Negative fixture missing required case fields.",
+  "cases": [
+    {
+      "case_id": "missing_prompt_case",
+      "seed": 61616,
+      "expected_outcome": "Loader must fail because `prompt` is missing.",
+      "scoring_rubric": {
+        "task_accuracy": 0.7,
+        "reasoning_trace_quality": 0.3
+      }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "suite_id": "invalid-rubric-weight-v1",
+  "family": "tool_use",
+  "description": "Negative fixture with invalid rubric weight values.",
+  "cases": [
+    {
+      "case_id": "invalid_weight_case",
+      "seed": 51515,
+      "prompt": "Attempt a tool-use task with malformed rubric weights.",
+      "expected_outcome": "Loader must reject this fixture.",
+      "scoring_rubric": {
+        "task_completion": 0.9,
+        "tool_safety": -0.2,
+        "tool_efficiency": 0.3
+      }
+    }
+  ]
+}
