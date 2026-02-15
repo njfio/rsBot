@@ -134,6 +134,9 @@ scan_root, allowlist_path, output_json_path, output_md_path, generated_at, allow
 
 scan_root_path = pathlib.Path(scan_root).resolve()
 allowlist_abs = pathlib.Path(allowlist_path).resolve()
+output_json_abs = pathlib.Path(output_json_path).resolve()
+output_md_abs = pathlib.Path(output_md_path).resolve()
+excluded_paths = {output_json_abs, output_md_abs}
 
 with allowlist_abs.open(encoding="utf-8") as handle:
     policy = json.load(handle)
@@ -189,6 +192,8 @@ def classify(term: str, rel_path: str, line_text: str, full_text: str):
 
 for candidate in sorted(scan_root_path.rglob("*")):
     if not candidate.is_file():
+        continue
+    if candidate.resolve() in excluded_paths:
         continue
     if candidate.suffix.lower() not in {".md", ".txt", ".rst"}:
         continue

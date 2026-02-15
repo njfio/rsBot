@@ -36,7 +36,7 @@
       "term": "RL training loop"
     }
   ],
-  "generated_at": "2026-02-15T17:17:22Z",
+  "generated_at": "2026-02-15T17:19:29Z",
   "policy_path": "tasks/policies/rl-terms-allowlist.json",
   "scan_root": "/Users/n/RustroverProjects/rust_pi_i1705",
   "schema_version": 1,
