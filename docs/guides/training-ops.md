@@ -83,7 +83,35 @@ Gateway dashboard endpoints (`/dashboard/health`, `/dashboard/widgets`,
 
 ## Flag Notes
 
-Legacy `--train-*` aliases are removed. Use canonical `--prompt-optimization-*` flags.
+Canonical flags for current automation:
+
+- `--prompt-optimization-config`
+- `--prompt-optimization-store-sqlite`
+- `--prompt-optimization-json`
+- `--prompt-optimization-proxy-*`
+
+Compatibility aliases (temporary migration path):
+
+- `--train-config` -> `--prompt-optimization-config`
+- `--train-store-sqlite` -> `--prompt-optimization-store-sqlite`
+- `--train-json` -> `--prompt-optimization-json`
+- `--training-proxy-server` -> `--prompt-optimization-proxy-server`
+- `--training-proxy-bind` -> `--prompt-optimization-proxy-bind`
+- `--training-proxy-upstream-url` -> `--prompt-optimization-proxy-upstream-url`
+- `--training-proxy-state-dir` -> `--prompt-optimization-proxy-state-dir`
+- `--training-proxy-timeout-ms` -> `--prompt-optimization-proxy-timeout-ms`
+
+When a compatibility alias is used, Tau emits a deterministic deprecation
+warning to stderr with the canonical replacement.
+
+To generate gate evidence for alias compatibility:
+
+```bash
+scripts/dev/m22-compatibility-alias-validation.sh \
+  --repo-root . \
+  --output-json tasks/reports/m22-compatibility-alias-validation.json \
+  --output-md tasks/reports/m22-compatibility-alias-validation.md
+```
 
 Boundary decisions and staged consolidation sets:
 - `docs/guides/training-crate-boundary-plan.md`

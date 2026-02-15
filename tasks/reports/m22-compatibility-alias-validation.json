@@ -1,0 +1,36 @@
+{
+  "commands": [
+    {
+      "cmd": "cargo test -p tau-coding-agent legacy_train_aliases_with_warning_snapshot",
+      "name": "legacy_train_alias",
+      "status": "pass",
+      "stdout_excerpt": "running 1 test\ntest tests::cli_validation::functional_cli_prompt_optimization_flags_accept_legacy_train_aliases_with_warning_snapshot ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 867 filtered out; finished in 0.03s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s\n\n\n   Compiling proc-macro2 v1.0.106\n   Compiling quote v1.0.44\n   Compiling unicode-ident v1.0.22\n   Compiling serde_core v1.0.228\n    ...[truncated]"
+    },
+    {
+      "cmd": "cargo test -p tau-coding-agent legacy_training_aliases_with_warning_snapshot",
+      "name": "legacy_proxy_alias",
+      "status": "pass",
+      "stdout_excerpt": "running 1 test\ntest tests::cli_validation::functional_cli_prompt_optimization_proxy_flags_accept_legacy_training_aliases_with_warning_snapshot ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 867 filtered out; finished in 0.03s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s\n\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.79s\n     Running unittests src/main.rs (target/debug/d ...[truncated]"
+    },
+    {
+      "cmd": "cargo test -p tau-coding-agent prompt_optimization_alias_normalization_keeps_unknown_flags_fail_closed",
+      "name": "unknown_flag_fail_closed",
+      "status": "pass",
+      "stdout_excerpt": "running 1 test\ntest tests::cli_validation::regression_cli_prompt_optimization_alias_normalization_keeps_unknown_flags_fail_closed ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 867 filtered out; finished in 0.02s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s\n\n\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s\n     Running unittests src/main.rs (target/debug/deps/tau_codin ...[truncated]"
+    },
+    {
+      "cmd": "python3 -m unittest discover -s .github/scripts -p 'test_docs_link_check.py'",
+      "name": "docs_policy_discoverability",
+      "status": "pass",
+      "stdout_excerpt": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.096s\n\nOK"
+    }
+  ],
+  "generated_at": "2026-02-15T17:09:53Z",
+  "repo_root": ".",
+  "schema_version": 1,
+  "summary": {
+    "failed": 0,
+    "passed": 4,
+    "total": 4
+  }
+}
