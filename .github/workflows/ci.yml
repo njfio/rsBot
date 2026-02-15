@@ -241,6 +241,12 @@ jobs:
         if: steps.helper_scope.outputs.helper_tests_needed == 'true'
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py"
 
+      - name: Validate rustdoc marker scripts
+        run: |
+          bash scripts/dev/test-rustdoc-marker-count.sh
+          bash scripts/dev/test-rustdoc-marker-threshold-verify.sh
+          bash scripts/dev/test-rustdoc-marker-ratchet-check.sh
+
       - name: Check roadmap status sync blocks
         env:
           GH_TOKEN: ${{ github.token }}
@@ -263,20 +269,80 @@ jobs:
           if-no-files-found: error
 
       - name: Check rust doc density thresholds
+        id: rust_doc_density
         if: steps.rust_scope.outputs.rust_changed == 'true'
+        continue-on-error: true
         run: |
           python3 .github/scripts/rust_doc_density.py \
             --repo-root . \
             --targets-file docs/guides/doc-density-targets.json \
             --json-output-file ci-artifacts/rust-doc-density.json
 
+      - name: Annotate rust doc density regressions
+        if: always() && steps.rust_scope.outputs.rust_changed == 'true'
+        run: |
+          python3 .github/scripts/doc_density_annotations.py \
+            --repo-root . \
+            --density-json ci-artifacts/rust-doc-density.json \
+            --base-ref "${{ github.base_ref }}" \
+            --json-output-file ci-artifacts/rust-doc-density-annotations.json
+
       - name: Upload rust doc density artifact
-        if: steps.rust_scope.outputs.rust_changed == 'true'
+        if: always() && steps.rust_scope.outputs.rust_changed == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: rust-doc-density
           path: ci-artifacts/rust-doc-density.json
           if-no-files-found: error
+
+      - name: Upload rust doc density annotations artifact
+        if: always() && steps.rust_scope.outputs.rust_changed == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: rust-doc-density-annotations
+          path: ci-artifacts/rust-doc-density-annotations.json
+          if-no-files-found: error
+
+      - name: Generate rustdoc marker count artifact
+        if: steps.rust_scope.outputs.rust_changed == 'true'
+        run: |
+          scripts/dev/rustdoc-marker-count.sh \
+            --repo-root . \
+            --scan-root crates \
+            --output-json ci-artifacts/m23-rustdoc-marker-count.json \
+            --output-md ci-artifacts/m23-rustdoc-marker-count.md
+
+      - name: Check rustdoc marker ratchet floor
+        id: rustdoc_marker_ratchet
+        if: steps.rust_scope.outputs.rust_changed == 'true'
+        continue-on-error: true
+        run: |
+          scripts/dev/rustdoc-marker-ratchet-check.sh \
+            --repo-root . \
+            --policy-file tasks/policies/m23-doc-ratchet-policy.json \
+            --current-json ci-artifacts/m23-rustdoc-marker-count.json \
+            --output-json ci-artifacts/m23-rustdoc-marker-ratchet-check.json \
+            --output-md ci-artifacts/m23-rustdoc-marker-ratchet-check.md
+
+      - name: Upload rustdoc marker ratchet artifact
+        if: always() && steps.rust_scope.outputs.rust_changed == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: rustdoc-marker-ratchet
+          path: |
+            ci-artifacts/m23-rustdoc-marker-count.json
+            ci-artifacts/m23-rustdoc-marker-count.md
+            ci-artifacts/m23-rustdoc-marker-ratchet-check.json
+            ci-artifacts/m23-rustdoc-marker-ratchet-check.md
+          if-no-files-found: error
+
+      - name: Fail when rust doc density thresholds fail
+        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.rust_doc_density.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail when rustdoc marker ratchet floor fails
+        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.rustdoc_marker_ratchet.outcome == 'failure'
+        run: exit 1
 
       - name: Determine fast-validate script scope
         id: fast_validate_scope

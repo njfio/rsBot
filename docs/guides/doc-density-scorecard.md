@@ -125,6 +125,38 @@ Outputs:
 - `tasks/reports/m23-rustdoc-marker-threshold-verify.json`
 - `tasks/reports/m23-rustdoc-marker-threshold-verify.md`
 
+### Ratchet Floor Check (CI Guardrail)
+
+M23 also enforces a non-regression ratchet floor for raw marker totals:
+
+Policy:
+
+- `tasks/policies/m23-doc-ratchet-policy.json`
+
+Command:
+
+```bash
+scripts/dev/rustdoc-marker-ratchet-check.sh \
+  --repo-root . \
+  --policy-file tasks/policies/m23-doc-ratchet-policy.json \
+  --current-json tasks/reports/m23-rustdoc-marker-count.json \
+  --output-json tasks/reports/m23-rustdoc-marker-ratchet-check.json \
+  --output-md tasks/reports/m23-rustdoc-marker-ratchet-check.md
+```
+
+Outputs:
+
+- `tasks/reports/m23-rustdoc-marker-ratchet-check.json`
+- `tasks/reports/m23-rustdoc-marker-ratchet-check.md`
+
+### PR File-Level Hints
+
+When crate density thresholds fail in CI, file-level hints are emitted for
+changed Rust files with undocumented public items:
+
+- script: `.github/scripts/doc_density_annotations.py`
+- artifact: `ci-artifacts/rust-doc-density-annotations.json`
+
 This complements (does not replace) `rust_doc_density.py`, which measures
 documented-public-API coverage percentage.
 

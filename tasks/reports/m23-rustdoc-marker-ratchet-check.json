@@ -1,0 +1,353 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T18:46:11Z",
+  "policy_file": "./tasks/policies/m23-doc-ratchet-policy.json",
+  "baseline_artifact": "tasks/reports/m23-rustdoc-marker-count-ratchet-baseline.json",
+  "current_artifact": "./tasks/reports/m23-rustdoc-marker-count.json",
+  "floor_markers": 1964,
+  "baseline_total_markers": 1964,
+  "current_total_markers": 1964,
+  "delta_total_markers": 0,
+  "below_floor_by": 0,
+  "meets_floor": true,
+  "fail_on_regression": true,
+  "crate_deltas": [
+    {
+      "crate": "kamn-core",
+      "baseline_markers": 4,
+      "current_markers": 4,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "kamn-sdk",
+      "baseline_markers": 3,
+      "current_markers": 3,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-access",
+      "baseline_markers": 21,
+      "current_markers": 21,
+      "delta_markers": 0,
+      "baseline_files_scanned": 7,
+      "current_files_scanned": 7
+    },
+    {
+      "crate": "tau-agent-core",
+      "baseline_markers": 283,
+      "current_markers": 283,
+      "delta_markers": 0,
+      "baseline_files_scanned": 6,
+      "current_files_scanned": 6
+    },
+    {
+      "crate": "tau-ai",
+      "baseline_markers": 26,
+      "current_markers": 26,
+      "delta_markers": 0,
+      "baseline_files_scanned": 7,
+      "current_files_scanned": 7
+    },
+    {
+      "crate": "tau-algorithm",
+      "baseline_markers": 17,
+      "current_markers": 17,
+      "delta_markers": 0,
+      "baseline_files_scanned": 3,
+      "current_files_scanned": 3
+    },
+    {
+      "crate": "tau-browser-automation",
+      "baseline_markers": 20,
+      "current_markers": 20,
+      "delta_markers": 0,
+      "baseline_files_scanned": 3,
+      "current_files_scanned": 3
+    },
+    {
+      "crate": "tau-cli",
+      "baseline_markers": 36,
+      "current_markers": 36,
+      "delta_markers": 0,
+      "baseline_files_scanned": 9,
+      "current_files_scanned": 9
+    },
+    {
+      "crate": "tau-coding-agent",
+      "baseline_markers": 166,
+      "current_markers": 166,
+      "delta_markers": 0,
+      "baseline_files_scanned": 57,
+      "current_files_scanned": 57
+    },
+    {
+      "crate": "tau-contract",
+      "baseline_markers": 40,
+      "current_markers": 40,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-core",
+      "baseline_markers": 10,
+      "current_markers": 10,
+      "delta_markers": 0,
+      "baseline_files_scanned": 3,
+      "current_files_scanned": 3
+    },
+    {
+      "crate": "tau-custom-command",
+      "baseline_markers": 17,
+      "current_markers": 17,
+      "delta_markers": 0,
+      "baseline_files_scanned": 4,
+      "current_files_scanned": 4
+    },
+    {
+      "crate": "tau-dashboard",
+      "baseline_markers": 22,
+      "current_markers": 22,
+      "delta_markers": 0,
+      "baseline_files_scanned": 3,
+      "current_files_scanned": 3
+    },
+    {
+      "crate": "tau-deployment",
+      "baseline_markers": 22,
+      "current_markers": 22,
+      "delta_markers": 0,
+      "baseline_files_scanned": 6,
+      "current_files_scanned": 6
+    },
+    {
+      "crate": "tau-diagnostics",
+      "baseline_markers": 22,
+      "current_markers": 22,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-events",
+      "baseline_markers": 27,
+      "current_markers": 27,
+      "delta_markers": 0,
+      "baseline_files_scanned": 3,
+      "current_files_scanned": 3
+    },
+    {
+      "crate": "tau-extensions",
+      "baseline_markers": 20,
+      "current_markers": 20,
+      "delta_markers": 0,
+      "baseline_files_scanned": 2,
+      "current_files_scanned": 2
+    },
+    {
+      "crate": "tau-gateway",
+      "baseline_markers": 62,
+      "current_markers": 62,
+      "delta_markers": 0,
+      "baseline_files_scanned": 16,
+      "current_files_scanned": 16
+    },
+    {
+      "crate": "tau-github-issues",
+      "baseline_markers": 29,
+      "current_markers": 29,
+      "delta_markers": 0,
+      "baseline_files_scanned": 23,
+      "current_files_scanned": 23
+    },
+    {
+      "crate": "tau-github-issues-runtime",
+      "baseline_markers": 39,
+      "current_markers": 39,
+      "delta_markers": 0,
+      "baseline_files_scanned": 17,
+      "current_files_scanned": 17
+    },
+    {
+      "crate": "tau-memory",
+      "baseline_markers": 48,
+      "current_markers": 48,
+      "delta_markers": 0,
+      "baseline_files_scanned": 3,
+      "current_files_scanned": 3
+    },
+    {
+      "crate": "tau-multi-channel",
+      "baseline_markers": 160,
+      "current_markers": 160,
+      "delta_markers": 0,
+      "baseline_files_scanned": 15,
+      "current_files_scanned": 15
+    },
+    {
+      "crate": "tau-onboarding",
+      "baseline_markers": 170,
+      "current_markers": 170,
+      "delta_markers": 0,
+      "baseline_files_scanned": 23,
+      "current_files_scanned": 23
+    },
+    {
+      "crate": "tau-ops",
+      "baseline_markers": 54,
+      "current_markers": 54,
+      "delta_markers": 0,
+      "baseline_files_scanned": 13,
+      "current_files_scanned": 13
+    },
+    {
+      "crate": "tau-orchestrator",
+      "baseline_markers": 23,
+      "current_markers": 23,
+      "delta_markers": 0,
+      "baseline_files_scanned": 5,
+      "current_files_scanned": 5
+    },
+    {
+      "crate": "tau-provider",
+      "baseline_markers": 104,
+      "current_markers": 104,
+      "delta_markers": 0,
+      "baseline_files_scanned": 14,
+      "current_files_scanned": 14
+    },
+    {
+      "crate": "tau-release-channel",
+      "baseline_markers": 15,
+      "current_markers": 15,
+      "delta_markers": 0,
+      "baseline_files_scanned": 4,
+      "current_files_scanned": 4
+    },
+    {
+      "crate": "tau-runtime",
+      "baseline_markers": 136,
+      "current_markers": 136,
+      "delta_markers": 0,
+      "baseline_files_scanned": 14,
+      "current_files_scanned": 14
+    },
+    {
+      "crate": "tau-safety",
+      "baseline_markers": 13,
+      "current_markers": 13,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-session",
+      "baseline_markers": 41,
+      "current_markers": 41,
+      "delta_markers": 0,
+      "baseline_files_scanned": 11,
+      "current_files_scanned": 11
+    },
+    {
+      "crate": "tau-skills",
+      "baseline_markers": 43,
+      "current_markers": 43,
+      "delta_markers": 0,
+      "baseline_files_scanned": 4,
+      "current_files_scanned": 4
+    },
+    {
+      "crate": "tau-slack-runtime",
+      "baseline_markers": 15,
+      "current_markers": 15,
+      "delta_markers": 0,
+      "baseline_files_scanned": 7,
+      "current_files_scanned": 7
+    },
+    {
+      "crate": "tau-startup",
+      "baseline_markers": 22,
+      "current_markers": 22,
+      "delta_markers": 0,
+      "baseline_files_scanned": 8,
+      "current_files_scanned": 8
+    },
+    {
+      "crate": "tau-tools",
+      "baseline_markers": 70,
+      "current_markers": 70,
+      "delta_markers": 0,
+      "baseline_files_scanned": 10,
+      "current_files_scanned": 10
+    },
+    {
+      "crate": "tau-trainer",
+      "baseline_markers": 8,
+      "current_markers": 8,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-training-proxy",
+      "baseline_markers": 5,
+      "current_markers": 5,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-training-runner",
+      "baseline_markers": 10,
+      "current_markers": 10,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-training-store",
+      "baseline_markers": 9,
+      "current_markers": 9,
+      "delta_markers": 0,
+      "baseline_files_scanned": 2,
+      "current_files_scanned": 2
+    },
+    {
+      "crate": "tau-training-tracer",
+      "baseline_markers": 9,
+      "current_markers": 9,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-training-types",
+      "baseline_markers": 77,
+      "current_markers": 77,
+      "delta_markers": 0,
+      "baseline_files_scanned": 1,
+      "current_files_scanned": 1
+    },
+    {
+      "crate": "tau-tui",
+      "baseline_markers": 17,
+      "current_markers": 17,
+      "delta_markers": 0,
+      "baseline_files_scanned": 2,
+      "current_files_scanned": 2
+    },
+    {
+      "crate": "tau-voice",
+      "baseline_markers": 29,
+      "current_markers": 29,
+      "delta_markers": 0,
+      "baseline_files_scanned": 4,
+      "current_files_scanned": 4
+    }
+  ],
+  "negative_crate_deltas": []
+}

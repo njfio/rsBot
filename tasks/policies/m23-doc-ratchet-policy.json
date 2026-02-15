@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T18:30:01Z",
+  "description": "M23 doc-marker non-regression ratchet floor policy.",
+  "floor_markers": 1964,
+  "baseline_artifact": "tasks/reports/m23-rustdoc-marker-count-ratchet-baseline.json",
+  "fail_on_regression": true
+}
