@@ -146,6 +146,35 @@ impl TrainingRunner {
             item.attempt.attempt_id.clone(),
         ));
         let resources = self.store.get_latest_resources().await?;
+        let (heartbeat_stop_tx, mut heartbeat_stop_rx) = watch::channel(false);
+        let heartbeat_store = self.store.clone();
+        let heartbeat_worker_id = self.config.worker_id.clone();
+        let heartbeat_rollout_id = item.rollout.rollout_id.clone();
+        let heartbeat_attempt_id = item.attempt.attempt_id.clone();
+        let heartbeat_interval = self.config.heartbeat_interval;
+        let heartbeat_task = tokio::spawn(async move {
+            let mut heartbeat = tokio::time::interval(heartbeat_interval);
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = heartbeat.tick() => {
+                        heartbeat_store
+                            .update_worker_heartbeat(
+                                &heartbeat_worker_id,
+                                Some(heartbeat_rollout_id.clone()),
+                                Some(heartbeat_attempt_id.clone()),
+                            )
+                            .await?;
+                    }
+                    changed = heartbeat_stop_rx.changed() => {
+                        if changed.is_err() || *heartbeat_stop_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        });
 
         let execution_result = {
             let _operation = tracer.operation("runner.execute_rollout");
@@ -153,6 +182,8 @@ impl TrainingRunner {
                 .execute(&item.rollout, resources.as_ref(), tracer.clone())
                 .await
         };
+        let _ = heartbeat_stop_tx.send(true);
+        heartbeat_task.await??;
 
         match &execution_result {
             Ok(outcome) => {
@@ -466,7 +497,7 @@ mod tests {
             RunnerConfig {
                 worker_id: "worker-slow".to_string(),
                 poll_interval: Duration::from_millis(20),
-                heartbeat_interval: Duration::from_millis(20),
+                heartbeat_interval: Duration::from_millis(200),
                 reassignment_interval: Duration::from_millis(20),
                 worker_timeout: Duration::from_millis(50),
             },
@@ -525,6 +556,77 @@ mod tests {
             .expect("spans attempt-2");
         assert!(!spans_1.is_empty());
         assert!(!spans_2.is_empty());
+    }
+
+    #[tokio::test]
+    async fn regression_healthy_long_running_worker_does_not_false_timeout() {
+        let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-healthy-1",
+                json!({ "prompt": "steady-worker" }),
+                Some(tau_training_types::RolloutMode::Train),
+            ))
+            .await
+            .expect("enqueue");
+
+        let slow_runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(SlowExecutor),
+            RunnerConfig {
+                worker_id: "worker-steady".to_string(),
+                poll_interval: Duration::from_millis(20),
+                heartbeat_interval: Duration::from_millis(20),
+                reassignment_interval: Duration::from_millis(20),
+                worker_timeout: Duration::from_millis(80),
+            },
+        );
+        let fast_runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(FastExecutor),
+            RunnerConfig {
+                worker_id: "worker-backup".to_string(),
+                poll_interval: Duration::from_millis(20),
+                heartbeat_interval: Duration::from_millis(20),
+                reassignment_interval: Duration::from_millis(10),
+                worker_timeout: Duration::from_millis(80),
+            },
+        );
+
+        let (slow_tx, slow_rx) = watch::channel(false);
+        let slow_handle = tokio::spawn(async move { slow_runner.run(slow_rx).await });
+
+        wait_for_worker_assignment(store.clone(), "worker-steady", Duration::from_secs(2))
+            .await
+            .expect("worker-steady assignment");
+
+        let (fast_tx, fast_rx) = watch::channel(false);
+        let fast_handle = tokio::spawn(async move { fast_runner.run(fast_rx).await });
+
+        wait_for_rollout_status(store.clone(), "r-healthy-1", RolloutStatus::Succeeded)
+            .await
+            .expect("rollout should succeed");
+
+        slow_tx.send(true).expect("shutdown slow");
+        fast_tx.send(true).expect("shutdown fast");
+        slow_handle.await.expect("join slow").expect("slow runner");
+        fast_handle.await.expect("join fast").expect("fast runner");
+
+        let attempt_1 = store
+            .get_attempt("r-healthy-1:attempt-1")
+            .await
+            .expect("attempt-1")
+            .expect("attempt-1 exists");
+        assert_eq!(attempt_1.status, AttemptStatus::Succeeded);
+
+        let attempt_2 = store
+            .get_attempt("r-healthy-1:attempt-2")
+            .await
+            .expect("attempt-2");
+        assert!(
+            attempt_2.is_none(),
+            "healthy worker should not be reassigned into attempt-2"
+        );
     }
 
     #[tokio::test]
