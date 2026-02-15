@@ -1,0 +1,944 @@
+[demo:index] [1] onboarding (local.sh)
+[demo:local] [1] onboard-non-interactive
+[demo:local] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --onboard --onboard-non-interactive
+onboarding complete: mode=non-interactive profile=default report=.tau/reports/onboarding-1771173386060.json
+directories: created=11 existing=1
+files: created=3 existing=0 profile_store_action=created
+release_channel: value=stable source=default action=created path=.tau/release-channel.json
+daemon: install_requested=false start_requested=false install_action=skipped start_action=skipped ready=true
+daemon_status: installed=false running=false profile=launchd diagnostics=0
+wizard: entrypoint=explicit_flag first_run=true provider=openai auth=api_key model=openai/gpt-4o-mini workspace=/Users/n/RustroverProjects/rust_pi_issue1767
+wizard_persistence: baseline_action=created baseline_path=.tau/onboarding-baseline.json profile_repair_requested=false identity_generation_requested=false identity_repair_requested=false
+identity_bootstrap: requested=false repair_requested=false created=0 repaired=0 skipped_existing=0 skipped_invalid_type=0
+identity: loaded=0 missing=3 skipped=0 tau_root=.tau
+wizard_first_run_reason: onboarding_first_run_detected
+wizard_reason: wizard_entrypoint_explicit_flag
+wizard_reason: wizard_non_interactive_defaults
+wizard_reason: onboarding_first_run_detected
+identity_bootstrap_reason: identity_bootstrap_not_requested
+identity_file: key=soul file=SOUL.md status=missing code=identity_file_missing path=.tau/SOUL.md
+identity_file: key=agents file=AGENTS.md status=missing code=identity_file_missing path=.tau/AGENTS.md
+identity_file: key=user file=USER.md status=missing code=identity_file_missing path=.tau/USER.md
+next: Create identity files under .tau (SOUL.md, AGENTS.md, USER.md) to customize startup composition.
+next: /auth status
+next: cargo run -p tau-coding-agent -- --model openai/gpt-4o-mini
+[demo:local] PASS onboard-non-interactive
+[demo:local] [2] extension-list
+[demo:local] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --extension-list --extension-list-root ./examples/extensions
+extension list: root=./examples/extensions count=1 invalid=0
+extension: id=issue-assistant version=1.0.0 runtime=process manifest=./examples/extensions/issue-assistant/extension.json
+[demo:local] PASS extension-list
+[demo:local] [3] rpc-capabilities
+[demo:local] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --rpc-capabilities
+{
+  "capabilities": [
+    "errors.structured",
+    "run.cancel",
+    "run.complete",
+    "run.fail",
+    "run.start",
+    "run.status",
+    "run.timeout",
+    "run.stream.assistant_text",
+    "run.stream.tool_events"
+  ],
+  "contracts": {
+    "errors": {
+      "codes": [
+        {
+          "category": "validation",
+          "code": "invalid_json",
+          "description": "Incoming rpc frame JSON is malformed."
+        },
+        {
+          "category": "compatibility",
+          "code": "unsupported_schema",
+          "description": "Requested rpc frame schema version is unsupported."
+        },
+        {
+          "category": "compatibility",
+          "code": "unsupported_kind",
+          "description": "Rpc frame kind is unsupported by this runtime."
+        },
+        {
+          "category": "validation",
+          "code": "invalid_request_id",
+          "description": "Rpc frame request_id is missing or invalid."
+        },
+        {
+          "category": "validation",
+          "code": "invalid_payload",
+          "description": "Rpc frame payload is missing required fields or shape."
+        },
+        {
+          "category": "transport",
+          "code": "io_error",
+          "description": "I/O failure occurred while reading or writing rpc frames."
+        },
+        {
+          "category": "internal",
+          "code": "internal_error",
+          "description": "Unexpected runtime failure while handling rpc frame."
+        }
+      ]
+    },
+    "lifecycle": {
+      "non_terminal_transitions": [
+        {
+          "request_kind": "run.start",
+          "response_kind": "run.accepted",
+          "stream_event_kinds": [
+            "run.stream.tool_events",
+            "run.stream.assistant_text"
+          ]
+        },
+        {
+          "request_kind": "run.status",
+          "response_kind": "run.status",
+          "stream_event_kinds": []
+        }
+      ],
+      "terminal_assistant_stream_final_required": true,
+      "terminal_transitions": [
+        {
+          "request_kind": "run.cancel",
+          "response_kind": "run.cancelled",
+          "terminal_state": "cancelled",
+          "terminal_stream_tool_event": "run.cancelled"
+        },
+        {
+          "request_kind": "run.complete",
+          "response_kind": "run.completed",
+          "terminal_state": "completed",
+          "terminal_stream_tool_event": "run.completed"
+        },
+        {
+          "request_kind": "run.fail",
+          "response_kind": "run.failed",
+          "terminal_state": "failed",
+          "terminal_stream_tool_event": "run.failed"
+        },
+        {
+          "request_kind": "run.timeout",
+          "response_kind": "run.timed_out",
+          "terminal_state": "timed_out",
+          "terminal_stream_tool_event": "run.timed_out"
+        }
+      ]
+    },
+    "protocol": {
+      "request_kinds": [
+        "capabilities.request",
+        "run.start",
+        "run.cancel",
+        "run.complete",
+        "run.fail",
+        "run.timeout",
+        "run.status"
+      ],
+      "response_kinds": [
+        "capabilities.response",
+        "run.accepted",
+        "run.cancelled",
+        "run.completed",
+        "run.failed",
+        "run.timed_out",
+        "run.status",
+        "run.stream.tool_events",
+        "run.stream.assistant_text",
+        "error"
+      ],
+      "stream_event_kinds": [
+        "run.stream.tool_events",
+        "run.stream.assistant_text"
+      ]
+    },
+    "run_status": {
+      "serve_closed_status_retention_capacity": 1024,
+      "status_values": [
+        "active",
+        "inactive",
+        "cancelled",
+        "completed",
+        "failed",
+        "timed_out"
+      ],
+      "terminal_flag_always_present": true,
+      "terminal_state_field_present_for_terminal_status": true,
+      "terminal_states": [
+        "cancelled",
+        "completed",
+        "failed",
+        "timed_out"
+      ]
+    }
+  },
+  "protocol_version": "0.1.0",
+  "schema_version": 1
+}
+[demo:local] PASS rpc-capabilities
+[demo:local] summary: total=3 passed=3 failed=0
+[demo:index] PASS onboarding
+[demo:index] [2] gateway-auth (gateway-auth.sh)
+[demo:gateway-auth] [1] gateway-remote-profile-token-mode
+[demo:gateway-auth] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --gateway-remote-profile-inspect --gateway-remote-profile proxy-remote --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-openresponses-auth-mode token --gateway-openresponses-auth-token demo-gateway-token --gateway-state-dir .tau/demo-gateway-auth --gateway-remote-profile-json
+{
+  "profile": "proxy-remote",
+  "posture": "remote-enabled",
+  "gate": "pass",
+  "risk_level": "moderate",
+  "server_enabled": true,
+  "bind": "127.0.0.1:8787",
+  "bind_ip": "127.0.0.1",
+  "loopback_bind": true,
+  "auth_mode": "token",
+  "auth_token_configured": true,
+  "auth_password_configured": false,
+  "remote_enabled": true,
+  "reason_codes": [
+    "profile_proxy_remote",
+    "server_enabled",
+    "proxy_remote_token_auth",
+    "proxy_remote_token_configured",
+    "proxy_remote_loopback_bind"
+  ],
+  "recommendations": [
+    "keep loopback bind and expose access through a trusted reverse proxy/tunnel"
+  ]
+}
+[demo:gateway-auth] PASS gateway-remote-profile-token-mode
+[demo:gateway-auth] [2] gateway-remote-profile-password-session-mode
+[demo:gateway-auth] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --gateway-remote-profile-inspect --gateway-remote-profile password-remote --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-openresponses-auth-mode password-session --gateway-openresponses-auth-password demo-gateway-password --gateway-openresponses-session-ttl-seconds 900 --gateway-state-dir .tau/demo-gateway-auth --gateway-remote-profile-json
+{
+  "profile": "password-remote",
+  "posture": "remote-enabled",
+  "gate": "pass",
+  "risk_level": "moderate",
+  "server_enabled": true,
+  "bind": "127.0.0.1:8787",
+  "bind_ip": "127.0.0.1",
+  "loopback_bind": true,
+  "auth_mode": "password-session",
+  "auth_token_configured": false,
+  "auth_password_configured": true,
+  "remote_enabled": true,
+  "reason_codes": [
+    "profile_password_remote",
+    "server_enabled",
+    "password_remote_password_session_auth",
+    "password_remote_password_configured",
+    "password_remote_loopback_bind"
+  ],
+  "recommendations": [
+    "publish loopback bind through a trusted tunnel or reverse proxy for remote operators"
+  ]
+}
+[demo:gateway-auth] PASS gateway-remote-profile-password-session-mode
+[demo:gateway-auth] summary: total=2 passed=2 failed=0
+[demo:index] PASS gateway-auth
+[demo:index] [3] gateway-remote-access (gateway-remote-access.sh)
+[demo:gateway-remote-access] [1] gateway-remote-profile-inspect-local-only
+[demo:gateway-remote-access] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --gateway-remote-profile-inspect --gateway-remote-profile-json --gateway-state-dir .tau/demo-gateway-remote-access
+{
+  "profile": "local-only",
+  "posture": "local-only",
+  "gate": "pass",
+  "risk_level": "low",
+  "server_enabled": false,
+  "bind": "127.0.0.1:8787",
+  "bind_ip": "127.0.0.1",
+  "loopback_bind": true,
+  "auth_mode": "token",
+  "auth_token_configured": false,
+  "auth_password_configured": false,
+  "remote_enabled": false,
+  "reason_codes": [
+    "profile_local_only",
+    "server_disabled_inspect_only",
+    "local_only_loopback_bind",
+    "local_only_auth_token"
+  ],
+  "recommendations": []
+}
+[demo:gateway-remote-access] PASS gateway-remote-profile-inspect-local-only
+[demo:gateway-remote-access] [2] gateway-remote-profile-inspect-tailscale-serve-token
+[demo:gateway-remote-access] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --gateway-remote-profile-inspect --gateway-remote-profile tailscale-serve --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-openresponses-auth-mode token --gateway-openresponses-auth-token demo-tailscale-token --gateway-remote-profile-json --gateway-state-dir .tau/demo-gateway-remote-access
+{
+  "profile": "tailscale-serve",
+  "posture": "remote-enabled",
+  "gate": "pass",
+  "risk_level": "moderate",
+  "server_enabled": true,
+  "bind": "127.0.0.1:8787",
+  "bind_ip": "127.0.0.1",
+  "loopback_bind": true,
+  "auth_mode": "token",
+  "auth_token_configured": true,
+  "auth_password_configured": false,
+  "remote_enabled": true,
+  "reason_codes": [
+    "profile_tailscale_serve",
+    "server_enabled",
+    "tailscale_serve_loopback_bind",
+    "tailscale_serve_token_auth",
+    "tailscale_serve_token_configured"
+  ],
+  "recommendations": [
+    "use tailscale serve to publish gateway while keeping loopback bind on host"
+  ]
+}
+[demo:gateway-remote-access] PASS gateway-remote-profile-inspect-tailscale-serve-token
+[demo:gateway-remote-access] [3] gateway-remote-plan-export-tailscale-serve
+[demo:gateway-remote-access] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --gateway-remote-plan --gateway-remote-plan-json --gateway-remote-profile tailscale-serve --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-openresponses-auth-mode token --gateway-openresponses-auth-token demo-tailscale-token --gateway-state-dir .tau/demo-gateway-remote-access
+{
+  "schema_version": 1,
+  "selected_profile": "tailscale-serve",
+  "selected_profile_gate": "pass",
+  "selected_profile_reason_codes": [
+    "profile_tailscale_serve",
+    "server_enabled",
+    "tailscale_serve_loopback_bind",
+    "tailscale_serve_token_auth",
+    "tailscale_serve_token_configured"
+  ],
+  "plans": [
+    {
+      "workflow": "tailscale-serve",
+      "gateway_profile": "tailscale-serve",
+      "gate": "pass",
+      "risk_level": "moderate",
+      "description": "Publish a loopback-bound gateway through tailscale serve for private network operators.",
+      "reason_codes": [
+        "profile_tailscale_serve",
+        "server_enabled",
+        "tailscale_serve_loopback_bind",
+        "tailscale_serve_token_auth",
+        "tailscale_serve_token_configured"
+      ],
+      "preflight_checks": [
+        "check=gateway_openresponses_server_enabled status=pass detail=enable --gateway-openresponses-server before exposing remotely",
+        "check=loopback_bind_required status=pass detail=bind should stay loopback when using tailscale serve",
+        "check=auth_mode_token_or_password_session status=pass detail=supported auth modes for tailscale serve: token or password-session",
+        "check=auth_secret_configured status=pass detail=set --gateway-openresponses-auth-token or --gateway-openresponses-auth-password"
+      ],
+      "auth_requirements": [
+        "token (recommended) or password-session auth mode",
+        "non-empty auth token/password value"
+      ],
+      "bind_requirements": [
+        "gateway bind must stay loopback (127.0.0.1 or ::1)",
+        "avoid direct public bind for serve profile"
+      ],
+      "warnings": [
+        "localhost-dev auth mode is unsupported for tailscale serve",
+        "review tailscale ACL posture before exposing operator routes"
+      ],
+      "commands": [
+        "tau-rs --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-remote-profile tailscale-serve --gateway-openresponses-auth-mode token --gateway-openresponses-auth-token <TOKEN>",
+        "tailscale serve --bg 8787 http://127.0.0.1:8787",
+        "curl -H \"Authorization: Bearer <TOKEN>\" http://127.0.0.1:8787/gateway/status"
+      ]
+    },
+    {
+      "workflow": "tailscale-funnel",
+      "gateway_profile": "tailscale-funnel",
+      "gate": "hold",
+      "risk_level": "high",
+      "description": "Expose a loopback-bound gateway through tailscale funnel with password-session auth for internet-accessible remote operators.",
+      "reason_codes": [
+        "profile_tailscale_funnel",
+        "server_enabled",
+        "tailscale_funnel_loopback_bind",
+        "tailscale_funnel_auth_mode_mismatch",
+        "tailscale_funnel_missing_password"
+      ],
+      "preflight_checks": [
+        "check=gateway_openresponses_server_enabled status=pass detail=enable --gateway-openresponses-server before exposing remotely",
+        "check=loopback_bind_required status=pass detail=bind should stay loopback when using tailscale funnel",
+        "check=auth_mode_password_session_required status=hold detail=tailscale funnel requires --gateway-openresponses-auth-mode=password-session",
+        "check=auth_password_configured status=hold detail=set --gateway-openresponses-auth-password to a non-empty value"
+      ],
+      "auth_requirements": [
+        "password-session auth mode",
+        "non-empty auth password"
+      ],
+      "bind_requirements": [
+        "gateway bind must stay loopback (127.0.0.1 or ::1)",
+        "public access should terminate through tailscale funnel, not direct bind"
+      ],
+      "warnings": [
+        "funnel exposure should be treated as internet-facing and high-risk",
+        "rotate session password regularly and monitor auth/session usage"
+      ],
+      "commands": [
+        "tau-rs --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-remote-profile tailscale-funnel --gateway-openresponses-auth-mode password-session --gateway-openresponses-auth-password <PASSWORD>",
+        "tailscale funnel --bg 8787",
+        "curl -X POST http://127.0.0.1:8787/gateway/auth/session -H \"Content-Type: application/json\" -d '{\"password\":\"<PASSWORD>\"}'"
+      ]
+    },
+    {
+      "workflow": "ssh-tunnel-fallback",
+      "gateway_profile": "proxy-remote",
+      "gate": "pass",
+      "risk_level": "moderate",
+      "description": "Fallback workflow that keeps gateway loopback-bound and grants remote operator access over an SSH local-forward tunnel.",
+      "reason_codes": [
+        "profile_proxy_remote",
+        "server_enabled",
+        "proxy_remote_token_auth",
+        "proxy_remote_token_configured",
+        "proxy_remote_loopback_bind"
+      ],
+      "preflight_checks": [
+        "check=gateway_openresponses_server_enabled status=pass detail=enable --gateway-openresponses-server before exposing remotely",
+        "check=loopback_bind_required status=pass detail=bind should stay loopback when using SSH tunnel fallback",
+        "check=auth_mode_token_required status=pass detail=ssh fallback uses bearer-token auth for deterministic operator access",
+        "check=auth_token_configured status=pass detail=set --gateway-openresponses-auth-token to a non-empty value"
+      ],
+      "auth_requirements": [
+        "token auth mode",
+        "non-empty bearer auth token"
+      ],
+      "bind_requirements": [
+        "gateway bind must stay loopback (127.0.0.1 or ::1)",
+        "remote access must flow through SSH forwarding, not direct bind"
+      ],
+      "warnings": [
+        "use short-lived SSH sessions and least-privilege host credentials",
+        "treat forwarded local port as privileged control-plane access"
+      ],
+      "commands": [
+        "tau-rs --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-remote-profile proxy-remote --gateway-openresponses-auth-mode token --gateway-openresponses-auth-token <TOKEN>",
+        "ssh -N -L 8787:127.0.0.1:8787 <user>@<host>",
+        "curl -H \"Authorization: Bearer <TOKEN>\" http://127.0.0.1:8787/gateway/status"
+      ]
+    }
+  ]
+}
+[demo:gateway-remote-access] PASS gateway-remote-plan-export-tailscale-serve
+[demo:gateway-remote-access] [4] gateway-remote-plan-fails-closed-for-missing-password
+[demo:gateway-remote-access] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --gateway-remote-plan --gateway-remote-profile tailscale-funnel --gateway-openresponses-server --gateway-openresponses-bind 127.0.0.1:8787 --gateway-openresponses-auth-mode password-session --gateway-state-dir .tau/demo-gateway-remote-access
+[demo:gateway-remote-access] expected_exit=1 expected_message=tailscale_funnel_missing_password
+[demo:gateway-remote-access] PASS gateway-remote-plan-fails-closed-for-missing-password
+[demo:gateway-remote-access] summary: total=4 passed=4 failed=0
+[demo:index] PASS gateway-remote-access
+[demo:index] [4] multi-channel-live (multi-channel.sh)
+[demo:multi-channel] [1] multi-channel-channel-login-telegram
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-live-ingress-dir .tau/demo-multi-channel/live-ingress --multi-channel-channel-login telegram --multi-channel-telegram-bot-token demo-telegram-token --multi-channel-channel-login-json
+{
+  "action": "login",
+  "channel": "telegram",
+  "probe_mode": "offline",
+  "lifecycle_status": "initialized",
+  "readiness_status": "pass",
+  "reason_codes": [
+    "ready"
+  ],
+  "online_probe_status": "disabled",
+  "online_probe_reason_codes": [
+    "probe_online_disabled"
+  ],
+  "remediation_hints": [],
+  "ingress_file": ".tau/demo-multi-channel/live-ingress/telegram.ndjson",
+  "ingress_exists": true,
+  "ingress_is_file": true,
+  "token_source": "cli_or_env",
+  "phone_number_source": "not_required",
+  "state_path": ".tau/demo-multi-channel/security/channel-lifecycle.json",
+  "state_persisted": true,
+  "updated_unix_ms": 1771173386694
+}
+[demo:multi-channel] PASS multi-channel-channel-login-telegram
+[demo:multi-channel] [2] multi-channel-channel-login-discord
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-live-ingress-dir .tau/demo-multi-channel/live-ingress --multi-channel-channel-login discord --multi-channel-discord-bot-token demo-discord-token --multi-channel-channel-login-json
+{
+  "action": "login",
+  "channel": "discord",
+  "probe_mode": "offline",
+  "lifecycle_status": "initialized",
+  "readiness_status": "pass",
+  "reason_codes": [
+    "ready"
+  ],
+  "online_probe_status": "disabled",
+  "online_probe_reason_codes": [
+    "probe_online_disabled"
+  ],
+  "remediation_hints": [],
+  "ingress_file": ".tau/demo-multi-channel/live-ingress/discord.ndjson",
+  "ingress_exists": true,
+  "ingress_is_file": true,
+  "token_source": "cli_or_env",
+  "phone_number_source": "not_required",
+  "state_path": ".tau/demo-multi-channel/security/channel-lifecycle.json",
+  "state_persisted": true,
+  "updated_unix_ms": 1771173386728
+}
+[demo:multi-channel] PASS multi-channel-channel-login-discord
+[demo:multi-channel] [3] multi-channel-channel-login-whatsapp
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-live-ingress-dir .tau/demo-multi-channel/live-ingress --multi-channel-channel-login whatsapp --multi-channel-whatsapp-access-token demo-whatsapp-token --multi-channel-whatsapp-phone-number-id 15551230000 --multi-channel-channel-login-json
+{
+  "action": "login",
+  "channel": "whatsapp",
+  "probe_mode": "offline",
+  "lifecycle_status": "initialized",
+  "readiness_status": "pass",
+  "reason_codes": [
+    "ready"
+  ],
+  "online_probe_status": "disabled",
+  "online_probe_reason_codes": [
+    "probe_online_disabled"
+  ],
+  "remediation_hints": [],
+  "ingress_file": ".tau/demo-multi-channel/live-ingress/whatsapp.ndjson",
+  "ingress_exists": true,
+  "ingress_is_file": true,
+  "token_source": "cli_or_env",
+  "phone_number_source": "cli_or_env",
+  "state_path": ".tau/demo-multi-channel/security/channel-lifecycle.json",
+  "state_persisted": true,
+  "updated_unix_ms": 1771173386765
+}
+[demo:multi-channel] PASS multi-channel-channel-login-whatsapp
+[demo:multi-channel] [4] multi-channel-channel-status-telegram
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-live-ingress-dir .tau/demo-multi-channel/live-ingress --multi-channel-channel-status telegram --multi-channel-telegram-bot-token demo-telegram-token --multi-channel-channel-status-json
+{
+  "action": "status",
+  "channel": "telegram",
+  "probe_mode": "offline",
+  "lifecycle_status": "initialized",
+  "readiness_status": "pass",
+  "reason_codes": [
+    "ready"
+  ],
+  "online_probe_status": "disabled",
+  "online_probe_reason_codes": [
+    "probe_online_disabled"
+  ],
+  "remediation_hints": [],
+  "ingress_file": ".tau/demo-multi-channel/live-ingress/telegram.ndjson",
+  "ingress_exists": true,
+  "ingress_is_file": true,
+  "token_source": "cli_or_env",
+  "phone_number_source": "not_required",
+  "state_path": ".tau/demo-multi-channel/security/channel-lifecycle.json",
+  "state_persisted": false,
+  "updated_unix_ms": 1771173386801
+}
+[demo:multi-channel] PASS multi-channel-channel-status-telegram
+[demo:multi-channel] [5] multi-channel-channel-probe-whatsapp
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-live-ingress-dir .tau/demo-multi-channel/live-ingress --multi-channel-channel-probe whatsapp --multi-channel-whatsapp-access-token demo-whatsapp-token --multi-channel-whatsapp-phone-number-id 15551230000 --multi-channel-channel-probe-json
+{
+  "action": "probe",
+  "channel": "whatsapp",
+  "probe_mode": "offline",
+  "lifecycle_status": "ready",
+  "readiness_status": "pass",
+  "reason_codes": [
+    "ready"
+  ],
+  "online_probe_status": "disabled",
+  "online_probe_reason_codes": [
+    "probe_online_disabled"
+  ],
+  "remediation_hints": [],
+  "ingress_file": ".tau/demo-multi-channel/live-ingress/whatsapp.ndjson",
+  "ingress_exists": true,
+  "ingress_is_file": true,
+  "token_source": "cli_or_env",
+  "phone_number_source": "cli_or_env",
+  "state_path": ".tau/demo-multi-channel/security/channel-lifecycle.json",
+  "state_persisted": true,
+  "updated_unix_ms": 1771173386838
+}
+[demo:multi-channel] PASS multi-channel-channel-probe-whatsapp
+[demo:multi-channel] [6] multi-channel-channel-logout-discord
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-live-ingress-dir .tau/demo-multi-channel/live-ingress --multi-channel-channel-logout discord --multi-channel-channel-logout-json
+{
+  "action": "logout",
+  "channel": "discord",
+  "probe_mode": "offline",
+  "lifecycle_status": "logged_out",
+  "readiness_status": "fail",
+  "reason_codes": [
+    "logout_requested"
+  ],
+  "online_probe_status": "disabled",
+  "online_probe_reason_codes": [
+    "probe_online_disabled"
+  ],
+  "remediation_hints": [
+    "Set TAU_DISCORD_BOT_TOKEN or configure credential-store integration discord-bot-token."
+  ],
+  "ingress_file": ".tau/demo-multi-channel/live-ingress/discord.ndjson",
+  "ingress_exists": true,
+  "ingress_is_file": true,
+  "token_source": "missing",
+  "phone_number_source": "not_required",
+  "state_path": ".tau/demo-multi-channel/security/channel-lifecycle.json",
+  "state_persisted": true,
+  "updated_unix_ms": 1771173386874
+}
+[demo:multi-channel] PASS multi-channel-channel-logout-discord
+[demo:multi-channel] [7] multi-channel-runner
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-contract-runner --multi-channel-fixture ./crates/tau-multi-channel/testdata/multi-channel-contract/baseline-three-channel.json --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-queue-limit 64 --multi-channel-processed-event-cap 10000 --multi-channel-retry-max-attempts 4 --multi-channel-retry-base-delay-ms 0 --multi-channel-outbound-mode dry-run --multi-channel-outbound-max-chars 512
+model catalog: source=built-in entries=10
+multi-channel runner summary: discovered=3 queued=3 completed=3 duplicate_skips=0 retries=0 transient_failures=0 failed=0 policy_checked=3 policy_enforced=0 policy_allowed=3 policy_denied=0 typing_events=0 presence_events=0 usage_records=3 usage_chars=225 usage_chunks=3 usage_cost_micros=0
+multi-channel runner health: state=healthy failure_streak=0 queue_depth=0 reason=no recent transport failures observed
+[demo:multi-channel] PASS multi-channel-runner
+[demo:multi-channel] [8] transport-health-inspect-multi-channel
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --transport-health-inspect multi-channel --transport-health-json
+[
+  {
+    "transport": "multi-channel",
+    "target": "telegram/discord/whatsapp",
+    "state_path": ".tau/demo-multi-channel/state.json",
+    "health": {
+      "updated_unix_ms": 1771173386981,
+      "cycle_duration_ms": 5,
+      "queue_depth": 0,
+      "active_runs": 0,
+      "failure_streak": 0,
+      "last_cycle_discovered": 3,
+      "last_cycle_processed": 3,
+      "last_cycle_completed": 3,
+      "last_cycle_failed": 0,
+      "last_cycle_duplicates": 0
+    }
+  }
+]
+[demo:multi-channel] PASS transport-health-inspect-multi-channel
+[demo:multi-channel] [9] multi-channel-status-inspect
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-status-inspect --multi-channel-status-json
+{
+  "state_path": ".tau/demo-multi-channel/state.json",
+  "events_log_path": ".tau/demo-multi-channel/runtime-events.jsonl",
+  "events_log_present": true,
+  "health_state": "healthy",
+  "health_reason": "no recent transport failures observed",
+  "rollout_gate": "pass",
+  "processed_event_count": 3,
+  "transport_counts": {
+    "discord": 1,
+    "telegram": 1,
+    "whatsapp": 1
+  },
+  "cycle_reports": 1,
+  "invalid_cycle_reports": 0,
+  "last_reason_codes": [
+    "healthy_cycle",
+    "pairing_policy_permissive",
+    "telemetry_usage_summary_emitted"
+  ],
+  "reason_code_counts": {
+    "healthy_cycle": 1,
+    "pairing_policy_permissive": 1,
+    "telemetry_usage_summary_emitted": 1
+  },
+  "health": {
+    "updated_unix_ms": 1771173386981,
+    "cycle_duration_ms": 5,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 3,
+    "last_cycle_processed": 3,
+    "last_cycle_completed": 3,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  },
+  "telemetry": {
+    "typing_events_emitted": 0,
+    "presence_events_emitted": 0,
+    "usage_summary_records": 3,
+    "usage_response_chars": 225,
+    "usage_chunks": 3,
+    "usage_estimated_cost_micros": 0,
+    "typing_events_by_transport": {},
+    "presence_events_by_transport": {},
+    "usage_summary_records_by_transport": {
+      "discord": 1,
+      "telegram": 1,
+      "whatsapp": 1
+    },
+    "usage_response_chars_by_transport": {
+      "discord": 89,
+      "telegram": 68,
+      "whatsapp": 68
+    },
+    "usage_chunks_by_transport": {
+      "discord": 1,
+      "telegram": 1,
+      "whatsapp": 1
+    },
+    "usage_estimated_cost_micros_by_transport": {},
+    "policy": {
+      "typing_presence_enabled": true,
+      "usage_summary_enabled": true,
+      "include_identifiers": false,
+      "typing_presence_min_response_chars": 120
+    }
+  }
+}
+[demo:multi-channel] PASS multi-channel-status-inspect
+[demo:multi-channel] [10] multi-channel-live-ingest-telegram
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/telegram-update.json --multi-channel-live-ingest-transport telegram --multi-channel-live-ingest-provider telegram-bot-api --multi-channel-live-ingest-dir .tau/demo-multi-channel/live-ingress
+multi-channel live ingest queued: transport=telegram provider=telegram-bot-api event_id=42 conversation_id=chat-100 ingress_file=.tau/demo-multi-channel/live-ingress/telegram.ndjson
+[demo:multi-channel] PASS multi-channel-live-ingest-telegram
+[demo:multi-channel] [11] multi-channel-live-ingest-discord
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/discord-message.json --multi-channel-live-ingest-transport discord --multi-channel-live-ingest-provider discord-gateway --multi-channel-live-ingest-dir .tau/demo-multi-channel/live-ingress
+multi-channel live ingest queued: transport=discord provider=discord-gateway event_id=discord-msg-1 conversation_id=discord-channel-88 ingress_file=.tau/demo-multi-channel/live-ingress/discord.ndjson
+[demo:multi-channel] PASS multi-channel-live-ingest-discord
+[demo:multi-channel] [12] multi-channel-live-ingest-whatsapp
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-live-ingest-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw/whatsapp-message.json --multi-channel-live-ingest-transport whatsapp --multi-channel-live-ingest-provider whatsapp-cloud-api --multi-channel-live-ingest-dir .tau/demo-multi-channel/live-ingress
+multi-channel live ingest queued: transport=whatsapp provider=whatsapp-cloud-api event_id=wamid.HBg123 conversation_id=phone-55:15551234567 ingress_file=.tau/demo-multi-channel/live-ingress/whatsapp.ndjson
+[demo:multi-channel] PASS multi-channel-live-ingest-whatsapp
+[demo:multi-channel] [13] multi-channel-live-runner
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-live-runner --multi-channel-live-ingress-dir .tau/demo-multi-channel/live-ingress --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-queue-limit 64 --multi-channel-processed-event-cap 10000 --multi-channel-retry-max-attempts 4 --multi-channel-retry-base-delay-ms 0 --multi-channel-outbound-mode dry-run --multi-channel-outbound-max-chars 512
+model catalog: source=built-in entries=10
+multi-channel live runner summary: discovered=3 queued=3 completed=3 duplicate_skips=0 retries=0 transient_failures=0 failed=0 policy_checked=3 policy_enforced=0 policy_allowed=3 policy_denied=0 typing_events=0 presence_events=0 usage_records=3 usage_chars=230 usage_chunks=3 usage_cost_micros=0
+multi-channel live runner health: state=healthy failure_streak=0 queue_depth=0 reason=no recent transport failures observed
+[demo:multi-channel] PASS multi-channel-live-runner
+[demo:multi-channel] [14] multi-channel-route-inspect-telegram
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-route-inspect-file ./crates/tau-multi-channel/testdata/multi-channel-live-ingress/telegram-valid.json --multi-channel-route-inspect-json
+{
+  "event_key": "telegram:42",
+  "transport": "telegram",
+  "conversation_id": "chat-100",
+  "actor_id": "user-7",
+  "binding_id": "default",
+  "binding_matched": false,
+  "match_specificity": 0,
+  "phase": "delegated-step",
+  "account_id": "",
+  "requested_category": null,
+  "selected_category": null,
+  "selected_role": "default",
+  "fallback_roles": [],
+  "attempt_roles": [
+    "default"
+  ],
+  "session_key": "chat-100"
+}
+[demo:multi-channel] PASS multi-channel-route-inspect-telegram
+[demo:multi-channel] [15] transport-health-inspect-multi-channel-live
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --transport-health-inspect multi-channel --transport-health-json
+[
+  {
+    "transport": "multi-channel",
+    "target": "telegram/discord/whatsapp",
+    "state_path": ".tau/demo-multi-channel/state.json",
+    "health": {
+      "updated_unix_ms": 1771173387198,
+      "cycle_duration_ms": 4,
+      "queue_depth": 0,
+      "active_runs": 0,
+      "failure_streak": 0,
+      "last_cycle_discovered": 3,
+      "last_cycle_processed": 3,
+      "last_cycle_completed": 3,
+      "last_cycle_failed": 0,
+      "last_cycle_duplicates": 0
+    }
+  }
+]
+[demo:multi-channel] PASS transport-health-inspect-multi-channel-live
+[demo:multi-channel] [16] multi-channel-status-inspect-live
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --multi-channel-state-dir .tau/demo-multi-channel --multi-channel-status-inspect --multi-channel-status-json
+{
+  "state_path": ".tau/demo-multi-channel/state.json",
+  "events_log_path": ".tau/demo-multi-channel/runtime-events.jsonl",
+  "events_log_present": true,
+  "health_state": "healthy",
+  "health_reason": "no recent transport failures observed",
+  "rollout_gate": "pass",
+  "processed_event_count": 6,
+  "transport_counts": {
+    "discord": 2,
+    "telegram": 2,
+    "whatsapp": 2
+  },
+  "cycle_reports": 2,
+  "invalid_cycle_reports": 0,
+  "last_reason_codes": [
+    "healthy_cycle",
+    "pairing_policy_permissive",
+    "telemetry_usage_summary_emitted"
+  ],
+  "reason_code_counts": {
+    "healthy_cycle": 2,
+    "pairing_policy_permissive": 2,
+    "telemetry_usage_summary_emitted": 2
+  },
+  "health": {
+    "updated_unix_ms": 1771173387198,
+    "cycle_duration_ms": 4,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 3,
+    "last_cycle_processed": 3,
+    "last_cycle_completed": 3,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  },
+  "telemetry": {
+    "typing_events_emitted": 0,
+    "presence_events_emitted": 0,
+    "usage_summary_records": 6,
+    "usage_response_chars": 455,
+    "usage_chunks": 6,
+    "usage_estimated_cost_micros": 0,
+    "typing_events_by_transport": {},
+    "presence_events_by_transport": {},
+    "usage_summary_records_by_transport": {
+      "discord": 2,
+      "telegram": 2,
+      "whatsapp": 2
+    },
+    "usage_response_chars_by_transport": {
+      "discord": 183,
+      "telegram": 131,
+      "whatsapp": 141
+    },
+    "usage_chunks_by_transport": {
+      "discord": 2,
+      "telegram": 2,
+      "whatsapp": 2
+    },
+    "usage_estimated_cost_micros_by_transport": {},
+    "policy": {
+      "typing_presence_enabled": true,
+      "usage_summary_enabled": true,
+      "include_identifiers": false,
+      "typing_presence_min_response_chars": 120
+    }
+  }
+}
+[demo:multi-channel] PASS multi-channel-status-inspect-live
+[demo:multi-channel] [17] channel-store-inspect-telegram
+[demo:multi-channel] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --channel-store-root .tau/demo-multi-channel/channel-store --channel-store-inspect telegram/chat-100
+channel store inspect: transport=telegram channel_id=chat-100 dir=.tau/demo-multi-channel/channel-store/channels/telegram/chat-100 log_records=2 context_records=2 invalid_log_lines=0 invalid_context_lines=0 artifact_records=0 invalid_artifact_lines=0 active_artifacts=0 expired_artifacts=0 memory_exists=false memory_bytes=0
+[demo:multi-channel] PASS channel-store-inspect-telegram
+[demo:multi-channel] summary: total=17 passed=17 failed=0
+[demo:index] PASS multi-channel-live
+[demo:index] [5] deployment-wasm (deployment.sh)
+[demo:deployment] [1] deployment-wasm-package
+[demo:deployment] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --deployment-state-dir .tau/demo-deployment --deployment-wasm-package-module ./crates/tau-coding-agent/testdata/deployment-wasm/edge-runtime.wasm --deployment-wasm-package-blueprint-id edge-wasm --deployment-wasm-package-output-dir .tau/demo-deployment/wasm-artifacts --deployment-wasm-package-json
+{
+  "blueprint_id": "edge-wasm",
+  "runtime_profile": "wasm_wasi",
+  "source_module_path": "./crates/tau-coding-agent/testdata/deployment-wasm/edge-runtime.wasm",
+  "artifact_path": ".tau/demo-deployment/wasm-artifacts/edge-wasm/93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476.wasm",
+  "artifact_sha256": "93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476",
+  "artifact_size_bytes": 8,
+  "manifest_path": ".tau/demo-deployment/wasm-artifacts/edge-wasm/93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476.manifest.json",
+  "state_path": ".tau/demo-deployment/state.json",
+  "state_updated": true,
+  "capability_constraints": [
+    "no_native_process_exec",
+    "filesystem_limited_to_preopened_dirs",
+    "network_access_requires_host_capability",
+    "deterministic_time_requires_host_injection"
+  ],
+  "constraint_profile_id": "control_plane_gateway_v1",
+  "compliance_reason_codes": [
+    "abi_assumed_no_imports"
+  ]
+}
+[demo:deployment] PASS deployment-wasm-package
+[demo:deployment] [2] deployment-runner
+[demo:deployment] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --deployment-contract-runner --deployment-fixture ./crates/tau-coding-agent/testdata/deployment-contract/rollout-pass.json --deployment-state-dir .tau/demo-deployment --deployment-queue-limit 64 --deployment-processed-case-cap 10000 --deployment-retry-max-attempts 4 --deployment-retry-base-delay-ms 0
+model catalog: source=built-in entries=10
+deployment runner summary: discovered=3 queued=3 applied=3 duplicate_skips=0 malformed=0 retryable_failures=0 retries=0 failed=0 upserted_rollouts=3 wasm_rollouts=1 cloud_rollouts=2
+deployment runner health: state=healthy failure_streak=0 queue_depth=0 reason=no recent transport failures observed
+[demo:deployment] PASS deployment-runner
+[demo:deployment] [3] transport-health-inspect-deployment
+[demo:deployment] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --deployment-state-dir .tau/demo-deployment --transport-health-inspect deployment --transport-health-json
+[
+  {
+    "transport": "deployment",
+    "target": "cloud-and-wasm-runtime",
+    "state_path": ".tau/demo-deployment/state.json",
+    "health": {
+      "updated_unix_ms": 1771173387515,
+      "cycle_duration_ms": 3,
+      "queue_depth": 0,
+      "active_runs": 0,
+      "failure_streak": 0,
+      "last_cycle_discovered": 3,
+      "last_cycle_processed": 3,
+      "last_cycle_completed": 3,
+      "last_cycle_failed": 0,
+      "last_cycle_duplicates": 0
+    }
+  }
+]
+[demo:deployment] PASS transport-health-inspect-deployment
+[demo:deployment] [4] deployment-status-inspect
+[demo:deployment] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --deployment-state-dir .tau/demo-deployment --deployment-status-inspect --deployment-status-json
+{
+  "state_path": ".tau/demo-deployment/state.json",
+  "events_log_path": ".tau/demo-deployment/runtime-events.jsonl",
+  "events_log_present": true,
+  "health_state": "healthy",
+  "health_reason": "no recent transport failures observed",
+  "rollout_gate": "pass",
+  "processed_case_count": 3,
+  "rollout_count": 3,
+  "target_counts": {
+    "container": 1,
+    "kubernetes": 1,
+    "wasm": 1
+  },
+  "runtime_profile_counts": {
+    "native": 2,
+    "wasm_wasi": 1
+  },
+  "environment_counts": {
+    "production": 2,
+    "staging": 1
+  },
+  "outcome_counts": {
+    "success": 3
+  },
+  "status_code_counts": {
+    "201": 1,
+    "202": 2
+  },
+  "error_code_counts": {},
+  "total_replicas": 6,
+  "wasm_rollout_count": 1,
+  "cloud_rollout_count": 2,
+  "cycle_reports": 1,
+  "invalid_cycle_reports": 0,
+  "last_reason_codes": [
+    "wasm_rollout_applied",
+    "cloud_rollout_applied"
+  ],
+  "reason_code_counts": {
+    "cloud_rollout_applied": 1,
+    "wasm_rollout_applied": 1
+  },
+  "health": {
+    "updated_unix_ms": 1771173387515,
+    "cycle_duration_ms": 3,
+    "queue_depth": 0,
+    "active_runs": 0,
+    "failure_streak": 0,
+    "last_cycle_discovered": 3,
+    "last_cycle_processed": 3,
+    "last_cycle_completed": 3,
+    "last_cycle_failed": 0,
+    "last_cycle_duplicates": 0
+  }
+}
+[demo:deployment] PASS deployment-status-inspect
+[demo:deployment] [5] channel-store-inspect-deployment-edge-wasm
+[demo:deployment] command: /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --channel-store-root .tau/demo-deployment/channel-store --channel-store-inspect deployment/edge-wasm
+channel store inspect: transport=deployment channel_id=edge-wasm dir=.tau/demo-deployment/channel-store/channels/deployment/edge-wasm log_records=1 context_records=1 invalid_log_lines=0 invalid_context_lines=0 artifact_records=0 invalid_artifact_lines=0 active_artifacts=0 expired_artifacts=0 memory_exists=true memory_bytes=157
+[demo:deployment] PASS channel-store-inspect-deployment-edge-wasm
+[demo:deployment] summary: total=5 passed=5 failed=0
+[demo:index] PASS deployment-wasm
+wrote proof-pack manifest: /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.manifest.json

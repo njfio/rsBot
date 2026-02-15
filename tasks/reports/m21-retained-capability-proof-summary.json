@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T16:36:22Z",
+  "matrix_name": "m21-retained-capability-proof-matrix",
+  "matrix_source": "/Users/n/RustroverProjects/rust_pi_issue1767/scripts/demo/m21-retained-capability-proof-matrix.json",
+  "issues": [
+    "#1631",
+    "#1704",
+    "#1745",
+    "#1746"
+  ],
+  "repository_root": "/Users/n/RustroverProjects/rust_pi_issue1767",
+  "report_paths": {
+    "json": "tasks/reports/m21-retained-capability-proof-summary.json",
+    "markdown": "tasks/reports/m21-retained-capability-proof-summary.md",
+    "logs_dir": "tasks/reports/m21-retained-capability-proof-logs",
+    "artifacts_dir": "tasks/reports/m21-retained-capability-artifacts"
+  },
+  "summary": {
+    "total_runs": 3,
+    "passed_runs": 3,
+    "failed_runs": 0,
+    "status": "pass"
+  },
+  "runs": [
+    {
+      "name": "demo-index-retained-scenarios",
+      "description": "Run retained scenario subset via demo index wrapper and emit report/manifest artifacts.",
+      "status": "pass",
+      "command": [
+        "./scripts/demo/index.sh",
+        "--skip-build",
+        "--repo-root",
+        "/Users/n/RustroverProjects/rust_pi_issue1767",
+        "--binary",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent",
+        "--only",
+        "onboarding,gateway-auth,gateway-remote-access,multi-channel-live,deployment-wasm",
+        "--json",
+        "--report-file",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.json",
+        "--manifest-file",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.manifest.json"
+      ],
+      "command_line": "./scripts/demo/index.sh --skip-build --repo-root /Users/n/RustroverProjects/rust_pi_issue1767 --binary /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --only onboarding,gateway-auth,gateway-remote-access,multi-channel-live,deployment-wasm --json --report-file /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.json --manifest-file /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.manifest.json",
+      "expected_exit_code": 0,
+      "exit_code": 0,
+      "duration_ms": 5181,
+      "stdout_log": "tasks/reports/m21-retained-capability-proof-logs/01-demo-index-retained-scenarios.stdout.log",
+      "stderr_log": "tasks/reports/m21-retained-capability-proof-logs/01-demo-index-retained-scenarios.stderr.log",
+      "marker_summary": {
+        "total": 4,
+        "matched": 4,
+        "missing": 0
+      },
+      "markers": [
+        {
+          "id": "index-summary-json",
+          "source": "stdout",
+          "contains": "\"summary\":{\"total\":",
+          "path": null,
+          "matched": true,
+          "detail": "matched stdout substring"
+        },
+        {
+          "id": "index-summary-failed-zero",
+          "source": "stdout",
+          "contains": "\"failed\":0",
+          "path": null,
+          "matched": true,
+          "detail": "matched stdout substring"
+        },
+        {
+          "id": "index-report-artifact",
+          "source": "file",
+          "contains": "\"summary\":{\"total\":",
+          "path": "tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.json",
+          "matched": true,
+          "detail": "matched file substring in /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.json"
+        },
+        {
+          "id": "index-manifest-artifact",
+          "source": "file",
+          "contains": "\"pack_name\": \"demo-index-live-proof-pack\"",
+          "path": "tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.manifest.json",
+          "matched": true,
+          "detail": "matched file substring in /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.manifest.json"
+        }
+      ],
+      "failure_reasons": []
+    },
+    {
+      "name": "demo-all-retained-demos",
+      "description": "Run retained demo subset via all.sh wrapper and emit report/manifest artifacts.",
+      "status": "pass",
+      "command": [
+        "./scripts/demo/all.sh",
+        "--skip-build",
+        "--repo-root",
+        "/Users/n/RustroverProjects/rust_pi_issue1767",
+        "--binary",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent",
+        "--only",
+        "local,multi-channel,gateway-auth,gateway-remote-access,deployment",
+        "--json",
+        "--report-file",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.json",
+        "--manifest-file",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.manifest.json"
+      ],
+      "command_line": "./scripts/demo/all.sh --skip-build --repo-root /Users/n/RustroverProjects/rust_pi_issue1767 --binary /Users/n/RustroverProjects/rust_pi_issue1767/target/debug/tau-coding-agent --only local,multi-channel,gateway-auth,gateway-remote-access,deployment --json --report-file /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.json --manifest-file /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.manifest.json",
+      "expected_exit_code": 0,
+      "exit_code": 0,
+      "duration_ms": 1659,
+      "stdout_log": "tasks/reports/m21-retained-capability-proof-logs/02-demo-all-retained-demos.stdout.log",
+      "stderr_log": "tasks/reports/m21-retained-capability-proof-logs/02-demo-all-retained-demos.stderr.log",
+      "marker_summary": {
+        "total": 4,
+        "matched": 4,
+        "missing": 0
+      },
+      "markers": [
+        {
+          "id": "all-summary-json",
+          "source": "stdout",
+          "contains": "\"summary\":{\"total\":",
+          "path": null,
+          "matched": true,
+          "detail": "matched stdout substring"
+        },
+        {
+          "id": "all-summary-failed-zero",
+          "source": "stdout",
+          "contains": "\"failed\":0",
+          "path": null,
+          "matched": true,
+          "detail": "matched stdout substring"
+        },
+        {
+          "id": "all-report-artifact",
+          "source": "file",
+          "contains": "\"summary\":{\"total\":",
+          "path": "tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.json",
+          "matched": true,
+          "detail": "matched file substring in /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.json"
+        },
+        {
+          "id": "all-manifest-artifact",
+          "source": "file",
+          "contains": "\"pack_name\": \"demo-all-live-proof-pack\"",
+          "path": "tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.manifest.json",
+          "matched": true,
+          "detail": "matched file substring in /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.manifest.json"
+        }
+      ],
+      "failure_reasons": []
+    },
+    {
+      "name": "proof-pack-rollup-manifest",
+      "description": "Emit rollup manifest for retained-capability proof artifacts.",
+      "status": "pass",
+      "command": [
+        "./scripts/demo/proof-pack-manifest.sh",
+        "--output",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/m21-retained-capability-proof-pack.manifest.json",
+        "--pack-name",
+        "m21-retained-capability-live-proof-pack",
+        "--producer-script",
+        "scripts/dev/m21-retained-capability-proof-summary.sh",
+        "--mode",
+        "run",
+        "--report-file",
+        "/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.json",
+        "--artifact",
+        "index-report=/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.json",
+        "--artifact",
+        "index-manifest=/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.manifest.json",
+        "--artifact",
+        "all-manifest=/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.manifest.json",
+        "--issue",
+        "#1745",
+        "--issue",
+        "#1746"
+      ],
+      "command_line": "./scripts/demo/proof-pack-manifest.sh --output /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/m21-retained-capability-proof-pack.manifest.json --pack-name m21-retained-capability-live-proof-pack --producer-script scripts/dev/m21-retained-capability-proof-summary.sh --mode run --report-file /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.json --artifact index-report=/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.json --artifact index-manifest=/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.manifest.json --artifact all-manifest=/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-all-retained-summary.manifest.json --issue '#1745' --issue '#1746'",
+      "expected_exit_code": 0,
+      "exit_code": 0,
+      "duration_ms": 64,
+      "stdout_log": "tasks/reports/m21-retained-capability-proof-logs/03-proof-pack-rollup-manifest.stdout.log",
+      "stderr_log": "tasks/reports/m21-retained-capability-proof-logs/03-proof-pack-rollup-manifest.stderr.log",
+      "marker_summary": {
+        "total": 3,
+        "matched": 3,
+        "missing": 0
+      },
+      "markers": [
+        {
+          "id": "rollup-manifest-log",
+          "source": "stderr",
+          "contains": "wrote proof-pack manifest:",
+          "path": null,
+          "matched": true,
+          "detail": "matched stderr substring"
+        },
+        {
+          "id": "rollup-manifest-pack-name",
+          "source": "file",
+          "contains": "\"pack_name\": \"m21-retained-capability-live-proof-pack\"",
+          "path": "tasks/reports/m21-retained-capability-artifacts/m21-retained-capability-proof-pack.manifest.json",
+          "matched": true,
+          "detail": "matched file substring in /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/m21-retained-capability-proof-pack.manifest.json"
+        },
+        {
+          "id": "rollup-manifest-status-pass",
+          "source": "file",
+          "contains": "\"status\": \"pass\"",
+          "path": "tasks/reports/m21-retained-capability-artifacts/m21-retained-capability-proof-pack.manifest.json",
+          "matched": true,
+          "detail": "matched file substring in /Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/m21-retained-capability-proof-pack.manifest.json"
+        }
+      ],
+      "failure_reasons": []
+    }
+  ]
+}

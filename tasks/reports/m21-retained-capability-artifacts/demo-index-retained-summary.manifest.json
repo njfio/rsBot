@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T16:36:27Z",
+  "pack_name": "demo-index-live-proof-pack",
+  "milestone": "Gap Closure Wave 2026-03: Structural Runtime Hardening",
+  "issues": [
+    "#1742"
+  ],
+  "producer": {
+    "script": "scripts/demo/index.sh",
+    "mode": "run"
+  },
+  "artifacts": [
+    {
+      "name": "report",
+      "path": "/Users/n/RustroverProjects/rust_pi_issue1767/tasks/reports/m21-retained-capability-artifacts/demo-index-retained-summary.json",
+      "required": true,
+      "status": "present"
+    }
+  ],
+  "summary": {
+    "status": "pass",
+    "total": 5,
+    "passed": 5,
+    "failed": 0
+  }
+}
