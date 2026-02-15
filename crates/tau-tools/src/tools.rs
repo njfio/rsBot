@@ -23,9 +23,13 @@ use tau_extensions::{
     evaluate_extension_policy_override, execute_extension_registered_tool, ExtensionRegisteredTool,
 };
 use tau_runtime::{
-    BackgroundJobCreateRequest, BackgroundJobRuntime, BackgroundJobRuntimeConfig,
-    BackgroundJobStatusFilter, BackgroundJobTraceContext, SsrfGuard, SsrfProtectionConfig,
-    SsrfViolation,
+    build_generated_wasm_tool, BackgroundJobCreateRequest, BackgroundJobRuntime,
+    BackgroundJobRuntimeConfig, BackgroundJobStatusFilter, BackgroundJobTraceContext,
+    GeneratedToolBuildRequest, SsrfGuard, SsrfProtectionConfig, SsrfViolation,
+    WasmSandboxCapabilityProfile, WasmSandboxFilesystemMode, WasmSandboxLimits,
+    WasmSandboxNetworkMode, WASM_SANDBOX_FUEL_LIMIT_DEFAULT,
+    WASM_SANDBOX_MAX_RESPONSE_BYTES_DEFAULT, WASM_SANDBOX_MEMORY_LIMIT_BYTES_DEFAULT,
+    WASM_SANDBOX_TIMEOUT_MS_DEFAULT,
 };
 use tokio::{process::Command, time::timeout};
 
@@ -97,6 +101,8 @@ const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT: u32 = 60;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED: u32 = 30;
+const TOOL_BUILDER_MAX_ATTEMPTS_DEFAULT: usize = 3;
+const TOOL_BUILDER_MAX_ATTEMPTS_MAX: usize = 8;
 const TOOL_HTTP_TIMEOUT_MS_PERMISSIVE: u64 = 60_000;
 const TOOL_HTTP_TIMEOUT_MS_BALANCED: u64 = 20_000;
 const TOOL_HTTP_TIMEOUT_MS_STRICT: u64 = 15_000;
@@ -155,6 +161,7 @@ const BUILTIN_AGENT_TOOL_NAMES: &[&str] = &[
     "undo",
     "redo",
     "http",
+    "tool_builder",
     "bash",
 ];
 
@@ -435,6 +442,10 @@ pub struct ToolPolicy {
     pub bash_dry_run: bool,
     pub tool_policy_trace: bool,
     pub extension_policy_override_root: Option<PathBuf>,
+    pub tool_builder_enabled: bool,
+    pub tool_builder_output_root: PathBuf,
+    pub tool_builder_extension_root: PathBuf,
+    pub tool_builder_max_attempts: usize,
     pub rbac_principal: Option<String>,
     pub rbac_policy_path: Option<PathBuf>,
     pub tool_rate_limit_max_requests: u32,
@@ -514,6 +525,10 @@ impl ToolPolicy {
             bash_dry_run: false,
             tool_policy_trace: false,
             extension_policy_override_root: None,
+            tool_builder_enabled: false,
+            tool_builder_output_root: PathBuf::from(".tau/generated-tools"),
+            tool_builder_extension_root: PathBuf::from(".tau/extensions/generated"),
+            tool_builder_max_attempts: TOOL_BUILDER_MAX_ATTEMPTS_DEFAULT,
             rbac_principal: None,
             rbac_policy_path: None,
             tool_rate_limit_max_requests: TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED,
@@ -735,6 +750,9 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(UndoTool::new(policy.clone()));
     agent.register_tool(RedoTool::new(policy.clone()));
     agent.register_tool(HttpTool::new(policy.clone()));
+    if policy.tool_builder_enabled {
+        agent.register_tool(ToolBuilderTool::new(policy.clone()));
+    }
     agent.register_tool(BashTool::new(policy));
 }
 
@@ -782,6 +800,277 @@ impl AgentTool for ExtensionProcessTool {
                 "manifest": self.registration.manifest_path.display().to_string(),
                 "error": error.to_string(),
             })),
+        }
+    }
+}
+
+/// Public struct `ToolBuilderTool` used across Tau components.
+pub struct ToolBuilderTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl ToolBuilderTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for ToolBuilderTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tool_builder".to_string(),
+            description: "Generate, compile, persist, and register a wasm-backed extension tool"
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Generated tool name (lowercase alphanumeric, dash, underscore)" },
+                    "description": { "type": "string", "description": "Generated tool description" },
+                    "spec": { "type": "string", "description": "Natural-language tool behavior specification" },
+                    "parameters": { "type": "object", "description": "JSON schema for generated tool arguments" },
+                    "wat_source": { "type": "string", "description": "Optional initial WAT source candidate" },
+                    "max_attempts": { "type": "integer", "minimum": 1, "maximum": 8 },
+                    "timeout_ms": { "type": "integer", "minimum": 1 },
+                    "fuel_limit": { "type": "integer", "minimum": 1 },
+                    "memory_limit_bytes": { "type": "integer", "minimum": 1 },
+                    "max_response_bytes": { "type": "integer", "minimum": 1 },
+                    "filesystem_mode": { "type": "string", "enum": ["deny", "read-only", "read-write"] },
+                    "network_mode": { "type": "string", "enum": ["deny", "allow"] },
+                    "env_allowlist": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    },
+                    "output_root": { "type": "string", "description": "Optional override for generated artifact root" },
+                    "extension_root": { "type": "string", "description": "Optional override for generated extension registration root" }
+                },
+                "required": ["name", "description", "spec"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        if !self.policy.tool_builder_enabled {
+            return ToolExecutionResult::error(json!({
+                "error": "tool_builder is disabled by policy",
+                "reason_code": "tool_builder_disabled",
+            }));
+        }
+
+        let name = match required_string(&arguments, "name") {
+            Ok(value) => value,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_name",
+                }));
+            }
+        };
+        let description = match required_string(&arguments, "description") {
+            Ok(value) => value,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_description",
+                }));
+            }
+        };
+        let spec = match required_string(&arguments, "spec") {
+            Ok(value) => value,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_spec",
+                }));
+            }
+        };
+        let parameters = arguments.get("parameters").cloned().unwrap_or_else(
+            || json!({"type":"object","properties":{},"additionalProperties":false}),
+        );
+        if !parameters.is_object() {
+            return ToolExecutionResult::error(json!({
+                "error": "field 'parameters' must be a JSON object",
+                "reason_code": "tool_builder_invalid_parameters",
+            }));
+        }
+
+        let max_attempts = match optional_positive_usize(&arguments, "max_attempts") {
+            Ok(value) => value.unwrap_or(self.policy.tool_builder_max_attempts),
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_max_attempts",
+                }));
+            }
+        }
+        .clamp(1, TOOL_BUILDER_MAX_ATTEMPTS_MAX);
+        let timeout_ms = match optional_positive_u64(&arguments, "timeout_ms") {
+            Ok(value) => value.unwrap_or(WASM_SANDBOX_TIMEOUT_MS_DEFAULT),
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_timeout_ms",
+                }));
+            }
+        };
+        let fuel_limit = match optional_positive_u64(&arguments, "fuel_limit") {
+            Ok(value) => value.unwrap_or(WASM_SANDBOX_FUEL_LIMIT_DEFAULT),
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_fuel_limit",
+                }));
+            }
+        };
+        let memory_limit_bytes = match optional_positive_u64(&arguments, "memory_limit_bytes") {
+            Ok(value) => value.unwrap_or(WASM_SANDBOX_MEMORY_LIMIT_BYTES_DEFAULT),
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_memory_limit_bytes",
+                }));
+            }
+        };
+        let max_response_bytes = match optional_positive_usize(&arguments, "max_response_bytes") {
+            Ok(value) => value.unwrap_or(WASM_SANDBOX_MAX_RESPONSE_BYTES_DEFAULT),
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_max_response_bytes",
+                }));
+            }
+        };
+        let filesystem_mode = match optional_string(&arguments, "filesystem_mode") {
+            Ok(Some(mode)) => match mode.as_str() {
+                "deny" => WasmSandboxFilesystemMode::Deny,
+                "read-only" => WasmSandboxFilesystemMode::ReadOnly,
+                "read-write" => WasmSandboxFilesystemMode::ReadWrite,
+                _ => {
+                    return ToolExecutionResult::error(json!({
+                        "error": "field 'filesystem_mode' must be one of: deny, read-only, read-write",
+                        "reason_code": "tool_builder_invalid_filesystem_mode",
+                    }));
+                }
+            },
+            Ok(None) => WasmSandboxFilesystemMode::Deny,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_filesystem_mode",
+                }));
+            }
+        };
+        let network_mode = match optional_string(&arguments, "network_mode") {
+            Ok(Some(mode)) => match mode.as_str() {
+                "deny" => WasmSandboxNetworkMode::Deny,
+                "allow" => WasmSandboxNetworkMode::Allow,
+                _ => {
+                    return ToolExecutionResult::error(json!({
+                        "error": "field 'network_mode' must be one of: deny, allow",
+                        "reason_code": "tool_builder_invalid_network_mode",
+                    }));
+                }
+            },
+            Ok(None) => WasmSandboxNetworkMode::Deny,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_network_mode",
+                }));
+            }
+        };
+        let env_allowlist = match optional_string_array_unbounded(&arguments, "env_allowlist") {
+            Ok(values) => values,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_env_allowlist",
+                }));
+            }
+        };
+        let provided_wat_source = match optional_string(&arguments, "wat_source") {
+            Ok(value) => value,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_wat_source",
+                }));
+            }
+        };
+        let output_root = match optional_string(&arguments, "output_root") {
+            Ok(value) => resolve_builder_root_path(value, &self.policy.tool_builder_output_root),
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_output_root",
+                }));
+            }
+        };
+        let extension_root = match optional_string(&arguments, "extension_root") {
+            Ok(value) => resolve_builder_root_path(value, &self.policy.tool_builder_extension_root),
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "error": error,
+                    "reason_code": "tool_builder_invalid_extension_root",
+                }));
+            }
+        };
+
+        let request = GeneratedToolBuildRequest {
+            tool_name: name,
+            description,
+            spec,
+            parameters,
+            output_root,
+            extension_root,
+            max_attempts,
+            timeout_ms,
+            wasm_limits: WasmSandboxLimits {
+                fuel_limit,
+                memory_limit_bytes,
+                timeout_ms,
+                max_response_bytes,
+            },
+            wasm_capabilities: WasmSandboxCapabilityProfile {
+                filesystem_mode,
+                network_mode,
+                env_allowlist,
+            },
+            provided_wat_source,
+        };
+        match build_generated_wasm_tool(request) {
+            Ok(report) => ToolExecutionResult::ok(json!({
+                "schema_version": report.schema_version,
+                "tool_name": report.tool_name,
+                "manifest_id": report.manifest_id,
+                "manifest_path": report.manifest_path.display().to_string(),
+                "module_path": report.module_path.display().to_string(),
+                "source_path": report.source_path.display().to_string(),
+                "metadata_path": report.metadata_path.display().to_string(),
+                "attempts": report.attempts,
+                "reason_codes": report.reason_codes,
+                "diagnostics": report.diagnostics,
+            })),
+            Err(error) => ToolExecutionResult::error(json!({
+                "error": error.message,
+                "reason_code": error.reason_code,
+                "diagnostics": error.diagnostics,
+            })),
+        }
+    }
+}
+
+fn resolve_builder_root_path(override_path: Option<String>, default_path: &Path) -> PathBuf {
+    let configured = override_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_path.to_path_buf());
+    if configured.is_absolute() {
+        configured
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(configured),
+            Err(_) => configured,
         }
     }
 }

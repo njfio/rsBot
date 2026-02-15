@@ -1578,7 +1578,7 @@ fn unit_tool_policy_to_json_includes_key_limits_and_modes() {
 
     let policy = build_tool_policy(&cli).expect("policy should build");
     let payload = tool_policy_to_json(&policy);
-    assert_eq!(payload["schema_version"], 11);
+    assert_eq!(payload["schema_version"], 12);
     assert_eq!(payload["preset"], "balanced");
     assert_eq!(payload["bash_profile"], "strict");
     assert_eq!(payload["os_sandbox_mode"], "auto");

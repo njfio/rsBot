@@ -1527,6 +1527,44 @@ pub struct Cli {
     pub extension_runtime_root: PathBuf,
 
     #[arg(
+        long = "tool-builder-enabled",
+        env = "TAU_TOOL_BUILDER_ENABLED",
+        default_value_t = false,
+        help = "Enable the built-in tool_builder workflow for generated wasm tools"
+    )]
+    pub tool_builder_enabled: bool,
+
+    #[arg(
+        long = "tool-builder-output-root",
+        env = "TAU_TOOL_BUILDER_OUTPUT_ROOT",
+        default_value = ".tau/generated-tools",
+        requires = "tool_builder_enabled",
+        value_name = "path",
+        help = "Root directory for generated tool build artifacts and metadata"
+    )]
+    pub tool_builder_output_root: PathBuf,
+
+    #[arg(
+        long = "tool-builder-extension-root",
+        env = "TAU_TOOL_BUILDER_EXTENSION_ROOT",
+        default_value = ".tau/extensions/generated",
+        requires = "tool_builder_enabled",
+        value_name = "path",
+        help = "Root directory where generated extension manifests/modules are registered"
+    )]
+    pub tool_builder_extension_root: PathBuf,
+
+    #[arg(
+        long = "tool-builder-max-attempts",
+        env = "TAU_TOOL_BUILDER_MAX_ATTEMPTS",
+        default_value_t = 3,
+        requires = "tool_builder_enabled",
+        value_name = "count",
+        help = "Maximum compile/retry attempts for tool_builder generated wasm modules"
+    )]
+    pub tool_builder_max_attempts: usize,
+
+    #[arg(
         long = "package-validate",
         env = "TAU_PACKAGE_VALIDATE",
         conflicts_with = "package_show",
