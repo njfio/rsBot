@@ -28,6 +28,7 @@ This index maps Tau documentation by audience and task.
 | Roadmap operator | [Roadmap Status Sync](guides/roadmap-status-sync.md) | Generate/check roadmap status snapshots from tracked GitHub issue state |
 | Roadmap operator | [Hierarchy Graph Extraction](guides/roadmap-status-sync.md#hierarchy-graph-extraction-for-the-1678-execution-tree) | Generate JSON + Markdown hierarchy graph artifacts for roadmap dependency visibility |
 | Roadmap operator | [Hierarchy Graph Publication](guides/roadmap-status-sync.md#to-publish-a-timestamped-history-snapshot-and-enforce-retention) | Publish timestamped hierarchy snapshots with retention and discoverability indexes |
+| Roadmap operator | [Critical-Path Update Template](guides/roadmap-status-sync.md#to-publish-recurring-critical-path-updates-in-tracker-comments-copy-the-canonical-template-and-fill-per-lane-statusrisk-fields) | Reusable tracker-comment template plus low/med/high risk scoring rubric references |
 | Roadmap operator | [Issue Hierarchy Drift Rules](guides/issue-hierarchy-drift-rules.md) | Required hierarchy metadata, orphan/drift condition IDs, and remediation contract |
 | Roadmap operator | [PR Batch Lane Boundaries](guides/pr-batch-lane-boundaries.md) | Lane boundaries, batch-size/review-SLA matrix, hotspot mitigation rules, and exception workflow |
 | Roadmap operator | [Stale Branch Response Playbook](guides/stale-branch-response-playbook.md) | Stale thresholds, alert channels, conflict triage criteria, and rollback triggers |

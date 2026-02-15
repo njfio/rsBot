@@ -34,6 +34,11 @@ Hierarchy graph publication and retention policy:
 - `scripts/dev/hierarchy-graph-publish.sh`
 - `tasks/policies/hierarchy-graph-publication-policy.json`
 
+Critical-path update template and risk rubric:
+
+- `tasks/templates/critical-path-update-template.md`
+- `tasks/policies/critical-path-risk-rubric.json`
+
 To preview hierarchy drift findings locally before CI:
 
 ```bash
@@ -61,6 +66,13 @@ Published history artifacts are discoverable via:
 
 - `tasks/reports/issue-hierarchy-history/index.json`
 - `tasks/reports/issue-hierarchy-history/index.md`
+
+To publish recurring critical-path updates in tracker comments, copy the
+canonical template and fill per-lane status/risk fields:
+
+```bash
+cat tasks/templates/critical-path-update-template.md
+```
 
 ## Prerequisites
 
@@ -119,4 +131,5 @@ Fixture format:
 scripts/dev/test-roadmap-status-sync.sh
 python3 -m unittest discover -s .github/scripts -p "test_hierarchy_graph_extractor_contract.py"
 python3 -m unittest discover -s .github/scripts -p "test_hierarchy_graph_publication_contract.py"
+python3 -m unittest discover -s .github/scripts -p "test_critical_path_update_template_contract.py"
 ```
