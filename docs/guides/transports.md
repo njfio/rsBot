@@ -412,6 +412,9 @@ cargo run -p tau-coding-agent -- \
 Server endpoints:
 
 - `POST /v1/responses` (OpenResponses subset)
+- `POST /v1/chat/completions` (OpenAI-compatible chat surface)
+- `POST /v1/completions` (OpenAI-compatible completions surface)
+- `GET /v1/models` (OpenAI-compatible model listing)
 - `POST /gateway/auth/session` (only when `--gateway-openresponses-auth-mode=password-session`)
 - `GET /gateway/status`
 - `GET /gateway/ws` (websocket control protocol)

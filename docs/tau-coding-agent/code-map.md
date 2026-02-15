@@ -93,7 +93,7 @@ Use this area for skill packaging, verification, registry support, and lock work
 - `dashboard_contract.rs`: web dashboard/operator control-plane fixture/schema contract definitions and validators.
 - `dashboard_runtime.rs`: dashboard runtime loop (state transitions, retries, dedupe, channel-store writes).
 - `daemon_runtime.rs`: Tau daemon lifecycle install/start/stop/status helpers, profile rendering (launchd/systemd-user), and lifecycle diagnostics.
-- `gateway_openresponses.rs`: OpenResponses HTTP server (`/v1/responses`) plus gateway auth/session (`/gateway/auth/session`), gateway status (`/gateway/status`), websocket control (`/gateway/ws`), and webchat endpoint.
+- `gateway_openresponses.rs`: OpenResponses HTTP server (`/v1/responses`) plus OpenAI-compatible adapters (`/v1/chat/completions`, `/v1/completions`, `/v1/models`), gateway auth/session (`/gateway/auth/session`), gateway status (`/gateway/status`), websocket control (`/gateway/ws`), and webchat endpoint.
 - `crates/tau-gateway/src/gateway_ws_protocol.rs`: websocket control-plane frame schema, version compatibility, parse/error contracts, and fixture replay compatibility tests.
 - `deployment_contract.rs`: cloud deployment + WASM deliverable fixture/schema contract definitions and validators.
 - `deployment_runtime.rs`: deployment/WASM runtime loop (queueing, retries, dedupe, channel-store writes).

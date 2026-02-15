@@ -415,6 +415,57 @@ fn unit_translate_openresponses_request_rejects_invalid_input_shape() {
 }
 
 #[test]
+fn unit_translate_chat_completions_request_maps_messages_and_session_seed() {
+    let request = OpenAiChatCompletionsRequest {
+        model: Some("openai/gpt-4o-mini".to_string()),
+        messages: json!([
+            {"role": "system", "content": "You are concise."},
+            {"role": "user", "content": "Hello from chat completions."}
+        ]),
+        stream: true,
+        user: Some("chat-user-42".to_string()),
+        extra: BTreeMap::from([("temperature".to_string(), json!(0.2))]),
+    };
+
+    let translated =
+        translate_chat_completions_request(request).expect("translate chat completions request");
+    assert!(translated.stream);
+    assert_eq!(
+        translated.request.model.as_deref(),
+        Some("openai/gpt-4o-mini")
+    );
+    assert_eq!(
+        translated.request.metadata["session_id"].as_str(),
+        Some("chat-user-42")
+    );
+    assert_eq!(
+        translated
+            .request
+            .input
+            .as_array()
+            .expect("array input")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn unit_translate_chat_completions_request_rejects_non_array_messages() {
+    let request = OpenAiChatCompletionsRequest {
+        model: None,
+        messages: json!("invalid"),
+        stream: false,
+        user: None,
+        extra: BTreeMap::new(),
+    };
+
+    let error = translate_chat_completions_request(request)
+        .expect_err("non-array messages should fail translation");
+    assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    assert_eq!(error.code, "invalid_messages");
+}
+
+#[test]
 fn unit_collect_gateway_multi_channel_status_report_composes_runtime_and_connector_fields() {
     let temp = tempdir().expect("tempdir");
     let gateway_state_dir = temp.path().join(".tau").join("gateway");
@@ -577,6 +628,143 @@ async fn functional_openresponses_endpoint_streams_sse_for_stream_true() {
     assert!(body.contains("event: response.output_text.delta"));
     assert!(body.contains("event: response.completed"));
     assert!(body.contains("event: done"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_openai_chat_completions_endpoint_returns_non_stream_response() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}{OPENAI_CHAT_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "model": "openai/gpt-4o-mini",
+            "messages": [{"role":"user","content":"hello compat"}]
+        }))
+        .send()
+        .await
+        .expect("send request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response
+        .json::<Value>()
+        .await
+        .expect("parse response payload");
+    assert_eq!(payload["object"], "chat.completion");
+    assert_eq!(payload["choices"][0]["message"]["role"], "assistant");
+    assert!(payload["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("messages="));
+    assert_eq!(
+        payload["usage"]["prompt_tokens"].as_u64(),
+        payload["usage"]["total_tokens"].as_u64().map(|total| total
+            .saturating_sub(payload["usage"]["completion_tokens"].as_u64().unwrap_or(0)))
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_openai_chat_completions_endpoint_streams_sse_for_stream_true() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}{OPENAI_CHAT_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "messages": [{"role":"user","content":"hello streaming compat"}],
+            "stream": true
+        }))
+        .send()
+        .await
+        .expect("send stream request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.contains("text/event-stream"));
+
+    let body = response.text().await.expect("read stream body");
+    assert!(body.contains("chat.completion.chunk"));
+    assert!(body.contains("[DONE]"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_openai_completions_endpoint_returns_non_stream_response() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}{OPENAI_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "prompt": "compat completion test"
+        }))
+        .send()
+        .await
+        .expect("send completion request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response
+        .json::<Value>()
+        .await
+        .expect("parse completion response");
+    assert_eq!(payload["object"], "text_completion");
+    assert!(payload["choices"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("messages="));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_openai_completions_endpoint_streams_sse_for_stream_true() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}{OPENAI_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "prompt": "compat completion streaming",
+            "stream": true
+        }))
+        .send()
+        .await
+        .expect("send stream request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.contains("text/event-stream"));
+
+    let body = response.text().await.expect("read stream body");
+    assert!(body.contains("text_completion"));
+    assert!(body.contains("[DONE]"));
 
     handle.abort();
 }
@@ -859,6 +1047,142 @@ async fn integration_openresponses_http_roundtrip_persists_session_state() {
     assert!(session_path.exists());
     let raw = std::fs::read_to_string(&session_path).expect("read session file");
     assert!(raw.lines().count() >= 4);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_openai_chat_completions_http_roundtrip_persists_session_state() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+
+    let client = Client::new();
+    let response_one = client
+        .post(format!("http://{addr}{OPENAI_CHAT_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "messages": [{"role":"user","content":"first"}],
+            "user": "openai-chat-integration"
+        }))
+        .send()
+        .await
+        .expect("send first request")
+        .json::<Value>()
+        .await
+        .expect("parse first response");
+    let first_count = response_one["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_start_matches("messages=")
+        .parse::<usize>()
+        .expect("parse first count");
+
+    let response_two = client
+        .post(format!("http://{addr}{OPENAI_CHAT_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "messages": [{"role":"user","content":"second"}],
+            "user": "openai-chat-integration"
+        }))
+        .send()
+        .await
+        .expect("send second request")
+        .json::<Value>()
+        .await
+        .expect("parse second response");
+    let second_count = response_two["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim_start_matches("messages=")
+        .parse::<usize>()
+        .expect("parse second count");
+    assert!(second_count > first_count);
+
+    let session_path = gateway_session_path(
+        &state.config.state_dir,
+        &sanitize_session_key("openai-chat-integration"),
+    );
+    assert!(session_path.exists());
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_gateway_status_endpoint_reports_openai_compat_runtime_counters() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let models = client
+        .get(format!("http://{addr}{OPENAI_MODELS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("request models list");
+    assert_eq!(models.status(), StatusCode::OK);
+
+    let chat = client
+        .post(format!("http://{addr}{OPENAI_CHAT_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "model": "openai/ignored-model",
+            "messages": [{"role":"user","content":"diagnostics"}],
+            "temperature": 0.7
+        }))
+        .send()
+        .await
+        .expect("request chat completions");
+    assert_eq!(chat.status(), StatusCode::OK);
+
+    let status = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("request status")
+        .json::<Value>()
+        .await
+        .expect("parse status payload");
+    assert_eq!(
+        status["gateway"]["openai_compat"]["chat_completions_endpoint"],
+        Value::String(OPENAI_CHAT_COMPLETIONS_ENDPOINT.to_string())
+    );
+    assert_eq!(
+        status["gateway"]["openai_compat"]["completions_endpoint"],
+        Value::String(OPENAI_COMPLETIONS_ENDPOINT.to_string())
+    );
+    assert_eq!(
+        status["gateway"]["openai_compat"]["models_endpoint"],
+        Value::String(OPENAI_MODELS_ENDPOINT.to_string())
+    );
+    assert_eq!(
+        status["gateway"]["openai_compat"]["runtime"]["chat_completions_requests"]
+            .as_u64()
+            .unwrap_or_default(),
+        1
+    );
+    assert_eq!(
+        status["gateway"]["openai_compat"]["runtime"]["models_requests"]
+            .as_u64()
+            .unwrap_or_default(),
+        1
+    );
+    assert_eq!(
+        status["gateway"]["openai_compat"]["runtime"]["total_requests"]
+            .as_u64()
+            .unwrap_or_default(),
+        2
+    );
+    assert!(
+        status["gateway"]["openai_compat"]["runtime"]["reason_code_counts"]
+            .as_object()
+            .expect("reason code map")
+            .contains_key("openai_chat_completions_model_override_ignored")
+    );
 
     handle.abort();
 }
@@ -1460,6 +1784,69 @@ async fn regression_openresponses_endpoint_rejects_oversized_input() {
         .expect("send oversized request");
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_openai_chat_completions_rejects_invalid_messages_shape() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}{OPENAI_CHAT_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "messages": "not-an-array"
+        }))
+        .send()
+        .await
+        .expect("send invalid request");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = response.json::<Value>().await.expect("parse response");
+    assert_eq!(payload["error"]["code"].as_str(), Some("invalid_messages"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_openai_completions_rejects_missing_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}{OPENAI_COMPLETIONS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "prompt": ""
+        }))
+        .send()
+        .await
+        .expect("send invalid request");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let payload = response.json::<Value>().await.expect("parse response");
+    assert_eq!(payload["error"]["code"].as_str(), Some("missing_prompt"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_openai_models_endpoint_rejects_unauthorized_request() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}{OPENAI_MODELS_ENDPOINT}"))
+        .send()
+        .await
+        .expect("send unauthorized request");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
     handle.abort();
 }
 

@@ -16,6 +16,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentConfig, AgentEvent};
@@ -34,6 +35,7 @@ use crate::remote_profile::GatewayOpenResponsesAuthMode;
 mod auth_runtime;
 mod dashboard_status;
 mod multi_channel_status;
+mod openai_compat;
 mod request_translation;
 mod session_runtime;
 #[cfg(test)]
@@ -51,6 +53,12 @@ use dashboard_status::{
     GatewayDashboardActionRequest,
 };
 use multi_channel_status::collect_gateway_multi_channel_status_report;
+use openai_compat::{
+    build_chat_completions_payload, build_chat_completions_stream_chunks,
+    build_completions_payload, build_completions_stream_chunks, build_models_payload,
+    translate_chat_completions_request, translate_completions_request,
+    OpenAiChatCompletionsRequest, OpenAiCompletionsRequest,
+};
 use request_translation::{sanitize_session_key, translate_openresponses_request};
 use session_runtime::{
     collect_assistant_reply, gateway_session_path, initialize_gateway_session_runtime,
@@ -66,6 +74,9 @@ use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
 
 const OPENRESPONSES_ENDPOINT: &str = "/v1/responses";
+const OPENAI_CHAT_COMPLETIONS_ENDPOINT: &str = "/v1/chat/completions";
+const OPENAI_COMPLETIONS_ENDPOINT: &str = "/v1/completions";
+const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
 const WEBCHAT_ENDPOINT: &str = "/webchat";
 const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
 const GATEWAY_WS_ENDPOINT: &str = "/gateway/ws";
@@ -146,6 +157,7 @@ struct GatewayOpenResponsesServerState {
     config: GatewayOpenResponsesServerConfig,
     response_sequence: Arc<AtomicU64>,
     auth_runtime: Arc<Mutex<GatewayAuthRuntimeState>>,
+    compat_runtime: Arc<Mutex<GatewayOpenAiCompatRuntimeState>>,
 }
 
 impl GatewayOpenResponsesServerState {
@@ -154,6 +166,7 @@ impl GatewayOpenResponsesServerState {
             config,
             response_sequence: Arc::new(AtomicU64::new(0)),
             auth_runtime: Arc::new(Mutex::new(GatewayAuthRuntimeState::default())),
+            compat_runtime: Arc::new(Mutex::new(GatewayOpenAiCompatRuntimeState::default())),
         }
     }
 
@@ -168,6 +181,113 @@ impl GatewayOpenResponsesServerState {
     fn next_output_message_id(&self) -> String {
         format!("msg_{:016x}", self.next_sequence())
     }
+
+    fn record_openai_compat_request(&self, surface: GatewayOpenAiCompatSurface, stream: bool) {
+        if let Ok(mut runtime) = self.compat_runtime.lock() {
+            runtime.total_requests = runtime.total_requests.saturating_add(1);
+            if stream {
+                runtime.stream_requests = runtime.stream_requests.saturating_add(1);
+            }
+            match surface {
+                GatewayOpenAiCompatSurface::ChatCompletions => {
+                    runtime.chat_completions_requests =
+                        runtime.chat_completions_requests.saturating_add(1);
+                }
+                GatewayOpenAiCompatSurface::Completions => {
+                    runtime.completions_requests = runtime.completions_requests.saturating_add(1);
+                }
+                GatewayOpenAiCompatSurface::Models => {
+                    runtime.models_requests = runtime.models_requests.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    fn record_openai_compat_reason(&self, reason_code: &str) {
+        if reason_code.trim().is_empty() {
+            return;
+        }
+        if let Ok(mut runtime) = self.compat_runtime.lock() {
+            *runtime
+                .reason_code_counts
+                .entry(reason_code.to_string())
+                .or_default() += 1;
+            runtime.last_reason_codes.push(reason_code.to_string());
+            if runtime.last_reason_codes.len() > 16 {
+                let drop_count = runtime.last_reason_codes.len().saturating_sub(16);
+                runtime.last_reason_codes.drain(0..drop_count);
+            }
+        }
+    }
+
+    fn record_openai_compat_ignored_fields(&self, fields: &[String]) {
+        if fields.is_empty() {
+            return;
+        }
+        if let Ok(mut runtime) = self.compat_runtime.lock() {
+            for field in fields {
+                if field.trim().is_empty() {
+                    continue;
+                }
+                *runtime
+                    .ignored_field_counts
+                    .entry(field.clone())
+                    .or_default() += 1;
+            }
+        }
+    }
+
+    fn collect_openai_compat_status_report(&self) -> GatewayOpenAiCompatStatusReport {
+        if let Ok(runtime) = self.compat_runtime.lock() {
+            return GatewayOpenAiCompatStatusReport {
+                total_requests: runtime.total_requests,
+                chat_completions_requests: runtime.chat_completions_requests,
+                completions_requests: runtime.completions_requests,
+                models_requests: runtime.models_requests,
+                stream_requests: runtime.stream_requests,
+                translation_failures: runtime.translation_failures,
+                execution_failures: runtime.execution_failures,
+                reason_code_counts: runtime.reason_code_counts.clone(),
+                ignored_field_counts: runtime.ignored_field_counts.clone(),
+                last_reason_codes: runtime.last_reason_codes.clone(),
+            };
+        }
+
+        GatewayOpenAiCompatStatusReport::default()
+    }
+
+    fn increment_openai_compat_translation_failures(&self) {
+        if let Ok(mut runtime) = self.compat_runtime.lock() {
+            runtime.translation_failures = runtime.translation_failures.saturating_add(1);
+        }
+    }
+
+    fn increment_openai_compat_execution_failures(&self) {
+        if let Ok(mut runtime) = self.compat_runtime.lock() {
+            runtime.execution_failures = runtime.execution_failures.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GatewayOpenAiCompatSurface {
+    ChatCompletions,
+    Completions,
+    Models,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GatewayOpenAiCompatRuntimeState {
+    total_requests: u64,
+    chat_completions_requests: u64,
+    completions_requests: u64,
+    models_requests: u64,
+    stream_requests: u64,
+    translation_failures: u64,
+    execution_failures: u64,
+    reason_code_counts: BTreeMap<String, u64>,
+    ignored_field_counts: BTreeMap<String, u64>,
+    last_reason_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -203,6 +323,20 @@ struct GatewayAuthStatusReport {
     rate_limited_requests: u64,
     rate_limit_window_seconds: u64,
     rate_limit_max_requests: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+struct GatewayOpenAiCompatStatusReport {
+    total_requests: u64,
+    chat_completions_requests: u64,
+    completions_requests: u64,
+    models_requests: u64,
+    stream_requests: u64,
+    translation_failures: u64,
+    execution_failures: u64,
+    reason_code_counts: BTreeMap<String, u64>,
+    ignored_field_counts: BTreeMap<String, u64>,
+    last_reason_codes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -454,6 +588,12 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
     Router::new()
         .route(OPENRESPONSES_ENDPOINT, post(handle_openresponses))
         .route(
+            OPENAI_CHAT_COMPLETIONS_ENDPOINT,
+            post(handle_openai_chat_completions),
+        )
+        .route(OPENAI_COMPLETIONS_ENDPOINT, post(handle_openai_completions))
+        .route(OPENAI_MODELS_ENDPOINT, get(handle_openai_models))
+        .route(
             GATEWAY_AUTH_SESSION_ENDPOINT,
             post(handle_gateway_auth_session),
         )
@@ -514,6 +654,12 @@ async fn handle_gateway_status(
             "runtime_heartbeat": runtime_heartbeat,
             "gateway": {
                 "responses_endpoint": OPENRESPONSES_ENDPOINT,
+                "openai_compat": {
+                    "chat_completions_endpoint": OPENAI_CHAT_COMPLETIONS_ENDPOINT,
+                    "completions_endpoint": OPENAI_COMPLETIONS_ENDPOINT,
+                    "models_endpoint": OPENAI_MODELS_ENDPOINT,
+                    "runtime": state.collect_openai_compat_status_report(),
+                },
                 "webchat_endpoint": WEBCHAT_ENDPOINT,
                 "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
                 "status_endpoint": GATEWAY_STATUS_ENDPOINT,
@@ -959,6 +1105,310 @@ async fn handle_openresponses(
         Ok(result) => (StatusCode::OK, Json(result.response)).into_response(),
         Err(error) => error.into_response(),
     }
+}
+
+async fn handle_openai_chat_completions(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    state.record_openai_compat_reason("openai_chat_completions_request_received");
+
+    if let Err(error) = validate_gateway_request_body_size(&state, &body) {
+        state.increment_openai_compat_translation_failures();
+        state.record_openai_compat_reason("openai_chat_completions_body_too_large");
+        return error.into_response();
+    }
+
+    let request = match parse_gateway_json_body::<OpenAiChatCompletionsRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            state.increment_openai_compat_translation_failures();
+            state.record_openai_compat_reason("openai_chat_completions_malformed_json");
+            return error.into_response();
+        }
+    };
+
+    let translated = match translate_chat_completions_request(request) {
+        Ok(translated) => translated,
+        Err(error) => {
+            state.increment_openai_compat_translation_failures();
+            state.record_openai_compat_reason("openai_chat_completions_translation_failed");
+            return error.into_response();
+        }
+    };
+
+    state.record_openai_compat_request(
+        GatewayOpenAiCompatSurface::ChatCompletions,
+        translated.stream,
+    );
+
+    if translated
+        .requested_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        state.record_openai_compat_reason("openai_chat_completions_model_override_ignored");
+    }
+    state.record_openai_compat_ignored_fields(&translated.ignored_fields);
+
+    if translated.stream {
+        return stream_openai_chat_completions(
+            state,
+            translated.request,
+            translated.ignored_fields,
+        )
+        .await;
+    }
+
+    match execute_openresponses_request(state.clone(), translated.request, None).await {
+        Ok(result) => {
+            let mut ignored_fields = translated.ignored_fields;
+            ignored_fields.extend(result.response.ignored_fields.clone());
+            if !ignored_fields.is_empty() {
+                state.record_openai_compat_reason("openai_chat_completions_ignored_fields");
+            }
+            state.record_openai_compat_ignored_fields(&ignored_fields);
+            state.record_openai_compat_reason("openai_chat_completions_succeeded");
+            (
+                StatusCode::OK,
+                Json(build_chat_completions_payload(&result.response)),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            state.increment_openai_compat_execution_failures();
+            state.record_openai_compat_reason("openai_chat_completions_execution_failed");
+            error.into_response()
+        }
+    }
+}
+
+async fn handle_openai_completions(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    state.record_openai_compat_reason("openai_completions_request_received");
+
+    if let Err(error) = validate_gateway_request_body_size(&state, &body) {
+        state.increment_openai_compat_translation_failures();
+        state.record_openai_compat_reason("openai_completions_body_too_large");
+        return error.into_response();
+    }
+
+    let request = match parse_gateway_json_body::<OpenAiCompletionsRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            state.increment_openai_compat_translation_failures();
+            state.record_openai_compat_reason("openai_completions_malformed_json");
+            return error.into_response();
+        }
+    };
+
+    let translated = match translate_completions_request(request) {
+        Ok(translated) => translated,
+        Err(error) => {
+            state.increment_openai_compat_translation_failures();
+            state.record_openai_compat_reason("openai_completions_translation_failed");
+            return error.into_response();
+        }
+    };
+
+    state.record_openai_compat_request(GatewayOpenAiCompatSurface::Completions, translated.stream);
+
+    if translated
+        .requested_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        state.record_openai_compat_reason("openai_completions_model_override_ignored");
+    }
+    state.record_openai_compat_ignored_fields(&translated.ignored_fields);
+
+    if translated.stream {
+        return stream_openai_completions(state, translated.request, translated.ignored_fields)
+            .await;
+    }
+
+    match execute_openresponses_request(state.clone(), translated.request, None).await {
+        Ok(result) => {
+            let mut ignored_fields = translated.ignored_fields;
+            ignored_fields.extend(result.response.ignored_fields.clone());
+            if !ignored_fields.is_empty() {
+                state.record_openai_compat_reason("openai_completions_ignored_fields");
+            }
+            state.record_openai_compat_ignored_fields(&ignored_fields);
+            state.record_openai_compat_reason("openai_completions_succeeded");
+            (
+                StatusCode::OK,
+                Json(build_completions_payload(&result.response)),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            state.increment_openai_compat_execution_failures();
+            state.record_openai_compat_reason("openai_completions_execution_failed");
+            error.into_response()
+        }
+    }
+}
+
+async fn handle_openai_models(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+
+    state.record_openai_compat_request(GatewayOpenAiCompatSurface::Models, false);
+    state.record_openai_compat_reason("openai_models_listed");
+
+    let payload = build_models_payload(&state.config.model, current_unix_timestamp());
+    (StatusCode::OK, Json(payload)).into_response()
+}
+
+fn authorize_and_enforce_gateway_limits(
+    state: &Arc<GatewayOpenResponsesServerState>,
+    headers: &HeaderMap,
+) -> Result<String, OpenResponsesApiError> {
+    let principal = authorize_gateway_request(state, headers)?;
+    enforce_gateway_rate_limit(state, principal.as_str())?;
+    Ok(principal)
+}
+
+fn validate_gateway_request_body_size(
+    state: &Arc<GatewayOpenResponsesServerState>,
+    body: &Bytes,
+) -> Result<(), OpenResponsesApiError> {
+    let body_limit = state
+        .config
+        .max_input_chars
+        .saturating_mul(INPUT_BODY_SIZE_MULTIPLIER)
+        .max(state.config.max_input_chars);
+    if body.len() > body_limit {
+        return Err(OpenResponsesApiError::payload_too_large(format!(
+            "request body exceeds max size of {} bytes",
+            body_limit
+        )));
+    }
+    Ok(())
+}
+
+fn parse_gateway_json_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, OpenResponsesApiError> {
+    serde_json::from_slice::<T>(body).map_err(|error| {
+        OpenResponsesApiError::bad_request(
+            "malformed_json",
+            format!("failed to parse request body: {error}"),
+        )
+    })
+}
+
+async fn stream_openai_chat_completions(
+    state: Arc<GatewayOpenResponsesServerState>,
+    request: OpenResponsesRequest,
+    compat_ignored_fields: Vec<String>,
+) -> Response {
+    let (tx, rx) = mpsc::unbounded_channel::<Event>();
+    tokio::spawn(async move {
+        match execute_openresponses_request(state.clone(), request, None).await {
+            Ok(result) => {
+                let mut ignored_fields = compat_ignored_fields;
+                ignored_fields.extend(result.response.ignored_fields.clone());
+                if !ignored_fields.is_empty() {
+                    state.record_openai_compat_reason(
+                        "openai_chat_completions_stream_ignored_fields",
+                    );
+                }
+                state.record_openai_compat_ignored_fields(&ignored_fields);
+                for chunk in build_chat_completions_stream_chunks(&result.response) {
+                    let _ = tx.send(Event::default().data(chunk.to_string()));
+                }
+                let _ = tx.send(Event::default().data("[DONE]"));
+                state.record_openai_compat_reason("openai_chat_completions_stream_succeeded");
+            }
+            Err(error) => {
+                state.increment_openai_compat_execution_failures();
+                state.record_openai_compat_reason("openai_chat_completions_stream_failed");
+                let _ = tx.send(
+                    Event::default().data(
+                        json!({
+                            "error": {
+                                "type": "server_error",
+                                "code": error.code,
+                                "message": error.message,
+                            }
+                        })
+                        .to_string(),
+                    ),
+                );
+                let _ = tx.send(Event::default().data("[DONE]"));
+            }
+        }
+    });
+
+    let stream = UnboundedReceiverStream::new(rx).map(Ok::<Event, Infallible>);
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn stream_openai_completions(
+    state: Arc<GatewayOpenResponsesServerState>,
+    request: OpenResponsesRequest,
+    compat_ignored_fields: Vec<String>,
+) -> Response {
+    let (tx, rx) = mpsc::unbounded_channel::<Event>();
+    tokio::spawn(async move {
+        match execute_openresponses_request(state.clone(), request, None).await {
+            Ok(result) => {
+                let mut ignored_fields = compat_ignored_fields;
+                ignored_fields.extend(result.response.ignored_fields.clone());
+                if !ignored_fields.is_empty() {
+                    state.record_openai_compat_reason("openai_completions_stream_ignored_fields");
+                }
+                state.record_openai_compat_ignored_fields(&ignored_fields);
+                for chunk in build_completions_stream_chunks(&result.response) {
+                    let _ = tx.send(Event::default().data(chunk.to_string()));
+                }
+                let _ = tx.send(Event::default().data("[DONE]"));
+                state.record_openai_compat_reason("openai_completions_stream_succeeded");
+            }
+            Err(error) => {
+                state.increment_openai_compat_execution_failures();
+                state.record_openai_compat_reason("openai_completions_stream_failed");
+                let _ = tx.send(
+                    Event::default().data(
+                        json!({
+                            "error": {
+                                "type": "server_error",
+                                "code": error.code,
+                                "message": error.message,
+                            }
+                        })
+                        .to_string(),
+                    ),
+                );
+                let _ = tx.send(Event::default().data("[DONE]"));
+            }
+        }
+    });
+
+    let stream = UnboundedReceiverStream::new(rx).map(Ok::<Event, Infallible>);
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 async fn handle_gateway_auth_session(

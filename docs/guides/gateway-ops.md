@@ -39,7 +39,7 @@ cargo run -p tau-coding-agent -- \
   --gateway-service-status-json
 ```
 
-## OpenResponses endpoint (`/v1/responses`)
+## OpenResponses endpoint (`/v1/responses`) and OpenAI-compatible adapters
 
 Start the OpenResponses endpoint in `token` auth mode:
 
@@ -86,7 +86,7 @@ cat docs/guides/gateway-remote-access.md
 
 Auth mode summary:
 
-- `token` (default): bearer token required on `/v1/responses` and `/gateway/status`.
+- `token` (default): bearer token required on `/v1/responses`, `/v1/chat/completions`, `/v1/completions`, `/v1/models`, and `/gateway/status`.
 - `password-session`: exchange password once at `/gateway/auth/session`, then use returned bearer session token.
 - `localhost-dev`: no bearer required, but bind must be loopback (`127.0.0.1`/`::1`).
 
@@ -147,12 +147,44 @@ curl -N http://127.0.0.1:8787/v1/responses \
   }'
 ```
 
+OpenAI-compatible non-stream chat request:
+
+```bash
+curl -sS http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role":"user","content":"Say hi in one sentence."}]
+  }'
+```
+
+OpenAI-compatible streaming completion request:
+
+```bash
+curl -N http://127.0.0.1:8787/v1/completions \
+  -H "Authorization: Bearer local-dev-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prompt": "Generate a one-line release note.",
+    "stream": true
+  }'
+```
+
+OpenAI-compatible model listing:
+
+```bash
+curl -sS http://127.0.0.1:8787/v1/models \
+  -H "Authorization: Bearer local-dev-token"
+```
+
 Current compatibility notes:
 
 - Supported input forms: `input` string, message item arrays, and `function_call_output` items.
 - Session continuity derives from `metadata.session_id`, then `conversation`, then `previous_response_id`.
 - Unknown request fields are ignored safely and surfaced in `ignored_fields` on the response.
 - `model` in request payload is accepted but ignored; runtime uses CLI-selected model.
+- OpenAI-compatible adapters reuse the same auth/rate-limit/session semantics as `/v1/responses`.
 
 Webchat/control surface:
 
@@ -179,6 +211,12 @@ curl -sS http://127.0.0.1:8787/gateway/status \
 - `rate_limited_requests`
 - `rate_limit_window_seconds`
 - `rate_limit_max_requests`
+
+`/gateway/status` includes `gateway.openai_compat` with:
+
+- endpoint paths (`chat_completions_endpoint`, `completions_endpoint`, `models_endpoint`)
+- runtime counters (`total_requests`, `chat_completions_requests`, `completions_requests`, `models_requests`, `stream_requests`)
+- diagnostics (`translation_failures`, `execution_failures`, `reason_code_counts`, `ignored_field_counts`, `last_reason_codes`)
 
 `/gateway/status` also includes a `runtime_heartbeat` block with:
 
