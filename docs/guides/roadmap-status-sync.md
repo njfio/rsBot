@@ -29,6 +29,11 @@ Hierarchy graph extraction for the `#1678` execution tree:
 
 - `scripts/dev/hierarchy-graph-extractor.sh`
 
+Hierarchy graph publication and retention policy:
+
+- `scripts/dev/hierarchy-graph-publish.sh`
+- `tasks/policies/hierarchy-graph-publication-policy.json`
+
 To preview hierarchy drift findings locally before CI:
 
 ```bash
@@ -43,6 +48,19 @@ scripts/dev/hierarchy-graph-extractor.sh \
   --output-json tasks/reports/issue-hierarchy-graph.json \
   --output-md tasks/reports/issue-hierarchy-graph.md
 ```
+
+To publish a timestamped history snapshot and enforce retention:
+
+```bash
+scripts/dev/hierarchy-graph-publish.sh \
+  --graph-json tasks/reports/issue-hierarchy-graph.json \
+  --graph-md tasks/reports/issue-hierarchy-graph.md
+```
+
+Published history artifacts are discoverable via:
+
+- `tasks/reports/issue-hierarchy-history/index.json`
+- `tasks/reports/issue-hierarchy-history/index.md`
 
 ## Prerequisites
 
@@ -100,4 +118,5 @@ Fixture format:
 ```bash
 scripts/dev/test-roadmap-status-sync.sh
 python3 -m unittest discover -s .github/scripts -p "test_hierarchy_graph_extractor_contract.py"
+python3 -m unittest discover -s .github/scripts -p "test_hierarchy_graph_publication_contract.py"
 ```
