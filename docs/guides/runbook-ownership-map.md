@@ -11,6 +11,7 @@ Use this map when triaging drift between documentation and runtime behavior.
 | `docs/guides/training-proxy-ops.md` | `crates/tau-training-proxy`, `crates/tau-gateway`, `crates/tau-provider`, `crates/tau-coding-agent` | Proxy attribution + upstream routing ownership boundaries. |
 | `docs/guides/transports.md` | `crates/tau-coding-agent`, `crates/tau-github-issues-runtime`, `crates/tau-slack-runtime`, `crates/tau-multi-channel`, `crates/tau-gateway`, `crates/tau-memory` | Transport entrypoints and per-surface runtime ownership map. |
 | `docs/guides/memory-ops.md` | `crates/tau-agent-core`, `crates/tau-memory`, `crates/tau-tools`, `crates/tau-coding-agent` | Runtime memory behavior is owned by `tau-agent-core`; `tau-memory` owns shared storage helpers/contracts. |
+| `docs/guides/consolidated-runtime-rollback-drill.md` | `scripts/demo/rollback-drill-checklist.sh`, `scripts/dev/m21-retained-capability-proof-summary.sh`, `docs/guides/runbook-ownership-map.md` | Rollback trigger contract + artifact capture drill for consolidated runtime surfaces. |
 
 ## Ownership update policy
 
