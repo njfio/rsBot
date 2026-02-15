@@ -39,6 +39,12 @@ Critical-path update template and risk rubric:
 - `tasks/templates/critical-path-update-template.md`
 - `tasks/policies/critical-path-risk-rubric.json`
 
+Critical-path cadence enforcement policy and checklist:
+
+- `tasks/policies/critical-path-update-cadence-policy.json`
+- `tasks/templates/critical-path-cadence-checklist.md`
+- `scripts/dev/critical-path-cadence-check.sh`
+
 To preview hierarchy drift findings locally before CI:
 
 ```bash
@@ -72,6 +78,12 @@ canonical template and fill per-lane status/risk fields:
 
 ```bash
 cat tasks/templates/critical-path-update-template.md
+```
+
+To validate update cadence and escalation status before publishing:
+
+```bash
+scripts/dev/critical-path-cadence-check.sh --json
 ```
 
 ## Prerequisites
@@ -132,4 +144,5 @@ scripts/dev/test-roadmap-status-sync.sh
 python3 -m unittest discover -s .github/scripts -p "test_hierarchy_graph_extractor_contract.py"
 python3 -m unittest discover -s .github/scripts -p "test_hierarchy_graph_publication_contract.py"
 python3 -m unittest discover -s .github/scripts -p "test_critical_path_update_template_contract.py"
+python3 -m unittest discover -s .github/scripts -p "test_critical_path_cadence_policy_contract.py"
 ```

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "policy_id": "critical-path-update-cadence-policy",
+  "description": "Cadence and escalation contract for recurring #1678 critical-path updates.",
+  "tracker_issue_number": 1678,
+  "update_header": "## Critical-Path Update",
+  "cadence_hours": 24,
+  "grace_period_hours": 4,
+  "warning_after_hours": 28,
+  "escalate_after_hours": 48,
+  "escalation_path": [
+    {
+      "level": "L1",
+      "condition": "warning",
+      "owner": "current update owner",
+      "action": "Post recovery update ETA comment and refresh checklist."
+    },
+    {
+      "level": "L2",
+      "condition": "critical",
+      "owner": "milestone owner",
+      "action": "Re-plan blockers and assign explicit unblock owners."
+    },
+    {
+      "level": "L3",
+      "condition": "repeat-critical",
+      "owner": "program owner",
+      "action": "Trigger de-scope/rollback decision for affected critical path."
+    }
+  ],
+  "checklist_required": [
+    "dependency_drift_check",
+    "critical_path_template_used",
+    "risk_scores_and_rationales_present",
+    "blockers_have_owners",
+    "next_update_target_set"
+  ]
+}
