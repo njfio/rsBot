@@ -3026,6 +3026,12 @@ fn redact_secrets_replaces_known_secret_token_patterns() {
 }
 
 #[test]
+fn regression_redact_secrets_replaces_project_scoped_openai_tokens() {
+    let redacted = redact_secrets("openai=sk-proj-AbCdEf0123456789_uvWXyZ9876543210");
+    assert_eq!(redacted, "openai=[REDACTED]");
+}
+
+#[test]
 fn canonicalize_best_effort_handles_non_existing_child() {
     let temp = tempdir().expect("tempdir");
     let target = temp.path().join("a/b/c.txt");

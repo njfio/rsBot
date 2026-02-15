@@ -5,6 +5,10 @@ use std::{
 
 use async_trait::async_trait;
 use serde_json::json;
+use tau_safety::{
+    ADVERSARIAL_PROMPT_INJECTION_MULTILINE, ADVERSARIAL_SECRET_LEAK_OPENAI_PROJECT_KEY,
+    ADVERSARIAL_TOOL_OUTPUT_PROMPT_EXFIL,
+};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::{
@@ -54,6 +58,27 @@ impl AgentTool for LeakyTool {
 
     async fn execute(&self, _arguments: serde_json::Value) -> ToolExecutionResult {
         ToolExecutionResult::ok(json!("openai key sk-abc123abc123abc123abc123"))
+    }
+}
+
+struct AdversarialUnsafeTool;
+
+#[async_trait]
+impl AgentTool for AdversarialUnsafeTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "adversarial_unsafe_echo".to_string(),
+            description: "Returns multiline prompt-injection content".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, _arguments: serde_json::Value) -> ToolExecutionResult {
+        ToolExecutionResult::ok(json!(ADVERSARIAL_TOOL_OUTPUT_PROMPT_EXFIL))
     }
 }
 
@@ -273,6 +298,116 @@ async fn functional_secret_leak_policy_redacts_outbound_http_payload() {
     let rendered = serde_json::to_string(request).expect("serialize request");
     assert!(rendered.contains("[TAU-SECRET-REDACTED]"));
     assert!(!rendered.contains("sk-abc123abc123abc123abc123"));
+}
+
+#[tokio::test]
+async fn regression_prompt_safety_block_rejects_multiline_bypass_prompt() {
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+    });
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.set_safety_policy(SafetyPolicy {
+        mode: SafetyMode::Block,
+        ..SafetyPolicy::default()
+    });
+
+    let error = agent
+        .prompt(ADVERSARIAL_PROMPT_INJECTION_MULTILINE)
+        .await
+        .expect_err("multiline bypass prompt should be blocked");
+    match error {
+        AgentError::SafetyViolation {
+            stage,
+            reason_codes,
+        } => {
+            assert_eq!(stage, "inbound_message");
+            assert!(reason_codes
+                .iter()
+                .any(|code| code == "prompt_injection.ignore_instructions"));
+        }
+        other => panic!("expected safety violation, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn regression_prompt_safety_block_prevents_multiline_tool_output_pass_through() {
+    let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+        id: "call_1".to_string(),
+        name: "adversarial_unsafe_echo".to_string(),
+        arguments: json!({}),
+    }]);
+    let second_assistant = Message::assistant_text("done");
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([
+            ChatResponse {
+                message: first_assistant,
+                finish_reason: Some("tool_calls".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: second_assistant,
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        ])),
+    });
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.register_tool(AdversarialUnsafeTool);
+    agent.set_safety_policy(SafetyPolicy {
+        mode: SafetyMode::Block,
+        ..SafetyPolicy::default()
+    });
+
+    let _ = agent
+        .prompt("run adversarial tool")
+        .await
+        .expect("prompt should succeed with blocked tool result message");
+    let tool_message = agent
+        .messages()
+        .iter()
+        .find(|message| matches!(message.role, tau_ai::MessageRole::Tool))
+        .expect("expected tool result message");
+    assert!(tool_message.is_error);
+    assert!(tool_message
+        .text_content()
+        .contains("tool output blocked by safety policy"));
+    assert!(!tool_message
+        .text_content()
+        .contains(ADVERSARIAL_TOOL_OUTPUT_PROMPT_EXFIL));
+}
+
+#[tokio::test]
+async fn regression_secret_leak_block_rejects_project_scoped_openai_key_payload() {
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("should never be returned"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+    });
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.set_safety_policy(SafetyPolicy {
+        secret_leak_mode: SafetyMode::Block,
+        ..SafetyPolicy::default()
+    });
+
+    let prompt = format!("temporary credential: {ADVERSARIAL_SECRET_LEAK_OPENAI_PROJECT_KEY}");
+    let error = agent
+        .prompt(prompt.as_str())
+        .await
+        .expect_err("outbound payload should be blocked for project-scoped key format");
+    match error {
+        AgentError::SafetyViolation {
+            stage,
+            reason_codes,
+        } => {
+            assert_eq!(stage, "outbound_http_payload");
+            assert!(reason_codes
+                .iter()
+                .any(|code| code == "secret_leak.openai_api_key"));
+        }
+        other => panic!("expected safety violation, got {other:?}"),
+    }
 }
 
 #[test]
