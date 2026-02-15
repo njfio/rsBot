@@ -10,7 +10,9 @@ use tau_agent_core::Agent;
 use tau_ai::MessageRole;
 use tau_training_store::{DequeuedRollout, TrainingStore};
 use tau_training_tracer::TrainingTracer;
-use tau_training_types::{AttemptStatus, ResourcesUpdate, Reward, Rollout, TrainingSpan};
+use tau_training_types::{
+    AttemptStatus, ResourcesUpdate, Reward, Rollout, RolloutStatus, TrainingSpan,
+};
 use tokio::sync::watch;
 
 type AgentFactoryFn = dyn Fn(Option<&ResourcesUpdate>) -> Agent + Send + Sync;
@@ -94,6 +96,72 @@ fn compute_poll_retry_delay(failure_count: u32, initial: Duration, max: Duration
         }
     }
     std::cmp::min(delay, max)
+}
+
+/// Per-attempt persistence details for rollout integrity audits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptPersistenceAudit {
+    pub attempt_id: String,
+    pub status: Option<AttemptStatus>,
+    pub span_count: usize,
+}
+
+/// Deterministic rollout persistence integrity report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RolloutPersistenceAuditReport {
+    pub rollout_id: String,
+    pub rollout_status: RolloutStatus,
+    pub expected_attempt_count: u32,
+    pub attempts: Vec<AttemptPersistenceAudit>,
+    pub gap_reasons: Vec<String>,
+    pub has_persistence_gaps: bool,
+}
+
+/// Audits rollout persistence integrity across attempts/spans using a store snapshot.
+pub async fn audit_rollout_persistence(
+    store: &dyn TrainingStore,
+    rollout_id: &str,
+) -> Result<RolloutPersistenceAuditReport> {
+    let rollouts = store
+        .query_rollouts(tau_training_types::RolloutQuery {
+            ids: Some(vec![rollout_id.to_string()]),
+            ..tau_training_types::RolloutQuery::default()
+        })
+        .await?;
+
+    let Some(rollout) = rollouts.first() else {
+        anyhow::bail!("rollout '{rollout_id}' not found for persistence audit");
+    };
+
+    let mut attempts = Vec::new();
+    let mut gap_reasons = Vec::new();
+    for attempt_sequence in 1..=rollout.attempt_count {
+        let attempt_id = format!("{rollout_id}:attempt-{attempt_sequence}");
+        let attempt = store.get_attempt(&attempt_id).await?;
+        let spans = store.query_spans(rollout_id, Some(&attempt_id)).await?;
+        let status = attempt.as_ref().map(|record| record.status);
+
+        if attempt.is_none() {
+            gap_reasons.push(format!("missing attempt record: {attempt_id}"));
+        } else if status.is_some_and(AttemptStatus::is_terminal) && spans.is_empty() {
+            gap_reasons.push(format!("missing terminal attempt spans: {attempt_id}"));
+        }
+
+        attempts.push(AttemptPersistenceAudit {
+            attempt_id,
+            status,
+            span_count: spans.len(),
+        });
+    }
+
+    Ok(RolloutPersistenceAuditReport {
+        rollout_id: rollout_id.to_string(),
+        rollout_status: rollout.status,
+        expected_attempt_count: rollout.attempt_count,
+        attempts,
+        has_persistence_gaps: !gap_reasons.is_empty(),
+        gap_reasons,
+    })
 }
 
 /// Configures reward shaping from safety-policy events.
@@ -661,14 +729,16 @@ fn parse_reason_codes(value: Option<&Value>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RolloutExecutionOutcome, RolloutExecutor, RunnerConfig, TauAgentExecutor, TrainingRunner,
+        audit_rollout_persistence, RolloutExecutionOutcome, RolloutExecutor, RunnerConfig,
+        TauAgentExecutor, TrainingRunner,
     };
     use anyhow::Result;
     use async_trait::async_trait;
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
     use tau_agent_core::{Agent, AgentConfig, AgentEvent, SafetyMode, SafetyStage};
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
@@ -775,6 +845,7 @@ mod tests {
     struct FlakyDequeueStore {
         inner: InMemoryTrainingStore,
         failures_remaining: AtomicUsize,
+        hidden_attempt_ids: Mutex<HashSet<String>>,
     }
 
     impl FlakyDequeueStore {
@@ -782,6 +853,13 @@ mod tests {
             Self {
                 inner: InMemoryTrainingStore::new(),
                 failures_remaining: AtomicUsize::new(failures),
+                hidden_attempt_ids: Mutex::new(HashSet::new()),
+            }
+        }
+
+        fn hide_attempt_for_audit(&self, attempt_id: &str) {
+            if let Ok(mut hidden) = self.hidden_attempt_ids.lock() {
+                hidden.insert(attempt_id.to_string());
             }
         }
     }
@@ -918,6 +996,14 @@ mod tests {
         }
 
         async fn get_attempt(&self, attempt_id: &str) -> StoreResult<Option<Attempt>> {
+            if self
+                .hidden_attempt_ids
+                .lock()
+                .ok()
+                .is_some_and(|hidden| hidden.contains(attempt_id))
+            {
+                return Ok(None);
+            }
             self.inner.get_attempt(attempt_id).await
         }
     }
@@ -1176,6 +1262,178 @@ mod tests {
         assert!(
             reward_metric_values(&spans, "runner.poll_retry_backoff_ms_before_rollout").is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn spec_1960_c01_single_rollout_audit_summary_is_deterministic() {
+        let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-audit-1",
+                json!({ "prompt": "audit-single" }),
+                Some(tau_training_types::RolloutMode::Train),
+            ))
+            .await
+            .expect("enqueue");
+
+        let runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(StaticExecutor),
+            RunnerConfig {
+                worker_id: "worker-audit-1".to_string(),
+                poll_interval: Duration::from_millis(10),
+                heartbeat_interval: Duration::from_millis(25),
+                reassignment_interval: Duration::from_millis(20),
+                worker_timeout: Duration::from_millis(120),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
+            },
+        );
+
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(async move { runner.run(rx).await });
+        wait_for_rollout_status(store.clone(), "r-audit-1", RolloutStatus::Succeeded)
+            .await
+            .expect("status wait");
+        tx.send(true).expect("shutdown");
+        handle.await.expect("join").expect("runner");
+
+        let report = audit_rollout_persistence(store.as_ref(), "r-audit-1")
+            .await
+            .expect("audit report");
+        assert_eq!(report.rollout_id, "r-audit-1");
+        assert_eq!(report.rollout_status, RolloutStatus::Succeeded);
+        assert_eq!(report.expected_attempt_count, 1);
+        assert_eq!(report.attempts.len(), 1);
+        assert_eq!(report.attempts[0].status, Some(AttemptStatus::Succeeded));
+        assert!(report.attempts[0].span_count > 0);
+        assert!(!report.has_persistence_gaps);
+        assert!(report.gap_reasons.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spec_1960_c02_retry_requeue_audit_reports_no_persistence_gaps() {
+        let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-audit-chaos-1",
+                json!({ "prompt": "audit-chaos" }),
+                Some(tau_training_types::RolloutMode::Train),
+            ))
+            .await
+            .expect("enqueue");
+
+        let slow_runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(SlowExecutor),
+            RunnerConfig {
+                worker_id: "worker-audit-slow".to_string(),
+                poll_interval: Duration::from_millis(20),
+                heartbeat_interval: Duration::from_millis(200),
+                reassignment_interval: Duration::from_millis(20),
+                worker_timeout: Duration::from_millis(50),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
+            },
+        );
+        let fast_runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(FastExecutor),
+            RunnerConfig {
+                worker_id: "worker-audit-fast".to_string(),
+                poll_interval: Duration::from_millis(20),
+                heartbeat_interval: Duration::from_millis(20),
+                reassignment_interval: Duration::from_millis(10),
+                worker_timeout: Duration::from_millis(50),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
+            },
+        );
+
+        let (slow_tx, slow_rx) = watch::channel(false);
+        let slow_handle = tokio::spawn(async move { slow_runner.run(slow_rx).await });
+        wait_for_worker_assignment(store.clone(), "worker-audit-slow", Duration::from_secs(2))
+            .await
+            .expect("assignment");
+
+        let (fast_tx, fast_rx) = watch::channel(false);
+        let fast_handle = tokio::spawn(async move { fast_runner.run(fast_rx).await });
+        wait_for_rollout_status(store.clone(), "r-audit-chaos-1", RolloutStatus::Succeeded)
+            .await
+            .expect("status wait");
+
+        slow_tx.send(true).expect("shutdown slow");
+        fast_tx.send(true).expect("shutdown fast");
+        slow_handle.await.expect("join slow").expect("slow runner");
+        fast_handle.await.expect("join fast").expect("fast runner");
+
+        let report = audit_rollout_persistence(store.as_ref(), "r-audit-chaos-1")
+            .await
+            .expect("audit report");
+        assert_eq!(report.expected_attempt_count, 2);
+        assert_eq!(report.attempts.len(), 2);
+        assert_eq!(report.attempts[0].status, Some(AttemptStatus::Timeout));
+        assert_eq!(report.attempts[1].status, Some(AttemptStatus::Succeeded));
+        assert!(report.attempts.iter().all(|attempt| attempt.span_count > 0));
+        assert!(!report.has_persistence_gaps);
+        assert!(report.gap_reasons.is_empty());
+    }
+
+    #[tokio::test]
+    async fn spec_1960_c03_audit_detects_missing_attempt_record_gaps() {
+        let store = Arc::new(FlakyDequeueStore::new(0));
+        let store_dyn: Arc<dyn TrainingStore> = store.clone();
+        store_dyn
+            .enqueue_rollout(Rollout::new(
+                "r-audit-gap-1",
+                json!({ "prompt": "audit-gap" }),
+                Some(tau_training_types::RolloutMode::Train),
+            ))
+            .await
+            .expect("enqueue");
+
+        let runner = TrainingRunner::new(
+            store_dyn.clone(),
+            Arc::new(StaticExecutor),
+            RunnerConfig {
+                worker_id: "worker-audit-gap".to_string(),
+                poll_interval: Duration::from_millis(10),
+                heartbeat_interval: Duration::from_millis(25),
+                reassignment_interval: Duration::from_millis(20),
+                worker_timeout: Duration::from_millis(120),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
+            },
+        );
+
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(async move { runner.run(rx).await });
+        wait_for_rollout_status(store_dyn.clone(), "r-audit-gap-1", RolloutStatus::Succeeded)
+            .await
+            .expect("status wait");
+        tx.send(true).expect("shutdown");
+        handle.await.expect("join").expect("runner");
+
+        store.hide_attempt_for_audit("r-audit-gap-1:attempt-1");
+        let report = audit_rollout_persistence(store.as_ref(), "r-audit-gap-1")
+            .await
+            .expect("audit report");
+        assert!(report.has_persistence_gaps);
+        assert!(report
+            .gap_reasons
+            .iter()
+            .any(|reason| reason == "missing attempt record: r-audit-gap-1:attempt-1"));
+    }
+
+    #[tokio::test]
+    async fn spec_1960_c04_audit_rejects_unknown_rollout_id() {
+        let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
+        let error = audit_rollout_persistence(store.as_ref(), "r-missing-1960")
+            .await
+            .expect_err("missing rollout should fail");
+        assert!(error
+            .to_string()
+            .contains("rollout 'r-missing-1960' not found for persistence audit"));
     }
 
     #[tokio::test]
