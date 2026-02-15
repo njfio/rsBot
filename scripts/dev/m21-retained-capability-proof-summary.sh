@@ -154,6 +154,7 @@ if not output_md.is_absolute():
     output_md = (repo_root / output_md).resolve()
 matrix_json = Path(matrix_json_raw).resolve() if matrix_json_raw else None
 quiet_mode = quiet_mode_raw == "true"
+default_matrix_path = repo_root / "scripts/demo/m21-retained-capability-proof-matrix.json"
 
 
 def log_info(message: str) -> None:
@@ -309,14 +310,19 @@ def default_matrix() -> dict:
     }
 
 
-def load_matrix(path: Path | None) -> dict:
-    if path is None:
-        return default_matrix()
-    with path.open(encoding="utf-8") as handle:
+def load_matrix(path: Path | None) -> tuple[dict, str]:
+    source = "embedded-default"
+    matrix_path = path
+    if matrix_path is None and default_matrix_path.is_file():
+        matrix_path = default_matrix_path
+    if matrix_path is None:
+        return default_matrix(), source
+    source = str(matrix_path)
+    with matrix_path.open(encoding="utf-8") as handle:
         matrix = json.load(handle)
     if not isinstance(matrix, dict):
         raise SystemExit("error: matrix JSON must decode to an object")
-    return matrix
+    return matrix, source
 
 
 def sanitize_name(raw: str) -> str:
@@ -407,7 +413,7 @@ def evaluate_marker(marker: dict, stdout_text: str, stderr_text: str) -> dict:
     return payload
 
 
-matrix = load_matrix(matrix_json)
+matrix, matrix_source = load_matrix(matrix_json)
 schema_version = matrix.get("schema_version", 1)
 if schema_version != 1:
     raise SystemExit(
@@ -547,6 +553,7 @@ payload = {
     "schema_version": 1,
     "generated_at": generated_at,
     "matrix_name": matrix_name,
+    "matrix_source": matrix_source,
     "issues": issues,
     "repository_root": str(repo_root),
     "report_paths": {
@@ -571,6 +578,7 @@ lines.append("# M21 Retained-Capability Proof Summary")
 lines.append("")
 lines.append(f"- Generated: {generated_at}")
 lines.append(f"- Matrix: {matrix_name}")
+lines.append(f"- Matrix source: {matrix_source}")
 if issues:
     lines.append(f"- Issues: {', '.join(issues)}")
 lines.append(f"- Status: {summary_status}")

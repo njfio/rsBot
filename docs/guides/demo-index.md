@@ -145,6 +145,19 @@ Example with explicit binary:
   --binary ./target/debug/tau-coding-agent
 ```
 
+Canonical retained-capability matrix and artifact checklist:
+- `scripts/demo/m21-retained-capability-proof-matrix.json`
+- capability IDs: `onboarding`, `gateway-auth`, `gateway-remote-access`,
+  `multi-channel-live`, `deployment-wasm`
+- checklist contract fields for each required artifact:
+  `name`, `path`, `required`, `status`
+
+Validate matrix/checklist contracts before live-proof runs:
+
+```bash
+./scripts/demo/validate-m21-retained-capability-proof-matrix.sh
+```
+
 Default report path conventions:
 - JSON summary: `tasks/reports/m21-retained-capability-proof-summary.json`
 - Markdown summary: `tasks/reports/m21-retained-capability-proof-summary.md`

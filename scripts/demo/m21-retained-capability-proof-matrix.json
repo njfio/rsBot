@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "name": "m21-retained-capability-proof-matrix",
+  "milestone": "Gap Closure Wave 2026-03: Structural Runtime Hardening",
+  "issues": ["#1631", "#1704", "#1745", "#1746"],
+  "artifact_checklist": {
+    "required_fields": ["name", "path", "required", "status"],
+    "required_status_values": ["present"],
+    "required_artifacts": [
+      {
+        "name": "demo-index-report",
+        "path_token": "{reports_dir}/demo-index-retained-summary.json",
+        "producer": "scripts/demo/index.sh"
+      },
+      {
+        "name": "demo-index-manifest",
+        "path_token": "{reports_dir}/demo-index-retained-summary.manifest.json",
+        "producer": "scripts/demo/index.sh"
+      },
+      {
+        "name": "demo-all-report",
+        "path_token": "{reports_dir}/demo-all-retained-summary.json",
+        "producer": "scripts/demo/all.sh"
+      },
+      {
+        "name": "demo-all-manifest",
+        "path_token": "{reports_dir}/demo-all-retained-summary.manifest.json",
+        "producer": "scripts/demo/all.sh"
+      },
+      {
+        "name": "proof-pack-rollup-manifest",
+        "path_token": "{reports_dir}/m21-retained-capability-proof-pack.manifest.json",
+        "producer": "scripts/demo/proof-pack-manifest.sh"
+      }
+    ],
+    "reviewer_checks": [
+      "All required artifact entries include name/path/required/status fields.",
+      "All required artifacts resolve to status=present in generated manifests.",
+      "Per-run summary status is pass and failed count is zero.",
+      "Rollup manifest includes linked issue references and producer metadata."
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "onboarding",
+      "wrapper": "scripts/demo/local.sh",
+      "proof_step": "demo-index-retained-scenarios",
+      "expected_markers": [
+        "[demo:local] PASS onboard-non-interactive",
+        "[demo:local] summary: total="
+      ],
+      "required_artifacts": ["demo-index-report", "demo-index-manifest"]
+    },
+    {
+      "id": "gateway-auth",
+      "wrapper": "scripts/demo/gateway-auth.sh",
+      "proof_step": "demo-index-retained-scenarios",
+      "expected_markers": [
+        "[demo:gateway-auth] PASS gateway-remote-profile-token-mode",
+        "[demo:gateway-auth] PASS gateway-remote-profile-password-session-mode"
+      ],
+      "required_artifacts": ["demo-index-report", "demo-index-manifest"]
+    },
+    {
+      "id": "gateway-remote-access",
+      "wrapper": "scripts/demo/gateway-remote-access.sh",
+      "proof_step": "demo-index-retained-scenarios",
+      "expected_markers": [
+        "[demo:gateway-remote-access] PASS gateway-remote-plan-export-tailscale-serve",
+        "[demo:gateway-remote-access] PASS gateway-remote-plan-fails-closed-for-missing-password"
+      ],
+      "required_artifacts": ["demo-index-report", "demo-index-manifest"]
+    },
+    {
+      "id": "multi-channel-live",
+      "wrapper": "scripts/demo/multi-channel.sh",
+      "proof_step": "demo-index-retained-scenarios",
+      "expected_markers": [
+        "[demo:multi-channel] PASS multi-channel-live-ingest-telegram",
+        "[demo:multi-channel] PASS multi-channel-live-ingest-discord",
+        "[demo:multi-channel] PASS multi-channel-live-ingest-whatsapp"
+      ],
+      "required_artifacts": ["demo-index-report", "demo-index-manifest"]
+    },
+    {
+      "id": "deployment-wasm",
+      "wrapper": "scripts/demo/deployment.sh",
+      "proof_step": "demo-index-retained-scenarios",
+      "expected_markers": [
+        "[demo:deployment] PASS deployment-wasm-package",
+        "[demo:deployment] PASS channel-store-inspect-deployment-edge-wasm"
+      ],
+      "required_artifacts": ["demo-index-report", "demo-index-manifest"]
+    }
+  ],
+  "runs": [
+    {
+      "name": "demo-index-retained-scenarios",
+      "description": "Run retained scenario subset via demo index wrapper and emit report/manifest artifacts.",
+      "command": [
+        "./scripts/demo/index.sh",
+        "--skip-build",
+        "--repo-root",
+        "{repo_root}",
+        "--binary",
+        "{binary}",
+        "--only",
+        "onboarding,gateway-auth,gateway-remote-access,multi-channel-live,deployment-wasm",
+        "--json",
+        "--report-file",
+        "{reports_dir}/demo-index-retained-summary.json",
+        "--manifest-file",
+        "{reports_dir}/demo-index-retained-summary.manifest.json"
+      ],
+      "expected_exit_code": 0,
+      "markers": [
+        {
+          "id": "index-summary-json",
+          "source": "stdout",
+          "contains": "\"summary\":{\"total\":"
+        },
+        {
+          "id": "index-summary-failed-zero",
+          "source": "stdout",
+          "contains": "\"failed\":0"
+        },
+        {
+          "id": "index-report-artifact",
+          "source": "file",
+          "path": "{reports_dir}/demo-index-retained-summary.json",
+          "contains": "\"summary\":{\"total\":"
+        },
+        {
+          "id": "index-manifest-artifact",
+          "source": "file",
+          "path": "{reports_dir}/demo-index-retained-summary.manifest.json",
+          "contains": "\"pack_name\": \"demo-index-live-proof-pack\""
+        }
+      ]
+    },
+    {
+      "name": "demo-all-retained-demos",
+      "description": "Run retained demo subset via all.sh wrapper and emit report/manifest artifacts.",
+      "command": [
+        "./scripts/demo/all.sh",
+        "--skip-build",
+        "--repo-root",
+        "{repo_root}",
+        "--binary",
+        "{binary}",
+        "--only",
+        "local,multi-channel,gateway-auth,gateway-remote-access,deployment",
+        "--json",
+        "--report-file",
+        "{reports_dir}/demo-all-retained-summary.json",
+        "--manifest-file",
+        "{reports_dir}/demo-all-retained-summary.manifest.json"
+      ],
+      "expected_exit_code": 0,
+      "markers": [
+        {
+          "id": "all-summary-json",
+          "source": "stdout",
+          "contains": "\"summary\":{\"total\":"
+        },
+        {
+          "id": "all-summary-failed-zero",
+          "source": "stdout",
+          "contains": "\"failed\":0"
+        },
+        {
+          "id": "all-report-artifact",
+          "source": "file",
+          "path": "{reports_dir}/demo-all-retained-summary.json",
+          "contains": "\"summary\":{\"total\":"
+        },
+        {
+          "id": "all-manifest-artifact",
+          "source": "file",
+          "path": "{reports_dir}/demo-all-retained-summary.manifest.json",
+          "contains": "\"pack_name\": \"demo-all-live-proof-pack\""
+        }
+      ]
+    },
+    {
+      "name": "proof-pack-rollup-manifest",
+      "description": "Emit rollup manifest for retained-capability proof artifacts.",
+      "command": [
+        "./scripts/demo/proof-pack-manifest.sh",
+        "--output",
+        "{reports_dir}/m21-retained-capability-proof-pack.manifest.json",
+        "--pack-name",
+        "m21-retained-capability-live-proof-pack",
+        "--producer-script",
+        "scripts/dev/m21-retained-capability-proof-summary.sh",
+        "--mode",
+        "run",
+        "--report-file",
+        "{reports_dir}/demo-all-retained-summary.json",
+        "--artifact",
+        "index-report={reports_dir}/demo-index-retained-summary.json",
+        "--artifact",
+        "index-manifest={reports_dir}/demo-index-retained-summary.manifest.json",
+        "--artifact",
+        "all-manifest={reports_dir}/demo-all-retained-summary.manifest.json",
+        "--issue",
+        "#1745",
+        "--issue",
+        "#1746"
+      ],
+      "expected_exit_code": 0,
+      "markers": [
+        {
+          "id": "rollup-manifest-log",
+          "source": "stderr",
+          "contains": "wrote proof-pack manifest:"
+        },
+        {
+          "id": "rollup-manifest-pack-name",
+          "source": "file",
+          "path": "{reports_dir}/m21-retained-capability-proof-pack.manifest.json",
+          "contains": "\"pack_name\": \"m21-retained-capability-live-proof-pack\""
+        },
+        {
+          "id": "rollup-manifest-status-pass",
+          "source": "file",
+          "path": "{reports_dir}/m21-retained-capability-proof-pack.manifest.json",
+          "contains": "\"status\": \"pass\""
+        }
+      ]
+    }
+  ]
+}
