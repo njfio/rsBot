@@ -7,6 +7,7 @@ This index maps Tau documentation by audience and task.
 | New user / operator | [Quickstart Guide](guides/quickstart.md) | Onboarding, auth modes, first prompt, first TUI run |
 | Fresh-clone validator / demo operator | [Demo Index Guide](guides/demo-index.md) | Deterministic onboarding, gateway auth, multi-channel live ingest, and deployment WASM demos |
 | Prompt optimization operator | [Prompt Optimization Operations Guide](guides/training-ops.md) | Rollout prompt optimization mode, JSON config schema, SQLite-backed state, M22 legacy-alias migration policy, and cross-link to future true-RL roadmap ([Epic #1657](https://github.com/njfio/Tau/issues/1657) / [Milestone #24](https://github.com/njfio/Tau/milestone/24)). |
+| Prompt optimization operator | [Prompt Optimization Recovery Runbook](guides/prompt-optimization-recovery-runbook.md) | Crash-detected resume flow, checkpoint primary/fallback restore behavior, and fail-closed recovery guardrails |
 | Prompt optimization integration operator | [Prompt Optimization Proxy Operations Guide](guides/training-proxy-ops.md) | OpenAI-compatible proxy mode with rollout/attempt attribution logs |
 | Prompt optimization maintainer | [Training Crate Boundary Plan](guides/training-crate-boundary-plan.md) | Explicit merge/retain decisions, staged PR sets, and boundary validation artifacts |
 | Workspace operator | [Project Index Guide](guides/project-index.md) | Build/query/inspect deterministic local code index |
