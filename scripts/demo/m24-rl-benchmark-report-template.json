@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "report_kind": "summary",
+  "run_id": "m24-2026-02-15-0001",
+  "generated_at": "2026-02-15T00:00:00Z",
+  "benchmark_suite": {
+    "name": "m24-rl-suite",
+    "version": "v1"
+  },
+  "metrics": {
+    "episodes": 200,
+    "mean_reward": 0.57,
+    "mean_safety_penalty": 0.0
+  },
+  "publication": {
+    "report_path": ".tau/reports/m24/m24-2026-02-15-0001/m24-benchmark-report-summary.json",
+    "archive_path": ".tau/reports/archive/m24/2026/02/m24-benchmark-report-m24-2026-02-15-0001-summary.json"
+  },
+  "retention": {
+    "policy": "archive-then-purge",
+    "retain_days": 365,
+    "archive_after_days": 30,
+    "purge_after": "2027-02-15T00:00:00Z"
+  }
+}

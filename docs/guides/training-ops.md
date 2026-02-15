@@ -178,6 +178,40 @@ The benchmark proof is a pass only if all conditions hold:
 If any criterion fails, mark `significance.pass=false` and treat the run as a
 regression or non-significant improvement.
 
+### Benchmark Report Publication And Archival Policy
+
+Use `scripts/demo/m24-rl-benchmark-report-template.json` for each published
+benchmark report (`baseline`, `trained`, `significance`, `summary`).
+
+Required schema groups:
+
+- run metadata: `schema_version`, `report_kind`, `run_id`, `generated_at`
+- benchmark metadata: `benchmark_suite.name`, `benchmark_suite.version`
+- metrics: `episodes`, `mean_reward`, `mean_safety_penalty`
+- publication paths: `publication.report_path`, `publication.archive_path`
+- retention policy: `retention.policy`, `retention.retain_days`,
+  `retention.archive_after_days`, `retention.purge_after`
+
+`.tau/reports` naming conventions:
+
+- active report:
+  `.tau/reports/m24/<run_id>/m24-benchmark-report-<report_kind>.json`
+- archived report:
+  `.tau/reports/archive/m24/YYYY/MM/m24-benchmark-report-<run_id>-<report_kind>.json`
+
+Retention policy rules:
+
+- `retention.policy` must be `archive-then-purge` or `retain-only`
+- `retention.retain_days > 0`
+- `0 <= retention.archive_after_days <= retention.retain_days`
+
+Validate publication reports with:
+
+```bash
+scripts/demo/validate-m24-rl-benchmark-report.sh \
+  .tau/reports/m24/<run_id>/m24-benchmark-report-<report_kind>.json
+```
+
 ## Ownership
 
 Primary ownership surfaces:
