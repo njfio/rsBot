@@ -86,3 +86,55 @@ python3 .github/scripts/rust_doc_density.py \
   --targets-file docs/guides/doc-density-targets.json \
   --json
 ```
+
+## Gate Reproducibility Artifact (M23)
+
+For milestone gate reviews, generate a standardized artifact bundle that records
+the exact doc-density command, tool versions, and execution context:
+
+```bash
+scripts/dev/doc-density-gate-artifact.sh \
+  --repo-root . \
+  --targets-file docs/guides/doc-density-targets.json \
+  --output-json tasks/reports/m23-doc-density-gate-artifact.json \
+  --output-md tasks/reports/m23-doc-density-gate-artifact.md
+```
+
+### Artifact Outputs
+
+- `tasks/reports/m23-doc-density-gate-artifact.json`
+- `tasks/reports/m23-doc-density-gate-artifact.md`
+
+## Artifact Template
+
+Gate artifact payload fields (JSON):
+
+- `schema_version`
+- `generated_at`
+- `repo_root`
+- `command` (`script`, `targets_file`, `rendered`)
+- `versions` (`python3`, `rustc`, `cargo`, `gh`, `jq`)
+- `context` (`os`, `git_commit`, `git_branch`, `git_dirty`)
+- `density_report` (embedded output from `rust_doc_density.py --json`)
+- `troubleshooting` (operator diagnostics checklist entries)
+
+Markdown template sections:
+
+- Command
+- Versions
+- Context
+- Summary
+- Crate Breakdown
+- Troubleshooting
+- Reproduction Command
+
+## Troubleshooting
+
+1. Count mismatch vs CI artifact:
+   Confirm `command.rendered` and `command.targets_file` match the CI run.
+2. Unexpected count movement after toolchain updates:
+   Compare `versions` between local and CI artifacts and rerun with aligned
+   tool versions.
+3. Local/remote divergence:
+   Verify `context.git_commit` and `context.git_dirty` before concluding the
+   counter behavior regressed.
