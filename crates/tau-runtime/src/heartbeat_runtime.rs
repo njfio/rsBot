@@ -17,10 +17,23 @@ const RUNTIME_HEARTBEAT_STATE_DISABLED: &str = "disabled";
 const RUNTIME_HEARTBEAT_STATE_UNKNOWN: &str = "unknown";
 const RUNTIME_HEARTBEAT_REASON_CYCLE_OK: &str = "heartbeat_cycle_ok";
 const RUNTIME_HEARTBEAT_REASON_BACKLOG: &str = "heartbeat_maintenance_backlog";
+const RUNTIME_HEARTBEAT_REASON_SELF_REPAIR: &str = "heartbeat_self_repair_applied";
 const RUNTIME_HEARTBEAT_REASON_STOPPED: &str = "heartbeat_stopped";
 const RUNTIME_HEARTBEAT_REASON_DISABLED: &str = "heartbeat_disabled";
 const RUNTIME_HEARTBEAT_REASON_STATE_MISSING: &str = "heartbeat_state_missing";
 const DEFAULT_MAINTENANCE_TEMP_MAX_AGE_SECONDS: u64 = 3_600;
+const DEFAULT_SELF_REPAIR_TIMEOUT_SECONDS: u64 = 300;
+const DEFAULT_SELF_REPAIR_MAX_RETRIES: usize = 2;
+const DEFAULT_SELF_REPAIR_ORPHAN_MAX_AGE_SECONDS: u64 = 3_600;
+
+const REPAIR_WORK_ITEM_STATUS_RUNNING: &str = "running";
+const REPAIR_WORK_ITEM_STATUS_BUILDING: &str = "building";
+const REPAIR_WORK_ITEM_STATUS_TIMED_OUT: &str = "timed_out";
+const REPAIR_WORK_ITEM_STATUS_QUEUED: &str = "queued";
+const REPAIR_WORK_ITEM_STATUS_REBUILD_QUEUED: &str = "rebuild_queued";
+const REPAIR_WORK_ITEM_STATUS_FAILED: &str = "failed";
+const REPAIR_WORK_ITEM_STATUS_SUCCEEDED: &str = "succeeded";
+const REPAIR_WORK_ITEM_STATUS_CANCELLED: &str = "cancelled";
 
 fn runtime_heartbeat_schema_version() -> u32 {
     RUNTIME_HEARTBEAT_SCHEMA_VERSION
@@ -34,6 +47,10 @@ fn default_runtime_heartbeat_state() -> String {
     RUNTIME_HEARTBEAT_STATE_UNKNOWN.to_string()
 }
 
+fn runtime_repair_work_item_schema_version() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `RuntimeHeartbeatSchedulerConfig` used across Tau components.
 pub struct RuntimeHeartbeatSchedulerConfig {
@@ -43,6 +60,11 @@ pub struct RuntimeHeartbeatSchedulerConfig {
     pub queue_state_paths: Vec<PathBuf>,
     pub events_dir: Option<PathBuf>,
     pub jobs_dir: Option<PathBuf>,
+    pub self_repair_enabled: bool,
+    pub self_repair_timeout: Duration,
+    pub self_repair_max_retries: usize,
+    pub self_repair_tool_builds_dir: Option<PathBuf>,
+    pub self_repair_orphan_artifact_max_age: Duration,
     pub maintenance_temp_dirs: Vec<PathBuf>,
     pub maintenance_temp_max_age: Duration,
 }
@@ -66,6 +88,13 @@ impl Default for RuntimeHeartbeatSchedulerConfig {
             queue_state_paths: Vec::new(),
             events_dir: None,
             jobs_dir: None,
+            self_repair_enabled: true,
+            self_repair_timeout: Duration::from_secs(DEFAULT_SELF_REPAIR_TIMEOUT_SECONDS),
+            self_repair_max_retries: DEFAULT_SELF_REPAIR_MAX_RETRIES,
+            self_repair_tool_builds_dir: None,
+            self_repair_orphan_artifact_max_age: Duration::from_secs(
+                DEFAULT_SELF_REPAIR_ORPHAN_MAX_AGE_SECONDS,
+            ),
             maintenance_temp_dirs: Vec::new(),
             maintenance_temp_max_age: Duration::from_secs(DEFAULT_MAINTENANCE_TEMP_MAX_AGE_SECONDS),
         }
@@ -100,6 +129,18 @@ pub struct RuntimeHeartbeatSnapshot {
     #[serde(default)]
     pub temp_files_cleaned: usize,
     #[serde(default)]
+    pub stuck_jobs: usize,
+    #[serde(default)]
+    pub stuck_tool_builds: usize,
+    #[serde(default)]
+    pub repair_actions: usize,
+    #[serde(default)]
+    pub retries_queued: usize,
+    #[serde(default)]
+    pub retries_exhausted: usize,
+    #[serde(default)]
+    pub orphan_artifacts_cleaned: usize,
+    #[serde(default)]
     pub reason_codes: Vec<String>,
     #[serde(default)]
     pub diagnostics: Vec<String>,
@@ -122,6 +163,12 @@ impl Default for RuntimeHeartbeatSnapshot {
             pending_events: 0,
             pending_jobs: 0,
             temp_files_cleaned: 0,
+            stuck_jobs: 0,
+            stuck_tool_builds: 0,
+            repair_actions: 0,
+            retries_queued: 0,
+            retries_exhausted: 0,
+            orphan_artifacts_cleaned: 0,
             reason_codes: Vec::new(),
             diagnostics: Vec::new(),
             state_path: String::new(),
@@ -139,6 +186,50 @@ struct RuntimeHeartbeatCycleReport {
     pending_events: usize,
     pending_jobs: usize,
     temp_files_cleaned: usize,
+    stuck_jobs: usize,
+    stuck_tool_builds: usize,
+    repair_actions: usize,
+    retries_queued: usize,
+    retries_exhausted: usize,
+    orphan_artifacts_cleaned: usize,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeSelfRepairSummary {
+    stuck_jobs: usize,
+    stuck_tool_builds: usize,
+    repair_actions: usize,
+    retries_queued: usize,
+    retries_exhausted: usize,
+    orphan_artifacts_cleaned: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeRepairWorkItem {
+    #[serde(default = "runtime_repair_work_item_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    retryable: bool,
+    #[serde(default)]
+    retry_count: usize,
+    #[serde(default)]
+    max_retries: usize,
+    #[serde(default)]
+    started_unix_ms: u64,
+    #[serde(default)]
+    updated_unix_ms: u64,
+    #[serde(default)]
+    reason_code: String,
+    #[serde(default)]
+    artifact_paths: Vec<String>,
+    #[serde(default)]
+    temp_paths: Vec<String>,
+    #[serde(default)]
     diagnostics: Vec<String>,
 }
 
@@ -223,6 +314,12 @@ pub fn start_runtime_heartbeat_scheduler(
             pending_events: 0,
             pending_jobs: 0,
             temp_files_cleaned: 0,
+            stuck_jobs: 0,
+            stuck_tool_builds: 0,
+            repair_actions: 0,
+            retries_queued: 0,
+            retries_exhausted: 0,
+            orphan_artifacts_cleaned: 0,
             reason_codes: vec![RUNTIME_HEARTBEAT_REASON_DISABLED.to_string()],
             diagnostics: Vec::new(),
             state_path: config.state_path.display().to_string(),
@@ -251,6 +348,12 @@ pub fn start_runtime_heartbeat_scheduler(
         pending_events: 0,
         pending_jobs: 0,
         temp_files_cleaned: 0,
+        stuck_jobs: 0,
+        stuck_tool_builds: 0,
+        repair_actions: 0,
+        retries_queued: 0,
+        retries_exhausted: 0,
+        orphan_artifacts_cleaned: 0,
         reason_codes: vec!["heartbeat_started".to_string()],
         diagnostics: vec![format!(
             "heartbeat_started: interval_ms={} state_path={}",
@@ -357,6 +460,12 @@ async fn run_runtime_heartbeat_loop(
                     pending_events: 0,
                     pending_jobs: 0,
                     temp_files_cleaned: 0,
+                    stuck_jobs: 0,
+                    stuck_tool_builds: 0,
+                    repair_actions: 0,
+                    retries_queued: 0,
+                    retries_exhausted: 0,
+                    orphan_artifacts_cleaned: 0,
                     reason_codes: vec![RUNTIME_HEARTBEAT_REASON_STOPPED.to_string()],
                     diagnostics: vec![format!(
                         "heartbeat_stopped: state_path={} ticks={tick_count}",
@@ -377,6 +486,7 @@ fn execute_runtime_heartbeat_cycle(
     config: &RuntimeHeartbeatSchedulerConfig,
     tick_count: u64,
 ) -> RuntimeHeartbeatCycleResult {
+    let now = current_unix_timestamp_ms();
     let mut diagnostics = Vec::new();
     let mut reason_codes = Vec::new();
 
@@ -418,16 +528,21 @@ fn execute_runtime_heartbeat_cycle(
     if temp_files_cleaned > 0 {
         push_unique_reason_code(&mut reason_codes, "stale_temp_files_cleaned");
     }
+
+    let self_repair = execute_runtime_self_repair(config, now, &mut diagnostics, &mut reason_codes);
+
     if reason_codes.is_empty() {
         reason_codes.push("heartbeat_cycle_clean".to_string());
     }
 
-    let reason_code = if queue_depth > 0 || pending_events > 0 || pending_jobs > 0 {
+    let reason_code = if self_repair.repair_actions > 0 {
+        RUNTIME_HEARTBEAT_REASON_SELF_REPAIR.to_string()
+    } else if queue_depth > 0 || pending_events > 0 || pending_jobs > 0 {
         RUNTIME_HEARTBEAT_REASON_BACKLOG.to_string()
     } else {
         RUNTIME_HEARTBEAT_REASON_CYCLE_OK.to_string()
     };
-    let now = current_unix_timestamp_ms();
+
     let snapshot = RuntimeHeartbeatSnapshot {
         schema_version: RUNTIME_HEARTBEAT_SCHEMA_VERSION,
         updated_unix_ms: now,
@@ -441,6 +556,12 @@ fn execute_runtime_heartbeat_cycle(
         pending_events,
         pending_jobs,
         temp_files_cleaned,
+        stuck_jobs: self_repair.stuck_jobs,
+        stuck_tool_builds: self_repair.stuck_tool_builds,
+        repair_actions: self_repair.repair_actions,
+        retries_queued: self_repair.retries_queued,
+        retries_exhausted: self_repair.retries_exhausted,
+        orphan_artifacts_cleaned: self_repair.orphan_artifacts_cleaned,
         reason_codes: reason_codes.clone(),
         diagnostics: diagnostics.clone(),
         state_path: config.state_path.display().to_string(),
@@ -454,9 +575,444 @@ fn execute_runtime_heartbeat_cycle(
         pending_events,
         pending_jobs,
         temp_files_cleaned,
+        stuck_jobs: self_repair.stuck_jobs,
+        stuck_tool_builds: self_repair.stuck_tool_builds,
+        repair_actions: self_repair.repair_actions,
+        retries_queued: self_repair.retries_queued,
+        retries_exhausted: self_repair.retries_exhausted,
+        orphan_artifacts_cleaned: self_repair.orphan_artifacts_cleaned,
         diagnostics,
     };
     RuntimeHeartbeatCycleResult { snapshot, report }
+}
+
+fn execute_runtime_self_repair(
+    config: &RuntimeHeartbeatSchedulerConfig,
+    now_unix_ms: u64,
+    diagnostics: &mut Vec<String>,
+    reason_codes: &mut Vec<String>,
+) -> RuntimeSelfRepairSummary {
+    if !config.self_repair_enabled {
+        diagnostics.push("self_repair_disabled".to_string());
+        return RuntimeSelfRepairSummary::default();
+    }
+
+    let timeout_ms = u64::try_from(config.self_repair_timeout.as_millis()).unwrap_or(u64::MAX);
+    let max_retries = config.self_repair_max_retries.max(1);
+    let orphan_max_age_ms =
+        u64::try_from(config.self_repair_orphan_artifact_max_age.as_millis()).unwrap_or(u64::MAX);
+
+    let mut summary = RuntimeSelfRepairSummary::default();
+    process_repair_work_item_dir(
+        config.jobs_dir.as_deref(),
+        "job",
+        now_unix_ms,
+        timeout_ms,
+        max_retries,
+        orphan_max_age_ms,
+        diagnostics,
+        reason_codes,
+        &mut summary,
+    );
+    process_repair_work_item_dir(
+        config.self_repair_tool_builds_dir.as_deref(),
+        "tool_build",
+        now_unix_ms,
+        timeout_ms,
+        max_retries,
+        orphan_max_age_ms,
+        diagnostics,
+        reason_codes,
+        &mut summary,
+    );
+
+    summary
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_repair_work_item_dir(
+    dir: Option<&Path>,
+    kind: &str,
+    now_unix_ms: u64,
+    timeout_ms: u64,
+    max_retries: usize,
+    orphan_max_age_ms: u64,
+    diagnostics: &mut Vec<String>,
+    reason_codes: &mut Vec<String>,
+    summary: &mut RuntimeSelfRepairSummary,
+) {
+    let Some(dir) = dir else {
+        diagnostics.push(format!("self_repair_{kind}_dir_not_configured"));
+        return;
+    };
+
+    if !dir.exists() {
+        diagnostics.push(format!(
+            "self_repair_{kind}_dir_missing: path={}",
+            dir.display()
+        ));
+        return;
+    }
+    if !dir.is_dir() {
+        diagnostics.push(format!(
+            "self_repair_{kind}_dir_not_directory: path={}",
+            dir.display()
+        ));
+        push_unique_reason_code(reason_codes, "self_repair_dir_error");
+        return;
+    }
+
+    let manifest_paths = match collect_repair_manifest_paths(dir) {
+        Ok(paths) => paths,
+        Err(error) => {
+            diagnostics.push(format!(
+                "self_repair_{kind}_dir_read_error: path={} error={error}",
+                dir.display()
+            ));
+            push_unique_reason_code(reason_codes, "self_repair_dir_error");
+            return;
+        }
+    };
+
+    for manifest_path in manifest_paths {
+        if let Err(error) = process_repair_work_item_manifest(
+            &manifest_path,
+            kind,
+            now_unix_ms,
+            timeout_ms,
+            max_retries,
+            orphan_max_age_ms,
+            diagnostics,
+            reason_codes,
+            summary,
+        ) {
+            diagnostics.push(format!(
+                "self_repair_manifest_error: kind={} path={} error={error}",
+                kind,
+                manifest_path.display()
+            ));
+            push_unique_reason_code(reason_codes, "self_repair_manifest_error");
+        }
+    }
+}
+
+fn collect_repair_manifest_paths(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let is_json = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("json"))
+            .unwrap_or(false);
+        if is_json {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_repair_work_item_manifest(
+    manifest_path: &Path,
+    kind: &str,
+    now_unix_ms: u64,
+    timeout_ms: u64,
+    max_retries: usize,
+    orphan_max_age_ms: u64,
+    diagnostics: &mut Vec<String>,
+    reason_codes: &mut Vec<String>,
+    summary: &mut RuntimeSelfRepairSummary,
+) -> Result<()> {
+    let raw = std::fs::read_to_string(manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let mut item = serde_json::from_str::<RuntimeRepairWorkItem>(&raw)
+        .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    if item.id.trim().is_empty() {
+        item.id = manifest_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+    }
+
+    let mut changed = false;
+    let mut stuck_detected = false;
+    let status = normalize_repair_work_item_status(&item.status);
+    let last_activity_unix_ms = item.updated_unix_ms.max(item.started_unix_ms);
+    let elapsed_ms = if last_activity_unix_ms == 0 {
+        0
+    } else {
+        now_unix_ms.saturating_sub(last_activity_unix_ms)
+    };
+
+    if is_running_repair_work_item_status(kind, status.as_str()) && elapsed_ms >= timeout_ms {
+        changed = true;
+        stuck_detected = true;
+        summary.repair_actions = summary.repair_actions.saturating_add(1);
+        match kind {
+            "job" => {
+                summary.stuck_jobs = summary.stuck_jobs.saturating_add(1);
+                push_unique_reason_code(reason_codes, "self_repair_stuck_job_detected");
+            }
+            "tool_build" => {
+                summary.stuck_tool_builds = summary.stuck_tool_builds.saturating_add(1);
+                push_unique_reason_code(reason_codes, "self_repair_stuck_tool_build_detected");
+            }
+            _ => {}
+        }
+        diagnostics.push(format!(
+            "self_repair_stuck_detected: kind={} id={} path={} status={} elapsed_ms={} timeout_ms={}",
+            kind,
+            item.id,
+            manifest_path.display(),
+            status,
+            elapsed_ms,
+            timeout_ms,
+        ));
+        item.status = REPAIR_WORK_ITEM_STATUS_TIMED_OUT.to_string();
+        item.reason_code = "self_repair_timed_out".to_string();
+        item.updated_unix_ms = now_unix_ms;
+        item.diagnostics.push(format!(
+            "self_repair_timed_out: elapsed_ms={} timeout_ms={}",
+            elapsed_ms, timeout_ms
+        ));
+
+        if item.retryable {
+            let retry_budget = if item.max_retries == 0 {
+                max_retries
+            } else {
+                item.max_retries
+            };
+            if item.retry_count < retry_budget {
+                item.retry_count = item.retry_count.saturating_add(1);
+                item.updated_unix_ms = now_unix_ms;
+                item.status = match kind {
+                    "tool_build" => REPAIR_WORK_ITEM_STATUS_REBUILD_QUEUED.to_string(),
+                    _ => REPAIR_WORK_ITEM_STATUS_QUEUED.to_string(),
+                };
+                item.reason_code = match kind {
+                    "tool_build" => "self_repair_rebuild_queued".to_string(),
+                    _ => "self_repair_retry_queued".to_string(),
+                };
+                item.diagnostics.push(format!(
+                    "self_repair_retry_queued: retry_count={} max_retries={retry_budget}",
+                    item.retry_count
+                ));
+                summary.retries_queued = summary.retries_queued.saturating_add(1);
+                summary.repair_actions = summary.repair_actions.saturating_add(1);
+                push_unique_reason_code(reason_codes, item.reason_code.as_str());
+                diagnostics.push(format!(
+                    "self_repair_retry_queued: kind={} id={} path={} retry_count={} max_retries={retry_budget}",
+                    kind,
+                    item.id,
+                    manifest_path.display(),
+                    item.retry_count
+                ));
+            } else {
+                item.updated_unix_ms = now_unix_ms;
+                item.status = REPAIR_WORK_ITEM_STATUS_FAILED.to_string();
+                item.reason_code = "self_repair_retry_exhausted".to_string();
+                item.diagnostics.push(format!(
+                    "self_repair_retry_exhausted: retry_count={} max_retries={retry_budget}",
+                    item.retry_count
+                ));
+                summary.retries_exhausted = summary.retries_exhausted.saturating_add(1);
+                summary.repair_actions = summary.repair_actions.saturating_add(1);
+                push_unique_reason_code(reason_codes, "self_repair_retry_exhausted");
+                diagnostics.push(format!(
+                    "self_repair_retry_exhausted: kind={} id={} path={} retry_count={} max_retries={retry_budget}",
+                    kind,
+                    item.id,
+                    manifest_path.display(),
+                    item.retry_count
+                ));
+            }
+        }
+    }
+
+    let status_after_repair = normalize_repair_work_item_status(&item.status);
+    let last_activity_after_repair = item.updated_unix_ms.max(item.started_unix_ms);
+    let elapsed_after_repair_ms = if last_activity_after_repair == 0 {
+        0
+    } else {
+        now_unix_ms.saturating_sub(last_activity_after_repair)
+    };
+    let stale_for_orphan_cleanup = if stuck_detected {
+        elapsed_ms >= orphan_max_age_ms
+    } else {
+        elapsed_after_repair_ms >= orphan_max_age_ms
+    };
+    if (is_terminal_repair_work_item_status(status_after_repair.as_str()) || stuck_detected)
+        && stale_for_orphan_cleanup
+    {
+        let (artifact_removed, artifact_changed) = cleanup_orphan_path_entries(
+            manifest_path,
+            &mut item.artifact_paths,
+            "artifact",
+            diagnostics,
+            reason_codes,
+        );
+        let (temp_removed, temp_changed) = cleanup_orphan_path_entries(
+            manifest_path,
+            &mut item.temp_paths,
+            "temp",
+            diagnostics,
+            reason_codes,
+        );
+        let total_removed = artifact_removed.saturating_add(temp_removed);
+        if total_removed > 0 {
+            changed = true;
+            summary.orphan_artifacts_cleaned = summary
+                .orphan_artifacts_cleaned
+                .saturating_add(total_removed);
+            summary.repair_actions = summary.repair_actions.saturating_add(1);
+            item.reason_code = "self_repair_orphan_cleanup".to_string();
+            item.updated_unix_ms = now_unix_ms;
+            item.diagnostics.push(format!(
+                "self_repair_orphan_cleanup: removed={total_removed} age_ms={elapsed_after_repair_ms} orphan_max_age_ms={orphan_max_age_ms}"
+            ));
+            push_unique_reason_code(reason_codes, "orphan_resources_cleaned");
+            diagnostics.push(format!(
+                "self_repair_orphan_cleanup: kind={} id={} path={} removed={total_removed}",
+                kind,
+                item.id,
+                manifest_path.display()
+            ));
+        } else if artifact_changed || temp_changed {
+            changed = true;
+        }
+    }
+
+    if changed {
+        persist_repair_work_item_manifest(manifest_path, &item)?;
+    }
+    Ok(())
+}
+
+fn cleanup_orphan_path_entries(
+    manifest_path: &Path,
+    entries: &mut Vec<String>,
+    label: &str,
+    diagnostics: &mut Vec<String>,
+    reason_codes: &mut Vec<String>,
+) -> (usize, bool) {
+    if entries.is_empty() {
+        return (0, false);
+    }
+
+    let original = entries.clone();
+    let mut removed = 0_usize;
+    let mut retained = Vec::new();
+    for raw_entry in &original {
+        let entry = raw_entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let resolved = match resolve_repair_path(manifest_path, entry) {
+            Ok(path) => path,
+            Err(error) => {
+                retained.push(entry.to_string());
+                diagnostics.push(format!(
+                    "self_repair_orphan_path_invalid: path={} entry={} error={error}",
+                    manifest_path.display(),
+                    entry
+                ));
+                push_unique_reason_code(reason_codes, "self_repair_orphan_cleanup_error");
+                continue;
+            }
+        };
+        if !resolved.exists() {
+            continue;
+        }
+
+        let remove_result = if resolved.is_file() {
+            std::fs::remove_file(&resolved)
+        } else if resolved.is_dir() {
+            std::fs::remove_dir_all(&resolved)
+        } else {
+            retained.push(entry.to_string());
+            continue;
+        };
+        match remove_result {
+            Ok(()) => {
+                removed = removed.saturating_add(1);
+                diagnostics.push(format!(
+                    "self_repair_orphan_path_removed: kind={label} manifest={} path={}",
+                    manifest_path.display(),
+                    resolved.display()
+                ));
+            }
+            Err(error) => {
+                retained.push(entry.to_string());
+                diagnostics.push(format!(
+                    "self_repair_orphan_path_remove_error: kind={label} manifest={} path={} error={error}",
+                    manifest_path.display(),
+                    resolved.display()
+                ));
+                push_unique_reason_code(reason_codes, "self_repair_orphan_cleanup_error");
+            }
+        }
+    }
+    let changed = retained != original;
+    if changed {
+        *entries = retained;
+    }
+    (removed, changed)
+}
+
+fn resolve_repair_path(manifest_path: &Path, entry: &str) -> Result<PathBuf> {
+    let candidate = PathBuf::from(entry);
+    if candidate.is_absolute() {
+        return Ok(candidate);
+    }
+    if candidate
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("relative orphan path must not traverse parent directories");
+    }
+    let parent = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    Ok(parent.join(candidate))
+}
+
+fn normalize_repair_work_item_status(status: &str) -> String {
+    status.trim().to_ascii_lowercase()
+}
+
+fn is_running_repair_work_item_status(kind: &str, status: &str) -> bool {
+    match kind {
+        "tool_build" => {
+            status == REPAIR_WORK_ITEM_STATUS_RUNNING || status == REPAIR_WORK_ITEM_STATUS_BUILDING
+        }
+        _ => status == REPAIR_WORK_ITEM_STATUS_RUNNING,
+    }
+}
+
+fn is_terminal_repair_work_item_status(status: &str) -> bool {
+    matches!(
+        status,
+        REPAIR_WORK_ITEM_STATUS_FAILED
+            | REPAIR_WORK_ITEM_STATUS_TIMED_OUT
+            | REPAIR_WORK_ITEM_STATUS_SUCCEEDED
+            | REPAIR_WORK_ITEM_STATUS_CANCELLED
+    )
+}
+
+fn persist_repair_work_item_manifest(path: &Path, item: &RuntimeRepairWorkItem) -> Result<()> {
+    let payload =
+        serde_json::to_string_pretty(item).context("failed to serialize self-repair work item")?;
+    write_text_atomic(path, &payload)
 }
 
 fn collect_queue_depth(
@@ -715,6 +1271,7 @@ mod tests {
         inspect_runtime_heartbeat, start_runtime_heartbeat_scheduler,
         RuntimeHeartbeatSchedulerConfig,
     };
+    use serde_json::Value;
     use std::path::Path;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -727,6 +1284,11 @@ mod tests {
             queue_state_paths: vec![root.join("queue/state.json")],
             events_dir: Some(root.join("events")),
             jobs_dir: Some(root.join("jobs")),
+            self_repair_enabled: true,
+            self_repair_timeout: Duration::from_secs(300),
+            self_repair_max_retries: 2,
+            self_repair_tool_builds_dir: Some(root.join("tool-builds")),
+            self_repair_orphan_artifact_max_age: Duration::from_secs(3_600),
             maintenance_temp_dirs: vec![root.join("tmp")],
             maintenance_temp_max_age: Duration::from_secs(60),
         }
@@ -818,6 +1380,145 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "stale_temp_files_cleaned"));
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn integration_runtime_heartbeat_scheduler_marks_stuck_jobs_and_queues_retry() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("queue")).expect("create queue dir");
+        std::fs::create_dir_all(temp.path().join("jobs")).expect("create jobs dir");
+        std::fs::write(temp.path().join("queue/state.json"), "{}").expect("write queue state");
+        std::fs::write(
+            temp.path().join("jobs/job-1.json"),
+            r#"{
+  "id": "job-1",
+  "status": "running",
+  "retryable": true,
+  "retry_count": 0,
+  "max_retries": 2,
+  "started_unix_ms": 1,
+  "updated_unix_ms": 1
+}"#,
+        )
+        .expect("write job manifest");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.self_repair_timeout = Duration::ZERO;
+        config.self_repair_max_retries = 2;
+
+        let mut handle =
+            start_runtime_heartbeat_scheduler(config).expect("start runtime heartbeat");
+        wait_for_tick(handle.state_path(), Duration::from_secs(2)).await;
+
+        let repaired_raw = std::fs::read_to_string(temp.path().join("jobs/job-1.json"))
+            .expect("read repaired job");
+        let repaired: Value = serde_json::from_str(&repaired_raw).expect("parse repaired job");
+        assert_eq!(repaired["status"], "queued");
+        assert_eq!(repaired["retry_count"], 1);
+        assert_eq!(repaired["reason_code"], "self_repair_retry_queued");
+
+        let snapshot = inspect_runtime_heartbeat(handle.state_path());
+        assert!(snapshot.stuck_jobs >= 1);
+        assert!(snapshot.retries_queued >= 1);
+        assert!(snapshot.repair_actions >= 2);
+        assert!(snapshot
+            .reason_codes
+            .iter()
+            .any(|code| code == "self_repair_retry_queued"));
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn functional_runtime_heartbeat_scheduler_rebuilds_tool_build_and_cleans_orphans() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("queue")).expect("create queue dir");
+        std::fs::create_dir_all(temp.path().join("tool-builds")).expect("create tool-builds dir");
+        std::fs::write(temp.path().join("queue/state.json"), "{}").expect("write queue state");
+
+        std::fs::write(temp.path().join("tool-builds/stale-output.bin"), "artifact")
+            .expect("write orphan artifact");
+        std::fs::write(
+            temp.path().join("tool-builds/build-1.json"),
+            r#"{
+  "id": "build-1",
+  "status": "building",
+  "retryable": true,
+  "retry_count": 0,
+  "max_retries": 1,
+  "started_unix_ms": 1,
+  "updated_unix_ms": 1,
+  "artifact_paths": ["stale-output.bin"]
+}"#,
+        )
+        .expect("write tool build manifest");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.self_repair_timeout = Duration::ZERO;
+        config.self_repair_orphan_artifact_max_age = Duration::ZERO;
+
+        let mut handle =
+            start_runtime_heartbeat_scheduler(config).expect("start runtime heartbeat");
+        wait_for_tick(handle.state_path(), Duration::from_secs(2)).await;
+        let snapshot = inspect_runtime_heartbeat(handle.state_path());
+        handle.shutdown().await;
+
+        assert!(!temp.path().join("tool-builds/stale-output.bin").exists());
+        let repaired_raw = std::fs::read_to_string(temp.path().join("tool-builds/build-1.json"))
+            .expect("read repaired tool build");
+        let repaired: Value = serde_json::from_str(&repaired_raw).expect("parse repaired build");
+        assert_eq!(repaired["status"], "rebuild_queued");
+        assert_eq!(repaired["retry_count"], 1);
+
+        assert!(snapshot.stuck_tool_builds >= 1);
+        assert!(snapshot.orphan_artifacts_cleaned >= 1);
+        assert!(snapshot
+            .reason_codes
+            .iter()
+            .any(|code| code == "orphan_resources_cleaned"));
+    }
+
+    #[tokio::test]
+    async fn regression_runtime_heartbeat_scheduler_marks_failed_when_retry_budget_exhausted() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("queue")).expect("create queue dir");
+        std::fs::create_dir_all(temp.path().join("jobs")).expect("create jobs dir");
+        std::fs::write(temp.path().join("queue/state.json"), "{}").expect("write queue state");
+        std::fs::write(
+            temp.path().join("jobs/job-exhausted.json"),
+            r#"{
+  "id": "job-exhausted",
+  "status": "running",
+  "retryable": true,
+  "retry_count": 1,
+  "max_retries": 1,
+  "started_unix_ms": 1,
+  "updated_unix_ms": 1
+}"#,
+        )
+        .expect("write exhausted job manifest");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.self_repair_timeout = Duration::ZERO;
+
+        let mut handle =
+            start_runtime_heartbeat_scheduler(config).expect("start runtime heartbeat");
+        wait_for_tick(handle.state_path(), Duration::from_secs(2)).await;
+
+        let repaired_raw = std::fs::read_to_string(temp.path().join("jobs/job-exhausted.json"))
+            .expect("read repaired exhausted job");
+        let repaired: Value = serde_json::from_str(&repaired_raw).expect("parse repaired job");
+        assert_eq!(repaired["status"], "failed");
+        assert_eq!(repaired["reason_code"], "self_repair_retry_exhausted");
+
+        let snapshot = inspect_runtime_heartbeat(handle.state_path());
+        assert!(snapshot.retries_exhausted >= 1);
+        assert!(snapshot
+            .reason_codes
+            .iter()
+            .any(|code| code == "self_repair_retry_exhausted"));
 
         handle.shutdown().await;
     }

@@ -2394,6 +2394,14 @@ fn unit_cli_daemon_flags_default_to_disabled() {
         cli.runtime_heartbeat_state_path,
         PathBuf::from(".tau/runtime-heartbeat/state.json")
     );
+    assert!(cli.runtime_self_repair_enabled);
+    assert_eq!(cli.runtime_self_repair_timeout_ms, 300_000);
+    assert_eq!(cli.runtime_self_repair_max_retries, 2);
+    assert_eq!(
+        cli.runtime_self_repair_tool_builds_dir,
+        PathBuf::from(".tau/tool-builds")
+    );
+    assert_eq!(cli.runtime_self_repair_orphan_max_age_seconds, 3_600);
 }
 
 #[test]
@@ -2426,6 +2434,15 @@ fn functional_cli_runtime_heartbeat_flags_accept_overrides() {
         "1500",
         "--runtime-heartbeat-state-path",
         ".tau/custom/heartbeat.json",
+        "--runtime-self-repair-enabled=false",
+        "--runtime-self-repair-timeout-ms",
+        "45000",
+        "--runtime-self-repair-max-retries",
+        "3",
+        "--runtime-self-repair-tool-builds-dir",
+        ".tau/custom/tool-builds",
+        "--runtime-self-repair-orphan-max-age-seconds",
+        "120",
     ]);
     assert!(!cli.runtime_heartbeat_enabled);
     assert_eq!(cli.runtime_heartbeat_interval_ms, 1_500);
@@ -2433,6 +2450,14 @@ fn functional_cli_runtime_heartbeat_flags_accept_overrides() {
         cli.runtime_heartbeat_state_path,
         PathBuf::from(".tau/custom/heartbeat.json")
     );
+    assert!(!cli.runtime_self_repair_enabled);
+    assert_eq!(cli.runtime_self_repair_timeout_ms, 45_000);
+    assert_eq!(cli.runtime_self_repair_max_retries, 3);
+    assert_eq!(
+        cli.runtime_self_repair_tool_builds_dir,
+        PathBuf::from(".tau/custom/tool-builds")
+    );
+    assert_eq!(cli.runtime_self_repair_orphan_max_age_seconds, 120);
 }
 
 #[test]
@@ -2440,6 +2465,34 @@ fn regression_cli_runtime_heartbeat_interval_rejects_zero() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--runtime-heartbeat-interval-ms", "0"]);
     let error = parse.expect_err("zero runtime heartbeat interval should fail");
     assert!(error.to_string().contains("value must be greater than 0"));
+}
+
+#[test]
+fn regression_cli_runtime_self_repair_numeric_flags_reject_zero() {
+    let timeout_parse =
+        try_parse_cli_with_stack(["tau-rs", "--runtime-self-repair-timeout-ms", "0"]);
+    let timeout_error = timeout_parse.expect_err("zero runtime self-repair timeout should fail");
+    assert!(timeout_error
+        .to_string()
+        .contains("value must be greater than 0"));
+
+    let retries_parse =
+        try_parse_cli_with_stack(["tau-rs", "--runtime-self-repair-max-retries", "0"]);
+    let retries_error = retries_parse.expect_err("zero runtime self-repair retries should fail");
+    assert!(retries_error
+        .to_string()
+        .contains("value must be greater than 0"));
+
+    let orphan_parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--runtime-self-repair-orphan-max-age-seconds",
+        "0",
+    ]);
+    let orphan_error =
+        orphan_parse.expect_err("zero runtime self-repair orphan max age should fail");
+    assert!(orphan_error
+        .to_string()
+        .contains("value must be greater than 0"));
 }
 
 #[test]

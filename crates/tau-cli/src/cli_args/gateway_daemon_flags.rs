@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args};
 
-use super::parse_positive_u64;
+use super::{parse_positive_u64, parse_positive_usize};
 use crate::{
     CliBashProfile, CliDaemonProfile, CliOsSandboxMode, CliOsSandboxPolicyMode,
     CliSessionImportMode, CliToolPolicyPreset,
@@ -461,6 +461,53 @@ pub struct CliGatewayDaemonFlags {
         help = "Path where runtime heartbeat scheduler persists state.json diagnostics"
     )]
     pub runtime_heartbeat_state_path: PathBuf,
+
+    #[arg(
+        long = "runtime-self-repair-enabled",
+        env = "TAU_RUNTIME_SELF_REPAIR_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Enable runtime self-repair for stuck jobs/tool-builds and orphaned artifacts"
+    )]
+    pub runtime_self_repair_enabled: bool,
+
+    #[arg(
+        long = "runtime-self-repair-timeout-ms",
+        env = "TAU_RUNTIME_SELF_REPAIR_TIMEOUT_MS",
+        default_value_t = 300_000,
+        value_parser = parse_positive_u64,
+        help = "Age threshold in milliseconds before running jobs/tool-builds are marked stuck"
+    )]
+    pub runtime_self_repair_timeout_ms: u64,
+
+    #[arg(
+        long = "runtime-self-repair-max-retries",
+        env = "TAU_RUNTIME_SELF_REPAIR_MAX_RETRIES",
+        default_value_t = 2,
+        value_parser = parse_positive_usize,
+        help = "Maximum self-repair retry/rebuild attempts for recoverable work items"
+    )]
+    pub runtime_self_repair_max_retries: usize,
+
+    #[arg(
+        long = "runtime-self-repair-tool-builds-dir",
+        env = "TAU_RUNTIME_SELF_REPAIR_TOOL_BUILDS_DIR",
+        default_value = ".tau/tool-builds",
+        help = "Directory containing tool-build work-item manifests consumed by runtime self-repair"
+    )]
+    pub runtime_self_repair_tool_builds_dir: PathBuf,
+
+    #[arg(
+        long = "runtime-self-repair-orphan-max-age-seconds",
+        env = "TAU_RUNTIME_SELF_REPAIR_ORPHAN_MAX_AGE_SECONDS",
+        default_value_t = 3_600,
+        value_parser = parse_positive_u64,
+        help = "Age threshold in seconds for cleaning orphaned artifact/temp paths listed on terminal work items"
+    )]
+    pub runtime_self_repair_orphan_max_age_seconds: u64,
 
     #[arg(
         long = "allow-path",

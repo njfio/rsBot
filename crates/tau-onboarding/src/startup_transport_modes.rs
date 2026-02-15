@@ -261,6 +261,13 @@ pub fn build_runtime_heartbeat_scheduler_config(cli: &Cli) -> RuntimeHeartbeatSc
         ],
         events_dir: Some(cli.events_dir.clone()),
         jobs_dir: Some(cli.custom_command_state_dir.join("jobs")),
+        self_repair_enabled: cli.runtime_self_repair_enabled,
+        self_repair_timeout: Duration::from_millis(cli.runtime_self_repair_timeout_ms.max(1)),
+        self_repair_max_retries: cli.runtime_self_repair_max_retries.max(1),
+        self_repair_tool_builds_dir: Some(cli.runtime_self_repair_tool_builds_dir.clone()),
+        self_repair_orphan_artifact_max_age: Duration::from_secs(
+            cli.runtime_self_repair_orphan_max_age_seconds.max(1),
+        ),
         maintenance_temp_dirs: vec![
             PathBuf::from(".tau/tmp"),
             cli.gateway_state_dir.join("tmp"),

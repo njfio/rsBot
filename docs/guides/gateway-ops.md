@@ -190,6 +190,12 @@ curl -sS http://127.0.0.1:8787/gateway/status \
 - `pending_events`
 - `pending_jobs`
 - `temp_files_cleaned`
+- `stuck_jobs`
+- `stuck_tool_builds`
+- `repair_actions`
+- `retries_queued`
+- `retries_exhausted`
+- `orphan_artifacts_cleaned`
 - `reason_codes[]`
 - `diagnostics[]`
 
@@ -203,7 +209,12 @@ cargo run -p tau-coding-agent -- \
   --gateway-openresponses-auth-mode token \
   --gateway-openresponses-auth-token local-dev-token \
   --runtime-heartbeat-enabled=true \
-  --runtime-heartbeat-interval-ms 5000
+  --runtime-heartbeat-interval-ms 5000 \
+  --runtime-self-repair-enabled=true \
+  --runtime-self-repair-timeout-ms 60000 \
+  --runtime-self-repair-max-retries 2 \
+  --runtime-self-repair-tool-builds-dir .tau/tool-builds \
+  --runtime-self-repair-orphan-max-age-seconds 3600
 ```
 
 By default, gateway mode writes heartbeat diagnostics to:
