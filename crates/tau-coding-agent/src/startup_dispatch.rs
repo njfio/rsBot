@@ -1,5 +1,6 @@
 use anyhow::Result;
 use tau_ai::ModelRef;
+use tau_cli::validation::validate_removed_contract_runner_flags_cli;
 use tau_cli::Cli;
 use tau_onboarding::startup_dispatch::{
     execute_startup_runtime_from_cli_with_modes, ExecuteStartupRuntimeFromCliWithModesRequest,
@@ -21,6 +22,7 @@ pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
     if execute_startup_preflight(&cli)? {
         return Ok(());
     }
+    validate_removed_contract_runner_flags_cli(&cli)?;
 
     execute_startup_runtime_from_cli_with_modes(ExecuteStartupRuntimeFromCliWithModesRequest {
         cli: &cli,

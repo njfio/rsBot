@@ -4,6 +4,7 @@ use std::pin::Pin;
 
 use anyhow::Result;
 use serde_json::Value;
+use tau_cli::validation::validate_removed_contract_runner_flags_cli;
 use tau_cli::Cli;
 use tau_skills::default_skills_lock_path;
 use tau_tools::tools::ToolPolicy;
@@ -71,6 +72,8 @@ where
         PathBuf,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>,
 {
+    validate_removed_contract_runner_flags_cli(cli)?;
+
     let StartupRuntimeResolution {
         model_ref,
         fallback_model_refs,
@@ -1091,6 +1094,63 @@ mod tests {
 
         assert_eq!(transport_calls.load(Ordering::Relaxed), 1);
         assert_eq!(local_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn regression_execute_startup_runtime_modes_rejects_removed_contract_runner_flags_before_dispatch(
+    ) {
+        let mut cli = parse_cli_with_stack();
+        cli.memory_contract_runner = true;
+
+        let runtime = StartupRuntimeResolution {
+            model_ref: "primary".to_string(),
+            fallback_model_refs: vec!["fallback".to_string()],
+            model_catalog: "catalog".to_string(),
+            client: "client".to_string(),
+            runtime_dispatch_context: build_startup_runtime_dispatch_context(
+                &cli,
+                Path::new(".tau/skills.lock.json"),
+                false,
+            )
+            .expect("runtime context"),
+        };
+        let transport_calls = AtomicUsize::new(0);
+        let local_calls = AtomicUsize::new(0);
+
+        let result = execute_startup_runtime_modes(
+            &cli,
+            runtime,
+            "render-v1".to_string(),
+            |_cli, _client, _model_ref, _system_prompt, _tool_policy, _render_options| {
+                transport_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async { Ok(false) })
+            },
+            |_cli,
+             _client,
+             _model_ref,
+             _fallback_model_refs,
+             _model_catalog,
+             _system_prompt,
+             _tool_policy,
+             _tool_policy_json,
+             _render_options,
+             _effective_skills_dir,
+             _skills_lock_path| {
+                local_calls.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async move { Ok(()) })
+            },
+        )
+        .await;
+        let error = match result {
+            Ok(_) => panic!("removed contract runner flags should fail before dispatch"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("--memory-contract-runner has been removed"));
+        assert_eq!(transport_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(local_calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

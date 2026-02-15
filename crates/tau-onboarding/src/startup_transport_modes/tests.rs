@@ -776,6 +776,42 @@ fn regression_validate_transport_mode_cli_rejects_removed_browser_automation_con
 }
 
 #[test]
+fn regression_validate_transport_mode_cli_rejects_removed_memory_contract_runner() {
+    let mut cli = parse_cli_with_stack();
+    cli.memory_contract_runner = true;
+
+    let error =
+        validate_transport_mode_cli(&cli).expect_err("removed memory contract runner should fail");
+    assert!(error
+        .to_string()
+        .contains("--memory-contract-runner has been removed"));
+}
+
+#[test]
+fn regression_validate_transport_mode_cli_rejects_removed_dashboard_contract_runner() {
+    let mut cli = parse_cli_with_stack();
+    cli.dashboard_contract_runner = true;
+
+    let error = validate_transport_mode_cli(&cli)
+        .expect_err("removed dashboard contract runner should fail");
+    assert!(error
+        .to_string()
+        .contains("--dashboard-contract-runner has been removed"));
+}
+
+#[test]
+fn regression_validate_transport_mode_cli_rejects_removed_custom_command_contract_runner() {
+    let mut cli = parse_cli_with_stack();
+    cli.custom_command_contract_runner = true;
+
+    let error = validate_transport_mode_cli(&cli)
+        .expect_err("removed custom-command contract runner should fail");
+    assert!(error
+        .to_string()
+        .contains("--custom-command-contract-runner has been removed"));
+}
+
+#[test]
 fn functional_resolve_gateway_openresponses_auth_trims_non_empty_values() {
     let mut cli = parse_cli_with_stack();
     cli.gateway_openresponses_auth_token = Some(" token-value ".to_string());

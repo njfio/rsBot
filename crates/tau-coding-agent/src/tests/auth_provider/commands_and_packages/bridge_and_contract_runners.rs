@@ -3,6 +3,7 @@
 use super::*;
 use tau_cli::{
     validate_browser_automation_contract_runner_cli, validate_browser_automation_live_runner_cli,
+    validate_removed_contract_runner_flags_cli,
 };
 
 #[test]
@@ -922,6 +923,19 @@ fn unit_validate_browser_automation_contract_runner_cli_is_removed() {
     assert!(error
         .to_string()
         .contains("--browser-automation-live-runner"));
+}
+
+#[test]
+fn regression_validate_removed_contract_runner_flags_cli_prefers_removed_guidance_over_conflicts() {
+    let mut cli = test_cli();
+    cli.memory_contract_runner = true;
+    cli.events_runner = true;
+
+    let error = validate_removed_contract_runner_flags_cli(&cli)
+        .expect_err("removed runner guidance should trigger first");
+    assert!(error
+        .to_string()
+        .contains("--memory-contract-runner has been removed"));
 }
 
 #[test]

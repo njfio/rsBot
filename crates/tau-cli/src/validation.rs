@@ -9,6 +9,15 @@ const CUSTOM_COMMAND_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--custom-command-c
 const BROWSER_AUTOMATION_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--browser-automation-contract-runner has been removed; use --browser-automation-live-runner with --browser-automation-live-fixture and --browser-automation-playwright-cli";
 const DASHBOARD_CONTRACT_RUNNER_REMOVED_MESSAGE: &str = "--dashboard-contract-runner has been removed; use --gateway-openresponses-server for dashboard API/webchat surfaces and --dashboard-status-inspect plus --transport-health-inspect dashboard for diagnostics";
 
+/// Rejects removed contract-runner flags before any runtime dispatch or mode-specific validation.
+pub fn validate_removed_contract_runner_flags_cli(cli: &Cli) -> Result<()> {
+    validate_browser_automation_contract_runner_cli(cli)?;
+    validate_memory_contract_runner_cli(cli)?;
+    validate_dashboard_contract_runner_cli(cli)?;
+    validate_custom_command_contract_runner_cli(cli)?;
+    Ok(())
+}
+
 fn resolve_non_empty_cli_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)

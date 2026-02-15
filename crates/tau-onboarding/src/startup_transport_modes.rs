@@ -14,14 +14,13 @@ use tau_browser_automation::browser_automation_live::{
     PlaywrightCliActionExecutor,
 };
 use tau_cli::validation::{
-    validate_browser_automation_contract_runner_cli, validate_browser_automation_live_runner_cli,
-    validate_custom_command_contract_runner_cli, validate_dashboard_contract_runner_cli,
-    validate_deployment_contract_runner_cli, validate_events_runner_cli,
-    validate_gateway_contract_runner_cli, validate_gateway_openresponses_server_cli,
-    validate_github_issues_bridge_cli, validate_memory_contract_runner_cli,
+    validate_browser_automation_live_runner_cli, validate_deployment_contract_runner_cli,
+    validate_events_runner_cli, validate_gateway_contract_runner_cli,
+    validate_gateway_openresponses_server_cli, validate_github_issues_bridge_cli,
     validate_multi_agent_contract_runner_cli, validate_multi_channel_contract_runner_cli,
     validate_multi_channel_live_connectors_runner_cli, validate_multi_channel_live_runner_cli,
-    validate_slack_bridge_cli, validate_voice_contract_runner_cli, validate_voice_live_runner_cli,
+    validate_removed_contract_runner_flags_cli, validate_slack_bridge_cli,
+    validate_voice_contract_runner_cli, validate_voice_live_runner_cli,
 };
 use tau_cli::Cli;
 use tau_cli::CliGatewayOpenResponsesAuthMode;
@@ -189,6 +188,7 @@ where
 }
 
 pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
+    validate_removed_contract_runner_flags_cli(cli)?;
     validate_github_issues_bridge_cli(cli)?;
     validate_slack_bridge_cli(cli)?;
     validate_events_runner_cli(cli)?;
@@ -196,14 +196,10 @@ pub fn validate_transport_mode_cli(cli: &Cli) -> Result<()> {
     validate_multi_channel_live_runner_cli(cli)?;
     validate_multi_channel_live_connectors_runner_cli(cli)?;
     validate_multi_agent_contract_runner_cli(cli)?;
-    validate_browser_automation_contract_runner_cli(cli)?;
     validate_browser_automation_live_runner_cli(cli)?;
-    validate_memory_contract_runner_cli(cli)?;
-    validate_dashboard_contract_runner_cli(cli)?;
     validate_gateway_openresponses_server_cli(cli)?;
     validate_gateway_contract_runner_cli(cli)?;
     validate_deployment_contract_runner_cli(cli)?;
-    validate_custom_command_contract_runner_cli(cli)?;
     validate_voice_contract_runner_cli(cli)?;
     validate_voice_live_runner_cli(cli)?;
     Ok(())
