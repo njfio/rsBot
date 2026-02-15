@@ -148,6 +148,11 @@ jobs:
             fast_validate:
               - "scripts/dev/fast-validate.sh"
               - "scripts/dev/test-fast-validate.sh"
+            tool_perf_smoke:
+              - "crates/tau-tools/src/tools.rs"
+              - "crates/tau-tools/src/tools/**"
+              - "scripts/dev/tool-split-performance-smoke.sh"
+              - "scripts/dev/test-tool-split-performance-smoke.sh"
             release_helpers:
               - "scripts/release/**"
               - ".github/workflows/release.yml"
@@ -259,6 +264,25 @@ jobs:
       - name: Validate fast-validate script
         if: steps.fast_validate_scope.outputs.fast_validate_tests_needed == 'true'
         run: ./scripts/dev/test-fast-validate.sh
+
+      - name: Determine tool split performance smoke scope
+        id: tool_perf_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_perf_smoke_needed="${{ steps.change_scope.outputs.tool_perf_smoke }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            tool_perf_smoke_needed="true"
+          elif [[ -z "${tool_perf_smoke_needed}" ]]; then
+            tool_perf_smoke_needed="false"
+          fi
+          echo "tool_perf_smoke_needed=${tool_perf_smoke_needed}" >> "$GITHUB_OUTPUT"
+          echo "### Tool Split Performance Smoke Scope" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tool split performance smoke needed: ${tool_perf_smoke_needed}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate tool split performance smoke script
+        if: steps.tool_perf_scope.outputs.tool_perf_smoke_needed == 'true'
+        run: ./scripts/dev/test-tool-split-performance-smoke.sh
 
       - name: Determine release-helper scope
         id: release_helper_scope
@@ -433,6 +457,23 @@ jobs:
               echo "- Scope: full workspace" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
+
+      - name: Run tool split performance smoke
+        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.tool_perf_scope.outputs.tool_perf_smoke_needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/dev/tool-split-performance-smoke.sh \
+            --output-json ci-artifacts/tool-split-performance-smoke.json \
+            --summary-file "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload tool split performance smoke artifact
+        if: always() && steps.rust_scope.outputs.rust_changed == 'true' && steps.tool_perf_scope.outputs.tool_perf_smoke_needed == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: tool-split-performance-smoke
+          path: ci-artifacts/tool-split-performance-smoke.json
+          if-no-files-found: error
 
       - name: Run codex light demo smoke
         if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light' && steps.demo_smoke_scope.outputs.demo_smoke_needed == 'true'
