@@ -111,6 +111,10 @@ pub trait TrainingStore: Send + Sync {
         active_rollout_id: Option<String>,
         active_attempt_id: Option<String>,
     ) -> StoreResult<()>;
+    async fn reassign_timed_out_rollouts(
+        &self,
+        heartbeat_timeout: Duration,
+    ) -> StoreResult<Vec<String>>;
     async fn query_workers(&self) -> StoreResult<Vec<WorkerState>>;
 
     async fn update_attempt_status(
@@ -490,6 +494,100 @@ impl TrainingStore for InMemoryTrainingStore {
         Ok(())
     }
 
+    async fn reassign_timed_out_rollouts(
+        &self,
+        heartbeat_timeout: Duration,
+    ) -> StoreResult<Vec<String>> {
+        let mut inner = self.inner.write().await;
+        let now = Utc::now();
+        let mut requeued_rollout_ids = Vec::new();
+
+        let worker_ids = inner.workers.keys().cloned().collect::<Vec<_>>();
+        for worker_id in worker_ids {
+            let (Some(active_rollout_id), Some(active_attempt_id)) = inner
+                .workers
+                .get(&worker_id)
+                .map(|worker| {
+                    (
+                        worker.active_rollout_id.clone(),
+                        worker.active_attempt_id.clone(),
+                    )
+                })
+                .unwrap_or((None, None))
+            else {
+                continue;
+            };
+
+            let Some(attempt) = inner.attempts.get_mut(&active_attempt_id) else {
+                if let Some(worker) = inner.workers.get_mut(&worker_id) {
+                    worker.active_rollout_id = None;
+                    worker.active_attempt_id = None;
+                    worker.last_heartbeat_at = now;
+                }
+                continue;
+            };
+
+            if attempt.status != AttemptStatus::Running {
+                continue;
+            }
+
+            let elapsed = now
+                .signed_duration_since(attempt.last_heartbeat_at)
+                .to_std()
+                .unwrap_or_default();
+            if elapsed <= heartbeat_timeout {
+                continue;
+            }
+
+            let from_attempt = attempt.status;
+            if !from_attempt.can_transition_to(AttemptStatus::Timeout) {
+                return Err(TrainingStoreError::InvalidAttemptTransition {
+                    from: from_attempt,
+                    to: AttemptStatus::Timeout,
+                });
+            }
+            attempt.status = AttemptStatus::Timeout;
+            attempt.last_heartbeat_at = now;
+            attempt.ended_at = Some(now);
+            attempt.error_message = Some("worker heartbeat timeout".to_string());
+
+            if let Some(rollout) = inner.rollouts.get_mut(&active_rollout_id) {
+                let from_rollout = rollout.status;
+                if from_rollout.can_transition_to(RolloutStatus::Requeuing) {
+                    rollout.status = RolloutStatus::Requeuing;
+                    rollout.assigned_worker_id = None;
+                    if !inner
+                        .queue
+                        .iter()
+                        .any(|queued_id| queued_id == &active_rollout_id)
+                    {
+                        inner.queue.push_back(active_rollout_id.clone());
+                    }
+                    if !requeued_rollout_ids.contains(&active_rollout_id) {
+                        requeued_rollout_ids.push(active_rollout_id.clone());
+                    }
+                } else {
+                    return Err(TrainingStoreError::InvalidRolloutTransition {
+                        from: from_rollout,
+                        to: RolloutStatus::Requeuing,
+                    });
+                }
+            }
+
+            if let Some(worker) = inner.workers.get_mut(&worker_id) {
+                worker.last_heartbeat_at = now;
+                worker.active_rollout_id = None;
+                worker.active_attempt_id = None;
+            }
+        }
+
+        drop(inner);
+        if !requeued_rollout_ids.is_empty() {
+            self.notify.notify_waiters();
+        }
+        Ok(requeued_rollout_ids)
+    }
+
     async fn query_workers(&self) -> StoreResult<Vec<WorkerState>> {
         let inner = self.inner.read().await;
         let mut workers: Vec<WorkerState> = inner.workers.values().cloned().collect();
@@ -534,7 +632,9 @@ impl TrainingStore for InMemoryTrainingStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{InMemoryTrainingStore, Rollout, RolloutQuery, RolloutStatus, TrainingSpan};
+    use super::{
+        AttemptStatus, InMemoryTrainingStore, Rollout, RolloutQuery, RolloutStatus, TrainingSpan,
+    };
     use crate::TrainingStore;
     use serde_json::json;
     use std::time::Duration;
@@ -643,6 +743,78 @@ mod tests {
             .expect("latest")
             .expect("resource");
         assert_eq!(latest.resources_id, second.resources_id);
+    }
+
+    #[tokio::test]
+    async fn integration_reassigns_timed_out_worker_and_preserves_spans() {
+        let store = InMemoryTrainingStore::new();
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-chaos-1",
+                json!({ "prompt": "hello" }),
+                None,
+            ))
+            .await
+            .expect("enqueue");
+
+        let first = store
+            .dequeue_rollout("worker-a")
+            .await
+            .expect("dequeue first")
+            .expect("first attempt");
+        store
+            .add_span(TrainingSpan::new(
+                "r-chaos-1",
+                first.attempt.attempt_id.clone(),
+                1,
+                "trace-1",
+                "span-attempt-1",
+                None,
+                "runner.execute",
+            ))
+            .await
+            .expect("add first attempt span");
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let requeued = store
+            .reassign_timed_out_rollouts(Duration::from_millis(5))
+            .await
+            .expect("reassign timed out");
+        assert_eq!(requeued, vec!["r-chaos-1".to_string()]);
+
+        let first_attempt = store
+            .get_attempt(&first.attempt.attempt_id)
+            .await
+            .expect("get first attempt")
+            .expect("first attempt exists");
+        assert_eq!(first_attempt.status, AttemptStatus::Timeout);
+
+        let second = store
+            .dequeue_rollout("worker-b")
+            .await
+            .expect("dequeue second")
+            .expect("second attempt");
+        assert_eq!(second.rollout.rollout_id, "r-chaos-1");
+        assert_eq!(second.attempt.sequence_id, 2);
+
+        store
+            .add_span(TrainingSpan::new(
+                "r-chaos-1",
+                second.attempt.attempt_id.clone(),
+                1,
+                "trace-2",
+                "span-attempt-2",
+                None,
+                "runner.execute",
+            ))
+            .await
+            .expect("add second attempt span");
+
+        let all_spans = store
+            .query_spans("r-chaos-1", None)
+            .await
+            .expect("query all spans");
+        assert_eq!(all_spans.len(), 2);
     }
 
     use std::collections::HashMap;

@@ -786,6 +786,106 @@ impl TrainingStore for SqliteTrainingStore {
         Ok(())
     }
 
+    async fn reassign_timed_out_rollouts(
+        &self,
+        heartbeat_timeout: Duration,
+    ) -> StoreResult<Vec<String>> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection.transaction()?;
+        let now = Utc::now();
+        let mut timed_out = Vec::new();
+
+        let mut statement = transaction.prepare(
+            r#"
+            SELECT w.worker_id, w.active_rollout_id, w.active_attempt_id, a.status, a.last_heartbeat_at
+            FROM workers w
+            LEFT JOIN attempts a ON a.attempt_id = w.active_attempt_id
+            WHERE w.active_rollout_id IS NOT NULL AND w.active_attempt_id IS NOT NULL
+            "#,
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let worker_id: String = row.get(0)?;
+            let rollout_id: Option<String> = row.get(1)?;
+            let attempt_id: Option<String> = row.get(2)?;
+            let attempt_status: Option<String> = row.get(3)?;
+            let last_heartbeat_at: Option<String> = row.get(4)?;
+            let (Some(rollout_id), Some(attempt_id), Some(attempt_status), Some(last_heartbeat_at)) =
+                (rollout_id, attempt_id, attempt_status, last_heartbeat_at)
+            else {
+                continue;
+            };
+            if attempt_status_from_db(&attempt_status)? != AttemptStatus::Running {
+                continue;
+            }
+            let last_heartbeat = timestamp_from_db(&last_heartbeat_at)?;
+            let elapsed = now
+                .signed_duration_since(last_heartbeat)
+                .to_std()
+                .unwrap_or_default();
+            if elapsed <= heartbeat_timeout {
+                continue;
+            }
+            timed_out.push((worker_id, rollout_id, attempt_id));
+        }
+        drop(rows);
+        drop(statement);
+
+        let mut requeued_rollouts = Vec::new();
+        for (worker_id, rollout_id, attempt_id) in timed_out {
+            transaction.execute(
+                r#"
+                UPDATE attempts
+                SET status = ?1, last_heartbeat_at = ?2, ended_at = ?3, error_message = ?4
+                WHERE attempt_id = ?5 AND status = ?6
+                "#,
+                params![
+                    attempt_status_to_db(AttemptStatus::Timeout),
+                    timestamp_to_db(now),
+                    timestamp_to_db(now),
+                    "worker heartbeat timeout",
+                    attempt_id,
+                    attempt_status_to_db(AttemptStatus::Running)
+                ],
+            )?;
+
+            let rollout_status_text: Option<String> = transaction
+                .query_row(
+                    "SELECT status FROM rollouts WHERE rollout_id = ?1",
+                    params![rollout_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(rollout_status_text) = rollout_status_text {
+                let rollout_status = rollout_status_from_db(&rollout_status_text)?;
+                if rollout_status.can_transition_to(RolloutStatus::Requeuing) {
+                    transaction.execute(
+                        "UPDATE rollouts SET status = ?1, assigned_worker_id = NULL WHERE rollout_id = ?2",
+                        params![rollout_status_to_db(RolloutStatus::Requeuing), rollout_id],
+                    )?;
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO rollout_queue (rollout_id) VALUES (?1)",
+                        params![rollout_id],
+                    )?;
+                    if !requeued_rollouts.contains(&rollout_id) {
+                        requeued_rollouts.push(rollout_id.clone());
+                    }
+                }
+            }
+
+            transaction.execute(
+                "UPDATE workers SET last_heartbeat_at = ?1, active_rollout_id = NULL, active_attempt_id = NULL WHERE worker_id = ?2",
+                params![timestamp_to_db(now), worker_id],
+            )?;
+        }
+
+        transaction.commit()?;
+        if !requeued_rollouts.is_empty() {
+            self.notify.notify_waiters();
+        }
+        Ok(requeued_rollouts)
+    }
+
     async fn query_workers(&self) -> StoreResult<Vec<WorkerState>> {
         let connection = self.open_connection()?;
         let mut statement = connection.prepare(
@@ -1091,9 +1191,10 @@ fn i64_to_u64(field: &'static str, value: i64) -> StoreResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::SqliteTrainingStore;
-    use crate::{Rollout, RolloutQuery, RolloutStatus, TrainingSpan, TrainingStore};
+    use crate::{AttemptStatus, Rollout, RolloutQuery, RolloutStatus, TrainingSpan, TrainingStore};
     use serde_json::json;
     use std::collections::HashMap;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -1166,5 +1267,48 @@ mod tests {
         let workers = reopened.query_workers().await.expect("query workers");
         assert_eq!(workers.len(), 1);
         assert_eq!(workers[0].worker_id, "worker-1");
+    }
+
+    #[tokio::test]
+    async fn reassigns_timed_out_worker_and_requeues_rollout() {
+        let temp = tempdir().expect("create tempdir");
+        let db_path = temp.path().join("training.sqlite");
+        let store = SqliteTrainingStore::new(&db_path).expect("create sqlite store");
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-chaos-1",
+                json!({ "prompt": "hello" }),
+                None,
+            ))
+            .await
+            .expect("enqueue rollout");
+
+        let first = store
+            .dequeue_rollout("worker-1")
+            .await
+            .expect("dequeue first")
+            .expect("first attempt");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let requeued = store
+            .reassign_timed_out_rollouts(Duration::from_millis(5))
+            .await
+            .expect("reassign timed out");
+        assert_eq!(requeued, vec!["r-chaos-1".to_string()]);
+
+        let first_attempt = store
+            .get_attempt(&first.attempt.attempt_id)
+            .await
+            .expect("get first attempt")
+            .expect("first attempt exists");
+        assert_eq!(first_attempt.status, AttemptStatus::Timeout);
+
+        let second = store
+            .dequeue_rollout("worker-2")
+            .await
+            .expect("dequeue second")
+            .expect("second attempt");
+        assert_eq!(second.rollout.rollout_id, "r-chaos-1");
+        assert_eq!(second.attempt.sequence_id, 2);
     }
 }

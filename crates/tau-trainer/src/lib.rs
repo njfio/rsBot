@@ -139,6 +139,8 @@ impl Trainer {
                     worker_id: format!("trainer-worker-{}", index + 1),
                     poll_interval: self.config.poll_interval,
                     heartbeat_interval: self.config.heartbeat_interval,
+                    reassignment_interval: self.config.poll_interval,
+                    worker_timeout: self.config.heartbeat_interval * 3,
                 },
             );
             let runner_shutdown = shutdown_rx.clone();

@@ -9,7 +9,7 @@ use tau_agent_core::Agent;
 use tau_ai::MessageRole;
 use tau_training_store::{DequeuedRollout, TrainingStore};
 use tau_training_tracer::TrainingTracer;
-use tau_training_types::{ResourcesUpdate, Reward, Rollout};
+use tau_training_types::{AttemptStatus, ResourcesUpdate, Reward, Rollout};
 use tokio::sync::watch;
 
 type AgentFactoryFn = dyn Fn(Option<&ResourcesUpdate>) -> Agent + Send + Sync;
@@ -48,6 +48,8 @@ pub struct RunnerConfig {
     pub worker_id: String,
     pub poll_interval: Duration,
     pub heartbeat_interval: Duration,
+    pub reassignment_interval: Duration,
+    pub worker_timeout: Duration,
 }
 
 impl Default for RunnerConfig {
@@ -56,6 +58,8 @@ impl Default for RunnerConfig {
             worker_id: "training-worker-1".to_string(),
             poll_interval: Duration::from_millis(75),
             heartbeat_interval: Duration::from_secs(1),
+            reassignment_interval: Duration::from_millis(250),
+            worker_timeout: Duration::from_secs(3),
         }
     }
 }
@@ -87,7 +91,9 @@ impl TrainingRunner {
 
         let mut heartbeat = tokio::time::interval(self.config.heartbeat_interval);
         let mut poll = tokio::time::interval(self.config.poll_interval);
+        let mut reassignment = tokio::time::interval(self.config.reassignment_interval);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        reassignment.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -106,6 +112,11 @@ impl TrainingRunner {
                 }
                 _ = poll.tick() => {
                     self.process_once().await?;
+                }
+                _ = reassignment.tick() => {
+                    self.store
+                        .reassign_timed_out_rollouts(self.config.worker_timeout)
+                        .await?;
                 }
             }
         }
@@ -143,23 +154,37 @@ impl TrainingRunner {
                 .await
         };
 
-        match execution_result {
+        match &execution_result {
             Ok(outcome) => {
-                for reward in outcome.rewards {
-                    tracer.emit_reward(reward);
+                for reward in &outcome.rewards {
+                    tracer.emit_reward(reward.clone());
                 }
                 tracer.emit_reward(Reward::new(
                     "runner.execution_success",
                     if outcome.output.is_null() { 0.0 } else { 1.0 },
                 ));
+            }
+            Err(_) => {
+                tracer.emit_reward(Reward::new("runner.execution_success", 0.0));
+            }
+        }
 
-                tracer.flush(self.store.as_ref()).await?;
+        tracer.flush(self.store.as_ref()).await?;
+
+        if !self
+            .attempt_is_still_running(&item.attempt.attempt_id)
+            .await?
+        {
+            self.store
+                .update_worker_heartbeat(&self.config.worker_id, None, None)
+                .await?;
+            return Ok(());
+        }
+
+        match execution_result {
+            Ok(_) => {
                 self.store
-                    .update_attempt_status(
-                        &item.attempt.attempt_id,
-                        tau_training_types::AttemptStatus::Succeeded,
-                        None,
-                    )
+                    .update_attempt_status(&item.attempt.attempt_id, AttemptStatus::Succeeded, None)
                     .await?;
                 self.store
                     .update_rollout_status(
@@ -169,12 +194,10 @@ impl TrainingRunner {
                     .await?;
             }
             Err(error) => {
-                tracer.emit_reward(Reward::new("runner.execution_success", 0.0));
-                tracer.flush(self.store.as_ref()).await?;
                 self.store
                     .update_attempt_status(
                         &item.attempt.attempt_id,
-                        tau_training_types::AttemptStatus::Failed,
+                        AttemptStatus::Failed,
                         Some(error.to_string()),
                     )
                     .await?;
@@ -192,6 +215,13 @@ impl TrainingRunner {
             .await?;
 
         Ok(())
+    }
+
+    async fn attempt_is_still_running(&self, attempt_id: &str) -> Result<bool> {
+        let attempt = self.store.get_attempt(attempt_id).await?;
+        Ok(attempt
+            .map(|current| current.status == AttemptStatus::Running)
+            .unwrap_or(false))
     }
 }
 
@@ -292,7 +322,7 @@ mod tests {
     use tau_agent_core::{Agent, AgentConfig};
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
     use tau_training_store::{InMemoryTrainingStore, RolloutQuery, TrainingStore};
-    use tau_training_types::{Reward, Rollout, RolloutStatus};
+    use tau_training_types::{AttemptStatus, Reward, Rollout, RolloutStatus};
     use tokio::sync::watch;
 
     struct StaticExecutor;
@@ -331,6 +361,53 @@ mod tests {
         }
     }
 
+    struct SlowExecutor;
+
+    #[async_trait]
+    impl RolloutExecutor for SlowExecutor {
+        async fn execute(
+            &self,
+            rollout: &Rollout,
+            _resources: Option<&tau_training_types::ResourcesUpdate>,
+            _tracer: Arc<tau_training_tracer::TrainingTracer>,
+        ) -> Result<RolloutExecutionOutcome> {
+            tokio::time::sleep(Duration::from_millis(180)).await;
+            let response = rollout
+                .input
+                .get("prompt")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Ok(RolloutExecutionOutcome {
+                output: json!({ "slow_echo": response }),
+                rewards: vec![Reward::new("slow", 0.5)],
+            })
+        }
+    }
+
+    struct FastExecutor;
+
+    #[async_trait]
+    impl RolloutExecutor for FastExecutor {
+        async fn execute(
+            &self,
+            rollout: &Rollout,
+            _resources: Option<&tau_training_types::ResourcesUpdate>,
+            _tracer: Arc<tau_training_tracer::TrainingTracer>,
+        ) -> Result<RolloutExecutionOutcome> {
+            let response = rollout
+                .input
+                .get("prompt")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Ok(RolloutExecutionOutcome {
+                output: json!({ "fast_echo": response }),
+                rewards: vec![Reward::new("fast", 1.0)],
+            })
+        }
+    }
+
     #[tokio::test]
     async fn runner_processes_rollout_and_persists_spans() {
         let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
@@ -350,6 +427,8 @@ mod tests {
                 worker_id: "worker-1".to_string(),
                 poll_interval: Duration::from_millis(20),
                 heartbeat_interval: Duration::from_millis(50),
+                reassignment_interval: Duration::from_millis(20),
+                worker_timeout: Duration::from_millis(120),
             },
         );
 
@@ -367,6 +446,85 @@ mod tests {
         assert!(spans
             .iter()
             .any(|span| span.name == "runner.execute_rollout"));
+    }
+
+    #[tokio::test]
+    async fn integration_reassigns_stalled_worker_and_preserves_attempt_spans() {
+        let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-chaos-1",
+                json!({ "prompt": "hello-chaos" }),
+                Some(tau_training_types::RolloutMode::Train),
+            ))
+            .await
+            .expect("enqueue");
+
+        let slow_runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(SlowExecutor),
+            RunnerConfig {
+                worker_id: "worker-slow".to_string(),
+                poll_interval: Duration::from_millis(20),
+                heartbeat_interval: Duration::from_millis(20),
+                reassignment_interval: Duration::from_millis(20),
+                worker_timeout: Duration::from_millis(50),
+            },
+        );
+        let fast_runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(FastExecutor),
+            RunnerConfig {
+                worker_id: "worker-fast".to_string(),
+                poll_interval: Duration::from_millis(20),
+                heartbeat_interval: Duration::from_millis(20),
+                reassignment_interval: Duration::from_millis(10),
+                worker_timeout: Duration::from_millis(50),
+            },
+        );
+
+        let (slow_tx, slow_rx) = watch::channel(false);
+        let slow_handle = tokio::spawn(async move { slow_runner.run(slow_rx).await });
+
+        wait_for_worker_assignment(store.clone(), "worker-slow", Duration::from_secs(2))
+            .await
+            .expect("worker-slow assignment");
+
+        let (fast_tx, fast_rx) = watch::channel(false);
+        let fast_handle = tokio::spawn(async move { fast_runner.run(fast_rx).await });
+
+        wait_for_rollout_status(store.clone(), "r-chaos-1", RolloutStatus::Succeeded)
+            .await
+            .expect("rollout should eventually succeed");
+
+        slow_tx.send(true).expect("shutdown slow");
+        fast_tx.send(true).expect("shutdown fast");
+        slow_handle.await.expect("join slow").expect("slow runner");
+        fast_handle.await.expect("join fast").expect("fast runner");
+
+        let attempt_1 = store
+            .get_attempt("r-chaos-1:attempt-1")
+            .await
+            .expect("attempt-1")
+            .expect("attempt-1 exists");
+        let attempt_2 = store
+            .get_attempt("r-chaos-1:attempt-2")
+            .await
+            .expect("attempt-2")
+            .expect("attempt-2 exists");
+        assert_eq!(attempt_1.status, AttemptStatus::Timeout);
+        assert_eq!(attempt_2.status, AttemptStatus::Succeeded);
+
+        let spans_1 = store
+            .query_spans("r-chaos-1", Some("r-chaos-1:attempt-1"))
+            .await
+            .expect("spans attempt-1");
+        let spans_2 = store
+            .query_spans("r-chaos-1", Some("r-chaos-1:attempt-2"))
+            .await
+            .expect("spans attempt-2");
+        assert!(!spans_1.is_empty());
+        assert!(!spans_2.is_empty());
     }
 
     #[tokio::test]
@@ -415,6 +573,31 @@ mod tests {
                 anyhow::bail!("timed out waiting for rollout {rollout_id} status {status:?}");
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+    }
+
+    async fn wait_for_worker_assignment(
+        store: Arc<dyn TrainingStore>,
+        worker_id: &str,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let workers = store.query_workers().await?;
+            if workers
+                .iter()
+                .find(|worker| worker.worker_id == worker_id)
+                .and_then(|worker| worker.active_attempt_id.clone())
+                .is_some()
+            {
+                return Ok(());
+            }
+
+            if Instant::now() >= deadline {
+                anyhow::bail!("worker '{worker_id}' was not assigned before timeout");
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 }
