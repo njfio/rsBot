@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Current schema version used by RL core payload types.
@@ -101,6 +101,29 @@ pub enum RlBundleError {
         "checkpoint progression mismatch: checkpoint.global_step={global_step} trajectory.steps={step_count}"
     )]
     CheckpointGlobalStepMismatch { global_step: u64, step_count: usize },
+}
+
+/// Checkpoint lineage validation/query error.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum CheckpointLineageError {
+    #[error("checkpoint '{checkpoint_id}' failed schema validation: {source}")]
+    CheckpointSchema {
+        checkpoint_id: String,
+        source: RlSchemaError,
+    },
+    #[error("duplicate checkpoint_id '{checkpoint_id}' in lineage input")]
+    DuplicateCheckpointId { checkpoint_id: String },
+    #[error("unknown leaf checkpoint '{checkpoint_id}'")]
+    UnknownLeafCheckpoint { checkpoint_id: String },
+    #[error(
+        "missing parent checkpoint '{parent_checkpoint_id}' referenced by checkpoint '{checkpoint_id}'"
+    )]
+    MissingParentCheckpoint {
+        checkpoint_id: String,
+        parent_checkpoint_id: String,
+    },
+    #[error("lineage cycle detected while traversing checkpoint '{checkpoint_id}'")]
+    LineageCycleDetected { checkpoint_id: String },
 }
 
 fn ensure_supported_rl_schema(type_name: &'static str, version: u32) -> Result<(), RlSchemaError> {
@@ -802,6 +825,80 @@ impl RlPayloadBundle {
     }
 }
 
+/// Resolves checkpoint lineage from root to `leaf_checkpoint_id`.
+///
+/// Parent links are read from `CheckpointRecord.metadata["parent_checkpoint_id"]`
+/// when present and non-empty.
+pub fn resolve_checkpoint_lineage_path(
+    records: &[CheckpointRecord],
+    leaf_checkpoint_id: &str,
+) -> Result<Vec<String>, CheckpointLineageError> {
+    let mut by_id: HashMap<String, &CheckpointRecord> = HashMap::new();
+
+    for record in records {
+        record
+            .validate()
+            .map_err(|source| CheckpointLineageError::CheckpointSchema {
+                checkpoint_id: record.checkpoint_id.clone(),
+                source,
+            })?;
+
+        if by_id.insert(record.checkpoint_id.clone(), record).is_some() {
+            return Err(CheckpointLineageError::DuplicateCheckpointId {
+                checkpoint_id: record.checkpoint_id.clone(),
+            });
+        }
+    }
+
+    if !by_id.contains_key(leaf_checkpoint_id) {
+        return Err(CheckpointLineageError::UnknownLeafCheckpoint {
+            checkpoint_id: leaf_checkpoint_id.to_string(),
+        });
+    }
+
+    let mut lineage_reversed = Vec::new();
+    let mut visited = HashSet::new();
+    let mut cursor = leaf_checkpoint_id.to_string();
+
+    loop {
+        if !visited.insert(cursor.clone()) {
+            return Err(CheckpointLineageError::LineageCycleDetected {
+                checkpoint_id: cursor,
+            });
+        }
+
+        lineage_reversed.push(cursor.clone());
+        let Some(record) = by_id.get(&cursor) else {
+            return Err(CheckpointLineageError::UnknownLeafCheckpoint {
+                checkpoint_id: cursor,
+            });
+        };
+
+        let parent = record
+            .metadata
+            .get("parent_checkpoint_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        let Some(parent_checkpoint_id) = parent else {
+            break;
+        };
+
+        if !by_id.contains_key(&parent_checkpoint_id) {
+            return Err(CheckpointLineageError::MissingParentCheckpoint {
+                checkpoint_id: record.checkpoint_id.clone(),
+                parent_checkpoint_id,
+            });
+        }
+        cursor = parent_checkpoint_id;
+    }
+
+    lineage_reversed.reverse();
+    Ok(lineage_reversed)
+}
+
 /// Filter used when listing rollouts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RolloutQuery {
@@ -825,8 +922,8 @@ pub struct WorkerState {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdvantageBatch, AttemptStatus, CheckpointRecord, EpisodeTrajectory, RlPayloadBundle,
-        RolloutStatus, TrajectoryStep, RL_SCHEMA_VERSION_V1,
+        resolve_checkpoint_lineage_path, AdvantageBatch, AttemptStatus, CheckpointRecord,
+        EpisodeTrajectory, RlPayloadBundle, RolloutStatus, TrajectoryStep, RL_SCHEMA_VERSION_V1,
     };
     use serde_json::json;
 
@@ -1050,5 +1147,81 @@ mod tests {
         let checkpoint = CheckpointRecord::new("checkpoint-1", "ppo", "policy-v1", 2);
 
         RlPayloadBundle::new(trajectory, advantages, checkpoint)
+    }
+
+    #[test]
+    fn spec_c01_resolve_checkpoint_lineage_path_root_to_leaf() {
+        let records = vec![
+            checkpoint_with_parent("checkpoint-root", None, 10),
+            checkpoint_with_parent("checkpoint-mid", Some("checkpoint-root"), 20),
+            checkpoint_with_parent("checkpoint-leaf", Some("checkpoint-mid"), 30),
+        ];
+
+        let path = resolve_checkpoint_lineage_path(&records, "checkpoint-leaf").expect("path");
+        assert_eq!(
+            path,
+            vec![
+                "checkpoint-root".to_string(),
+                "checkpoint-mid".to_string(),
+                "checkpoint-leaf".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn spec_c04_reject_unknown_leaf_checkpoint() {
+        let records = vec![checkpoint_with_parent("checkpoint-root", None, 10)];
+        let error = resolve_checkpoint_lineage_path(&records, "checkpoint-unknown")
+            .expect_err("unknown leaf should fail");
+        assert!(error.to_string().contains("unknown leaf"));
+    }
+
+    #[test]
+    fn spec_c02_reject_duplicate_checkpoint_ids() {
+        let records = vec![
+            checkpoint_with_parent("checkpoint-dup", None, 10),
+            checkpoint_with_parent("checkpoint-dup", None, 20),
+        ];
+        let error = resolve_checkpoint_lineage_path(&records, "checkpoint-dup")
+            .expect_err("duplicate ids should fail");
+        assert!(error.to_string().contains("duplicate checkpoint_id"));
+    }
+
+    #[test]
+    fn spec_c03_reject_missing_parent_checkpoint() {
+        let records = vec![checkpoint_with_parent(
+            "checkpoint-leaf",
+            Some("checkpoint-missing"),
+            30,
+        )];
+        let error = resolve_checkpoint_lineage_path(&records, "checkpoint-leaf")
+            .expect_err("missing parent should fail");
+        assert!(error.to_string().contains("missing parent"));
+    }
+
+    #[test]
+    fn spec_c03_reject_lineage_cycle() {
+        let records = vec![
+            checkpoint_with_parent("checkpoint-a", Some("checkpoint-b"), 10),
+            checkpoint_with_parent("checkpoint-b", Some("checkpoint-a"), 20),
+        ];
+        let error = resolve_checkpoint_lineage_path(&records, "checkpoint-a")
+            .expect_err("lineage cycle should fail");
+        assert!(error.to_string().contains("lineage cycle"));
+    }
+
+    fn checkpoint_with_parent(
+        checkpoint_id: &str,
+        parent_checkpoint_id: Option<&str>,
+        global_step: u64,
+    ) -> CheckpointRecord {
+        let mut checkpoint = CheckpointRecord::new(checkpoint_id, "ppo", "policy-v1", global_step);
+        if let Some(parent_checkpoint_id) = parent_checkpoint_id {
+            checkpoint.metadata.insert(
+                "parent_checkpoint_id".to_string(),
+                json!(parent_checkpoint_id),
+            );
+        }
+        checkpoint
     }
 }
