@@ -3086,6 +3086,8 @@ name = "tau-memory"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "httpmock",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tau-contract",

@@ -31,7 +31,9 @@ use tau_access::{
     RbacDecision,
 };
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
-use tau_memory::runtime::{FileMemoryStore, MemoryScopeFilter, MemorySearchOptions};
+use tau_memory::runtime::{
+    FileMemoryStore, MemoryEmbeddingProviderConfig, MemoryScopeFilter, MemorySearchOptions,
+};
 use tau_session::{
     compute_session_entry_depths, redo_session_head, resolve_session_navigation_head,
     search_session_entries, session_message_preview, session_message_role, undo_session_head,
@@ -73,6 +75,7 @@ const MEMORY_WRITE_MAX_FACTS: usize = 32;
 const MEMORY_WRITE_MAX_TAGS: usize = 32;
 const MEMORY_WRITE_MAX_FACT_CHARS: usize = 400;
 const MEMORY_WRITE_MAX_TAG_CHARS: usize = 96;
+const MEMORY_EMBEDDING_TIMEOUT_MS_DEFAULT: u64 = 10_000;
 const TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT: u64 = 60_000;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
@@ -332,6 +335,13 @@ pub struct ToolPolicy {
     pub memory_search_max_limit: usize,
     pub memory_embedding_dimensions: usize,
     pub memory_min_similarity: f32,
+    pub memory_embedding_provider: Option<String>,
+    pub memory_embedding_model: Option<String>,
+    pub memory_embedding_api_base: Option<String>,
+    pub memory_embedding_api_key: Option<String>,
+    pub memory_embedding_timeout_ms: u64,
+    pub memory_enable_embedding_migration: bool,
+    pub memory_benchmark_against_hash: bool,
     pub memory_write_max_summary_chars: usize,
     pub memory_write_max_facts: usize,
     pub memory_write_max_tags: usize,
@@ -377,6 +387,13 @@ impl ToolPolicy {
             memory_search_max_limit: MEMORY_SEARCH_MAX_LIMIT,
             memory_embedding_dimensions: 128,
             memory_min_similarity: 0.55,
+            memory_embedding_provider: None,
+            memory_embedding_model: None,
+            memory_embedding_api_base: None,
+            memory_embedding_api_key: None,
+            memory_embedding_timeout_ms: MEMORY_EMBEDDING_TIMEOUT_MS_DEFAULT,
+            memory_enable_embedding_migration: true,
+            memory_benchmark_against_hash: false,
             memory_write_max_summary_chars: MEMORY_WRITE_MAX_SUMMARY_CHARS,
             memory_write_max_facts: MEMORY_WRITE_MAX_FACTS,
             memory_write_max_tags: MEMORY_WRITE_MAX_TAGS,
@@ -535,6 +552,25 @@ impl ToolPolicy {
 
     pub fn rate_limit_counters(&self) -> ToolRateLimitCounters {
         self.rate_limiter.counters()
+    }
+
+    pub fn memory_embedding_provider_config(&self) -> Option<MemoryEmbeddingProviderConfig> {
+        let provider = self.memory_embedding_provider.as_ref()?.trim();
+        let model = self.memory_embedding_model.as_ref()?.trim();
+        let api_base = self.memory_embedding_api_base.as_ref()?.trim();
+        let api_key = self.memory_embedding_api_key.as_ref()?.trim();
+        if provider.is_empty() || model.is_empty() || api_base.is_empty() || api_key.is_empty() {
+            return None;
+        }
+
+        Some(MemoryEmbeddingProviderConfig {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            api_base: api_base.to_string(),
+            api_key: api_key.to_string(),
+            dimensions: self.memory_embedding_dimensions.max(1),
+            timeout_ms: self.memory_embedding_timeout_ms.max(1),
+        })
     }
 }
 
@@ -1184,7 +1220,10 @@ impl AgentTool for MemoryWriteTool {
             recency_weight_bps,
             confidence_bps,
         };
-        let store = FileMemoryStore::new(self.policy.memory_state_dir.clone());
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
         let entries_path = store.root_dir().join("entries.jsonl");
 
         if let Some(rbac_result) = evaluate_tool_rbac_gate(
@@ -1242,6 +1281,9 @@ impl AgentTool for MemoryWriteTool {
                 "recency_weight_bps": result.record.entry.recency_weight_bps,
                 "confidence_bps": result.record.entry.confidence_bps,
                 "updated_unix_ms": result.record.updated_unix_ms,
+                "embedding_source": result.record.embedding_source,
+                "embedding_model": result.record.embedding_model,
+                "embedding_reason_code": result.record.embedding_reason_code,
                 "store_root": store.root_dir().display().to_string(),
             })),
             Err(error) => ToolExecutionResult::error(json!({
@@ -1322,7 +1364,10 @@ impl AgentTool for MemoryReadTool {
             return rate_limit_result;
         }
 
-        let store = FileMemoryStore::new(self.policy.memory_state_dir.clone());
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
         match store.read_entry(memory_id.as_str(), scope_filter.as_ref()) {
             Ok(Some(record)) => ToolExecutionResult::ok(json!({
                 "tool": "memory_read",
@@ -1336,6 +1381,9 @@ impl AgentTool for MemoryReadTool {
                 "recency_weight_bps": record.entry.recency_weight_bps,
                 "confidence_bps": record.entry.confidence_bps,
                 "updated_unix_ms": record.updated_unix_ms,
+                "embedding_source": record.embedding_source,
+                "embedding_model": record.embedding_model,
+                "embedding_reason_code": record.embedding_reason_code,
                 "store_root": store.root_dir().display().to_string(),
             })),
             Ok(None) => ToolExecutionResult::ok(json!({
@@ -1459,7 +1507,10 @@ impl AgentTool for MemorySearchTool {
             return rate_limit_result;
         }
 
-        let store = FileMemoryStore::new(self.policy.memory_state_dir.clone());
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
         match store.search(
             query.as_str(),
             &MemorySearchOptions {
@@ -1467,6 +1518,8 @@ impl AgentTool for MemorySearchTool {
                 limit,
                 embedding_dimensions: self.policy.memory_embedding_dimensions,
                 min_similarity: self.policy.memory_min_similarity,
+                enable_embedding_migration: self.policy.memory_enable_embedding_migration,
+                benchmark_against_hash: self.policy.memory_benchmark_against_hash,
             },
         ) {
             Ok(result) => ToolExecutionResult::ok(json!({
@@ -1477,6 +1530,12 @@ impl AgentTool for MemorySearchTool {
                 "returned": result.returned,
                 "min_similarity": self.policy.memory_min_similarity,
                 "embedding_dimensions": self.policy.memory_embedding_dimensions,
+                "embedding_backend": result.embedding_backend,
+                "embedding_reason_code": result.embedding_reason_code,
+                "migrated_entries": result.migrated_entries,
+                "query_embedding_latency_ms": result.query_embedding_latency_ms,
+                "ranking_latency_ms": result.ranking_latency_ms,
+                "baseline_hash_overlap": result.baseline_hash_overlap,
                 "matches": result.matches,
                 "store_root": store.root_dir().display().to_string(),
             })),
@@ -1538,7 +1597,10 @@ impl AgentTool for MemoryTreeTool {
             return rate_limit_result;
         }
 
-        let store = FileMemoryStore::new(self.policy.memory_state_dir.clone());
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
         match store.tree() {
             Ok(tree) => ToolExecutionResult::ok(json!({
                 "tool": "memory_tree",

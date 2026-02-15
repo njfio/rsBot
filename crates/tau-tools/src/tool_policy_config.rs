@@ -9,9 +9,16 @@ use crate::tools::{
     BashCommandProfile, OsSandboxMode, OsSandboxPolicyMode, ToolPolicy,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 7;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 8;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
+const MEMORY_EMBEDDING_PROVIDER_ENV: &str = "TAU_MEMORY_EMBEDDING_PROVIDER";
+const MEMORY_EMBEDDING_MODEL_ENV: &str = "TAU_MEMORY_EMBEDDING_MODEL";
+const MEMORY_EMBEDDING_API_BASE_ENV: &str = "TAU_MEMORY_EMBEDDING_API_BASE";
+const MEMORY_EMBEDDING_API_KEY_ENV: &str = "TAU_MEMORY_EMBEDDING_API_KEY";
+const MEMORY_EMBEDDING_TIMEOUT_MS_ENV: &str = "TAU_MEMORY_EMBEDDING_TIMEOUT_MS";
+const MEMORY_ENABLE_EMBEDDING_MIGRATION_ENV: &str = "TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION";
+const MEMORY_BENCHMARK_AGAINST_HASH_ENV: &str = "TAU_MEMORY_BENCHMARK_AGAINST_HASH";
 
 pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     let cwd = std::env::current_dir().context("failed to resolve current directory")?;
@@ -98,6 +105,37 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     } else {
         cwd.join(cli.memory_state_dir.as_path())
     };
+    if let Some(provider) = parse_optional_env_string(MEMORY_EMBEDDING_PROVIDER_ENV) {
+        policy.memory_embedding_provider = Some(provider);
+    }
+    if let Some(model) = parse_optional_env_string(MEMORY_EMBEDDING_MODEL_ENV) {
+        policy.memory_embedding_model = Some(model);
+    }
+    if let Some(api_base) = parse_optional_env_string(MEMORY_EMBEDDING_API_BASE_ENV) {
+        policy.memory_embedding_api_base = Some(api_base);
+    }
+    if let Some(api_key) = parse_optional_env_string(MEMORY_EMBEDDING_API_KEY_ENV) {
+        policy.memory_embedding_api_key = Some(api_key);
+    }
+    if let Some(timeout_ms) = parse_optional_env_u64(MEMORY_EMBEDDING_TIMEOUT_MS_ENV)? {
+        policy.memory_embedding_timeout_ms = timeout_ms.max(1);
+    }
+    if let Some(enable_migration) = parse_optional_env_bool(MEMORY_ENABLE_EMBEDDING_MIGRATION_ENV)?
+    {
+        policy.memory_enable_embedding_migration = enable_migration;
+    }
+    if let Some(benchmark_against_hash) =
+        parse_optional_env_bool(MEMORY_BENCHMARK_AGAINST_HASH_ENV)?
+    {
+        policy.memory_benchmark_against_hash = benchmark_against_hash;
+    }
+
+    if policy.memory_embedding_api_base.is_none() && policy.memory_embedding_provider.is_some() {
+        policy.memory_embedding_api_base = Some(cli.api_base.clone());
+    }
+    if policy.memory_embedding_api_key.is_none() && policy.memory_embedding_provider.is_some() {
+        policy.memory_embedding_api_key = cli.openai_api_key.clone().or(cli.api_key.clone());
+    }
 
     if let Some(allow_mutations) = parse_optional_env_bool(ALLOW_PROTECTED_PATH_MUTATIONS_ENV)? {
         policy.allow_protected_path_mutations = allow_mutations;
@@ -178,6 +216,37 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
     payload.insert(
         "memory_min_similarity".to_string(),
         serde_json::json!(policy.memory_min_similarity),
+    );
+    payload.insert(
+        "memory_embedding_provider".to_string(),
+        serde_json::json!(policy.memory_embedding_provider.clone()),
+    );
+    payload.insert(
+        "memory_embedding_model".to_string(),
+        serde_json::json!(policy.memory_embedding_model.clone()),
+    );
+    payload.insert(
+        "memory_embedding_api_base".to_string(),
+        serde_json::json!(policy.memory_embedding_api_base.clone()),
+    );
+    payload.insert(
+        "memory_embedding_api_key_present".to_string(),
+        serde_json::json!(policy
+            .memory_embedding_api_key
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())),
+    );
+    payload.insert(
+        "memory_embedding_timeout_ms".to_string(),
+        serde_json::json!(policy.memory_embedding_timeout_ms),
+    );
+    payload.insert(
+        "memory_enable_embedding_migration".to_string(),
+        serde_json::json!(policy.memory_enable_embedding_migration),
+    );
+    payload.insert(
+        "memory_benchmark_against_hash".to_string(),
+        serde_json::json!(policy.memory_benchmark_against_hash),
     );
     payload.insert(
         "memory_write_max_summary_chars".to_string(),
@@ -327,6 +396,36 @@ fn parse_optional_env_bool(name: &str) -> Result<Option<bool>> {
     }
 }
 
+fn parse_optional_env_string(name: &str) -> Option<String> {
+    let raw = std::env::var_os(name)?;
+    let value = raw.to_string_lossy();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn parse_optional_env_u64(name: &str) -> Result<Option<u64>> {
+    let Some(raw) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = raw.to_string_lossy();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed = trimmed.parse::<u64>().map_err(|error| {
+        anyhow!(
+            "invalid {} value '{}': expected unsigned integer ({error})",
+            name,
+            trimmed
+        )
+    })?;
+    Ok(Some(parsed))
+}
+
 fn parse_protected_paths_env(name: &str) -> Result<Vec<std::path::PathBuf>> {
     let Some(raw) = std::env::var_os(name) else {
         return Ok(Vec::new());
@@ -385,8 +484,12 @@ fn map_cli_tool_policy_preset(value: CliToolPolicyPreset) -> crate::tools::ToolP
 
 #[cfg(test)]
 mod tests {
-    use super::tool_policy_to_json;
+    use super::{build_tool_policy, tool_policy_to_json};
     use crate::tools::ToolPolicy;
+    use clap::Parser;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+    use tau_cli::cli_args::Cli;
     use tempfile::tempdir;
 
     #[test]
@@ -396,11 +499,24 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 7);
+        assert_eq!(payload["schema_version"], 8);
         assert_eq!(payload["allow_protected_path_mutations"], true);
         assert_eq!(payload["memory_search_default_limit"], 5);
         assert_eq!(payload["memory_search_max_limit"], 50);
         assert_eq!(payload["memory_embedding_dimensions"], 128);
+        assert_eq!(
+            payload["memory_embedding_provider"],
+            serde_json::Value::Null
+        );
+        assert_eq!(payload["memory_embedding_model"], serde_json::Value::Null);
+        assert_eq!(
+            payload["memory_embedding_api_base"],
+            serde_json::Value::Null
+        );
+        assert_eq!(payload["memory_embedding_api_key_present"], false);
+        assert_eq!(payload["memory_embedding_timeout_ms"], 10_000);
+        assert_eq!(payload["memory_enable_embedding_migration"], true);
+        assert_eq!(payload["memory_benchmark_against_hash"], false);
         let min_similarity = payload["memory_min_similarity"]
             .as_f64()
             .expect("memory_min_similarity as f64");
@@ -425,5 +541,101 @@ mod tests {
                 })
             })
             .unwrap_or(false));
+    }
+
+    #[test]
+    fn integration_build_tool_policy_reads_memory_embedding_env_without_exposing_keys() {
+        let _guard = env_lock().lock().expect("env lock");
+        let vars = [
+            "TAU_MEMORY_EMBEDDING_PROVIDER",
+            "TAU_MEMORY_EMBEDDING_MODEL",
+            "TAU_MEMORY_EMBEDDING_API_BASE",
+            "TAU_MEMORY_EMBEDDING_API_KEY",
+            "TAU_MEMORY_EMBEDDING_TIMEOUT_MS",
+            "TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION",
+            "TAU_MEMORY_BENCHMARK_AGAINST_HASH",
+        ];
+        let _snapshot = EnvSnapshot::capture(&vars);
+        for name in vars {
+            std::env::remove_var(name);
+        }
+
+        std::env::set_var("TAU_MEMORY_EMBEDDING_PROVIDER", "openai-compatible");
+        std::env::set_var("TAU_MEMORY_EMBEDDING_MODEL", "text-embedding-3-small");
+        std::env::set_var(
+            "TAU_MEMORY_EMBEDDING_API_BASE",
+            "https://embeddings.example/v1",
+        );
+        std::env::set_var("TAU_MEMORY_EMBEDDING_API_KEY", "secret");
+        std::env::set_var("TAU_MEMORY_EMBEDDING_TIMEOUT_MS", "2500");
+        std::env::set_var("TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION", "false");
+        std::env::set_var("TAU_MEMORY_BENCHMARK_AGAINST_HASH", "true");
+
+        let cli = parse_cli_with_stack();
+        let policy = build_tool_policy(&cli).expect("build tool policy");
+        assert_eq!(
+            policy.memory_embedding_provider.as_deref(),
+            Some("openai-compatible")
+        );
+        assert_eq!(
+            policy.memory_embedding_model.as_deref(),
+            Some("text-embedding-3-small")
+        );
+        assert_eq!(
+            policy.memory_embedding_api_base.as_deref(),
+            Some("https://embeddings.example/v1")
+        );
+        assert_eq!(policy.memory_embedding_api_key.as_deref(), Some("secret"));
+        assert_eq!(policy.memory_embedding_timeout_ms, 2_500);
+        assert!(!policy.memory_enable_embedding_migration);
+        assert!(policy.memory_benchmark_against_hash);
+
+        let payload = tool_policy_to_json(&policy);
+        assert_eq!(payload["memory_embedding_api_key_present"], true);
+        assert!(!payload
+            .as_object()
+            .map(|object| object.contains_key("memory_embedding_api_key"))
+            .unwrap_or(false));
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn parse_cli_with_stack() -> Cli {
+        std::thread::Builder::new()
+            .name("tau-cli-parse".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::parse_from(["tau-rs"]))
+            .expect("spawn cli parse thread")
+            .join()
+            .expect("join cli parse thread")
+    }
+
+    struct EnvSnapshot {
+        values: Vec<(String, Option<OsString>)>,
+    }
+
+    impl EnvSnapshot {
+        fn capture(names: &[&str]) -> Self {
+            Self {
+                values: names
+                    .iter()
+                    .map(|name| ((*name).to_string(), std::env::var_os(name)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (name, value) in self.values.drain(..) {
+                match value {
+                    Some(previous) => std::env::set_var(name, previous),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
     }
 }

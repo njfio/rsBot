@@ -17,6 +17,25 @@ User-facing memory tools are available in runtime:
 
 These tools persist under `--memory-state-dir` (default `.tau/memory`).
 
+Optional real-embedding configuration (runtime env):
+
+- `TAU_MEMORY_EMBEDDING_PROVIDER` (`openai` or `openai-compatible`)
+- `TAU_MEMORY_EMBEDDING_MODEL` (for example `text-embedding-3-small`)
+- `TAU_MEMORY_EMBEDDING_API_BASE` (defaults to `--api-base` when provider is set)
+- `TAU_MEMORY_EMBEDDING_API_KEY` (falls back to `OPENAI_API_KEY`/`TAU_API_KEY`)
+- `TAU_MEMORY_EMBEDDING_TIMEOUT_MS` (default `10000`)
+- `TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION` (default `true`)
+- `TAU_MEMORY_BENCHMARK_AGAINST_HASH` (default `false`)
+
+`memory_search` now reports embedding diagnostics:
+
+- `embedding_backend`
+- `embedding_reason_code`
+- `migrated_entries`
+- `query_embedding_latency_ms`
+- `ranking_latency_ms`
+- `baseline_hash_overlap` (when hash benchmark is enabled)
+
 ## Health and observability signals
 
 Primary status signal:
@@ -69,6 +88,8 @@ Primary state files:
   Action: verify `.tau/memory/state.json` exists and contains a `health` object.
 - Symptom: runtime recall quality regresses.
   Action: run `cargo test -p tau-agent-core memory -- --test-threads=1` and inspect embedding/retrieval test failures.
+- Symptom: `memory_search` reports `embedding_reason_code=memory_embedding_provider_failed`.
+  Action: verify provider API base/key/model, then disable migration (`TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION=false`) during incident mitigation.
 - Symptom: health state `failing` (`failure_streak >= 3`).
   Action: treat as rollout gate failure; pause promotion and investigate repeated runtime failures in active memory producers.
 - Symptom: non-zero `queue_depth`.
