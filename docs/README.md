@@ -28,7 +28,7 @@ This index maps Tau documentation by audience and task.
 | Roadmap operator | [Roadmap Status Sync](guides/roadmap-status-sync.md) | Generate/check roadmap status snapshots from tracked GitHub issue state |
 | Roadmap operator | [Issue Hierarchy Drift Rules](guides/issue-hierarchy-drift-rules.md) | Required hierarchy metadata, orphan/drift condition IDs, and remediation contract |
 | Roadmap operator | [PR Batch Lane Boundaries](guides/pr-batch-lane-boundaries.md) | Lane boundaries, batch-size/review-SLA matrix, hotspot mitigation rules, and exception workflow |
-| Roadmap operator | [Stale Branch Response Playbook](guides/stale-branch-response-playbook.md) | Stale thresholds, alert channel rules, and acknowledgement/resolve workflow |
+| Roadmap operator | [Stale Branch Response Playbook](guides/stale-branch-response-playbook.md) | Stale thresholds, alert channels, conflict triage criteria, and rollback triggers |
 | Gateway auth operator | [Gateway Auth Session Smoke](guides/gateway-auth-session-smoke.md) | End-to-end password-session issuance, authorized status call, invalid/expired fail-closed checks |
 | Platform / integration engineer | [Transport Guide](guides/transports.md) | GitHub Issues bridge, Slack bridge, contract runners (multi-channel/multi-agent/gateway/deployment/voice), dashboard diagnostics/API, memory diagnostics, custom-command diagnostics, RPC, ChannelStore admin |
 | Package and extension author | [Packages Guide](guides/packages.md) | Extension manifests, package lifecycle, activation, signing |

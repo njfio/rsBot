@@ -22,6 +22,8 @@ class StaleBranchAlertPolicyTests(unittest.TestCase):
         self.assertIn("thresholds", policy)
         self.assertIn("alert_conditions", policy)
         self.assertIn("acknowledge_resolve_workflow", policy)
+        self.assertIn("conflict_response", policy)
+        self.assertIn("rollback_triggers", policy)
         self.assertIn("pr_reference_fields", policy)
 
         warning = policy["thresholds"]["warning"]
@@ -29,6 +31,10 @@ class StaleBranchAlertPolicyTests(unittest.TestCase):
         self.assertLess(warning["age_days"], critical["age_days"])
         self.assertLess(warning["behind_commits"], critical["behind_commits"])
         self.assertGreater(policy["thresholds"]["unresolved_conflict_warning_hours"], 0)
+        self.assertGreater(len(policy["conflict_response"]["triage_flow"]), 0)
+        self.assertIn("merge", policy["conflict_response"]["decision_criteria"])
+        self.assertIn("rebase", policy["conflict_response"]["decision_criteria"])
+        self.assertIn("abandon", policy["conflict_response"]["decision_criteria"])
 
     def test_regression_alert_condition_ids_are_unique_and_actionable(self):
         policy = load_policy()
@@ -60,11 +66,30 @@ class StaleBranchAlertPolicyTests(unittest.TestCase):
             self.assertIn(field, guide_text)
             self.assertIn(field, template_text)
 
+        normalized_guide = guide_text.replace("`", "").lower()
+        self.assertIn("conflict triage flow", normalized_guide)
+        self.assertIn("merge", normalized_guide)
+        self.assertIn("rebase", normalized_guide)
+        self.assertIn("abandon", normalized_guide)
+
+        for trigger in policy["rollback_triggers"]:
+            self.assertIn(trigger["id"], guide_text)
+
     def test_regression_resolve_states_are_documented_in_playbook(self):
         policy = load_policy()
         guide_text = GUIDE_PATH.read_text(encoding="utf-8")
         for state in policy["acknowledge_resolve_workflow"]["resolve_states"]:
             self.assertIn(state, guide_text)
+
+    def test_regression_rollback_trigger_ids_are_unique_with_actions(self):
+        policy = load_policy()
+        triggers = policy["rollback_triggers"]
+        trigger_ids = [entry["id"] for entry in triggers]
+
+        self.assertEqual(len(trigger_ids), len(set(trigger_ids)))
+        self.assertGreaterEqual(len(triggers), 2)
+        for entry in triggers:
+            self.assertGreater(len(entry["required_actions"]), 0)
 
 
 if __name__ == "__main__":

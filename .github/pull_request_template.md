@@ -14,6 +14,8 @@
 - Exception Reference (`none` or `tasks/policies/pr-batch-exceptions.json#<exception_id>`):
 - Branch Freshness (`age_days`, `behind_commits`, `ok|warning|critical`):
 - Stale Alert Acknowledgement (`none` or link to acknowledgement comment/workflow update):
+- Conflict Response Decision (`merge` | `rebase` | `abandon` | `n/a`):
+- Rollback Trigger Check (`none` or rollback trigger id + mitigation link):
 
 ## Validation Evidence
 

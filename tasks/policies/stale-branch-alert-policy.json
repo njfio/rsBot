@@ -61,8 +61,63 @@
       "stale-critical"
     ]
   },
+  "conflict_response": {
+    "triage_flow": [
+      "Classify conflict scope (manifest, workflow, runtime module, docs-only).",
+      "Estimate resolution effort and blast radius within 30 minutes.",
+      "Select merge, rebase, or abandon using decision criteria and record rationale."
+    ],
+    "decision_criteria": {
+      "merge": [
+        "Branch is <= 10 commits behind master.",
+        "Conflict scope is docs-only or low-risk non-hotspot changes.",
+        "No rollback trigger is active."
+      ],
+      "rebase": [
+        "Branch is > 10 commits behind master.",
+        "Conflict scope includes hotspot paths or generated artifacts.",
+        "Rebase can be completed within one review cycle."
+      ],
+      "abandon": [
+        "Branch is > 21 days old with unresolved conflicts.",
+        "Superseded by merged replacement PR or obsolete roadmap scope.",
+        "Two failed rebase attempts within 48 hours."
+      ]
+    }
+  },
+  "rollback_triggers": [
+    {
+      "id": "rollback.conflict_churn",
+      "trigger": "same conflict resurfaces in two consecutive rebases",
+      "required_actions": [
+        "pause merge queue for impacted lane",
+        "escalate to runtime maintainer",
+        "open rollback/disposition issue"
+      ]
+    },
+    {
+      "id": "rollback.red_ci_after_resolution",
+      "trigger": "quality checks fail after conflict resolution with no source changes",
+      "required_actions": [
+        "revert resolution commit",
+        "restore last green commit",
+        "rerun validation matrix"
+      ]
+    },
+    {
+      "id": "rollback.hotspot_collision",
+      "trigger": "hotspot files (`Cargo.toml`, `Cargo.lock`, `ci.yml`) conflict across >1 active lane",
+      "required_actions": [
+        "freeze non-owner lane merges",
+        "serialize hotspot owner PRs",
+        "rebaseline stale branches"
+      ]
+    }
+  ],
   "pr_reference_fields": [
     "Branch Freshness",
-    "Stale Alert Acknowledgement"
+    "Stale Alert Acknowledgement",
+    "Conflict Response Decision",
+    "Rollback Trigger Check"
   ]
 }
