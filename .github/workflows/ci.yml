@@ -26,6 +26,7 @@ concurrency:
 
 permissions:
   contents: read
+  issues: read
   pull-requests: read
 
 env:
@@ -196,6 +197,11 @@ jobs:
       - name: Validate CI helper scripts
         if: steps.helper_scope.outputs.helper_tests_needed == 'true'
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py"
+
+      - name: Check roadmap status sync blocks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/dev/roadmap-status-sync.sh --check
 
       - name: Check rust doc density thresholds
         if: steps.rust_scope.outputs.rust_changed == 'true'
