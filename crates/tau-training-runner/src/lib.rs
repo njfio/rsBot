@@ -356,6 +356,16 @@ mod tests {
     use tau_training_types::{AttemptStatus, Reward, Rollout, RolloutStatus};
     use tokio::sync::watch;
 
+    #[derive(Debug, Clone)]
+    struct CollectorLoadReport {
+        enqueued_rollouts: usize,
+        succeeded_rollouts: usize,
+        failed_rollouts: usize,
+        cancelled_rollouts: usize,
+        elapsed_ms: u128,
+        throughput_per_sec: f64,
+    }
+
     struct StaticExecutor;
 
     #[async_trait]
@@ -630,6 +640,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regression_collector_load_harness_reports_metrics_and_no_drop() {
+        let report = run_collector_load_harness(64, 4)
+            .await
+            .expect("load harness should run");
+
+        assert_eq!(report.enqueued_rollouts, 64);
+        assert_eq!(report.succeeded_rollouts, 64);
+        assert_eq!(report.failed_rollouts, 0);
+        assert_eq!(report.cancelled_rollouts, 0);
+        assert!(report.elapsed_ms > 0);
+        assert!(report.throughput_per_sec > 0.0);
+    }
+
+    #[tokio::test]
     async fn tau_agent_executor_extracts_exact_match_reward() {
         let executor = TauAgentExecutor::new(|_resources| {
             Agent::new(Arc::new(MockClient), AgentConfig::default())
@@ -701,5 +725,105 @@ mod tests {
 
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    async fn run_collector_load_harness(
+        enqueued_rollouts: usize,
+        worker_count: usize,
+    ) -> Result<CollectorLoadReport> {
+        let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
+
+        for index in 0..enqueued_rollouts {
+            store
+                .enqueue_rollout(Rollout::new(
+                    format!("r-load-{index}"),
+                    json!({ "prompt": format!("load-{index}") }),
+                    Some(tau_training_types::RolloutMode::Train),
+                ))
+                .await?;
+        }
+
+        let mut shutdown_txs = Vec::with_capacity(worker_count);
+        let mut handles = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let runner = TrainingRunner::new(
+                store.clone(),
+                Arc::new(StaticExecutor),
+                RunnerConfig {
+                    worker_id: format!("worker-load-{}", index + 1),
+                    poll_interval: Duration::from_millis(5),
+                    heartbeat_interval: Duration::from_millis(25),
+                    reassignment_interval: Duration::from_millis(25),
+                    worker_timeout: Duration::from_millis(150),
+                },
+            );
+            let (tx, rx) = watch::channel(false);
+            shutdown_txs.push(tx);
+            handles.push(tokio::spawn(async move { runner.run(rx).await }));
+        }
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(15);
+
+        let (succeeded_rollouts, failed_rollouts, cancelled_rollouts) = loop {
+            let rollouts = store.query_rollouts(RolloutQuery::default()).await?;
+            let succeeded = rollouts
+                .iter()
+                .filter(|rollout| rollout.status == RolloutStatus::Succeeded)
+                .count();
+            let failed = rollouts
+                .iter()
+                .filter(|rollout| rollout.status == RolloutStatus::Failed)
+                .count();
+            let cancelled = rollouts
+                .iter()
+                .filter(|rollout| rollout.status == RolloutStatus::Cancelled)
+                .count();
+
+            if succeeded + failed + cancelled == enqueued_rollouts {
+                break (succeeded, failed, cancelled);
+            }
+
+            if Instant::now() >= deadline {
+                anyhow::bail!(
+                    "collector load harness timed out before terminal completion: succeeded={succeeded} failed={failed} cancelled={cancelled} expected={enqueued_rollouts}"
+                );
+            }
+
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        let elapsed_ms = started.elapsed().as_millis();
+        let throughput_per_sec = if elapsed_ms == 0 {
+            succeeded_rollouts as f64
+        } else {
+            succeeded_rollouts as f64 / (elapsed_ms as f64 / 1000.0)
+        };
+
+        println!(
+            "METRIC collector_load enqueued={} succeeded={} failed={} cancelled={} elapsed_ms={} throughput_per_sec={:.3}",
+            enqueued_rollouts,
+            succeeded_rollouts,
+            failed_rollouts,
+            cancelled_rollouts,
+            elapsed_ms,
+            throughput_per_sec
+        );
+
+        for tx in shutdown_txs {
+            tx.send(true).expect("shutdown worker");
+        }
+        for handle in handles {
+            handle.await.expect("join worker")?;
+        }
+
+        Ok(CollectorLoadReport {
+            enqueued_rollouts,
+            succeeded_rollouts,
+            failed_rollouts,
+            cancelled_rollouts,
+            elapsed_ms,
+            throughput_per_sec,
+        })
     }
 }
