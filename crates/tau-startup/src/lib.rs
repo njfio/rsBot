@@ -74,6 +74,7 @@ pub trait StartupPreflightActions {
     fn execute_package_conflicts_command(&self, cli: &Cli) -> Result<()>;
     fn execute_package_activate_command(&self, cli: &Cli) -> Result<()>;
     fn execute_qa_loop_preflight_command(&self, cli: &Cli) -> Result<()>;
+    fn execute_mcp_client_inspect_command(&self, cli: &Cli) -> Result<()>;
     fn execute_mcp_server_command(&self, cli: &Cli) -> Result<()>;
     fn execute_rpc_capabilities_command(&self, cli: &Cli) -> Result<()>;
     fn execute_rpc_validate_frame_command(&self, cli: &Cli) -> Result<()>;
@@ -441,6 +442,11 @@ pub fn execute_startup_preflight(cli: &Cli, actions: &dyn StartupPreflightAction
 
     if cli.qa_loop {
         actions.execute_qa_loop_preflight_command(cli)?;
+        return Ok(true);
+    }
+
+    if cli.mcp_client_inspect {
+        actions.execute_mcp_client_inspect_command(cli)?;
         return Ok(true);
     }
 

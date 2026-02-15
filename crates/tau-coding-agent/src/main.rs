@@ -12,6 +12,7 @@ mod commands;
 mod deployment_wasm;
 mod events;
 mod macro_profile_commands;
+mod mcp_client;
 mod mcp_server;
 mod model_catalog;
 mod multi_agent_router;
@@ -124,6 +125,8 @@ pub(crate) use crate::macro_profile_commands::{
     validate_macro_name, validate_profile_name, MacroCommand, MacroFile, ProfileCommand,
     ProfileStoreFile, MACRO_SCHEMA_VERSION, MACRO_USAGE, PROFILE_SCHEMA_VERSION, PROFILE_USAGE,
 };
+#[cfg(test)]
+pub(crate) use crate::mcp_client::execute_mcp_client_inspect_command;
 #[cfg(test)]
 pub(crate) use crate::mcp_server::execute_mcp_server_command;
 #[cfg(test)]

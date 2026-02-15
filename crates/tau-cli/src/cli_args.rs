@@ -1919,6 +1919,7 @@ pub struct Cli {
         long = "mcp-server",
         env = "TAU_MCP_SERVER",
         default_value_t = false,
+        conflicts_with = "mcp_client",
         conflicts_with = "rpc_capabilities",
         conflicts_with = "rpc_validate_frame_file",
         conflicts_with = "rpc_dispatch_frame_file",
@@ -1932,11 +1933,37 @@ pub struct Cli {
     pub mcp_server: bool,
 
     #[arg(
+        long = "mcp-client",
+        env = "TAU_MCP_CLIENT",
+        default_value_t = false,
+        conflicts_with = "mcp_server",
+        help = "Enable MCP client mode and register external MCP tools for the local agent runtime"
+    )]
+    pub mcp_client: bool,
+
+    #[arg(
+        long = "mcp-client-inspect",
+        env = "TAU_MCP_CLIENT_INSPECT",
+        default_value_t = false,
+        requires = "mcp_client",
+        help = "Run MCP client discovery/diagnostics and exit"
+    )]
+    pub mcp_client_inspect: bool,
+
+    #[arg(
+        long = "mcp-client-inspect-json",
+        env = "TAU_MCP_CLIENT_INSPECT_JSON",
+        default_value_t = false,
+        requires = "mcp_client_inspect",
+        help = "Render MCP client inspect output as JSON"
+    )]
+    pub mcp_client_inspect_json: bool,
+
+    #[arg(
         long = "mcp-external-server-config",
         env = "TAU_MCP_EXTERNAL_SERVER_CONFIG",
         value_name = "path",
-        requires = "mcp_server",
-        help = "Optional external MCP server config JSON used for discovery and tool forwarding"
+        help = "External MCP server/client config JSON used for MCP server passthrough and MCP client discovery/registration"
     )]
     pub mcp_external_server_config: Option<PathBuf>,
 

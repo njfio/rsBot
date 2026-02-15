@@ -32,6 +32,7 @@ pub struct StartupPreflightCallbacks {
     pub execute_package_conflicts_command: StartupCommandFn,
     pub execute_package_activate_command: StartupCommandFn,
     pub execute_qa_loop_preflight_command: StartupCommandFn,
+    pub execute_mcp_client_inspect_command: StartupCommandFn,
     pub execute_mcp_server_command: StartupCommandFn,
     pub execute_rpc_capabilities_command: StartupCommandFn,
     pub execute_rpc_validate_frame_command: StartupCommandFn,
@@ -152,6 +153,10 @@ impl tau_startup::StartupPreflightActions for CallbackStartupPreflightActions<'_
 
     fn execute_qa_loop_preflight_command(&self, cli: &Cli) -> Result<()> {
         (self.callbacks.execute_qa_loop_preflight_command)(cli)
+    }
+
+    fn execute_mcp_client_inspect_command(&self, cli: &Cli) -> Result<()> {
+        (self.callbacks.execute_mcp_client_inspect_command)(cli)
     }
 
     fn execute_mcp_server_command(&self, cli: &Cli) -> Result<()> {
@@ -301,6 +306,7 @@ mod tests {
             execute_package_conflicts_command: noop_command,
             execute_package_activate_command: noop_command,
             execute_qa_loop_preflight_command: noop_command,
+            execute_mcp_client_inspect_command: noop_command,
             execute_mcp_server_command: noop_command,
             execute_rpc_capabilities_command: noop_command,
             execute_rpc_validate_frame_command: noop_command,

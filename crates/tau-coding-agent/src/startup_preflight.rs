@@ -32,6 +32,7 @@ use crate::extension_manifest::{
     execute_extension_exec_command, execute_extension_list_command, execute_extension_show_command,
     execute_extension_validate_command,
 };
+use crate::mcp_client::execute_mcp_client_inspect_command;
 use crate::mcp_server::execute_mcp_server_command;
 use crate::project_index::execute_project_index_command;
 use crate::qa_loop_commands::execute_qa_loop_preflight_command;
@@ -67,6 +68,7 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         execute_package_conflicts_command,
         execute_package_activate_command,
         execute_qa_loop_preflight_command,
+        execute_mcp_client_inspect_command,
         execute_mcp_server_command,
         execute_rpc_capabilities_command,
         execute_rpc_validate_frame_command,

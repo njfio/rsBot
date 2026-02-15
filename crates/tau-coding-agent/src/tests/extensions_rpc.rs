@@ -217,6 +217,9 @@ fn regression_cli_deployment_wasm_inspect_conflicts_with_package_mode() {
 fn unit_cli_rpc_flags_default_to_disabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(!cli.mcp_server);
+    assert!(!cli.mcp_client);
+    assert!(!cli.mcp_client_inspect);
+    assert!(!cli.mcp_client_inspect_json);
     assert!(cli.mcp_external_server_config.is_none());
     assert!(cli.mcp_context_provider.is_empty());
     assert!(!cli.rpc_capabilities);
@@ -230,6 +233,13 @@ fn unit_cli_rpc_flags_default_to_disabled() {
 fn regression_cli_mcp_server_conflicts_with_rpc_serve_ndjson() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--mcp-server", "--rpc-serve-ndjson"]);
     let error = parse.expect_err("mcp server and rpc serve ndjson should conflict");
+    assert!(error.to_string().contains("cannot be used with"));
+}
+
+#[test]
+fn regression_cli_mcp_client_conflicts_with_mcp_server() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--mcp-client", "--mcp-server"]);
+    let error = parse.expect_err("mcp client and mcp server should conflict");
     assert!(error.to_string().contains("cannot be used with"));
 }
 

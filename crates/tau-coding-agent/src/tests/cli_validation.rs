@@ -2600,12 +2600,44 @@ fn functional_cli_mcp_server_flags_accept_external_config_and_context_providers(
         cli.mcp_context_provider,
         vec!["session".to_string(), "skills".to_string()]
     );
+    assert!(!cli.mcp_client);
+    assert!(!cli.mcp_client_inspect);
+    assert!(!cli.mcp_client_inspect_json);
+}
+
+#[test]
+fn functional_cli_mcp_client_flags_accept_inspect_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--mcp-client",
+        "--mcp-client-inspect",
+        "--mcp-client-inspect-json",
+        "--mcp-external-server-config",
+        ".tau/mcp/client.json",
+    ]);
+    assert!(cli.mcp_client);
+    assert!(cli.mcp_client_inspect);
+    assert!(cli.mcp_client_inspect_json);
+    assert!(!cli.mcp_server);
+    assert_eq!(
+        cli.mcp_external_server_config.as_deref(),
+        Some(Path::new(".tau/mcp/client.json"))
+    );
 }
 
 #[test]
 fn regression_cli_mcp_context_provider_requires_mcp_server_flag() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--mcp-context-provider", "session"]);
     let error = parse.expect_err("mcp context provider should require mcp server mode");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_mcp_client_inspect_requires_mcp_client_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--mcp-client-inspect"]);
+    let error = parse.expect_err("mcp client inspect should require mcp client mode");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));

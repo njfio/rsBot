@@ -13,6 +13,7 @@ This index maps Tau documentation by audience and task.
 | Runtime contributor | [Startup DI Pipeline](guides/startup-di-pipeline.md) | 3-stage startup resolution: preflight gate, dependency/context composition, mode dispatch |
 | Runtime contributor | [Contract Pattern Lifecycle](guides/contract-pattern-lifecycle.md) | Shared fixture lifecycle, compatibility gates, extension checklist, anti-patterns |
 | Runtime contributor | [Tool Name Registry](guides/tool-name-registry.md) | Reserved built-in tool-name catalog and registration conflict behavior for extension + MCP external tools |
+| Runtime operator / integration engineer | [MCP Client Operations Guide](guides/mcp-client-ops.md) | MCP client transport config (stdio + HTTP/SSE), OAuth PKCE token handling, inspect diagnostics, and live validation flow |
 | Runtime contributor | [Tool Policy Sandbox Mode](guides/tool-policy-sandbox-mode.md) | Fail-closed sandbox posture (`best-effort` vs `required`), preset defaults, and operator diagnostics |
 | Runtime contributor | [Tool Policy HTTP Client](guides/tool-policy-http-client.md) | `HttpTool` controls, SSRF/redirect guardrails, caps, and deterministic reason codes |
 | Runtime contributor | [Tool Policy Protected Paths](guides/tool-policy-protected-paths.md) | Protected identity/system file deny policy for write/edit with override controls and diagnostics |

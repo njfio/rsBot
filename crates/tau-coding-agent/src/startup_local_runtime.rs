@@ -14,6 +14,7 @@ use crate::extension_manifest::{
     discover_extension_runtime_registrations, dispatch_extension_runtime_hook,
     ExtensionRuntimeRegistrationSummary,
 };
+use crate::mcp_client::register_mcp_client_tools;
 use crate::model_catalog::ModelCatalog;
 use crate::multi_agent_router::load_multi_agent_route_table;
 use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
@@ -193,6 +194,26 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         |diagnostic| eprintln!("{diagnostic}"),
         |root, hook, payload| dispatch_extension_runtime_hook(root, hook, payload).diagnostics,
     );
+    let mcp_registration = register_mcp_client_tools(&mut agent, cli)?;
+    if cli.mcp_client {
+        eprintln!(
+            "mcp client registration: config={} servers={} discovered_tools={} registered_tools={}",
+            mcp_registration.config_path,
+            mcp_registration.server_count,
+            mcp_registration.discovered_tool_count,
+            mcp_registration.registered_tool_count
+        );
+        for diagnostic in &mcp_registration.diagnostics {
+            eprintln!(
+                "mcp client diagnostic: server={} phase={} status={} reason_code={} detail={}",
+                diagnostic.server,
+                diagnostic.phase,
+                diagnostic.status,
+                diagnostic.reason_code,
+                diagnostic.detail
+            );
+        }
+    }
 
     let LocalRuntimeStartupResolution {
         interactive_defaults,
