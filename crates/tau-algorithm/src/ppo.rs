@@ -251,7 +251,19 @@ mod tests {
         compute_ppo_loss, compute_ppo_update, PpoConfig, PpoLossBreakdown, PpoOptimizerStep,
         PpoSample,
     };
-    use anyhow::Result;
+    use anyhow::{bail, Context, Result};
+    use serde_json::Value;
+
+    const PPO_REFERENCE_FIXTURE: &str = include_str!("../testdata/ppo/reference_loss_cases.json");
+
+    #[derive(Debug, Clone)]
+    struct PpoReferenceCase {
+        name: String,
+        tolerance: f64,
+        config: PpoConfig,
+        samples: Vec<PpoSample>,
+        expected_loss: PpoLossBreakdown,
+    }
 
     #[test]
     fn spec_c01_compute_ppo_loss_matches_reference_vector() -> Result<()> {
@@ -283,6 +295,7 @@ mod tests {
 
         let loss = compute_ppo_loss(&config, &samples)?;
         assert_loss_close(
+            "spec_c01_inline_reference",
             loss,
             PpoLossBreakdown {
                 policy_loss: -0.352_585_459_037_823_85,
@@ -394,24 +407,234 @@ mod tests {
         );
     }
 
-    fn assert_loss_close(actual: PpoLossBreakdown, expected: PpoLossBreakdown, tolerance: f64) {
-        assert_close(actual.policy_loss, expected.policy_loss, tolerance);
-        assert_close(actual.value_loss, expected.value_loss, tolerance);
-        assert_close(actual.entropy_bonus, expected.entropy_bonus, tolerance);
-        assert_close(actual.total_loss, expected.total_loss, tolerance);
-        assert_close(actual.mean_ratio, expected.mean_ratio, tolerance);
+    #[test]
+    fn regression_ppo_reference_fixtures_match_expected_tolerance() -> Result<()> {
+        let cases = load_ppo_reference_cases()?;
+        assert!(
+            !cases.is_empty(),
+            "fixture suite must include at least one conformance case"
+        );
+
+        for case in cases {
+            let loss = compute_ppo_loss(&case.config, &case.samples)?;
+            assert_loss_close(&case.name, loss, case.expected_loss, case.tolerance);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unit_ppo_update_fixture_cases_remain_finite_and_deterministic() -> Result<()> {
+        for case in load_ppo_reference_cases()? {
+            let summary = compute_ppo_update(&case.config, &case.samples)?;
+            assert_eq!(summary.mini_batch_count, 1);
+            assert_eq!(summary.optimizer_step_count, 1);
+            assert_eq!(summary.optimizer_steps[0].sample_count, case.samples.len());
+            assert_eq!(summary.optimizer_steps[0].micro_batch_count, 1);
+            assert_loss_close(
+                &format!("{}_update_mean_loss", case.name),
+                summary.mean_loss,
+                case.expected_loss,
+                case.tolerance,
+            );
+        }
+
+        Ok(())
+    }
+
+    fn load_ppo_reference_cases() -> Result<Vec<PpoReferenceCase>> {
+        let payload: Value = serde_json::from_str(PPO_REFERENCE_FIXTURE)
+            .context("failed to parse PPO reference fixture JSON")?;
+        let schema_version = payload
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .context("fixture missing numeric schema_version")?;
+        if schema_version != 1 {
+            bail!("unsupported fixture schema_version {schema_version} (expected 1)");
+        }
+
+        let cases = payload
+            .get("cases")
+            .and_then(Value::as_array)
+            .context("fixture missing array field 'cases'")?;
+        cases
+            .iter()
+            .enumerate()
+            .map(|(index, case)| parse_reference_case(case, index))
+            .collect()
+    }
+
+    fn parse_reference_case(case: &Value, case_index: usize) -> Result<PpoReferenceCase> {
+        let name = case
+            .get("name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .with_context(|| format!("fixture case[{case_index}] missing string field 'name'"))?;
+        let tolerance = case
+            .get("tolerance")
+            .and_then(Value::as_f64)
+            .with_context(|| format!("fixture case '{name}' missing numeric field 'tolerance'"))?;
+        let config = parse_config(
+            case.get("config")
+                .context("fixture case missing object field 'config'")?,
+            &name,
+        )?;
+        let samples = parse_samples(
+            case.get("samples")
+                .context("fixture case missing array field 'samples'")?,
+            &name,
+        )?;
+        let expected_loss = parse_expected_loss(
+            case.get("expected_loss")
+                .context("fixture case missing object field 'expected_loss'")?,
+            &name,
+        )?;
+
+        Ok(PpoReferenceCase {
+            name,
+            tolerance,
+            config,
+            samples,
+            expected_loss,
+        })
+    }
+
+    fn parse_config(config: &Value, case_name: &str) -> Result<PpoConfig> {
+        let object = config
+            .as_object()
+            .with_context(|| format!("fixture case '{case_name}' has non-object config"))?;
+        Ok(PpoConfig {
+            clip_epsilon: required_f64(object, "clip_epsilon", case_name)?,
+            value_loss_coefficient: required_f64(object, "value_loss_coefficient", case_name)?,
+            entropy_coefficient: required_f64(object, "entropy_coefficient", case_name)?,
+            mini_batch_size: required_u64(object, "mini_batch_size", case_name)? as usize,
+            gradient_accumulation_steps: required_u64(
+                object,
+                "gradient_accumulation_steps",
+                case_name,
+            )? as usize,
+        })
+    }
+
+    fn parse_samples(samples: &Value, case_name: &str) -> Result<Vec<PpoSample>> {
+        let items = samples
+            .as_array()
+            .with_context(|| format!("fixture case '{case_name}' has non-array samples"))?;
+        if items.is_empty() {
+            bail!("fixture case '{case_name}' must provide at least one sample");
+        }
+
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| parse_sample(sample, case_name, index))
+            .collect()
+    }
+
+    fn parse_sample(sample: &Value, case_name: &str, index: usize) -> Result<PpoSample> {
+        let object = sample
+            .as_object()
+            .with_context(|| format!("fixture case '{case_name}' sample[{index}] is not object"))?;
+        Ok(PpoSample {
+            old_logprob: required_f64(object, "old_logprob", case_name)?,
+            new_logprob: required_f64(object, "new_logprob", case_name)?,
+            advantage: required_f64(object, "advantage", case_name)?,
+            return_value: required_f64(object, "return_value", case_name)?,
+            value_prediction: required_f64(object, "value_prediction", case_name)?,
+            entropy: required_f64(object, "entropy", case_name)?,
+        })
+    }
+
+    fn parse_expected_loss(expected_loss: &Value, case_name: &str) -> Result<PpoLossBreakdown> {
+        let object = expected_loss
+            .as_object()
+            .with_context(|| format!("fixture case '{case_name}' has non-object expected_loss"))?;
+        Ok(PpoLossBreakdown {
+            policy_loss: required_f64(object, "policy_loss", case_name)?,
+            value_loss: required_f64(object, "value_loss", case_name)?,
+            entropy_bonus: required_f64(object, "entropy_bonus", case_name)?,
+            total_loss: required_f64(object, "total_loss", case_name)?,
+            mean_ratio: required_f64(object, "mean_ratio", case_name)?,
+            clipped_fraction: required_f64(object, "clipped_fraction", case_name)?,
+        })
+    }
+
+    fn required_f64(
+        object: &serde_json::Map<String, Value>,
+        key: &str,
+        case_name: &str,
+    ) -> Result<f64> {
+        object
+            .get(key)
+            .and_then(Value::as_f64)
+            .with_context(|| format!("fixture case '{case_name}' missing numeric field '{key}'"))
+    }
+
+    fn required_u64(
+        object: &serde_json::Map<String, Value>,
+        key: &str,
+        case_name: &str,
+    ) -> Result<u64> {
+        object
+            .get(key)
+            .and_then(Value::as_u64)
+            .with_context(|| format!("fixture case '{case_name}' missing integer field '{key}'"))
+    }
+
+    fn assert_loss_close(
+        case_name: &str,
+        actual: PpoLossBreakdown,
+        expected: PpoLossBreakdown,
+        tolerance: f64,
+    ) {
         assert_close(
+            case_name,
+            "policy_loss",
+            actual.policy_loss,
+            expected.policy_loss,
+            tolerance,
+        );
+        assert_close(
+            case_name,
+            "value_loss",
+            actual.value_loss,
+            expected.value_loss,
+            tolerance,
+        );
+        assert_close(
+            case_name,
+            "entropy_bonus",
+            actual.entropy_bonus,
+            expected.entropy_bonus,
+            tolerance,
+        );
+        assert_close(
+            case_name,
+            "total_loss",
+            actual.total_loss,
+            expected.total_loss,
+            tolerance,
+        );
+        assert_close(
+            case_name,
+            "mean_ratio",
+            actual.mean_ratio,
+            expected.mean_ratio,
+            tolerance,
+        );
+        assert_close(
+            case_name,
+            "clipped_fraction",
             actual.clipped_fraction,
             expected.clipped_fraction,
             tolerance,
         );
     }
 
-    fn assert_close(actual: f64, expected: f64, tolerance: f64) {
+    fn assert_close(case_name: &str, field: &str, actual: f64, expected: f64, tolerance: f64) {
         let delta = (actual - expected).abs();
         assert!(
             delta <= tolerance,
-            "delta {delta} exceeds tolerance {tolerance}; actual={actual}, expected={expected}"
+            "fixture case '{case_name}' field '{field}' delta {delta} exceeds tolerance {tolerance}; actual={actual}, expected={expected}"
         );
     }
 
