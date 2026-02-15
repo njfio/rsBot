@@ -118,6 +118,7 @@ python3 - \
   "${GENERATED_AT}" \
   "${QUIET_MODE}" <<'PY'
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -338,6 +339,11 @@ def ensure_path(path_text: str) -> Path:
     return path
 
 
+def relative_display(path: Path) -> str:
+    path = path.resolve()
+    return Path(os.path.relpath(path, repo_root)).as_posix()
+
+
 def render_template(raw: str) -> str:
     rendered = raw
     replacements = {
@@ -363,6 +369,7 @@ def evaluate_marker(marker: dict, stdout_text: str, stderr_text: str) -> dict:
     contains = marker.get("contains")
     marker_path_raw = marker.get("path")
     marker_path = render_template(marker_path_raw) if isinstance(marker_path_raw, str) else None
+    marker_path_display = marker_path
     matched = False
     detail = ""
 
@@ -380,6 +387,7 @@ def evaluate_marker(marker: dict, stdout_text: str, stderr_text: str) -> dict:
         if not isinstance(marker_path, str) or not marker_path:
             raise SystemExit(f"error: marker '{marker_id}' file markers require path")
         path = ensure_path(marker_path)
+        marker_path_display = relative_display(path)
         if not path.exists():
             matched = False
             detail = f"file missing: {path}"
@@ -406,7 +414,7 @@ def evaluate_marker(marker: dict, stdout_text: str, stderr_text: str) -> dict:
         "id": marker_id,
         "source": source,
         "contains": contains,
-        "path": marker_path,
+        "path": marker_path_display,
         "matched": matched,
         "detail": detail,
     }
@@ -528,8 +536,8 @@ for index, run in enumerate(runs, start=1):
             "expected_exit_code": expected_exit_code,
             "exit_code": completed.returncode,
             "duration_ms": duration_ms,
-            "stdout_log": str(stdout_log),
-            "stderr_log": str(stderr_log),
+            "stdout_log": relative_display(stdout_log),
+            "stderr_log": relative_display(stderr_log),
             "marker_summary": {
                 "total": len(marker_results),
                 "matched": matched_markers,
@@ -557,10 +565,10 @@ payload = {
     "issues": issues,
     "repository_root": str(repo_root),
     "report_paths": {
-        "json": str(output_json),
-        "markdown": str(output_md),
-        "logs_dir": str(logs_dir),
-        "artifacts_dir": str(reports_dir),
+        "json": relative_display(output_json),
+        "markdown": relative_display(output_md),
+        "logs_dir": relative_display(logs_dir),
+        "artifacts_dir": relative_display(reports_dir),
     },
     "summary": {
         "total_runs": len(results),
@@ -585,10 +593,10 @@ lines.append(f"- Status: {summary_status}")
 lines.append("")
 lines.append("## Report Paths")
 lines.append("")
-lines.append(f"- JSON: `{output_json}`")
-lines.append(f"- Markdown: `{output_md}`")
-lines.append(f"- Logs directory: `{logs_dir}`")
-lines.append(f"- Artifact directory: `{reports_dir}`")
+lines.append(f"- JSON: `{relative_display(output_json)}`")
+lines.append(f"- Markdown: `{relative_display(output_md)}`")
+lines.append(f"- Logs directory: `{relative_display(logs_dir)}`")
+lines.append(f"- Artifact directory: `{relative_display(reports_dir)}`")
 lines.append("")
 lines.append("## Summary")
 lines.append("")
