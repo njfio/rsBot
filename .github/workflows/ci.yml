@@ -214,7 +214,16 @@ jobs:
         run: |
           python3 .github/scripts/rust_doc_density.py \
             --repo-root . \
-            --targets-file docs/guides/doc-density-targets.json
+            --targets-file docs/guides/doc-density-targets.json \
+            --json-output-file ci-artifacts/rust-doc-density.json
+
+      - name: Upload rust doc density artifact
+        if: steps.rust_scope.outputs.rust_changed == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: rust-doc-density
+          path: ci-artifacts/rust-doc-density.json
+          if-no-files-found: error
 
       - name: Determine fast-validate script scope
         id: fast_validate_scope
