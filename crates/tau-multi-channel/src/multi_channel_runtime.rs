@@ -1,3 +1,9 @@
+//! Core multi-channel runtime orchestration loop.
+//!
+//! The runtime composes ingress, policy, routing, dedupe, and outbound delivery
+//! into a single execution pipeline. It coordinates retry cadence and structured
+//! telemetry so failed deliveries can be diagnosed and replayed safely.
+
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};

@@ -1,3 +1,9 @@
+//! Multi-channel policy schema and evaluation helpers.
+//!
+//! Policy rules gate inbound events before routing/agent execution. This module
+//! defines load/validate semantics and fail-closed behavior when policy files are
+//! missing, invalid, or explicitly reject event kinds/channels.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

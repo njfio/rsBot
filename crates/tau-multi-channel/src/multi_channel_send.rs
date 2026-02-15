@@ -1,3 +1,9 @@
+//! Send-command routing and outbound execution wrappers.
+//!
+//! This module maps `/send` style requests into channel-specific outbound calls,
+//! preserving session/routing metadata. It documents validation boundaries and
+//! error surfaces used by retry/dedupe handling in higher runtime layers.
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

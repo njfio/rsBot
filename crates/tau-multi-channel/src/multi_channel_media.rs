@@ -1,3 +1,9 @@
+//! Media attachment policy and enrichment helpers for multi-channel ingress.
+//!
+//! Media handling enforces attachment limits, dedupes repeated assets, and
+//! records machine-readable reason codes for accept/reject/enrichment outcomes.
+//! Runtime and telemetry layers consume these reason codes for diagnostics.
+
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};

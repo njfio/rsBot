@@ -1,3 +1,9 @@
+//! Ingress envelope parsing and normalization for live multi-channel events.
+//!
+//! Incoming payloads are converted into canonical event envelopes with stable
+//! metadata/session fields before routing. Parsing and normalization failures are
+//! surfaced with contextual diagnostics so operators can trace malformed ingress.
+
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::fs::OpenOptions;

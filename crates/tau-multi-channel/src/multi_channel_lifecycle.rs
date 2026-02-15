@@ -1,3 +1,9 @@
+//! Lifecycle orchestration utilities for multi-channel deployments.
+//!
+//! This module coordinates setup/health probes and lifecycle transitions across
+//! configured channels. It documents when lifecycle checks short-circuit startup
+//! versus when retry/backoff paths continue execution with diagnostics.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::thread;

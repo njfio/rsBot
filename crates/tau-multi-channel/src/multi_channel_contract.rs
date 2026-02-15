@@ -1,3 +1,9 @@
+//! Multi-channel contract schema and fixture parsing.
+//!
+//! This module defines transport contract types and validation helpers used by
+//! runtime and bridge entrypoints. It enforces schema/header checks so ingress
+//! and routing code only consumes well-formed contract fixtures.
+
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 

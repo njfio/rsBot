@@ -1,3 +1,9 @@
+//! Credential snapshot and secret-resolution primitives for multi-channel runtimes.
+//!
+//! Credential records are resolved per channel with explicit revoked-state
+//! handling. Callers can distinguish missing versus revoked secrets so runtime
+//! diagnostics and policy gates fail closed with actionable reasons.
+
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default)]

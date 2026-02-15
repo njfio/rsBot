@@ -1,3 +1,9 @@
+//! Live connector HTTP ingress/egress handlers for multi-channel mode.
+//!
+//! Connector endpoints normalize inbound envelopes, apply policy/routing gates,
+//! and emit structured diagnostics for delivery failures. This boundary isolates
+//! transport-specific HTTP concerns from core runtime orchestration.
+
 use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;

@@ -1,3 +1,9 @@
+//! Routing and session-key selection for multi-channel events.
+//!
+//! Routing resolves each inbound envelope to a deterministic session key and
+//! target execution route (including multi-agent selection when configured).
+//! Invariants here keep dedupe/session continuity stable across retries.
+
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 

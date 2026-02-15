@@ -1,3 +1,9 @@
+//! Outbound delivery helpers for channel-specific transports.
+//!
+//! This module applies SSRF-guarded HTTP delivery with per-transport payload
+//! shaping and response classification. Retryable versus terminal failures are
+//! exposed through structured errors for runtime dedupe/retry coordination.
+
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
