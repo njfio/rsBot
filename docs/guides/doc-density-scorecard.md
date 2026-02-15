@@ -46,12 +46,40 @@ Targets are defined in `docs/guides/doc-density-targets.json` and enforced in CI
 - `tau-multi-channel >= 45.0%`
 - `tau-session >= 23.0%`
 
+## CI Artifact
+
+When Rust scope changes, CI uploads artifact `rust-doc-density` containing `ci-artifacts/rust-doc-density.json`.
+
+### JSON Schema (v1)
+
+- `schema_version` (`1`)
+- `repo_root`
+- `crate_count`
+- `overall_public_items`
+- `overall_documented_items`
+- `overall_percent`
+- `global_min_percent`
+- `crate_targets` (object: crate -> threshold percent)
+- `reports[]`:
+- `crate`
+- `total_public_items`
+- `documented_public_items`
+- `percent`
+- `issues[]`:
+- `kind`
+- `detail`
+
 ## Recompute
 
 ```bash
 python3 .github/scripts/rust_doc_density.py \
   --repo-root . \
   --targets-file docs/guides/doc-density-targets.json
+
+python3 .github/scripts/rust_doc_density.py \
+  --repo-root . \
+  --targets-file docs/guides/doc-density-targets.json \
+  --json-output-file ci-artifacts/rust-doc-density.json
 
 python3 .github/scripts/rust_doc_density.py \
   --repo-root . \

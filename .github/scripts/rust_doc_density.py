@@ -13,6 +13,7 @@ PUB_ITEM_PATTERN = re.compile(
     r"^\s*pub\s+(?:async\s+)?(?P<kind>const|fn|struct|enum|trait|mod|type)\b"
 )
 LINE_DOC_PATTERN = re.compile(r"^\s*///")
+JSON_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -252,6 +253,44 @@ def render_human_report(
     return "\n".join(lines)
 
 
+def build_json_payload(
+    repo_root: Path,
+    reports: list[CrateDensityReport],
+    global_min_percent: float | None,
+    crate_min_percent: dict[str, float],
+    issues: list[ThresholdIssue],
+) -> dict[str, object]:
+    total_public = sum(report.total_public_items for report in reports)
+    total_documented = sum(report.documented_public_items for report in reports)
+    overall_percent = (total_documented / total_public * 100.0) if total_public else 100.0
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "repo_root": str(repo_root),
+        "crate_count": len(reports),
+        "overall_public_items": total_public,
+        "overall_documented_items": total_documented,
+        "overall_percent": round(overall_percent, 2),
+        "global_min_percent": global_min_percent,
+        "crate_targets": crate_min_percent,
+        "reports": [
+            {
+                "crate": report.crate,
+                "total_public_items": report.total_public_items,
+                "documented_public_items": report.documented_public_items,
+                "percent": round(report.percent, 2),
+            }
+            for report in reports
+        ],
+        "issues": [
+            {
+                "kind": issue.kind,
+                "detail": issue.detail,
+            }
+            for issue in issues
+        ],
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Measure rust public API doc density and validate configured thresholds."
@@ -286,6 +325,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit JSON payload instead of human-readable text",
     )
+    parser.add_argument(
+        "--json-output-file",
+        help=(
+            "Optional path to write the JSON payload artifact (relative to --repo-root unless absolute)"
+        ),
+    )
     return parser
 
 
@@ -317,40 +362,19 @@ def main(argv: list[str] | None = None) -> int:
 
     issues = evaluate_thresholds(reports, global_min_percent, crate_min_percent)
 
-    if args.json:
-        total_public = sum(report.total_public_items for report in reports)
-        total_documented = sum(report.documented_public_items for report in reports)
-        overall_percent = (total_documented / total_public * 100.0) if total_public else 100.0
-        print(
-            json.dumps(
-                {
-                    "repo_root": str(repo_root),
-                    "crate_count": len(reports),
-                    "overall_public_items": total_public,
-                    "overall_documented_items": total_documented,
-                    "overall_percent": round(overall_percent, 2),
-                    "global_min_percent": global_min_percent,
-                    "crate_targets": crate_min_percent,
-                    "reports": [
-                        {
-                            "crate": report.crate,
-                            "total_public_items": report.total_public_items,
-                            "documented_public_items": report.documented_public_items,
-                            "percent": round(report.percent, 2),
-                        }
-                        for report in reports
-                    ],
-                    "issues": [
-                        {
-                            "kind": issue.kind,
-                            "detail": issue.detail,
-                        }
-                        for issue in issues
-                    ],
-                },
-                indent=2,
-            )
+    json_payload: dict[str, object] | None = None
+    if args.json or args.json_output_file:
+        json_payload = build_json_payload(
+            repo_root,
+            reports,
+            global_min_percent,
+            crate_min_percent,
+            issues,
         )
+
+    if args.json:
+        assert json_payload is not None
+        print(json.dumps(json_payload, indent=2))
     else:
         print(
             render_human_report(
@@ -361,6 +385,14 @@ def main(argv: list[str] | None = None) -> int:
                 issues,
             )
         )
+
+    if args.json_output_file:
+        assert json_payload is not None
+        output_path = Path(args.json_output_file)
+        if not output_path.is_absolute():
+            output_path = (repo_root / output_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(json_payload, indent=2) + "\n", encoding="utf-8")
 
     return 0 if not issues else 1
 
