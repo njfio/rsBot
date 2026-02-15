@@ -171,6 +171,7 @@ Core guides:
 - Project index workflow: [`docs/guides/project-index.md`](docs/guides/project-index.md)
 - Startup DI pipeline: [`docs/guides/startup-di-pipeline.md`](docs/guides/startup-di-pipeline.md)
 - Contract lifecycle: [`docs/guides/contract-pattern-lifecycle.md`](docs/guides/contract-pattern-lifecycle.md)
+- Multi-channel event pipeline: [`docs/guides/multi-channel-event-pipeline.md`](docs/guides/multi-channel-event-pipeline.md)
 - Prompt optimization ops: [`docs/guides/training-ops.md`](docs/guides/training-ops.md)
 - Prompt optimization proxy ops: [`docs/guides/training-proxy-ops.md`](docs/guides/training-proxy-ops.md)
 - Memory ops: [`docs/guides/memory-ops.md`](docs/guides/memory-ops.md)
@@ -178,6 +179,7 @@ Core guides:
 - Custom command ops: [`docs/guides/custom-command-ops.md`](docs/guides/custom-command-ops.md)
 - Voice ops: [`docs/guides/voice-ops.md`](docs/guides/voice-ops.md)
 - Deployment ops: [`docs/guides/deployment-ops.md`](docs/guides/deployment-ops.md)
+- Doc density scorecard: [`docs/guides/doc-density-scorecard.md`](docs/guides/doc-density-scorecard.md)
 
 Contributor references:
 
