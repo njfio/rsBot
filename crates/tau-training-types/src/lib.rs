@@ -74,6 +74,35 @@ pub enum RlSchemaError {
     },
 }
 
+/// Cross-payload validation error for RL bundle conformance.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum RlBundleError {
+    #[error("trajectory payload failed schema validation: {source}")]
+    TrajectorySchema { source: RlSchemaError },
+    #[error("advantage payload failed schema validation: {source}")]
+    AdvantageSchema { source: RlSchemaError },
+    #[error("checkpoint payload failed schema validation: {source}")]
+    CheckpointSchema { source: RlSchemaError },
+    #[error(
+        "trajectory_id mismatch: trajectory.trajectory_id='{trajectory_id}' advantages.trajectory_id='{advantages_trajectory_id}'"
+    )]
+    TrajectoryIdMismatch {
+        trajectory_id: String,
+        advantages_trajectory_id: String,
+    },
+    #[error(
+        "trajectory/advantage length mismatch: trajectory.steps={step_count} advantages={advantage_count}"
+    )]
+    StepAdvantageLengthMismatch {
+        step_count: usize,
+        advantage_count: usize,
+    },
+    #[error(
+        "checkpoint progression mismatch: checkpoint.global_step={global_step} trajectory.steps={step_count}"
+    )]
+    CheckpointGlobalStepMismatch { global_step: u64, step_count: usize },
+}
+
 fn ensure_supported_rl_schema(type_name: &'static str, version: u32) -> Result<(), RlSchemaError> {
     if version == RL_SCHEMA_VERSION_V1 {
         return Ok(());
@@ -712,6 +741,67 @@ impl CheckpointRecord {
     }
 }
 
+/// Combined RL payload bundle used for cross-object conformance checks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RlPayloadBundle {
+    pub trajectory: EpisodeTrajectory,
+    pub advantages: AdvantageBatch,
+    pub checkpoint: CheckpointRecord,
+}
+
+impl RlPayloadBundle {
+    /// Creates a bundle from trajectory, advantage batch, and checkpoint record.
+    pub fn new(
+        trajectory: EpisodeTrajectory,
+        advantages: AdvantageBatch,
+        checkpoint: CheckpointRecord,
+    ) -> Self {
+        Self {
+            trajectory,
+            advantages,
+            checkpoint,
+        }
+    }
+
+    /// Validates component payload schemas and cross-payload consistency.
+    pub fn validate(&self) -> Result<(), RlBundleError> {
+        self.trajectory
+            .validate()
+            .map_err(|source| RlBundleError::TrajectorySchema { source })?;
+        self.advantages
+            .validate()
+            .map_err(|source| RlBundleError::AdvantageSchema { source })?;
+        self.checkpoint
+            .validate()
+            .map_err(|source| RlBundleError::CheckpointSchema { source })?;
+
+        if self.trajectory.trajectory_id != self.advantages.trajectory_id {
+            return Err(RlBundleError::TrajectoryIdMismatch {
+                trajectory_id: self.trajectory.trajectory_id.clone(),
+                advantages_trajectory_id: self.advantages.trajectory_id.clone(),
+            });
+        }
+
+        let step_count = self.trajectory.steps.len();
+        let advantage_count = self.advantages.advantages.len();
+        if step_count != advantage_count {
+            return Err(RlBundleError::StepAdvantageLengthMismatch {
+                step_count,
+                advantage_count,
+            });
+        }
+
+        if self.checkpoint.global_step < step_count as u64 {
+            return Err(RlBundleError::CheckpointGlobalStepMismatch {
+                global_step: self.checkpoint.global_step,
+                step_count,
+            });
+        }
+
+        Ok(())
+    }
+}
+
 /// Filter used when listing rollouts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RolloutQuery {
@@ -735,8 +825,8 @@ pub struct WorkerState {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdvantageBatch, AttemptStatus, CheckpointRecord, EpisodeTrajectory, RolloutStatus,
-        TrajectoryStep, RL_SCHEMA_VERSION_V1,
+        AdvantageBatch, AttemptStatus, CheckpointRecord, EpisodeTrajectory, RlPayloadBundle,
+        RolloutStatus, TrajectoryStep, RL_SCHEMA_VERSION_V1,
     };
     use serde_json::json;
 
@@ -900,5 +990,65 @@ mod tests {
         let checkpoint_reason = checkpoint_error.to_string();
         assert!(checkpoint_reason.contains("CheckpointRecord"));
         assert!(checkpoint_reason.contains("unsupported schema version"));
+    }
+
+    #[test]
+    fn spec_c04_valid_rl_payload_bundle_passes_validation() {
+        let bundle = valid_bundle_fixture();
+        assert!(bundle.validate().is_ok());
+    }
+
+    #[test]
+    fn regression_bundle_validation_rejects_trajectory_id_mismatch() {
+        let mut bundle = valid_bundle_fixture();
+        bundle.advantages.trajectory_id = "trajectory-other".to_string();
+
+        let error = bundle
+            .validate()
+            .expect_err("trajectory id mismatch should fail");
+        assert!(error.to_string().contains("trajectory_id"));
+    }
+
+    #[test]
+    fn regression_bundle_validation_rejects_step_advantage_length_mismatch() {
+        let mut bundle = valid_bundle_fixture();
+        bundle.advantages.advantages.pop();
+        bundle.advantages.returns.pop();
+        bundle.advantages.value_targets.pop();
+
+        let error = bundle
+            .validate()
+            .expect_err("step/advantage length mismatch should fail");
+        assert!(error.to_string().contains("trajectory.steps"));
+        assert!(error.to_string().contains("advantages"));
+    }
+
+    #[test]
+    fn regression_bundle_validation_rejects_checkpoint_progression_mismatch() {
+        let mut bundle = valid_bundle_fixture();
+        bundle.checkpoint.global_step = 1;
+
+        let error = bundle
+            .validate()
+            .expect_err("checkpoint progression mismatch should fail");
+        assert!(error.to_string().contains("checkpoint.global_step"));
+    }
+
+    fn valid_bundle_fixture() -> RlPayloadBundle {
+        let trajectory = EpisodeTrajectory::new(
+            "trajectory-1",
+            Some("rollout-1".to_string()),
+            Some("episode-1".to_string()),
+            vec![
+                TrajectoryStep::new(0, json!({"state": 0}), json!({"action": "a0"}), 0.4, false),
+                TrajectoryStep::new(1, json!({"state": 1}), json!({"action": "a1"}), 0.6, true),
+            ],
+        );
+        let mut advantages =
+            AdvantageBatch::new("batch-1", "trajectory-1", vec![0.4, 0.2], vec![0.8, 0.6]);
+        advantages.value_targets = vec![0.5, 0.4];
+        let checkpoint = CheckpointRecord::new("checkpoint-1", "ppo", "policy-v1", 2);
+
+        RlPayloadBundle::new(trajectory, advantages, checkpoint)
     }
 }
