@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "policy_id": "critical-path-risk-rubric",
+  "description": "Risk-scoring rubric for recurring critical-path tracker updates.",
+  "template_path": "tasks/templates/critical-path-update-template.md",
+  "tracker_issue_number": 1678,
+  "status_values": [
+    "blocked",
+    "at-risk",
+    "on-track",
+    "done"
+  ],
+  "risk_levels": {
+    "low": {
+      "criteria": "Delivery path is on-track with no unresolved blockers and predictable merge timing.",
+      "rationale_required": true
+    },
+    "med": {
+      "criteria": "At least one blocker or dependency risk exists, but mitigation actions are active and dates remain plausible.",
+      "rationale_required": true
+    },
+    "high": {
+      "criteria": "Critical blockers or repeated failures jeopardize milestone dates without a validated mitigation path.",
+      "rationale_required": true
+    }
+  },
+  "required_template_fields": [
+    "Update Date (UTC)",
+    "Wave/Milestone",
+    "Critical Path Item",
+    "Status",
+    "Blockers",
+    "Owner",
+    "Risk Score",
+    "Risk Rationale",
+    "Next Action",
+    "Target Date"
+  ]
+}
