@@ -15,6 +15,8 @@ pub struct PpoConfig {
     pub mini_batch_size: usize,
     /// Number of minibatches per optimizer step.
     pub gradient_accumulation_steps: usize,
+    /// Number of passes over the sample set per update call.
+    pub epochs: usize,
     /// Coefficient for KL penalty term added to total loss.
     pub kl_penalty_coefficient: f64,
     /// Optional target KL used for diagnostics and future scheduling hooks.
@@ -31,6 +33,7 @@ impl Default for PpoConfig {
             entropy_coefficient: 0.01,
             mini_batch_size: 32,
             gradient_accumulation_steps: 1,
+            epochs: 1,
             kl_penalty_coefficient: 0.0,
             target_kl: None,
             max_kl: None,
@@ -73,6 +76,7 @@ pub struct PpoOptimizerStep {
 /// Update summary over all minibatches and optimizer steps.
 #[derive(Debug, Clone)]
 pub struct PpoUpdateSummary {
+    pub epochs: usize,
     pub mini_batch_count: usize,
     pub optimizer_step_count: usize,
     pub mini_batch_losses: Vec<PpoLossBreakdown>,
@@ -157,13 +161,18 @@ pub fn compute_ppo_update(config: &PpoConfig, samples: &[PpoSample]) -> Result<P
     }
 
     let mini_batch_slices: Vec<&[PpoSample]> = samples.chunks(config.mini_batch_size).collect();
-    let mini_batch_losses = mini_batch_slices
+    let mut epoch_batches = Vec::with_capacity(mini_batch_slices.len() * config.epochs);
+    for _epoch in 0..config.epochs {
+        epoch_batches.extend(mini_batch_slices.iter().copied());
+    }
+
+    let mini_batch_losses = epoch_batches
         .iter()
         .map(|batch| compute_ppo_loss(config, batch))
         .collect::<Result<Vec<_>>>()?;
 
     let mut optimizer_steps = Vec::new();
-    for (step_index, batch_group) in mini_batch_slices
+    for (step_index, batch_group) in epoch_batches
         .chunks(config.gradient_accumulation_steps)
         .enumerate()
     {
@@ -191,6 +200,7 @@ pub fn compute_ppo_update(config: &PpoConfig, samples: &[PpoSample]) -> Result<P
     };
 
     let summary = PpoUpdateSummary {
+        epochs: config.epochs,
         mini_batch_count: mini_batch_losses.len(),
         optimizer_step_count: optimizer_steps.len(),
         mini_batch_losses: mini_batch_losses.clone(),
@@ -251,6 +261,9 @@ fn validate_config(config: &PpoConfig) -> Result<()> {
     }
     if config.gradient_accumulation_steps == 0 {
         bail!("invalid ppo config: gradient_accumulation_steps must be > 0");
+    }
+    if config.epochs == 0 {
+        bail!("invalid ppo config: epochs must be > 0");
     }
     Ok(())
 }
@@ -331,6 +344,7 @@ mod tests {
             entropy_coefficient: 0.01,
             mini_batch_size: 2,
             gradient_accumulation_steps: 1,
+            epochs: 1,
             kl_penalty_coefficient: 0.0,
             target_kl: None,
             max_kl: None,
@@ -381,6 +395,7 @@ mod tests {
             entropy_coefficient: 0.01,
             mini_batch_size: 2,
             gradient_accumulation_steps: 2,
+            epochs: 1,
             kl_penalty_coefficient: 0.0,
             target_kl: None,
             max_kl: None,
@@ -492,6 +507,25 @@ mod tests {
     }
 
     #[test]
+    fn unit_ppo_config_rejects_zero_epochs() {
+        let config = PpoConfig {
+            epochs: 0,
+            ..PpoConfig::default()
+        };
+        let samples = vec![PpoSample {
+            old_logprob: -0.2,
+            new_logprob: -0.1,
+            advantage: 0.5,
+            return_value: 0.5,
+            value_prediction: 0.4,
+            entropy: 0.2,
+        }];
+
+        let error = compute_ppo_update(&config, &samples).expect_err("epochs=0 must fail closed");
+        assert!(error.to_string().contains("epochs"));
+    }
+
+    #[test]
     fn functional_ppo_loss_includes_kl_penalty_term() -> Result<()> {
         let config = PpoConfig {
             kl_penalty_coefficient: 2.0,
@@ -555,6 +589,98 @@ mod tests {
             summary.early_stop_reason.as_deref(),
             Some("ppo.max_kl_exceeded")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn functional_ppo_update_expands_minibatches_across_epochs() -> Result<()> {
+        let config = PpoConfig {
+            mini_batch_size: 2,
+            gradient_accumulation_steps: 2,
+            epochs: 3,
+            ..PpoConfig::default()
+        };
+        let samples = vec![
+            PpoSample {
+                old_logprob: -0.1,
+                new_logprob: -0.05,
+                advantage: 1.0,
+                return_value: 1.0,
+                value_prediction: 0.8,
+                entropy: 0.4,
+            },
+            PpoSample {
+                old_logprob: -0.2,
+                new_logprob: -0.1,
+                advantage: 0.7,
+                return_value: 0.8,
+                value_prediction: 0.6,
+                entropy: 0.35,
+            },
+            PpoSample {
+                old_logprob: -0.3,
+                new_logprob: -0.2,
+                advantage: 0.5,
+                return_value: 0.6,
+                value_prediction: 0.5,
+                entropy: 0.3,
+            },
+            PpoSample {
+                old_logprob: -0.4,
+                new_logprob: -0.25,
+                advantage: 0.4,
+                return_value: 0.5,
+                value_prediction: 0.45,
+                entropy: 0.25,
+            },
+            PpoSample {
+                old_logprob: -0.5,
+                new_logprob: -0.3,
+                advantage: 0.3,
+                return_value: 0.4,
+                value_prediction: 0.35,
+                entropy: 0.2,
+            },
+        ];
+
+        let summary = compute_ppo_update(&config, &samples)?;
+        assert_eq!(summary.epochs, 3);
+        assert_eq!(summary.mini_batch_count, 9);
+        assert_eq!(summary.optimizer_step_count, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn regression_ppo_update_rejects_overflowing_approx_kl() {
+        let config = PpoConfig::default();
+        let samples = vec![PpoSample {
+            old_logprob: -1.0e308,
+            new_logprob: 1.0e308,
+            advantage: 0.5,
+            return_value: 0.5,
+            value_prediction: 0.4,
+            entropy: 0.2,
+        }];
+
+        let error =
+            compute_ppo_update(&config, &samples).expect_err("overflowing approx_kl must fail");
+        assert!(error.to_string().contains("non-finite ppo loss field"));
+    }
+
+    #[test]
+    fn integration_ppo_epoch_fixture_runs_are_deterministic() -> Result<()> {
+        let mut case = load_ppo_reference_cases()?
+            .into_iter()
+            .next()
+            .context("expected at least one fixture case")?;
+        case.config.epochs = 2;
+
+        let first = compute_ppo_update(&case.config, &case.samples)?;
+        let second = compute_ppo_update(&case.config, &case.samples)?;
+        assert_eq!(first.mini_batch_count, second.mini_batch_count);
+        assert_eq!(first.optimizer_step_count, second.optimizer_step_count);
+        assert!((first.mean_loss.total_loss - second.mean_loss.total_loss).abs() < 1e-12);
+        assert!((first.mean_loss.approx_kl - second.mean_loss.approx_kl).abs() < 1e-12);
         Ok(())
     }
 
@@ -664,6 +790,7 @@ mod tests {
                 "gradient_accumulation_steps",
                 case_name,
             )? as usize,
+            epochs: optional_u64(object, "epochs").unwrap_or(defaults.epochs as u64) as usize,
             kl_penalty_coefficient: optional_f64(object, "kl_penalty_coefficient")
                 .unwrap_or(defaults.kl_penalty_coefficient),
             target_kl: optional_f64(object, "target_kl"),
@@ -739,6 +866,10 @@ mod tests {
 
     fn optional_f64(object: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
         object.get(key).and_then(Value::as_f64)
+    }
+
+    fn optional_u64(object: &serde_json::Map<String, Value>, key: &str) -> Option<u64> {
+        object.get(key).and_then(Value::as_u64)
     }
 
     fn assert_loss_close(
