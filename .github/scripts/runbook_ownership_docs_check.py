@@ -49,6 +49,15 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
         ),
     ),
     OwnershipSpec(
+        path="docs/guides/training-crate-boundary-plan.md",
+        required_tokens=(
+            "## Ownership",
+            "`scripts/dev/training-crate-boundary-plan.sh`",
+            "`crates/tau-trainer`",
+            "docs/guides/runbook-ownership-map.md",
+        ),
+    ),
+    OwnershipSpec(
         path="docs/guides/transports.md",
         required_tokens=(
             "## Ownership",
@@ -82,6 +91,7 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
             "docs/guides/demo-index.md",
             "docs/guides/training-ops.md",
             "docs/guides/training-proxy-ops.md",
+            "docs/guides/training-crate-boundary-plan.md",
             "docs/guides/transports.md",
             "docs/guides/memory-ops.md",
             "docs/guides/consolidated-runtime-rollback-drill.md",
@@ -90,7 +100,10 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
 )
 
 
-README_EXPECTED_LINK = "guides/runbook-ownership-map.md"
+README_EXPECTED_LINKS: tuple[str, ...] = (
+    "guides/runbook-ownership-map.md",
+    "guides/training-crate-boundary-plan.md",
+)
 
 
 def read_text_if_exists(path: Path) -> str | None:
@@ -112,14 +125,16 @@ def collect_ownership_issues(repo_root: Path) -> list[OwnershipIssue]:
                 detail="documentation index file is missing",
             )
         )
-    elif README_EXPECTED_LINK not in readme:
-        issues.append(
-            OwnershipIssue(
-                category="missing_readme_link",
-                subject="docs/README.md",
-                detail=f"missing docs index link '{README_EXPECTED_LINK}'",
-            )
-        )
+    else:
+        for link in README_EXPECTED_LINKS:
+            if link not in readme:
+                issues.append(
+                    OwnershipIssue(
+                        category="missing_readme_link",
+                        subject="docs/README.md",
+                        detail=f"missing docs index link '{link}'",
+                    )
+                )
 
     for spec in OWNERSHIP_SPECS:
         path = repo_root / spec.path

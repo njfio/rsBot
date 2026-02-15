@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T00:00:00Z",
+  "repository_root": ".",
+  "schema_path": "tasks/schemas/training-crate-boundary-plan.schema.json",
+  "required_crates": [
+    "tau-training-types",
+    "tau-training-store",
+    "tau-training-tracer",
+    "tau-training-runner",
+    "tau-training-proxy",
+    "tau-trainer",
+    "tau-algorithm"
+  ],
+  "summary": {
+    "total_crates": 7,
+    "retain_count": 7,
+    "merge_count": 0,
+    "ambiguous_count": 0
+  },
+  "crates": [
+    {
+      "crate": "tau-algorithm",
+      "decision": "retain",
+      "merge_target": null,
+      "owner_surface": "strategy layer (APO + adapters)",
+      "rationale": "Algorithm surface evolves separately from runtime/store plumbing and keeps strategy polymorphism clean."
+    },
+    {
+      "crate": "tau-trainer",
+      "decision": "retain",
+      "merge_target": null,
+      "owner_surface": "top-level fit orchestration and lifecycle coordination",
+      "rationale": "Keeps orchestration boundary explicit above runner/store without forcing algorithm coupling."
+    },
+    {
+      "crate": "tau-training-proxy",
+      "decision": "retain",
+      "merge_target": null,
+      "owner_surface": "optional OpenAI-compatible attribution proxy",
+      "rationale": "Operationally optional HTTP surface; should remain isolated from core prompt optimization runtime."
+    },
+    {
+      "crate": "tau-training-runner",
+      "decision": "retain",
+      "merge_target": null,
+      "owner_surface": "worker poll-execute-report loop",
+      "rationale": "Runner behavior remains independently testable and can scale without coupling to trainer orchestration."
+    },
+    {
+      "crate": "tau-training-store",
+      "decision": "retain",
+      "merge_target": null,
+      "owner_surface": "rollout queue, persistence, and resource versioning",
+      "rationale": "SQLite and in-memory store boundaries are stable and used by multiple runtime surfaces."
+    },
+    {
+      "crate": "tau-training-tracer",
+      "decision": "retain",
+      "merge_target": null,
+      "owner_surface": "execution spans and reward emission contracts",
+      "rationale": "Tracer integrates with agent events and store without owning runner orchestration."
+    },
+    {
+      "crate": "tau-training-types",
+      "decision": "retain",
+      "merge_target": null,
+      "owner_surface": "shared training domain types and serde contracts",
+      "rationale": "Leaf types crate used by store/runner/tracer/algorithm/trainer; avoids cyclic dependencies."
+    }
+  ],
+  "first_pr_sets": [
+    {
+      "id": "training-boundary-set-a",
+      "title": "Boundary decision plan + docs ownership contract",
+      "status": "completed",
+      "issues": [
+        "#1711"
+      ],
+      "scope": [
+        "Publish crate-by-crate retain/merge decisions.",
+        "Wire decision-plan checks and docs references."
+      ],
+      "test_matrix": [
+        "unit",
+        "functional",
+        "integration",
+        "regression"
+      ]
+    },
+    {
+      "id": "training-boundary-set-b",
+      "title": "Stale training flag/docs cleanup",
+      "status": "planned",
+      "issues": [
+        "#1712"
+      ],
+      "scope": [
+        "Remove stale training alias/docs paths after boundary confirmation.",
+        "Align CLI/help output with prompt-optimization naming."
+      ],
+      "test_matrix": [
+        "unit",
+        "functional",
+        "integration",
+        "regression"
+      ]
+    },
+    {
+      "id": "training-boundary-set-c",
+      "title": "Consolidation execution follow-through",
+      "status": "planned",
+      "issues": [
+        "#1628"
+      ],
+      "scope": [
+        "Implement merges only where future ambiguity appears or duplication emerges.",
+        "Preserve compile/test stability across trainer/runner/store/algorithm surfaces."
+      ],
+      "test_matrix": [
+        "unit",
+        "functional",
+        "integration",
+        "regression"
+      ]
+    }
+  ]
+}

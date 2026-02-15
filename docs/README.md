@@ -8,6 +8,7 @@ This index maps Tau documentation by audience and task.
 | Fresh-clone validator / demo operator | [Demo Index Guide](guides/demo-index.md) | Deterministic onboarding, gateway auth, multi-channel live ingest, and deployment WASM demos |
 | Prompt optimization operator | [Prompt Optimization Operations Guide](guides/training-ops.md) | Rollout prompt optimization mode, JSON config schema, and SQLite-backed state |
 | Prompt optimization integration operator | [Prompt Optimization Proxy Operations Guide](guides/training-proxy-ops.md) | OpenAI-compatible proxy mode with rollout/attempt attribution logs |
+| Prompt optimization maintainer | [Training Crate Boundary Plan](guides/training-crate-boundary-plan.md) | Explicit merge/retain decisions, staged PR sets, and boundary validation artifacts |
 | Workspace operator | [Project Index Guide](guides/project-index.md) | Build/query/inspect deterministic local code index |
 | Runtime operator / SRE | [Operator Control Summary](guides/operator-control-summary.md) | Unified control-plane status, policy posture, daemon/release checks, triage map |
 | Runtime operator / SRE | [Background Jobs Operations Guide](guides/background-jobs-ops.md) | Asynchronous job tool lifecycle, persisted state layout, reason-codes, and trace integration |
