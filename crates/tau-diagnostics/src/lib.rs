@@ -30,6 +30,10 @@ pub const PROMPT_TELEMETRY_RECORD_TYPE_V1: &str = "prompt_telemetry_v1";
 pub const PROMPT_TELEMETRY_RECORD_TYPE_LEGACY_V0: &str = "prompt_telemetry";
 /// Current prompt telemetry diagnostics schema version.
 pub const PROMPT_TELEMETRY_SCHEMA_VERSION: u32 = 1;
+/// Stable lifecycle control audit record type for schema version 1 payloads.
+pub const LIFECYCLE_CONTROL_AUDIT_RECORD_TYPE_V1: &str = "lifecycle_control_audit_v1";
+/// Current lifecycle control audit schema version accepted by diagnostics.
+pub const LIFECYCLE_CONTROL_AUDIT_SCHEMA_VERSION: u32 = 1;
 pub const MULTI_CHANNEL_READINESS_TELEGRAM_TOKEN_ENV: &str = "TAU_TELEGRAM_BOT_TOKEN";
 pub const MULTI_CHANNEL_READINESS_DISCORD_TOKEN_ENV: &str = "TAU_DISCORD_BOT_TOKEN";
 pub const MULTI_CHANNEL_READINESS_WHATSAPP_ACCESS_TOKEN_ENV: &str = "TAU_WHATSAPP_ACCESS_TOKEN";
@@ -66,6 +70,9 @@ pub struct AuditSummary {
     pub record_count: u64,
     pub tool_event_count: u64,
     pub prompt_record_count: u64,
+    pub lifecycle_control_record_count: u64,
+    pub lifecycle_control_compliant_count: u64,
+    pub lifecycle_control_non_compliant_count: u64,
     pub tools: BTreeMap<String, ToolAuditAggregate>,
     pub providers: BTreeMap<String, ProviderAuditAggregate>,
 }
@@ -92,6 +99,55 @@ fn is_compatible_prompt_telemetry_record(value: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_lifecycle_control_audit_record(value: &Value) -> bool {
+    value
+        .get("record_type")
+        .and_then(Value::as_str)
+        .is_some_and(|record_type| record_type == LIFECYCLE_CONTROL_AUDIT_RECORD_TYPE_V1)
+}
+
+fn lifecycle_control_record_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+}
+
+fn is_compliant_lifecycle_control_audit_record(value: &Value) -> bool {
+    let schema_version = value
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok());
+    if schema_version != Some(LIFECYCLE_CONTROL_AUDIT_SCHEMA_VERSION) {
+        return false;
+    }
+    if value
+        .get("timestamp_unix_ms")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
+        return false;
+    }
+    if lifecycle_control_record_field(value, "request_id").is_none()
+        || lifecycle_control_record_field(value, "run_id").is_none()
+        || lifecycle_control_record_field(value, "from_state").is_none()
+        || lifecycle_control_record_field(value, "to_state").is_none()
+    {
+        return false;
+    }
+    let Some(action) = lifecycle_control_record_field(value, "action") else {
+        return false;
+    };
+    if !matches!(action, "pause" | "resume" | "cancel" | "rollback") {
+        return false;
+    }
+    let Some(status) = lifecycle_control_record_field(value, "status") else {
+        return false;
+    };
+    matches!(status, "accepted" | "rejected")
 }
 
 pub fn summarize_audit_file(path: &Path) -> Result<AuditSummary> {
@@ -121,6 +177,20 @@ pub fn summarize_audit_file(path: &Path) -> Result<AuditSummary> {
                 path.display()
             )
         })?;
+
+        if is_lifecycle_control_audit_record(&value) {
+            summary.lifecycle_control_record_count =
+                summary.lifecycle_control_record_count.saturating_add(1);
+            if is_compliant_lifecycle_control_audit_record(&value) {
+                summary.lifecycle_control_compliant_count =
+                    summary.lifecycle_control_compliant_count.saturating_add(1);
+            } else {
+                summary.lifecycle_control_non_compliant_count = summary
+                    .lifecycle_control_non_compliant_count
+                    .saturating_add(1);
+            }
+            continue;
+        }
 
         if value.get("event").and_then(Value::as_str) == Some("tool_execution_end") {
             summary.tool_event_count = summary.tool_event_count.saturating_add(1);
@@ -211,11 +281,13 @@ pub fn percentile_duration_ms(values: &[u64], percentile_numerator: u64) -> u64 
 
 pub fn render_audit_summary(path: &Path, summary: &AuditSummary) -> String {
     let mut lines = vec![format!(
-        "audit summary: path={} records={} tool_events={} prompt_records={}",
+        "audit summary: path={} records={} tool_events={} prompt_records={} lifecycle_records={} lifecycle_non_compliant={}",
         path.display(),
         summary.record_count,
         summary.tool_event_count,
-        summary.prompt_record_count
+        summary.prompt_record_count,
+        summary.lifecycle_control_record_count,
+        summary.lifecycle_control_non_compliant_count,
     )];
 
     lines.push("tool_breakdown:".to_string());
@@ -1886,5 +1958,38 @@ mod tests {
         assert_eq!(summary.prompt_record_count, 0);
         assert_eq!(summary.tool_event_count, 1);
         assert!(summary.providers.is_empty());
+    }
+
+    #[test]
+    fn regression_summarize_audit_file_tracks_lifecycle_control_compliance_failures() {
+        let (_temp, path) = write_audit_fixture(&[
+            serde_json::json!({
+                "record_type": "lifecycle_control_audit_v1",
+                "schema_version": 1,
+                "timestamp_unix_ms": 42,
+                "request_id": "req-start",
+                "run_id": "run-1",
+                "action": "resume",
+                "from_state": "inactive",
+                "to_state": "running",
+                "status": "accepted"
+            }),
+            serde_json::json!({
+                "record_type": "lifecycle_control_audit_v1",
+                "schema_version": 1,
+                "timestamp_unix_ms": 43,
+                "request_id": "req-bad",
+                "run_id": "run-2",
+                "action": "explode",
+                "from_state": "running",
+                "to_state": "cancelled",
+                "status": "accepted"
+            }),
+        ]);
+        let summary = summarize_audit_file(&path).expect("summarize");
+        assert_eq!(summary.record_count, 2);
+        assert_eq!(summary.lifecycle_control_record_count, 2);
+        assert_eq!(summary.lifecycle_control_compliant_count, 1);
+        assert_eq!(summary.lifecycle_control_non_compliant_count, 1);
     }
 }

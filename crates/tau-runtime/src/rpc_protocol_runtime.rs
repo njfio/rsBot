@@ -9,6 +9,7 @@ use std::{
     io::{BufRead, Write},
     path::Path,
     str::FromStr,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -31,6 +32,11 @@ const RPC_ERROR_CODE_INTERNAL_ERROR: &str = "internal_error";
 const RPC_RUN_STREAM_ASSISTANT_TEXT_KIND: &str = "run.stream.assistant_text";
 const RPC_RUN_STREAM_TOOL_EVENTS_KIND: &str = "run.stream.tool_events";
 pub const RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY: usize = 1024;
+pub const LIFECYCLE_CONTROL_AUDIT_RECORD_TYPE_V1: &str = "lifecycle_control_audit_v1";
+pub const LIFECYCLE_CONTROL_AUDIT_SCHEMA_VERSION: u32 = 1;
+const LIFECYCLE_CONTROL_ACTION_RESUME: &str = "resume";
+const LIFECYCLE_CONTROL_ACTION_CANCEL: &str = "cancel";
+const LIFECYCLE_CONTROL_STATUS_ACCEPTED: &str = "accepted";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Public struct `RpcErrorContract` used across Tau components.
@@ -456,6 +462,65 @@ fn dispatch_rpc_raw_with_error_envelope_for_serve(
     }
 }
 
+fn current_unix_timestamp_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn build_lifecycle_control_audit_record(
+    request_id: &str,
+    run_id: &str,
+    action: &str,
+    from_state: &str,
+    to_state: &str,
+) -> Value {
+    json!({
+        "record_type": LIFECYCLE_CONTROL_AUDIT_RECORD_TYPE_V1,
+        "schema_version": LIFECYCLE_CONTROL_AUDIT_SCHEMA_VERSION,
+        "timestamp_unix_ms": current_unix_timestamp_ms(),
+        "request_id": request_id,
+        "run_id": run_id,
+        "action": action,
+        "from_state": from_state,
+        "to_state": to_state,
+        "status": LIFECYCLE_CONTROL_STATUS_ACCEPTED,
+    })
+}
+
+fn lifecycle_control_audit_record_for_dispatch(
+    frame: &RpcFrame,
+    responses: &[RpcResponseFrame],
+) -> Option<Value> {
+    match frame.kind {
+        RpcFrameKind::RunStart => {
+            let run_id = responses
+                .first()
+                .and_then(|response| response.payload.get("run_id"))
+                .and_then(Value::as_str)?;
+            Some(build_lifecycle_control_audit_record(
+                &frame.request_id,
+                run_id,
+                LIFECYCLE_CONTROL_ACTION_RESUME,
+                "inactive",
+                "running",
+            ))
+        }
+        RpcFrameKind::RunCancel => {
+            let run_id = frame.payload.get("run_id").and_then(Value::as_str)?;
+            Some(build_lifecycle_control_audit_record(
+                &frame.request_id,
+                run_id,
+                LIFECYCLE_CONTROL_ACTION_CANCEL,
+                "running",
+                "cancelled",
+            ))
+        }
+        _ => None,
+    }
+}
+
 fn dispatch_rpc_frame_for_serve(
     frame: &RpcFrame,
     state: &mut RpcServeSessionState,
@@ -678,6 +743,90 @@ where
         }
         processed_lines = processed_lines.saturating_add(1);
         let responses = dispatch_rpc_raw_with_error_envelope_for_serve(trimmed, &mut state);
+        for response in responses {
+            if response.kind == RPC_ERROR_KIND {
+                error_count = error_count.saturating_add(1);
+            }
+            serde_json::to_writer(&mut *writer, &response)
+                .context("failed to serialize rpc response frame")?;
+            writer
+                .write_all(b"\n")
+                .context("failed to write rpc response delimiter")?;
+            writer
+                .flush()
+                .context("failed to flush rpc response line")?;
+        }
+    }
+
+    Ok(RpcNdjsonServeReport {
+        processed_lines,
+        error_count,
+    })
+}
+
+pub fn serve_rpc_ndjson_reader_with_lifecycle_audit<R, W, A>(
+    mut reader: R,
+    writer: &mut W,
+    lifecycle_audit_writer: &mut A,
+) -> Result<RpcNdjsonServeReport>
+where
+    R: BufRead,
+    W: Write,
+    A: Write,
+{
+    let mut line = String::new();
+    let mut processed_lines = 0_usize;
+    let mut error_count = 0_usize;
+    let mut state = RpcServeSessionState::default();
+
+    loop {
+        line.clear();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .context("failed to read rpc ndjson input line")?;
+        if bytes_read == 0 {
+            break;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        processed_lines = processed_lines.saturating_add(1);
+
+        let responses = match parse_rpc_frame(trimmed) {
+            Ok(frame) => match dispatch_rpc_frame_for_serve(&frame, &mut state) {
+                Ok(responses) => {
+                    if let Some(audit_record) =
+                        lifecycle_control_audit_record_for_dispatch(&frame, &responses)
+                    {
+                        serde_json::to_writer(&mut *lifecycle_audit_writer, &audit_record)
+                            .context("failed to serialize lifecycle audit record")?;
+                        lifecycle_audit_writer
+                            .write_all(b"\n")
+                            .context("failed to write lifecycle audit delimiter")?;
+                        lifecycle_audit_writer
+                            .flush()
+                            .context("failed to flush lifecycle audit line")?;
+                    }
+                    responses
+                }
+                Err(error) => vec![build_error_response_frame(
+                    &frame.request_id,
+                    classify_rpc_error_message(&error.to_string()),
+                    &error.to_string(),
+                )],
+            },
+            Err(error) => {
+                let request_id = best_effort_request_id_from_raw(trimmed)
+                    .unwrap_or_else(|| "unknown".to_string());
+                vec![build_error_response_frame(
+                    &request_id,
+                    classify_rpc_error_message(&error.to_string()),
+                    &error.to_string(),
+                )]
+            }
+        };
+
         for response in responses {
             if response.kind == RPC_ERROR_KIND {
                 error_count = error_count.saturating_add(1);
@@ -1061,10 +1210,11 @@ mod tests {
         classify_rpc_error_message, dispatch_rpc_frame, dispatch_rpc_frame_file,
         dispatch_rpc_frame_for_serve, dispatch_rpc_ndjson_input,
         dispatch_rpc_raw_with_error_envelope, parse_rpc_frame, serve_rpc_ndjson_reader,
-        validate_rpc_frame_file, RpcFrameKind, RpcResponseFrame, RpcServeSessionState,
-        RPC_ERROR_CODE_INVALID_JSON, RPC_ERROR_CODE_INVALID_PAYLOAD,
-        RPC_ERROR_CODE_INVALID_REQUEST_ID, RPC_ERROR_CODE_UNSUPPORTED_KIND,
-        RPC_ERROR_CODE_UNSUPPORTED_SCHEMA, RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY,
+        serve_rpc_ndjson_reader_with_lifecycle_audit, validate_rpc_frame_file, RpcFrameKind,
+        RpcResponseFrame, RpcServeSessionState, RPC_ERROR_CODE_INVALID_JSON,
+        RPC_ERROR_CODE_INVALID_PAYLOAD, RPC_ERROR_CODE_INVALID_REQUEST_ID,
+        RPC_ERROR_CODE_UNSUPPORTED_KIND, RPC_ERROR_CODE_UNSUPPORTED_SCHEMA,
+        RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY,
     };
 
     const RPC_SCHEMA_COMPAT_FIXTURE_SCHEMA_VERSION: u32 = 1;
@@ -2043,6 +2193,44 @@ not-json
         let response: serde_json::Value = serde_json::from_str(rows[0]).expect("json frame");
         assert_eq!(response["request_id"], "req-cap");
         assert_eq!(response["kind"], "capabilities.response");
+    }
+
+    #[test]
+    fn functional_serve_rpc_ndjson_reader_with_lifecycle_audit_logs_control_transitions() {
+        let input = r#"
+{"schema_version":1,"request_id":"req-start","kind":"run.start","payload":{"prompt":"hello"}}
+{"schema_version":1,"request_id":"req-cancel","kind":"run.cancel","payload":{"run_id":"run-req-start"}}
+"#;
+        let mut output = Vec::new();
+        let mut lifecycle_audit = Vec::new();
+        let report = serve_rpc_ndjson_reader_with_lifecycle_audit(
+            std::io::Cursor::new(input),
+            &mut output,
+            &mut lifecycle_audit,
+        )
+        .expect("serve with lifecycle audit should succeed");
+        assert_eq!(report.processed_lines, 2);
+        assert_eq!(report.error_count, 0);
+
+        let lifecycle_raw =
+            String::from_utf8(lifecycle_audit).expect("lifecycle audit utf8 output");
+        let lifecycle_rows = lifecycle_raw
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("audit json frame"))
+            .collect::<Vec<_>>();
+        assert_eq!(lifecycle_rows.len(), 2);
+        assert_eq!(
+            lifecycle_rows[0]["record_type"].as_str(),
+            Some("lifecycle_control_audit_v1")
+        );
+        assert_eq!(lifecycle_rows[0]["action"].as_str(), Some("resume"));
+        assert_eq!(lifecycle_rows[0]["from_state"].as_str(), Some("inactive"));
+        assert_eq!(lifecycle_rows[0]["to_state"].as_str(), Some("running"));
+        assert_eq!(lifecycle_rows[0]["status"].as_str(), Some("accepted"));
+        assert_eq!(lifecycle_rows[1]["action"].as_str(), Some("cancel"));
+        assert_eq!(lifecycle_rows[1]["from_state"].as_str(), Some("running"));
+        assert_eq!(lifecycle_rows[1]["to_state"].as_str(), Some("cancelled"));
+        assert_eq!(lifecycle_rows[1]["status"].as_str(), Some("accepted"));
     }
 
     #[test]
