@@ -2,14 +2,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tau_agent_core::{Agent, AgentTool, ToolExecutionResult};
+use tau_agent_core::{Agent, AgentTool, DefaultLeakDetector, LeakDetector, ToolExecutionResult};
 use tau_ai::{Message, ToolDefinition};
 use tau_extensions::{
     evaluate_extension_policy_override, execute_extension_registered_tool, ExtensionRegisteredTool,
@@ -2999,7 +2999,9 @@ fn truncate_bytes(value: &str, limit: usize) -> String {
 }
 
 fn redact_secrets(text: &str) -> String {
-    let mut redacted = text.to_string();
+    static DETECTOR: OnceLock<DefaultLeakDetector> = OnceLock::new();
+    let detector = DETECTOR.get_or_init(DefaultLeakDetector::new);
+    let mut redacted = detector.scan(text, "[REDACTED]").redacted_text;
 
     for (name, value) in std::env::vars() {
         let upper = name.to_ascii_uppercase();

@@ -145,6 +145,9 @@ fn unit_build_local_runtime_agent_preserves_system_prompt_message() {
             prompt_sanitizer_enabled: true,
             prompt_sanitizer_mode: SafetyMode::Warn,
             prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
+            secret_leak_detector_enabled: true,
+            secret_leak_detector_mode: SafetyMode::Warn,
+            secret_leak_redaction_token: "[TAU-SECRET-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
@@ -178,12 +181,21 @@ fn unit_build_local_runtime_agent_applies_prompt_sanitizer_settings() {
             prompt_sanitizer_enabled: true,
             prompt_sanitizer_mode: SafetyMode::Redact,
             prompt_sanitizer_redaction_token: "[MASK]".to_string(),
+            secret_leak_detector_enabled: true,
+            secret_leak_detector_mode: SafetyMode::Block,
+            secret_leak_redaction_token: "[SECRET-MASK]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
     assert!(agent.safety_policy().enabled);
     assert_eq!(agent.safety_policy().mode, SafetyMode::Redact);
     assert_eq!(agent.safety_policy().redaction_token, "[MASK]");
+    assert!(agent.safety_policy().secret_leak_detection_enabled);
+    assert_eq!(agent.safety_policy().secret_leak_mode, SafetyMode::Block);
+    assert_eq!(
+        agent.safety_policy().secret_leak_redaction_token,
+        "[SECRET-MASK]"
+    );
 }
 
 #[tokio::test]
@@ -220,6 +232,9 @@ async fn functional_build_local_runtime_agent_applies_cost_budget_and_pricing_se
             prompt_sanitizer_enabled: true,
             prompt_sanitizer_mode: SafetyMode::Warn,
             prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
+            secret_leak_detector_enabled: true,
+            secret_leak_detector_mode: SafetyMode::Warn,
+            secret_leak_redaction_token: "[TAU-SECRET-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
@@ -262,6 +277,9 @@ async fn functional_build_local_runtime_agent_registers_builtin_tools_with_model
             prompt_sanitizer_enabled: true,
             prompt_sanitizer_mode: SafetyMode::Warn,
             prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
+            secret_leak_detector_enabled: true,
+            secret_leak_detector_mode: SafetyMode::Warn,
+            secret_leak_redaction_token: "[TAU-SECRET-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
@@ -304,6 +322,9 @@ async fn integration_build_local_runtime_agent_respects_max_turns_limit() {
             prompt_sanitizer_enabled: true,
             prompt_sanitizer_mode: SafetyMode::Warn,
             prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
+            secret_leak_detector_enabled: true,
+            secret_leak_detector_mode: SafetyMode::Warn,
+            secret_leak_redaction_token: "[TAU-SECRET-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
@@ -340,6 +361,9 @@ fn regression_build_local_runtime_agent_skips_empty_system_prompt_message() {
             prompt_sanitizer_enabled: true,
             prompt_sanitizer_mode: SafetyMode::Warn,
             prompt_sanitizer_redaction_token: "[TAU-SAFETY-REDACTED]".to_string(),
+            secret_leak_detector_enabled: true,
+            secret_leak_detector_mode: SafetyMode::Warn,
+            secret_leak_redaction_token: "[TAU-SECRET-REDACTED]".to_string(),
         },
         ToolPolicy::new(vec![std::env::temp_dir()]),
     );
