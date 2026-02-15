@@ -10,6 +10,8 @@ Training roadmap boundary:
 - Future true RL policy learning is tracked in [Epic #1657](https://github.com/njfio/Tau/issues/1657)
   under [Milestone #24](https://github.com/njfio/Tau/milestone/24)
   (`True RL Wave 2026-Q3: Policy Learning in Production`).
+- Staged phase definitions are documented in
+  [`docs/planning/true-rl-roadmap-skeleton.md`](docs/planning/true-rl-roadmap-skeleton.md).
 
 ## What Tau Includes Today
 
@@ -180,6 +182,7 @@ Core guides:
 - Multi-channel event pipeline: [`docs/guides/multi-channel-event-pipeline.md`](docs/guides/multi-channel-event-pipeline.md)
 - Prompt optimization ops: [`docs/guides/training-ops.md`](docs/guides/training-ops.md)
 - Prompt optimization proxy ops: [`docs/guides/training-proxy-ops.md`](docs/guides/training-proxy-ops.md)
+- Future true-RL staged roadmap: [`docs/planning/true-rl-roadmap-skeleton.md`](docs/planning/true-rl-roadmap-skeleton.md)
 - Memory ops: [`docs/guides/memory-ops.md`](docs/guides/memory-ops.md)
 - Dashboard ops: [`docs/guides/dashboard-ops.md`](docs/guides/dashboard-ops.md)
 - Custom command ops: [`docs/guides/custom-command-ops.md`](docs/guides/custom-command-ops.md)

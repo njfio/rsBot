@@ -8,7 +8,7 @@ It maps each roadmap item to:
 - story
 - task
 
-Snapshot date: 2026-02-14 (UTC)
+Snapshot date: 2026-02-15 (UTC)
 
 ## Coverage Summary
 
@@ -27,6 +27,21 @@ Snapshot date: 2026-02-14 (UTC)
 - Open epics in this index: 11
 - Open stories in this index: 45
 - Open tasks in this index: 45
+
+## Naming Alignment Overlays (M22+)
+
+These overlays separate current prompt-optimization taxonomy from future
+true-RL planning:
+
+- [#6 Agent Lightning Prompt Optimization Port (Tau)](https://github.com/njfio/Tau/milestone/6)
+  - historical "Agent Lightning RL Port" lane renamed for current-scope accuracy
+- [#22 Gap Closure Wave 2026-04: Prompt Optimization Naming Alignment](https://github.com/njfio/Tau/milestone/22)
+  - rename, compatibility alias, and terminology scan gate
+- [#24 True RL Wave 2026-Q3: Policy Learning in Production](https://github.com/njfio/Tau/milestone/24)
+  - dedicated future true-RL delivery wave
+
+Future true-RL staged roadmap:
+- [`docs/planning/true-rl-roadmap-skeleton.md`](../planning/true-rl-roadmap-skeleton.md)
 
 ## Execution Order
 

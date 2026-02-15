@@ -9,6 +9,7 @@ Future true RL policy-learning work is tracked separately in
 [Epic #1657](https://github.com/njfio/Tau/issues/1657) and
 [Milestone #24](https://github.com/njfio/Tau/milestone/24)
 (`True RL Wave 2026-Q3: Policy Learning in Production`).
+Staged roadmap details: [`docs/planning/true-rl-roadmap-skeleton.md`](../planning/true-rl-roadmap-skeleton.md).
 
 ## Run Prompt Optimization Mode
 
