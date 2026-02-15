@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T09:54:15Z",
+  "reporting_interval": "daily",
+  "baseline": {
+    "path": "tasks/reports/pr-throughput-baseline.json",
+    "generated_at": "2026-02-15T09:50:16Z",
+    "window": {
+      "limit": 60,
+      "since_days": 30,
+      "source_pr_count": 200,
+      "merged_pr_count": 60
+    },
+    "metrics": {
+      "pr_age": {
+        "count": 60,
+        "avg_seconds": 2793.733333333333,
+        "p50_seconds": 110,
+        "min_seconds": 14,
+        "max_seconds": 20295
+      },
+      "review_latency": {
+        "count": 60,
+        "avg_seconds": 309.06666666666666,
+        "p50_seconds": 276,
+        "min_seconds": 95,
+        "max_seconds": 756
+      },
+      "merge_interval": {
+        "count": 59,
+        "avg_seconds": 685.2203389830509,
+        "p50_seconds": 494,
+        "min_seconds": 2,
+        "max_seconds": 2910
+      }
+    }
+  },
+  "current": {
+    "source": "live",
+    "path": "live-generated",
+    "generated_at": "2026-02-15T09:54:15Z",
+    "window": {
+      "limit": 60,
+      "since_days": 30,
+      "source_pr_count": 200,
+      "merged_pr_count": 60
+    },
+    "metrics": {
+      "pr_age": {
+        "count": 60,
+        "avg_seconds": 2557.7,
+        "p50_seconds": 103,
+        "min_seconds": 14,
+        "max_seconds": 20295
+      },
+      "review_latency": {
+        "count": 59,
+        "avg_seconds": 311.271186440678,
+        "p50_seconds": 279,
+        "min_seconds": 95,
+        "max_seconds": 756
+      },
+      "merge_interval": {
+        "count": 59,
+        "avg_seconds": 693.6101694915254,
+        "p50_seconds": 494,
+        "min_seconds": 2,
+        "max_seconds": 2910
+      }
+    }
+  },
+  "delta": {
+    "pr_age": {
+      "baseline_avg_seconds": 2793.733333333333,
+      "current_avg_seconds": 2557.7,
+      "delta_seconds": -236.0333333333333,
+      "delta_percent": -8.448670834725338,
+      "status": "improved"
+    },
+    "review_latency": {
+      "baseline_avg_seconds": 309.06666666666666,
+      "current_avg_seconds": 311.271186440678,
+      "delta_seconds": 2.2045197740113167,
+      "delta_percent": 0.7132829294687176,
+      "status": "regressed"
+    },
+    "merge_interval": {
+      "baseline_avg_seconds": 685.2203389830509,
+      "current_avg_seconds": 693.6101694915254,
+      "delta_seconds": 8.389830508474574,
+      "delta_percent": 1.2243989314336594,
+      "status": "regressed"
+    }
+  },
+  "summary": {
+    "improved_metrics": 1,
+    "regressed_metrics": 2,
+    "flat_metrics": 0,
+    "unknown_metrics": 0
+  }
+}
