@@ -112,8 +112,11 @@ assert_equals "flat" "$(jq -r '.delta.merge_interval.status' <<<"${json_content}
 assert_equals "1" "$(jq -r '.summary.improved_metrics' <<<"${json_content}")" "functional improved count"
 assert_equals "1" "$(jq -r '.summary.regressed_metrics' <<<"${json_content}")" "functional regressed count"
 assert_equals "1" "$(jq -r '.summary.flat_metrics' <<<"${json_content}")" "functional flat count"
+assert_equals "3" "$(jq -r '.actions | length' <<<"${json_content}")" "functional actions count"
+assert_equals "high" "$(jq -r '.actions[] | select(.metric == "Review latency (created -> first review)") | .priority' <<<"${json_content}")" "functional regressed action priority"
 assert_contains "${md_content}" "| PR age (created -> merged) | 5.00m | 4.00m | -1.00m | -20.00% | improved |" "functional markdown improved row"
 assert_contains "${md_content}" "| Review latency (created -> first review) | 2.00m | 2.50m | 30s | +25.00% | regressed |" "functional markdown regressed row"
+assert_contains "${md_content}" "| Review latency (created -> first review) | regressed | high | Regression exceeds 10%; reduce batch size and inspect CI/review queue blockers. |" "functional action markdown row"
 
 # Regression: handles unknown deltas when current averages are null.
 "${DELTA_SCRIPT}" \
@@ -126,6 +129,8 @@ assert_contains "${md_content}" "| Review latency (created -> first review) | 2.
   --output-json "${unknown_out}"
 
 assert_equals "3" "$(jq -r '.summary.unknown_metrics' <"${unknown_out}")" "regression unknown count"
+assert_equals "low" "$(jq -r '.actions[] | select(.metric == "PR age (created -> merged)") | .priority' <"${unknown_out}")" "regression unknown action priority"
 assert_contains "$(cat "${unknown_md}")" "| PR age (created -> merged) | 5.00m | n/a | n/a | n/a | unknown |" "regression unknown markdown row"
+assert_contains "$(cat "${unknown_md}")" "| PR age (created -> merged) | unknown | low | Insufficient data; confirm review events and merged PR samples are being captured. |" "regression unknown action markdown row"
 
 echo "pr-throughput-delta-report tests passed"

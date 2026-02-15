@@ -202,6 +202,37 @@ delta_json="$(
           }
         end;
 
+      def build_action($metric; $status; $delta_percent):
+        {
+          metric: $metric,
+          status: $status,
+          delta_percent: $delta_percent,
+          priority: (
+            if $status == "regressed" and ($delta_percent != null) and ($delta_percent >= 10) then
+              "high"
+            elif $status == "regressed" then
+              "medium"
+            elif $status == "unknown" then
+              "low"
+            else
+              "info"
+            end
+          ),
+          recommendation: (
+            if $status == "regressed" and ($delta_percent != null) and ($delta_percent >= 10) then
+              "Regression exceeds 10%; reduce batch size and inspect CI/review queue blockers."
+            elif $status == "regressed" then
+              "Review recent batching and assignment changes; identify primary delay source."
+            elif $status == "improved" then
+              "Trend is improving; keep current policy and continue interval monitoring."
+            elif $status == "flat" then
+              "No material change; maintain policy and verify if a tighter SLA is needed."
+            else
+              "Insufficient data; confirm review events and merged PR samples are being captured."
+            end
+          )
+        };
+
       ($baseline[0]) as $b |
       ($current[0]) as $c |
       {
@@ -235,7 +266,12 @@ delta_json="$(
           flat_metrics: ($statuses | map(select(. == "flat")) | length),
           unknown_metrics: ($statuses | map(select(. == "unknown")) | length)
         }
-      )
+      ) |
+      .actions = [
+        build_action("PR age (created -> merged)"; .delta.pr_age.status; .delta.pr_age.delta_percent),
+        build_action("Review latency (created -> first review)"; .delta.review_latency.status; .delta.review_latency.delta_percent),
+        build_action("Merge interval (between merged PRs)"; .delta.merge_interval.status; .delta.merge_interval.delta_percent)
+      ]
     '
 )"
 
@@ -275,6 +311,18 @@ render_delta_row() {
     "${status}"
 }
 
+render_action_rows() {
+  while IFS=$'\t' read -r metric status priority recommendation; do
+    printf '| %s | %s | %s | %s |\n' \
+      "${metric}" \
+      "${status}" \
+      "${priority}" \
+      "${recommendation}"
+  done < <(
+    jq -r '.actions[] | [.metric, .status, .priority, .recommendation] | @tsv' <<<"${delta_json}"
+  )
+}
+
 {
   cat <<EOF
 # PR Throughput Delta Report
@@ -303,6 +351,14 @@ EOF
   render_delta_row "pr_age" "PR age (created -> merged)"
   render_delta_row "review_latency" "Review latency (created -> first review)"
   render_delta_row "merge_interval" "Merge interval (between merged PRs)"
+  cat <<'EOF'
+
+## Recommended Actions
+
+| Metric | Status | Priority | Recommendation |
+| --- | --- | --- | --- |
+EOF
+  render_action_rows
   cat <<'EOF'
 
 ## Notes Template
