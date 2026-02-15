@@ -1,0 +1,53 @@
+{
+  "todo_groups": [
+    {
+      "label": "Phase 0 (scaffold-to-real execution wave) delivered",
+      "ids": [1486, 1488, 1490, 1492, 1494]
+    },
+    {
+      "label": "Phase 1 (security) delivered",
+      "ids": [1431, 1433, 1435, 1436, 1439, 1440, 1442, 1445]
+    },
+    {
+      "label": "Phase 2 (core tool gaps) delivered",
+      "ids": [1447, 1448, 1449, 1451, 1455, 1457]
+    },
+    {
+      "label": "Phase 3 (memory and persistence) delivered",
+      "ids": [1459, 1461, 1463, 1465]
+    },
+    {
+      "label": "Phase 4 (sandbox and runtime) delivered",
+      "ids": [1438, 1439, 1444, 1445]
+    },
+    {
+      "label": "Phase 5 (innovation) delivered",
+      "ids": [1448, 1449, 1452, 1453]
+    },
+    {
+      "label": "Phase 6 (operations) delivered",
+      "ids": [1467, 1469, 1471, 1473]
+    },
+    {
+      "label": "Phase 7 (deployment and API) delivered",
+      "ids": [1478, 1479, 1480, 1567]
+    },
+    {
+      "label": "Phase 8/9 + cleanup execution delivered",
+      "ids": [1497, 1499, 1501, 1503, 1505, 1507, 1510, 1512, 1514, 1516, 1518, 1520, 1522, 1524, 1525]
+    },
+    {
+      "label": "Closing epics complete",
+      "ids": [1425, 1426]
+    }
+  ],
+  "epic_ids": [1425, 1426],
+  "gap": {
+    "core_delivery_pr_span": {
+      "from": 1526,
+      "to": 1574
+    },
+    "child_story_task_ids": [1438, 1439, 1444, 1445, 1448, 1449, 1452, 1453],
+    "epic_summary": "#1425 (P3 Sandbox Hardening) and #1426 (P4 Innovation Layer)"
+  }
+}

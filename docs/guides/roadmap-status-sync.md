@@ -7,6 +7,8 @@ This guide describes how to refresh generated roadmap status blocks in:
 
 Use `scripts/dev/roadmap-status-sync.sh` to avoid manual drift between docs and GitHub issue state.
 
+Tracked roadmap groups/IDs are configured in `tasks/roadmap-status-config.json`.
+
 ## Prerequisites
 
 - `gh` authenticated for this repository.
@@ -36,6 +38,7 @@ scripts/dev/roadmap-status-sync.sh --check
 ```bash
 scripts/dev/roadmap-status-sync.sh \
   --fixture-json path/to/fixture.json \
+  --config-path tasks/roadmap-status-config.json \
   --todo-path /tmp/todo.md \
   --gap-path /tmp/gap.md
 ```
