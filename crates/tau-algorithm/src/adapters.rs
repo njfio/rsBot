@@ -123,13 +123,56 @@ impl TraceAdapter<Vec<Message>> for SpansToMessages {
 }
 
 /// Converts spans into RL episode trajectories.
+///
+/// By default, trajectories retain the natural step count from input spans.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct SpansToTrajectories;
+pub struct SpansToTrajectories {
+    window_policy: Option<TrajectoryWindowPolicy>,
+}
+
+/// Optional sequence-window policy applied during span-to-trajectory adaptation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrajectoryWindowPolicy {
+    /// Target number of steps kept/emitted per trajectory.
+    pub window_size: usize,
+    /// Padding strategy when observed steps are fewer than `window_size`.
+    pub padding_mode: TrajectoryPaddingMode,
+}
+
+/// Padding mode for trajectory window adaptation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrajectoryPaddingMode {
+    /// Keep shorter trajectories as-is after truncation rules are applied.
+    Disabled,
+    /// Right-pad deterministic synthetic steps until `window_size` is reached.
+    PadRight,
+}
+
+impl TrajectoryWindowPolicy {
+    fn validate(self) -> Result<()> {
+        if self.window_size == 0 {
+            bail!("trajectory window policy window_size must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl SpansToTrajectories {
+    /// Creates an adapter with an explicit windowing policy.
+    pub fn with_window_policy(window_policy: TrajectoryWindowPolicy) -> Self {
+        Self {
+            window_policy: Some(window_policy),
+        }
+    }
+}
 
 impl TraceAdapter<Vec<EpisodeTrajectory>> for SpansToTrajectories {
     fn adapt(&self, spans: &[TrainingSpan]) -> Result<Vec<EpisodeTrajectory>> {
         if spans.is_empty() {
             bail!("trajectory adapter requires at least one span");
+        }
+        if let Some(policy) = self.window_policy {
+            policy.validate()?;
         }
 
         let mut grouped: BTreeMap<(String, String), Vec<&TrainingSpan>> = BTreeMap::new();
@@ -179,6 +222,9 @@ impl TraceAdapter<Vec<EpisodeTrajectory>> for SpansToTrajectories {
                 step.metadata
                     .insert("attempt_id".to_string(), json!(attempt_id));
                 steps.push(step);
+            }
+            if let Some(policy) = self.window_policy {
+                apply_window_policy(&mut steps, policy);
             }
 
             let trajectory_id = format!("{rollout_id}::{attempt_id}");
@@ -258,6 +304,42 @@ fn extract_action(span: &TrainingSpan) -> Value {
     })
 }
 
+fn apply_window_policy(steps: &mut Vec<TrajectoryStep>, policy: TrajectoryWindowPolicy) {
+    if steps.len() > policy.window_size {
+        let to_drop = steps.len() - policy.window_size;
+        steps.drain(0..to_drop);
+    }
+
+    if steps.len() < policy.window_size
+        && matches!(policy.padding_mode, TrajectoryPaddingMode::PadRight)
+    {
+        let missing = policy.window_size - steps.len();
+        for padding_index in 0..missing {
+            let mut padded = TrajectoryStep::new(
+                0,
+                json!({"padding": "observation"}),
+                json!({"padding": "action"}),
+                0.0,
+                false,
+            );
+            padded.metadata.insert("padded".to_string(), json!(true));
+            padded
+                .metadata
+                .insert("padding_mode".to_string(), json!("right"));
+            padded
+                .metadata
+                .insert("padding_index".to_string(), json!(padding_index));
+            steps.push(padded);
+        }
+    }
+
+    let last_index = steps.len().saturating_sub(1);
+    for (index, step) in steps.iter_mut().enumerate() {
+        step.step_index = index as u32;
+        step.done = index == last_index;
+    }
+}
+
 fn extract_reward(span: &TrainingSpan) -> f64 {
     extract_reward_value(
         span.attributes
@@ -279,7 +361,10 @@ fn parse_role(value: &str) -> MessageRole {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpansToMessages, SpansToTrajectories, SpansToTriplets, TraceAdapter};
+    use super::{
+        SpansToMessages, SpansToTrajectories, SpansToTriplets, TraceAdapter, TrajectoryPaddingMode,
+        TrajectoryWindowPolicy,
+    };
     use serde_json::json;
     use std::collections::HashMap;
     use tau_training_types::TrainingSpan;
@@ -365,7 +450,7 @@ mod tests {
             ),
         ];
 
-        let trajectories = SpansToTrajectories
+        let trajectories = SpansToTrajectories::default()
             .adapt(&spans)
             .expect("adapt trajectories");
         assert_eq!(trajectories.len(), 1);
@@ -381,7 +466,7 @@ mod tests {
     fn adapts_partial_telemetry_with_fallback_metadata() {
         let spans = vec![span(1, "message.added", HashMap::new())];
 
-        let trajectories = SpansToTrajectories
+        let trajectories = SpansToTrajectories::default()
             .adapt(&spans)
             .expect("adapt trajectories");
         assert_eq!(trajectories.len(), 1);
@@ -395,7 +480,7 @@ mod tests {
 
     #[test]
     fn returns_deterministic_error_for_empty_input() {
-        let error = SpansToTrajectories
+        let error = SpansToTrajectories::default()
             .adapt(&[])
             .expect_err("empty spans should fail");
         assert_eq!(
@@ -446,7 +531,7 @@ mod tests {
             ),
         ];
 
-        let trajectories = SpansToTrajectories
+        let trajectories = SpansToTrajectories::default()
             .adapt(&spans)
             .expect("adapt trajectories");
         assert_eq!(trajectories.len(), 1);
@@ -469,5 +554,112 @@ mod tests {
             json!("Tau RL pipeline summary...")
         );
         assert!(trajectory.validate().is_ok());
+    }
+
+    #[test]
+    fn spec_c01_spans_to_trajectories_default_behavior_is_compatible() {
+        let spans = vec![
+            span(
+                1,
+                "agent.turn.1",
+                HashMap::from([
+                    ("observation".to_string(), json!({"state": "s0"})),
+                    ("action".to_string(), json!({"tool": "search"})),
+                    ("reward".to_string(), json!(0.25)),
+                ]),
+            ),
+            span(
+                2,
+                "agent.turn.2",
+                HashMap::from([
+                    ("observation".to_string(), json!({"state": "s1"})),
+                    ("action".to_string(), json!({"tool": "summarize"})),
+                    ("reward_value".to_string(), json!(0.75)),
+                ]),
+            ),
+        ];
+
+        let trajectories = SpansToTrajectories::default()
+            .adapt(&spans)
+            .expect("adapt trajectories");
+        assert_eq!(trajectories.len(), 1);
+        assert_eq!(trajectories[0].steps.len(), 2);
+        assert!(trajectories[0].validate().is_ok());
+    }
+
+    #[test]
+    fn spec_c02_spans_to_trajectories_truncates_to_tail_window() {
+        let spans = vec![
+            span(1, "s1", HashMap::from([("reward".to_string(), json!(0.1))])),
+            span(2, "s2", HashMap::from([("reward".to_string(), json!(0.2))])),
+            span(3, "s3", HashMap::from([("reward".to_string(), json!(0.3))])),
+            span(4, "s4", HashMap::from([("reward".to_string(), json!(0.4))])),
+            span(5, "s5", HashMap::from([("reward".to_string(), json!(0.5))])),
+        ];
+
+        let adapter = SpansToTrajectories::with_window_policy(TrajectoryWindowPolicy {
+            window_size: 3,
+            padding_mode: TrajectoryPaddingMode::Disabled,
+        });
+        let trajectories = adapter.adapt(&spans).expect("adapt trajectories");
+        assert_eq!(trajectories.len(), 1);
+        let steps = &trajectories[0].steps;
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].step_index, 0);
+        assert_eq!(steps[1].step_index, 1);
+        assert_eq!(steps[2].step_index, 2);
+        assert_eq!(steps[0].reward, 0.3);
+        assert_eq!(steps[1].reward, 0.4);
+        assert_eq!(steps[2].reward, 0.5);
+        assert!(!steps[0].done);
+        assert!(!steps[1].done);
+        assert!(steps[2].done);
+        assert!(trajectories[0].validate().is_ok());
+    }
+
+    #[test]
+    fn spec_c03_spans_to_trajectories_pads_to_fixed_window() {
+        let spans = vec![span(
+            1,
+            "agent.turn.1",
+            HashMap::from([
+                ("observation".to_string(), json!({"state": "s0"})),
+                ("action".to_string(), json!({"tool": "search"})),
+                ("reward".to_string(), json!(1.0)),
+            ]),
+        )];
+
+        let adapter = SpansToTrajectories::with_window_policy(TrajectoryWindowPolicy {
+            window_size: 3,
+            padding_mode: TrajectoryPaddingMode::PadRight,
+        });
+        let trajectories = adapter.adapt(&spans).expect("adapt trajectories");
+        let steps = &trajectories[0].steps;
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].reward, 1.0);
+        assert_eq!(steps[1].reward, 0.0);
+        assert_eq!(steps[2].reward, 0.0);
+        assert!(!steps[0].done);
+        assert!(!steps[1].done);
+        assert!(steps[2].done);
+        assert_eq!(steps[1].metadata.get("padded"), Some(&json!(true)));
+        assert_eq!(steps[2].metadata.get("padded"), Some(&json!(true)));
+        assert!(trajectories[0].validate().is_ok());
+    }
+
+    #[test]
+    fn spec_c04_spans_to_trajectories_rejects_zero_window_size() {
+        let spans = vec![span(1, "sample", HashMap::new())];
+        let adapter = SpansToTrajectories::with_window_policy(TrajectoryWindowPolicy {
+            window_size: 0,
+            padding_mode: TrajectoryPaddingMode::Disabled,
+        });
+
+        let error = adapter
+            .adapt(&spans)
+            .expect_err("invalid policy should fail");
+        assert!(error
+            .to_string()
+            .contains("window_size must be greater than 0"));
     }
 }

@@ -12,7 +12,10 @@ mod gae;
 mod ppo;
 mod safety_penalty_calibration;
 
-pub use adapters::{SpansToMessages, SpansToTrajectories, SpansToTriplets, TraceAdapter};
+pub use adapters::{
+    SpansToMessages, SpansToTrajectories, SpansToTriplets, TraceAdapter, TrajectoryPaddingMode,
+    TrajectoryWindowPolicy,
+};
 pub use apo::{ApoAlgorithm, ApoConfig, ApoTemplates, PromptEvaluator, VersionedPrompt};
 pub use gae::{compute_gae_batch_from_slices, compute_gae_batch_from_trajectory, GaeConfig};
 pub use ppo::{
