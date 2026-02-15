@@ -130,6 +130,13 @@ assert_equals "1" "$(jq -r '.summary.testing_matrix_closed' "${output_json}")" "
 assert_equals "2" "$(jq -r '.summary.local_artifacts_total' "${output_json}")" "functional local artifacts"
 assert_equals "1741" "$(jq -r '.issues[0].number' "${output_json}")" "functional sorted issue order"
 assert_equals "1759" "$(jq -r '.issues[2].number' "${output_json}")" "functional sorted issue order tail"
+
+artifact_json_path="$(jq -r '.local_artifacts[0].path' "${output_json}")"
+if [[ "${artifact_json_path}" == /* ]]; then
+  echo "assertion failed (regression artifact path portability): expected relative path, got absolute '${artifact_json_path}'" >&2
+  exit 1
+fi
+
 assert_contains "$(cat "${output_md}")" "## Issue Matrix" "functional markdown issue table"
 assert_contains "$(cat "${output_md}")" "## Local Artifacts" "functional markdown artifact section"
 

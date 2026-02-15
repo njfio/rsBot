@@ -164,6 +164,7 @@ python3 - \
   "${issues_path}" \
   "${milestone_path}" \
   "${REPORTS_DIR}" \
+  "${REPO_ROOT}" \
   "${OUTPUT_JSON}" \
   "${OUTPUT_MD}" \
   "${REPO_SLUG}" \
@@ -179,6 +180,7 @@ from datetime import datetime, timezone
     issues_path,
     milestone_path,
     reports_dir,
+    repo_root,
     output_json,
     output_md,
     repo_slug,
@@ -263,6 +265,7 @@ testing_closed = sum(
 )
 
 reports_path = pathlib.Path(reports_dir)
+repo_root_path = pathlib.Path(repo_root).resolve()
 local_artifacts = []
 if reports_path.exists() and reports_path.is_dir():
     for artifact_path in sorted(reports_path.iterdir(), key=lambda item: item.name):
@@ -270,10 +273,15 @@ if reports_path.exists() and reports_path.is_dir():
             continue
         if artifact_path.suffix not in {".json", ".md"}:
             continue
+        artifact_abs_path = artifact_path.resolve()
+        if artifact_abs_path.is_relative_to(repo_root_path):
+            relative_artifact_path = artifact_abs_path.relative_to(repo_root_path).as_posix()
+        else:
+            relative_artifact_path = artifact_abs_path.relative_to(reports_path.resolve()).as_posix()
         stat = artifact_path.stat()
         local_artifacts.append(
             {
-                "path": str(artifact_path),
+                "path": relative_artifact_path,
                 "name": artifact_path.name,
                 "bytes": stat.st_size,
                 "modified_at": datetime.fromtimestamp(
