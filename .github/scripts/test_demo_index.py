@@ -35,6 +35,7 @@ class DemoIndexTests(unittest.TestCase):
                 "gateway-auth",
                 "gateway-remote-access",
                 "multi-channel-live",
+                "safety-smoke",
                 "deployment-wasm",
             ],
         )
@@ -43,6 +44,7 @@ class DemoIndexTests(unittest.TestCase):
         self.assertEqual(wrappers["gateway-auth"], "gateway-auth.sh")
         self.assertEqual(wrappers["gateway-remote-access"], "gateway-remote-access.sh")
         self.assertEqual(wrappers["multi-channel-live"], "multi-channel.sh")
+        self.assertEqual(wrappers["safety-smoke"], "safety-smoke.sh")
         self.assertEqual(wrappers["deployment-wasm"], "deployment.sh")
 
     def test_functional_demo_index_list_text_contains_markers_and_hints(self):
@@ -52,6 +54,7 @@ class DemoIndexTests(unittest.TestCase):
         self.assertIn("gateway-auth", result.stdout)
         self.assertIn("gateway-remote-access", result.stdout)
         self.assertIn("multi-channel-live", result.stdout)
+        self.assertIn("safety-smoke", result.stdout)
         self.assertIn("deployment-wasm", result.stdout)
         self.assertIn("expected_marker:", result.stdout)
         self.assertIn("troubleshooting:", result.stdout)
@@ -107,7 +110,7 @@ class DemoIndexTests(unittest.TestCase):
                 "--list",
                 "--json",
                 "--only",
-                "local,gatewayauth,gatewayremoteaccess,multi-channel,deployment",
+                "local,gatewayauth,gatewayremoteaccess,multi-channel,safety,deployment",
             ]
         )
         self.assertEqual(alias_result.returncode, 0, msg=alias_result.stderr)
@@ -120,6 +123,7 @@ class DemoIndexTests(unittest.TestCase):
                 "gateway-auth",
                 "gateway-remote-access",
                 "multi-channel-live",
+                "safety-smoke",
                 "deployment-wasm",
             ],
         )
@@ -136,6 +140,7 @@ class DemoIndexTests(unittest.TestCase):
         self.assertIn("onboard-non-interactive", command_names)
         self.assertIn("gateway-remote-profile-token-auth", command_names)
         self.assertIn("gateway-remote-plan-tailscale-serve", command_names)
+        self.assertIn("safety-prompt-injection-block", command_names)
         self.assertIn(
             "gateway-remote-plan-fails-closed-missing-funnel-password",
             command_names,
