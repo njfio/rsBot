@@ -1,0 +1,1616 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T12:32:53Z",
+  "repository": "njfio/Tau",
+  "schema_path": "/Users/n/RustroverProjects/rust_pi_issue1741/tasks/schemas/m21-validation-matrix.schema.json",
+  "milestone": {
+    "number": 21,
+    "title": "Gap Closure Wave 2026-03: Structural Runtime Hardening",
+    "state": "open",
+    "open_issues": 78,
+    "closed_issues": 10,
+    "due_on": "2026-03-30T00:00:00Z"
+  },
+  "summary": {
+    "total_issues": 88,
+    "open_issues": 78,
+    "closed_issues": 10,
+    "completion_percent": 11.36,
+    "epics": 3,
+    "stories": 12,
+    "tasks": 73,
+    "with_comments": 11,
+    "testing_matrix_required": 88,
+    "testing_matrix_closed": 10,
+    "local_artifacts_total": 6
+  },
+  "local_artifacts": [
+    {
+      "path": "/Users/n/RustroverProjects/rust_pi_issue1741/tasks/reports/m21-validation-matrix.json",
+      "name": "m21-validation-matrix.json",
+      "bytes": 48225,
+      "modified_at": "2026-02-15T12:32:30Z",
+      "status": "present"
+    },
+    {
+      "path": "/Users/n/RustroverProjects/rust_pi_issue1741/tasks/reports/m21-validation-matrix.md",
+      "name": "m21-validation-matrix.md",
+      "bytes": 9729,
+      "modified_at": "2026-02-15T12:32:30Z",
+      "status": "present"
+    },
+    {
+      "path": "/Users/n/RustroverProjects/rust_pi_issue1741/tasks/reports/pr-throughput-baseline.json",
+      "name": "pr-throughput-baseline.json",
+      "bytes": 22890,
+      "modified_at": "2026-02-15T12:29:27Z",
+      "status": "present"
+    },
+    {
+      "path": "/Users/n/RustroverProjects/rust_pi_issue1741/tasks/reports/pr-throughput-baseline.md",
+      "name": "pr-throughput-baseline.md",
+      "bytes": 6515,
+      "modified_at": "2026-02-15T12:29:27Z",
+      "status": "present"
+    },
+    {
+      "path": "/Users/n/RustroverProjects/rust_pi_issue1741/tasks/reports/pr-throughput-delta.json",
+      "name": "pr-throughput-delta.json",
+      "bytes": 2533,
+      "modified_at": "2026-02-15T12:29:27Z",
+      "status": "present"
+    },
+    {
+      "path": "/Users/n/RustroverProjects/rust_pi_issue1741/tasks/reports/pr-throughput-delta.md",
+      "name": "pr-throughput-delta.md",
+      "bytes": 1285,
+      "modified_at": "2026-02-15T12:29:27Z",
+      "status": "present"
+    }
+  ],
+  "issues": [
+    {
+      "number": 1605,
+      "title": "Epic: Merge or Remove Scaffold Crates (Current-State Audit + Execution)",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1605",
+      "labels": [
+        "area:memory",
+        "area:runtime",
+        "area:tools",
+        "enhancement",
+        "epic",
+        "roadmap",
+        "testing-matrix"
+      ],
+      "type": "epic",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1678"
+    },
+    {
+      "number": 1606,
+      "title": "Epic: Split tools.rs and 10 Other Oversized Production Files",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1606",
+      "labels": [
+        "area:cli",
+        "area:runtime",
+        "area:tools",
+        "enhancement",
+        "epic",
+        "roadmap",
+        "testing-matrix"
+      ],
+      "type": "epic",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1678"
+    },
+    {
+      "number": 1607,
+      "title": "Epic: Merge tau-safety to Mainline Runtime Enforcement",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1607",
+      "labels": [
+        "area:providers",
+        "area:runtime",
+        "area:tools",
+        "enhancement",
+        "epic",
+        "roadmap",
+        "testing-matrix"
+      ],
+      "type": "epic",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1678"
+    },
+    {
+      "number": 1610,
+      "title": "Story: Scaffold-Crate Inventory and Merge/Remove Decision Matrix",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1610",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1605"
+    },
+    {
+      "number": 1611,
+      "title": "Story: Execute Scaffold Merge/Remove Decisions Across Runtime Crates",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1611",
+      "labels": [
+        "area:memory",
+        "area:runtime",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1605"
+    },
+    {
+      "number": 1612,
+      "title": "Story: Live Validation and Rollout Hardening After Scaffold Consolidation",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1612",
+      "labels": [
+        "area:observability",
+        "area:runtime",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1605"
+    },
+    {
+      "number": 1613,
+      "title": "Story: Split `tau-tools/src/tools.rs` Below Maintainability Budget",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1613",
+      "labels": [
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1606"
+    },
+    {
+      "number": 1614,
+      "title": "Story: Split Oversized Production Files Cohort A (Files 2-6)",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1614",
+      "labels": [
+        "area:cli",
+        "area:runtime",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1606"
+    },
+    {
+      "number": 1615,
+      "title": "Story: Split Oversized Production Files Cohort B (Files 7-11) + File-Size Guardrails",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1615",
+      "labels": [
+        "area:ci-cd",
+        "area:runtime",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1606"
+    },
+    {
+      "number": 1616,
+      "title": "Story: Wire `tau-safety` Policy into Mainline Startup and Runtime Context",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1616",
+      "labels": [
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1607"
+    },
+    {
+      "number": 1617,
+      "title": "Story: Enforce Safety Scanning Across Inbound, Tool Output, and Outbound Payload Paths",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1617",
+      "labels": [
+        "area:providers",
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1607"
+    },
+    {
+      "number": 1618,
+      "title": "Story: Safety Observability, Operator Diagnostics, and Live-Run Proofs",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1618",
+      "labels": [
+        "area:observability",
+        "area:runtime",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1607"
+    },
+    {
+      "number": 1626,
+      "title": "Task: Build scaffold inventory script and ownership map",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1626",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1610"
+    },
+    {
+      "number": 1627,
+      "title": "Task: Publish merge/remove decision rubric and scoring sheet",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1627",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1610"
+    },
+    {
+      "number": 1628,
+      "title": "Task: Consolidate or justify retention of training micro-crates",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1628",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1611"
+    },
+    {
+      "number": 1629,
+      "title": "Task: Resolve scaffolded memory postgres backend path (implement or remove)",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1629",
+      "labels": [
+        "area:memory",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1611"
+    },
+    {
+      "number": 1630,
+      "title": "Task: Remove dead contract-runner and scaffold remnants across retained crates",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1630",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1611"
+    },
+    {
+      "number": 1631,
+      "title": "Task: Execute live proof matrix for retained consolidated capabilities",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1631",
+      "labels": [
+        "area:observability",
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1612"
+    },
+    {
+      "number": 1632,
+      "title": "Task: Align runbooks and CLI/help docs to post-consolidation ownership",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1632",
+      "labels": [
+        "area:runtime",
+        "documentation",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1612"
+    },
+    {
+      "number": 1633,
+      "title": "Task: Extract tool domains from `tools.rs` into focused modules",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1633",
+      "labels": [
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1613"
+    },
+    {
+      "number": 1634,
+      "title": "Task: Validate tool behavior parity and latency after `tools.rs` split",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1634",
+      "labels": [
+        "area:observability",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1613"
+    },
+    {
+      "number": 1635,
+      "title": "Task: Split `tau-cli/src/cli_args.rs` and `tau-github-issues-runtime/src/github_issues_runtime.rs`",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1635",
+      "labels": [
+        "area:cli",
+        "area:transports",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1614"
+    },
+    {
+      "number": 1636,
+      "title": "Task: Split `tau-skills/src/package_manifest.rs`, `tau-agent-core/src/lib.rs`, and `tau-ops/src/channel_store_admin.rs`",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1636",
+      "labels": [
+        "area:runtime",
+        "area:skills",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1614"
+    },
+    {
+      "number": 1637,
+      "title": "Task: Split `auth_commands_runtime.rs` and `rpc_protocol_runtime.rs`",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1637",
+      "labels": [
+        "area:providers",
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1615"
+    },
+    {
+      "number": 1638,
+      "title": "Task: Split `tau-memory/src/runtime.rs`, `tau-multi-channel/src/multi_channel_runtime.rs`, and `tau-skills/src/lib.rs`",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1638",
+      "labels": [
+        "area:memory",
+        "area:transports",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1615"
+    },
+    {
+      "number": 1639,
+      "title": "Task: Add CI guardrail for oversized production files",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1639",
+      "labels": [
+        "area:ci-cd",
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1615"
+    },
+    {
+      "number": 1640,
+      "title": "Task: Unify safety policy resolution across CLI, profile, and startup context",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1640",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1616"
+    },
+    {
+      "number": 1641,
+      "title": "Task: Remove or close safety bypass paths with explicit fail-closed behavior",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1641",
+      "labels": [
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1616"
+    },
+    {
+      "number": 1642,
+      "title": "Task: Add integration tests for inbound prompt and tool-output safety enforcement",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1642",
+      "labels": [
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1617"
+    },
+    {
+      "number": 1643,
+      "title": "Task: Add integration tests for outbound HTTP payload leak/safety enforcement",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1643",
+      "labels": [
+        "area:providers",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1617"
+    },
+    {
+      "number": 1644,
+      "title": "Task: Expose safety diagnostics and enforcement telemetry to operators",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1644",
+      "labels": [
+        "area:observability",
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1618"
+    },
+    {
+      "number": 1645,
+      "title": "Task: Add safety live-run validation to demo/CI smoke matrix",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1645",
+      "labels": [
+        "area:ci-cd",
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1618"
+    },
+    {
+      "number": 1679,
+      "title": "Subtask: Split `tau-cli/src/cli_args.rs` into argument-domain modules",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1679",
+      "labels": [
+        "area:cli",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1635"
+    },
+    {
+      "number": 1680,
+      "title": "Subtask: Split `tau-github-issues-runtime/src/github_issues_runtime.rs` into runtime domains",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1680",
+      "labels": [
+        "area:runtime",
+        "area:transports",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1635"
+    },
+    {
+      "number": 1681,
+      "title": "Subtask: Split `tau-skills/src/package_manifest.rs` by schema/validation/IO boundaries",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1681",
+      "labels": [
+        "area:skills",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1636"
+    },
+    {
+      "number": 1682,
+      "title": "Subtask: Split `tau-agent-core/src/lib.rs` into runtime lifecycle modules",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1682",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1636"
+    },
+    {
+      "number": 1683,
+      "title": "Subtask: Split `tau-ops/src/channel_store_admin.rs` into command/report/repair modules",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1683",
+      "labels": [
+        "area:observability",
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1636"
+    },
+    {
+      "number": 1684,
+      "title": "Subtask: Split `tau-provider/src/auth_commands_runtime.rs` by provider and shared runtime core",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1684",
+      "labels": [
+        "area:providers",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1637"
+    },
+    {
+      "number": 1685,
+      "title": "Subtask: Split `tau-runtime/src/rpc_protocol_runtime.rs` by protocol parsing/dispatch/transport",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1685",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1637"
+    },
+    {
+      "number": 1686,
+      "title": "Subtask: Split `tau-memory/src/runtime.rs` into backend/query/ranking modules",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1686",
+      "labels": [
+        "area:memory",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1638"
+    },
+    {
+      "number": 1687,
+      "title": "Subtask: Split `tau-multi-channel/src/multi_channel_runtime.rs` into ingress/routing/outbound orchestration modules",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1687",
+      "labels": [
+        "area:runtime",
+        "area:transports",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1638"
+    },
+    {
+      "number": 1688,
+      "title": "Subtask: Split `tau-skills/src/lib.rs` into command/load/trust orchestration modules",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1688",
+      "labels": [
+        "area:skills",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1638"
+    },
+    {
+      "number": 1699,
+      "title": "Story: Gate M21 Structural Hardening Exit (Merge/Remove + Splits + Safety)",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1699",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1678"
+    },
+    {
+      "number": 1703,
+      "title": "Task: Compile milestone #21 consolidated validation matrix",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1703",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1699"
+    },
+    {
+      "number": 1704,
+      "title": "Task: Execute milestone #21 live-run proof pack",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1704",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1699"
+    },
+    {
+      "number": 1711,
+      "title": "Subtask: Training micro-crate boundary decision implementation plan",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1711",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1628"
+    },
+    {
+      "number": 1712,
+      "title": "Subtask: Remove stale training flag/docs references after crate boundary updates",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1712",
+      "labels": [
+        "area:runtime",
+        "documentation",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1628"
+    },
+    {
+      "number": 1713,
+      "title": "Subtask: Decide postgres backend disposition for tau-memory (implement vs remove)",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1713",
+      "labels": [
+        "area:memory",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1629"
+    },
+    {
+      "number": 1714,
+      "title": "Subtask: Purge removed contract-runner flags from startup dispatch and CLI validation",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1714",
+      "labels": [
+        "area:cli",
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1630"
+    },
+    {
+      "number": 1715,
+      "title": "Subtask: Centralize safety policy precedence contract (CLI/profile/env)",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1715",
+      "labels": [
+        "area:runtime",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1640"
+    },
+    {
+      "number": 1716,
+      "title": "Subtask: Add fail-closed safety gate tests for bypass attempts",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1716",
+      "labels": [
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1641"
+    },
+    {
+      "number": 1717,
+      "title": "Subtask: Safety diagnostics schema versioning and backward-compat tests",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1717",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1644"
+    },
+    {
+      "number": 1728,
+      "title": "Subtask: Inbound safety fixture corpus for transport-sourced prompt injection cases",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1728",
+      "labels": [
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1642"
+    },
+    {
+      "number": 1729,
+      "title": "Subtask: Tool-output reinjection safety regression suite",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1729",
+      "labels": [
+        "area:runtime",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1642"
+    },
+    {
+      "number": 1730,
+      "title": "Subtask: Outbound HTTP payload secret-leak fixture matrix",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1730",
+      "labels": [
+        "area:providers",
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1643"
+    },
+    {
+      "number": 1731,
+      "title": "Subtask: Safety smoke scenario in demo index and CI-light lane",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1731",
+      "labels": [
+        "area:ci-cd",
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1645"
+    },
+    {
+      "number": 1741,
+      "title": "Subtask: Automated aggregation script for M21 validation matrix generation",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1741",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 1,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1703"
+    },
+    {
+      "number": 1742,
+      "title": "Subtask: Standard artifact manifest template for M21 live proof pack",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1742",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1704"
+    },
+    {
+      "number": 1745,
+      "title": "Subtask: Define retained-capability live-proof matrix and artifact checklist",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1745",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1631"
+    },
+    {
+      "number": 1746,
+      "title": "Subtask: Automate retained-capability proof execution summary generation",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1746",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1631"
+    },
+    {
+      "number": 1747,
+      "title": "Subtask: Runbook ownership map update for consolidated crate boundaries",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1747",
+      "labels": [
+        "documentation",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1632"
+    },
+    {
+      "number": 1748,
+      "title": "Subtask: Add rollback simulation checklist for consolidated runtime surfaces",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1748",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1632"
+    },
+    {
+      "number": 1749,
+      "title": "Subtask: Split tools.rs into registry/core + domain modules first pass",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1749",
+      "labels": [
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1633"
+    },
+    {
+      "number": 1750,
+      "title": "Subtask: Split tools.rs domain modules second pass (fs/shell/session/http)",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1750",
+      "labels": [
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 1,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1633"
+    },
+    {
+      "number": 1751,
+      "title": "Subtask: Create before/after behavior parity checklist for tool dispatch",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1751",
+      "labels": [
+        "area:tools",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1634"
+    },
+    {
+      "number": 1752,
+      "title": "Subtask: Add lightweight performance smoke for tool split regressions",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1752",
+      "labels": [
+        "area:ci-cd",
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1634"
+    },
+    {
+      "number": 1753,
+      "title": "Subtask: Define oversized-file threshold policy and exemption process doc",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1753",
+      "labels": [
+        "area:ci-cd",
+        "documentation",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1639"
+    },
+    {
+      "number": 1754,
+      "title": "Subtask: Add CI output annotation for oversized-file threshold failures",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1754",
+      "labels": [
+        "area:ci-cd",
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 3,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1639"
+    },
+    {
+      "number": 1759,
+      "title": "Story: Cross-Wave Dependency Graph and Critical Path Control",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1759",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1678"
+    },
+    {
+      "number": 1760,
+      "title": "Story: Parallel Execution Batching and PR Merge Throughput Plan",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1760",
+      "labels": [
+        "area:ci-cd",
+        "area:observability",
+        "roadmap",
+        "story",
+        "testing-matrix"
+      ],
+      "type": "story",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1678"
+    },
+    {
+      "number": 1761,
+      "title": "Task: Generate machine-readable dependency graph for #1678 hierarchy",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1761",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1759"
+    },
+    {
+      "number": 1762,
+      "title": "Task: Publish critical-path dashboard comment template with blocker states",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1762",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1759"
+    },
+    {
+      "number": 1763,
+      "title": "Task: Add dependency drift check to prevent orphaned tasks",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1763",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1759"
+    },
+    {
+      "number": 1764,
+      "title": "Task: Define PR batch policy by lane (structural/docs/rl) with conflict boundaries",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1764",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1760"
+    },
+    {
+      "number": 1765,
+      "title": "Task: Add merge-throughput telemetry (PR age, review latency, merge interval)",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1765",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1760"
+    },
+    {
+      "number": 1766,
+      "title": "Task: Create stale-branch and merge-conflict fast-response playbook",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1766",
+      "labels": [
+        "area:ci-cd",
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1760"
+    },
+    {
+      "number": 1767,
+      "title": "Subtask: Implement hierarchy graph extractor script (JSON + Markdown outputs)",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1767",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1761"
+    },
+    {
+      "number": 1768,
+      "title": "Subtask: Add graph artifact publication workflow and retention convention",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1768",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1761"
+    },
+    {
+      "number": 1769,
+      "title": "Subtask: Author critical-path update template with risk scoring rubric",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1769",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1762"
+    },
+    {
+      "number": 1770,
+      "title": "Subtask: Add critical-path update cadence policy and enforcement checklist",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1770",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1762"
+    },
+    {
+      "number": 1771,
+      "title": "Subtask: Define orphan-task detection rules and expected metadata",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1771",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1763"
+    },
+    {
+      "number": 1772,
+      "title": "Subtask: Implement drift-check command dry-run mode for local validation",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1772",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1763"
+    },
+    {
+      "number": 1773,
+      "title": "Subtask: Define lane-specific file ownership boundaries for PR batching",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1773",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1764"
+    },
+    {
+      "number": 1774,
+      "title": "Subtask: Create batch-size and review-SLA matrix for lane policy",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1774",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1764"
+    },
+    {
+      "number": 1775,
+      "title": "Subtask: Build PR throughput baseline report from recent merged history",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1775",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1765"
+    },
+    {
+      "number": 1776,
+      "title": "Subtask: Add periodic throughput delta report against baseline",
+      "state": "closed",
+      "url": "https://github.com/njfio/Tau/issues/1776",
+      "labels": [
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 2,
+      "has_comments": true,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1765"
+    },
+    {
+      "number": 1777,
+      "title": "Subtask: Define stale-branch thresholds and automated alert conditions",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1777",
+      "labels": [
+        "area:ci-cd",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1766"
+    },
+    {
+      "number": 1778,
+      "title": "Subtask: Create fast conflict-resolution playbook with rollback criteria",
+      "state": "open",
+      "url": "https://github.com/njfio/Tau/issues/1778",
+      "labels": [
+        "area:ci-cd",
+        "area:observability",
+        "roadmap",
+        "task",
+        "testing-matrix"
+      ],
+      "type": "task",
+      "comments": 0,
+      "has_comments": false,
+      "testing_matrix_required": true,
+      "parent_issue_url": "https://api.github.com/repos/njfio/Tau/issues/1766"
+    }
+  ]
+}
