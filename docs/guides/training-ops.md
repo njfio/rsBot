@@ -81,11 +81,9 @@ SQLite store. This status file includes model identity and rollout outcome count
 Gateway dashboard endpoints (`/dashboard/health`, `/dashboard/widgets`,
 `/dashboard/queue-timeline`, `/dashboard/alerts`) include this status under the `training` field.
 
-## Migration Notes
+## Flag Notes
 
-- `--train-config` -> `--prompt-optimization-config`
-- `--train-store-sqlite` -> `--prompt-optimization-store-sqlite`
-- `--train-json` -> `--prompt-optimization-json`
+Legacy `--train-*` aliases are removed. Use canonical `--prompt-optimization-*` flags.
 
 Boundary decisions and staged consolidation sets:
 - `docs/guides/training-crate-boundary-plan.md`

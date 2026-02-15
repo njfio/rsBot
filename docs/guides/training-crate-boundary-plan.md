@@ -48,7 +48,7 @@ The plan publishes explicit PR sets with issue linkage:
 1. `training-boundary-set-a` (`#1711`)  
    Boundary decisions + docs/check contracts.
 2. `training-boundary-set-b` (`#1712`)  
-   Remove stale training flag/docs references after boundary confirmation.
+   Remove stale training flag/docs references after boundary confirmation (completed).
 3. `training-boundary-set-c` (`#1628`)  
    Follow-through consolidation changes only when ambiguity/duplication appears.
 

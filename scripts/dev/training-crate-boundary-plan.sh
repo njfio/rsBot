@@ -196,7 +196,7 @@ def default_plan() -> dict:
             {
                 "id": "training-boundary-set-b",
                 "title": "Stale training flag/docs cleanup",
-                "status": "planned",
+                "status": "completed",
                 "issues": ["#1712"],
                 "scope": [
                     "Remove stale training alias/docs paths after boundary confirmation.",

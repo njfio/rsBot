@@ -1873,7 +1873,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-config",
-        alias = "train-config",
         env = "TAU_PROMPT_OPTIMIZATION_CONFIG",
         value_name = "path",
         help = "Run rollout prompt-optimization mode from JSON config and exit"
@@ -1882,7 +1881,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-store-sqlite",
-        alias = "train-store-sqlite",
         env = "TAU_PROMPT_OPTIMIZATION_STORE_SQLITE",
         requires = "prompt_optimization_config",
         default_value = ".tau/training/store.sqlite",
@@ -1893,7 +1891,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-json",
-        alias = "train-json",
         env = "TAU_PROMPT_OPTIMIZATION_JSON",
         requires = "prompt_optimization_config",
         default_value_t = false,
@@ -1903,7 +1900,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-proxy-server",
-        alias = "training-proxy-server",
         env = "TAU_PROMPT_OPTIMIZATION_PROXY_SERVER",
         default_value_t = false,
         help = "Run OpenAI-compatible prompt-optimization attribution proxy mode and exit"
@@ -1912,7 +1908,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-proxy-bind",
-        alias = "training-proxy-bind",
         env = "TAU_PROMPT_OPTIMIZATION_PROXY_BIND",
         requires = "prompt_optimization_proxy_server",
         default_value = "127.0.0.1:8788",
@@ -1923,7 +1918,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-proxy-upstream-url",
-        alias = "training-proxy-upstream-url",
         env = "TAU_PROMPT_OPTIMIZATION_PROXY_UPSTREAM_URL",
         requires = "prompt_optimization_proxy_server",
         value_name = "url",
@@ -1933,7 +1927,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-proxy-state-dir",
-        alias = "training-proxy-state-dir",
         env = "TAU_PROMPT_OPTIMIZATION_PROXY_STATE_DIR",
         requires = "prompt_optimization_proxy_server",
         default_value = ".tau",
@@ -1944,7 +1937,6 @@ pub struct Cli {
 
     #[arg(
         long = "prompt-optimization-proxy-timeout-ms",
-        alias = "training-proxy-timeout-ms",
         env = "TAU_PROMPT_OPTIMIZATION_PROXY_TIMEOUT_MS",
         requires = "prompt_optimization_proxy_server",
         default_value_t = 30_000,

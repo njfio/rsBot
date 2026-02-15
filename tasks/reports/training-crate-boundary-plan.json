@@ -91,7 +91,7 @@
     {
       "id": "training-boundary-set-b",
       "title": "Stale training flag/docs cleanup",
-      "status": "planned",
+      "status": "completed",
       "issues": [
         "#1712"
       ],

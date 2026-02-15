@@ -15,7 +15,7 @@ cargo run -p tau-coding-agent -- \
   --prompt-optimization-proxy-timeout-ms 30000
 ```
 
-Legacy `--training-proxy-*` flags remain accepted as aliases.
+Use canonical `--prompt-optimization-proxy-*` flags.
 
 ## Required Attribution Headers
 
@@ -48,13 +48,10 @@ The proxy appends JSONL records to:
 Each record includes rollout/attempt IDs, optional sequence/trace IDs, request and response byte
 counts, latency, and upstream status/error outcome.
 
-## Migration Notes
+## Flag Notes
 
-- `--training-proxy-server` -> `--prompt-optimization-proxy-server`
-- `--training-proxy-bind` -> `--prompt-optimization-proxy-bind`
-- `--training-proxy-upstream-url` -> `--prompt-optimization-proxy-upstream-url`
-- `--training-proxy-state-dir` -> `--prompt-optimization-proxy-state-dir`
-- `--training-proxy-timeout-ms` -> `--prompt-optimization-proxy-timeout-ms`
+Legacy `--training-proxy-*` aliases are removed. Use canonical
+`--prompt-optimization-proxy-*` flags.
 
 ## Ownership
 

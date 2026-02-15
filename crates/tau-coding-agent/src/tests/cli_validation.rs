@@ -2818,24 +2818,12 @@ fn functional_cli_prompt_optimization_flags_accept_canonical_overrides() {
 }
 
 #[test]
-fn regression_cli_prompt_optimization_flags_accept_legacy_train_aliases() {
-    let cli = parse_cli_with_stack([
-        "tau-rs",
-        "--train-config",
-        ".tau/train-legacy.json",
-        "--train-store-sqlite",
-        ".tau/training/legacy.sqlite",
-        "--train-json",
-    ]);
-    assert_eq!(
-        cli.prompt_optimization_config.as_deref(),
-        Some(Path::new(".tau/train-legacy.json"))
-    );
-    assert_eq!(
-        cli.prompt_optimization_store_sqlite,
-        PathBuf::from(".tau/training/legacy.sqlite")
-    );
-    assert!(cli.prompt_optimization_json);
+fn regression_cli_prompt_optimization_flags_reject_legacy_train_aliases() {
+    let error = try_parse_cli_with_stack(["tau-rs", "--train-config", ".tau/train-legacy.json"])
+        .expect_err("legacy --train-* aliases should be rejected");
+    assert!(error
+        .to_string()
+        .contains("unexpected argument '--train-config' found"));
 }
 
 #[test]
@@ -2866,30 +2854,17 @@ fn functional_cli_prompt_optimization_proxy_flags_accept_canonical_overrides() {
 }
 
 #[test]
-fn regression_cli_prompt_optimization_proxy_flags_accept_legacy_training_aliases() {
-    let cli = parse_cli_with_stack([
+fn regression_cli_prompt_optimization_proxy_flags_reject_legacy_training_aliases() {
+    let error = try_parse_cli_with_stack([
         "tau-rs",
         "--training-proxy-server",
         "--training-proxy-bind",
         "127.0.0.1:8866",
-        "--training-proxy-upstream-url",
-        "http://127.0.0.1:5000",
-        "--training-proxy-state-dir",
-        ".tau-legacy",
-        "--training-proxy-timeout-ms",
-        "42000",
-    ]);
-    assert!(cli.prompt_optimization_proxy_server);
-    assert_eq!(cli.prompt_optimization_proxy_bind, "127.0.0.1:8866");
-    assert_eq!(
-        cli.prompt_optimization_proxy_upstream_url.as_deref(),
-        Some("http://127.0.0.1:5000")
-    );
-    assert_eq!(
-        cli.prompt_optimization_proxy_state_dir,
-        PathBuf::from(".tau-legacy")
-    );
-    assert_eq!(cli.prompt_optimization_proxy_timeout_ms, 42_000);
+    ])
+    .expect_err("legacy --training-proxy-* aliases should be rejected");
+    assert!(error
+        .to_string()
+        .contains("unexpected argument '--training-proxy-server' found"));
 }
 
 #[test]
