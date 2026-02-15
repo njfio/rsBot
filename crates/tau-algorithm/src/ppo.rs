@@ -15,6 +15,12 @@ pub struct PpoConfig {
     pub mini_batch_size: usize,
     /// Number of minibatches per optimizer step.
     pub gradient_accumulation_steps: usize,
+    /// Coefficient for KL penalty term added to total loss.
+    pub kl_penalty_coefficient: f64,
+    /// Optional target KL used for diagnostics and future scheduling hooks.
+    pub target_kl: Option<f64>,
+    /// Optional max KL threshold that triggers early-stop guidance.
+    pub max_kl: Option<f64>,
 }
 
 impl Default for PpoConfig {
@@ -25,6 +31,9 @@ impl Default for PpoConfig {
             entropy_coefficient: 0.01,
             mini_batch_size: 32,
             gradient_accumulation_steps: 1,
+            kl_penalty_coefficient: 0.0,
+            target_kl: None,
+            max_kl: None,
         }
     }
 }
@@ -49,6 +58,7 @@ pub struct PpoLossBreakdown {
     pub total_loss: f64,
     pub mean_ratio: f64,
     pub clipped_fraction: f64,
+    pub approx_kl: f64,
 }
 
 /// Aggregated optimizer step summary after gradient accumulation.
@@ -68,6 +78,9 @@ pub struct PpoUpdateSummary {
     pub mini_batch_losses: Vec<PpoLossBreakdown>,
     pub optimizer_steps: Vec<PpoOptimizerStep>,
     pub mean_loss: PpoLossBreakdown,
+    pub early_stop_triggered: bool,
+    pub early_stop_reason: Option<String>,
+    pub observed_approx_kl: f64,
 }
 
 /// Computes PPO loss terms over one batch of samples.
@@ -82,6 +95,7 @@ pub fn compute_ppo_loss(config: &PpoConfig, samples: &[PpoSample]) -> Result<Ppo
     let mut value_loss_sum = 0.0;
     let mut entropy_bonus_sum = 0.0;
     let mut ratio_sum = 0.0;
+    let mut approx_kl_sum = 0.0;
     let mut clipped_count = 0usize;
 
     let clip_lower = 1.0 - config.clip_epsilon;
@@ -102,6 +116,8 @@ pub fn compute_ppo_loss(config: &PpoConfig, samples: &[PpoSample]) -> Result<Ppo
 
         entropy_bonus_sum += sample.entropy;
         ratio_sum += ratio;
+        let delta = sample.new_logprob - sample.old_logprob;
+        approx_kl_sum += 0.5 * delta * delta;
         if (ratio - clipped_ratio).abs() > f64::EPSILON {
             clipped_count += 1;
         }
@@ -113,9 +129,11 @@ pub fn compute_ppo_loss(config: &PpoConfig, samples: &[PpoSample]) -> Result<Ppo
     let entropy_bonus = entropy_bonus_sum / sample_count;
     let mean_ratio = ratio_sum / sample_count;
     let clipped_fraction = clipped_count as f64 / sample_count;
+    let approx_kl = approx_kl_sum / sample_count;
 
     let total_loss = policy_loss + (config.value_loss_coefficient * value_loss)
-        - (config.entropy_coefficient * entropy_bonus);
+        - (config.entropy_coefficient * entropy_bonus)
+        + (config.kl_penalty_coefficient * approx_kl);
 
     let breakdown = PpoLossBreakdown {
         policy_loss,
@@ -124,6 +142,7 @@ pub fn compute_ppo_loss(config: &PpoConfig, samples: &[PpoSample]) -> Result<Ppo
         total_loss,
         mean_ratio,
         clipped_fraction,
+        approx_kl,
     };
     ensure_loss_is_finite(&breakdown)?;
     Ok(breakdown)
@@ -160,12 +179,26 @@ pub fn compute_ppo_update(config: &PpoConfig, samples: &[PpoSample]) -> Result<P
         });
     }
 
+    let mean_loss = mean_loss(&mini_batch_losses);
+    let observed_approx_kl = mean_loss.approx_kl;
+    let (early_stop_triggered, early_stop_reason) = if config
+        .max_kl
+        .is_some_and(|max_kl| observed_approx_kl > max_kl)
+    {
+        (true, Some("ppo.max_kl_exceeded".to_string()))
+    } else {
+        (false, None)
+    };
+
     let summary = PpoUpdateSummary {
         mini_batch_count: mini_batch_losses.len(),
         optimizer_step_count: optimizer_steps.len(),
         mini_batch_losses: mini_batch_losses.clone(),
         optimizer_steps,
-        mean_loss: mean_loss(&mini_batch_losses),
+        mean_loss,
+        early_stop_triggered,
+        early_stop_reason,
+        observed_approx_kl,
     };
     ensure_loss_is_finite(&summary.mean_loss)?;
     Ok(summary)
@@ -189,6 +222,29 @@ fn validate_config(config: &PpoConfig) -> Result<()> {
             "invalid ppo config: entropy_coefficient must be finite and >= 0.0, found {}",
             config.entropy_coefficient
         );
+    }
+    if !config.kl_penalty_coefficient.is_finite() || config.kl_penalty_coefficient < 0.0 {
+        bail!(
+            "invalid ppo config: kl_penalty_coefficient must be finite and >= 0.0, found {}",
+            config.kl_penalty_coefficient
+        );
+    }
+    if config
+        .target_kl
+        .is_some_and(|target_kl| !target_kl.is_finite() || target_kl < 0.0)
+    {
+        bail!("invalid ppo config: target_kl must be finite and >= 0.0");
+    }
+    if config
+        .max_kl
+        .is_some_and(|max_kl| !max_kl.is_finite() || max_kl < 0.0)
+    {
+        bail!("invalid ppo config: max_kl must be finite and >= 0.0");
+    }
+    if let (Some(target_kl), Some(max_kl)) = (config.target_kl, config.max_kl) {
+        if max_kl < target_kl {
+            bail!("invalid ppo config: max_kl must be >= target_kl when both are set");
+        }
     }
     if config.mini_batch_size == 0 {
         bail!("invalid ppo config: mini_batch_size must be > 0");
@@ -225,6 +281,7 @@ fn mean_loss(losses: &[PpoLossBreakdown]) -> PpoLossBreakdown {
         total_loss: losses.iter().map(|loss| loss.total_loss).sum::<f64>() / count,
         mean_ratio: losses.iter().map(|loss| loss.mean_ratio).sum::<f64>() / count,
         clipped_fraction: losses.iter().map(|loss| loss.clipped_fraction).sum::<f64>() / count,
+        approx_kl: losses.iter().map(|loss| loss.approx_kl).sum::<f64>() / count,
     }
 }
 
@@ -236,6 +293,7 @@ fn ensure_loss_is_finite(loss: &PpoLossBreakdown) -> Result<()> {
         ("total_loss", loss.total_loss),
         ("mean_ratio", loss.mean_ratio),
         ("clipped_fraction", loss.clipped_fraction),
+        ("approx_kl", loss.approx_kl),
     ];
     for (field, value) in values {
         if !value.is_finite() {
@@ -273,6 +331,9 @@ mod tests {
             entropy_coefficient: 0.01,
             mini_batch_size: 2,
             gradient_accumulation_steps: 1,
+            kl_penalty_coefficient: 0.0,
+            target_kl: None,
+            max_kl: None,
         };
         let samples = vec![
             PpoSample {
@@ -304,6 +365,7 @@ mod tests {
                 total_loss: -0.342_335_459_037_823_84,
                 mean_ratio: 0.922_994_569_378_682_7,
                 clipped_fraction: 0.5,
+                approx_kl: 0.025,
             },
             1e-12,
         );
@@ -319,6 +381,9 @@ mod tests {
             entropy_coefficient: 0.01,
             mini_batch_size: 2,
             gradient_accumulation_steps: 2,
+            kl_penalty_coefficient: 0.0,
+            target_kl: None,
+            max_kl: None,
         };
         let samples = vec![
             PpoSample {
@@ -405,6 +470,92 @@ mod tests {
             error.to_string().contains("non-finite"),
             "unexpected error: {error:#}"
         );
+    }
+
+    #[test]
+    fn unit_ppo_config_rejects_negative_kl_penalty_coefficient() {
+        let config = PpoConfig {
+            kl_penalty_coefficient: -0.1,
+            ..PpoConfig::default()
+        };
+        let samples = vec![PpoSample {
+            old_logprob: -0.2,
+            new_logprob: -0.1,
+            advantage: 0.5,
+            return_value: 0.5,
+            value_prediction: 0.4,
+            entropy: 0.2,
+        }];
+
+        let error = compute_ppo_loss(&config, &samples).expect_err("negative KL penalty must fail");
+        assert!(error.to_string().contains("kl_penalty_coefficient"));
+    }
+
+    #[test]
+    fn functional_ppo_loss_includes_kl_penalty_term() -> Result<()> {
+        let config = PpoConfig {
+            kl_penalty_coefficient: 2.0,
+            ..PpoConfig::default()
+        };
+        let samples = vec![
+            PpoSample {
+                old_logprob: -0.2,
+                new_logprob: -0.05,
+                advantage: 1.0,
+                return_value: 1.2,
+                value_prediction: 1.1,
+                entropy: 0.7,
+            },
+            PpoSample {
+                old_logprob: -0.3,
+                new_logprob: -0.15,
+                advantage: 0.8,
+                return_value: 0.9,
+                value_prediction: 0.75,
+                entropy: 0.6,
+            },
+        ];
+
+        let loss = compute_ppo_loss(&config, &samples)?;
+        let expected_total = loss.policy_loss + (config.value_loss_coefficient * loss.value_loss)
+            - (config.entropy_coefficient * loss.entropy_bonus)
+            + (config.kl_penalty_coefficient * loss.approx_kl);
+        assert!((loss.total_loss - expected_total).abs() < 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn regression_ppo_update_triggers_early_stop_when_mean_kl_exceeds_threshold() -> Result<()> {
+        let config = PpoConfig {
+            max_kl: Some(0.02),
+            ..PpoConfig::default()
+        };
+        let samples = vec![
+            PpoSample {
+                old_logprob: -0.5,
+                new_logprob: 0.0,
+                advantage: 0.6,
+                return_value: 1.0,
+                value_prediction: 0.8,
+                entropy: 0.3,
+            },
+            PpoSample {
+                old_logprob: -0.4,
+                new_logprob: 0.1,
+                advantage: 0.4,
+                return_value: 0.9,
+                value_prediction: 0.7,
+                entropy: 0.2,
+            },
+        ];
+
+        let summary = compute_ppo_update(&config, &samples)?;
+        assert!(summary.early_stop_triggered);
+        assert_eq!(
+            summary.early_stop_reason.as_deref(),
+            Some("ppo.max_kl_exceeded")
+        );
+        Ok(())
     }
 
     #[test]
@@ -502,6 +653,7 @@ mod tests {
         let object = config
             .as_object()
             .with_context(|| format!("fixture case '{case_name}' has non-object config"))?;
+        let defaults = PpoConfig::default();
         Ok(PpoConfig {
             clip_epsilon: required_f64(object, "clip_epsilon", case_name)?,
             value_loss_coefficient: required_f64(object, "value_loss_coefficient", case_name)?,
@@ -512,6 +664,10 @@ mod tests {
                 "gradient_accumulation_steps",
                 case_name,
             )? as usize,
+            kl_penalty_coefficient: optional_f64(object, "kl_penalty_coefficient")
+                .unwrap_or(defaults.kl_penalty_coefficient),
+            target_kl: optional_f64(object, "target_kl"),
+            max_kl: optional_f64(object, "max_kl"),
         })
     }
 
@@ -555,6 +711,7 @@ mod tests {
             total_loss: required_f64(object, "total_loss", case_name)?,
             mean_ratio: required_f64(object, "mean_ratio", case_name)?,
             clipped_fraction: required_f64(object, "clipped_fraction", case_name)?,
+            approx_kl: required_f64(object, "approx_kl", case_name)?,
         })
     }
 
@@ -578,6 +735,10 @@ mod tests {
             .get(key)
             .and_then(Value::as_u64)
             .with_context(|| format!("fixture case '{case_name}' missing integer field '{key}'"))
+    }
+
+    fn optional_f64(object: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
+        object.get(key).and_then(Value::as_f64)
     }
 
     fn assert_loss_close(
@@ -626,6 +787,13 @@ mod tests {
             "clipped_fraction",
             actual.clipped_fraction,
             expected.clipped_fraction,
+            tolerance,
+        );
+        assert_close(
+            case_name,
+            "approx_kl",
+            actual.approx_kl,
+            expected.approx_kl,
             tolerance,
         );
     }
