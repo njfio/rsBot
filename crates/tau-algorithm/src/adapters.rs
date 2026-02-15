@@ -1,6 +1,8 @@
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use tau_ai::{Message, MessageRole};
-use tau_training_types::{TrainingSpan, Triplet};
+use tau_training_types::{EpisodeTrajectory, TrainingSpan, TrajectoryStep, Triplet};
 
 /// Adapter trait converting raw spans into algorithm-specific structures.
 pub trait TraceAdapter<T>: Send + Sync {
@@ -120,8 +122,141 @@ impl TraceAdapter<Vec<Message>> for SpansToMessages {
     }
 }
 
+/// Converts spans into RL episode trajectories.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SpansToTrajectories;
+
+impl TraceAdapter<Vec<EpisodeTrajectory>> for SpansToTrajectories {
+    fn adapt(&self, spans: &[TrainingSpan]) -> Result<Vec<EpisodeTrajectory>> {
+        if spans.is_empty() {
+            bail!("trajectory adapter requires at least one span");
+        }
+
+        let mut grouped: BTreeMap<(String, String), Vec<&TrainingSpan>> = BTreeMap::new();
+        for span in spans {
+            grouped
+                .entry((span.rollout_id.clone(), span.attempt_id.clone()))
+                .or_default()
+                .push(span);
+        }
+
+        let mut trajectories = Vec::with_capacity(grouped.len());
+        for ((rollout_id, attempt_id), mut grouped_spans) in grouped {
+            grouped_spans.sort_by_key(|span| span.sequence_id);
+
+            let mut steps = Vec::with_capacity(grouped_spans.len());
+            let last_index = grouped_spans.len().saturating_sub(1);
+            for (position, span) in grouped_spans.iter().enumerate() {
+                let observation = extract_observation(span);
+                let action = extract_action(span);
+                let reward = extract_reward(span);
+                let done = span
+                    .attributes
+                    .get("done")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(position == last_index);
+
+                let mut step =
+                    TrajectoryStep::new(position as u32, observation, action, reward, done);
+                step.logprob = extract_reward_value(
+                    span.attributes
+                        .get("logprob")
+                        .or_else(|| span.attributes.get("action_logprob")),
+                );
+                step.value_estimate = extract_reward_value(
+                    span.attributes
+                        .get("value_estimate")
+                        .or_else(|| span.attributes.get("value")),
+                );
+                step.metadata
+                    .insert("span_name".to_string(), json!(span.name));
+                step.metadata
+                    .insert("span_id".to_string(), json!(span.span_id));
+                step.metadata
+                    .insert("trace_id".to_string(), json!(span.trace_id));
+                step.metadata
+                    .insert("sequence_id".to_string(), json!(span.sequence_id));
+                step.metadata
+                    .insert("attempt_id".to_string(), json!(attempt_id));
+                steps.push(step);
+            }
+
+            let trajectory_id = format!("{rollout_id}::{attempt_id}");
+            let mut trajectory = EpisodeTrajectory::new(
+                trajectory_id,
+                Some(rollout_id.clone()),
+                Some(attempt_id.clone()),
+                steps,
+            );
+            trajectory.metadata.insert(
+                "adapter".to_string(),
+                json!("tau-algorithm::SpansToTrajectories"),
+            );
+            trajectory
+                .validate()
+                .map_err(|error| anyhow!(
+                    "trajectory adapter validation failed for rollout={rollout_id} attempt={attempt_id}: {error}"
+                ))?;
+            trajectories.push(trajectory);
+        }
+
+        Ok(trajectories)
+    }
+}
+
 fn extract_reward_value(value: Option<&serde_json::Value>) -> Option<f64> {
     value.and_then(serde_json::Value::as_f64)
+}
+
+fn extract_value_by_keys(
+    attributes: &std::collections::HashMap<String, Value>,
+    keys: &[&str],
+) -> Option<Value> {
+    keys.iter().find_map(|key| attributes.get(*key)).cloned()
+}
+
+fn extract_observation(span: &TrainingSpan) -> Value {
+    extract_value_by_keys(
+        &span.attributes,
+        &["observation", "state", "prompt", "input"],
+    )
+    .unwrap_or_else(|| {
+        json!({
+            "fallback": "observation",
+            "span_name": span.name,
+            "sequence_id": span.sequence_id,
+        })
+    })
+}
+
+fn extract_action(span: &TrainingSpan) -> Value {
+    extract_value_by_keys(
+        &span.attributes,
+        &[
+            "action",
+            "response",
+            "assistant_text",
+            "output",
+            "text",
+            "tool_name",
+        ],
+    )
+    .unwrap_or_else(|| {
+        json!({
+            "fallback": "action",
+            "span_name": span.name,
+            "sequence_id": span.sequence_id,
+        })
+    })
+}
+
+fn extract_reward(span: &TrainingSpan) -> f64 {
+    extract_reward_value(
+        span.attributes
+            .get("reward")
+            .or_else(|| span.attributes.get("reward_value")),
+    )
+    .unwrap_or(0.0)
 }
 
 fn parse_role(value: &str) -> MessageRole {
@@ -136,7 +271,7 @@ fn parse_role(value: &str) -> MessageRole {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpansToMessages, SpansToTriplets, TraceAdapter};
+    use super::{SpansToMessages, SpansToTrajectories, SpansToTriplets, TraceAdapter};
     use serde_json::json;
     use std::collections::HashMap;
     use tau_training_types::TrainingSpan;
@@ -197,5 +332,67 @@ mod tests {
         let messages = SpansToMessages.adapt(&spans).expect("adapt messages");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text_content(), "hello");
+    }
+
+    #[test]
+    fn adapts_spans_into_valid_episode_trajectories() {
+        let spans = vec![
+            span(
+                1,
+                "agent.turn.1",
+                HashMap::from([
+                    ("observation".to_string(), json!({"state": "s0"})),
+                    ("action".to_string(), json!({"tool": "search"})),
+                    ("reward".to_string(), json!(0.25)),
+                ]),
+            ),
+            span(
+                2,
+                "agent.turn.2",
+                HashMap::from([
+                    ("observation".to_string(), json!({"state": "s1"})),
+                    ("action".to_string(), json!({"tool": "summarize"})),
+                    ("reward_value".to_string(), json!(0.75)),
+                ]),
+            ),
+        ];
+
+        let trajectories = SpansToTrajectories
+            .adapt(&spans)
+            .expect("adapt trajectories");
+        assert_eq!(trajectories.len(), 1);
+        assert_eq!(trajectories[0].steps.len(), 2);
+        assert_eq!(trajectories[0].steps[0].step_index, 0);
+        assert_eq!(trajectories[0].steps[1].step_index, 1);
+        assert!(!trajectories[0].steps[0].done);
+        assert!(trajectories[0].steps[1].done);
+        assert!(trajectories[0].validate().is_ok());
+    }
+
+    #[test]
+    fn adapts_partial_telemetry_with_fallback_metadata() {
+        let spans = vec![span(1, "message.added", HashMap::new())];
+
+        let trajectories = SpansToTrajectories
+            .adapt(&spans)
+            .expect("adapt trajectories");
+        assert_eq!(trajectories.len(), 1);
+        assert_eq!(trajectories[0].steps.len(), 1);
+        let step = &trajectories[0].steps[0];
+        assert!(step.observation.is_object());
+        assert!(step.action.is_object());
+        assert!(step.done);
+        assert!(trajectories[0].validate().is_ok());
+    }
+
+    #[test]
+    fn returns_deterministic_error_for_empty_input() {
+        let error = SpansToTrajectories
+            .adapt(&[])
+            .expect_err("empty spans should fail");
+        assert_eq!(
+            error.to_string(),
+            "trajectory adapter requires at least one span"
+        );
     }
 }

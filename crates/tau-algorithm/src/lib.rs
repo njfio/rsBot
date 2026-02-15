@@ -9,7 +9,7 @@ use tau_training_types::ResourcesUpdate;
 mod adapters;
 mod apo;
 
-pub use adapters::{SpansToMessages, SpansToTriplets, TraceAdapter};
+pub use adapters::{SpansToMessages, SpansToTrajectories, SpansToTriplets, TraceAdapter};
 pub use apo::{ApoAlgorithm, ApoConfig, ApoTemplates, PromptEvaluator, VersionedPrompt};
 
 /// Input/output example used by prompt-oriented training algorithms.
