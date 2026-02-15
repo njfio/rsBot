@@ -5,6 +5,12 @@ Tau is a pure-Rust agent runtime and operator control plane.
 The workspace includes core agent execution, multi-provider model access, transport bridges,
 gateway APIs, deterministic demo/contract workflows, and prompt-optimization training support.
 
+Training roadmap boundary:
+- Current implemented training loop is prompt optimization.
+- Future true RL policy learning is tracked in [Epic #1657](https://github.com/njfio/Tau/issues/1657)
+  under [Milestone #24](https://github.com/njfio/Tau/milestone/24)
+  (`True RL Wave 2026-Q3: Policy Learning in Production`).
+
 ## What Tau Includes Today
 
 - Rust-first runtime architecture (no Node.js/TypeScript runtime dependency in core paths)

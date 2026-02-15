@@ -5,6 +5,11 @@ This guide covers rollout-based prompt optimization mode with durable SQLite sta
 This mode executes and evaluates rollouts. It is not a full policy-learning
 training pipeline.
 
+Future true RL policy-learning work is tracked separately in
+[Epic #1657](https://github.com/njfio/Tau/issues/1657) and
+[Milestone #24](https://github.com/njfio/Tau/milestone/24)
+(`True RL Wave 2026-Q3: Policy Learning in Production`).
+
 ## Run Prompt Optimization Mode
 
 From repository root:
