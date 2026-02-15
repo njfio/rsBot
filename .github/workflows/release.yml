@@ -45,22 +45,38 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-amd64
             archive_ext: tar.gz
+            smoke_mode: run
+            smoke_reason: native_arch
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             platform: linux-arm64
             archive_ext: tar.gz
+            smoke_mode: skip
+            smoke_reason: cross_arch_linux_arm64_on_amd64_runner
           - os: macos-14
             target: x86_64-apple-darwin
             platform: macos-amd64
             archive_ext: tar.gz
+            smoke_mode: skip
+            smoke_reason: cross_arch_macos_amd64_on_arm64_runner
           - os: macos-14
             target: aarch64-apple-darwin
             platform: macos-arm64
             archive_ext: tar.gz
+            smoke_mode: run
+            smoke_reason: native_arch
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-amd64
             archive_ext: zip
+            smoke_mode: run
+            smoke_reason: native_arch
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            platform: windows-arm64
+            archive_ext: zip
+            smoke_mode: skip
+            smoke_reason: cross_arch_windows_arm64_on_amd64_runner
 
     steps:
       - name: Checkout tag
@@ -116,8 +132,12 @@ jobs:
             echo "release_hook_reason=sign_hooks_disabled"
           fi
 
-          # Smoke test gate: artifact must execute and print help before publish.
-          "${packaged_binary}" --help > /dev/null
+          if [[ "${{ matrix.smoke_mode }}" == "run" ]]; then
+            # Smoke test gate: artifact must execute and print help before publish.
+            "${packaged_binary}" --help > /dev/null
+          else
+            echo "release_smoke_reason=${{ matrix.smoke_reason }}"
+          fi
 
           archive_path="dist/${APP_NAME}-${{ matrix.platform }}.tar.gz"
           tar -czf "${archive_path}" -C dist "${APP_NAME}-${{ matrix.platform }}"
@@ -157,8 +177,12 @@ jobs:
             Write-Output "release_hook_reason=sign_hooks_disabled"
           }
 
-          # Smoke test gate: artifact must execute and print help before publish.
-          & "$packagedBinary" --help | Out-Null
+          if ("${{ matrix.smoke_mode }}" -eq "run") {
+            # Smoke test gate: artifact must execute and print help before publish.
+            & "$packagedBinary" --help | Out-Null
+          } else {
+            Write-Output "release_smoke_reason=${{ matrix.smoke_reason }}"
+          }
 
           Compress-Archive -Path "$packagedBinary" -DestinationPath "dist\\$env:APP_NAME-${{ matrix.platform }}.zip" -Force
 

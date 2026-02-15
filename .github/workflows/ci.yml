@@ -240,7 +240,9 @@ jobs:
 
       - name: Validate release install/update helper scripts
         if: steps.release_helper_scope.outputs.release_helper_tests_needed == 'true'
-        run: ./scripts/release/test-install-helpers.sh
+        run: |
+          ./scripts/release/test-install-helpers.sh
+          ./scripts/release/test-release-workflow-contract.sh
 
       - name: Determine wasm smoke scope
         id: wasm_scope
@@ -399,28 +401,37 @@ jobs:
         run: ./scripts/dev/wasm-smoke.sh
 
   cross-platform-smoke:
-    name: Cross-platform compile smoke (${{ matrix.os }})
+    name: Cross-platform compile smoke (${{ matrix.name }})
     needs: [quality-linux]
     if: needs.quality-linux.outputs.run_cross_platform == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - macos-latest
-          - windows-latest
+        include:
+          - name: macos-amd64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - name: windows-amd64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build test binaries
-        run: cargo test --workspace --no-run
+      - name: Compile release target smoke
+        run: cargo build --release -p tau-coding-agent --target ${{ matrix.target }}
 
   coverage:
     name: Coverage (llvm-cov)
