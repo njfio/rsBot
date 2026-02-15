@@ -1,3 +1,8 @@
+//! Startup transport-mode resolution and dispatch bridge.
+//!
+//! Selects and executes requested transport runtime modes after startup context
+//! resolution, preserving mode-specific failure diagnostics.
+
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;

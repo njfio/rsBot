@@ -1,3 +1,8 @@
+//! Startup preflight checks and early-command short-circuit handling.
+//!
+//! Validates prerequisites and handles daemon/onboarding/preflight command paths
+//! before model/policy resolution and runtime dispatch.
+
 use anyhow::Result;
 use tau_cli::Cli;
 use tau_diagnostics::{

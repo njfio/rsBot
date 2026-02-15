@@ -1,3 +1,8 @@
+//! Macro/profile command adapters for coding-agent dispatch.
+//!
+//! Bridges `/macro` and `/profile` command contracts into runtime command
+//! handling while preserving validation and persistence invariants.
+
 use std::path::Path;
 
 #[cfg(test)]

@@ -1,3 +1,8 @@
+//! Local runtime bootstrap from resolved startup context.
+//!
+//! This module builds local runtime dependencies and entry-mode execution paths
+//! after preflight/model/policy resolution completes.
+
 use std::{path::Path, sync::Arc};
 
 use anyhow::Result;

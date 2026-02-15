@@ -1,4 +1,9 @@
 #![cfg_attr(test, allow(unused_imports))]
+//! Tau coding-agent binary entrypoint and module wiring.
+//!
+//! This crate root binds startup, command, runtime, and transport modules into a
+//! single executable. Startup preflight and dispatch boundaries are delegated to
+//! dedicated modules to keep runtime behavior explicit and testable.
 
 mod auth_commands;
 mod bootstrap_helpers;

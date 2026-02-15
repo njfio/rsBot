@@ -1,3 +1,8 @@
+//! Runtime event subscription and reporting utilities.
+//!
+//! This module configures JSON/event reporters and extension hook subscribers so
+//! runtime execution emits structured diagnostics and audit records.
+
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

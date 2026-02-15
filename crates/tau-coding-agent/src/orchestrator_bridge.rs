@@ -1,3 +1,8 @@
+//! Bridge adapters between coding-agent runtime and orchestrator services.
+//!
+//! This module wires orchestrator-facing contracts into local runtime flows and
+//! preserves explicit error propagation at the bridge boundary.
+
 use std::path::Path;
 
 use anyhow::Result;

@@ -1,3 +1,8 @@
+//! Primary interactive/runtime execution loop for coding-agent.
+//!
+//! Coordinates turn processing, command dispatch, event emission, and transport
+//! integration. Failure reasons are surfaced with stage-specific diagnostics.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,

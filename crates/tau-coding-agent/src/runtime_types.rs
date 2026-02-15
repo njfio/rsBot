@@ -1,3 +1,8 @@
+//! Shared runtime type aliases and startup/runtime structs.
+//!
+//! Centralizes coding-agent runtime configuration/state types referenced across
+//! startup dispatch, command handling, and test harnesses.
+
 use crate::extension_manifest::ExtensionRegisteredCommand;
 pub(crate) use tau_onboarding::startup_config::ProfileDefaults;
 #[cfg(test)]

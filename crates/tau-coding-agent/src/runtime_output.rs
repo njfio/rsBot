@@ -1,3 +1,8 @@
+//! Runtime output rendering and event stream helpers.
+//!
+//! Converts agent/runtime events into user-facing output while preserving
+//! deterministic formatting and error context for diagnostics.
+
 use anyhow::Result;
 use tau_agent_core::AgentEvent;
 use tau_ai::Message;

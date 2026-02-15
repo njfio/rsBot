@@ -1,3 +1,8 @@
+//! Startup dispatch composition for coding-agent runtime modes.
+//!
+//! Builds resolved startup context (models, policy, prompt, runtime defaults)
+//! and routes execution into local or transport runtime paths.
+
 use anyhow::Result;
 use tau_ai::ModelRef;
 use tau_cli::validation::validate_removed_contract_runner_flags_cli;

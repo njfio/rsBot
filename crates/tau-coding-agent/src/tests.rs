@@ -1,3 +1,8 @@
+//! Crate-level regression/integration test harness for coding-agent runtime.
+//!
+//! These tests validate command dispatch, startup modes, and transport/routing
+//! behaviors against deterministic fixtures and failure contracts.
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     future::{pending, ready},

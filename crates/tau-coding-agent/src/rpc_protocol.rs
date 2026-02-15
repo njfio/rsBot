@@ -1,3 +1,8 @@
+//! JSON-RPC protocol parsing and command loop adapters.
+//!
+//! Implements RPC frame validation and dispatch plumbing for coding-agent RPC
+//! mode, with fail-closed handling for malformed frames and unsupported methods.
+
 use std::io::BufReader;
 
 use anyhow::{bail, Context, Result};

@@ -1,3 +1,8 @@
+//! Top-level slash-command dispatch for coding-agent runtime.
+//!
+//! Parses command input and routes to feature modules (auth, profile, macro,
+//! transport, diagnostics) with explicit error propagation semantics.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;

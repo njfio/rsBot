@@ -1,3 +1,8 @@
+//! Process/bootstrap helper utilities.
+//!
+//! Provides shared initialization helpers (for example tracing setup) used by
+//! binary startup before runtime dispatch begins.
+
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
