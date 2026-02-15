@@ -33,8 +33,9 @@ use tau_access::{
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{FileMemoryStore, MemoryScopeFilter, MemorySearchOptions};
 use tau_session::{
-    compute_session_entry_depths, search_session_entries, session_message_preview,
-    session_message_role, SessionStore,
+    compute_session_entry_depths, redo_session_head, resolve_session_navigation_head,
+    search_session_entries, session_message_preview, session_message_role, undo_session_head,
+    SessionRuntime, SessionStore,
 };
 
 const SAFE_BASH_ENV_VARS: &[&str] = &[
@@ -115,6 +116,8 @@ const BUILTIN_AGENT_TOOL_NAMES: &[&str] = &[
     "sessions_search",
     "sessions_stats",
     "sessions_send",
+    "undo",
+    "redo",
     "http",
     "bash",
 ];
@@ -565,6 +568,8 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(SessionsSearchTool::new(policy.clone()));
     agent.register_tool(SessionsStatsTool::new(policy.clone()));
     agent.register_tool(SessionsSendTool::new(policy.clone()));
+    agent.register_tool(UndoTool::new(policy.clone()));
+    agent.register_tool(RedoTool::new(policy.clone()));
     agent.register_tool(HttpTool::new(policy.clone()));
     agent.register_tool(BashTool::new(policy));
 }
@@ -2249,6 +2254,250 @@ impl AgentTool for SessionsSendTool {
             "after_entries": after_entries,
             "appended_entries": after_entries.saturating_sub(before_entries),
             "message_preview": session_message_preview(&Message::user(message)),
+        }))
+    }
+}
+
+/// Public struct `UndoTool` used across Tau components.
+pub struct UndoTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl UndoTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for UndoTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "undo".to_string(),
+            description:
+                "Move a session's active navigation head backward using persisted undo history"
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to target session JSONL file"
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let path = match required_string(&arguments, "path") {
+            Ok(path) => path,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Write) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": path,
+                    "error": error,
+                }))
+            }
+        };
+        if let Err(error) = validate_file_target(
+            &resolved,
+            PathMode::Write,
+            self.policy.enforce_regular_files,
+        ) {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
+
+        let store = match SessionStore::load(&resolved) {
+            Ok(store) => store,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_navigation_load_error",
+                    "error": format!("failed to load session: {error}"),
+                }))
+            }
+        };
+
+        let active_head = match resolve_session_navigation_head(&store) {
+            Ok(active_head) => active_head,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "undo",
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_navigation_state_error",
+                    "error": format!("failed to resolve navigation state: {error}"),
+                }))
+            }
+        };
+        let mut runtime = SessionRuntime { store, active_head };
+        let transition = match undo_session_head(&mut runtime) {
+            Ok(transition) => transition,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "undo",
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_navigation_state_error",
+                    "error": format!("failed to execute undo: {error}"),
+                }))
+            }
+        };
+
+        if !transition.changed {
+            return ToolExecutionResult::error(json!({
+                "tool": "undo",
+                "path": resolved.display().to_string(),
+                "reason_code": "session_undo_empty_stack",
+                "summary": "undo unavailable: no prior navigation target",
+                "previous_head_id": transition.previous_head,
+                "active_head_id": transition.active_head,
+                "undo_depth": transition.undo_depth,
+                "redo_depth": transition.redo_depth,
+                "skipped_invalid_targets": transition.skipped_invalid_targets,
+            }));
+        }
+
+        ToolExecutionResult::ok(json!({
+            "tool": "undo",
+            "path": resolved.display().to_string(),
+            "reason_code": "session_undo_applied",
+            "summary": "undo complete",
+            "previous_head_id": transition.previous_head,
+            "active_head_id": transition.active_head,
+            "undo_depth": transition.undo_depth,
+            "redo_depth": transition.redo_depth,
+            "skipped_invalid_targets": transition.skipped_invalid_targets,
+        }))
+    }
+}
+
+/// Public struct `RedoTool` used across Tau components.
+pub struct RedoTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl RedoTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for RedoTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "redo".to_string(),
+            description:
+                "Move a session's active navigation head forward using persisted redo history"
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to target session JSONL file"
+                    }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let path = match required_string(&arguments, "path") {
+            Ok(path) => path,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Write) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": path,
+                    "error": error,
+                }))
+            }
+        };
+        if let Err(error) = validate_file_target(
+            &resolved,
+            PathMode::Write,
+            self.policy.enforce_regular_files,
+        ) {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
+
+        let store = match SessionStore::load(&resolved) {
+            Ok(store) => store,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_navigation_load_error",
+                    "error": format!("failed to load session: {error}"),
+                }))
+            }
+        };
+
+        let active_head = match resolve_session_navigation_head(&store) {
+            Ok(active_head) => active_head,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "redo",
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_navigation_state_error",
+                    "error": format!("failed to resolve navigation state: {error}"),
+                }))
+            }
+        };
+        let mut runtime = SessionRuntime { store, active_head };
+        let transition = match redo_session_head(&mut runtime) {
+            Ok(transition) => transition,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "redo",
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_navigation_state_error",
+                    "error": format!("failed to execute redo: {error}"),
+                }))
+            }
+        };
+
+        if !transition.changed {
+            return ToolExecutionResult::error(json!({
+                "tool": "redo",
+                "path": resolved.display().to_string(),
+                "reason_code": "session_redo_empty_stack",
+                "summary": "redo unavailable: no prior undone navigation target",
+                "previous_head_id": transition.previous_head,
+                "active_head_id": transition.active_head,
+                "undo_depth": transition.undo_depth,
+                "redo_depth": transition.redo_depth,
+                "skipped_invalid_targets": transition.skipped_invalid_targets,
+            }));
+        }
+
+        ToolExecutionResult::ok(json!({
+            "tool": "redo",
+            "path": resolved.display().to_string(),
+            "reason_code": "session_redo_applied",
+            "summary": "redo complete",
+            "previous_head_id": transition.previous_head,
+            "active_head_id": transition.active_head,
+            "undo_depth": transition.undo_depth,
+            "redo_depth": transition.redo_depth,
+            "skipped_invalid_targets": transition.skipped_invalid_targets,
         }))
     }
 }

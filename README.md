@@ -131,7 +131,7 @@ Implemented now:
 - Multi-provider model routing (`openai/*`, `anthropic/*`, `google/*`)
 - OAuth/session login backend routing for Codex, Claude Code, and Gemini CLI flows
 - Interactive prompt mode, one-shot mode, and plan-first orchestration mode
-- Persistent JSONL sessions with branch/resume/repair/export/import tooling
+- Persistent JSONL sessions with branch/undo/redo/resume/repair/export/import tooling
 - Deterministic project index build/query/inspect workflow for local code search
 - Built-in filesystem and shell tools
 - Transport bridges for GitHub Issues and Slack Socket Mode

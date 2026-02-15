@@ -1361,6 +1361,8 @@ fn functional_render_help_overview_lists_known_commands() {
     assert!(help.contains("/integration-auth <set|status|rotate|revoke> ..."));
     assert!(help.contains("/profile <save|load|list|show|delete> ..."));
     assert!(help.contains("/branch <id>"));
+    assert!(help.contains("/undo"));
+    assert!(help.contains("/redo"));
     assert!(help.contains("/branch-alias <set|list|use> ..."));
     assert!(help.contains("/session-bookmark <set|list|use|delete> ..."));
     assert!(help.contains("/quit"));
@@ -1372,6 +1374,14 @@ fn functional_render_command_help_supports_branch_topic_without_slash() {
     assert!(help.contains("command: /branch"));
     assert!(help.contains("usage: /branch <id>"));
     assert!(help.contains("example: /branch 12"));
+}
+
+#[test]
+fn functional_render_command_help_supports_undo_topic_without_slash() {
+    let help = render_command_help("undo").expect("render help");
+    assert!(help.contains("command: /undo"));
+    assert!(help.contains("usage: /undo"));
+    assert!(help.contains("example: /undo"));
 }
 
 #[test]

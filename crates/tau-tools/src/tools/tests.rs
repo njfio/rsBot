@@ -19,13 +19,17 @@ use super::{
     is_session_candidate_path, leading_executable, os_sandbox_mode_name,
     os_sandbox_policy_mode_name, redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool,
     BashCommandProfile, BashTool, EditTool, HttpTool, MemoryReadTool, MemorySearchTool,
-    MemoryTreeTool, MemoryWriteTool, OsSandboxMode, OsSandboxPolicyMode, SessionsHistoryTool,
-    SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolExecutionResult,
-    ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, WriteTool,
+    MemoryTreeTool, MemoryWriteTool, OsSandboxMode, OsSandboxPolicyMode, RedoTool,
+    SessionsHistoryTool, SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool,
+    ToolExecutionResult, ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool,
+    WriteTool,
 };
 use tau_access::ApprovalAction;
 use tau_ai::Message;
-use tau_session::{session_message_preview, session_message_role, SessionStore};
+use tau_session::{
+    navigate_session_head, session_message_preview, session_message_role, SessionRuntime,
+    SessionStore,
+};
 
 fn test_policy(path: &Path) -> Arc<ToolPolicy> {
     Arc::new(ToolPolicy::new(vec![path.to_path_buf()]))
@@ -204,6 +208,8 @@ fn unit_builtin_agent_tool_name_registry_includes_session_tools() {
     assert!(names.contains(&"sessions_search"));
     assert!(names.contains(&"sessions_stats"));
     assert!(names.contains(&"sessions_send"));
+    assert!(names.contains(&"undo"));
+    assert!(names.contains(&"redo"));
     assert!(names.contains(&"http"));
     assert!(names.contains(&"bash"));
 }
@@ -1142,6 +1148,139 @@ async fn regression_sessions_send_tool_rejects_unknown_parent_id() {
         .content
         .to_string()
         .contains("failed to append handoff message"));
+}
+
+#[tokio::test]
+async fn unit_undo_tool_rejects_paths_outside_allowed_roots() {
+    let root = tempdir().expect("root");
+    let outside = tempdir().expect("outside");
+    let session_path = outside.path().join(".tau/sessions/default.jsonl");
+    let mut store = SessionStore::load(&session_path).expect("load outside session");
+    store
+        .append_messages(None, &[Message::user("outside")])
+        .expect("append outside message");
+
+    let tool = UndoTool::new(test_policy(root.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": session_path,
+        }))
+        .await;
+    assert!(result.is_error);
+    assert!(result.content.to_string().contains("outside allowed roots"));
+}
+
+#[tokio::test]
+async fn functional_undo_tool_rewinds_navigation_head() {
+    let temp = tempdir().expect("tempdir");
+    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let mut store = SessionStore::load(&session_path).expect("load session");
+    let head = store
+        .append_messages(
+            None,
+            &[
+                Message::system("root"),
+                Message::user("q1"),
+                Message::assistant_text("a1"),
+            ],
+        )
+        .expect("append messages")
+        .expect("head");
+    let branch_target = store.entries().first().expect("root entry should exist").id;
+    let mut runtime = SessionRuntime {
+        store,
+        active_head: Some(head),
+    };
+    navigate_session_head(&mut runtime, Some(branch_target)).expect("navigate to branch target");
+
+    let tool = UndoTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": session_path,
+        }))
+        .await;
+    assert!(!result.is_error);
+    assert_eq!(result.content["reason_code"], "session_undo_applied");
+    assert_eq!(
+        result
+            .content
+            .get("active_head_id")
+            .and_then(serde_json::Value::as_u64),
+        Some(head)
+    );
+}
+
+#[tokio::test]
+async fn integration_redo_tool_reapplies_undone_navigation_head() {
+    let temp = tempdir().expect("tempdir");
+    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let mut store = SessionStore::load(&session_path).expect("load session");
+    let head = store
+        .append_messages(
+            None,
+            &[
+                Message::system("root"),
+                Message::user("q1"),
+                Message::assistant_text("a1"),
+            ],
+        )
+        .expect("append messages")
+        .expect("head");
+    let branch_target = store.entries().first().expect("root entry should exist").id;
+    let mut runtime = SessionRuntime {
+        store,
+        active_head: Some(head),
+    };
+    navigate_session_head(&mut runtime, Some(branch_target)).expect("navigate to branch target");
+
+    let undo_tool = UndoTool::new(test_policy(temp.path()));
+    let undo = undo_tool
+        .execute(serde_json::json!({
+            "path": session_path,
+        }))
+        .await;
+    assert!(!undo.is_error);
+    assert_eq!(undo.content["reason_code"], "session_undo_applied");
+
+    let redo_tool = RedoTool::new(test_policy(temp.path()));
+    let redo = redo_tool
+        .execute(serde_json::json!({
+            "path": session_path,
+        }))
+        .await;
+    assert!(!redo.is_error);
+    assert_eq!(redo.content["reason_code"], "session_redo_applied");
+    assert_eq!(
+        redo.content
+            .get("active_head_id")
+            .and_then(serde_json::Value::as_u64),
+        Some(branch_target)
+    );
+}
+
+#[tokio::test]
+async fn regression_undo_tool_reports_empty_navigation_history() {
+    let temp = tempdir().expect("tempdir");
+    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let mut store = SessionStore::load(&session_path).expect("load session");
+    store
+        .append_messages(None, &[Message::user("seed")])
+        .expect("append seed");
+
+    let tool = UndoTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": session_path,
+        }))
+        .await;
+    assert!(result.is_error);
+    assert_eq!(result.content["reason_code"], "session_undo_empty_stack");
+    assert!(result
+        .content
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .contains("undo unavailable"));
 }
 
 #[tokio::test]

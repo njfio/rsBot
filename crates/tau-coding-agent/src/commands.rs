@@ -36,12 +36,12 @@ use tau_provider::{
 use tau_session::SessionImportMode;
 use tau_session::{
     execute_branch_alias_command, execute_branch_switch_command, execute_branches_command,
-    execute_resume_command, execute_session_bookmark_command, execute_session_compact_command,
-    execute_session_diff_runtime_command, execute_session_export_command,
-    execute_session_graph_export_runtime_command, execute_session_import_command,
-    execute_session_merge_command, execute_session_repair_command,
+    execute_redo_command, execute_resume_command, execute_session_bookmark_command,
+    execute_session_compact_command, execute_session_diff_runtime_command,
+    execute_session_export_command, execute_session_graph_export_runtime_command,
+    execute_session_import_command, execute_session_merge_command, execute_session_repair_command,
     execute_session_search_runtime_command, execute_session_stats_runtime_command,
-    execute_session_status_command, session_lineage_messages, SessionRuntime,
+    execute_session_status_command, execute_undo_command, session_lineage_messages, SessionRuntime,
 };
 #[cfg(test)]
 use tau_skills::default_skills_lock_path;
@@ -605,6 +605,42 @@ pub(crate) fn handle_command_with_session_import_mode(
         };
 
         let outcome = execute_resume_command(command_args, runtime);
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/undo" {
+        if !command_args.is_empty() {
+            println!("usage: /undo");
+            return Ok(CommandAction::Continue);
+        }
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_undo_command(command_args, runtime)?;
+        if outcome.reload_active_head {
+            agent.replace_messages(session_lineage_messages(runtime)?);
+        }
+        println!("{}", outcome.message);
+        return Ok(CommandAction::Continue);
+    }
+
+    if command_name == "/redo" {
+        if !command_args.is_empty() {
+            println!("usage: /redo");
+            return Ok(CommandAction::Continue);
+        }
+        let Some(runtime) = session_runtime.as_mut() else {
+            println!("session is disabled");
+            return Ok(CommandAction::Continue);
+        };
+
+        let outcome = execute_redo_command(command_args, runtime)?;
         if outcome.reload_active_head {
             agent.replace_messages(session_lineage_messages(runtime)?);
         }

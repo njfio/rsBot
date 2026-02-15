@@ -328,6 +328,22 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         example: "/branch 12",
     },
     CommandSpec {
+        name: "/undo",
+        usage: "/undo",
+        description: "Rewind active session head to previous navigation target",
+        details:
+            "Uses persisted navigation history and skips stale targets removed by repair/compact operations.",
+        example: "/undo",
+    },
+    CommandSpec {
+        name: "/redo",
+        usage: "/redo",
+        description: "Re-apply one previously undone session head navigation step",
+        details:
+            "Available after a successful undo. Uses persisted navigation history and reports empty-stack diagnostics when unavailable.",
+        example: "/redo",
+    },
+    CommandSpec {
         name: "/resume",
         usage: "/resume",
         description: "Jump back to the latest session head",
@@ -399,6 +415,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "/branch-alias",
     "/session-bookmark",
     "/branch",
+    "/undo",
+    "/redo",
     "/resume",
     "/session-repair",
     "/session-compact",
@@ -430,6 +448,8 @@ mod tests {
     fn unit_command_catalog_contains_expected_entries() {
         assert!(COMMAND_NAMES.contains(&"/help"));
         assert!(COMMAND_NAMES.contains(&"/canvas"));
+        assert!(COMMAND_NAMES.contains(&"/undo"));
+        assert!(COMMAND_NAMES.contains(&"/redo"));
         assert!(COMMAND_NAMES.contains(&"/exit"));
         assert_eq!(COMMAND_SPECS[0].name, "/help");
     }
@@ -439,6 +459,7 @@ mod tests {
         let rendered = render_help_overview();
         assert!(rendered.contains("/help"));
         assert!(rendered.contains("/session"));
+        assert!(rendered.contains("/undo"));
         assert!(rendered.contains("/qa-loop"));
     }
 

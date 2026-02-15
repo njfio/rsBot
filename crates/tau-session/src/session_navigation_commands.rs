@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tau_core::write_text_atomic;
 
-use crate::{session_lineage_messages, SessionRuntime};
+use crate::{session_lineage_messages, SessionRuntime, SessionStore};
 
 pub const BRANCH_ALIAS_SCHEMA_VERSION: u32 = 1;
 pub const BRANCH_ALIAS_USAGE: &str = "usage: /branch-alias <set|list|use> ...";
@@ -123,6 +123,253 @@ pub fn save_branch_aliases(path: &Path, aliases: &BTreeMap<String, u64>) -> Resu
         serde_json::to_string_pretty(&payload).context("failed to encode branch aliases")?;
     encoded.push('\n');
     write_text_atomic(path, &encoded)
+}
+
+pub const SESSION_NAVIGATION_SCHEMA_VERSION: u32 = 1;
+const SESSION_NAVIGATION_MAX_STACK_DEPTH: usize = 256;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `SessionNavigationState` used across Tau components.
+pub struct SessionNavigationState {
+    pub schema_version: u32,
+    pub current_head: Option<u64>,
+    pub undo_stack: Vec<Option<u64>>,
+    pub redo_stack: Vec<Option<u64>>,
+}
+
+impl Default for SessionNavigationState {
+    fn default() -> Self {
+        Self {
+            schema_version: SESSION_NAVIGATION_SCHEMA_VERSION,
+            current_head: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public struct `SessionNavigationTransition` used across Tau components.
+pub struct SessionNavigationTransition {
+    pub previous_head: Option<u64>,
+    pub active_head: Option<u64>,
+    pub undo_depth: usize,
+    pub redo_depth: usize,
+    pub skipped_invalid_targets: usize,
+    pub changed: bool,
+}
+
+pub fn session_navigation_path_for_session(session_path: &Path) -> PathBuf {
+    session_path.with_extension("navigation.json")
+}
+
+pub fn load_session_navigation_state(path: &Path) -> Result<SessionNavigationState> {
+    if !path.exists() {
+        return Ok(SessionNavigationState::default());
+    }
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read navigation file {}", path.display()))?;
+    let parsed = serde_json::from_str::<SessionNavigationState>(&raw)
+        .with_context(|| format!("failed to parse navigation file {}", path.display()))?;
+    if parsed.schema_version != SESSION_NAVIGATION_SCHEMA_VERSION {
+        bail!(
+            "unsupported navigation schema_version {} in {} (expected {})",
+            parsed.schema_version,
+            path.display(),
+            SESSION_NAVIGATION_SCHEMA_VERSION
+        );
+    }
+    Ok(parsed)
+}
+
+pub fn save_session_navigation_state(path: &Path, state: &SessionNavigationState) -> Result<()> {
+    let mut state_to_save = state.clone();
+    state_to_save.schema_version = SESSION_NAVIGATION_SCHEMA_VERSION;
+    let mut encoded = serde_json::to_string_pretty(&state_to_save)
+        .context("failed to encode session navigation state")?;
+    encoded.push('\n');
+    write_text_atomic(path, &encoded)
+}
+
+fn trim_navigation_stack(stack: &mut Vec<Option<u64>>) {
+    if stack.len() <= SESSION_NAVIGATION_MAX_STACK_DEPTH {
+        return;
+    }
+    let remove = stack.len() - SESSION_NAVIGATION_MAX_STACK_DEPTH;
+    stack.drain(0..remove);
+}
+
+fn prune_navigation_stack(store: &SessionStore, stack: &mut Vec<Option<u64>>) -> usize {
+    let initial = stack.len();
+    stack.retain(|candidate| match candidate {
+        Some(id) => store.contains(*id),
+        None => true,
+    });
+    initial.saturating_sub(stack.len())
+}
+
+fn normalize_runtime_head(store: &SessionStore, head: Option<u64>) -> Option<u64> {
+    match head {
+        Some(id) if store.contains(id) => Some(id),
+        Some(_) => None,
+        None => None,
+    }
+}
+
+fn prune_navigation_state(store: &SessionStore, state: &mut SessionNavigationState) -> usize {
+    let mut skipped = 0usize;
+    if let Some(id) = state.current_head {
+        if !store.contains(id) {
+            state.current_head = None;
+            skipped += 1;
+        }
+    }
+    skipped += prune_navigation_stack(store, &mut state.undo_stack);
+    skipped += prune_navigation_stack(store, &mut state.redo_stack);
+    skipped
+}
+
+pub fn resolve_session_navigation_head(store: &SessionStore) -> Result<Option<u64>> {
+    let state_path = session_navigation_path_for_session(store.path());
+    let mut state = load_session_navigation_state(&state_path)?;
+    let original_state = state.clone();
+    let skipped_invalid_targets = prune_navigation_state(store, &mut state);
+    if state.current_head.is_none() {
+        state.current_head = store.head_id();
+    }
+    if skipped_invalid_targets > 0 || state != original_state {
+        save_session_navigation_state(&state_path, &state)?;
+    }
+    Ok(state.current_head)
+}
+
+pub fn navigate_session_head(
+    runtime: &mut SessionRuntime,
+    target_head: Option<u64>,
+) -> Result<SessionNavigationTransition> {
+    if let Some(target) = target_head {
+        if !runtime.store.contains(target) {
+            bail!("unknown session id {}", target);
+        }
+    }
+
+    let state_path = session_navigation_path_for_session(runtime.store.path());
+    let mut state = load_session_navigation_state(&state_path)?;
+    let previous_head = normalize_runtime_head(&runtime.store, runtime.active_head);
+    let original_state = state.clone();
+    let skipped_invalid_targets = prune_navigation_state(&runtime.store, &mut state);
+    state.current_head = previous_head;
+
+    let changed = previous_head != target_head;
+    if changed {
+        state.undo_stack.push(previous_head);
+        trim_navigation_stack(&mut state.undo_stack);
+        state.redo_stack.clear();
+        state.current_head = target_head;
+    }
+
+    runtime.active_head = state.current_head;
+    if skipped_invalid_targets > 0 || state != original_state {
+        save_session_navigation_state(&state_path, &state)?;
+    }
+
+    Ok(SessionNavigationTransition {
+        previous_head,
+        active_head: runtime.active_head,
+        undo_depth: state.undo_stack.len(),
+        redo_depth: state.redo_stack.len(),
+        skipped_invalid_targets,
+        changed,
+    })
+}
+
+pub fn undo_session_head(runtime: &mut SessionRuntime) -> Result<SessionNavigationTransition> {
+    let state_path = session_navigation_path_for_session(runtime.store.path());
+    let mut state = load_session_navigation_state(&state_path)?;
+    let previous_head = normalize_runtime_head(&runtime.store, runtime.active_head);
+    let original_state = state.clone();
+    let mut skipped_invalid_targets = prune_navigation_state(&runtime.store, &mut state);
+    state.current_head = previous_head;
+
+    let mut target_head = None;
+    while let Some(candidate) = state.undo_stack.pop() {
+        if candidate
+            .map(|id| runtime.store.contains(id))
+            .unwrap_or(true)
+        {
+            target_head = Some(candidate);
+            break;
+        }
+        skipped_invalid_targets += 1;
+    }
+
+    let changed = if let Some(target_head) = target_head {
+        state.redo_stack.push(previous_head);
+        trim_navigation_stack(&mut state.redo_stack);
+        state.current_head = target_head;
+        true
+    } else {
+        false
+    };
+
+    runtime.active_head = state.current_head;
+    if skipped_invalid_targets > 0 || state != original_state {
+        save_session_navigation_state(&state_path, &state)?;
+    }
+
+    Ok(SessionNavigationTransition {
+        previous_head,
+        active_head: runtime.active_head,
+        undo_depth: state.undo_stack.len(),
+        redo_depth: state.redo_stack.len(),
+        skipped_invalid_targets,
+        changed,
+    })
+}
+
+pub fn redo_session_head(runtime: &mut SessionRuntime) -> Result<SessionNavigationTransition> {
+    let state_path = session_navigation_path_for_session(runtime.store.path());
+    let mut state = load_session_navigation_state(&state_path)?;
+    let previous_head = normalize_runtime_head(&runtime.store, runtime.active_head);
+    let original_state = state.clone();
+    let mut skipped_invalid_targets = prune_navigation_state(&runtime.store, &mut state);
+    state.current_head = previous_head;
+
+    let mut target_head = None;
+    while let Some(candidate) = state.redo_stack.pop() {
+        if candidate
+            .map(|id| runtime.store.contains(id))
+            .unwrap_or(true)
+        {
+            target_head = Some(candidate);
+            break;
+        }
+        skipped_invalid_targets += 1;
+    }
+
+    let changed = if let Some(target_head) = target_head {
+        state.undo_stack.push(previous_head);
+        trim_navigation_stack(&mut state.undo_stack);
+        state.current_head = target_head;
+        true
+    } else {
+        false
+    };
+
+    runtime.active_head = state.current_head;
+    if skipped_invalid_targets > 0 || state != original_state {
+        save_session_navigation_state(&state_path, &state)?;
+    }
+
+    Ok(SessionNavigationTransition {
+        previous_head,
+        active_head: runtime.active_head,
+        undo_depth: state.undo_stack.len(),
+        redo_depth: state.redo_stack.len(),
+        skipped_invalid_targets,
+        changed,
+    })
 }
 
 fn render_branch_alias_list(
@@ -258,7 +505,16 @@ pub fn execute_branch_alias_command(
                     false,
                 );
             }
-            runtime.active_head = Some(id);
+            if let Err(error) = navigate_session_head(runtime, Some(id)) {
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "branch alias error: path={} name={} error={error}",
+                        alias_path.display(),
+                        name
+                    ),
+                    false,
+                );
+            }
             match session_lineage_messages(runtime) {
                 Ok(_) => SessionNavigationOutcome::new(
                     format!(
@@ -512,7 +768,16 @@ pub fn execute_session_bookmark_command(
                     false,
                 );
             }
-            runtime.active_head = Some(id);
+            if let Err(error) = navigate_session_head(runtime, Some(id)) {
+                return SessionNavigationOutcome::new(
+                    format!(
+                        "session bookmark error: path={} name={} error={error}",
+                        bookmark_path.display(),
+                        name
+                    ),
+                    false,
+                );
+            }
             match session_lineage_messages(runtime) {
                 Ok(_) => SessionNavigationOutcome::new(
                     format!(

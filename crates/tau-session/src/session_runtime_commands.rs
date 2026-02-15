@@ -8,8 +8,8 @@ use tau_ai::Message;
 use crate::{
     execute_session_diff_command, execute_session_graph_export_command,
     execute_session_search_command, execute_session_stats_command, format_id_list,
-    format_remap_ids, parse_session_diff_args, parse_session_stats_args, SessionImportMode,
-    SessionMergeStrategy, SessionRuntime,
+    format_remap_ids, navigate_session_head, parse_session_diff_args, parse_session_stats_args,
+    redo_session_head, undo_session_head, SessionImportMode, SessionMergeStrategy, SessionRuntime,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,11 @@ impl SessionRuntimeCommandOutcome {
             reload_active_head,
         }
     }
+}
+
+fn format_head(head: Option<u64>) -> String {
+    head.map(|id| id.to_string())
+        .unwrap_or_else(|| "none".to_string())
 }
 
 pub fn session_import_mode_label(mode: SessionImportMode) -> &'static str {
@@ -119,17 +124,99 @@ pub fn execute_resume_command(
     if !command_args.is_empty() {
         return SessionRuntimeCommandOutcome::new("usage: /resume".to_string(), false);
     }
-    runtime.active_head = runtime.store.head_id();
-    SessionRuntimeCommandOutcome::new(
+    let target_head = runtime.store.head_id();
+    let message = match navigate_session_head(runtime, target_head) {
+        Ok(transition) => format!(
+            "resumed at head {} reason_code=session_resume undo_depth={} redo_depth={}",
+            format_head(transition.active_head),
+            transition.undo_depth,
+            transition.redo_depth
+        ),
+        Err(error) => {
+            runtime.active_head = target_head;
+            format!(
+                "resumed at head {} warning=failed_to_record_navigation error={error}",
+                format_head(runtime.active_head)
+            )
+        }
+    };
+    SessionRuntimeCommandOutcome::new(message, true)
+}
+
+pub fn execute_undo_command(
+    command_args: &str,
+    runtime: &mut SessionRuntime,
+) -> Result<SessionRuntimeCommandOutcome> {
+    if !command_args.is_empty() {
+        return Ok(SessionRuntimeCommandOutcome::new(
+            "usage: /undo".to_string(),
+            false,
+        ));
+    }
+
+    let transition = undo_session_head(runtime)?;
+    if !transition.changed {
+        return Ok(SessionRuntimeCommandOutcome::new(
+            format!(
+                "undo unavailable: active_head={} reason_code=session_undo_empty_stack undo_depth={} redo_depth={} skipped_invalid_targets={}",
+                format_head(transition.active_head),
+                transition.undo_depth,
+                transition.redo_depth,
+                transition.skipped_invalid_targets
+            ),
+            false,
+        ));
+    }
+
+    Ok(SessionRuntimeCommandOutcome::new(
         format!(
-            "resumed at head {}",
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
+            "undo complete: from={} to={} reason_code=session_undo_applied undo_depth={} redo_depth={} skipped_invalid_targets={}",
+            format_head(transition.previous_head),
+            format_head(transition.active_head),
+            transition.undo_depth,
+            transition.redo_depth,
+            transition.skipped_invalid_targets
         ),
         true,
-    )
+    ))
+}
+
+pub fn execute_redo_command(
+    command_args: &str,
+    runtime: &mut SessionRuntime,
+) -> Result<SessionRuntimeCommandOutcome> {
+    if !command_args.is_empty() {
+        return Ok(SessionRuntimeCommandOutcome::new(
+            "usage: /redo".to_string(),
+            false,
+        ));
+    }
+
+    let transition = redo_session_head(runtime)?;
+    if !transition.changed {
+        return Ok(SessionRuntimeCommandOutcome::new(
+            format!(
+                "redo unavailable: active_head={} reason_code=session_redo_empty_stack undo_depth={} redo_depth={} skipped_invalid_targets={}",
+                format_head(transition.active_head),
+                transition.undo_depth,
+                transition.redo_depth,
+                transition.skipped_invalid_targets
+            ),
+            false,
+        ));
+    }
+
+    Ok(SessionRuntimeCommandOutcome::new(
+        format!(
+            "redo complete: from={} to={} reason_code=session_redo_applied undo_depth={} redo_depth={} skipped_invalid_targets={}",
+            format_head(transition.previous_head),
+            format_head(transition.active_head),
+            transition.undo_depth,
+            transition.redo_depth,
+            transition.skipped_invalid_targets
+        ),
+        true,
+    ))
 }
 
 pub fn execute_session_repair_command(
@@ -144,10 +231,11 @@ pub fn execute_session_repair_command(
     }
 
     let report = runtime.store.repair()?;
-    runtime.active_head = runtime
+    let target_head = runtime
         .active_head
         .filter(|head| runtime.store.contains(*head))
         .or_else(|| runtime.store.head_id());
+    navigate_session_head(runtime, target_head)?;
 
     Ok(SessionRuntimeCommandOutcome::new(
         format!(
@@ -175,20 +263,18 @@ pub fn execute_session_compact_command(
     }
 
     let report = runtime.store.compact_to_lineage(runtime.active_head)?;
-    runtime.active_head = report
+    let target_head = report
         .head_id
         .filter(|head| runtime.store.contains(*head))
         .or_else(|| runtime.store.head_id());
+    navigate_session_head(runtime, target_head)?;
 
     Ok(SessionRuntimeCommandOutcome::new(
         format!(
             "compact complete: removed_entries={} retained_entries={} head={}",
             report.removed_entries,
             report.retained_entries,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
+            format_head(runtime.active_head)
         ),
         true,
     ))
@@ -213,7 +299,7 @@ pub fn execute_branch_switch_command(
         bail!("unknown session id {}", target);
     }
 
-    runtime.active_head = Some(target);
+    navigate_session_head(runtime, Some(target))?;
     Ok(SessionRuntimeCommandOutcome::new(
         format!("switched to branch id {target}"),
         true,
@@ -287,7 +373,7 @@ pub fn execute_session_import_command(
     let report = runtime
         .store
         .import_snapshot(&source, session_import_mode)?;
-    runtime.active_head = report.active_head;
+    navigate_session_head(runtime, report.active_head)?;
     Ok(SessionRuntimeCommandOutcome::new(
         format!(
             "session import complete: path={} mode={} imported_entries={} remapped_entries={} remapped_ids={} replaced_entries={} total_entries={} head={}",
@@ -298,10 +384,7 @@ pub fn execute_session_import_command(
             format_remap_ids(&report.remapped_ids),
             report.replaced_entries,
             report.resulting_entries,
-            runtime
-                .active_head
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
+            format_head(runtime.active_head)
         ),
         true,
     ))
@@ -328,7 +411,7 @@ pub fn execute_session_merge_command(
     let report = runtime
         .store
         .merge_branches(parsed.source_head, target_head, parsed.strategy)?;
-    runtime.active_head = Some(report.merged_head);
+    navigate_session_head(runtime, Some(report.merged_head))?;
 
     Ok(SessionRuntimeCommandOutcome::new(
         format!(
@@ -463,14 +546,14 @@ fn summarize_message(message: &Message) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        execute_branch_switch_command, execute_branches_command, execute_resume_command,
-        execute_session_compact_command, execute_session_diff_runtime_command,
-        execute_session_export_command, execute_session_graph_export_runtime_command,
-        execute_session_import_command, execute_session_merge_command,
-        execute_session_repair_command, execute_session_search_runtime_command,
-        execute_session_stats_runtime_command, execute_session_status_command,
-        parse_session_merge_command_args, session_import_mode_label, session_merge_strategy_label,
-        SessionMergeCommandArgs,
+        execute_branch_switch_command, execute_branches_command, execute_redo_command,
+        execute_resume_command, execute_session_compact_command,
+        execute_session_diff_runtime_command, execute_session_export_command,
+        execute_session_graph_export_runtime_command, execute_session_import_command,
+        execute_session_merge_command, execute_session_repair_command,
+        execute_session_search_runtime_command, execute_session_stats_runtime_command,
+        execute_session_status_command, execute_undo_command, parse_session_merge_command_args,
+        session_import_mode_label, session_merge_strategy_label, SessionMergeCommandArgs,
     };
     use crate::{SessionImportMode, SessionMergeStrategy, SessionRuntime, SessionStore};
     use std::{
@@ -625,6 +708,53 @@ mod tests {
         assert!(outcome.reload_active_head);
         assert_eq!(fixture.runtime.active_head, fixture.runtime.store.head_id());
         assert!(outcome.message.starts_with("resumed at head "));
+        assert!(outcome.message.contains("reason_code=session_resume"));
+    }
+
+    #[test]
+    fn functional_execute_undo_command_rewinds_previous_navigation_head() {
+        let mut fixture = SessionRuntimeFixture::seeded();
+        let latest_head = fixture
+            .runtime
+            .active_head
+            .expect("latest head should exist");
+        let branch_target = fixture
+            .runtime
+            .store
+            .entries()
+            .get(1)
+            .expect("second entry should exist")
+            .id;
+
+        execute_branch_switch_command(&branch_target.to_string(), &mut fixture.runtime)
+            .expect("branch switch should succeed");
+        assert_eq!(fixture.runtime.active_head, Some(branch_target));
+
+        let undo = execute_undo_command("", &mut fixture.runtime).expect("undo should succeed");
+        assert!(undo.reload_active_head);
+        assert_eq!(fixture.runtime.active_head, Some(latest_head));
+        assert!(undo.message.contains("reason_code=session_undo_applied"));
+    }
+
+    #[test]
+    fn integration_execute_redo_command_reapplies_undone_navigation_head() {
+        let mut fixture = SessionRuntimeFixture::seeded();
+        let branch_target = fixture
+            .runtime
+            .store
+            .entries()
+            .get(1)
+            .expect("second entry should exist")
+            .id;
+
+        execute_branch_switch_command(&branch_target.to_string(), &mut fixture.runtime)
+            .expect("branch switch should succeed");
+        execute_undo_command("", &mut fixture.runtime).expect("undo should succeed");
+
+        let redo = execute_redo_command("", &mut fixture.runtime).expect("redo should succeed");
+        assert!(redo.reload_active_head);
+        assert_eq!(fixture.runtime.active_head, Some(branch_target));
+        assert!(redo.message.contains("reason_code=session_redo_applied"));
     }
 
     #[test]
@@ -1025,5 +1155,54 @@ mod tests {
             success_outcome.message,
             format!("switched to branch id {target}")
         );
+    }
+
+    #[test]
+    fn regression_execute_undo_redo_commands_cover_usage_empty_and_stale_histories() {
+        let mut fixture = SessionRuntimeFixture::seeded();
+
+        let undo_usage = execute_undo_command("extra", &mut fixture.runtime)
+            .expect("usage path should return outcome");
+        assert_eq!(undo_usage.message, "usage: /undo");
+        assert!(!undo_usage.reload_active_head);
+
+        let redo_usage = execute_redo_command("extra", &mut fixture.runtime)
+            .expect("usage path should return outcome");
+        assert_eq!(redo_usage.message, "usage: /redo");
+        assert!(!redo_usage.reload_active_head);
+
+        let undo_empty =
+            execute_undo_command("", &mut fixture.runtime).expect("undo empty should succeed");
+        assert!(!undo_empty.reload_active_head);
+        assert!(undo_empty
+            .message
+            .contains("reason_code=session_undo_empty_stack"));
+
+        let branch_target = fixture
+            .runtime
+            .store
+            .entries()
+            .first()
+            .expect("root entry should exist")
+            .id;
+        execute_branch_switch_command(&branch_target.to_string(), &mut fixture.runtime)
+            .expect("branch switch should succeed");
+        execute_session_compact_command("", &mut fixture.runtime)
+            .expect("compact should remove stale branch heads");
+
+        let undo_stale =
+            execute_undo_command("", &mut fixture.runtime).expect("undo stale should succeed");
+        assert!(!undo_stale.reload_active_head);
+        assert!(undo_stale
+            .message
+            .contains("reason_code=session_undo_empty_stack"));
+        assert!(undo_stale.message.contains("skipped_invalid_targets="));
+
+        let redo_empty =
+            execute_redo_command("", &mut fixture.runtime).expect("redo empty should succeed");
+        assert!(!redo_empty.reload_active_head);
+        assert!(redo_empty
+            .message
+            .contains("reason_code=session_redo_empty_stack"));
     }
 }

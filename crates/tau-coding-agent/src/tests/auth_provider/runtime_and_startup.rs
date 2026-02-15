@@ -2138,7 +2138,7 @@ async fn integration_agent_write_policy_blocks_oversized_content() {
 }
 
 #[test]
-fn branch_and_resume_commands_reload_agent_messages() {
+fn branch_undo_redo_and_resume_commands_reload_agent_messages() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.jsonl");
 
@@ -2180,6 +2180,24 @@ fn branch_and_resume_commands_reload_agent_messages() {
         &tool_policy_json,
     )
     .expect("branch command should succeed");
+    assert_eq!(action, CommandAction::Continue);
+    assert_eq!(
+        runtime.as_ref().and_then(|runtime| runtime.active_head),
+        Some(branch_target)
+    );
+    assert_eq!(agent.messages().len(), 3);
+
+    let action = handle_command("/undo", &mut agent, &mut runtime, &tool_policy_json)
+        .expect("undo command should succeed");
+    assert_eq!(action, CommandAction::Continue);
+    assert_eq!(
+        runtime.as_ref().and_then(|runtime| runtime.active_head),
+        Some(head)
+    );
+    assert_eq!(agent.messages().len(), 5);
+
+    let action = handle_command("/redo", &mut agent, &mut runtime, &tool_policy_json)
+        .expect("redo command should succeed");
     assert_eq!(action, CommandAction::Continue);
     assert_eq!(
         runtime.as_ref().and_then(|runtime| runtime.active_head),
