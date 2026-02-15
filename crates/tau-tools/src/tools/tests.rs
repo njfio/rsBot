@@ -4,6 +4,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpListener,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -22,11 +23,12 @@ use super::{
     EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool,
     MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool, OsSandboxDockerNetwork,
     OsSandboxMode, OsSandboxPolicyMode, RedoTool, SessionsHistoryTool, SessionsListTool,
-    SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolExecutionResult, ToolPolicy,
-    ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool, WriteTool,
+    SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolBuilderTool, ToolExecutionResult,
+    ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool, WriteTool,
 };
 use tau_access::ApprovalAction;
 use tau_ai::Message;
+use tau_extensions::{discover_extension_runtime_registrations, execute_extension_registered_tool};
 use tau_session::{
     navigate_session_head, session_message_preview, session_message_role, SessionRuntime,
     SessionStore,
@@ -50,6 +52,15 @@ fn test_policy_with_jobs(path: &Path) -> Arc<ToolPolicy> {
     policy.jobs_default_session_path = Some(path.join(".tau/sessions/default.sqlite"));
     policy.jobs_default_timeout_ms = 5_000;
     policy.jobs_max_timeout_ms = 10_000;
+    Arc::new(policy)
+}
+
+fn test_policy_with_tool_builder(path: &Path) -> Arc<ToolPolicy> {
+    let mut policy = ToolPolicy::new(vec![path.to_path_buf()]);
+    policy.tool_builder_enabled = true;
+    policy.tool_builder_output_root = path.join(".tau/generated-tools");
+    policy.tool_builder_extension_root = path.join(".tau/extensions/generated");
+    policy.tool_builder_max_attempts = 3;
     Arc::new(policy)
 }
 
@@ -168,7 +179,6 @@ fn spawn_http_server_sequence(
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink as symlink_file;
-use std::path::Path;
 
 #[test]
 fn unit_tool_policy_hardened_preset_applies_expected_configuration() {
@@ -227,7 +237,133 @@ fn unit_builtin_agent_tool_name_registry_includes_session_tools() {
     assert!(names.contains(&"undo"));
     assert!(names.contains(&"redo"));
     assert!(names.contains(&"http"));
+    assert!(names.contains(&"tool_builder"));
     assert!(names.contains(&"bash"));
+}
+
+#[tokio::test]
+async fn unit_tool_builder_tool_rejects_when_disabled() {
+    let temp = tempdir().expect("tempdir");
+    let tool = ToolBuilderTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "name": "issue_triage",
+            "description": "Generate triage tool",
+            "spec": "Summarize issue urgency",
+        }))
+        .await;
+    assert!(result.is_error);
+    assert_eq!(result.content["reason_code"], "tool_builder_disabled");
+}
+
+#[tokio::test]
+async fn functional_tool_builder_tool_builds_wasm_artifacts() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_tool_builder(temp.path());
+    let tool = ToolBuilderTool::new(policy.clone());
+    let result = tool
+        .execute(serde_json::json!({
+            "name": "issue_triage",
+            "description": "Generate triage tool",
+            "spec": "Summarize issue urgency",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" }
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            }
+        }))
+        .await;
+
+    assert!(!result.is_error, "tool_builder error: {}", result.content);
+    assert_eq!(result.content["tool_name"], "issue_triage");
+    let module_path = PathBuf::from(
+        result.content["module_path"]
+            .as_str()
+            .expect("module_path should be a string"),
+    );
+    let manifest_path = PathBuf::from(
+        result.content["manifest_path"]
+            .as_str()
+            .expect("manifest_path should be a string"),
+    );
+    let metadata_path = PathBuf::from(
+        result.content["metadata_path"]
+            .as_str()
+            .expect("metadata_path should be a string"),
+    );
+    assert!(module_path.is_file());
+    assert!(manifest_path.is_file());
+    assert!(metadata_path.is_file());
+    let reason_codes = result.content["reason_codes"]
+        .as_array()
+        .expect("reason_codes should be an array");
+    assert!(reason_codes
+        .iter()
+        .any(|value| value == "generated_tool_sandbox_validation_succeeded"));
+}
+
+#[tokio::test]
+async fn integration_tool_builder_generated_tool_executes_through_extension_runtime() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_tool_builder(temp.path());
+    let tool = ToolBuilderTool::new(policy.clone());
+    let build_result = tool
+        .execute(serde_json::json!({
+            "name": "issue_triage",
+            "description": "Generate triage tool",
+            "spec": "Summarize issue urgency",
+        }))
+        .await;
+    assert!(
+        !build_result.is_error,
+        "tool_builder build failed: {}",
+        build_result.content
+    );
+
+    let registrations = discover_extension_runtime_registrations(
+        &policy.tool_builder_extension_root,
+        builtin_agent_tool_names(),
+        &[],
+    );
+    assert_eq!(registrations.registered_tools.len(), 1);
+    let registered = registrations
+        .registered_tools
+        .first()
+        .expect("generated extension tool should be registered");
+    assert_eq!(registered.runtime, "wasm");
+    let exec_result = execute_extension_registered_tool(registered, &serde_json::json!({}))
+        .expect("generated extension tool should execute");
+    assert!(!exec_result.is_error);
+    assert_eq!(exec_result.content["status"], "ok");
+}
+
+#[tokio::test]
+async fn regression_tool_builder_tool_retries_invalid_seed_wat() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_tool_builder(temp.path());
+    let tool = ToolBuilderTool::new(policy);
+    let result = tool
+        .execute(serde_json::json!({
+            "name": "issue_triage",
+            "description": "Generate triage tool",
+            "spec": "Summarize issue urgency",
+            "wat_source": "(module",
+            "max_attempts": 3,
+        }))
+        .await;
+    assert!(
+        !result.is_error,
+        "tool_builder retry failed: {}",
+        result.content
+    );
+    let attempts = result.content["attempts"]
+        .as_array()
+        .expect("attempts should be an array");
+    assert!(attempts.len() >= 2);
+    assert_eq!(attempts[0]["reason_code"], "generated_tool_compile_failed");
 }
 
 #[test]

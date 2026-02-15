@@ -11,7 +11,7 @@ use crate::tools::{
     OsSandboxPolicyMode, ToolPolicy,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 11;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 12;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 const MEMORY_EMBEDDING_PROVIDER_ENV: &str = "TAU_MEMORY_EMBEDDING_PROVIDER";
@@ -110,6 +110,20 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     if cli.extension_runtime_hooks {
         policy.extension_policy_override_root = Some(cli.extension_runtime_root.clone());
     }
+    if cli.tool_builder_enabled {
+        policy.tool_builder_enabled = true;
+    }
+    policy.tool_builder_output_root = if cli.tool_builder_output_root.is_absolute() {
+        cli.tool_builder_output_root.clone()
+    } else {
+        cwd.join(cli.tool_builder_output_root.as_path())
+    };
+    policy.tool_builder_extension_root = if cli.tool_builder_extension_root.is_absolute() {
+        cli.tool_builder_extension_root.clone()
+    } else {
+        cwd.join(cli.tool_builder_extension_root.as_path())
+    };
+    policy.tool_builder_max_attempts = cli.tool_builder_max_attempts.clamp(1, 8);
     if !cli.allow_command.is_empty() {
         for command in &cli.allow_command {
             let command = command.trim();
@@ -528,6 +542,22 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
             .map(|path| path.display().to_string())),
     );
     payload.insert(
+        "tool_builder_enabled".to_string(),
+        serde_json::json!(policy.tool_builder_enabled),
+    );
+    payload.insert(
+        "tool_builder_output_root".to_string(),
+        serde_json::json!(policy.tool_builder_output_root.display().to_string()),
+    );
+    payload.insert(
+        "tool_builder_extension_root".to_string(),
+        serde_json::json!(policy.tool_builder_extension_root.display().to_string()),
+    );
+    payload.insert(
+        "tool_builder_max_attempts".to_string(),
+        serde_json::json!(policy.tool_builder_max_attempts),
+    );
+    payload.insert(
         "rbac_principal".to_string(),
         serde_json::json!(policy.rbac_principal.clone()),
     );
@@ -763,7 +793,7 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 11);
+        assert_eq!(payload["schema_version"], 12);
         assert_eq!(payload["allow_protected_path_mutations"], true);
         assert_eq!(payload["memory_search_default_limit"], 5);
         assert_eq!(payload["memory_search_max_limit"], 50);
@@ -843,6 +873,16 @@ mod tests {
         assert_eq!(payload["http_max_redirects"], 5);
         assert_eq!(payload["http_allow_http"], false);
         assert_eq!(payload["http_allow_private_network"], false);
+        assert_eq!(payload["tool_builder_enabled"], false);
+        assert!(payload["tool_builder_output_root"]
+            .as_str()
+            .map(|value| value.ends_with(".tau/generated-tools"))
+            .unwrap_or(false));
+        assert!(payload["tool_builder_extension_root"]
+            .as_str()
+            .map(|value| value.ends_with(".tau/extensions/generated"))
+            .unwrap_or(false));
+        assert_eq!(payload["tool_builder_max_attempts"], 3);
         assert!(payload["protected_paths"]
             .as_array()
             .map(|paths| {
@@ -1010,6 +1050,29 @@ mod tests {
             payload["os_sandbox_docker_env_allowlist"],
             serde_json::json!(["OPENAI_API_KEY"])
         );
+    }
+
+    #[test]
+    fn functional_build_tool_policy_applies_tool_builder_settings() {
+        let cli = parse_cli_with_stack_args(vec![
+            "tau-rs",
+            "--tool-builder-enabled",
+            "--tool-builder-output-root",
+            ".tau/generated-artifacts",
+            "--tool-builder-extension-root",
+            ".tau/extensions/generated-runtime",
+            "--tool-builder-max-attempts",
+            "6",
+        ]);
+        let policy = build_tool_policy(&cli).expect("build tool policy");
+        assert!(policy.tool_builder_enabled);
+        assert!(policy
+            .tool_builder_output_root
+            .ends_with(".tau/generated-artifacts"));
+        assert!(policy
+            .tool_builder_extension_root
+            .ends_with(".tau/extensions/generated-runtime"));
+        assert_eq!(policy.tool_builder_max_attempts, 6);
     }
 
     #[test]

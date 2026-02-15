@@ -2138,6 +2138,26 @@ async fn integration_agent_write_policy_blocks_oversized_content() {
 }
 
 #[test]
+fn unit_register_builtin_tools_includes_tool_builder_when_enabled() {
+    let temp = tempdir().expect("tempdir");
+    let client = Arc::new(QueueClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+    });
+    let mut agent = Agent::new(client, AgentConfig::default());
+    let mut policy = crate::tools::ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.tool_builder_enabled = true;
+    policy.tool_builder_output_root = temp.path().join(".tau/generated-tools");
+    policy.tool_builder_extension_root = temp.path().join(".tau/extensions/generated");
+    policy.tool_builder_max_attempts = 3;
+    crate::tools::register_builtin_tools(&mut agent, policy);
+
+    assert!(agent
+        .registered_tool_names()
+        .iter()
+        .any(|name| name == "tool_builder"));
+}
+
+#[test]
 fn branch_undo_redo_and_resume_commands_reload_agent_messages() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.jsonl");

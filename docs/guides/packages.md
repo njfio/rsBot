@@ -68,6 +68,25 @@ Optional manifest-level WASM controls:
 }
 ```
 
+### Tool Builder (Generated WASM tools)
+
+Enable the built-in `tool_builder` workflow:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --tool-builder-enabled \
+  --tool-builder-output-root .tau/generated-tools \
+  --tool-builder-extension-root .tau/extensions/generated \
+  --tool-builder-max-attempts 3
+```
+
+When invoked, `tool_builder` runs:
+- spec -> WAT source synthesis
+- compile/retry loop with bounded attempts
+- persistence of `.wasm`, `.wat`, and `metadata.json`
+- extension registration under `--tool-builder-extension-root`
+- sandbox validation through wasm runtime controls
+
 ## Package lifecycle
 
 Validate package manifest:

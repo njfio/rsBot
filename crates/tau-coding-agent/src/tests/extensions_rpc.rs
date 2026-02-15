@@ -18,6 +18,16 @@ fn unit_cli_extension_validate_flag_defaults_to_none() {
     assert!(cli.extension_show.is_none());
     assert!(!cli.extension_runtime_hooks);
     assert_eq!(cli.extension_runtime_root, PathBuf::from(".tau/extensions"));
+    assert!(!cli.tool_builder_enabled);
+    assert_eq!(
+        cli.tool_builder_output_root,
+        PathBuf::from(".tau/generated-tools")
+    );
+    assert_eq!(
+        cli.tool_builder_extension_root,
+        PathBuf::from(".tau/extensions/generated")
+    );
+    assert_eq!(cli.tool_builder_max_attempts, 3);
 }
 
 #[test]
@@ -85,6 +95,30 @@ fn functional_cli_extension_runtime_hook_flags_accept_root_override() {
 }
 
 #[test]
+fn functional_cli_tool_builder_flags_accept_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--tool-builder-enabled",
+        "--tool-builder-output-root",
+        ".tau/generated-artifacts",
+        "--tool-builder-extension-root",
+        ".tau/extensions/generated-runtime",
+        "--tool-builder-max-attempts",
+        "6",
+    ]);
+    assert!(cli.tool_builder_enabled);
+    assert_eq!(
+        cli.tool_builder_output_root,
+        PathBuf::from(".tau/generated-artifacts")
+    );
+    assert_eq!(
+        cli.tool_builder_extension_root,
+        PathBuf::from(".tau/extensions/generated-runtime")
+    );
+    assert_eq!(cli.tool_builder_max_attempts, 6);
+}
+
+#[test]
 fn regression_cli_extension_show_and_validate_conflict() {
     let parse = try_parse_cli_with_stack([
         "tau-rs",
@@ -126,6 +160,15 @@ fn regression_cli_extension_exec_requires_hook_and_payload() {
 fn regression_cli_extension_runtime_root_requires_runtime_hooks_flag() {
     let parse = try_parse_cli_with_stack(["tau-rs", "--extension-runtime-root", "extensions"]);
     let error = parse.expect_err("runtime root should require runtime hooks flag");
+    assert!(error
+        .to_string()
+        .contains("required arguments were not provided"));
+}
+
+#[test]
+fn regression_cli_tool_builder_output_root_requires_enable_flag() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--tool-builder-output-root", "generated"]);
+    let error = parse.expect_err("tool builder output root should require enable flag");
     assert!(error
         .to_string()
         .contains("required arguments were not provided"));
