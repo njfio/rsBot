@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-02-15T17:30:49Z",
+  "scope": "M22 taxonomy rename pass for stale RL metadata outside future true-RL track",
+  "milestone_changes": [
+    {
+      "milestone_number": 6,
+      "before": {
+        "title": "Agent Lightning RL Port (Tau)",
+        "state": "open",
+        "description": "Port Agent Lightning reinforcement learning pipeline into Tau as native Rust crates across phased delivery (foundation, APO, production hardening)."
+      },
+      "after": {
+        "title": "Agent Lightning Prompt Optimization Port (Tau)",
+        "state": "closed",
+        "description": "Port Agent Lightning prompt optimization pipeline into Tau as native Rust crates across phased delivery (foundation, APO-style prompt optimization, production hardening). Future true reinforcement-learning work is tracked separately in Milestone #24."
+      },
+      "actions": [
+        "renamed",
+        "closed"
+      ],
+      "rationale": "Milestone #6 represents completed prompt-optimization delivery and should not be labeled as current RL; true RL remains tracked in Milestone #24."
+    }
+  ],
+  "summary": {
+    "stale_taxonomy_items_before": 1,
+    "resolved": 1,
+    "remaining": 0
+  }
+}
