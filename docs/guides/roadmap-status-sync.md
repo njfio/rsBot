@@ -17,6 +17,7 @@ Hierarchy drift/orphan detection rules are defined in:
 PR batch lane ownership boundaries are defined in:
 
 - `tasks/policies/pr-batch-lane-boundaries.json`
+- `tasks/policies/pr-batch-exceptions.json`
 - `docs/guides/pr-batch-lane-boundaries.md`
 
 To preview hierarchy drift findings locally before CI:

@@ -119,6 +119,51 @@
       ]
     }
   ],
+  "batch_size_review_sla_matrix": [
+    {
+      "lane": "structural",
+      "max_open_prs_per_batch": 2,
+      "max_hotspot_paths_per_pr": 1,
+      "target_first_review_hours": 24,
+      "target_merge_hours": 72,
+      "required_reviewers": 2
+    },
+    {
+      "lane": "docs",
+      "max_open_prs_per_batch": 4,
+      "max_hotspot_paths_per_pr": 2,
+      "target_first_review_hours": 12,
+      "target_merge_hours": 48,
+      "required_reviewers": 1
+    },
+    {
+      "lane": "rl",
+      "max_open_prs_per_batch": 2,
+      "max_hotspot_paths_per_pr": 1,
+      "target_first_review_hours": 24,
+      "target_merge_hours": 96,
+      "required_reviewers": 2
+    }
+  ],
+  "exception_workflow": {
+    "tracking_file": "tasks/policies/pr-batch-exceptions.json",
+    "required_fields": [
+      "exception_id",
+      "lane",
+      "issue_url",
+      "rationale",
+      "approved_by",
+      "approved_at",
+      "expires_on",
+      "mitigation"
+    ],
+    "escalation_path": [
+      "Open or reference the blocking issue that requires exceeding lane matrix limits.",
+      "Record the exception in the tracking file with rationale and mitigation.",
+      "Obtain approval from a runtime maintainer before merging.",
+      "Expire or remove the exception entry after merge completion."
+    ]
+  },
   "pr_reference_contract": {
     "template_path": ".github/pull_request_template.md",
     "boundary_map_reference": "tasks/policies/pr-batch-lane-boundaries.json",
@@ -126,7 +171,10 @@
       "Lane",
       "Boundary Map",
       "Boundary Paths",
-      "Hotspot Mitigation"
+      "Hotspot Mitigation",
+      "Batch Size",
+      "Review SLA",
+      "Exception Reference"
     ]
   }
 }

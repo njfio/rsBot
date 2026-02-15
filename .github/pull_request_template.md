@@ -9,6 +9,9 @@
 - Boundary Map (`tasks/policies/pr-batch-lane-boundaries.json`):
 - Boundary Paths (list concrete files/paths touched):
 - Hotspot Mitigation (`none` if no hotspot path touched):
+- Batch Size (`<open PR count in lane>` / `<lane max>`):
+- Review SLA (first review and merge target windows):
+- Exception Reference (`none` or `tasks/policies/pr-batch-exceptions.json#<exception_id>`):
 
 ## Validation Evidence
 
