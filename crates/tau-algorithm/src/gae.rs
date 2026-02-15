@@ -393,11 +393,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unit_gae_truncation_scenario_with_bootstrap_remains_finite() -> Result<()> {
+        let config = GaeConfig {
+            normalize_advantages: false,
+            normalize_returns: false,
+            ..GaeConfig::default()
+        };
+        let batch = compute_gae_batch_from_slices(
+            &config,
+            "batch-truncation",
+            "trajectory-truncation",
+            &[0.4, 0.0, 0.2, 0.1],
+            &[0.3, 0.2, 0.15, 0.05],
+            &[false, false, false, false],
+            0.7,
+        )?;
+
+        assert_all_finite_values(&batch.advantages);
+        assert_all_finite_values(&batch.returns);
+        assert_eq!(batch.advantages.len(), 4);
+        assert_eq!(batch.returns.len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn regression_gae_terminal_state_masks_bootstrap_value() -> Result<()> {
+        let config = GaeConfig {
+            normalize_advantages: false,
+            normalize_returns: false,
+            ..GaeConfig::default()
+        };
+        let batch = compute_gae_batch_from_slices(
+            &config,
+            "batch-terminal-mask",
+            "trajectory-terminal-mask",
+            &[0.0, 1.0],
+            &[0.5, 0.2],
+            &[false, true],
+            5.0,
+        )?;
+
+        // Terminal transition must ignore bootstrap and reduce to reward - value.
+        assert_close(batch.advantages[1], 0.8, 1e-12);
+        Ok(())
+    }
+
+    #[test]
+    fn unit_gae_sparse_reward_sequence_stays_finite() -> Result<()> {
+        let config = GaeConfig {
+            normalize_advantages: true,
+            normalize_returns: true,
+            clip_advantages: Some(1.0),
+            clip_returns: Some(1.5),
+            ..GaeConfig::default()
+        };
+        let batch = compute_gae_batch_from_slices(
+            &config,
+            "batch-sparse",
+            "trajectory-sparse",
+            &[0.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            &[0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+            &[false, false, false, false, false, true],
+            0.0,
+        )?;
+
+        assert_all_finite_values(&batch.advantages);
+        assert_all_finite_values(&batch.returns);
+        Ok(())
+    }
+
     fn assert_close(actual: f64, expected: f64, tolerance: f64) {
         let delta = (actual - expected).abs();
         assert!(
             delta <= tolerance,
             "delta {delta} exceeds tolerance {tolerance}; actual={actual}, expected={expected}"
+        );
+    }
+
+    fn assert_all_finite_values(values: &[f64]) {
+        assert!(
+            values.iter().all(|value| value.is_finite()),
+            "expected all values to be finite, found {values:?}"
         );
     }
 }
