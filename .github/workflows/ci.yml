@@ -196,6 +196,9 @@ jobs:
               - ".github/scripts/demo_smoke_runner.py"
               - ".github/scripts/test_demo_smoke_runner.py"
               - "scripts/demo-smoke.sh"
+              - "scripts/demo/index.sh"
+              - "scripts/demo/safety-smoke.sh"
+              - "scripts/demo/test-safety-smoke.sh"
               - ".github/workflows/ci.yml"
 
       - name: Determine rust scope
@@ -411,6 +414,10 @@ jobs:
           echo "demo_smoke_needed=${demo_smoke_needed}" >> "$GITHUB_OUTPUT"
           echo "### Codex Demo Smoke Scope" >> "$GITHUB_STEP_SUMMARY"
           echo "- Demo smoke needed: ${demo_smoke_needed}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate safety smoke demo scripts
+        if: steps.demo_smoke_scope.outputs.demo_smoke_needed == 'true'
+        run: ./scripts/demo/test-safety-smoke.sh
 
       - name: Determine quality mode
         id: quality_mode

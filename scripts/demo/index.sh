@@ -18,6 +18,7 @@ scenario_ids=(
   "gateway-auth"
   "gateway-remote-access"
   "multi-channel-live"
+  "safety-smoke"
   "deployment-wasm"
 )
 
@@ -94,6 +95,9 @@ scenario_wrapper() {
     multi-channel-live)
       echo "multi-channel.sh"
       ;;
+    safety-smoke)
+      echo "safety-smoke.sh"
+      ;;
     deployment-wasm)
       echo "deployment.sh"
       ;;
@@ -117,6 +121,9 @@ scenario_description() {
       ;;
     multi-channel-live)
       echo "Exercise Telegram/Discord/WhatsApp fixture ingest and multi-channel routing health."
+      ;;
+    safety-smoke)
+      echo "Run deterministic fail-closed safety checks with actionable reason-code markers."
       ;;
     deployment-wasm)
       echo "Package and inspect deployment WASM artifacts with deterministic status checks."
@@ -147,6 +154,10 @@ scenario_expected_markers() {
       echo "[demo:multi-channel] PASS multi-channel-live-ingest-discord"
       echo "[demo:multi-channel] PASS multi-channel-live-ingest-whatsapp"
       ;;
+    safety-smoke)
+      echo "[demo:safety-smoke] PASS safety-prompt-injection-block"
+      echo "[demo:safety-smoke] summary: total="
+      ;;
     deployment-wasm)
       echo "[demo:deployment] PASS deployment-wasm-package"
       echo "[demo:deployment] PASS channel-store-inspect-deployment-edge-wasm"
@@ -171,6 +182,9 @@ scenario_troubleshooting_hint() {
       ;;
     multi-channel-live)
       echo "Confirm Telegram/Discord/WhatsApp fixture files exist and rerun ./scripts/demo/multi-channel.sh --fail-fast."
+      ;;
+    safety-smoke)
+      echo "Re-run ./scripts/demo/safety-smoke.sh --fail-fast and verify safety reason codes remain present in stderr output."
       ;;
     deployment-wasm)
       echo "Confirm deployment fixture/module paths exist and rerun ./scripts/demo/deployment.sh --fail-fast."
@@ -198,6 +212,10 @@ normalize_scenario_name() {
       ;;
     multi-channel-live|multichannel-live|multi-channel|multi-channel-live.sh|multi-channel.sh)
       echo "multi-channel-live"
+      return 0
+      ;;
+    safety-smoke|safetysmoke|safety|safety-smoke.sh|safetysmoke.sh|safety.sh)
+      echo "safety-smoke"
       return 0
       ;;
     deployment-wasm|deploymentwasm|deployment|deployment-wasm.sh|deployment.sh)
@@ -350,6 +368,7 @@ Run the operator-focused demo index for fresh-clone validation:
 - gateway-auth
 - gateway-remote-access
 - multi-channel-live (Telegram/Discord/WhatsApp)
+- safety-smoke
 - deployment-wasm
 
 Options:
@@ -357,7 +376,7 @@ Options:
   --binary PATH      tau-coding-agent binary path (default: <repo-root>/target/debug/tau-coding-agent)
   --skip-build       Skip cargo build and require --binary to exist
   --list             Print selected scenarios and exit without execution
-  --only SCENARIOS   Comma-separated subset (names: onboarding,gateway-auth,gateway-remote-access,multi-channel-live,deployment-wasm)
+  --only SCENARIOS   Comma-separated subset (names: onboarding,gateway-auth,gateway-remote-access,multi-channel-live,safety-smoke,deployment-wasm)
   --json             Emit deterministic JSON output for list/summary modes
   --report-file      Write deterministic JSON report artifact to path
   --manifest-file    Write standardized proof-pack manifest artifact to path
