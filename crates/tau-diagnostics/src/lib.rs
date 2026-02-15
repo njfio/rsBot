@@ -24,6 +24,12 @@ use tau_release_channel::{
 pub const DOCTOR_USAGE: &str = "usage: /doctor [--json] [--online]";
 pub const POLICY_USAGE: &str = "usage: /policy";
 pub const AUDIT_SUMMARY_USAGE: &str = "usage: /audit-summary <path>";
+/// Stable prompt telemetry record type for schema version 1 diagnostics payloads.
+pub const PROMPT_TELEMETRY_RECORD_TYPE_V1: &str = "prompt_telemetry_v1";
+/// Legacy prompt telemetry record type accepted for backward compatibility.
+pub const PROMPT_TELEMETRY_RECORD_TYPE_LEGACY_V0: &str = "prompt_telemetry";
+/// Current prompt telemetry diagnostics schema version.
+pub const PROMPT_TELEMETRY_SCHEMA_VERSION: u32 = 1;
 pub const MULTI_CHANNEL_READINESS_TELEGRAM_TOKEN_ENV: &str = "TAU_TELEGRAM_BOT_TOKEN";
 pub const MULTI_CHANNEL_READINESS_DISCORD_TOKEN_ENV: &str = "TAU_DISCORD_BOT_TOKEN";
 pub const MULTI_CHANNEL_READINESS_WHATSAPP_ACCESS_TOKEN_ENV: &str = "TAU_WHATSAPP_ACCESS_TOKEN";
@@ -62,6 +68,30 @@ pub struct AuditSummary {
     pub prompt_record_count: u64,
     pub tools: BTreeMap<String, ToolAuditAggregate>,
     pub providers: BTreeMap<String, ProviderAuditAggregate>,
+}
+
+fn prompt_telemetry_schema_version(value: &Value) -> Option<u32> {
+    value
+        .get("schema_version")
+        .and_then(Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+}
+
+fn is_compatible_prompt_telemetry_record(value: &Value) -> bool {
+    let Some(record_type) = value.get("record_type").and_then(Value::as_str) else {
+        return false;
+    };
+    let schema_version = prompt_telemetry_schema_version(value);
+
+    match record_type {
+        PROMPT_TELEMETRY_RECORD_TYPE_V1 => schema_version
+            .map(|version| version == PROMPT_TELEMETRY_SCHEMA_VERSION)
+            .unwrap_or(true),
+        PROMPT_TELEMETRY_RECORD_TYPE_LEGACY_V0 => {
+            schema_version.map(|version| version == 0).unwrap_or(true)
+        }
+        _ => false,
+    }
 }
 
 pub fn summarize_audit_file(path: &Path) -> Result<AuditSummary> {
@@ -115,7 +145,7 @@ pub fn summarize_audit_file(path: &Path) -> Result<AuditSummary> {
             continue;
         }
 
-        if value.get("record_type").and_then(Value::as_str) == Some("prompt_telemetry_v1") {
+        if is_compatible_prompt_telemetry_record(&value) {
             summary.prompt_record_count = summary.prompt_record_count.saturating_add(1);
             let provider = value
                 .get("provider")
@@ -1747,4 +1777,114 @@ pub fn execute_policy_command(
         bail!("{POLICY_USAGE}");
     }
     Ok(tool_policy_json.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        summarize_audit_file, PROMPT_TELEMETRY_RECORD_TYPE_LEGACY_V0,
+        PROMPT_TELEMETRY_RECORD_TYPE_V1, PROMPT_TELEMETRY_SCHEMA_VERSION,
+    };
+    use serde_json::Value;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    fn write_audit_fixture(lines: &[Value]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("audit.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .expect("open audit fixture file");
+        for line in lines {
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(line).expect("serialize fixture line")
+            )
+            .expect("write fixture line");
+        }
+        file.flush().expect("flush fixture file");
+        (temp, path)
+    }
+
+    #[test]
+    fn unit_summarize_audit_file_accepts_prompt_telemetry_v1_schema() {
+        let (_temp, path) = write_audit_fixture(&[serde_json::json!({
+            "record_type": PROMPT_TELEMETRY_RECORD_TYPE_V1,
+            "schema_version": PROMPT_TELEMETRY_SCHEMA_VERSION,
+            "provider": "openai",
+            "status": "completed",
+            "success": true,
+            "duration_ms": 12,
+            "token_usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15
+            }
+        })]);
+        let summary = summarize_audit_file(&path).expect("summarize");
+        assert_eq!(summary.record_count, 1);
+        assert_eq!(summary.prompt_record_count, 1);
+        let provider = summary.providers.get("openai").expect("provider aggregate");
+        assert_eq!(provider.count, 1);
+        assert_eq!(provider.error_count, 0);
+        assert_eq!(provider.input_tokens, 10);
+        assert_eq!(provider.output_tokens, 5);
+        assert_eq!(provider.total_tokens, 15);
+    }
+
+    #[test]
+    fn functional_summarize_audit_file_accepts_legacy_prompt_telemetry_fixture() {
+        let (_temp, path) = write_audit_fixture(&[serde_json::json!({
+            "record_type": PROMPT_TELEMETRY_RECORD_TYPE_LEGACY_V0,
+            "provider": "anthropic",
+            "status": "completed",
+            "duration_ms": 8,
+            "token_usage": {
+                "input_tokens": 4,
+                "output_tokens": 6,
+                "total_tokens": 10
+            }
+        })]);
+        let summary = summarize_audit_file(&path).expect("summarize");
+        assert_eq!(summary.record_count, 1);
+        assert_eq!(summary.prompt_record_count, 1);
+        let provider = summary
+            .providers
+            .get("anthropic")
+            .expect("provider aggregate");
+        assert_eq!(provider.count, 1);
+        assert_eq!(provider.total_tokens, 10);
+    }
+
+    #[test]
+    fn regression_summarize_audit_file_ignores_future_prompt_telemetry_schema_versions() {
+        let (_temp, path) = write_audit_fixture(&[
+            serde_json::json!({
+                "record_type": PROMPT_TELEMETRY_RECORD_TYPE_V1,
+                "schema_version": PROMPT_TELEMETRY_SCHEMA_VERSION + 1,
+                "provider": "openai",
+                "status": "completed",
+                "token_usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2
+                }
+            }),
+            serde_json::json!({
+                "event": "tool_execution_end",
+                "tool_name": "bash",
+                "is_error": false,
+                "duration_ms": 3
+            }),
+        ]);
+        let summary = summarize_audit_file(&path).expect("summarize");
+        assert_eq!(summary.record_count, 2);
+        assert_eq!(summary.prompt_record_count, 0);
+        assert_eq!(summary.tool_event_count, 1);
+        assert!(summary.providers.is_empty());
+    }
 }

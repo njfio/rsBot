@@ -73,6 +73,21 @@ When `--operator-control-summary-compare` is used:
 - `changed_components[]`: per-component drift rows (`severity`, before/after state, queue/failure counters)
 - `unchanged_component_count`: stable component count
 
+## Safety Diagnostics Schema Contract
+
+Prompt telemetry records written by runtime observability use:
+- `record_type=prompt_telemetry_v1`
+- `schema_version=1`
+
+Compatibility behavior for diagnostics consumers:
+- Legacy records with `record_type=prompt_telemetry` and missing (or `0`) `schema_version` remain accepted.
+- Unknown future prompt telemetry schema versions are ignored by summary aggregation until explicit support is added.
+
+Migration guidance:
+1. Producers should emit only `prompt_telemetry_v1` with `schema_version=1`.
+2. Consumers should keep compatibility acceptance for legacy v0 records during rollout windows.
+3. When introducing v2+, ship consumer support before enabling producers to emit the new schema.
+
 ## Troubleshooting map
 
 Common hold reason codes and actions:

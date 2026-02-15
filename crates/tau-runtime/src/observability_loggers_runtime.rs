@@ -10,6 +10,11 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use tau_agent_core::AgentEvent;
 
+/// Stable record type for prompt telemetry diagnostics payloads.
+pub const PROMPT_TELEMETRY_RECORD_TYPE_V1: &str = "prompt_telemetry_v1";
+/// Current prompt telemetry diagnostics schema version emitted by runtime loggers.
+pub const PROMPT_TELEMETRY_SCHEMA_VERSION: u32 = 1;
+
 fn current_unix_timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -143,8 +148,8 @@ impl PromptTelemetryLogger {
         success: bool,
     ) -> Value {
         serde_json::json!({
-            "record_type": "prompt_telemetry_v1",
-            "schema_version": 1,
+            "record_type": PROMPT_TELEMETRY_RECORD_TYPE_V1,
+            "schema_version": PROMPT_TELEMETRY_SCHEMA_VERSION,
             "timestamp_unix_ms": current_unix_timestamp_ms(),
             "prompt_id": active.prompt_id,
             "provider": self.provider,
@@ -673,6 +678,33 @@ mod tests {
         assert_eq!(
             record["secret_leak"]["pattern_class_counts"]["github_token"],
             1
+        );
+    }
+
+    #[test]
+    fn regression_prompt_telemetry_logger_emits_versioned_schema_contract() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("prompt-telemetry-schema.jsonl");
+        let logger = PromptTelemetryLogger::open(log_path.clone(), "openai", "gpt-4o-mini")
+            .expect("logger open");
+
+        logger
+            .log_event(&AgentEvent::AgentStart)
+            .expect("start prompt");
+        logger
+            .log_event(&AgentEvent::AgentEnd { new_messages: 1 })
+            .expect("end prompt");
+
+        let raw = std::fs::read_to_string(log_path).expect("read telemetry log");
+        let line = raw.lines().next().expect("first record");
+        let record: serde_json::Value = serde_json::from_str(line).expect("record");
+        assert_eq!(
+            record["record_type"],
+            super::PROMPT_TELEMETRY_RECORD_TYPE_V1
+        );
+        assert_eq!(
+            record["schema_version"],
+            super::PROMPT_TELEMETRY_SCHEMA_VERSION
         );
     }
 }
