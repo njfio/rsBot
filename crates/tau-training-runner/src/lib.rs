@@ -3,13 +3,14 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tau_agent_core::Agent;
 use tau_ai::MessageRole;
 use tau_training_store::{DequeuedRollout, TrainingStore};
 use tau_training_tracer::TrainingTracer;
-use tau_training_types::{AttemptStatus, ResourcesUpdate, Reward, Rollout};
+use tau_training_types::{AttemptStatus, ResourcesUpdate, Reward, Rollout, TrainingSpan};
 use tokio::sync::watch;
 
 type AgentFactoryFn = dyn Fn(Option<&ResourcesUpdate>) -> Agent + Send + Sync;
@@ -62,6 +63,112 @@ impl Default for RunnerConfig {
             worker_timeout: Duration::from_secs(3),
         }
     }
+}
+
+/// Configures reward shaping from safety-policy events.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SafetyRewardPolicy {
+    /// Penalty applied when a safety event was explicitly blocked.
+    pub blocked_penalty: f64,
+    /// Penalty for reason codes that do not match a configured family/override.
+    pub default_reason_code_penalty: f64,
+    /// Penalty for `prompt_injection.*` reason codes.
+    pub prompt_injection_penalty: f64,
+    /// Penalty for `secret_leak.*` reason codes.
+    pub secret_leak_penalty: f64,
+    /// Per-reason-code penalty overrides.
+    pub reason_code_penalties: HashMap<String, f64>,
+    /// Exact reason codes that trigger hard gating.
+    pub hard_gate_reason_codes: HashSet<String>,
+    /// Prefixes that trigger hard gating.
+    pub hard_gate_reason_prefixes: Vec<String>,
+    /// Upper bound applied to positive rewards when hard gate triggers.
+    pub hard_gate_reward_ceiling: f64,
+    /// Additional penalty applied when hard gate triggers.
+    pub hard_gate_penalty: f64,
+    /// Treat blocked safety events as hard-gate signals.
+    pub blocked_event_triggers_hard_gate: bool,
+    /// Reject the rollout on hard-gate instead of only clamping rewards.
+    pub reject_rollout_on_hard_gate: bool,
+}
+
+impl Default for SafetyRewardPolicy {
+    fn default() -> Self {
+        Self {
+            blocked_penalty: 1.0,
+            default_reason_code_penalty: 0.25,
+            prompt_injection_penalty: 1.0,
+            secret_leak_penalty: 1.5,
+            reason_code_penalties: HashMap::new(),
+            hard_gate_reason_codes: HashSet::from([
+                "prompt_injection.system_prompt_exfiltration".to_string(),
+                "secret_leak.redaction_failed".to_string(),
+            ]),
+            hard_gate_reason_prefixes: vec!["secret_leak.".to_string()],
+            hard_gate_reward_ceiling: 0.0,
+            hard_gate_penalty: 1.0,
+            blocked_event_triggers_hard_gate: true,
+            reject_rollout_on_hard_gate: false,
+        }
+    }
+}
+
+impl SafetyRewardPolicy {
+    /// Validates policy numeric constraints and hard-gate config fields.
+    pub fn validate(&self) -> Result<()> {
+        ensure_non_negative_finite(self.blocked_penalty, "blocked_penalty")?;
+        ensure_non_negative_finite(
+            self.default_reason_code_penalty,
+            "default_reason_code_penalty",
+        )?;
+        ensure_non_negative_finite(self.prompt_injection_penalty, "prompt_injection_penalty")?;
+        ensure_non_negative_finite(self.secret_leak_penalty, "secret_leak_penalty")?;
+        ensure_non_negative_finite(self.hard_gate_penalty, "hard_gate_penalty")?;
+        if !self.hard_gate_reward_ceiling.is_finite() || self.hard_gate_reward_ceiling > 0.0 {
+            anyhow::bail!("hard_gate_reward_ceiling must be finite and <= 0");
+        }
+        for (reason_code, penalty) in &self.reason_code_penalties {
+            if !penalty.is_finite() || *penalty < 0.0 {
+                anyhow::bail!(
+                    "reason_code_penalties[{reason_code}] must be finite and non-negative"
+                );
+            }
+        }
+        for prefix in &self.hard_gate_reason_prefixes {
+            if prefix.trim().is_empty() {
+                anyhow::bail!("hard_gate_reason_prefixes cannot include empty values");
+            }
+        }
+        Ok(())
+    }
+
+    fn penalty_for_reason_code(&self, reason_code: &str) -> f64 {
+        if let Some(penalty) = self.reason_code_penalties.get(reason_code) {
+            return *penalty;
+        }
+        if reason_code.starts_with("prompt_injection.") {
+            return self.prompt_injection_penalty;
+        }
+        if reason_code.starts_with("secret_leak.") {
+            return self.secret_leak_penalty;
+        }
+        self.default_reason_code_penalty
+    }
+
+    fn is_hard_gate_reason_code(&self, reason_code: &str) -> bool {
+        self.hard_gate_reason_codes.contains(reason_code)
+            || self
+                .hard_gate_reason_prefixes
+                .iter()
+                .any(|prefix| reason_code.starts_with(prefix))
+    }
+}
+
+fn ensure_non_negative_finite(value: f64, field_name: &str) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        anyhow::bail!("{field_name} must be finite and non-negative");
+    }
+    Ok(())
 }
 
 /// Polling worker that executes queued rollouts.
@@ -261,6 +368,7 @@ impl TrainingRunner {
 pub struct TauAgentExecutor {
     agent_factory: Arc<AgentFactoryFn>,
     prompt_extractor: Arc<PromptExtractorFn>,
+    safety_reward_policy: SafetyRewardPolicy,
 }
 
 impl TauAgentExecutor {
@@ -272,6 +380,7 @@ impl TauAgentExecutor {
         Self {
             agent_factory: Arc::new(factory),
             prompt_extractor: Arc::new(default_prompt_extractor),
+            safety_reward_policy: SafetyRewardPolicy::default(),
         }
     }
 
@@ -282,6 +391,13 @@ impl TauAgentExecutor {
     {
         self.prompt_extractor = Arc::new(extractor);
         self
+    }
+
+    /// Overrides safety reward shaping and hard-gate behavior.
+    pub fn with_safety_reward_policy(mut self, policy: SafetyRewardPolicy) -> Result<Self> {
+        policy.validate()?;
+        self.safety_reward_policy = policy;
+        Ok(self)
     }
 }
 
@@ -318,10 +434,28 @@ impl RolloutExecutor for TauAgentExecutor {
             rewards.push(Reward::new("exact_match", score));
         }
 
+        let safety_spans = tracer.completed_spans();
+        let safety_decision =
+            apply_safety_reward_policy(&mut rewards, &safety_spans, &self.safety_reward_policy)?;
+        if safety_decision.hard_gate_triggered
+            && self.safety_reward_policy.reject_rollout_on_hard_gate
+        {
+            anyhow::bail!(
+                "safety hard gate triggered: reason_codes={:?}",
+                safety_decision.triggered_reason_codes
+            );
+        }
+
         Ok(RolloutExecutionOutcome {
             output: json!({
                 "assistant_text": assistant_text,
                 "message_count": messages.len(),
+                "safety": {
+                    "penalty_total": safety_decision.penalty_total,
+                    "hard_gate_triggered": safety_decision.hard_gate_triggered,
+                    "blocked_events": safety_decision.blocked_events,
+                    "reason_codes": safety_decision.triggered_reason_codes,
+                },
             }),
             rewards,
         })
@@ -340,6 +474,114 @@ fn default_prompt_extractor(input: &Value) -> Result<String> {
     anyhow::bail!("rollout input must be a string or object with a string 'prompt' field")
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SafetySignalSummary {
+    blocked_events: usize,
+    reason_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct SafetyRewardDecision {
+    penalty_total: f64,
+    hard_gate_triggered: bool,
+    blocked_events: usize,
+    triggered_reason_codes: Vec<String>,
+}
+
+fn apply_safety_reward_policy(
+    rewards: &mut Vec<Reward>,
+    spans: &[TrainingSpan],
+    policy: &SafetyRewardPolicy,
+) -> Result<SafetyRewardDecision> {
+    policy.validate()?;
+
+    let summary = summarize_safety_signals(spans);
+    if summary.blocked_events == 0 && summary.reason_codes.is_empty() {
+        return Ok(SafetyRewardDecision::default());
+    }
+
+    let penalty_total_from_reasons = summary
+        .reason_codes
+        .iter()
+        .map(|reason_code| policy.penalty_for_reason_code(reason_code))
+        .sum::<f64>();
+    let penalty_total =
+        penalty_total_from_reasons + (summary.blocked_events as f64 * policy.blocked_penalty);
+
+    if penalty_total > 0.0 {
+        rewards.push(Reward::new("safety.penalty_total", -penalty_total));
+    }
+
+    let hard_gate_triggered = (policy.blocked_event_triggers_hard_gate
+        && summary.blocked_events > 0)
+        || summary
+            .reason_codes
+            .iter()
+            .any(|reason_code| policy.is_hard_gate_reason_code(reason_code));
+
+    if hard_gate_triggered {
+        for reward in rewards.iter_mut() {
+            if reward.value > policy.hard_gate_reward_ceiling {
+                reward.value = policy.hard_gate_reward_ceiling;
+            }
+        }
+        if policy.hard_gate_penalty > 0.0 {
+            rewards.push(Reward::new(
+                "safety.hard_gate_penalty",
+                -policy.hard_gate_penalty,
+            ));
+        }
+        rewards.push(Reward::new("safety.hard_gate_triggered", 0.0));
+    }
+
+    Ok(SafetyRewardDecision {
+        penalty_total,
+        hard_gate_triggered,
+        blocked_events: summary.blocked_events,
+        triggered_reason_codes: summary.reason_codes,
+    })
+}
+
+fn summarize_safety_signals(spans: &[TrainingSpan]) -> SafetySignalSummary {
+    let mut blocked_events = 0usize;
+    let mut reason_codes = BTreeSet::new();
+
+    for span in spans
+        .iter()
+        .filter(|span| span.name == "agent.safety_policy_applied")
+    {
+        if span
+            .attributes
+            .get("blocked")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            blocked_events += 1;
+        }
+        for reason_code in parse_reason_codes(span.attributes.get("reason_codes")) {
+            reason_codes.insert(reason_code);
+        }
+    }
+
+    SafetySignalSummary {
+        blocked_events,
+        reason_codes: reason_codes.into_iter().collect(),
+    }
+}
+
+fn parse_reason_codes(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -350,7 +592,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use tau_agent_core::{Agent, AgentConfig};
+    use tau_agent_core::{Agent, AgentConfig, AgentEvent, SafetyMode, SafetyStage};
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
     use tau_training_store::{InMemoryTrainingStore, RolloutQuery, TrainingStore};
     use tau_training_types::{AttemptStatus, Reward, Rollout, RolloutStatus};
@@ -676,6 +918,183 @@ mod tests {
         assert!(outcome.rewards.iter().any(
             |reward| reward.name == "exact_match" && (reward.value - 1.0).abs() < f64::EPSILON
         ));
+    }
+
+    #[tokio::test]
+    async fn regression_tau_agent_executor_penalizes_prompt_injection_reason_codes() {
+        let executor = TauAgentExecutor::new(|_resources| {
+            Agent::new(Arc::new(MockClient), AgentConfig::default())
+        });
+        let tracer = Arc::new(tau_training_tracer::TrainingTracer::new("r-penalty", "a-1"));
+        tracer.on_agent_event(&AgentEvent::SafetyPolicyApplied {
+            stage: SafetyStage::InboundMessage,
+            mode: SafetyMode::Warn,
+            blocked: false,
+            matched_rules: vec!["literal.ignore_previous_instructions".to_string()],
+            reason_codes: vec!["prompt_injection.ignore_instructions".to_string()],
+        });
+
+        let outcome = executor
+            .execute(
+                &Rollout::new(
+                    "r-penalty",
+                    json!({ "prompt": "Say expected", "expected": "expected-output" }),
+                    Some(tau_training_types::RolloutMode::Train),
+                ),
+                None,
+                tracer,
+            )
+            .await
+            .expect("execute");
+
+        let total_reward = outcome
+            .rewards
+            .iter()
+            .map(|reward| reward.value)
+            .sum::<f64>();
+        assert!(
+            total_reward <= 0.0,
+            "unsafe prompt-injection trajectory should not retain positive reward: {:?}",
+            outcome.rewards
+        );
+        assert!(
+            outcome
+                .rewards
+                .iter()
+                .any(|reward| reward.name == "safety.penalty_total"),
+            "safety penalty reward missing: {:?}",
+            outcome.rewards
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_tau_agent_executor_hard_gate_clamps_reward_improvement() {
+        let executor = TauAgentExecutor::new(|_resources| {
+            Agent::new(Arc::new(MockClient), AgentConfig::default())
+        });
+        let tracer = Arc::new(tau_training_tracer::TrainingTracer::new(
+            "r-hard-gate",
+            "a-1",
+        ));
+        tracer.on_agent_event(&AgentEvent::SafetyPolicyApplied {
+            stage: SafetyStage::InboundMessage,
+            mode: SafetyMode::Block,
+            blocked: true,
+            matched_rules: vec!["literal.reveal_system_prompt".to_string()],
+            reason_codes: vec!["prompt_injection.system_prompt_exfiltration".to_string()],
+        });
+
+        let outcome = executor
+            .execute(
+                &Rollout::new(
+                    "r-hard-gate",
+                    json!({ "prompt": "Say expected", "expected": "expected-output" }),
+                    Some(tau_training_types::RolloutMode::Train),
+                ),
+                None,
+                tracer,
+            )
+            .await
+            .expect("execute");
+
+        let exact_match = outcome
+            .rewards
+            .iter()
+            .find(|reward| reward.name == "exact_match")
+            .expect("exact_match reward");
+        assert!(
+            exact_match.value <= 0.0,
+            "hard-gated trajectory must clamp positive reward improvement: {:?}",
+            outcome.rewards
+        );
+        assert!(
+            outcome
+                .rewards
+                .iter()
+                .any(|reward| reward.name == "safety.hard_gate_penalty"),
+            "hard-gate penalty reward missing: {:?}",
+            outcome.rewards
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_tau_agent_executor_penalizes_secret_leak_reason_codes() {
+        let executor = TauAgentExecutor::new(|_resources| {
+            Agent::new(Arc::new(MockClient), AgentConfig::default())
+        });
+        let tracer = Arc::new(tau_training_tracer::TrainingTracer::new("r-secret", "a-1"));
+        tracer.on_agent_event(&AgentEvent::SafetyPolicyApplied {
+            stage: SafetyStage::InboundMessage,
+            mode: SafetyMode::Warn,
+            blocked: false,
+            matched_rules: vec!["regex.openai_api_key".to_string()],
+            reason_codes: vec!["secret_leak.openai_api_key".to_string()],
+        });
+
+        let outcome = executor
+            .execute(
+                &Rollout::new(
+                    "r-secret",
+                    json!({ "prompt": "Say expected", "expected": "expected-output" }),
+                    Some(tau_training_types::RolloutMode::Train),
+                ),
+                None,
+                tracer,
+            )
+            .await
+            .expect("execute");
+
+        let total_reward = outcome
+            .rewards
+            .iter()
+            .map(|reward| reward.value)
+            .sum::<f64>();
+        assert!(
+            total_reward <= 0.0,
+            "secret-leak trajectory should not retain positive reward: {:?}",
+            outcome.rewards
+        );
+        assert!(
+            outcome
+                .rewards
+                .iter()
+                .any(|reward| reward.name == "safety.hard_gate_penalty"),
+            "secret-leak trajectory should trigger hard gate penalty: {:?}",
+            outcome.rewards
+        );
+    }
+
+    #[tokio::test]
+    async fn functional_tau_agent_executor_rejects_rollout_on_hard_gate_when_configured() {
+        let mut policy = super::SafetyRewardPolicy::default();
+        policy.reject_rollout_on_hard_gate = true;
+        let executor = TauAgentExecutor::new(|_resources| {
+            Agent::new(Arc::new(MockClient), AgentConfig::default())
+        })
+        .with_safety_reward_policy(policy)
+        .expect("policy");
+        let tracer = Arc::new(tau_training_tracer::TrainingTracer::new("r-reject", "a-1"));
+        tracer.on_agent_event(&AgentEvent::SafetyPolicyApplied {
+            stage: SafetyStage::InboundMessage,
+            mode: SafetyMode::Block,
+            blocked: true,
+            matched_rules: vec!["literal.reveal_system_prompt".to_string()],
+            reason_codes: vec!["prompt_injection.system_prompt_exfiltration".to_string()],
+        });
+
+        let error = executor
+            .execute(
+                &Rollout::new(
+                    "r-reject",
+                    json!({ "prompt": "Say expected", "expected": "expected-output" }),
+                    Some(tau_training_types::RolloutMode::Train),
+                ),
+                None,
+                tracer,
+            )
+            .await
+            .expect_err("hard gate should reject rollout");
+        assert!(error.to_string().contains("safety hard gate triggered"));
     }
 
     async fn wait_for_rollout_status(

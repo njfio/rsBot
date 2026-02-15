@@ -20,7 +20,7 @@ use tau_trainer::checkpoint_store::{
     load_policy_checkpoint, load_policy_checkpoint_with_rollback, CheckpointSource,
 };
 use tau_trainer::{Trainer, TrainerConfig};
-use tau_training_runner::TauAgentExecutor;
+use tau_training_runner::{SafetyRewardPolicy, TauAgentExecutor};
 use tau_training_store::{SqliteTrainingStore, TrainingStore};
 
 use crate::model_catalog::ModelCatalog;
@@ -95,6 +95,34 @@ struct TrainingConfigFile {
     completion_poll_interval_ms: Option<u64>,
     #[serde(default)]
     completion_timeout_secs: Option<u64>,
+    #[serde(default)]
+    safety_reward: Option<SafetyRewardConfigFile>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct SafetyRewardConfigFile {
+    #[serde(default)]
+    blocked_penalty: Option<f64>,
+    #[serde(default)]
+    default_reason_code_penalty: Option<f64>,
+    #[serde(default)]
+    prompt_injection_penalty: Option<f64>,
+    #[serde(default)]
+    secret_leak_penalty: Option<f64>,
+    #[serde(default)]
+    reason_code_penalties: Option<HashMap<String, f64>>,
+    #[serde(default)]
+    hard_gate_reason_codes: Option<Vec<String>>,
+    #[serde(default)]
+    hard_gate_reason_prefixes: Option<Vec<String>>,
+    #[serde(default)]
+    hard_gate_reward_ceiling: Option<f64>,
+    #[serde(default)]
+    hard_gate_penalty: Option<f64>,
+    #[serde(default)]
+    blocked_event_triggers_hard_gate: Option<bool>,
+    #[serde(default)]
+    reject_rollout_on_hard_gate: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -229,7 +257,8 @@ pub(crate) async fn run_prompt_optimization_mode_if_requested(
         model_catalog,
         system_prompt,
         tool_policy,
-    );
+        &config,
+    )?;
 
     let train_dataset = (!config.optimize.is_empty()).then_some(config.optimize);
     let val_dataset = (!config.validate.is_empty()).then_some(config.validate);
@@ -1006,7 +1035,86 @@ fn build_trainer_config(config: &TrainingConfigFile) -> Result<TrainerConfig> {
         trainer_config.completion_timeout = Duration::from_secs(completion_timeout_secs);
     }
 
+    // Fail closed on invalid safety reward policy values before runtime starts.
+    let _ = resolve_safety_reward_policy(config.safety_reward.as_ref())?;
+
     Ok(trainer_config)
+}
+
+fn resolve_safety_reward_policy(
+    config: Option<&SafetyRewardConfigFile>,
+) -> Result<SafetyRewardPolicy> {
+    let mut policy = SafetyRewardPolicy::default();
+    let Some(config) = config else {
+        policy
+            .validate()
+            .context("safety_reward policy validation failed")?;
+        return Ok(policy);
+    };
+
+    if let Some(value) = config.blocked_penalty {
+        validate_non_negative_finite_config(value, "safety_reward.blocked_penalty")?;
+        policy.blocked_penalty = value;
+    }
+    if let Some(value) = config.default_reason_code_penalty {
+        validate_non_negative_finite_config(value, "safety_reward.default_reason_code_penalty")?;
+        policy.default_reason_code_penalty = value;
+    }
+    if let Some(value) = config.prompt_injection_penalty {
+        validate_non_negative_finite_config(value, "safety_reward.prompt_injection_penalty")?;
+        policy.prompt_injection_penalty = value;
+    }
+    if let Some(value) = config.secret_leak_penalty {
+        validate_non_negative_finite_config(value, "safety_reward.secret_leak_penalty")?;
+        policy.secret_leak_penalty = value;
+    }
+    if let Some(map) = &config.reason_code_penalties {
+        for (reason_code, penalty) in map {
+            if !penalty.is_finite() || *penalty < 0.0 {
+                bail!(
+                    "safety_reward.reason_code_penalties.{reason_code} must be finite and non-negative"
+                );
+            }
+        }
+        policy.reason_code_penalties = map.clone();
+    }
+    if let Some(reason_codes) = &config.hard_gate_reason_codes {
+        policy.hard_gate_reason_codes = reason_codes.iter().cloned().collect();
+    }
+    if let Some(prefixes) = &config.hard_gate_reason_prefixes {
+        if prefixes.iter().any(|prefix| prefix.trim().is_empty()) {
+            bail!("safety_reward.hard_gate_reason_prefixes cannot include empty values");
+        }
+        policy.hard_gate_reason_prefixes = prefixes.clone();
+    }
+    if let Some(value) = config.hard_gate_reward_ceiling {
+        if !value.is_finite() || value > 0.0 {
+            bail!("safety_reward.hard_gate_reward_ceiling must be finite and <= 0");
+        }
+        policy.hard_gate_reward_ceiling = value;
+    }
+    if let Some(value) = config.hard_gate_penalty {
+        validate_non_negative_finite_config(value, "safety_reward.hard_gate_penalty")?;
+        policy.hard_gate_penalty = value;
+    }
+    if let Some(value) = config.blocked_event_triggers_hard_gate {
+        policy.blocked_event_triggers_hard_gate = value;
+    }
+    if let Some(value) = config.reject_rollout_on_hard_gate {
+        policy.reject_rollout_on_hard_gate = value;
+    }
+
+    policy
+        .validate()
+        .context("safety_reward policy validation failed")?;
+    Ok(policy)
+}
+
+fn validate_non_negative_finite_config(value: f64, field_name: &str) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        bail!("{field_name} must be finite and non-negative");
+    }
+    Ok(())
 }
 
 fn build_executor(
@@ -1016,9 +1124,11 @@ fn build_executor(
     model_catalog: &ModelCatalog,
     system_prompt: &str,
     tool_policy: &ToolPolicy,
-) -> Arc<TauAgentExecutor> {
+    config: &TrainingConfigFile,
+) -> Result<Arc<TauAgentExecutor>> {
     let agent_defaults = AgentConfig::default();
     let model_catalog_entry = model_catalog.find_model_ref(model_ref);
+    let safety_reward_policy = resolve_safety_reward_policy(config.safety_reward.as_ref())?;
     let settings = LocalRuntimeAgentSettings {
         max_turns: cli.max_turns,
         max_parallel_tool_calls: cli.agent_max_parallel_tool_calls,
@@ -1046,7 +1156,7 @@ fn build_executor(
     let model_ref = model_ref.clone();
     let tool_policy = tool_policy.clone();
 
-    Arc::new(TauAgentExecutor::new(move |resources| {
+    let executor = TauAgentExecutor::new(move |resources| {
         let effective_system_prompt = resources
             .and_then(|snapshot| snapshot.resources.get("system_prompt"))
             .and_then(Value::as_str)
@@ -1059,7 +1169,11 @@ fn build_executor(
             settings.clone(),
             tool_policy.clone(),
         )
-    }))
+    })
+    .with_safety_reward_policy(safety_reward_policy)
+    .context("invalid safety reward policy configuration")?;
+
+    Ok(Arc::new(executor))
 }
 
 fn print_training_report(report: &TrainingRunReport, as_json: bool) -> Result<()> {
@@ -1087,8 +1201,9 @@ fn print_training_report(report: &TrainingRunReport, as_json: bool) -> Result<()
 mod tests {
     use super::{
         build_trainer_config, execute_prompt_optimization_control_command,
-        run_prompt_optimization_mode_if_requested, TrainingConfigFile, TRAINING_CONTROL_AUDIT_FILE,
-        TRAINING_CONTROL_STATE_FILE, TRAINING_RECOVERY_REPORT_FILE,
+        resolve_safety_reward_policy, run_prompt_optimization_mode_if_requested,
+        TrainingConfigFile, TRAINING_CONTROL_AUDIT_FILE, TRAINING_CONTROL_STATE_FILE,
+        TRAINING_RECOVERY_REPORT_FILE,
     };
     use crate::model_catalog::ModelCatalog;
     use crate::tools::ToolPolicy;
@@ -1170,6 +1285,7 @@ mod tests {
             heartbeat_interval_ms: Some(300),
             completion_poll_interval_ms: Some(45),
             completion_timeout_secs: Some(4),
+            safety_reward: None,
         };
 
         let trainer_config = build_trainer_config(&config).expect("build trainer config");
@@ -1178,6 +1294,71 @@ mod tests {
         assert_eq!(trainer_config.heartbeat_interval.as_millis(), 300);
         assert_eq!(trainer_config.completion_poll_interval.as_millis(), 45);
         assert_eq!(trainer_config.completion_timeout.as_secs(), 4);
+    }
+
+    #[test]
+    fn unit_resolve_safety_reward_policy_applies_overrides() {
+        let config: TrainingConfigFile = serde_json::from_value(json!({
+            "optimize": [{ "prompt": "one" }],
+            "safety_reward": {
+                "blocked_penalty": 0.75,
+                "default_reason_code_penalty": 0.2,
+                "prompt_injection_penalty": 1.4,
+                "secret_leak_penalty": 2.2,
+                "reason_code_penalties": {
+                    "prompt_injection.ignore_instructions": 1.8
+                },
+                "hard_gate_reason_codes": [
+                    "prompt_injection.ignore_instructions"
+                ],
+                "hard_gate_reason_prefixes": [
+                    "secret_leak."
+                ],
+                "hard_gate_reward_ceiling": 0.0,
+                "hard_gate_penalty": 1.1,
+                "blocked_event_triggers_hard_gate": false,
+                "reject_rollout_on_hard_gate": true
+            }
+        }))
+        .expect("parse config");
+
+        let policy =
+            resolve_safety_reward_policy(config.safety_reward.as_ref()).expect("resolve policy");
+        assert!((policy.blocked_penalty - 0.75).abs() < f64::EPSILON);
+        assert!((policy.default_reason_code_penalty - 0.2).abs() < f64::EPSILON);
+        assert!((policy.prompt_injection_penalty - 1.4).abs() < f64::EPSILON);
+        assert!((policy.secret_leak_penalty - 2.2).abs() < f64::EPSILON);
+        assert_eq!(
+            policy
+                .reason_code_penalties
+                .get("prompt_injection.ignore_instructions"),
+            Some(&1.8)
+        );
+        assert!(policy
+            .hard_gate_reason_codes
+            .contains("prompt_injection.ignore_instructions"));
+        assert_eq!(
+            policy.hard_gate_reason_prefixes,
+            vec!["secret_leak.".to_string()]
+        );
+        assert!((policy.hard_gate_penalty - 1.1).abs() < f64::EPSILON);
+        assert!(!policy.blocked_event_triggers_hard_gate);
+        assert!(policy.reject_rollout_on_hard_gate);
+    }
+
+    #[test]
+    fn regression_build_trainer_config_rejects_negative_safety_reward_penalty() {
+        let config: TrainingConfigFile = serde_json::from_value(json!({
+            "optimize": [{ "prompt": "one" }],
+            "safety_reward": {
+                "blocked_penalty": -0.25
+            }
+        }))
+        .expect("parse training config");
+
+        let error = build_trainer_config(&config)
+            .expect_err("negative safety reward penalties must fail closed");
+        assert!(error.to_string().contains("safety_reward.blocked_penalty"));
     }
 
     #[tokio::test]
