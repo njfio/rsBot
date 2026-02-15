@@ -1,3 +1,9 @@
+//! Gateway contract runtime execution and telemetry persistence.
+//!
+//! The runtime orchestrates fixture execution loops, timeout handling, and
+//! summary emission for operator workflows. It preserves deterministic state and
+//! reasoned failure reporting for contract validation runs.
+
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};

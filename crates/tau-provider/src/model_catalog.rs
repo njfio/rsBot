@@ -1,3 +1,9 @@
+//! Provider model-catalog loading, caching, and refresh logic.
+//!
+//! Catalog snapshots are resolved from local/remote sources with schema-aware
+//! parsing and staleness checks. Callers use these helpers to make deterministic
+//! model selection decisions with clear fallback diagnostics.
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

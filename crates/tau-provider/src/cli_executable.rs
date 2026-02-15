@@ -1,3 +1,9 @@
+//! CLI executable discovery/validation helpers for provider adapters.
+//!
+//! Provider CLI clients use these checks to ensure configured binaries exist and
+//! are executable before spawning subprocesses, preventing ambiguous runtime
+//! failures from missing or non-executable command paths.
+
 use std::path::Path;
 
 #[cfg(unix)]

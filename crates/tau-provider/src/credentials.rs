@@ -1,3 +1,9 @@
+//! Provider credential resolution from CLI flags, env, and credential store.
+//!
+//! Resolution order and expiration checks are centralized here so startup/client
+//! code consumes deterministic auth material. Missing or expired credentials are
+//! surfaced with provider-specific messages and fail-closed semantics.
+
 use anyhow::{anyhow, Context, Result};
 use tau_ai::Provider;
 use tau_cli::Cli;

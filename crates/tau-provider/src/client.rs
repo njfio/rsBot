@@ -1,3 +1,9 @@
+//! Provider client factory and runtime selection helpers.
+//!
+//! This module builds concrete `LlmClient` instances from resolved provider/auth
+//! configuration and model refs. It enforces unsupported/missing-auth failure
+//! checks before returning a runnable client stack.
+
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};

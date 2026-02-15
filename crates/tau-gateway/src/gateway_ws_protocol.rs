@@ -1,3 +1,9 @@
+//! WebSocket protocol schema types and validation for gateway transport.
+//!
+//! Request/response envelopes, version constants, and parse/render helpers live
+//! here. The module enforces protocol invariants so malformed messages surface
+//! explicit validation errors rather than undefined runtime behavior.
+
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};

@@ -1,3 +1,9 @@
+//! Runtime wrappers for provider auth command execution.
+//!
+//! These helpers run external auth commands with timeout enforcement and parse
+//! output into structured records. Command failures and malformed output are
+//! surfaced as typed errors for login/status/logout flows.
+
 use std::process::Command;
 use std::time::Duration;
 

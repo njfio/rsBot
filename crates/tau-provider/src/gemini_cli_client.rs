@@ -1,3 +1,9 @@
+//! Gemini CLI-backed `LlmClient` implementation.
+//!
+//! This adapter runs Gemini CLI commands, converts outputs to Tau chat
+//! responses, and emits structured failures for timeout/parse/subprocess errors.
+//! It provides auth-mode parity with other provider CLI adapters.
+
 use std::process::Stdio;
 use std::time::Duration;
 

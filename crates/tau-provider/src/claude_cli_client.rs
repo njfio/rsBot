@@ -1,3 +1,9 @@
+//! Claude CLI-backed `LlmClient` implementation.
+//!
+//! Requests are translated into Claude CLI subprocess invocations with timeout
+//! and output parsing guards. Errors preserve subprocess/parse context so auth or
+//! executable failures can be diagnosed separately from model-response failures.
+
 use std::process::Stdio;
 use std::time::Duration;
 

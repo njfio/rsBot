@@ -1,3 +1,9 @@
+//! Integration auth command workflows and credential-store mutations.
+//!
+//! This module executes provider integration login/logout/status flows and
+//! writes normalized credential records. It defines fail-closed behavior for
+//! malformed auth responses and missing required integration fields.
+
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, bail, Context, Result};

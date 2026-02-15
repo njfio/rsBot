@@ -1,3 +1,9 @@
+//! Shared provider configuration and auth type definitions.
+//!
+//! These enums/structs form the serialization contract between CLI, startup, and
+//! provider runtime layers, including credential-store encryption and auth mode
+//! selections.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tau_cli::CliProviderAuthMode;

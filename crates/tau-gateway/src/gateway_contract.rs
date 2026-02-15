@@ -1,3 +1,9 @@
+//! Gateway contract schema and fixture validation helpers.
+//!
+//! This module defines request-case fixtures and schema/version guards for
+//! gateway contract runs. Runtime entrypoints depend on these parsers so invalid
+//! fixtures fail closed before websocket or OpenResponses execution starts.
+
 use std::collections::BTreeSet;
 use std::path::Path;
 

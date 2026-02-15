@@ -1,3 +1,9 @@
+//! Credential store schema, encryption, and persistence helpers.
+//!
+//! This module defines the on-disk credential contract and keyed/plaintext
+//! storage behavior. It validates schema/integrity and reports explicit errors
+//! for decryption, checksum, and format failures.
+
 use std::{
     collections::BTreeMap,
     path::Path,

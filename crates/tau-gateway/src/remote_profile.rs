@@ -1,3 +1,9 @@
+//! Remote profile resolution for gateway OpenResponses deployments.
+//!
+//! This module captures remote-profile auth/mode selections and rendering logic
+//! used by gateway bootstrap flows. It keeps auth-mode decisions explicit for
+//! token and password-session paths.
+
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result};

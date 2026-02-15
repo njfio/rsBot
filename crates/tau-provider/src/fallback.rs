@@ -1,3 +1,9 @@
+//! Composite LLM client with ordered provider/model fallback behavior.
+//!
+//! This adapter attempts calls against a primary client then configured fallback
+//! clients, preserving error context and attempt ordering for diagnostics. It is
+//! used when startup/runtime enables provider fallback routing.
+
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};

@@ -1,3 +1,9 @@
+//! Codex CLI-backed `LlmClient` implementation and session plumbing.
+//!
+//! The adapter manages subprocess lifecycle, prompt/response framing, and usage
+//! extraction for Codex CLI calls. Failures propagate with explicit stage context
+//! (spawn, stream, parse) for operational debugging.
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};

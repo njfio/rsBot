@@ -1,3 +1,9 @@
+//! OpenResponses-compatible gateway server and request flow handlers.
+//!
+//! This module defines HTTP/WebSocket serving boundaries, auth handling, and
+//! response streaming behavior for gateway mode. Failure paths retain structured
+//! context to support operator diagnostics and incident replay.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::io::Write;

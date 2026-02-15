@@ -1,3 +1,9 @@
+//! Provider auth capability, mode selection, and validation helpers.
+//!
+//! This module resolves effective auth methods per provider and surfaces
+//! capability/requirement checks used by client construction and CLI auth flows.
+//! Invalid or incomplete auth configuration fails with explicit guidance.
+
 use anyhow::{Context, Result};
 use tau_ai::Provider;
 use tau_cli::Cli;
