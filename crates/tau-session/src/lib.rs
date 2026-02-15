@@ -32,11 +32,34 @@ use session_integrity::{
     collect_lineage_ids, has_cycle, merge_entries_with_remap, validation_report_for_entries,
 };
 use session_locking::acquire_lock;
-use session_storage::{read_session_entries, write_session_entries_atomic};
+use session_storage::{
+    maybe_import_legacy_jsonl_into_sqlite, read_session_entries, resolve_session_backend,
+    write_session_entries_atomic,
+};
 
 const SESSION_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_LOCK_WAIT_MS: u64 = 5_000;
 const DEFAULT_LOCK_STALE_MS: u64 = 30_000;
+const SESSION_BACKEND_ENV: &str = "TAU_SESSION_BACKEND";
+const SESSION_POSTGRES_DSN_ENV: &str = "TAU_SESSION_POSTGRES_DSN";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates supported `SessionStorageBackend` values.
+pub enum SessionStorageBackend {
+    Jsonl,
+    Sqlite,
+    Postgres,
+}
+
+impl SessionStorageBackend {
+    pub fn label(self) -> &'static str {
+        match self {
+            SessionStorageBackend::Jsonl => "jsonl",
+            SessionStorageBackend::Sqlite => "sqlite",
+            SessionStorageBackend::Postgres => "postgres",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Public struct `SessionEntry` used across Tau components.
@@ -143,6 +166,8 @@ pub struct BranchMergeReport {
 /// Public struct `SessionStore` used across Tau components.
 pub struct SessionStore {
     path: PathBuf,
+    backend: SessionStorageBackend,
+    backend_reason_code: String,
     entries: Vec<SessionEntry>,
     next_id: u64,
     lock_wait_ms: u64,

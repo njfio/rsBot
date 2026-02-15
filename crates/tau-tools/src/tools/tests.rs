@@ -538,7 +538,7 @@ async fn regression_http_tool_enforces_response_byte_cap() {
 #[test]
 fn unit_is_session_candidate_path_matches_expected_shapes() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let issue_path = temp.path().join(".tau/github/repo/sessions/issue-42.jsonl");
     let event_log = temp.path().join(".tau/events/runner.jsonl");
     let non_jsonl = temp.path().join(".tau/sessions/default.txt");
@@ -552,7 +552,7 @@ fn unit_is_session_candidate_path_matches_expected_shapes() {
 #[tokio::test]
 async fn functional_sessions_list_tool_reports_session_inventory() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     store
         .append_messages(
@@ -586,7 +586,7 @@ async fn functional_sessions_list_tool_reports_session_inventory() {
         .get("path")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
-        .ends_with(".tau/sessions/default.jsonl"));
+        .ends_with(".tau/sessions/default.sqlite"));
     assert_eq!(
         sessions[0]
             .get("newest_role")
@@ -598,7 +598,7 @@ async fn functional_sessions_list_tool_reports_session_inventory() {
 #[tokio::test]
 async fn integration_sessions_history_tool_returns_bounded_lineage() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     let head = store
         .append_messages(
@@ -655,7 +655,7 @@ async fn integration_sessions_history_tool_returns_bounded_lineage() {
 async fn regression_sessions_history_tool_rejects_paths_outside_allowed_roots() {
     let root = tempdir().expect("root");
     let outside = tempdir().expect("outside");
-    let outside_session = outside.path().join(".tau/sessions/default.jsonl");
+    let outside_session = outside.path().join(".tau/sessions/default.sqlite");
     let mut outside_store = SessionStore::load(&outside_session).expect("load outside session");
     outside_store
         .append_messages(None, &[Message::user("outside")])
@@ -715,7 +715,7 @@ async fn unit_sessions_search_tool_rejects_invalid_role_filter() {
 #[tokio::test]
 async fn functional_sessions_search_tool_returns_matches_for_single_path() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     store
         .append_messages(
@@ -772,7 +772,7 @@ async fn functional_sessions_search_tool_returns_matches_for_single_path() {
 #[tokio::test]
 async fn integration_sessions_search_tool_scans_discovered_session_files() {
     let temp = tempdir().expect("tempdir");
-    let first_session = temp.path().join(".tau/sessions/default.jsonl");
+    let first_session = temp.path().join(".tau/sessions/default.sqlite");
     let second_session = temp.path().join(".tau/github/repo/sessions/issue-8.jsonl");
 
     let mut first_store = SessionStore::load(&first_session).expect("load first");
@@ -819,7 +819,7 @@ async fn integration_sessions_search_tool_scans_discovered_session_files() {
 async fn regression_sessions_search_tool_rejects_paths_outside_allowed_roots() {
     let root = tempdir().expect("root");
     let outside = tempdir().expect("outside");
-    let outside_session = outside.path().join(".tau/sessions/default.jsonl");
+    let outside_session = outside.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&outside_session).expect("load outside");
     store
         .append_messages(None, &[Message::user("outside message")])
@@ -851,7 +851,7 @@ async fn unit_sessions_stats_tool_rejects_invalid_limit() {
 #[tokio::test]
 async fn functional_sessions_stats_tool_reports_single_session_metrics() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     store
         .append_messages(
@@ -926,7 +926,7 @@ async fn functional_sessions_stats_tool_reports_single_session_metrics() {
 #[tokio::test]
 async fn integration_sessions_stats_tool_aggregates_discovered_sessions() {
     let temp = tempdir().expect("tempdir");
-    let first_session = temp.path().join(".tau/sessions/default.jsonl");
+    let first_session = temp.path().join(".tau/sessions/default.sqlite");
     let second_session = temp.path().join(".tau/github/repo/sessions/issue-91.jsonl");
 
     let mut first_store = SessionStore::load(&first_session).expect("load first");
@@ -986,7 +986,7 @@ async fn integration_sessions_stats_tool_aggregates_discovered_sessions() {
 async fn regression_sessions_stats_tool_rejects_paths_outside_allowed_roots() {
     let root = tempdir().expect("root");
     let outside = tempdir().expect("outside");
-    let outside_session = outside.path().join(".tau/sessions/default.jsonl");
+    let outside_session = outside.path().join(".tau/sessions/default.sqlite");
     let mut outside_store = SessionStore::load(&outside_session).expect("load outside");
     outside_store
         .append_messages(None, &[Message::user("outside stats")])
@@ -1005,7 +1005,7 @@ async fn regression_sessions_stats_tool_rejects_paths_outside_allowed_roots() {
 #[tokio::test]
 async fn regression_sessions_stats_tool_skips_malformed_sessions_in_aggregate_mode() {
     let temp = tempdir().expect("tempdir");
-    let valid_session = temp.path().join(".tau/sessions/default.jsonl");
+    let valid_session = temp.path().join(".tau/sessions/default.sqlite");
     let malformed_session = temp.path().join(".tau/sessions/broken.jsonl");
     let mut store = SessionStore::load(&valid_session).expect("load valid");
     store
@@ -1042,7 +1042,7 @@ async fn regression_sessions_stats_tool_skips_malformed_sessions_in_aggregate_mo
 #[tokio::test]
 async fn unit_sessions_send_tool_rejects_empty_message() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let tool = SessionsSendTool::new(test_policy(temp.path()));
     let result = tool
         .execute(serde_json::json!({
@@ -1060,7 +1060,7 @@ async fn unit_sessions_send_tool_rejects_empty_message() {
 #[tokio::test]
 async fn functional_sessions_send_tool_appends_and_reports_metadata() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     store
         .append_messages(None, &[Message::user("existing")])
@@ -1099,7 +1099,7 @@ async fn functional_sessions_send_tool_appends_and_reports_metadata() {
 #[tokio::test]
 async fn integration_sessions_send_tool_persists_updated_session_state() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     store
         .append_messages(None, &[Message::system("root")])
@@ -1129,7 +1129,7 @@ async fn integration_sessions_send_tool_persists_updated_session_state() {
 #[tokio::test]
 async fn regression_sessions_send_tool_rejects_unknown_parent_id() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     store
         .append_messages(None, &[Message::user("seed")])
@@ -1154,7 +1154,7 @@ async fn regression_sessions_send_tool_rejects_unknown_parent_id() {
 async fn unit_undo_tool_rejects_paths_outside_allowed_roots() {
     let root = tempdir().expect("root");
     let outside = tempdir().expect("outside");
-    let session_path = outside.path().join(".tau/sessions/default.jsonl");
+    let session_path = outside.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load outside session");
     store
         .append_messages(None, &[Message::user("outside")])
@@ -1173,7 +1173,7 @@ async fn unit_undo_tool_rejects_paths_outside_allowed_roots() {
 #[tokio::test]
 async fn functional_undo_tool_rewinds_navigation_head() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     let head = store
         .append_messages(
@@ -1213,7 +1213,7 @@ async fn functional_undo_tool_rewinds_navigation_head() {
 #[tokio::test]
 async fn integration_redo_tool_reapplies_undone_navigation_head() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     let head = store
         .append_messages(
@@ -1261,7 +1261,7 @@ async fn integration_redo_tool_reapplies_undone_navigation_head() {
 #[tokio::test]
 async fn regression_undo_tool_reports_empty_navigation_history() {
     let temp = tempdir().expect("tempdir");
-    let session_path = temp.path().join(".tau/sessions/default.jsonl");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
     let mut store = SessionStore::load(&session_path).expect("load session");
     store
         .append_messages(None, &[Message::user("seed")])

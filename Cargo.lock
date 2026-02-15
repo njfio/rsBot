@@ -3088,6 +3088,7 @@ dependencies = [
  "anyhow",
  "httpmock",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "tau-contract",
@@ -3255,6 +3256,7 @@ name = "tau-session"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rusqlite",
  "serde",
  "serde_json",
  "tau-ai",

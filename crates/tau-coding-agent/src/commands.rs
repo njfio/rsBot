@@ -135,7 +135,7 @@ pub(crate) fn handle_command(
             release_lookup_cache_ttl_ms: 900_000,
             browser_automation_playwright_cli: "playwright-cli".to_string(),
             session_enabled: true,
-            session_path: PathBuf::from(".tau/sessions/default.jsonl"),
+            session_path: PathBuf::from(".tau/sessions/default.sqlite"),
             skills_dir: PathBuf::from(".tau/skills"),
             skills_lock_path: PathBuf::from(".tau/skills/skills.lock.json"),
             trust_root_path: None,
@@ -147,7 +147,7 @@ pub(crate) fn handle_command(
         fallback_models: Vec::new(),
         session: ProfileSessionDefaults {
             enabled: true,
-            path: Some(".tau/sessions/default.jsonl".to_string()),
+            path: Some(".tau/sessions/default.sqlite".to_string()),
             import_mode: "merge".to_string(),
         },
         policy: ProfilePolicyDefaults {

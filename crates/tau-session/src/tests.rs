@@ -5,7 +5,8 @@ use tempfile::tempdir;
 
 use super::{
     acquire_lock, CompactReport, RepairReport, SessionEntry, SessionImportMode,
-    SessionMergeStrategy, SessionRecord, SessionStore, SessionValidationReport,
+    SessionMergeStrategy, SessionRecord, SessionStorageBackend, SessionStore,
+    SessionValidationReport,
 };
 
 #[test]
@@ -1226,7 +1227,7 @@ fn unit_acquire_lock_creates_missing_parent_directories() {
 #[test]
 fn functional_append_messages_creates_missing_session_parent_directory() {
     let temp = tempdir().expect("tempdir");
-    let path = temp.path().join(".tau/sessions/default.jsonl");
+    let path = temp.path().join(".tau/sessions/default.sqlite");
     let parent = path.parent().expect("session parent");
     assert!(!parent.exists());
 
@@ -1242,7 +1243,7 @@ fn functional_append_messages_creates_missing_session_parent_directory() {
 #[test]
 fn regression_default_tau_session_initialization_succeeds_without_existing_dir() {
     let temp = tempdir().expect("tempdir");
-    let path = temp.path().join(".tau/sessions/default.jsonl");
+    let path = temp.path().join(".tau/sessions/default.sqlite");
     let parent = path.parent().expect("session parent");
     assert!(!parent.exists());
 
@@ -1256,11 +1257,63 @@ fn regression_default_tau_session_initialization_succeeds_without_existing_dir()
 #[test]
 fn regression_session_load_precreates_default_tau_parent_directory() {
     let temp = tempdir().expect("tempdir");
-    let path = temp.path().join(".tau/sessions/default.jsonl");
+    let path = temp.path().join(".tau/sessions/default.sqlite");
     let parent = path.parent().expect("session parent");
     assert!(!parent.exists());
 
     let store = SessionStore::load(&path).expect("load");
     assert!(store.entries().is_empty());
     assert!(parent.exists());
+}
+
+#[test]
+fn functional_sqlite_backend_round_trip_preserves_lineage() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("session.sqlite");
+    let mut store = SessionStore::load(&path).expect("load sqlite store");
+    assert_eq!(store.storage_backend(), SessionStorageBackend::Sqlite);
+
+    let head = store
+        .append_messages(None, &[tau_ai::Message::system("sqlite-root")])
+        .expect("append root");
+    let head = store
+        .append_messages(head, &[tau_ai::Message::assistant_text("sqlite-reply")])
+        .expect("append reply");
+    let lineage = store.lineage_messages(head).expect("lineage");
+    assert_eq!(lineage.len(), 2);
+    assert_eq!(lineage[0].text_content(), "sqlite-root");
+    assert_eq!(lineage[1].text_content(), "sqlite-reply");
+
+    let reloaded = SessionStore::load(&path).expect("reload sqlite store");
+    assert_eq!(reloaded.storage_backend(), SessionStorageBackend::Sqlite);
+    assert_eq!(reloaded.entries().len(), 2);
+}
+
+#[test]
+fn integration_sqlite_backend_auto_imports_legacy_jsonl_snapshot() {
+    let temp = tempdir().expect("tempdir");
+    let legacy_path = temp.path().join("legacy.jsonl");
+    let sqlite_path = temp.path().join("legacy.sqlite");
+
+    let mut legacy_store = SessionStore::load(&legacy_path).expect("load legacy jsonl store");
+    let head = legacy_store
+        .append_messages(None, &[tau_ai::Message::system("legacy-root")])
+        .expect("append root");
+    legacy_store
+        .append_messages(head, &[tau_ai::Message::assistant_text("legacy-reply")])
+        .expect("append reply");
+
+    let sqlite_store = SessionStore::load(&sqlite_path).expect("load sqlite store");
+    assert_eq!(
+        sqlite_store.storage_backend(),
+        SessionStorageBackend::Sqlite
+    );
+    assert_eq!(sqlite_store.entries().len(), 2);
+    assert_eq!(
+        sqlite_store
+            .lineage_messages(sqlite_store.head_id())
+            .expect("lineage")[0]
+            .text_content(),
+        "legacy-root"
+    );
 }

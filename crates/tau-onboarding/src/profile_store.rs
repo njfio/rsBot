@@ -96,7 +96,7 @@ mod tests {
             fallback_models: vec!["openai/gpt-4.1-mini".to_string()],
             session: ProfileSessionDefaults {
                 enabled: true,
-                path: Some(".tau/sessions/default.jsonl".to_string()),
+                path: Some(".tau/sessions/default.sqlite".to_string()),
                 import_mode: "merge".to_string(),
             },
             policy: ProfilePolicyDefaults {

@@ -4,13 +4,17 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::memory_contract::{MemoryEntry, MemoryScope};
 
 const MEMORY_RUNTIME_SCHEMA_VERSION: u32 = 1;
 const MEMORY_RUNTIME_ENTRIES_FILE_NAME: &str = "entries.jsonl";
+const MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME: &str = "entries.sqlite";
+const MEMORY_BACKEND_ENV: &str = "TAU_MEMORY_BACKEND";
+const MEMORY_POSTGRES_DSN_ENV: &str = "TAU_MEMORY_POSTGRES_DSN";
 const MEMORY_SCOPE_DEFAULT_WORKSPACE: &str = "default-workspace";
 const MEMORY_SCOPE_DEFAULT_CHANNEL: &str = "default-channel";
 const MEMORY_SCOPE_DEFAULT_ACTOR: &str = "default-actor";
@@ -23,6 +27,44 @@ const MEMORY_RETRIEVAL_BACKEND_VECTOR_ONLY: &str = "vector-only";
 const MEMORY_RETRIEVAL_BACKEND_HYBRID_BM25_RRF: &str = "hybrid-bm25-rrf";
 const MEMORY_RETRIEVAL_REASON_VECTOR_ONLY: &str = "memory_retrieval_vector_only";
 const MEMORY_RETRIEVAL_REASON_HYBRID_ENABLED: &str = "memory_retrieval_hybrid_enabled";
+const MEMORY_STORAGE_REASON_PATH_JSONL: &str = "memory_storage_backend_path_jsonl";
+const MEMORY_STORAGE_REASON_PATH_SQLITE: &str = "memory_storage_backend_path_sqlite";
+const MEMORY_STORAGE_REASON_EXISTING_JSONL: &str = "memory_storage_backend_existing_jsonl";
+const MEMORY_STORAGE_REASON_EXISTING_SQLITE: &str = "memory_storage_backend_existing_sqlite";
+const MEMORY_STORAGE_REASON_DEFAULT_SQLITE: &str = "memory_storage_backend_default_sqlite";
+const MEMORY_STORAGE_REASON_ENV_JSONL: &str = "memory_storage_backend_env_jsonl";
+const MEMORY_STORAGE_REASON_ENV_SQLITE: &str = "memory_storage_backend_env_sqlite";
+const MEMORY_STORAGE_REASON_ENV_POSTGRES: &str = "memory_storage_backend_env_postgres";
+const MEMORY_STORAGE_REASON_ENV_AUTO: &str = "memory_storage_backend_env_auto";
+const MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK: &str =
+    "memory_storage_backend_env_invalid_fallback";
+const MEMORY_STORAGE_REASON_INIT_IMPORT_FAILED: &str = "memory_storage_backend_import_failed";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Enumerates supported `MemoryStorageBackend` values.
+pub enum MemoryStorageBackend {
+    Jsonl,
+    Sqlite,
+    Postgres,
+}
+
+impl MemoryStorageBackend {
+    pub fn label(self) -> &'static str {
+        match self {
+            MemoryStorageBackend::Jsonl => "jsonl",
+            MemoryStorageBackend::Sqlite => "sqlite",
+            MemoryStorageBackend::Postgres => "postgres",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedMemoryBackend {
+    backend: MemoryStorageBackend,
+    storage_path: Option<PathBuf>,
+    reason_code: String,
+    postgres_dsn: Option<String>,
+}
 
 fn default_embedding_source() -> String {
     MEMORY_EMBEDDING_SOURCE_HASH.to_string()
@@ -232,15 +274,17 @@ pub struct RankedTextMatch {
 pub struct FileMemoryStore {
     root_dir: PathBuf,
     embedding_provider: Option<MemoryEmbeddingProviderConfig>,
+    storage_backend: MemoryStorageBackend,
+    storage_path: Option<PathBuf>,
+    backend_reason_code: String,
+    postgres_dsn: Option<String>,
+    backend_init_error: Option<String>,
 }
 
 impl FileMemoryStore {
     /// Creates a file-backed store rooted at `root_dir`.
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
-        Self {
-            root_dir: root_dir.into(),
-            embedding_provider: None,
-        }
+        Self::new_with_embedding_provider(root_dir, None)
     }
 
     /// Creates a file-backed store rooted at `root_dir` with optional embedding provider config.
@@ -248,15 +292,86 @@ impl FileMemoryStore {
         root_dir: impl Into<PathBuf>,
         embedding_provider: Option<MemoryEmbeddingProviderConfig>,
     ) -> Self {
-        Self {
-            root_dir: root_dir.into(),
+        let root_dir = root_dir.into();
+        let resolved = resolve_memory_backend(&root_dir);
+        let mut store = Self {
+            root_dir,
             embedding_provider,
+            storage_backend: resolved.backend,
+            storage_path: resolved.storage_path,
+            backend_reason_code: resolved.reason_code,
+            postgres_dsn: resolved.postgres_dsn,
+            backend_init_error: None,
+        };
+        if store.storage_backend == MemoryStorageBackend::Sqlite {
+            if let Err(error) = store.maybe_import_legacy_jsonl_into_sqlite() {
+                store.backend_init_error = Some(error.to_string());
+                store.backend_reason_code = MEMORY_STORAGE_REASON_INIT_IMPORT_FAILED.to_string();
+            }
         }
+        store
     }
 
     /// Returns the store root directory.
     pub fn root_dir(&self) -> &Path {
         self.root_dir.as_path()
+    }
+
+    /// Returns the active storage backend.
+    pub fn storage_backend(&self) -> MemoryStorageBackend {
+        self.storage_backend
+    }
+
+    /// Returns the active storage backend label.
+    pub fn storage_backend_label(&self) -> &'static str {
+        self.storage_backend.label()
+    }
+
+    /// Returns the backend selection reason code.
+    pub fn storage_backend_reason_code(&self) -> &str {
+        self.backend_reason_code.as_str()
+    }
+
+    /// Returns the resolved storage file path, when applicable.
+    pub fn storage_path(&self) -> Option<&Path> {
+        self.storage_path.as_deref()
+    }
+
+    /// Imports JSONL artifacts into the active backend.
+    pub fn import_jsonl_artifact(&self, source: &Path) -> Result<usize> {
+        let records = load_records_jsonl(source)?;
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        self.ensure_backend_ready()?;
+        match self.storage_backend {
+            MemoryStorageBackend::Jsonl => {
+                for record in &records {
+                    append_record_jsonl(self.storage_path_required()?, record)?;
+                }
+                Ok(records.len())
+            }
+            MemoryStorageBackend::Sqlite => {
+                let mut connection = open_memory_sqlite_connection(self.storage_path_required()?)?;
+                initialize_memory_sqlite_schema(&connection)?;
+                let transaction = connection.transaction()?;
+                for record in &records {
+                    let encoded =
+                        serde_json::to_string(record).context("failed to encode memory record")?;
+                    transaction.execute(
+                        r#"
+                        INSERT INTO memory_records (memory_id, updated_unix_ms, record_json)
+                        VALUES (?1, ?2, ?3)
+                        "#,
+                        params![record.entry.memory_id, record.updated_unix_ms, encoded],
+                    )?;
+                }
+                transaction.commit()?;
+                Ok(records.len())
+            }
+            MemoryStorageBackend::Postgres => unreachable!("checked by ensure_backend_ready"),
+        }
     }
 
     /// Writes or updates a memory entry under `scope`.
@@ -297,7 +412,7 @@ impl FileMemoryStore {
             embedding_vector: computed_embedding.vector,
             embedding_reason_code: computed_embedding.reason_code,
         };
-        append_record(self.entries_path().as_path(), &record)?;
+        self.append_record_backend(&record)?;
         Ok(MemoryWriteResult { record, created })
     }
 
@@ -650,7 +765,7 @@ impl FileMemoryStore {
                 embedding_vector: vector,
                 embedding_reason_code: MEMORY_EMBEDDING_REASON_PROVIDER_SUCCESS.to_string(),
             };
-            append_record(self.entries_path().as_path(), &migrated_record)?;
+            self.append_record_backend(&migrated_record)?;
             migrated = migrated.saturating_add(1);
         }
 
@@ -716,7 +831,7 @@ impl FileMemoryStore {
     }
 
     fn load_latest_records(&self) -> Result<Vec<RuntimeMemoryRecord>> {
-        let records = load_records(self.entries_path().as_path())?;
+        let records = self.load_records_backend()?;
         let mut seen = BTreeSet::new();
         let mut latest = Vec::new();
         for record in records.into_iter().rev() {
@@ -733,8 +848,130 @@ impl FileMemoryStore {
         Ok(latest)
     }
 
-    fn entries_path(&self) -> PathBuf {
-        self.root_dir.join(MEMORY_RUNTIME_ENTRIES_FILE_NAME)
+    fn ensure_backend_ready(&self) -> Result<()> {
+        if let Some(error) = &self.backend_init_error {
+            bail!(
+                "memory storage backend initialization failed (reason_code={}): {}",
+                self.backend_reason_code,
+                error
+            );
+        }
+
+        if self.storage_backend == MemoryStorageBackend::Postgres {
+            let dsn = self.postgres_dsn.as_deref().unwrap_or_default();
+            if dsn.trim().is_empty() {
+                bail!(
+                    "{}=postgres requires non-empty {}",
+                    MEMORY_BACKEND_ENV,
+                    MEMORY_POSTGRES_DSN_ENV
+                );
+            }
+            bail!(
+                "memory postgres backend is scaffolded but not implemented (dsn_set=true); set {}=jsonl or sqlite",
+                MEMORY_BACKEND_ENV
+            );
+        }
+        Ok(())
+    }
+
+    fn storage_path_required(&self) -> Result<&Path> {
+        self.storage_path.as_deref().ok_or_else(|| {
+            anyhow!(
+                "memory storage backend '{}' does not define a filesystem path",
+                self.storage_backend.label()
+            )
+        })
+    }
+
+    fn append_record_backend(&self, record: &RuntimeMemoryRecord) -> Result<()> {
+        self.ensure_backend_ready()?;
+        match self.storage_backend {
+            MemoryStorageBackend::Jsonl => {
+                append_record_jsonl(self.storage_path_required()?, record)
+            }
+            MemoryStorageBackend::Sqlite => {
+                append_record_sqlite(self.storage_path_required()?, record)
+            }
+            MemoryStorageBackend::Postgres => unreachable!("checked by ensure_backend_ready"),
+        }
+    }
+
+    fn load_records_backend(&self) -> Result<Vec<RuntimeMemoryRecord>> {
+        self.ensure_backend_ready()?;
+        match self.storage_backend {
+            MemoryStorageBackend::Jsonl => load_records_jsonl(self.storage_path_required()?),
+            MemoryStorageBackend::Sqlite => load_records_sqlite(self.storage_path_required()?),
+            MemoryStorageBackend::Postgres => unreachable!("checked by ensure_backend_ready"),
+        }
+    }
+
+    fn maybe_import_legacy_jsonl_into_sqlite(&self) -> Result<usize> {
+        if self.storage_backend != MemoryStorageBackend::Sqlite {
+            return Ok(0);
+        }
+        let Some(sqlite_path) = self.storage_path.as_deref() else {
+            return Ok(0);
+        };
+        let Some(legacy_path) = self.legacy_jsonl_import_path() else {
+            return Ok(0);
+        };
+        if !legacy_path.exists() {
+            return Ok(0);
+        }
+
+        let mut connection = open_memory_sqlite_connection(sqlite_path)?;
+        initialize_memory_sqlite_schema(&connection)?;
+        let existing_count: u64 = connection
+            .query_row("SELECT COUNT(1) FROM memory_records", [], |row| row.get(0))
+            .context("failed to inspect sqlite memory record count")?;
+        if existing_count > 0 {
+            return Ok(0);
+        }
+
+        let records = load_records_jsonl(&legacy_path)?;
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let transaction = connection.transaction()?;
+        for record in &records {
+            let encoded =
+                serde_json::to_string(record).context("failed to encode memory sqlite record")?;
+            transaction.execute(
+                r#"
+                INSERT INTO memory_records (memory_id, updated_unix_ms, record_json)
+                VALUES (?1, ?2, ?3)
+                "#,
+                params![record.entry.memory_id, record.updated_unix_ms, encoded],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(records.len())
+    }
+
+    fn legacy_jsonl_import_path(&self) -> Option<PathBuf> {
+        match self.storage_backend {
+            MemoryStorageBackend::Jsonl | MemoryStorageBackend::Postgres => None,
+            MemoryStorageBackend::Sqlite => {
+                if self.root_dir.extension().and_then(|value| value.to_str()) == Some("sqlite")
+                    || self.root_dir.extension().and_then(|value| value.to_str()) == Some("db")
+                {
+                    let legacy = self.root_dir.with_extension("jsonl");
+                    if self.storage_path.as_deref() == Some(legacy.as_path()) {
+                        None
+                    } else {
+                        Some(legacy)
+                    }
+                } else {
+                    let legacy = self.root_dir.join(MEMORY_RUNTIME_ENTRIES_FILE_NAME);
+                    if self.storage_path.as_deref() == Some(legacy.as_path()) {
+                        None
+                    } else {
+                        Some(legacy)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1145,7 +1382,165 @@ fn normalize_entry(entry: MemoryEntry) -> Result<MemoryEntry> {
     })
 }
 
-fn append_record(path: &Path, record: &RuntimeMemoryRecord) -> Result<()> {
+fn resolve_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
+    let env_backend = std::env::var(MEMORY_BACKEND_ENV)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase());
+    let env_backend = env_backend.as_deref().unwrap_or("auto");
+
+    if env_backend != "auto"
+        && env_backend != "jsonl"
+        && env_backend != "sqlite"
+        && env_backend != "postgres"
+    {
+        let mut inferred = infer_memory_backend(root_dir);
+        inferred.reason_code = MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK.to_string();
+        return inferred;
+    }
+
+    if env_backend == "jsonl" {
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Jsonl,
+            storage_path: Some(resolve_jsonl_path(root_dir)),
+            reason_code: MEMORY_STORAGE_REASON_ENV_JSONL.to_string(),
+            postgres_dsn: None,
+        };
+    }
+
+    if env_backend == "sqlite" {
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Sqlite,
+            storage_path: Some(resolve_sqlite_path(root_dir)),
+            reason_code: MEMORY_STORAGE_REASON_ENV_SQLITE.to_string(),
+            postgres_dsn: None,
+        };
+    }
+
+    if env_backend == "postgres" {
+        let dsn = std::env::var(MEMORY_POSTGRES_DSN_ENV).ok();
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Postgres,
+            storage_path: None,
+            reason_code: MEMORY_STORAGE_REASON_ENV_POSTGRES.to_string(),
+            postgres_dsn: dsn,
+        };
+    }
+
+    let mut inferred = infer_memory_backend(root_dir);
+    if std::env::var(MEMORY_BACKEND_ENV).is_ok() {
+        inferred.reason_code = MEMORY_STORAGE_REASON_ENV_AUTO.to_string();
+    }
+    inferred
+}
+
+fn infer_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
+    let extension = root_dir
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase());
+
+    if matches!(extension.as_deref(), Some("jsonl")) {
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Jsonl,
+            storage_path: Some(root_dir.to_path_buf()),
+            reason_code: MEMORY_STORAGE_REASON_PATH_JSONL.to_string(),
+            postgres_dsn: None,
+        };
+    }
+    if matches!(extension.as_deref(), Some("sqlite" | "db")) {
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Sqlite,
+            storage_path: Some(root_dir.to_path_buf()),
+            reason_code: MEMORY_STORAGE_REASON_PATH_SQLITE.to_string(),
+            postgres_dsn: None,
+        };
+    }
+
+    if root_dir.exists() && root_dir.is_file() {
+        if looks_like_sqlite_file(root_dir) {
+            return ResolvedMemoryBackend {
+                backend: MemoryStorageBackend::Sqlite,
+                storage_path: Some(root_dir.to_path_buf()),
+                reason_code: MEMORY_STORAGE_REASON_EXISTING_SQLITE.to_string(),
+                postgres_dsn: None,
+            };
+        }
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Jsonl,
+            storage_path: Some(root_dir.to_path_buf()),
+            reason_code: MEMORY_STORAGE_REASON_EXISTING_JSONL.to_string(),
+            postgres_dsn: None,
+        };
+    }
+
+    let sqlite_candidate = root_dir.join(MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME);
+    if sqlite_candidate.exists() {
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Sqlite,
+            storage_path: Some(sqlite_candidate),
+            reason_code: MEMORY_STORAGE_REASON_EXISTING_SQLITE.to_string(),
+            postgres_dsn: None,
+        };
+    }
+
+    let jsonl_candidate = root_dir.join(MEMORY_RUNTIME_ENTRIES_FILE_NAME);
+    if jsonl_candidate.exists() {
+        return ResolvedMemoryBackend {
+            backend: MemoryStorageBackend::Sqlite,
+            storage_path: Some(resolve_sqlite_path(root_dir)),
+            reason_code: MEMORY_STORAGE_REASON_EXISTING_JSONL.to_string(),
+            postgres_dsn: None,
+        };
+    }
+
+    ResolvedMemoryBackend {
+        backend: MemoryStorageBackend::Sqlite,
+        storage_path: Some(resolve_sqlite_path(root_dir)),
+        reason_code: MEMORY_STORAGE_REASON_DEFAULT_SQLITE.to_string(),
+        postgres_dsn: None,
+    }
+}
+
+fn resolve_jsonl_path(root_dir: &Path) -> PathBuf {
+    match root_dir
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jsonl") => root_dir.to_path_buf(),
+        _ => root_dir.join(MEMORY_RUNTIME_ENTRIES_FILE_NAME),
+    }
+}
+
+fn resolve_sqlite_path(root_dir: &Path) -> PathBuf {
+    match root_dir
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("sqlite" | "db") => root_dir.to_path_buf(),
+        _ => root_dir.join(MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME),
+    }
+}
+
+fn looks_like_sqlite_file(path: &Path) -> bool {
+    if !path.exists() || !path.is_file() {
+        return false;
+    }
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut prefix = [0u8; 16];
+    if std::io::Read::read(&mut file, &mut prefix).unwrap_or_default() < 16 {
+        return false;
+    }
+    &prefix == b"SQLite format 3\0"
+}
+
+fn append_record_jsonl(path: &Path, record: &RuntimeMemoryRecord) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create memory store root {}", parent.display()))?;
@@ -1166,7 +1561,7 @@ fn append_record(path: &Path, record: &RuntimeMemoryRecord) -> Result<()> {
     Ok(())
 }
 
-fn load_records(path: &Path) -> Result<Vec<RuntimeMemoryRecord>> {
+fn load_records_jsonl(path: &Path) -> Result<Vec<RuntimeMemoryRecord>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -1198,6 +1593,77 @@ fn load_records(path: &Path) -> Result<Vec<RuntimeMemoryRecord>> {
     Ok(records)
 }
 
+fn append_record_sqlite(path: &Path, record: &RuntimeMemoryRecord) -> Result<()> {
+    let connection = open_memory_sqlite_connection(path)?;
+    initialize_memory_sqlite_schema(&connection)?;
+    let encoded = serde_json::to_string(record).context("failed to encode memory record")?;
+    connection.execute(
+        r#"
+        INSERT INTO memory_records (memory_id, updated_unix_ms, record_json)
+        VALUES (?1, ?2, ?3)
+        "#,
+        params![record.entry.memory_id, record.updated_unix_ms, encoded],
+    )?;
+    Ok(())
+}
+
+fn load_records_sqlite(path: &Path) -> Result<Vec<RuntimeMemoryRecord>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let connection = open_memory_sqlite_connection(path)?;
+    initialize_memory_sqlite_schema(&connection)?;
+    let mut statement = connection.prepare(
+        r#"
+        SELECT record_json
+        FROM memory_records
+        ORDER BY row_id ASC
+        "#,
+    )?;
+    let mut rows = statement.query([])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let encoded: String = row.get(0)?;
+        let record = serde_json::from_str::<RuntimeMemoryRecord>(&encoded)
+            .context("failed to decode sqlite memory record")?;
+        records.push(record);
+    }
+    Ok(records)
+}
+
+fn open_memory_sqlite_connection(path: &Path) -> Result<Connection> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create memory store root {}", parent.display()))?;
+    }
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open sqlite memory store {}", path.display()))?;
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    connection.execute_batch(
+        r#"
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        "#,
+    )?;
+    Ok(connection)
+}
+
+fn initialize_memory_sqlite_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS memory_records (
+            row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id TEXT NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_records_memory_id_updated
+            ON memory_records(memory_id, updated_unix_ms);
+        "#,
+    )?;
+    Ok(())
+}
+
 fn current_unix_timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1209,7 +1675,8 @@ fn current_unix_timestamp_ms() -> u64 {
 mod tests {
     use super::{
         embed_text_vector, rank_text_candidates, rank_text_candidates_bm25, FileMemoryStore,
-        MemoryEmbeddingProviderConfig, MemoryScopeFilter, MemorySearchOptions, RankedTextCandidate,
+        MemoryEmbeddingProviderConfig, MemoryScopeFilter, MemorySearchOptions,
+        MemoryStorageBackend, RankedTextCandidate,
     };
     use crate::memory_contract::{MemoryEntry, MemoryScope};
     use httpmock::{Method::POST, MockServer};
@@ -1225,6 +1692,60 @@ mod tests {
             .sqrt();
         assert!(magnitude > 0.99);
         assert!(magnitude <= 1.001);
+    }
+
+    #[test]
+    fn functional_memory_store_defaults_to_sqlite_backend_for_directory_roots() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path().join(".tau/memory"));
+        assert_eq!(store.storage_backend(), MemoryStorageBackend::Sqlite);
+        assert_eq!(
+            store.storage_backend_reason_code(),
+            "memory_storage_backend_default_sqlite"
+        );
+        assert!(store
+            .storage_path()
+            .expect("sqlite storage path")
+            .ends_with("entries.sqlite"));
+    }
+
+    #[test]
+    fn integration_memory_store_imports_legacy_jsonl_into_sqlite() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join(".tau/memory");
+        let legacy_jsonl = root.join("entries.jsonl");
+        let legacy_store = FileMemoryStore::new_with_embedding_provider(legacy_jsonl.clone(), None);
+        let scope = MemoryScope {
+            workspace_id: "workspace".to_string(),
+            channel_id: "channel".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        let entry = MemoryEntry {
+            memory_id: "memory-legacy".to_string(),
+            summary: "legacy-jsonl-entry".to_string(),
+            tags: vec!["legacy".to_string()],
+            facts: vec!["imported=true".to_string()],
+            source_event_key: "evt-legacy".to_string(),
+            recency_weight_bps: 0,
+            confidence_bps: 1_000,
+        };
+        legacy_store
+            .write_entry(&scope, entry)
+            .expect("seed legacy jsonl");
+
+        let sqlite_store = FileMemoryStore::new_with_embedding_provider(root.clone(), None);
+        assert_eq!(sqlite_store.storage_backend(), MemoryStorageBackend::Sqlite);
+        assert_eq!(
+            sqlite_store.storage_backend_reason_code(),
+            "memory_storage_backend_existing_jsonl"
+        );
+        let loaded = sqlite_store
+            .read_entry("memory-legacy", None)
+            .expect("read legacy")
+            .expect("legacy should import");
+        assert_eq!(loaded.entry.summary, "legacy-jsonl-entry");
+        assert!(root.join("entries.sqlite").exists());
+        assert!(legacy_jsonl.exists());
     }
 
     #[test]
