@@ -16,6 +16,7 @@ This index maps Tau documentation by audience and task.
 | Runtime contributor | [Contract Pattern Lifecycle](guides/contract-pattern-lifecycle.md) | Shared fixture lifecycle, compatibility gates, extension checklist, anti-patterns |
 | Runtime contributor | [Tool Name Registry](guides/tool-name-registry.md) | Reserved built-in tool-name catalog and registration conflict behavior for extension + MCP external tools |
 | Runtime contributor / doc maintainer | [Runbook Ownership Map](guides/runbook-ownership-map.md) | Post-consolidation runbook-to-crate ownership matrix and update policy |
+| Runtime operator / release manager | [Consolidated Runtime Rollback Drill](guides/consolidated-runtime-rollback-drill.md) | Trigger conditions, rollback simulation checklist, and required artifact capture flow |
 | Runtime operator / integration engineer | [MCP Client Operations Guide](guides/mcp-client-ops.md) | MCP client transport config (stdio + HTTP/SSE), OAuth PKCE token handling, inspect diagnostics, and live validation flow |
 | Runtime contributor | [Tool Policy Sandbox Mode](guides/tool-policy-sandbox-mode.md) | Fail-closed sandbox posture (`best-effort` vs `required`), preset defaults, and operator diagnostics |
 | Runtime contributor | [Tool Policy HTTP Client](guides/tool-policy-http-client.md) | `HttpTool` controls, SSRF/redirect guardrails, caps, and deterministic reason codes |

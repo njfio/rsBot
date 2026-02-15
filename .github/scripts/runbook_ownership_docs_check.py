@@ -67,6 +67,15 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
         ),
     ),
     OwnershipSpec(
+        path="docs/guides/consolidated-runtime-rollback-drill.md",
+        required_tokens=(
+            "## Ownership",
+            "`scripts/demo/rollback-drill-checklist.sh`",
+            "`scripts/dev/m21-retained-capability-proof-summary.sh`",
+            "docs/guides/runbook-ownership-map.md",
+        ),
+    ),
+    OwnershipSpec(
         path="docs/guides/runbook-ownership-map.md",
         required_tokens=(
             "# Runbook Ownership Map",
@@ -75,6 +84,7 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
             "docs/guides/training-proxy-ops.md",
             "docs/guides/transports.md",
             "docs/guides/memory-ops.md",
+            "docs/guides/consolidated-runtime-rollback-drill.md",
         ),
     ),
 )

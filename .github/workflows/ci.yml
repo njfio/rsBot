@@ -154,6 +154,8 @@ jobs:
               - "scripts/demo/m21-retained-capability-proof-matrix.json"
               - "scripts/demo/validate-m21-retained-capability-proof-matrix.sh"
               - "scripts/demo/test-m21-retained-capability-proof-matrix.sh"
+              - "scripts/demo/rollback-drill-checklist.sh"
+              - "scripts/demo/test-rollback-drill-checklist.sh"
               - "scripts/demo/index.sh"
               - "scripts/demo/all.sh"
               - "scripts/demo/proof-pack-manifest.sh"
@@ -298,6 +300,10 @@ jobs:
       - name: Validate retained-capability proof matrix/checklist contracts
         if: steps.retained_proof_summary_scope.outputs.retained_proof_summary_tests_needed == 'true'
         run: ./scripts/demo/test-m21-retained-capability-proof-matrix.sh
+
+      - name: Validate rollback drill checklist script
+        if: steps.retained_proof_summary_scope.outputs.retained_proof_summary_tests_needed == 'true'
+        run: ./scripts/demo/test-rollback-drill-checklist.sh
 
       - name: Determine tool split performance smoke scope
         id: tool_perf_scope
