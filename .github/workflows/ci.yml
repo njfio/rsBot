@@ -363,7 +363,15 @@ jobs:
 
       - name: Lint (codex-light lane)
         if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light'
-        run: cargo check -p tau-coding-agent --all-targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}" || true
+            ./scripts/dev/fast-validate.sh --check-only --direct-packages-only --base "${{ github.event.pull_request.base.sha }}"
+          else
+            ./scripts/dev/fast-validate.sh --check-only --direct-packages-only --full
+          fi
 
       - name: Report lint strategy
         shell: bash
@@ -374,7 +382,13 @@ jobs:
             echo "- Reason: no Rust/Cargo changes in pull_request scope" >> "$GITHUB_STEP_SUMMARY"
           elif [[ "${{ steps.quality_mode.outputs.mode }}" == "codex-light" ]]; then
             echo "- Mode: codex-light" >> "$GITHUB_STEP_SUMMARY"
-            echo "- Command: cargo check -p tau-coding-agent --all-targets" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "- Command: ./scripts/dev/fast-validate.sh --check-only --direct-packages-only --base <pull_request.base.sha>" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Scope: directly changed crates only (no reverse-dependency expansion)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- Command: ./scripts/dev/fast-validate.sh --check-only --direct-packages-only --full" >> "$GITHUB_STEP_SUMMARY"
+              echo "- Scope: full workspace check-only" >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo "- Mode: full" >> "$GITHUB_STEP_SUMMARY"
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then

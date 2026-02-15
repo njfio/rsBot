@@ -8,10 +8,12 @@ cd "${REPO_ROOT}"
 FULL_MODE="false"
 BASE_REF=""
 PRINT_PACKAGES_FROM_STDIN="false"
+CHECK_ONLY="false"
+DIRECT_PACKAGES_ONLY="false"
 
 usage() {
   cat <<'EOF'
-Usage: fast-validate.sh [--full] [--base <git-ref>] [--print-packages-from-stdin]
+Usage: fast-validate.sh [--full] [--check-only] [--direct-packages-only] [--base <git-ref>] [--print-packages-from-stdin]
 
 Fast validation defaults to impacted-package scope:
   - cargo fmt --all -- --check
@@ -20,6 +22,9 @@ Fast validation defaults to impacted-package scope:
 
 Options:
   --full                        Run full workspace clippy + tests.
+  --check-only                  Run `cargo check` instead of clippy + tests.
+  --direct-packages-only        Keep package scope to directly changed crates
+                                (skip reverse-dependency expansion).
   --base <git-ref>              Compare changes against this base ref.
   --print-packages-from-stdin   Internal/test mode: read newline-delimited paths from stdin
                                 and print derived impacted package scope.
@@ -31,6 +36,12 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --full)
       FULL_MODE="true"
+      ;;
+    --check-only)
+      CHECK_ONLY="true"
+      ;;
+    --direct-packages-only)
+      DIRECT_PACKAGES_ONLY="true"
       ;;
     --base)
       shift
@@ -228,7 +239,7 @@ if [[ "${PRINT_PACKAGES_FROM_STDIN}" == "true" ]]; then
   mapfile -t scope < <(derive_scope_from_files "${stdin_files[@]}")
   full_workspace="${scope[0]:-0}"
   packages=("${scope[@]:1}")
-  if [[ "${full_workspace}" != "1" && ${#packages[@]} -gt 0 ]]; then
+  if [[ "${DIRECT_PACKAGES_ONLY}" != "true" && "${full_workspace}" != "1" && ${#packages[@]} -gt 0 ]]; then
     mapfile -t packages < <(expand_impacted_packages "${packages[@]}")
   fi
   print_scope "${full_workspace}" "${packages[@]}"
@@ -240,13 +251,34 @@ mapfile -t CHANGED_FILES < <(collect_changed_files "${BASE}")
 mapfile -t SCOPE < <(derive_scope_from_files "${CHANGED_FILES[@]}")
 FULL_WORKSPACE_FROM_SCOPE="${SCOPE[0]:-0}"
 PACKAGES=("${SCOPE[@]:1}")
-if [[ "${FULL_MODE}" != "true" && "${FULL_WORKSPACE_FROM_SCOPE}" != "1" && ${#PACKAGES[@]} -gt 0 ]]; then
+if [[ "${DIRECT_PACKAGES_ONLY}" != "true" && "${FULL_MODE}" != "true" && "${FULL_WORKSPACE_FROM_SCOPE}" != "1" && ${#PACKAGES[@]} -gt 0 ]]; then
   mapfile -t PACKAGES < <(expand_impacted_packages "${PACKAGES[@]}")
 fi
 
-echo "fast-validate base=${BASE} changed_files=${#CHANGED_FILES[@]} impacted_packages=${#PACKAGES[@]}"
+echo "fast-validate base=${BASE} changed_files=${#CHANGED_FILES[@]} impacted_packages=${#PACKAGES[@]} check_only=${CHECK_ONLY} direct_packages_only=${DIRECT_PACKAGES_ONLY}"
 
 run_step "fmt-check" cargo fmt --all -- --check
+
+if [[ "${CHECK_ONLY}" == "true" ]]; then
+  if [[ "${FULL_MODE}" == "true" || "${FULL_WORKSPACE_FROM_SCOPE}" == "1" ]]; then
+    echo "running full workspace check-only validation"
+    run_step "check-workspace" cargo check --workspace --all-targets
+    exit 0
+  fi
+
+  if [[ ${#PACKAGES[@]} -eq 0 ]]; then
+    echo "no crate changes detected; fmt check completed"
+    exit 0
+  fi
+
+  PACKAGE_ARGS=()
+  for pkg in "${PACKAGES[@]}"; do
+    PACKAGE_ARGS+=("-p" "${pkg}")
+  done
+  echo "running package-scoped check-only validation for: ${PACKAGES[*]}"
+  run_step "check-packages" cargo check "${PACKAGE_ARGS[@]}" --all-targets
+  exit 0
+fi
 
 if [[ "${FULL_MODE}" == "true" || "${FULL_WORKSPACE_FROM_SCOPE}" == "1" ]]; then
   echo "running full workspace validation"
