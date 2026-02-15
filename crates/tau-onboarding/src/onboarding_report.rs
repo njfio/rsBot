@@ -7,6 +7,7 @@ use tau_ops::TauDaemonStatusReport;
 use tau_provider::is_executable_available;
 
 use crate::onboarding_paths::resolve_tau_root;
+use crate::onboarding_wizard::OnboardingIdentityBootstrapReport;
 use crate::startup_prompt_composition::StartupIdentityCompositionReport;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,9 +50,29 @@ pub struct OnboardingReport {
     pub files_created: Vec<String>,
     pub files_existing: Vec<String>,
     pub executable_checks: Vec<OnboardingExecutableCheck>,
+    pub wizard: OnboardingWizardReport,
+    pub identity_bootstrap: OnboardingIdentityBootstrapReport,
     pub identity_composition: StartupIdentityCompositionReport,
     pub daemon_bootstrap: OnboardingDaemonBootstrapReport,
     pub next_steps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `OnboardingWizardReport` used across Tau components.
+pub struct OnboardingWizardReport {
+    pub entrypoint: String,
+    pub first_run_detected: bool,
+    pub first_run_reason_codes: Vec<String>,
+    pub selected_provider: String,
+    pub selected_auth_mode: String,
+    pub selected_model: String,
+    pub selected_workspace: String,
+    pub profile_repair_requested: bool,
+    pub identity_generation_requested: bool,
+    pub identity_repair_requested: bool,
+    pub baseline_path: String,
+    pub baseline_action: String,
+    pub reason_codes: Vec<String>,
 }
 
 pub fn collect_executable_checks(cli: &Cli) -> Vec<OnboardingExecutableCheck> {
@@ -205,6 +226,32 @@ pub fn render_onboarding_summary(report: &OnboardingReport, report_path: &Path) 
             report.daemon_bootstrap.status.diagnostics.len()
         ),
         format!(
+            "wizard: entrypoint={} first_run={} provider={} auth={} model={} workspace={}",
+            report.wizard.entrypoint,
+            report.wizard.first_run_detected,
+            report.wizard.selected_provider,
+            report.wizard.selected_auth_mode,
+            report.wizard.selected_model,
+            report.wizard.selected_workspace
+        ),
+        format!(
+            "wizard_persistence: baseline_action={} baseline_path={} profile_repair_requested={} identity_generation_requested={} identity_repair_requested={}",
+            report.wizard.baseline_action,
+            report.wizard.baseline_path,
+            report.wizard.profile_repair_requested,
+            report.wizard.identity_generation_requested,
+            report.wizard.identity_repair_requested
+        ),
+        format!(
+            "identity_bootstrap: requested={} repair_requested={} created={} repaired={} skipped_existing={} skipped_invalid_type={}",
+            report.identity_bootstrap.requested,
+            report.identity_bootstrap.repair_requested,
+            report.identity_bootstrap.files_created,
+            report.identity_bootstrap.files_repaired,
+            report.identity_bootstrap.files_skipped_existing,
+            report.identity_bootstrap.files_skipped_invalid_type
+        ),
+        format!(
             "identity: loaded={} missing={} skipped={} tau_root={}",
             report.identity_composition.loaded_count,
             report.identity_composition.missing_count,
@@ -214,6 +261,21 @@ pub fn render_onboarding_summary(report: &OnboardingReport, report_path: &Path) 
     ];
     for reason in &report.daemon_bootstrap.readiness_reason_codes {
         lines.push(format!("daemon_reason: {reason}"));
+    }
+    for reason in &report.wizard.first_run_reason_codes {
+        lines.push(format!("wizard_first_run_reason: {reason}"));
+    }
+    for reason in &report.wizard.reason_codes {
+        lines.push(format!("wizard_reason: {reason}"));
+    }
+    for reason in &report.identity_bootstrap.reason_codes {
+        lines.push(format!("identity_bootstrap_reason: {reason}"));
+    }
+    for file in &report.identity_bootstrap.files {
+        lines.push(format!(
+            "identity_bootstrap_file: file={} action={} code={} path={}",
+            file.file_name, file.action, file.reason_code, file.path
+        ));
     }
     for identity in &report.identity_composition.entries {
         lines.push(format!(
@@ -236,7 +298,10 @@ mod tests {
     use super::{
         build_onboarding_next_steps, collect_executable_checks, render_onboarding_summary,
         resolve_onboarding_report_path, write_onboarding_report, OnboardingDaemonBootstrapReport,
-        OnboardingReport,
+        OnboardingReport, OnboardingWizardReport,
+    };
+    use crate::onboarding_wizard::{
+        OnboardingIdentityBootstrapReport, OnboardingIdentityFileAction,
     };
     use crate::startup_prompt_composition::{
         StartupIdentityCompositionReport, StartupIdentityFileReportEntry, StartupIdentityFileStatus,
@@ -313,7 +378,7 @@ mod tests {
 
     fn sample_report() -> OnboardingReport {
         OnboardingReport {
-            schema_version: 3,
+            schema_version: 4,
             generated_at_ms: 123,
             mode: "non-interactive".to_string(),
             tau_root: ".tau".to_string(),
@@ -329,6 +394,36 @@ mod tests {
             files_created: vec![".tau/profiles.json".to_string()],
             files_existing: vec![],
             executable_checks: vec![],
+            wizard: OnboardingWizardReport {
+                entrypoint: "explicit_flag".to_string(),
+                first_run_detected: true,
+                first_run_reason_codes: vec!["onboarding_first_run_detected".to_string()],
+                selected_provider: "openai".to_string(),
+                selected_auth_mode: "api_key".to_string(),
+                selected_model: "openai/gpt-4o-mini".to_string(),
+                selected_workspace: ".".to_string(),
+                profile_repair_requested: false,
+                identity_generation_requested: true,
+                identity_repair_requested: false,
+                baseline_path: ".tau/onboarding-baseline.json".to_string(),
+                baseline_action: "created".to_string(),
+                reason_codes: vec!["wizard_interactive_prompts_completed".to_string()],
+            },
+            identity_bootstrap: OnboardingIdentityBootstrapReport {
+                requested: true,
+                repair_requested: false,
+                files_created: 3,
+                files_repaired: 0,
+                files_skipped_existing: 0,
+                files_skipped_invalid_type: 0,
+                reason_codes: vec!["identity_file_created".to_string()],
+                files: vec![OnboardingIdentityFileAction {
+                    file_name: "SOUL.md".to_string(),
+                    path: ".tau/SOUL.md".to_string(),
+                    action: "created".to_string(),
+                    reason_code: "identity_file_created".to_string(),
+                }],
+            },
             identity_composition: StartupIdentityCompositionReport {
                 schema_version: 1,
                 tau_root: ".tau".to_string(),
@@ -427,6 +522,12 @@ mod tests {
         let report = sample_report();
         let summary = render_onboarding_summary(&report, Path::new(".tau/reports/test.json"));
         assert!(summary.contains("daemon_reason: daemon_start_expected_running"));
+        assert!(summary.contains("wizard_first_run_reason: onboarding_first_run_detected"));
+        assert!(summary.contains("wizard_reason: wizard_interactive_prompts_completed"));
+        assert!(summary.contains("identity_bootstrap_reason: identity_file_created"));
+        assert!(summary.contains(
+            "identity_bootstrap_file: file=SOUL.md action=created code=identity_file_created path=.tau/SOUL.md"
+        ));
         assert!(summary.contains("identity: loaded=1 missing=2 skipped=0 tau_root=.tau"));
         assert!(summary.contains(
             "identity_file: key=soul file=SOUL.md status=loaded code=identity_file_loaded path=.tau/SOUL.md"

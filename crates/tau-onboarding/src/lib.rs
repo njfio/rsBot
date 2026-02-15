@@ -9,6 +9,7 @@ pub mod onboarding_paths;
 pub mod onboarding_profile_bootstrap;
 pub mod onboarding_release_channel;
 pub mod onboarding_report;
+pub mod onboarding_wizard;
 pub mod profile_commands;
 pub mod profile_store;
 pub mod startup_config;

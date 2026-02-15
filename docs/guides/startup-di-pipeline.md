@@ -24,6 +24,15 @@ Source of truth:
 `run_cli` in `tau-coding-agent` calls `execute_startup_preflight` first.  
 If any preflight command is selected, startup ends immediately with no model/client boot.
 
+When no explicit preflight command matches, onboarding preflight performs a
+first-run auto-wizard check before returning `Ok(false)`. Auto-wizard runs only
+when all guards pass:
+
+- `TAU_ONBOARD_AUTO` is not set to `0|false|no|off`
+- invocation has no explicit CLI args beyond executable name
+- stdin and stdout are TTYs
+- first-run state is detected (`profiles.json` and `release-channel.json` absent)
+
 ```mermaid
 sequenceDiagram
     participant CLI as Cli
@@ -41,6 +50,8 @@ sequenceDiagram
         Entry-->>CLI: return Ok(())
     else no preflight command
         Startup-->>Entry: Ok(false)
+        Onboarding->>Actions: execute_onboarding_command() when first-run auto guards pass
+        Actions-->>Entry: Ok(true)
     end
 ```
 
@@ -100,6 +111,10 @@ sequenceDiagram
 cargo test -p tau-onboarding \
   startup_preflight::tests::unit_execute_startup_preflight_onboard_calls_callback
 
+# Stage 1 first-run auto onboarding behavior
+cargo test -p tau-onboarding \
+  startup_preflight::tests::functional_execute_startup_preflight_auto_runs_onboarding_on_first_run_default_invocation
+
 # Stage 2 model/client/context resolution behavior
 cargo test -p tau-onboarding \
   startup_dispatch::tests::unit_resolve_startup_model_runtime_from_cli_returns_composed_outputs
@@ -108,4 +123,3 @@ cargo test -p tau-onboarding \
 cargo test -p tau-onboarding \
   startup_dispatch::tests::functional_execute_startup_runtime_modes_short_circuits_local_when_transport_handles
 ```
-

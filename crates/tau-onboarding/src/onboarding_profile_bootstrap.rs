@@ -1,9 +1,8 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-use tau_cli::Cli;
 
 use crate::profile_store::{load_profile_store, save_profile_store, validate_profile_name};
-use crate::startup_config::build_profile_defaults;
+use crate::startup_config::ProfileDefaults;
 
 pub const ONBOARDING_DEFAULT_PROFILE: &str = "default";
 
@@ -40,17 +39,26 @@ pub fn ensure_directory(
 }
 
 pub fn ensure_profile_store_entry(
-    cli: &Cli,
     profile_store_path: &Path,
     profile_name: &str,
+    profile_defaults: &ProfileDefaults,
+    repair_existing: bool,
 ) -> Result<&'static str> {
     let mut profiles = load_profile_store(profile_store_path)?;
-    if profiles.contains_key(profile_name) {
-        return Ok("unchanged");
+    if let Some(existing) = profiles.get(profile_name) {
+        if !repair_existing {
+            return Ok("unchanged");
+        }
+        if existing == profile_defaults {
+            return Ok("unchanged");
+        }
+        profiles.insert(profile_name.to_string(), profile_defaults.clone());
+        save_profile_store(profile_store_path, &profiles)?;
+        return Ok("repaired");
     }
 
     let file_existed = profile_store_path.exists();
-    profiles.insert(profile_name.to_string(), build_profile_defaults(cli));
+    profiles.insert(profile_name.to_string(), profile_defaults.clone());
     save_profile_store(profile_store_path, &profiles)?;
     if file_existed {
         Ok("updated")
@@ -62,6 +70,7 @@ pub fn ensure_profile_store_entry(
 #[cfg(test)]
 mod tests {
     use super::{ensure_directory, ensure_profile_store_entry, resolve_onboarding_profile_name};
+    use crate::startup_config::build_profile_defaults;
     use clap::Parser;
     use std::path::Path;
     use tau_cli::Cli;
@@ -133,13 +142,32 @@ mod tests {
         let mut cli = parse_cli_with_stack();
         apply_workspace_paths(&mut cli, temp.path());
         let profile_store_path = temp.path().join(".tau/profiles.json");
+        let defaults = build_profile_defaults(&cli);
 
-        let first = ensure_profile_store_entry(&cli, &profile_store_path, "team")
+        let first = ensure_profile_store_entry(&profile_store_path, "team", &defaults, false)
             .expect("create profile entry");
         assert_eq!(first, "created");
 
-        let second = ensure_profile_store_entry(&cli, &profile_store_path, "team")
+        let second = ensure_profile_store_entry(&profile_store_path, "team", &defaults, false)
             .expect("preserve existing profile entry");
         assert_eq!(second, "unchanged");
+    }
+
+    #[test]
+    fn regression_ensure_profile_store_entry_rewrites_existing_profile_when_repair_requested() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        let profile_store_path = temp.path().join(".tau/profiles.json");
+        let first_defaults = build_profile_defaults(&cli);
+        ensure_profile_store_entry(&profile_store_path, "team", &first_defaults, false)
+            .expect("create profile entry");
+
+        cli.model = "google/gemini-2.5-pro".to_string();
+        let repaired_defaults = build_profile_defaults(&cli);
+        let action =
+            ensure_profile_store_entry(&profile_store_path, "team", &repaired_defaults, true)
+                .expect("repair profile");
+        assert_eq!(action, "repaired");
     }
 }

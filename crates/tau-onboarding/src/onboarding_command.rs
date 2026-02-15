@@ -14,10 +14,19 @@ use crate::onboarding_release_channel::ensure_onboarding_release_channel;
 use crate::onboarding_report::{
     build_onboarding_next_steps, collect_executable_checks, render_onboarding_summary,
     resolve_onboarding_report_path, write_onboarding_report, OnboardingReport,
+    OnboardingWizardReport,
 };
+use crate::onboarding_wizard::{
+    apply_wizard_plan_to_profile_defaults, bootstrap_identity_files,
+    detect_onboarding_first_run_state, persist_onboarding_baseline,
+    resolve_interactive_wizard_plan, resolve_non_interactive_wizard_plan,
+    resolve_onboarding_entrypoint, OnboardingEntrypoint, OnboardingFirstRunState,
+    OnboardingWizardPlan,
+};
+use crate::startup_config::build_profile_defaults;
 use crate::startup_prompt_composition::resolve_startup_identity_report;
 
-const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 3;
+const ONBOARDING_REPORT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnboardingMode {
@@ -26,6 +35,8 @@ enum OnboardingMode {
 }
 
 pub fn execute_onboarding_command(cli: &Cli) -> Result<()> {
+    let entrypoint = resolve_onboarding_entrypoint(cli);
+    let first_run = detect_onboarding_first_run_state(cli);
     let mode = if cli.onboard_non_interactive {
         OnboardingMode::NonInteractive
     } else {
@@ -42,8 +53,20 @@ pub fn execute_onboarding_command(cli: &Cli) -> Result<()> {
             return Ok(());
         }
     }
+    let wizard_plan = if mode == OnboardingMode::Interactive {
+        resolve_interactive_wizard_plan(cli, entrypoint, &first_run, prompt_line)?
+    } else {
+        resolve_non_interactive_wizard_plan(cli, entrypoint, &first_run)
+    };
 
-    let report = build_onboarding_report(cli, &profile_name, mode)?;
+    let report = build_onboarding_report(
+        cli,
+        &profile_name,
+        mode,
+        entrypoint,
+        &first_run,
+        &wizard_plan,
+    )?;
     let report_path = write_onboarding_report(&report, resolve_onboarding_report_path(cli)?)
         .context("failed to persist onboarding report")?;
     println!("{}", render_onboarding_summary(&report, &report_path));
@@ -54,6 +77,9 @@ fn build_onboarding_report(
     cli: &Cli,
     profile_name: &str,
     mode: OnboardingMode,
+    entrypoint: OnboardingEntrypoint,
+    first_run: &OnboardingFirstRunState,
+    wizard_plan: &OnboardingWizardPlan,
 ) -> Result<OnboardingReport> {
     let tau_root = resolve_tau_root(cli);
     let directories = collect_bootstrap_directories(cli, &tau_root);
@@ -68,13 +94,23 @@ fn build_onboarding_report(
     }
 
     let profile_store_path = tau_root.join("profiles.json");
-    let profile_store_action = ensure_profile_store_entry(cli, &profile_store_path, profile_name)?;
+    let profile_defaults =
+        apply_wizard_plan_to_profile_defaults(build_profile_defaults(cli), wizard_plan);
+    let profile_store_action = ensure_profile_store_entry(
+        &profile_store_path,
+        profile_name,
+        &profile_defaults,
+        wizard_plan.profile_repair_requested,
+    )?;
     let release_channel_path = tau_root.join("release-channel.json");
     let release_channel_state = ensure_onboarding_release_channel(
         &release_channel_path,
         cli.onboard_release_channel.as_deref(),
     )?;
     let daemon_bootstrap = run_onboarding_daemon_bootstrap(cli)?;
+    let baseline_persist_result =
+        persist_onboarding_baseline(&tau_root, entrypoint, first_run, wizard_plan)?;
+    let identity_bootstrap = bootstrap_identity_files(&tau_root, wizard_plan)?;
     let mut files_created = Vec::new();
     let mut files_existing = Vec::new();
     if profile_store_action == "created" {
@@ -86,6 +122,17 @@ fn build_onboarding_report(
         files_created.push(release_channel_path.display().to_string());
     } else {
         files_existing.push(release_channel_path.display().to_string());
+    }
+    if baseline_persist_result.action == "created" {
+        files_created.push(baseline_persist_result.path.clone());
+    } else {
+        files_existing.push(baseline_persist_result.path.clone());
+    }
+    for identity_file in &identity_bootstrap.files {
+        match identity_file.action.as_str() {
+            "created" => push_unique_path(&mut files_created, &identity_file.path),
+            _ => push_unique_path(&mut files_existing, &identity_file.path),
+        }
     }
 
     let executable_checks = collect_executable_checks(cli);
@@ -114,6 +161,22 @@ fn build_onboarding_report(
         files_created,
         files_existing,
         executable_checks,
+        wizard: OnboardingWizardReport {
+            entrypoint: entrypoint.as_str().to_string(),
+            first_run_detected: first_run.is_first_run,
+            first_run_reason_codes: first_run.reason_codes.clone(),
+            selected_provider: wizard_plan.selected_provider.as_str().to_string(),
+            selected_auth_mode: wizard_plan.selected_auth_mode.as_str().to_string(),
+            selected_model: wizard_plan.selected_model.clone(),
+            selected_workspace: wizard_plan.selected_workspace.clone(),
+            profile_repair_requested: wizard_plan.profile_repair_requested,
+            identity_generation_requested: wizard_plan.identity_generation_requested,
+            identity_repair_requested: wizard_plan.identity_repair_requested,
+            baseline_path: baseline_persist_result.path,
+            baseline_action: baseline_persist_result.action,
+            reason_codes: wizard_plan.reason_codes.clone(),
+        },
+        identity_bootstrap,
         identity_composition,
         daemon_bootstrap,
         next_steps,
@@ -128,6 +191,11 @@ fn onboarding_mode_label(mode: OnboardingMode) -> &'static str {
 }
 
 fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
+    let buffer = prompt_line(prompt)?;
+    Ok(parse_yes_no_response(&buffer, default_yes))
+}
+
+fn prompt_line(prompt: &str) -> Result<String> {
     print!("{prompt}");
     io::stdout()
         .flush()
@@ -136,13 +204,24 @@ fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
     io::stdin()
         .read_line(&mut buffer)
         .context("failed to read onboarding prompt response")?;
-    Ok(parse_yes_no_response(&buffer, default_yes))
+    Ok(buffer)
+}
+
+fn push_unique_path(target: &mut Vec<String>, path: &str) {
+    if target.iter().any(|existing| existing == path) {
+        return;
+    }
+    target.push(path.to_string());
 }
 
 #[cfg(test)]
 mod tests {
     use super::{build_onboarding_report, OnboardingMode, ONBOARDING_REPORT_SCHEMA_VERSION};
     use crate::onboarding_paths::{parse_yes_no_response, resolve_tau_root};
+    use crate::onboarding_wizard::{
+        detect_onboarding_first_run_state, resolve_non_interactive_wizard_plan,
+        resolve_onboarding_entrypoint,
+    };
     use clap::Parser;
     use std::path::{Path, PathBuf};
     use tau_cli::Cli;
@@ -212,9 +291,19 @@ mod tests {
         let mut cli = test_cli();
         apply_workspace_paths(&mut cli, temp.path());
         cli.onboard_profile = "team-default".to_string();
+        let first_run = detect_onboarding_first_run_state(&cli);
+        let entrypoint = resolve_onboarding_entrypoint(&cli);
+        let wizard_plan = resolve_non_interactive_wizard_plan(&cli, entrypoint, &first_run);
 
-        let report = build_onboarding_report(&cli, "team-default", OnboardingMode::NonInteractive)
-            .expect("build report");
+        let report = build_onboarding_report(
+            &cli,
+            "team-default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &first_run,
+            &wizard_plan,
+        )
+        .expect("build report");
 
         assert_eq!(report.schema_version, ONBOARDING_REPORT_SCHEMA_VERSION);
         assert_eq!(report.profile_name, "team-default");
@@ -228,6 +317,13 @@ mod tests {
         assert_eq!(report.daemon_bootstrap.install_action, "skipped");
         assert_eq!(report.daemon_bootstrap.start_action, "skipped");
         assert!(report.daemon_bootstrap.ready);
+        assert_eq!(report.wizard.entrypoint, "explicit_flag".to_string());
+        assert!(report.wizard.first_run_detected);
+        assert!(report
+            .wizard
+            .reason_codes
+            .iter()
+            .any(|code| code == "wizard_non_interactive_defaults"));
         assert!(
             PathBuf::from(&report.profile_store_path).exists(),
             "profile store should exist after onboarding"
@@ -244,17 +340,39 @@ mod tests {
         let mut cli = test_cli();
         apply_workspace_paths(&mut cli, temp.path());
         cli.onboard_profile = "default".to_string();
+        let first_run = detect_onboarding_first_run_state(&cli);
+        let entrypoint = resolve_onboarding_entrypoint(&cli);
+        let wizard_plan = resolve_non_interactive_wizard_plan(&cli, entrypoint, &first_run);
 
-        let first = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
-            .expect("first report");
+        let first = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &first_run,
+            &wizard_plan,
+        )
+        .expect("first report");
         assert_eq!(first.profile_store_action, "created");
+        assert_eq!(first.wizard.baseline_action, "created");
 
-        let second = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
-            .expect("second report");
+        let second_first_run = detect_onboarding_first_run_state(&cli);
+        let second_wizard_plan =
+            resolve_non_interactive_wizard_plan(&cli, entrypoint, &second_first_run);
+        let second = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &second_first_run,
+            &second_wizard_plan,
+        )
+        .expect("second report");
         assert_eq!(second.profile_store_action, "unchanged");
         assert_eq!(second.release_channel, "stable");
         assert_eq!(second.release_channel_source, "existing");
         assert_eq!(second.release_channel_action, "unchanged");
+        assert_eq!(second.wizard.baseline_action, "updated");
         assert_eq!(second.daemon_bootstrap.install_action, "skipped");
         assert_eq!(second.daemon_bootstrap.start_action, "skipped");
     }
@@ -266,16 +384,36 @@ mod tests {
         apply_workspace_paths(&mut cli, temp.path());
         cli.onboard_profile = "default".to_string();
         cli.onboard_release_channel = Some("beta".to_string());
+        let entrypoint = resolve_onboarding_entrypoint(&cli);
+        let first_run = detect_onboarding_first_run_state(&cli);
+        let wizard_plan = resolve_non_interactive_wizard_plan(&cli, entrypoint, &first_run);
 
-        let first = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
-            .expect("first report");
+        let first = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &first_run,
+            &wizard_plan,
+        )
+        .expect("first report");
         assert_eq!(first.release_channel, "beta");
         assert_eq!(first.release_channel_source, "override");
         assert_eq!(first.release_channel_action, "created");
 
         cli.onboard_release_channel = Some("dev".to_string());
-        let second = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
-            .expect("second report");
+        let second_first_run = detect_onboarding_first_run_state(&cli);
+        let second_wizard_plan =
+            resolve_non_interactive_wizard_plan(&cli, entrypoint, &second_first_run);
+        let second = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &second_first_run,
+            &second_wizard_plan,
+        )
+        .expect("second report");
         assert_eq!(second.release_channel, "dev");
         assert_eq!(second.release_channel_source, "override");
         assert_eq!(second.release_channel_action, "updated");
@@ -287,9 +425,19 @@ mod tests {
         let mut cli = test_cli();
         apply_workspace_paths(&mut cli, temp.path());
         cli.onboard_release_channel = Some("nightly".to_string());
+        let first_run = detect_onboarding_first_run_state(&cli);
+        let entrypoint = resolve_onboarding_entrypoint(&cli);
+        let wizard_plan = resolve_non_interactive_wizard_plan(&cli, entrypoint, &first_run);
 
-        let error = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
-            .expect_err("invalid release channel should fail");
+        let error = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &first_run,
+            &wizard_plan,
+        )
+        .expect_err("invalid release channel should fail");
         assert!(error.to_string().contains("expected stable|beta|dev"));
     }
 
@@ -300,9 +448,19 @@ mod tests {
         apply_workspace_paths(&mut cli, temp.path());
         cli.onboard_install_daemon = true;
         cli.onboard_start_daemon = true;
+        let first_run = detect_onboarding_first_run_state(&cli);
+        let entrypoint = resolve_onboarding_entrypoint(&cli);
+        let wizard_plan = resolve_non_interactive_wizard_plan(&cli, entrypoint, &first_run);
 
-        let report = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
-            .expect("report with daemon bootstrap");
+        let report = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &first_run,
+            &wizard_plan,
+        )
+        .expect("report with daemon bootstrap");
 
         assert!(report.daemon_bootstrap.requested_install);
         assert!(report.daemon_bootstrap.requested_start);
@@ -328,14 +486,47 @@ mod tests {
         let mut cli = test_cli();
         apply_workspace_paths(&mut cli, temp.path());
         cli.onboard_install_daemon = true;
+        let first_run = detect_onboarding_first_run_state(&cli);
+        let entrypoint = resolve_onboarding_entrypoint(&cli);
+        let wizard_plan = resolve_non_interactive_wizard_plan(&cli, entrypoint, &first_run);
 
         let invalid_state_dir = temp.path().join("daemon-state-file");
         std::fs::write(&invalid_state_dir, "not-a-directory").expect("write invalid state path");
         cli.daemon_state_dir = invalid_state_dir;
 
-        let error = build_onboarding_report(&cli, "default", OnboardingMode::NonInteractive)
-            .expect_err("daemon install should fail closed");
+        let error = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &first_run,
+            &wizard_plan,
+        )
+        .expect_err("daemon install should fail closed");
         let error_text = error.to_string();
         assert!(error_text.contains("onboarding daemon install failed"));
+    }
+
+    #[test]
+    fn regression_build_onboarding_report_marks_first_run_auto_entrypoint_when_not_explicit() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = test_cli();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.onboard = false;
+        cli.onboard_non_interactive = true;
+
+        let first_run = detect_onboarding_first_run_state(&cli);
+        let entrypoint = resolve_onboarding_entrypoint(&cli);
+        let wizard_plan = resolve_non_interactive_wizard_plan(&cli, entrypoint, &first_run);
+        let report = build_onboarding_report(
+            &cli,
+            "default",
+            OnboardingMode::NonInteractive,
+            entrypoint,
+            &first_run,
+            &wizard_plan,
+        )
+        .expect("build report");
+        assert_eq!(report.wizard.entrypoint, "first_run_auto");
     }
 }

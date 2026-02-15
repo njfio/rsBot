@@ -1,5 +1,8 @@
 use anyhow::Result;
+use std::io::IsTerminal;
 use tau_cli::Cli;
+
+use crate::onboarding_wizard::detect_onboarding_first_run_state;
 
 pub type StartupCommandFn = fn(&Cli) -> Result<()>;
 pub type ResolveSecretFn = fn(&Cli, Option<&str>, Option<&str>, &str) -> Result<Option<String>>;
@@ -224,19 +227,93 @@ impl tau_startup::StartupPreflightActions for CallbackStartupPreflightActions<'_
 }
 
 pub fn execute_startup_preflight(cli: &Cli, callbacks: &StartupPreflightCallbacks) -> Result<bool> {
+    execute_startup_preflight_with_detection(
+        cli,
+        callbacks,
+        std::env::args_os().count(),
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+        onboarding_auto_enabled_from_env(),
+    )
+}
+
+fn execute_startup_preflight_with_detection(
+    cli: &Cli,
+    callbacks: &StartupPreflightCallbacks,
+    arg_count: usize,
+    stdin_is_tty: bool,
+    stdout_is_tty: bool,
+    auto_enabled: bool,
+) -> Result<bool> {
     let actions = CallbackStartupPreflightActions { callbacks };
-    tau_startup::execute_startup_preflight(cli, &actions)
+    let handled = tau_startup::execute_startup_preflight(cli, &actions)?;
+    if handled {
+        return Ok(true);
+    }
+
+    let first_run = detect_onboarding_first_run_state(cli);
+    if should_auto_run_onboarding(
+        cli,
+        first_run.is_first_run,
+        arg_count,
+        stdin_is_tty,
+        stdout_is_tty,
+        auto_enabled,
+    ) {
+        (callbacks.execute_onboarding_command)(cli)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn onboarding_auto_enabled_from_env() -> bool {
+    match std::env::var("TAU_ONBOARD_AUTO") {
+        Ok(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
+        }
+        Err(_) => true,
+    }
+}
+
+fn should_auto_run_onboarding(
+    cli: &Cli,
+    first_run_detected: bool,
+    arg_count: usize,
+    stdin_is_tty: bool,
+    stdout_is_tty: bool,
+    auto_enabled: bool,
+) -> bool {
+    if !auto_enabled {
+        return false;
+    }
+    if cli.onboard || cli.onboard_non_interactive {
+        return false;
+    }
+    if arg_count > 1 {
+        return false;
+    }
+    if !stdin_is_tty || !stdout_is_tty {
+        return false;
+    }
+    first_run_detected
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_startup_preflight, StartupPreflightCallbacks};
+    use super::{
+        execute_startup_preflight_with_detection, should_auto_run_onboarding,
+        StartupPreflightCallbacks,
+    };
     use anyhow::{anyhow, Result};
     use clap::Parser;
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tau_cli::Cli;
+    use tempfile::tempdir;
 
     static ONBOARD_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static AUTO_ONBOARD_CALLS: AtomicUsize = AtomicUsize::new(0);
     static DAEMON_CALLS: AtomicUsize = AtomicUsize::new(0);
 
     fn parse_cli_with_stack() -> Cli {
@@ -247,6 +324,34 @@ mod tests {
             .expect("spawn cli parse thread")
             .join()
             .expect("join cli parse thread")
+    }
+
+    fn apply_workspace_paths(cli: &mut Cli, workspace: &Path) {
+        let tau_root = workspace.join(".tau");
+        cli.session = tau_root.join("sessions/default.sqlite");
+        cli.credential_store = tau_root.join("credentials.json");
+        cli.skills_dir = tau_root.join("skills");
+        cli.model_catalog_cache = tau_root.join("models/catalog.json");
+        cli.channel_store_root = tau_root.join("channel-store");
+        cli.events_dir = tau_root.join("events");
+        cli.events_state_path = tau_root.join("events/state.json");
+        cli.dashboard_state_dir = tau_root.join("dashboard");
+        cli.github_state_dir = tau_root.join("github-issues");
+        cli.slack_state_dir = tau_root.join("slack");
+        cli.package_install_root = tau_root.join("packages");
+        cli.package_update_root = tau_root.join("packages");
+        cli.package_list_root = tau_root.join("packages");
+        cli.package_remove_root = tau_root.join("packages");
+        cli.package_rollback_root = tau_root.join("packages");
+        cli.package_conflicts_root = tau_root.join("packages");
+        cli.package_activate_root = tau_root.join("packages");
+        cli.package_activate_destination = tau_root.join("packages-active");
+        cli.extension_list_root = tau_root.join("extensions");
+        cli.extension_runtime_root = tau_root.join("extensions");
+    }
+
+    fn execute_without_auto(cli: &Cli, callbacks: &StartupPreflightCallbacks) -> Result<bool> {
+        execute_startup_preflight_with_detection(cli, callbacks, 2, true, true, true)
     }
 
     fn noop_command(_cli: &Cli) -> Result<()> {
@@ -268,6 +373,11 @@ mod tests {
 
     fn onboarding_counter(_cli: &Cli) -> Result<()> {
         ONBOARD_CALLS.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn auto_onboarding_counter(_cli: &Cli) -> Result<()> {
+        AUTO_ONBOARD_CALLS.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -332,7 +442,7 @@ mod tests {
         cli.onboard = true;
 
         let handled =
-            execute_startup_preflight(&cli, &callbacks).expect("startup preflight should succeed");
+            execute_without_auto(&cli, &callbacks).expect("startup preflight should succeed");
         assert!(handled);
         assert_eq!(ONBOARD_CALLS.load(Ordering::Relaxed), 1);
     }
@@ -345,7 +455,7 @@ mod tests {
         let cli = parse_cli_with_stack();
 
         let handled =
-            execute_startup_preflight(&cli, &callbacks).expect("startup preflight should succeed");
+            execute_without_auto(&cli, &callbacks).expect("startup preflight should succeed");
         assert!(handled);
         assert_eq!(DAEMON_CALLS.load(Ordering::Relaxed), 1);
     }
@@ -356,7 +466,7 @@ mod tests {
         let cli = parse_cli_with_stack();
 
         let handled =
-            execute_startup_preflight(&cli, &callbacks).expect("startup preflight should succeed");
+            execute_without_auto(&cli, &callbacks).expect("startup preflight should succeed");
         assert!(!handled);
     }
 
@@ -367,8 +477,54 @@ mod tests {
         let mut cli = parse_cli_with_stack();
         cli.onboard = true;
 
-        let error = execute_startup_preflight(&cli, &callbacks)
+        let error = execute_without_auto(&cli, &callbacks)
             .expect_err("onboarding callback failure should propagate");
         assert!(error.to_string().contains("onboarding callback failure"));
+    }
+
+    #[test]
+    fn functional_execute_startup_preflight_auto_runs_onboarding_on_first_run_default_invocation() {
+        AUTO_ONBOARD_CALLS.store(0, Ordering::Relaxed);
+        let mut callbacks = default_callbacks();
+        callbacks.execute_onboarding_command = auto_onboarding_counter;
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+
+        let handled =
+            execute_startup_preflight_with_detection(&cli, &callbacks, 1, true, true, true)
+                .expect("startup preflight should succeed");
+        assert!(handled);
+        assert_eq!(AUTO_ONBOARD_CALLS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn regression_execute_startup_preflight_auto_onboarding_respects_disable_and_tty_guards() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        let callbacks = default_callbacks();
+
+        let handled_disabled =
+            execute_startup_preflight_with_detection(&cli, &callbacks, 1, true, true, false)
+                .expect("startup preflight should succeed");
+        assert!(!handled_disabled);
+
+        let handled_non_tty =
+            execute_startup_preflight_with_detection(&cli, &callbacks, 1, false, true, true)
+                .expect("startup preflight should succeed");
+        assert!(!handled_non_tty);
+    }
+
+    #[test]
+    fn unit_should_auto_run_onboarding_requires_first_run_and_default_invocation() {
+        let mut cli = parse_cli_with_stack();
+        assert!(should_auto_run_onboarding(&cli, true, 1, true, true, true));
+        assert!(!should_auto_run_onboarding(
+            &cli, false, 1, true, true, true
+        ));
+        assert!(!should_auto_run_onboarding(&cli, true, 2, true, true, true));
+        cli.onboard = true;
+        assert!(!should_auto_run_onboarding(&cli, true, 1, true, true, true));
     }
 }

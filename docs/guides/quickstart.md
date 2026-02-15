@@ -14,6 +14,16 @@ Run all commands from repository root.
 
 ## Onboarding
 
+First-run default startup (`cargo run -p tau-coding-agent --`) now auto-enters the
+interactive onboarding wizard when `.tau/profiles.json` and
+`.tau/release-channel.json` are both missing and stdin/stdout are TTYs.
+
+Disable first-run auto onboarding for scripted environments:
+
+```bash
+TAU_ONBOARD_AUTO=false cargo run -p tau-coding-agent --
+```
+
 Initialize `.tau` directories, profile store, and release-channel metadata:
 
 ```bash
@@ -37,6 +47,14 @@ Interactive onboarding with daemon install only:
 ```bash
 cargo run -p tau-coding-agent -- --onboard --onboard-profile default --onboard-install-daemon
 ```
+
+Onboarding writes a baseline selection record to `.tau/onboarding-baseline.json`
+and supports rerun-safe behavior:
+
+- Existing profile entries are preserved by default on rerun.
+- Interactive wizard reruns can request profile repair/overwrite explicitly.
+- Identity files (`SOUL.md`, `AGENTS.md`, `USER.md`) are optional and can be
+  generated/repair-overwritten explicitly through guided prompts.
 
 Release channel planning/apply workflow runbook:
 
