@@ -19,6 +19,10 @@ const MEMORY_EMBEDDING_SOURCE_PROVIDER: &str = "provider-openai-compatible";
 const MEMORY_EMBEDDING_REASON_HASH_ONLY: &str = "memory_embedding_hash_only";
 const MEMORY_EMBEDDING_REASON_PROVIDER_SUCCESS: &str = "memory_embedding_provider_success";
 const MEMORY_EMBEDDING_REASON_PROVIDER_FAILED: &str = "memory_embedding_provider_failed";
+const MEMORY_RETRIEVAL_BACKEND_VECTOR_ONLY: &str = "vector-only";
+const MEMORY_RETRIEVAL_BACKEND_HYBRID_BM25_RRF: &str = "hybrid-bm25-rrf";
+const MEMORY_RETRIEVAL_REASON_VECTOR_ONLY: &str = "memory_retrieval_vector_only";
+const MEMORY_RETRIEVAL_REASON_HYBRID_ENABLED: &str = "memory_retrieval_hybrid_enabled";
 
 fn default_embedding_source() -> String {
     MEMORY_EMBEDDING_SOURCE_HASH.to_string()
@@ -120,8 +124,16 @@ pub struct MemorySearchOptions {
     pub limit: usize,
     pub embedding_dimensions: usize,
     pub min_similarity: f32,
+    pub enable_hybrid_retrieval: bool,
+    pub bm25_k1: f32,
+    pub bm25_b: f32,
+    pub bm25_min_score: f32,
+    pub rrf_k: usize,
+    pub rrf_vector_weight: f32,
+    pub rrf_lexical_weight: f32,
     pub enable_embedding_migration: bool,
     pub benchmark_against_hash: bool,
+    pub benchmark_against_vector_only: bool,
 }
 
 impl Default for MemorySearchOptions {
@@ -131,8 +143,16 @@ impl Default for MemorySearchOptions {
             limit: 5,
             embedding_dimensions: 128,
             min_similarity: 0.55,
+            enable_hybrid_retrieval: false,
+            bm25_k1: 1.2,
+            bm25_b: 0.75,
+            bm25_min_score: 0.0,
+            rrf_k: 60,
+            rrf_vector_weight: 1.0,
+            rrf_lexical_weight: 1.0,
             enable_embedding_migration: true,
             benchmark_against_hash: false,
+            benchmark_against_vector_only: false,
         }
     }
 }
@@ -142,6 +162,9 @@ impl Default for MemorySearchOptions {
 pub struct MemorySearchMatch {
     pub memory_id: String,
     pub score: f32,
+    pub vector_score: Option<f32>,
+    pub lexical_score: Option<f32>,
+    pub fused_score: Option<f32>,
     pub scope: MemoryScope,
     pub summary: String,
     pub tags: Vec<String>,
@@ -157,12 +180,19 @@ pub struct MemorySearchResult {
     pub query: String,
     pub scanned: usize,
     pub returned: usize,
+    pub retrieval_backend: String,
+    pub retrieval_reason_code: String,
     pub embedding_backend: String,
     pub embedding_reason_code: String,
     pub migrated_entries: usize,
     pub query_embedding_latency_ms: u64,
     pub ranking_latency_ms: u64,
+    pub lexical_ranking_latency_ms: u64,
+    pub fusion_latency_ms: u64,
+    pub vector_candidates: usize,
+    pub lexical_candidates: usize,
     pub baseline_hash_overlap: Option<usize>,
+    pub baseline_vector_overlap: Option<usize>,
     pub matches: Vec<MemorySearchMatch>,
 }
 
@@ -341,58 +371,103 @@ impl FileMemoryStore {
         if computed_query.reason_code != MEMORY_EMBEDDING_REASON_HASH_ONLY {
             embedding_reason_code = computed_query.reason_code.clone();
         }
-        if computed_query
+        let has_query_embedding = computed_query
             .vector
             .iter()
-            .all(|component| *component == 0.0)
-        {
-            return Ok(MemorySearchResult {
-                query: normalized_query.to_string(),
-                scanned: by_memory_id.len(),
-                returned: 0,
-                embedding_backend: computed_query.backend,
-                embedding_reason_code,
-                migrated_entries,
-                query_embedding_latency_ms,
-                ranking_latency_ms: 0,
-                baseline_hash_overlap: options.benchmark_against_hash.then_some(0),
-                matches: Vec::new(),
-            });
-        }
+            .any(|component| *component != 0.0);
 
         let ranking_started = Instant::now();
-        let mut ranked = by_memory_id
-            .iter()
-            .filter_map(|(memory_id, record)| {
-                let candidate_embedding = if record.embedding_vector.is_empty() {
-                    embed_text_vector(
-                        record_search_text(record).as_str(),
-                        options.embedding_dimensions,
-                    )
-                } else {
-                    resize_and_normalize_embedding(
-                        record.embedding_vector.as_slice(),
-                        options.embedding_dimensions,
-                    )
-                };
-                let score = cosine_similarity(&computed_query.vector, &candidate_embedding);
-                if score >= options.min_similarity {
-                    Some(RankedTextMatch {
-                        key: memory_id.clone(),
-                        text: record_search_text(record),
-                        score,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        ranked.sort_by(|left, right| {
+        let mut vector_ranked = if has_query_embedding {
+            by_memory_id
+                .iter()
+                .filter_map(|(memory_id, record)| {
+                    let candidate_embedding = if record.embedding_vector.is_empty() {
+                        embed_text_vector(
+                            record_search_text(record).as_str(),
+                            options.embedding_dimensions,
+                        )
+                    } else {
+                        resize_and_normalize_embedding(
+                            record.embedding_vector.as_slice(),
+                            options.embedding_dimensions,
+                        )
+                    };
+                    let score = cosine_similarity(&computed_query.vector, &candidate_embedding);
+                    if score >= options.min_similarity {
+                        Some(RankedTextMatch {
+                            key: memory_id.clone(),
+                            text: record_search_text(record),
+                            score,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        vector_ranked.sort_by(|left, right| {
             right
                 .score
                 .total_cmp(&left.score)
                 .then_with(|| left.key.cmp(&right.key))
         });
+
+        let mut lexical_ranking_latency_ms = 0u64;
+        let mut lexical_ranked = Vec::new();
+        if options.enable_hybrid_retrieval {
+            let lexical_started = Instant::now();
+            lexical_ranked = rank_text_candidates_bm25(
+                normalized_query,
+                by_memory_id
+                    .iter()
+                    .map(|(memory_id, record)| RankedTextCandidate {
+                        key: memory_id.clone(),
+                        text: record_search_text(record),
+                    })
+                    .collect::<Vec<_>>(),
+                by_memory_id.len(),
+                options.bm25_k1,
+                options.bm25_b,
+                options.bm25_min_score,
+            );
+            lexical_ranking_latency_ms = lexical_started.elapsed().as_millis() as u64;
+        }
+
+        let mut vector_scores = HashMap::new();
+        for item in &vector_ranked {
+            vector_scores.insert(item.key.clone(), item.score);
+        }
+        let mut lexical_scores = HashMap::new();
+        for item in &lexical_ranked {
+            lexical_scores.insert(item.key.clone(), item.score);
+        }
+
+        let vector_candidates = vector_ranked.len();
+        let lexical_candidates = lexical_ranked.len();
+
+        let mut fusion_latency_ms = 0u64;
+        let mut fused_scores = HashMap::new();
+        let mut ranked = if options.enable_hybrid_retrieval {
+            let fusion_started = Instant::now();
+            let fused = reciprocal_rank_fuse(
+                &vector_ranked,
+                &lexical_ranked,
+                options.limit,
+                options.rrf_k,
+                options.rrf_vector_weight,
+                options.rrf_lexical_weight,
+            );
+            fusion_latency_ms = fusion_started.elapsed().as_millis() as u64;
+            for item in &fused {
+                fused_scores.insert(item.key.clone(), item.score);
+            }
+            fused
+        } else {
+            vector_ranked.clone()
+        };
+
         ranked.truncate(options.limit);
         let ranking_latency_ms = ranking_started.elapsed().as_millis() as u64;
 
@@ -404,6 +479,12 @@ impl FileMemoryStore {
             matches.push(MemorySearchMatch {
                 memory_id: record.entry.memory_id.clone(),
                 score: item.score,
+                vector_score: vector_scores.get(item.key.as_str()).copied(),
+                lexical_score: lexical_scores.get(item.key.as_str()).copied(),
+                fused_score: options
+                    .enable_hybrid_retrieval
+                    .then(|| fused_scores.get(item.key.as_str()).copied())
+                    .flatten(),
                 scope: record.scope.clone(),
                 summary: record.entry.summary.clone(),
                 tags: record.entry.tags.clone(),
@@ -413,6 +494,10 @@ impl FileMemoryStore {
                 embedding_model: record.embedding_model.clone(),
             });
         }
+        let selected = matches
+            .iter()
+            .map(|item| item.memory_id.as_str())
+            .collect::<BTreeSet<_>>();
 
         let baseline_hash_overlap = if options.benchmark_against_hash {
             let baseline = rank_text_candidates(
@@ -428,10 +513,6 @@ impl FileMemoryStore {
                 options.embedding_dimensions,
                 options.min_similarity,
             );
-            let selected = matches
-                .iter()
-                .map(|item| item.memory_id.as_str())
-                .collect::<BTreeSet<_>>();
             Some(
                 baseline
                     .into_iter()
@@ -441,17 +522,45 @@ impl FileMemoryStore {
         } else {
             None
         };
+        let baseline_vector_overlap = if options.benchmark_against_vector_only {
+            Some(
+                vector_ranked
+                    .iter()
+                    .take(options.limit)
+                    .filter(|candidate| selected.contains(candidate.key.as_str()))
+                    .count(),
+            )
+        } else {
+            None
+        };
+        let retrieval_backend = if options.enable_hybrid_retrieval {
+            MEMORY_RETRIEVAL_BACKEND_HYBRID_BM25_RRF.to_string()
+        } else {
+            MEMORY_RETRIEVAL_BACKEND_VECTOR_ONLY.to_string()
+        };
+        let retrieval_reason_code = if options.enable_hybrid_retrieval {
+            MEMORY_RETRIEVAL_REASON_HYBRID_ENABLED.to_string()
+        } else {
+            MEMORY_RETRIEVAL_REASON_VECTOR_ONLY.to_string()
+        };
 
         Ok(MemorySearchResult {
             query: normalized_query.to_string(),
             scanned: by_memory_id.len(),
             returned: matches.len(),
+            retrieval_backend,
+            retrieval_reason_code,
             embedding_backend: computed_query.backend,
             embedding_reason_code,
             migrated_entries,
             query_embedding_latency_ms,
             ranking_latency_ms,
+            lexical_ranking_latency_ms,
+            fusion_latency_ms,
+            vector_candidates,
+            lexical_candidates,
             baseline_hash_overlap,
+            baseline_vector_overlap,
             matches,
         })
     }
@@ -676,15 +785,146 @@ pub fn rank_text_candidates(
     matches
 }
 
+/// Ranks text candidates using BM25 lexical scoring.
+pub fn rank_text_candidates_bm25(
+    query: &str,
+    candidates: Vec<RankedTextCandidate>,
+    limit: usize,
+    k1: f32,
+    b: f32,
+    min_score: f32,
+) -> Vec<RankedTextMatch> {
+    if limit == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let query_tokens = tokenize_text(query);
+    if query_tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let safe_k1 = k1.max(0.1);
+    let safe_b = b.clamp(0.0, 1.0);
+    let safe_min_score = min_score.max(0.0);
+
+    let mut corpus_tokens = Vec::with_capacity(candidates.len());
+    let mut doc_frequencies = HashMap::<String, usize>::new();
+    let mut total_doc_len = 0usize;
+    for candidate in &candidates {
+        let tokens = tokenize_text(candidate.text.as_str());
+        total_doc_len = total_doc_len.saturating_add(tokens.len());
+        let unique_terms = tokens.iter().cloned().collect::<BTreeSet<_>>();
+        for term in unique_terms {
+            *doc_frequencies.entry(term).or_default() += 1;
+        }
+        corpus_tokens.push(tokens);
+    }
+
+    let doc_count = candidates.len() as f32;
+    let average_doc_len = (total_doc_len as f32 / doc_count).max(1.0);
+    let mut matches = Vec::new();
+    for (candidate, tokens) in candidates.into_iter().zip(corpus_tokens.into_iter()) {
+        if tokens.is_empty() {
+            continue;
+        }
+        let mut term_frequencies = HashMap::<String, usize>::new();
+        for token in tokens {
+            *term_frequencies.entry(token).or_default() += 1;
+        }
+
+        let doc_len = term_frequencies.values().sum::<usize>() as f32;
+        let mut score = 0.0f32;
+        for term in &query_tokens {
+            let term_frequency = *term_frequencies.get(term.as_str()).unwrap_or(&0) as f32;
+            if term_frequency <= 0.0 {
+                continue;
+            }
+            let doc_frequency = *doc_frequencies.get(term.as_str()).unwrap_or(&0) as f32;
+            if doc_frequency <= 0.0 {
+                continue;
+            }
+            let idf = (((doc_count - doc_frequency + 0.5) / (doc_frequency + 0.5)) + 1.0).ln();
+            let normalization = safe_k1 * (1.0 - safe_b + safe_b * (doc_len / average_doc_len));
+            let denominator = (term_frequency + normalization).max(f32::EPSILON);
+            score += idf * ((term_frequency * (safe_k1 + 1.0)) / denominator);
+        }
+
+        if score >= safe_min_score {
+            matches.push(RankedTextMatch {
+                key: candidate.key,
+                text: candidate.text,
+                score,
+            });
+        }
+    }
+
+    matches.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    matches.truncate(limit);
+    matches
+}
+
+fn reciprocal_rank_fuse(
+    vector_ranked: &[RankedTextMatch],
+    lexical_ranked: &[RankedTextMatch],
+    limit: usize,
+    rrf_k: usize,
+    vector_weight: f32,
+    lexical_weight: f32,
+) -> Vec<RankedTextMatch> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let safe_rrf_k = rrf_k.max(1) as f32;
+    let safe_vector_weight = vector_weight.max(0.0);
+    let safe_lexical_weight = lexical_weight.max(0.0);
+
+    let mut scores = HashMap::<String, f32>::new();
+    let mut texts = HashMap::<String, String>::new();
+    for (rank, candidate) in vector_ranked.iter().enumerate() {
+        let contribution = safe_vector_weight / (safe_rrf_k + rank as f32 + 1.0);
+        *scores.entry(candidate.key.clone()).or_default() += contribution;
+        texts
+            .entry(candidate.key.clone())
+            .or_insert_with(|| candidate.text.clone());
+    }
+    for (rank, candidate) in lexical_ranked.iter().enumerate() {
+        let contribution = safe_lexical_weight / (safe_rrf_k + rank as f32 + 1.0);
+        *scores.entry(candidate.key.clone()).or_default() += contribution;
+        texts
+            .entry(candidate.key.clone())
+            .or_insert_with(|| candidate.text.clone());
+    }
+
+    let mut fused = scores
+        .into_iter()
+        .filter_map(|(key, score)| {
+            texts.get(key.as_str()).map(|text| RankedTextMatch {
+                key,
+                text: text.clone(),
+                score,
+            })
+        })
+        .collect::<Vec<_>>();
+    fused.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    fused.truncate(limit);
+    fused
+}
+
 /// Converts text to a normalized fixed-size vector using FNV-1a token hashing.
 pub fn embed_text_vector(text: &str, dimensions: usize) -> Vec<f32> {
     let dimensions = dimensions.max(1);
     let mut vector = vec![0.0f32; dimensions];
-    for raw_token in text.split(|character: char| !character.is_alphanumeric()) {
-        if raw_token.is_empty() {
-            continue;
-        }
-        let token = raw_token.to_ascii_lowercase();
+    for token in tokenize_text(text) {
         let hash = fnv1a_hash(token.as_bytes());
         let index = (hash as usize) % dimensions;
         let sign = if (hash & 1) == 0 { 1.0 } else { -1.0 };
@@ -796,6 +1036,13 @@ fn resize_and_normalize_embedding(values: &[f32], dimensions: usize) -> Vec<f32>
         }
     }
     resized
+}
+
+fn tokenize_text(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>()
 }
 
 /// Computes cosine similarity for equal-length vectors.
@@ -961,8 +1208,8 @@ fn current_unix_timestamp_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        embed_text_vector, rank_text_candidates, FileMemoryStore, MemoryEmbeddingProviderConfig,
-        MemoryScopeFilter, MemorySearchOptions, RankedTextCandidate,
+        embed_text_vector, rank_text_candidates, rank_text_candidates_bm25, FileMemoryStore,
+        MemoryEmbeddingProviderConfig, MemoryScopeFilter, MemorySearchOptions, RankedTextCandidate,
     };
     use crate::memory_contract::{MemoryEntry, MemoryScope};
     use httpmock::{Method::POST, MockServer};
@@ -1217,8 +1464,16 @@ mod tests {
                     limit: 5,
                     embedding_dimensions: 4,
                     min_similarity: 0.0,
+                    enable_hybrid_retrieval: false,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.0,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
                     enable_embedding_migration: true,
                     benchmark_against_hash: false,
+                    benchmark_against_vector_only: false,
                 },
             )
             .expect("search with migration");
@@ -1311,8 +1566,16 @@ mod tests {
                     limit: 5,
                     embedding_dimensions: 128,
                     min_similarity: 0.1,
+                    enable_hybrid_retrieval: false,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.0,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
                     enable_embedding_migration: true,
                     benchmark_against_hash: false,
+                    benchmark_against_vector_only: false,
                 },
             )
             .expect("search");
@@ -1367,8 +1630,16 @@ mod tests {
                     limit: 5,
                     embedding_dimensions: 64,
                     min_similarity: 0.0,
+                    enable_hybrid_retrieval: false,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.0,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
                     enable_embedding_migration: false,
                     benchmark_against_hash: true,
+                    benchmark_against_vector_only: false,
                 },
             )
             .expect("benchmarked search");
@@ -1380,14 +1651,214 @@ mod tests {
                     limit: 5,
                     embedding_dimensions: 64,
                     min_similarity: 0.0,
+                    enable_hybrid_retrieval: false,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.0,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
                     enable_embedding_migration: false,
                     benchmark_against_hash: false,
+                    benchmark_against_vector_only: false,
                 },
             )
             .expect("regular search");
 
         assert!(benchmarked.baseline_hash_overlap.is_some());
         assert_eq!(regular.baseline_hash_overlap, None);
+    }
+
+    #[test]
+    fn integration_memory_search_hybrid_returns_lexical_match_when_vector_filter_excludes() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "ops".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        store
+            .write_entry(
+                &scope,
+                MemoryEntry {
+                    memory_id: "memory-hybrid".to_string(),
+                    summary: "kubernetes incident playbook for oncall".to_string(),
+                    tags: vec!["kubernetes".to_string()],
+                    facts: vec!["incident escalation".to_string()],
+                    source_event_key: "evt-hybrid".to_string(),
+                    recency_weight_bps: 0,
+                    confidence_bps: 0,
+                },
+            )
+            .expect("write hybrid memory");
+        store
+            .write_entry(
+                &scope,
+                MemoryEntry {
+                    memory_id: "memory-other".to_string(),
+                    summary: "office kitchen cleanup schedule".to_string(),
+                    tags: vec!["office".to_string()],
+                    facts: vec!["cleanup rota".to_string()],
+                    source_event_key: "evt-other".to_string(),
+                    recency_weight_bps: 0,
+                    confidence_bps: 0,
+                },
+            )
+            .expect("write other memory");
+
+        let vector_only = store
+            .search(
+                "kubernetes incident",
+                &MemorySearchOptions {
+                    scope: MemoryScopeFilter::default(),
+                    limit: 5,
+                    embedding_dimensions: 64,
+                    min_similarity: 1.1,
+                    enable_hybrid_retrieval: false,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.1,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
+                    enable_embedding_migration: false,
+                    benchmark_against_hash: false,
+                    benchmark_against_vector_only: false,
+                },
+            )
+            .expect("vector-only search");
+        let hybrid = store
+            .search(
+                "kubernetes incident",
+                &MemorySearchOptions {
+                    scope: MemoryScopeFilter::default(),
+                    limit: 5,
+                    embedding_dimensions: 64,
+                    min_similarity: 1.1,
+                    enable_hybrid_retrieval: true,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.1,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
+                    enable_embedding_migration: false,
+                    benchmark_against_hash: false,
+                    benchmark_against_vector_only: true,
+                },
+            )
+            .expect("hybrid search");
+
+        assert_eq!(vector_only.returned, 0);
+        assert_eq!(hybrid.returned, 1);
+        assert_eq!(hybrid.matches[0].memory_id, "memory-hybrid");
+        assert_eq!(hybrid.retrieval_backend, "hybrid-bm25-rrf");
+        assert_eq!(
+            hybrid.retrieval_reason_code,
+            "memory_retrieval_hybrid_enabled"
+        );
+        assert!(hybrid.matches[0]
+            .lexical_score
+            .is_some_and(|score| score > 0.0));
+        assert!(hybrid.matches[0].vector_score.is_none());
+        assert!(hybrid.baseline_vector_overlap.is_some());
+    }
+
+    #[test]
+    fn regression_memory_search_vector_only_matches_hash_baseline_order() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "deploy".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+
+        store
+            .write_entry(
+                &scope,
+                MemoryEntry {
+                    memory_id: "memory-a".to_string(),
+                    summary: "release checklist smoke tests".to_string(),
+                    tags: vec!["release".to_string()],
+                    facts: vec!["smoke".to_string()],
+                    source_event_key: "evt-a".to_string(),
+                    recency_weight_bps: 0,
+                    confidence_bps: 0,
+                },
+            )
+            .expect("write memory a");
+        store
+            .write_entry(
+                &scope,
+                MemoryEntry {
+                    memory_id: "memory-b".to_string(),
+                    summary: "deployment rollback strategy".to_string(),
+                    tags: vec!["rollback".to_string()],
+                    facts: vec!["rollback drill".to_string()],
+                    source_event_key: "evt-b".to_string(),
+                    recency_weight_bps: 0,
+                    confidence_bps: 0,
+                },
+            )
+            .expect("write memory b");
+
+        let result = store
+            .search(
+                "release smoke",
+                &MemorySearchOptions {
+                    scope: MemoryScopeFilter::default(),
+                    limit: 5,
+                    embedding_dimensions: 64,
+                    min_similarity: 0.0,
+                    enable_hybrid_retrieval: false,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.0,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
+                    enable_embedding_migration: false,
+                    benchmark_against_hash: false,
+                    benchmark_against_vector_only: false,
+                },
+            )
+            .expect("vector-only search");
+        let records = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list latest records");
+        let baseline = rank_text_candidates(
+            "release smoke",
+            records
+                .iter()
+                .map(|record| RankedTextCandidate {
+                    key: record.entry.memory_id.clone(),
+                    text: format!(
+                        "{}\n{}\n{}",
+                        record.entry.summary,
+                        record.entry.tags.join(" "),
+                        record.entry.facts.join(" ")
+                    ),
+                })
+                .collect::<Vec<_>>(),
+            5,
+            64,
+            0.0,
+        );
+        let result_ids = result
+            .matches
+            .iter()
+            .map(|item| item.memory_id.as_str())
+            .collect::<Vec<_>>();
+        let baseline_ids = baseline
+            .iter()
+            .map(|item| item.key.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(result_ids, baseline_ids);
+        assert_eq!(result.retrieval_backend, "vector-only");
+        assert_eq!(result.retrieval_reason_code, "memory_retrieval_vector_only");
     }
 
     #[test]
@@ -1451,5 +1922,29 @@ mod tests {
         );
         assert_eq!(ranked.len(), 1);
         assert_eq!(ranked[0].key, "a");
+    }
+
+    #[test]
+    fn unit_rank_text_candidates_bm25_prefers_exact_lexical_overlap() {
+        let ranked = rank_text_candidates_bm25(
+            "tokio runtime",
+            vec![
+                RankedTextCandidate {
+                    key: "match".to_string(),
+                    text: "tokio runtime troubleshooting checklist".to_string(),
+                },
+                RankedTextCandidate {
+                    key: "other".to_string(),
+                    text: "garden watering schedule".to_string(),
+                },
+            ],
+            5,
+            1.2,
+            0.75,
+            0.001,
+        );
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].key, "match");
+        assert!(ranked[0].score > 0.0);
     }
 }

@@ -9,7 +9,7 @@ use crate::tools::{
     BashCommandProfile, OsSandboxMode, OsSandboxPolicyMode, ToolPolicy,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 8;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 9;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 const MEMORY_EMBEDDING_PROVIDER_ENV: &str = "TAU_MEMORY_EMBEDDING_PROVIDER";
@@ -17,8 +17,16 @@ const MEMORY_EMBEDDING_MODEL_ENV: &str = "TAU_MEMORY_EMBEDDING_MODEL";
 const MEMORY_EMBEDDING_API_BASE_ENV: &str = "TAU_MEMORY_EMBEDDING_API_BASE";
 const MEMORY_EMBEDDING_API_KEY_ENV: &str = "TAU_MEMORY_EMBEDDING_API_KEY";
 const MEMORY_EMBEDDING_TIMEOUT_MS_ENV: &str = "TAU_MEMORY_EMBEDDING_TIMEOUT_MS";
+const MEMORY_ENABLE_HYBRID_RETRIEVAL_ENV: &str = "TAU_MEMORY_ENABLE_HYBRID_RETRIEVAL";
+const MEMORY_BM25_K1_ENV: &str = "TAU_MEMORY_BM25_K1";
+const MEMORY_BM25_B_ENV: &str = "TAU_MEMORY_BM25_B";
+const MEMORY_BM25_MIN_SCORE_ENV: &str = "TAU_MEMORY_BM25_MIN_SCORE";
+const MEMORY_RRF_K_ENV: &str = "TAU_MEMORY_RRF_K";
+const MEMORY_RRF_VECTOR_WEIGHT_ENV: &str = "TAU_MEMORY_RRF_VECTOR_WEIGHT";
+const MEMORY_RRF_LEXICAL_WEIGHT_ENV: &str = "TAU_MEMORY_RRF_LEXICAL_WEIGHT";
 const MEMORY_ENABLE_EMBEDDING_MIGRATION_ENV: &str = "TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION";
 const MEMORY_BENCHMARK_AGAINST_HASH_ENV: &str = "TAU_MEMORY_BENCHMARK_AGAINST_HASH";
+const MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY_ENV: &str = "TAU_MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY";
 
 pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     let cwd = std::env::current_dir().context("failed to resolve current directory")?;
@@ -120,6 +128,29 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     if let Some(timeout_ms) = parse_optional_env_u64(MEMORY_EMBEDDING_TIMEOUT_MS_ENV)? {
         policy.memory_embedding_timeout_ms = timeout_ms.max(1);
     }
+    if let Some(enable_hybrid_retrieval) =
+        parse_optional_env_bool(MEMORY_ENABLE_HYBRID_RETRIEVAL_ENV)?
+    {
+        policy.memory_enable_hybrid_retrieval = enable_hybrid_retrieval;
+    }
+    if let Some(bm25_k1) = parse_optional_env_f32(MEMORY_BM25_K1_ENV)? {
+        policy.memory_bm25_k1 = bm25_k1.max(0.1);
+    }
+    if let Some(bm25_b) = parse_optional_env_f32(MEMORY_BM25_B_ENV)? {
+        policy.memory_bm25_b = bm25_b.clamp(0.0, 1.0);
+    }
+    if let Some(bm25_min_score) = parse_optional_env_f32(MEMORY_BM25_MIN_SCORE_ENV)? {
+        policy.memory_bm25_min_score = bm25_min_score.max(0.0);
+    }
+    if let Some(rrf_k) = parse_optional_env_u64(MEMORY_RRF_K_ENV)? {
+        policy.memory_rrf_k = (rrf_k as usize).max(1);
+    }
+    if let Some(rrf_vector_weight) = parse_optional_env_f32(MEMORY_RRF_VECTOR_WEIGHT_ENV)? {
+        policy.memory_rrf_vector_weight = rrf_vector_weight.max(0.0);
+    }
+    if let Some(rrf_lexical_weight) = parse_optional_env_f32(MEMORY_RRF_LEXICAL_WEIGHT_ENV)? {
+        policy.memory_rrf_lexical_weight = rrf_lexical_weight.max(0.0);
+    }
     if let Some(enable_migration) = parse_optional_env_bool(MEMORY_ENABLE_EMBEDDING_MIGRATION_ENV)?
     {
         policy.memory_enable_embedding_migration = enable_migration;
@@ -128,6 +159,11 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
         parse_optional_env_bool(MEMORY_BENCHMARK_AGAINST_HASH_ENV)?
     {
         policy.memory_benchmark_against_hash = benchmark_against_hash;
+    }
+    if let Some(benchmark_against_vector_only) =
+        parse_optional_env_bool(MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY_ENV)?
+    {
+        policy.memory_benchmark_against_vector_only = benchmark_against_vector_only;
     }
 
     if policy.memory_embedding_api_base.is_none() && policy.memory_embedding_provider.is_some() {
@@ -241,12 +277,44 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
         serde_json::json!(policy.memory_embedding_timeout_ms),
     );
     payload.insert(
+        "memory_enable_hybrid_retrieval".to_string(),
+        serde_json::json!(policy.memory_enable_hybrid_retrieval),
+    );
+    payload.insert(
+        "memory_bm25_k1".to_string(),
+        serde_json::json!(policy.memory_bm25_k1),
+    );
+    payload.insert(
+        "memory_bm25_b".to_string(),
+        serde_json::json!(policy.memory_bm25_b),
+    );
+    payload.insert(
+        "memory_bm25_min_score".to_string(),
+        serde_json::json!(policy.memory_bm25_min_score),
+    );
+    payload.insert(
+        "memory_rrf_k".to_string(),
+        serde_json::json!(policy.memory_rrf_k),
+    );
+    payload.insert(
+        "memory_rrf_vector_weight".to_string(),
+        serde_json::json!(policy.memory_rrf_vector_weight),
+    );
+    payload.insert(
+        "memory_rrf_lexical_weight".to_string(),
+        serde_json::json!(policy.memory_rrf_lexical_weight),
+    );
+    payload.insert(
         "memory_enable_embedding_migration".to_string(),
         serde_json::json!(policy.memory_enable_embedding_migration),
     );
     payload.insert(
         "memory_benchmark_against_hash".to_string(),
         serde_json::json!(policy.memory_benchmark_against_hash),
+    );
+    payload.insert(
+        "memory_benchmark_against_vector_only".to_string(),
+        serde_json::json!(policy.memory_benchmark_against_vector_only),
     );
     payload.insert(
         "memory_write_max_summary_chars".to_string(),
@@ -426,6 +494,25 @@ fn parse_optional_env_u64(name: &str) -> Result<Option<u64>> {
     Ok(Some(parsed))
 }
 
+fn parse_optional_env_f32(name: &str) -> Result<Option<f32>> {
+    let Some(raw) = std::env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = raw.to_string_lossy();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed = trimmed.parse::<f32>().map_err(|error| {
+        anyhow!(
+            "invalid {} value '{}': expected float ({error})",
+            name,
+            trimmed
+        )
+    })?;
+    Ok(Some(parsed))
+}
+
 fn parse_protected_paths_env(name: &str) -> Result<Vec<std::path::PathBuf>> {
     let Some(raw) = std::env::var_os(name) else {
         return Ok(Vec::new());
@@ -499,7 +586,7 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 8);
+        assert_eq!(payload["schema_version"], 9);
         assert_eq!(payload["allow_protected_path_mutations"], true);
         assert_eq!(payload["memory_search_default_limit"], 5);
         assert_eq!(payload["memory_search_max_limit"], 50);
@@ -515,8 +602,30 @@ mod tests {
         );
         assert_eq!(payload["memory_embedding_api_key_present"], false);
         assert_eq!(payload["memory_embedding_timeout_ms"], 10_000);
+        assert_eq!(payload["memory_enable_hybrid_retrieval"], false);
+        assert!(
+            (payload["memory_bm25_k1"]
+                .as_f64()
+                .expect("memory_bm25_k1 as f64")
+                - 1.2)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (payload["memory_bm25_b"]
+                .as_f64()
+                .expect("memory_bm25_b as f64")
+                - 0.75)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(payload["memory_bm25_min_score"], 0.0);
+        assert_eq!(payload["memory_rrf_k"], 60);
+        assert_eq!(payload["memory_rrf_vector_weight"], 1.0);
+        assert_eq!(payload["memory_rrf_lexical_weight"], 1.0);
         assert_eq!(payload["memory_enable_embedding_migration"], true);
         assert_eq!(payload["memory_benchmark_against_hash"], false);
+        assert_eq!(payload["memory_benchmark_against_vector_only"], false);
         let min_similarity = payload["memory_min_similarity"]
             .as_f64()
             .expect("memory_min_similarity as f64");
@@ -552,8 +661,16 @@ mod tests {
             "TAU_MEMORY_EMBEDDING_API_BASE",
             "TAU_MEMORY_EMBEDDING_API_KEY",
             "TAU_MEMORY_EMBEDDING_TIMEOUT_MS",
+            "TAU_MEMORY_ENABLE_HYBRID_RETRIEVAL",
+            "TAU_MEMORY_BM25_K1",
+            "TAU_MEMORY_BM25_B",
+            "TAU_MEMORY_BM25_MIN_SCORE",
+            "TAU_MEMORY_RRF_K",
+            "TAU_MEMORY_RRF_VECTOR_WEIGHT",
+            "TAU_MEMORY_RRF_LEXICAL_WEIGHT",
             "TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION",
             "TAU_MEMORY_BENCHMARK_AGAINST_HASH",
+            "TAU_MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY",
         ];
         let _snapshot = EnvSnapshot::capture(&vars);
         for name in vars {
@@ -568,8 +685,16 @@ mod tests {
         );
         std::env::set_var("TAU_MEMORY_EMBEDDING_API_KEY", "secret");
         std::env::set_var("TAU_MEMORY_EMBEDDING_TIMEOUT_MS", "2500");
+        std::env::set_var("TAU_MEMORY_ENABLE_HYBRID_RETRIEVAL", "true");
+        std::env::set_var("TAU_MEMORY_BM25_K1", "1.6");
+        std::env::set_var("TAU_MEMORY_BM25_B", "0.4");
+        std::env::set_var("TAU_MEMORY_BM25_MIN_SCORE", "0.2");
+        std::env::set_var("TAU_MEMORY_RRF_K", "42");
+        std::env::set_var("TAU_MEMORY_RRF_VECTOR_WEIGHT", "1.5");
+        std::env::set_var("TAU_MEMORY_RRF_LEXICAL_WEIGHT", "0.8");
         std::env::set_var("TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION", "false");
         std::env::set_var("TAU_MEMORY_BENCHMARK_AGAINST_HASH", "true");
+        std::env::set_var("TAU_MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY", "true");
 
         let cli = parse_cli_with_stack();
         let policy = build_tool_policy(&cli).expect("build tool policy");
@@ -587,11 +712,30 @@ mod tests {
         );
         assert_eq!(policy.memory_embedding_api_key.as_deref(), Some("secret"));
         assert_eq!(policy.memory_embedding_timeout_ms, 2_500);
+        assert!(policy.memory_enable_hybrid_retrieval);
+        assert!((policy.memory_bm25_k1 - 1.6).abs() < 1e-6);
+        assert!((policy.memory_bm25_b - 0.4).abs() < 1e-6);
+        assert!((policy.memory_bm25_min_score - 0.2).abs() < 1e-6);
+        assert_eq!(policy.memory_rrf_k, 42);
+        assert!((policy.memory_rrf_vector_weight - 1.5).abs() < 1e-6);
+        assert!((policy.memory_rrf_lexical_weight - 0.8).abs() < 1e-6);
         assert!(!policy.memory_enable_embedding_migration);
         assert!(policy.memory_benchmark_against_hash);
+        assert!(policy.memory_benchmark_against_vector_only);
 
         let payload = tool_policy_to_json(&policy);
         assert_eq!(payload["memory_embedding_api_key_present"], true);
+        assert_eq!(payload["memory_enable_hybrid_retrieval"], true);
+        assert!(
+            (payload["memory_bm25_k1"]
+                .as_f64()
+                .expect("memory_bm25_k1 as f64")
+                - 1.6)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(payload["memory_rrf_k"], 42);
+        assert_eq!(payload["memory_benchmark_against_vector_only"], true);
         assert!(!payload
             .as_object()
             .map(|object| object.contains_key("memory_embedding_api_key"))

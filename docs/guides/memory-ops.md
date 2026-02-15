@@ -26,15 +26,33 @@ Optional real-embedding configuration (runtime env):
 - `TAU_MEMORY_EMBEDDING_TIMEOUT_MS` (default `10000`)
 - `TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION` (default `true`)
 - `TAU_MEMORY_BENCHMARK_AGAINST_HASH` (default `false`)
+- `TAU_MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY` (default `false`)
+
+Optional hybrid lexical/vector retrieval configuration:
+
+- `TAU_MEMORY_ENABLE_HYBRID_RETRIEVAL` (default `false`)
+- `TAU_MEMORY_BM25_K1` (default `1.2`)
+- `TAU_MEMORY_BM25_B` (default `0.75`)
+- `TAU_MEMORY_BM25_MIN_SCORE` (default `0.0`)
+- `TAU_MEMORY_RRF_K` (default `60`)
+- `TAU_MEMORY_RRF_VECTOR_WEIGHT` (default `1.0`)
+- `TAU_MEMORY_RRF_LEXICAL_WEIGHT` (default `1.0`)
 
 `memory_search` now reports embedding diagnostics:
 
+- `retrieval_backend`
+- `retrieval_reason_code`
 - `embedding_backend`
 - `embedding_reason_code`
 - `migrated_entries`
 - `query_embedding_latency_ms`
 - `ranking_latency_ms`
+- `lexical_ranking_latency_ms`
+- `fusion_latency_ms`
+- `vector_candidates`
+- `lexical_candidates`
 - `baseline_hash_overlap` (when hash benchmark is enabled)
+- `baseline_vector_overlap` (when vector baseline benchmark is enabled)
 
 ## Health and observability signals
 
@@ -90,6 +108,8 @@ Primary state files:
   Action: run `cargo test -p tau-agent-core memory -- --test-threads=1` and inspect embedding/retrieval test failures.
 - Symptom: `memory_search` reports `embedding_reason_code=memory_embedding_provider_failed`.
   Action: verify provider API base/key/model, then disable migration (`TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION=false`) during incident mitigation.
+- Symptom: hybrid retrieval quality is unstable after enabling BM25/RRF.
+  Action: reduce lexical contribution (`TAU_MEMORY_RRF_LEXICAL_WEIGHT`) and raise lexical floor (`TAU_MEMORY_BM25_MIN_SCORE`), then compare `baseline_vector_overlap`.
 - Symptom: health state `failing` (`failure_streak >= 3`).
   Action: treat as rollout gate failure; pause promotion and investigate repeated runtime failures in active memory producers.
 - Symptom: non-zero `queue_depth`.

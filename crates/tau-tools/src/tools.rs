@@ -76,6 +76,12 @@ const MEMORY_WRITE_MAX_TAGS: usize = 32;
 const MEMORY_WRITE_MAX_FACT_CHARS: usize = 400;
 const MEMORY_WRITE_MAX_TAG_CHARS: usize = 96;
 const MEMORY_EMBEDDING_TIMEOUT_MS_DEFAULT: u64 = 10_000;
+const MEMORY_BM25_K1_DEFAULT: f32 = 1.2;
+const MEMORY_BM25_B_DEFAULT: f32 = 0.75;
+const MEMORY_BM25_MIN_SCORE_DEFAULT: f32 = 0.0;
+const MEMORY_RRF_K_DEFAULT: usize = 60;
+const MEMORY_RRF_VECTOR_WEIGHT_DEFAULT: f32 = 1.0;
+const MEMORY_RRF_LEXICAL_WEIGHT_DEFAULT: f32 = 1.0;
 const TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT: u64 = 60_000;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
@@ -340,8 +346,16 @@ pub struct ToolPolicy {
     pub memory_embedding_api_base: Option<String>,
     pub memory_embedding_api_key: Option<String>,
     pub memory_embedding_timeout_ms: u64,
+    pub memory_enable_hybrid_retrieval: bool,
+    pub memory_bm25_k1: f32,
+    pub memory_bm25_b: f32,
+    pub memory_bm25_min_score: f32,
+    pub memory_rrf_k: usize,
+    pub memory_rrf_vector_weight: f32,
+    pub memory_rrf_lexical_weight: f32,
     pub memory_enable_embedding_migration: bool,
     pub memory_benchmark_against_hash: bool,
+    pub memory_benchmark_against_vector_only: bool,
     pub memory_write_max_summary_chars: usize,
     pub memory_write_max_facts: usize,
     pub memory_write_max_tags: usize,
@@ -392,8 +406,16 @@ impl ToolPolicy {
             memory_embedding_api_base: None,
             memory_embedding_api_key: None,
             memory_embedding_timeout_ms: MEMORY_EMBEDDING_TIMEOUT_MS_DEFAULT,
+            memory_enable_hybrid_retrieval: false,
+            memory_bm25_k1: MEMORY_BM25_K1_DEFAULT,
+            memory_bm25_b: MEMORY_BM25_B_DEFAULT,
+            memory_bm25_min_score: MEMORY_BM25_MIN_SCORE_DEFAULT,
+            memory_rrf_k: MEMORY_RRF_K_DEFAULT,
+            memory_rrf_vector_weight: MEMORY_RRF_VECTOR_WEIGHT_DEFAULT,
+            memory_rrf_lexical_weight: MEMORY_RRF_LEXICAL_WEIGHT_DEFAULT,
             memory_enable_embedding_migration: true,
             memory_benchmark_against_hash: false,
+            memory_benchmark_against_vector_only: false,
             memory_write_max_summary_chars: MEMORY_WRITE_MAX_SUMMARY_CHARS,
             memory_write_max_facts: MEMORY_WRITE_MAX_FACTS,
             memory_write_max_tags: MEMORY_WRITE_MAX_TAGS,
@@ -1518,8 +1540,16 @@ impl AgentTool for MemorySearchTool {
                 limit,
                 embedding_dimensions: self.policy.memory_embedding_dimensions,
                 min_similarity: self.policy.memory_min_similarity,
+                enable_hybrid_retrieval: self.policy.memory_enable_hybrid_retrieval,
+                bm25_k1: self.policy.memory_bm25_k1,
+                bm25_b: self.policy.memory_bm25_b,
+                bm25_min_score: self.policy.memory_bm25_min_score,
+                rrf_k: self.policy.memory_rrf_k,
+                rrf_vector_weight: self.policy.memory_rrf_vector_weight,
+                rrf_lexical_weight: self.policy.memory_rrf_lexical_weight,
                 enable_embedding_migration: self.policy.memory_enable_embedding_migration,
                 benchmark_against_hash: self.policy.memory_benchmark_against_hash,
+                benchmark_against_vector_only: self.policy.memory_benchmark_against_vector_only,
             },
         ) {
             Ok(result) => ToolExecutionResult::ok(json!({
@@ -1528,6 +1558,8 @@ impl AgentTool for MemorySearchTool {
                 "limit": limit,
                 "scanned": result.scanned,
                 "returned": result.returned,
+                "retrieval_backend": result.retrieval_backend,
+                "retrieval_reason_code": result.retrieval_reason_code,
                 "min_similarity": self.policy.memory_min_similarity,
                 "embedding_dimensions": self.policy.memory_embedding_dimensions,
                 "embedding_backend": result.embedding_backend,
@@ -1535,7 +1567,12 @@ impl AgentTool for MemorySearchTool {
                 "migrated_entries": result.migrated_entries,
                 "query_embedding_latency_ms": result.query_embedding_latency_ms,
                 "ranking_latency_ms": result.ranking_latency_ms,
+                "lexical_ranking_latency_ms": result.lexical_ranking_latency_ms,
+                "fusion_latency_ms": result.fusion_latency_ms,
+                "vector_candidates": result.vector_candidates,
+                "lexical_candidates": result.lexical_candidates,
                 "baseline_hash_overlap": result.baseline_hash_overlap,
+                "baseline_vector_overlap": result.baseline_vector_overlap,
                 "matches": result.matches,
                 "store_root": store.root_dir().display().to_string(),
             })),
