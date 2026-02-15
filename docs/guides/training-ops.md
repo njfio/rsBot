@@ -192,6 +192,23 @@ scripts/demo/validate-m24-rl-benchmark-proof-template.sh \
   tasks/reports/m24-benchmark-proof-<run_id>.json
 ```
 
+Generate baseline/trained/significance/proof artifacts in one command:
+
+```bash
+scripts/demo/m24-rl-live-benchmark-proof.sh \
+  --baseline-samples tasks/fixtures/m24/baseline-reward-samples.json \
+  --trained-samples tasks/fixtures/m24/trained-reward-samples.json \
+  --run-id m24-live-proof-2026-02-15-1 \
+  --output-dir tasks/reports
+```
+
+This command writes:
+
+- `m24-benchmark-baseline.json`
+- `m24-benchmark-trained.json`
+- `m24-benchmark-significance.json`
+- `m24-benchmark-proof-<run_id>.json`
+
 ### Pass/Fail Significance Criteria
 
 The benchmark proof is a pass only if all conditions hold:

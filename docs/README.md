@@ -10,6 +10,7 @@ This index maps Tau documentation by audience and task.
 | Prompt optimization operator | [Prompt Optimization Recovery Runbook](guides/prompt-optimization-recovery-runbook.md) | Crash-detected resume flow, checkpoint primary/fallback restore behavior, and fail-closed recovery guardrails |
 | Prompt optimization operator | [M24 Operational Safety Proof Command](guides/training-ops.md#m24-operational-safety-proof-command) | One-shot proof artifact generation for pause/resume/rollback controls, safety gate checks, and runbook evidence |
 | Prompt optimization operator | [M24 Benchmark Significance Report Generator](guides/training-ops.md#required-artifacts) | Deterministic baseline-vs-trained significance report generation and validator-compatible artifact output |
+| Prompt optimization operator | [M24 One-Command Live Benchmark Proof](guides/training-ops.md#required-artifacts) | End-to-end baseline/trained/significance/proof artifact generation with fail-analysis on non-significant runs |
 | Prompt optimization integration operator | [Prompt Optimization Proxy Operations Guide](guides/training-proxy-ops.md) | OpenAI-compatible proxy mode with rollout/attempt attribution logs |
 | Prompt optimization maintainer | [Training Crate Boundary Plan](guides/training-crate-boundary-plan.md) | Explicit merge/retain decisions, staged PR sets, and boundary validation artifacts |
 | Workspace operator | [Project Index Guide](guides/project-index.md) | Build/query/inspect deterministic local code index |
