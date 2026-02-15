@@ -59,6 +59,16 @@ pub struct ProfilePolicyDefaults {
     pub runtime_heartbeat_interval_ms: u64,
     #[serde(default = "default_runtime_heartbeat_state_path")]
     pub runtime_heartbeat_state_path: String,
+    #[serde(default = "default_runtime_self_repair_enabled")]
+    pub runtime_self_repair_enabled: bool,
+    #[serde(default = "default_runtime_self_repair_timeout_ms")]
+    pub runtime_self_repair_timeout_ms: u64,
+    #[serde(default = "default_runtime_self_repair_max_retries")]
+    pub runtime_self_repair_max_retries: usize,
+    #[serde(default = "default_runtime_self_repair_tool_builds_dir")]
+    pub runtime_self_repair_tool_builds_dir: String,
+    #[serde(default = "default_runtime_self_repair_orphan_max_age_seconds")]
+    pub runtime_self_repair_orphan_max_age_seconds: u64,
 }
 
 fn default_runtime_heartbeat_enabled() -> bool {
@@ -71,6 +81,26 @@ fn default_runtime_heartbeat_interval_ms() -> u64 {
 
 fn default_runtime_heartbeat_state_path() -> String {
     ".tau/runtime-heartbeat/state.json".to_string()
+}
+
+fn default_runtime_self_repair_enabled() -> bool {
+    true
+}
+
+fn default_runtime_self_repair_timeout_ms() -> u64 {
+    300_000
+}
+
+fn default_runtime_self_repair_max_retries() -> usize {
+    2
+}
+
+fn default_runtime_self_repair_tool_builds_dir() -> String {
+    ".tau/tool-builds".to_string()
+}
+
+fn default_runtime_self_repair_orphan_max_age_seconds() -> u64 {
+    3_600
 }
 
 fn default_profile_mcp_context_providers() -> Vec<String> {
@@ -158,6 +188,15 @@ pub fn build_profile_defaults(cli: &Cli) -> ProfileDefaults {
             runtime_heartbeat_enabled: cli.runtime_heartbeat_enabled,
             runtime_heartbeat_interval_ms: cli.runtime_heartbeat_interval_ms,
             runtime_heartbeat_state_path: cli.runtime_heartbeat_state_path.display().to_string(),
+            runtime_self_repair_enabled: cli.runtime_self_repair_enabled,
+            runtime_self_repair_timeout_ms: cli.runtime_self_repair_timeout_ms,
+            runtime_self_repair_max_retries: cli.runtime_self_repair_max_retries,
+            runtime_self_repair_tool_builds_dir: cli
+                .runtime_self_repair_tool_builds_dir
+                .display()
+                .to_string(),
+            runtime_self_repair_orphan_max_age_seconds: cli
+                .runtime_self_repair_orphan_max_age_seconds,
         },
         mcp: ProfileMcpDefaults {
             context_providers: if cli.mcp_context_provider.is_empty() {
@@ -207,6 +246,17 @@ mod tests {
             defaults.policy.runtime_heartbeat_state_path,
             ".tau/runtime-heartbeat/state.json".to_string()
         );
+        assert!(defaults.policy.runtime_self_repair_enabled);
+        assert_eq!(defaults.policy.runtime_self_repair_timeout_ms, 300_000);
+        assert_eq!(defaults.policy.runtime_self_repair_max_retries, 2);
+        assert_eq!(
+            defaults.policy.runtime_self_repair_tool_builds_dir,
+            ".tau/tool-builds".to_string()
+        );
+        assert_eq!(
+            defaults.policy.runtime_self_repair_orphan_max_age_seconds,
+            3_600
+        );
     }
 
     #[test]
@@ -215,6 +265,11 @@ mod tests {
         cli.runtime_heartbeat_enabled = false;
         cli.runtime_heartbeat_interval_ms = 1_200;
         cli.runtime_heartbeat_state_path = PathBuf::from(".tau/runtime-heartbeat/custom.json");
+        cli.runtime_self_repair_enabled = false;
+        cli.runtime_self_repair_timeout_ms = 45_000;
+        cli.runtime_self_repair_max_retries = 4;
+        cli.runtime_self_repair_tool_builds_dir = PathBuf::from(".tau/tool-builds/custom");
+        cli.runtime_self_repair_orphan_max_age_seconds = 120;
 
         let defaults = build_profile_defaults(&cli);
         assert!(!defaults.policy.runtime_heartbeat_enabled);
@@ -222,6 +277,17 @@ mod tests {
         assert_eq!(
             defaults.policy.runtime_heartbeat_state_path,
             ".tau/runtime-heartbeat/custom.json".to_string()
+        );
+        assert!(!defaults.policy.runtime_self_repair_enabled);
+        assert_eq!(defaults.policy.runtime_self_repair_timeout_ms, 45_000);
+        assert_eq!(defaults.policy.runtime_self_repair_max_retries, 4);
+        assert_eq!(
+            defaults.policy.runtime_self_repair_tool_builds_dir,
+            ".tau/tool-builds/custom".to_string()
+        );
+        assert_eq!(
+            defaults.policy.runtime_self_repair_orphan_max_age_seconds,
+            120
         );
     }
 }

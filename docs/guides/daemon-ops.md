@@ -69,6 +69,11 @@ Local/runtime daemon sessions can run periodic maintenance probes (queues/events
 - `--runtime-heartbeat-enabled` (default `true`)
 - `--runtime-heartbeat-interval-ms` (default `5000`)
 - `--runtime-heartbeat-state-path` (default `.tau/runtime-heartbeat/state.json`)
+- `--runtime-self-repair-enabled` (default `true`)
+- `--runtime-self-repair-timeout-ms` (default `300000`)
+- `--runtime-self-repair-max-retries` (default `2`)
+- `--runtime-self-repair-tool-builds-dir` (default `.tau/tool-builds`)
+- `--runtime-self-repair-orphan-max-age-seconds` (default `3600`)
 
 Example:
 
@@ -77,7 +82,12 @@ cargo run -p tau-coding-agent -- \
   --daemon-start \
   --runtime-heartbeat-enabled=true \
   --runtime-heartbeat-interval-ms 3000 \
-  --runtime-heartbeat-state-path .tau/runtime-heartbeat/state.json
+  --runtime-heartbeat-state-path .tau/runtime-heartbeat/state.json \
+  --runtime-self-repair-enabled=true \
+  --runtime-self-repair-timeout-ms 60000 \
+  --runtime-self-repair-max-retries 2 \
+  --runtime-self-repair-tool-builds-dir .tau/tool-builds \
+  --runtime-self-repair-orphan-max-age-seconds 3600
 ```
 
 ## Activate launchd profile (macOS)

@@ -207,6 +207,47 @@ pub fn render_profile_diffs(current: &ProfileDefaults, loaded: &ProfileDefaults)
             current.policy.runtime_heartbeat_state_path, loaded.policy.runtime_heartbeat_state_path
         ));
     }
+    if current.policy.runtime_self_repair_enabled != loaded.policy.runtime_self_repair_enabled {
+        diffs.push(format!(
+            "diff: field=policy.runtime_self_repair_enabled current={} loaded={}",
+            current.policy.runtime_self_repair_enabled, loaded.policy.runtime_self_repair_enabled
+        ));
+    }
+    if current.policy.runtime_self_repair_timeout_ms != loaded.policy.runtime_self_repair_timeout_ms
+    {
+        diffs.push(format!(
+            "diff: field=policy.runtime_self_repair_timeout_ms current={} loaded={}",
+            current.policy.runtime_self_repair_timeout_ms,
+            loaded.policy.runtime_self_repair_timeout_ms
+        ));
+    }
+    if current.policy.runtime_self_repair_max_retries
+        != loaded.policy.runtime_self_repair_max_retries
+    {
+        diffs.push(format!(
+            "diff: field=policy.runtime_self_repair_max_retries current={} loaded={}",
+            current.policy.runtime_self_repair_max_retries,
+            loaded.policy.runtime_self_repair_max_retries
+        ));
+    }
+    if current.policy.runtime_self_repair_tool_builds_dir
+        != loaded.policy.runtime_self_repair_tool_builds_dir
+    {
+        diffs.push(format!(
+            "diff: field=policy.runtime_self_repair_tool_builds_dir current={} loaded={}",
+            current.policy.runtime_self_repair_tool_builds_dir,
+            loaded.policy.runtime_self_repair_tool_builds_dir
+        ));
+    }
+    if current.policy.runtime_self_repair_orphan_max_age_seconds
+        != loaded.policy.runtime_self_repair_orphan_max_age_seconds
+    {
+        diffs.push(format!(
+            "diff: field=policy.runtime_self_repair_orphan_max_age_seconds current={} loaded={}",
+            current.policy.runtime_self_repair_orphan_max_age_seconds,
+            loaded.policy.runtime_self_repair_orphan_max_age_seconds
+        ));
+    }
     if current.mcp.context_providers != loaded.mcp.context_providers {
         diffs.push(format!(
             "diff: field=mcp.context_providers current={} loaded={}",
@@ -341,6 +382,26 @@ pub fn render_profile_show(profile_path: &Path, name: &str, profile: &ProfileDef
     lines.push(format!(
         "value: policy.runtime_heartbeat_state_path={}",
         profile.policy.runtime_heartbeat_state_path
+    ));
+    lines.push(format!(
+        "value: policy.runtime_self_repair_enabled={}",
+        profile.policy.runtime_self_repair_enabled
+    ));
+    lines.push(format!(
+        "value: policy.runtime_self_repair_timeout_ms={}",
+        profile.policy.runtime_self_repair_timeout_ms
+    ));
+    lines.push(format!(
+        "value: policy.runtime_self_repair_max_retries={}",
+        profile.policy.runtime_self_repair_max_retries
+    ));
+    lines.push(format!(
+        "value: policy.runtime_self_repair_tool_builds_dir={}",
+        profile.policy.runtime_self_repair_tool_builds_dir
+    ));
+    lines.push(format!(
+        "value: policy.runtime_self_repair_orphan_max_age_seconds={}",
+        profile.policy.runtime_self_repair_orphan_max_age_seconds
     ));
     lines.push(format!(
         "value: mcp.context_providers={}",
@@ -514,6 +575,11 @@ mod tests {
                 runtime_heartbeat_enabled: true,
                 runtime_heartbeat_interval_ms: 5_000,
                 runtime_heartbeat_state_path: ".tau/runtime-heartbeat/state.json".to_string(),
+                runtime_self_repair_enabled: true,
+                runtime_self_repair_timeout_ms: 300_000,
+                runtime_self_repair_max_retries: 2,
+                runtime_self_repair_tool_builds_dir: ".tau/tool-builds".to_string(),
+                runtime_self_repair_orphan_max_age_seconds: 3_600,
             },
             mcp: ProfileMcpDefaults {
                 context_providers: vec![],

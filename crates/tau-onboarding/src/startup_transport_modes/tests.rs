@@ -935,6 +935,20 @@ fn unit_build_runtime_heartbeat_scheduler_config_uses_expected_defaults() {
         config.jobs_dir,
         Some(PathBuf::from(".tau/custom-command/jobs"))
     );
+    assert!(config.self_repair_enabled);
+    assert_eq!(
+        config.self_repair_timeout,
+        std::time::Duration::from_millis(300_000)
+    );
+    assert_eq!(config.self_repair_max_retries, 2);
+    assert_eq!(
+        config.self_repair_tool_builds_dir,
+        Some(PathBuf::from(".tau/tool-builds"))
+    );
+    assert_eq!(
+        config.self_repair_orphan_artifact_max_age,
+        std::time::Duration::from_secs(3_600)
+    );
 }
 
 #[test]
@@ -945,6 +959,11 @@ fn functional_build_runtime_heartbeat_scheduler_config_accepts_overrides() {
     cli.runtime_heartbeat_state_path = PathBuf::from(".tau/ops/heartbeat-state.json");
     cli.events_dir = PathBuf::from(".tau/events-alt");
     cli.custom_command_state_dir = PathBuf::from(".tau/custom-commands-alt");
+    cli.runtime_self_repair_enabled = false;
+    cli.runtime_self_repair_timeout_ms = 9_000;
+    cli.runtime_self_repair_max_retries = 3;
+    cli.runtime_self_repair_tool_builds_dir = PathBuf::from(".tau/tool-builds-alt");
+    cli.runtime_self_repair_orphan_max_age_seconds = 180;
 
     let config = build_runtime_heartbeat_scheduler_config(&cli);
     assert!(!config.enabled);
@@ -957,6 +976,20 @@ fn functional_build_runtime_heartbeat_scheduler_config_accepts_overrides() {
     assert_eq!(
         config.jobs_dir,
         Some(PathBuf::from(".tau/custom-commands-alt/jobs"))
+    );
+    assert!(!config.self_repair_enabled);
+    assert_eq!(
+        config.self_repair_timeout,
+        std::time::Duration::from_millis(9_000)
+    );
+    assert_eq!(config.self_repair_max_retries, 3);
+    assert_eq!(
+        config.self_repair_tool_builds_dir,
+        Some(PathBuf::from(".tau/tool-builds-alt"))
+    );
+    assert_eq!(
+        config.self_repair_orphan_artifact_max_age,
+        std::time::Duration::from_secs(180)
     );
 }
 
@@ -976,6 +1009,11 @@ fn integration_build_gateway_openresponses_server_config_preserves_runtime_field
     cli.runtime_heartbeat_enabled = false;
     cli.runtime_heartbeat_interval_ms = 2_500;
     cli.runtime_heartbeat_state_path = PathBuf::from(".tau/gateway/custom-heartbeat/state.json");
+    cli.runtime_self_repair_enabled = false;
+    cli.runtime_self_repair_timeout_ms = 5_500;
+    cli.runtime_self_repair_max_retries = 4;
+    cli.runtime_self_repair_tool_builds_dir = PathBuf::from(".tau/gateway/tool-builds");
+    cli.runtime_self_repair_orphan_max_age_seconds = 90;
 
     let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
     let client: Arc<dyn LlmClient> = Arc::new(NoopClient);
@@ -1011,6 +1049,20 @@ fn integration_build_gateway_openresponses_server_config_preserves_runtime_field
     assert_eq!(
         config.runtime_heartbeat.state_path,
         PathBuf::from(".tau/gateway/custom-heartbeat/state.json")
+    );
+    assert!(!config.runtime_heartbeat.self_repair_enabled);
+    assert_eq!(
+        config.runtime_heartbeat.self_repair_timeout,
+        std::time::Duration::from_millis(5_500)
+    );
+    assert_eq!(config.runtime_heartbeat.self_repair_max_retries, 4);
+    assert_eq!(
+        config.runtime_heartbeat.self_repair_tool_builds_dir,
+        Some(PathBuf::from(".tau/gateway/tool-builds"))
+    );
+    assert_eq!(
+        config.runtime_heartbeat.self_repair_orphan_artifact_max_age,
+        std::time::Duration::from_secs(90)
     );
 }
 
