@@ -26,6 +26,7 @@ This index maps Tau documentation by audience and task.
 | Runtime maintainer | [Doc Density Scorecard](guides/doc-density-scorecard.md) | Baseline/targets for public API docs coverage and CI regression guard policy |
 | Roadmap operator | [Roadmap Execution Index](guides/roadmap-execution-index.md) | End-to-end mapping from `tasks/todo.md` items to milestones/issues and execution wave ordering |
 | Roadmap operator | [Roadmap Status Sync](guides/roadmap-status-sync.md) | Generate/check roadmap status snapshots from tracked GitHub issue state |
+| Roadmap operator | [Hierarchy Graph Extraction](guides/roadmap-status-sync.md#hierarchy-graph-extraction-for-the-1678-execution-tree) | Generate JSON + Markdown hierarchy graph artifacts for roadmap dependency visibility |
 | Roadmap operator | [Issue Hierarchy Drift Rules](guides/issue-hierarchy-drift-rules.md) | Required hierarchy metadata, orphan/drift condition IDs, and remediation contract |
 | Roadmap operator | [PR Batch Lane Boundaries](guides/pr-batch-lane-boundaries.md) | Lane boundaries, batch-size/review-SLA matrix, hotspot mitigation rules, and exception workflow |
 | Roadmap operator | [Stale Branch Response Playbook](guides/stale-branch-response-playbook.md) | Stale thresholds, alert channels, conflict triage criteria, and rollback triggers |

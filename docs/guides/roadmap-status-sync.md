@@ -25,10 +25,23 @@ Stale-branch threshold and alert rules are defined in:
 - `tasks/policies/stale-branch-alert-policy.json`
 - `docs/guides/stale-branch-response-playbook.md`
 
+Hierarchy graph extraction for the `#1678` execution tree:
+
+- `scripts/dev/hierarchy-graph-extractor.sh`
+
 To preview hierarchy drift findings locally before CI:
 
 ```bash
 scripts/dev/dependency-drift-check.sh --mode dry-run
+```
+
+To generate machine-readable + Markdown hierarchy artifacts:
+
+```bash
+scripts/dev/hierarchy-graph-extractor.sh \
+  --root-issue 1678 \
+  --output-json tasks/reports/issue-hierarchy-graph.json \
+  --output-md tasks/reports/issue-hierarchy-graph.md
 ```
 
 ## Prerequisites
@@ -86,4 +99,5 @@ Fixture format:
 
 ```bash
 scripts/dev/test-roadmap-status-sync.sh
+python3 -m unittest discover -s .github/scripts -p "test_hierarchy_graph_extractor_contract.py"
 ```
