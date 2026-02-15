@@ -1,0 +1,90 @@
+name: Throughput Telemetry
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: throughput-telemetry-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-throughput-telemetry:
+    name: PR throughput telemetry
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Generate current throughput baseline snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-artifacts
+          scripts/dev/pr-throughput-baseline.sh \
+            --repo "${GITHUB_REPOSITORY}" \
+            --since-days 30 \
+            --limit 60 \
+            --output-md ci-artifacts/pr-throughput-current-baseline.md \
+            --output-json ci-artifacts/pr-throughput-current-baseline.json
+
+      - name: Generate throughput delta report
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/dev/pr-throughput-delta-report.sh \
+            --repo "${GITHUB_REPOSITORY}" \
+            --baseline-json tasks/reports/pr-throughput-baseline.json \
+            --current-json ci-artifacts/pr-throughput-current-baseline.json \
+            --reporting-interval daily \
+            --since-days 30 \
+            --limit 60 \
+            --output-md ci-artifacts/pr-throughput-delta.md \
+            --output-json ci-artifacts/pr-throughput-delta.json
+
+      - name: Publish workflow summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          improved="$(jq -r '.summary.improved_metrics' ci-artifacts/pr-throughput-delta.json)"
+          regressed="$(jq -r '.summary.regressed_metrics' ci-artifacts/pr-throughput-delta.json)"
+          flat="$(jq -r '.summary.flat_metrics' ci-artifacts/pr-throughput-delta.json)"
+          unknown="$(jq -r '.summary.unknown_metrics' ci-artifacts/pr-throughput-delta.json)"
+          {
+            echo "# PR Throughput Telemetry"
+            echo
+            echo "- Baseline file: \`tasks/reports/pr-throughput-baseline.json\`"
+            echo "- Current snapshot: \`ci-artifacts/pr-throughput-current-baseline.json\`"
+            echo "- Delta report: \`ci-artifacts/pr-throughput-delta.json\`"
+            echo
+            echo "## Metric Status Counts"
+            echo
+            echo "- Improved: ${improved}"
+            echo "- Regressed: ${regressed}"
+            echo "- Flat: ${flat}"
+            echo "- Unknown: ${unknown}"
+            echo
+            echo "## Recommended Actions"
+            echo
+            echo "| Metric | Status | Priority | Recommendation |"
+            echo "| --- | --- | --- | --- |"
+            jq -r '.actions[] | "| \(.metric) | \(.status) | \(.priority) | \(.recommendation) |"' ci-artifacts/pr-throughput-delta.json
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload telemetry artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: pr-throughput-telemetry
+          path: |
+            ci-artifacts/pr-throughput-current-baseline.md
+            ci-artifacts/pr-throughput-current-baseline.json
+            ci-artifacts/pr-throughput-delta.md
+            ci-artifacts/pr-throughput-delta.json
