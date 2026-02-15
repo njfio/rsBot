@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "policy_id": "doc-quality-remediation-policy",
+  "scope": "Documentation quality audit remediation tracking and closure",
+  "severity_classes": [
+    {
+      "id": "S0",
+      "name": "critical",
+      "definition": "Incorrect or missing guidance that can cause operator misuse, unsafe behavior, or gate blockage.",
+      "target_sla_hours": 24
+    },
+    {
+      "id": "S1",
+      "name": "high",
+      "definition": "Materially incomplete or misleading documentation that degrades onboarding, runtime operations, or compliance evidence.",
+      "target_sla_hours": 72
+    },
+    {
+      "id": "S2",
+      "name": "medium",
+      "definition": "Quality debt that reduces clarity or consistency but does not block critical operations.",
+      "target_sla_hours": 168
+    },
+    {
+      "id": "S3",
+      "name": "low",
+      "definition": "Minor wording, formatting, or discoverability issues with low operational risk.",
+      "target_sla_hours": 336
+    }
+  ],
+  "checklist_items": [
+    "Confirm finding scope and impacted docs/commands.",
+    "Assign owner and due date based on severity SLA.",
+    "Document remediation steps and linked PR/issues.",
+    "Capture validation evidence (tests/check outputs).",
+    "Record reviewer sign-off before closure."
+  ],
+  "closure_proof_fields": [
+    "finding_id",
+    "severity",
+    "owner",
+    "source_artifact",
+    "root_cause",
+    "remediation_summary",
+    "validation_evidence",
+    "reviewer",
+    "closed_at"
+  ]
+}
