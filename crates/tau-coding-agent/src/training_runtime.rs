@@ -16,7 +16,9 @@ use tau_agent_core::{AgentConfig, SafetyMode};
 use tau_ai::{LlmClient, ModelRef};
 use tau_cli::{Cli, CliPromptSanitizerMode};
 use tau_onboarding::startup_local_runtime::{build_local_runtime_agent, LocalRuntimeAgentSettings};
-use tau_trainer::checkpoint_store::load_policy_checkpoint;
+use tau_trainer::checkpoint_store::{
+    load_policy_checkpoint, load_policy_checkpoint_with_rollback, CheckpointSource,
+};
 use tau_trainer::{Trainer, TrainerConfig};
 use tau_training_runner::TauAgentExecutor;
 use tau_training_store::{SqliteTrainingStore, TrainingStore};
@@ -29,6 +31,10 @@ const TRAINING_STATUS_FILE: &str = "status.json";
 const TRAINING_CONTROL_STATE_SCHEMA_VERSION: u32 = 1;
 const TRAINING_CONTROL_STATE_FILE: &str = "control-state.json";
 const TRAINING_CONTROL_AUDIT_FILE: &str = "control-audit.jsonl";
+const TRAINING_RECOVERY_REPORT_SCHEMA_VERSION: u32 = 1;
+const TRAINING_RECOVERY_REPORT_FILE: &str = "recovery-report.json";
+const TRAINING_RECOVERY_PRIMARY_CHECKPOINT_FILE: &str = "policy-checkpoint.json";
+const TRAINING_RECOVERY_FALLBACK_CHECKPOINT_FILE: &str = "policy-checkpoint.rollback.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromptOptimizationControlAction {
@@ -134,6 +140,7 @@ struct TrainingControlAuditRecord {
     lifecycle_state: String,
     idempotent: bool,
     rollback_checkpoint: Option<String>,
+    recovery_checkpoint_source: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -147,8 +154,34 @@ struct TrainingControlStatusReport {
     idempotent: Option<bool>,
     rollback_checkpoint: Option<String>,
     checkpoint_run_id: Option<String>,
+    recovery_report_path: Option<String>,
+    recovery_checkpoint_source: Option<String>,
+    recovery_crash_detected: Option<bool>,
+    recovery_replayed_audit_events: Option<usize>,
     control_state: Option<TrainingControlStateFile>,
     training_status: Option<TrainingStatusFile>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct TrainingRecoveryReportFile {
+    schema_version: u32,
+    recovered_at_unix_ms: u64,
+    principal: String,
+    crash_detected: bool,
+    prior_lifecycle_state: String,
+    prior_training_state: Option<String>,
+    replayed_audit_events: usize,
+    replayed_actions: Vec<String>,
+    checkpoint_source: Option<String>,
+    checkpoint_run_id: Option<String>,
+    checkpoint_global_step: Option<u64>,
+    checkpoint_optimizer_step: Option<u64>,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrainingControlAuditReplayRow {
+    action: String,
 }
 
 pub(crate) async fn run_prompt_optimization_mode_if_requested(
@@ -248,11 +281,19 @@ pub(crate) fn execute_prompt_optimization_control_command(cli: &Cli) -> Result<(
     let control_state_path = state_dir.join(TRAINING_CONTROL_STATE_FILE);
     let control_audit_path = state_dir.join(TRAINING_CONTROL_AUDIT_FILE);
     let training_status_path = state_dir.join(TRAINING_STATUS_FILE);
+    let recovery_report_path = state_dir.join(TRAINING_RECOVERY_REPORT_FILE);
 
     let existing_control_state = load_training_control_state(&control_state_path)?;
     let training_status = load_training_status_file(&training_status_path)?;
+    let mut recovery_report = load_training_recovery_report(&recovery_report_path)?;
 
     if action == PromptOptimizationControlAction::Status {
+        let (
+            recovery_report_path_field,
+            recovery_checkpoint_source,
+            recovery_crash_detected,
+            recovery_replayed_audit_events,
+        ) = recovery_report_status_fields(recovery_report.as_ref(), &recovery_report_path);
         print_training_control_report(
             &TrainingControlStatusReport {
                 schema_version: TRAINING_CONTROL_STATE_SCHEMA_VERSION,
@@ -264,6 +305,10 @@ pub(crate) fn execute_prompt_optimization_control_command(cli: &Cli) -> Result<(
                 idempotent: None,
                 rollback_checkpoint: None,
                 checkpoint_run_id: None,
+                recovery_report_path: recovery_report_path_field,
+                recovery_checkpoint_source,
+                recovery_crash_detected,
+                recovery_replayed_audit_events,
                 control_state: existing_control_state,
                 training_status,
             },
@@ -292,6 +337,19 @@ pub(crate) fn execute_prompt_optimization_control_command(cli: &Cli) -> Result<(
         None
     };
 
+    if action == PromptOptimizationControlAction::Resume {
+        let report = build_resume_recovery_report(
+            state_dir,
+            &principal,
+            existing_control_state.as_ref(),
+            training_status.as_ref(),
+            &control_audit_path,
+        )?;
+        persist_training_recovery_report(&recovery_report_path, &report)?;
+        checkpoint_run_id = report.checkpoint_run_id.clone();
+        recovery_report = Some(report);
+    }
+
     let mut next_state =
         existing_control_state.unwrap_or_else(|| default_training_control_state(&principal));
     let target_lifecycle_state = lifecycle_state_for_control_action(action);
@@ -305,6 +363,13 @@ pub(crate) fn execute_prompt_optimization_control_command(cli: &Cli) -> Result<(
     next_state.principal = principal.clone();
     next_state.rollback_checkpoint = rollback_checkpoint.clone();
 
+    let (
+        recovery_report_path_field,
+        recovery_checkpoint_source,
+        recovery_crash_detected,
+        recovery_replayed_audit_events,
+    ) = recovery_report_status_fields(recovery_report.as_ref(), &recovery_report_path);
+
     persist_training_control_state(&control_state_path, &next_state)?;
     append_training_control_audit(
         &control_audit_path,
@@ -317,6 +382,11 @@ pub(crate) fn execute_prompt_optimization_control_command(cli: &Cli) -> Result<(
             lifecycle_state: target_lifecycle_state.to_string(),
             idempotent,
             rollback_checkpoint: rollback_checkpoint.clone(),
+            recovery_checkpoint_source: if action == PromptOptimizationControlAction::Resume {
+                recovery_checkpoint_source.clone()
+            } else {
+                None
+            },
         },
     )?;
 
@@ -331,6 +401,10 @@ pub(crate) fn execute_prompt_optimization_control_command(cli: &Cli) -> Result<(
             idempotent: Some(idempotent),
             rollback_checkpoint,
             checkpoint_run_id,
+            recovery_report_path: recovery_report_path_field,
+            recovery_checkpoint_source,
+            recovery_crash_detected,
+            recovery_replayed_audit_events,
             control_state: Some(next_state),
             training_status,
         },
@@ -484,6 +558,32 @@ fn load_training_status_file(path: &Path) -> Result<Option<TrainingStatusFile>> 
     Ok(Some(status))
 }
 
+fn load_training_recovery_report(path: &Path) -> Result<Option<TrainingRecoveryReportFile>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read training recovery report '{}'",
+            path.display()
+        )
+    })?;
+    let report = serde_json::from_str::<TrainingRecoveryReportFile>(&raw).with_context(|| {
+        format!(
+            "failed to parse training recovery report '{}'",
+            path.display()
+        )
+    })?;
+    if report.schema_version != TRAINING_RECOVERY_REPORT_SCHEMA_VERSION {
+        bail!(
+            "unsupported training recovery schema version {} (expected {})",
+            report.schema_version,
+            TRAINING_RECOVERY_REPORT_SCHEMA_VERSION
+        );
+    }
+    Ok(Some(report))
+}
+
 fn load_training_control_state(path: &Path) -> Result<Option<TrainingControlStateFile>> {
     if !path.exists() {
         return Ok(None);
@@ -526,6 +626,29 @@ fn persist_training_control_state(path: &Path, state: &TrainingControlStateFile)
     Ok(())
 }
 
+fn persist_training_recovery_report(
+    path: &Path,
+    report: &TrainingRecoveryReportFile,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create training recovery report parent '{}'",
+                parent.display()
+            )
+        })?;
+    }
+    let encoded = serde_json::to_string_pretty(report)
+        .context("failed to encode training recovery report")?;
+    std::fs::write(path, encoded).with_context(|| {
+        format!(
+            "failed to write training recovery report '{}'",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn append_training_control_audit(path: &Path, record: &TrainingControlAuditRecord) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -549,6 +672,126 @@ fn append_training_control_audit(path: &Path, record: &TrainingControlAuditRecor
         )
     })?;
     Ok(())
+}
+
+fn load_training_control_audit_actions(path: &Path) -> Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read training control audit '{}'", path.display()))?;
+    let mut actions = Vec::new();
+    for (index, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row =
+            serde_json::from_str::<TrainingControlAuditReplayRow>(line).with_context(|| {
+                format!(
+                    "failed to parse training control audit line {} from '{}'",
+                    index + 1,
+                    path.display()
+                )
+            })?;
+        actions.push(row.action);
+    }
+    Ok(actions)
+}
+
+fn is_terminal_training_state(training_status: Option<&TrainingStatusFile>) -> bool {
+    training_status.is_some_and(|status| {
+        matches!(
+            status.run_state.as_str(),
+            "completed" | "failed" | "cancelled"
+        )
+    })
+}
+
+fn detect_resume_crash(
+    control_state: Option<&TrainingControlStateFile>,
+    training_status: Option<&TrainingStatusFile>,
+) -> bool {
+    let lifecycle_running = control_state.is_some_and(|state| state.lifecycle_state == "running");
+    lifecycle_running && !is_terminal_training_state(training_status)
+}
+
+fn checkpoint_source_label(source: CheckpointSource) -> &'static str {
+    match source {
+        CheckpointSource::Primary => "primary",
+        CheckpointSource::Fallback => "fallback",
+    }
+}
+
+fn build_resume_recovery_report(
+    state_dir: &Path,
+    principal: &str,
+    control_state: Option<&TrainingControlStateFile>,
+    training_status: Option<&TrainingStatusFile>,
+    control_audit_path: &Path,
+) -> Result<TrainingRecoveryReportFile> {
+    let replayed_actions = load_training_control_audit_actions(control_audit_path)?;
+    let crash_detected = detect_resume_crash(control_state, training_status);
+    let mut diagnostics = Vec::new();
+
+    let mut checkpoint_source = None;
+    let mut checkpoint_run_id = None;
+    let mut checkpoint_global_step = None;
+    let mut checkpoint_optimizer_step = None;
+
+    if crash_detected {
+        let primary_checkpoint_path = state_dir.join(TRAINING_RECOVERY_PRIMARY_CHECKPOINT_FILE);
+        let fallback_checkpoint_path = state_dir.join(TRAINING_RECOVERY_FALLBACK_CHECKPOINT_FILE);
+        let resume = load_policy_checkpoint_with_rollback(
+            &primary_checkpoint_path,
+            &fallback_checkpoint_path,
+        )
+        .with_context(|| {
+            format!(
+                "resume recovery guardrail: crash detected but checkpoint restore failed (primary='{}' fallback='{}')",
+                primary_checkpoint_path.display(),
+                fallback_checkpoint_path.display()
+            )
+        })?;
+        checkpoint_source = Some(checkpoint_source_label(resume.source).to_string());
+        checkpoint_run_id = Some(resume.checkpoint.run_id.clone());
+        checkpoint_global_step = Some(resume.checkpoint.global_step);
+        checkpoint_optimizer_step = Some(resume.checkpoint.optimizer_step);
+        diagnostics.extend(resume.diagnostics);
+    } else {
+        diagnostics.push(
+            "resume recovery: no crash-detected state, checkpoint restore not required".to_string(),
+        );
+    }
+
+    Ok(TrainingRecoveryReportFile {
+        schema_version: TRAINING_RECOVERY_REPORT_SCHEMA_VERSION,
+        recovered_at_unix_ms: tau_core::current_unix_timestamp_ms(),
+        principal: principal.to_string(),
+        crash_detected,
+        prior_lifecycle_state: control_state
+            .map(|state| state.lifecycle_state.clone())
+            .unwrap_or_else(|| "missing".to_string()),
+        prior_training_state: training_status.map(|status| status.run_state.clone()),
+        replayed_audit_events: replayed_actions.len(),
+        replayed_actions,
+        checkpoint_source,
+        checkpoint_run_id,
+        checkpoint_global_step,
+        checkpoint_optimizer_step,
+        diagnostics,
+    })
+}
+
+fn recovery_report_status_fields(
+    report: Option<&TrainingRecoveryReportFile>,
+    report_path: &Path,
+) -> (Option<String>, Option<String>, Option<bool>, Option<usize>) {
+    (
+        report.map(|_| report_path.display().to_string()),
+        report.and_then(|item| item.checkpoint_source.clone()),
+        report.map(|item| item.crash_detected),
+        report.map(|item| item.replayed_audit_events),
+    )
 }
 
 fn print_training_control_report(
@@ -580,8 +823,21 @@ fn print_training_control_report(
         .unwrap_or_else(|| "n/a".to_string());
     let rollback_checkpoint = report.rollback_checkpoint.as_deref().unwrap_or("none");
     let checkpoint_run_id = report.checkpoint_run_id.as_deref().unwrap_or("none");
+    let recovery_report_path = report.recovery_report_path.as_deref().unwrap_or("none");
+    let recovery_checkpoint_source = report
+        .recovery_checkpoint_source
+        .as_deref()
+        .unwrap_or("none");
+    let recovery_crash_detected = report
+        .recovery_crash_detected
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    let recovery_replayed_audit_events = report
+        .recovery_replayed_audit_events
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
     println!(
-        "prompt optimization lifecycle control: action={} principal={} lifecycle_state={} training_run_state={} idempotent={} rollback_checkpoint={} checkpoint_run_id={} state_dir={} state_file={} audit_file={}",
+        "prompt optimization lifecycle control: action={} principal={} lifecycle_state={} training_run_state={} idempotent={} rollback_checkpoint={} checkpoint_run_id={} recovery_report={} recovery_checkpoint_source={} recovery_crash_detected={} recovery_replayed_audit_events={} state_dir={} state_file={} audit_file={}",
         report.action,
         report.principal,
         lifecycle_state,
@@ -589,6 +845,10 @@ fn print_training_control_report(
         idempotent,
         rollback_checkpoint,
         checkpoint_run_id,
+        recovery_report_path,
+        recovery_checkpoint_source,
+        recovery_crash_detected,
+        recovery_replayed_audit_events,
         report.state_dir,
         report.control_state_path,
         report.control_audit_path
@@ -828,7 +1088,7 @@ mod tests {
     use super::{
         build_trainer_config, execute_prompt_optimization_control_command,
         run_prompt_optimization_mode_if_requested, TrainingConfigFile, TRAINING_CONTROL_AUDIT_FILE,
-        TRAINING_CONTROL_STATE_FILE,
+        TRAINING_CONTROL_STATE_FILE, TRAINING_RECOVERY_REPORT_FILE,
     };
     use crate::model_catalog::ModelCatalog;
     use crate::tools::ToolPolicy;
@@ -1233,5 +1493,218 @@ mod tests {
             .expect_err("invalid checkpoint should fail closed");
         let message = format!("{error:#}");
         assert!(message.contains("failed to load rollback checkpoint"));
+    }
+
+    #[test]
+    fn integration_prompt_optimization_control_resume_persists_recovery_report_with_crash_metadata()
+    {
+        let temp = tempdir().expect("create tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_rbac_policy(
+            &policy_path,
+            &json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    { "principal": "local:rl-operator", "roles": ["rl-control"] }
+                ],
+                "roles": {
+                    "rl-control": {
+                        "allow": ["control:rl:*"]
+                    }
+                }
+            }),
+        );
+
+        let state_dir = temp.path().join("training");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        std::fs::write(
+            state_dir.join(TRAINING_CONTROL_STATE_FILE),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "updated_unix_ms": 1_760_000_010_000_u64,
+                "lifecycle_state": "running",
+                "last_action": "resume",
+                "principal": "local:rl-operator",
+                "rollback_checkpoint": null
+            }))
+            .expect("encode control state"),
+        )
+        .expect("write control state");
+        std::fs::write(
+            state_dir.join(TRAINING_CONTROL_AUDIT_FILE),
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&json!({
+                    "schema_version": 1,
+                    "timestamp_unix_ms": 1_760_000_010_000_u64,
+                    "principal": "local:rl-operator",
+                    "action": "pause",
+                    "action_key": "control:rl:pause",
+                    "lifecycle_state": "paused",
+                    "idempotent": false,
+                    "rollback_checkpoint": null
+                }))
+                .expect("encode audit row"),
+                serde_json::to_string(&json!({
+                    "schema_version": 1,
+                    "timestamp_unix_ms": 1_760_000_011_000_u64,
+                    "principal": "local:rl-operator",
+                    "action": "resume",
+                    "action_key": "control:rl:resume",
+                    "lifecycle_state": "running",
+                    "idempotent": false,
+                    "rollback_checkpoint": null
+                }))
+                .expect("encode audit row")
+            ),
+        )
+        .expect("write audit");
+        save_policy_checkpoint(
+            &state_dir.join("policy-checkpoint.json"),
+            &checkpoint_payload(),
+        )
+        .expect("save checkpoint");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_control_resume = true;
+        cli.prompt_optimization_control_state_dir = state_dir.clone();
+        cli.prompt_optimization_control_principal = Some("local:rl-operator".to_string());
+        cli.prompt_optimization_control_rbac_policy = policy_path;
+        cli.prompt_optimization_control_json = true;
+
+        execute_prompt_optimization_control_command(&cli).expect("resume recovery command");
+
+        let recovery_report_path = state_dir.join(TRAINING_RECOVERY_REPORT_FILE);
+        assert!(
+            recovery_report_path.exists(),
+            "recovery report should exist"
+        );
+        let report_raw = std::fs::read_to_string(&recovery_report_path).expect("read report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report_raw).expect("parse recovery report");
+        assert_eq!(report_json["crash_detected"], true);
+        assert_eq!(report_json["replayed_audit_events"], 2);
+        assert_eq!(report_json["checkpoint_source"], "primary");
+    }
+
+    #[test]
+    fn regression_prompt_optimization_control_resume_uses_fallback_checkpoint_when_primary_is_corrupted(
+    ) {
+        let temp = tempdir().expect("create tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_rbac_policy(
+            &policy_path,
+            &json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    { "principal": "local:rl-operator", "roles": ["rl-control"] }
+                ],
+                "roles": {
+                    "rl-control": {
+                        "allow": ["control:rl:*"]
+                    }
+                }
+            }),
+        );
+
+        let state_dir = temp.path().join("training");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        std::fs::write(
+            state_dir.join(TRAINING_CONTROL_STATE_FILE),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "updated_unix_ms": 1_760_000_010_000_u64,
+                "lifecycle_state": "running",
+                "last_action": "resume",
+                "principal": "local:rl-operator",
+                "rollback_checkpoint": null
+            }))
+            .expect("encode control state"),
+        )
+        .expect("write control state");
+        std::fs::write(
+            state_dir.join("policy-checkpoint.json"),
+            "{\"checkpoint_version\":1}\n",
+        )
+        .expect("write corrupted primary");
+        save_policy_checkpoint(
+            &state_dir.join("policy-checkpoint.rollback.json"),
+            &checkpoint_payload(),
+        )
+        .expect("save fallback checkpoint");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_control_resume = true;
+        cli.prompt_optimization_control_state_dir = state_dir.clone();
+        cli.prompt_optimization_control_principal = Some("local:rl-operator".to_string());
+        cli.prompt_optimization_control_rbac_policy = policy_path;
+
+        execute_prompt_optimization_control_command(&cli).expect("resume recovery command");
+
+        let report_raw =
+            std::fs::read_to_string(state_dir.join(TRAINING_RECOVERY_REPORT_FILE)).expect("read");
+        let report_json: serde_json::Value = serde_json::from_str(&report_raw).expect("parse");
+        assert_eq!(report_json["checkpoint_source"], "fallback");
+        assert_eq!(report_json["checkpoint_run_id"], "run-checkpoint-1");
+        assert!(report_json["diagnostics"]
+            .as_array()
+            .expect("diagnostics array")
+            .iter()
+            .any(|item| item
+                .as_str()
+                .unwrap_or_default()
+                .contains("primary checkpoint load failed")));
+    }
+
+    #[test]
+    fn regression_prompt_optimization_control_resume_fails_closed_when_crash_detected_and_no_checkpoint(
+    ) {
+        let temp = tempdir().expect("create tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_rbac_policy(
+            &policy_path,
+            &json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    { "principal": "local:rl-operator", "roles": ["rl-control"] }
+                ],
+                "roles": {
+                    "rl-control": {
+                        "allow": ["control:rl:*"]
+                    }
+                }
+            }),
+        );
+
+        let state_dir = temp.path().join("training");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        std::fs::write(
+            state_dir.join(TRAINING_CONTROL_STATE_FILE),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "updated_unix_ms": 1_760_000_010_000_u64,
+                "lifecycle_state": "running",
+                "last_action": "resume",
+                "principal": "local:rl-operator",
+                "rollback_checkpoint": null
+            }))
+            .expect("encode control state"),
+        )
+        .expect("write control state");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_control_resume = true;
+        cli.prompt_optimization_control_state_dir = state_dir;
+        cli.prompt_optimization_control_principal = Some("local:rl-operator".to_string());
+        cli.prompt_optimization_control_rbac_policy = policy_path;
+
+        let error = execute_prompt_optimization_control_command(&cli)
+            .expect_err("resume should fail without checkpoint");
+        let message = format!("{error:#}");
+        assert!(message.contains("resume recovery guardrail"));
+        assert!(message.contains("policy-checkpoint.json"));
     }
 }

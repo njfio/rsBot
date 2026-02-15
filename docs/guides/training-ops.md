@@ -87,6 +87,9 @@ SQLite store. This status file includes model identity and rollout outcome count
 Gateway dashboard endpoints (`/dashboard/health`, `/dashboard/widgets`,
 `/dashboard/queue-timeline`, `/dashboard/alerts`) include this status under the `training` field.
 
+Resume/recovery lifecycle controls and guardrail procedures are documented in:
+`docs/guides/prompt-optimization-recovery-runbook.md`.
+
 ## Flag Notes
 
 Canonical flags for current automation:
