@@ -54,6 +54,64 @@ fn unit_validate_extension_manifest_accepts_minimal_schema() {
 }
 
 #[test]
+fn unit_validate_extension_manifest_accepts_wasm_runtime_config() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "wasm-assistant",
+  "version": "0.1.0",
+  "runtime": "wasm",
+  "entrypoint": "hook.wasm",
+  "hooks": ["run-start"],
+  "permissions": ["run-commands"],
+  "wasm": {
+    "fuel_limit": 500000,
+    "memory_limit_bytes": 131072,
+    "max_response_bytes": 4096,
+    "filesystem_mode": "deny",
+    "network_mode": "deny"
+  }
+}"#,
+    )
+    .expect("write manifest");
+
+    let summary = validate_extension_manifest(&manifest_path).expect("valid wasm manifest");
+    assert_eq!(summary.runtime, "wasm");
+    assert_eq!(summary.entrypoint, "hook.wasm");
+}
+
+#[test]
+fn regression_validate_extension_manifest_rejects_wasm_zero_fuel_limit() {
+    let temp = tempdir().expect("tempdir");
+    let manifest_path = temp.path().join("extension.json");
+    std::fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "wasm-assistant",
+  "version": "0.1.0",
+  "runtime": "wasm",
+  "entrypoint": "hook.wasm",
+  "hooks": ["run-start"],
+  "permissions": ["run-commands"],
+  "wasm": {
+    "fuel_limit": 0
+  }
+}"#,
+    )
+    .expect("write manifest");
+
+    let error =
+        validate_extension_manifest(&manifest_path).expect_err("zero wasm fuel should fail");
+    assert!(error
+        .to_string()
+        .contains("wasm 'fuel_limit' must be greater than 0"));
+}
+
+#[test]
 fn regression_validate_extension_manifest_rejects_parent_dir_entrypoint() {
     let temp = tempdir().expect("tempdir");
     let manifest_path = temp.path().join("extension.json");
@@ -121,6 +179,7 @@ fn unit_render_extension_manifest_report_is_deterministic() {
         tools: vec![],
         commands: vec![],
         timeout_ms: 60_000,
+        wasm: Default::default(),
     };
 
     let report = render_extension_manifest_report(&summary, &manifest);
@@ -214,6 +273,31 @@ fn make_executable(path: &std::path::Path) {
     }
 }
 
+fn write_wasm_module(path: &std::path::Path, response_json: &str) {
+    let escaped = response_json.replace('\\', "\\\\").replace('"', "\\\"");
+    let wat_source = format!(
+        r#"(module
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 1024))
+  (data (i32.const 0) "{escaped}")
+  (func (export "tau_extension_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    global.get $heap
+    local.set $ptr
+    global.get $heap
+    local.get $len
+    i32.add
+    global.set $heap
+    local.get $ptr)
+  (func (export "tau_extension_invoke") (param i32 i32) (result i64)
+    i64.const {len})
+)"#,
+        len = response_json.len()
+    );
+    let bytes = wat::parse_str(&wat_source).expect("parse wat");
+    fs::write(path, bytes).expect("write wasm module");
+}
+
 #[test]
 fn functional_execute_extension_process_hook_runs_process_runtime() {
     let temp = tempdir().expect("tempdir");
@@ -247,6 +331,72 @@ fn functional_execute_extension_process_hook_runs_process_runtime() {
     assert_eq!(summary.id, "issue-assistant");
     assert_eq!(summary.hook, "run-start");
     assert!(summary.response.contains("\"ok\":true"));
+}
+
+#[test]
+fn functional_execute_extension_process_hook_runs_wasm_runtime() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("hook.wasm");
+    write_wasm_module(&module_path, r#"{"ok":true,"runtime":"wasm"}"#);
+
+    let manifest_path = temp.path().join("extension.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "wasm-extension",
+  "version": "0.1.0",
+  "runtime": "wasm",
+  "entrypoint": "hook.wasm",
+  "hooks": ["run-start"],
+  "permissions": ["run-commands"],
+  "timeout_ms": 5000
+}"#,
+    )
+    .expect("write manifest");
+
+    let payload = serde_json::json!({"event":"created"});
+    let summary = execute_extension_process_hook(&manifest_path, "run-start", &payload)
+        .expect("wasm extension execution should succeed");
+    assert_eq!(summary.runtime, "wasm");
+    assert!(summary.response.contains("\"runtime\":\"wasm\""));
+    assert!(summary
+        .reason_codes
+        .iter()
+        .any(|code| code == "wasm_execution_succeeded"));
+}
+
+#[test]
+fn regression_execute_extension_process_hook_wasm_fails_closed_on_unsupported_network() {
+    let temp = tempdir().expect("tempdir");
+    let module_path = temp.path().join("hook.wasm");
+    write_wasm_module(&module_path, r#"{"ok":true}"#);
+
+    let manifest_path = temp.path().join("extension.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "schema_version": 1,
+  "id": "wasm-extension",
+  "version": "0.1.0",
+  "runtime": "wasm",
+  "entrypoint": "hook.wasm",
+  "hooks": ["run-start"],
+  "permissions": ["run-commands"],
+  "timeout_ms": 5000,
+  "wasm": {
+    "network_mode": "allow"
+  }
+}"#,
+    )
+    .expect("write manifest");
+
+    let payload = serde_json::json!({"event":"created"});
+    let error = execute_extension_process_hook(&manifest_path, "run-start", &payload)
+        .expect_err("unsupported wasm network capability should fail closed");
+    assert!(error
+        .to_string()
+        .contains("reason_code=wasm_capability_network_unsupported"));
 }
 
 #[test]
@@ -445,6 +595,37 @@ fn functional_dispatch_extension_runtime_hook_runs_process_extensions() {
         "run-start",
         &serde_json::json!({"event":"started"}),
     );
+    assert_eq!(report.executed, 1);
+    assert_eq!(report.failed, 0);
+    assert!(report.diagnostics.is_empty());
+}
+
+#[test]
+fn integration_dispatch_extension_runtime_hook_runs_wasm_extensions() {
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path().join("extensions");
+    let extension_dir = root.join("wasm-hook");
+    fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+    let module_path = extension_dir.join("hook.wasm");
+    write_wasm_module(&module_path, r#"{"ok":true,"runtime":"wasm"}"#);
+
+    fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "wasm-hook",
+  "version": "1.0.0",
+  "runtime": "wasm",
+  "entrypoint": "hook.wasm",
+  "hooks": ["run-start"],
+  "permissions": ["run-commands"],
+  "timeout_ms": 5000
+}"#,
+    )
+    .expect("write manifest");
+
+    let report = dispatch_extension_runtime_hook(&root, "run-start", &serde_json::json!({}));
     assert_eq!(report.executed, 1);
     assert_eq!(report.failed, 0);
     assert!(report.diagnostics.is_empty());
@@ -1223,6 +1404,70 @@ fn functional_discover_extension_runtime_registrations_collects_tools_and_comman
     assert_eq!(summary.registered_commands.len(), 1);
     assert_eq!(summary.registered_commands[0].name, "/triage-now");
     assert!(summary.diagnostics.is_empty());
+}
+
+#[test]
+fn integration_discover_extension_runtime_registrations_executes_wasm_tools_and_commands() {
+    let temp = tempdir().expect("tempdir");
+    let root = temp.path().join("extensions");
+    let extension_dir = root.join("wasm-registry");
+    fs::create_dir_all(&extension_dir).expect("create extension dir");
+
+    let module_path = extension_dir.join("runtime.wasm");
+    write_wasm_module(
+        &module_path,
+        r#"{"output":"command complete","content":{"status":"ok"},"is_error":false}"#,
+    );
+
+    fs::write(
+        extension_dir.join("extension.json"),
+        r#"{
+  "schema_version": 1,
+  "id": "wasm-registry",
+  "version": "1.0.0",
+  "runtime": "wasm",
+  "entrypoint": "runtime.wasm",
+  "permissions": ["run-commands"],
+  "tools": [
+{
+  "name": "issue_triage_wasm",
+  "description": "Wasm triage tool",
+  "parameters": {"type":"object","properties":{}}
+}
+  ],
+  "commands": [
+{
+  "name": "/triage-wasm",
+  "description": "Wasm triage command"
+}
+  ]
+}"#,
+    )
+    .expect("write manifest");
+
+    let summary =
+        discover_extension_runtime_registrations(&root, RESERVED_BUILTIN_TOOL_NAMES, &["/help"]);
+    assert_eq!(summary.registered_tools.len(), 1);
+    assert_eq!(summary.registered_tools[0].runtime, "wasm");
+    assert!(summary.registered_tools[0].wasm_limits.is_some());
+    assert!(summary.registered_tools[0].wasm_capabilities.is_some());
+    assert_eq!(summary.registered_commands.len(), 1);
+    assert_eq!(summary.registered_commands[0].runtime, "wasm");
+
+    let tool = summary
+        .registered_tools
+        .first()
+        .expect("registered tool should exist");
+    let tool_result = execute_extension_registered_tool(tool, &serde_json::json!({}))
+        .expect("wasm tool execution should succeed");
+    assert_eq!(tool_result.content["status"], "ok");
+    assert!(!tool_result.is_error);
+
+    let command_result =
+        dispatch_extension_registered_command(&summary.registered_commands, "/triage-wasm", "123")
+            .expect("command dispatch should succeed")
+            .expect("command should match");
+    assert_eq!(command_result.output.as_deref(), Some("command complete"));
 }
 
 #[test]

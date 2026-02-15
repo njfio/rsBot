@@ -15,6 +15,7 @@ pub mod slack_helpers_runtime;
 pub mod ssrf_guard;
 pub mod transport_conformance_runtime;
 pub mod transport_health;
+pub mod wasm_sandbox_runtime;
 
 pub use background_jobs_runtime::*;
 pub use channel_store::*;
@@ -27,3 +28,4 @@ pub use slack_helpers_runtime::*;
 pub use ssrf_guard::*;
 pub use transport_conformance_runtime::*;
 pub use transport_health::*;
+pub use wasm_sandbox_runtime::*;

@@ -1,7 +1,7 @@
 //! Extension manifest, command execution, and runtime hook support for Tau.
 //!
-//! Provides extension discovery/validation and process-hook dispatch used to
-//! customize runtime behavior and command surfaces.
+//! Provides extension discovery/validation and runtime-hook dispatch used to
+//! customize runtime behavior and command surfaces for process and wasm modules.
 
 use std::{
     collections::HashSet,
@@ -17,6 +17,12 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tau_cli::Cli;
+use tau_runtime::{
+    execute_wasm_sandbox_sync, WasmSandboxCapabilityProfile, WasmSandboxExecutionRequest,
+    WasmSandboxFilesystemMode, WasmSandboxLimits, WasmSandboxNetworkMode,
+    WASM_SANDBOX_FUEL_LIMIT_DEFAULT, WASM_SANDBOX_MAX_RESPONSE_BYTES_DEFAULT,
+    WASM_SANDBOX_MEMORY_LIMIT_BYTES_DEFAULT,
+};
 use wait_timeout::ChildExt;
 
 #[cfg(test)]
@@ -28,6 +34,7 @@ const EXTENSION_TIMEOUT_MS_MAX: u64 = 300_000;
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 const EXTENSION_COMMAND_RESPONSE_ACTION_CONTINUE: &str = "continue";
 const EXTENSION_COMMAND_RESPONSE_ACTION_EXIT: &str = "exit";
+const EXTENSION_PROCESS_EXECUTION_SUCCEEDED_REASON_CODE: &str = "process_execution_succeeded";
 
 pub fn execute_extension_list_command(cli: &Cli) -> Result<()> {
     if !cli.extension_list {
@@ -53,7 +60,7 @@ pub fn execute_extension_exec_command(cli: &Cli) -> Result<()> {
     let payload = load_extension_exec_payload(payload_file)?;
     let summary = execute_extension_process_hook(manifest_path, hook, &payload)?;
     println!(
-        "extension exec: path={} id={} version={} runtime={} hook={} timeout_ms={} duration_ms={} response_bytes={}",
+        "extension exec: path={} id={} version={} runtime={} hook={} timeout_ms={} duration_ms={} response_bytes={} reason_codes={} diagnostics={}",
         summary.manifest_path.display(),
         summary.id,
         summary.version,
@@ -61,7 +68,9 @@ pub fn execute_extension_exec_command(cli: &Cli) -> Result<()> {
         summary.hook,
         summary.timeout_ms,
         summary.duration_ms,
-        summary.response_bytes
+        summary.response_bytes,
+        summary.reason_codes.join(","),
+        summary.diagnostics.len()
     );
     println!("extension exec response: {}", summary.response);
     Ok(())
@@ -144,6 +153,8 @@ pub struct ExtensionExecSummary {
     pub duration_ms: u64,
     pub response_bytes: usize,
     pub response: String,
+    pub reason_codes: Vec<String>,
+    pub diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,11 +233,14 @@ pub struct ExtensionRegisteredTool {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    pub runtime: String,
     pub extension_id: String,
     pub extension_version: String,
     pub manifest_path: PathBuf,
     pub entrypoint: PathBuf,
     pub timeout_ms: u64,
+    pub wasm_limits: Option<WasmSandboxLimits>,
+    pub wasm_capabilities: Option<WasmSandboxCapabilityProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,11 +249,14 @@ pub struct ExtensionRegisteredCommand {
     pub name: String,
     pub description: String,
     pub usage: Option<String>,
+    pub runtime: String,
     pub extension_id: String,
     pub extension_version: String,
     pub manifest_path: PathBuf,
     pub entrypoint: PathBuf,
     pub timeout_ms: u64,
+    pub wasm_limits: Option<WasmSandboxLimits>,
+    pub wasm_capabilities: Option<WasmSandboxCapabilityProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -286,6 +303,39 @@ pub struct ExtensionManifest {
     commands: Vec<ExtensionCommandRegistration>,
     #[serde(default = "default_extension_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default)]
+    wasm: ExtensionWasmRuntimeConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+struct ExtensionWasmRuntimeConfig {
+    #[serde(default)]
+    fuel_limit: Option<u64>,
+    #[serde(default)]
+    memory_limit_bytes: Option<u64>,
+    #[serde(default)]
+    max_response_bytes: Option<usize>,
+    #[serde(default)]
+    filesystem_mode: Option<ExtensionWasmFilesystemMode>,
+    #[serde(default)]
+    network_mode: Option<ExtensionWasmNetworkMode>,
+    #[serde(default)]
+    env_allowlist: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ExtensionWasmFilesystemMode {
+    Deny,
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ExtensionWasmNetworkMode {
+    Deny,
+    Allow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,6 +448,153 @@ fn required_permission_for_hook(hook: &ExtensionHook) -> Option<ExtensionPermiss
     }
 }
 
+#[derive(Debug, Clone)]
+struct ExtensionHookExecutionOutput {
+    response: String,
+    response_bytes: usize,
+    duration_ms: u64,
+    reason_codes: Vec<String>,
+    diagnostics: Vec<String>,
+}
+
+fn is_supported_extension_runtime(runtime: &ExtensionRuntime) -> bool {
+    matches!(runtime, ExtensionRuntime::Process | ExtensionRuntime::Wasm)
+}
+
+fn parse_registered_extension_runtime(runtime: &str) -> Result<ExtensionRuntime> {
+    match runtime.trim() {
+        "process" => Ok(ExtensionRuntime::Process),
+        "wasm" => Ok(ExtensionRuntime::Wasm),
+        other => bail!("unsupported extension runtime '{}'", other),
+    }
+}
+
+fn wasm_runtime_limits_from_manifest(manifest: &ExtensionManifest) -> WasmSandboxLimits {
+    WasmSandboxLimits {
+        fuel_limit: manifest
+            .wasm
+            .fuel_limit
+            .unwrap_or(WASM_SANDBOX_FUEL_LIMIT_DEFAULT),
+        memory_limit_bytes: manifest
+            .wasm
+            .memory_limit_bytes
+            .unwrap_or(WASM_SANDBOX_MEMORY_LIMIT_BYTES_DEFAULT),
+        timeout_ms: manifest.timeout_ms,
+        max_response_bytes: manifest
+            .wasm
+            .max_response_bytes
+            .unwrap_or(WASM_SANDBOX_MAX_RESPONSE_BYTES_DEFAULT),
+    }
+}
+
+fn wasm_runtime_capabilities_from_manifest(
+    manifest: &ExtensionManifest,
+) -> WasmSandboxCapabilityProfile {
+    let filesystem_mode = match manifest.wasm.filesystem_mode {
+        Some(ExtensionWasmFilesystemMode::Deny) | None => WasmSandboxFilesystemMode::Deny,
+        Some(ExtensionWasmFilesystemMode::ReadOnly) => WasmSandboxFilesystemMode::ReadOnly,
+        Some(ExtensionWasmFilesystemMode::ReadWrite) => WasmSandboxFilesystemMode::ReadWrite,
+    };
+    let network_mode = match manifest.wasm.network_mode {
+        Some(ExtensionWasmNetworkMode::Deny) | None => WasmSandboxNetworkMode::Deny,
+        Some(ExtensionWasmNetworkMode::Allow) => WasmSandboxNetworkMode::Allow,
+    };
+    WasmSandboxCapabilityProfile {
+        filesystem_mode,
+        network_mode,
+        env_allowlist: manifest.wasm.env_allowlist.clone(),
+    }
+}
+
+fn execute_extension_runtime_with_request(
+    runtime: &ExtensionRuntime,
+    entrypoint: &Path,
+    request_json: &str,
+    timeout_ms: u64,
+    wasm_limits: Option<WasmSandboxLimits>,
+    wasm_capabilities: Option<WasmSandboxCapabilityProfile>,
+) -> Result<ExtensionHookExecutionOutput> {
+    let started_at = Instant::now();
+    match runtime {
+        ExtensionRuntime::Process => {
+            let output = run_extension_process_with_timeout(entrypoint, request_json, timeout_ms)?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stderr = stderr.trim();
+                if stderr.is_empty() {
+                    bail!(
+                        "extension process exited with non-zero status {}",
+                        output.status
+                    );
+                }
+                bail!(
+                    "extension process exited with non-zero status {}: {}",
+                    output.status,
+                    stderr
+                );
+            }
+            let response_raw = String::from_utf8(output.stdout)
+                .context("extension process output is not valid UTF-8")?;
+            if response_raw.trim().is_empty() {
+                bail!("extension process returned empty response");
+            }
+            let response_json = serde_json::from_str::<Value>(&response_raw)
+                .context("extension process response must be valid JSON")?;
+            if !response_json.is_object() {
+                bail!("extension process response must be a JSON object");
+            }
+            let response = serde_json::to_string(&response_json)
+                .context("failed to serialize extension process response JSON")?;
+            Ok(ExtensionHookExecutionOutput {
+                response_bytes: response.len(),
+                response,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                reason_codes: vec![EXTENSION_PROCESS_EXECUTION_SUCCEEDED_REASON_CODE.to_string()],
+                diagnostics: vec![],
+            })
+        }
+        ExtensionRuntime::Wasm => {
+            let limits = wasm_limits.unwrap_or(WasmSandboxLimits {
+                timeout_ms,
+                ..WasmSandboxLimits::default()
+            });
+            let capabilities = wasm_capabilities.unwrap_or_default();
+            let report = execute_wasm_sandbox_sync(WasmSandboxExecutionRequest {
+                module_path: entrypoint.to_path_buf(),
+                request_json: request_json.to_string(),
+                limits,
+                capabilities,
+            })
+            .map_err(|error| {
+                anyhow!(
+                    "extension wasm runtime failed: reason_code={} message={} diagnostics={}",
+                    error.reason_code,
+                    error.message,
+                    if error.diagnostics.is_empty() {
+                        "none".to_string()
+                    } else {
+                        error.diagnostics.join("; ")
+                    }
+                )
+            })?;
+            let response_json = serde_json::from_str::<Value>(&report.response_json)
+                .context("extension wasm response must be valid JSON")?;
+            if !response_json.is_object() {
+                bail!("extension wasm response must be a JSON object");
+            }
+            let response = serde_json::to_string(&response_json)
+                .context("failed to serialize extension wasm response JSON")?;
+            Ok(ExtensionHookExecutionOutput {
+                response_bytes: response.len(),
+                response,
+                duration_ms: started_at.elapsed().as_millis() as u64,
+                reason_codes: report.reason_codes,
+                diagnostics: report.diagnostics,
+            })
+        }
+    }
+}
+
 pub fn validate_extension_manifest(path: &Path) -> Result<ExtensionManifestSummary> {
     let (_, summary) = load_and_validate_extension_manifest(path)?;
     Ok(summary)
@@ -415,6 +612,7 @@ pub fn load_and_validate_extension_manifest(
     validate_tool_registrations(&manifest.tools)?;
     validate_command_registrations(&manifest.commands)?;
     validate_timeout_ms(manifest.timeout_ms)?;
+    validate_wasm_runtime_config(&manifest)?;
     let summary = ExtensionManifestSummary {
         manifest_path: path.to_path_buf(),
         id: manifest.id.clone(),
@@ -654,7 +852,7 @@ pub fn dispatch_extension_runtime_hook(
     summary.diagnostics.extend(invalid_diagnostics);
     summary.discovered = loaded.len();
     for loaded_manifest in loaded {
-        if loaded_manifest.manifest.runtime != ExtensionRuntime::Process {
+        if !is_supported_extension_runtime(&loaded_manifest.manifest.runtime) {
             summary.skipped_unsupported_runtime += 1;
             summary.diagnostics.push(format!(
                 "extension runtime: skipped id={} manifest={} reason=unsupported runtime={}",
@@ -748,7 +946,7 @@ pub fn apply_extension_message_transforms(
     result.diagnostics.extend(invalid_diagnostics);
 
     for loaded_manifest in loaded {
-        if loaded_manifest.manifest.runtime != ExtensionRuntime::Process {
+        if !is_supported_extension_runtime(&loaded_manifest.manifest.runtime) {
             result.skipped_unsupported_runtime += 1;
             continue;
         }
@@ -862,7 +1060,7 @@ pub fn evaluate_extension_policy_override(
     result.diagnostics.extend(invalid_diagnostics);
 
     for loaded_manifest in loaded {
-        if loaded_manifest.manifest.runtime != ExtensionRuntime::Process {
+        if !is_supported_extension_runtime(&loaded_manifest.manifest.runtime) {
             result.skipped_unsupported_runtime += 1;
             continue;
         }
@@ -995,7 +1193,7 @@ pub fn discover_extension_runtime_registrations(
     let mut seen_commands = HashSet::new();
 
     for loaded_manifest in loaded {
-        if loaded_manifest.manifest.runtime != ExtensionRuntime::Process {
+        if !is_supported_extension_runtime(&loaded_manifest.manifest.runtime) {
             summary.skipped_unsupported_runtime += 1;
             summary.diagnostics.push(format!(
                 "extension runtime: skipped id={} manifest={} reason=unsupported runtime={}",
@@ -1027,6 +1225,19 @@ pub fn discover_extension_runtime_registrations(
             .manifest
             .permissions
             .contains(&ExtensionPermission::RunCommands);
+        let runtime = loaded_manifest.manifest.runtime.as_str().to_string();
+        let wasm_limits = match loaded_manifest.manifest.runtime {
+            ExtensionRuntime::Wasm => {
+                Some(wasm_runtime_limits_from_manifest(&loaded_manifest.manifest))
+            }
+            ExtensionRuntime::Process => None,
+        };
+        let wasm_capabilities = match loaded_manifest.manifest.runtime {
+            ExtensionRuntime::Wasm => Some(wasm_runtime_capabilities_from_manifest(
+                &loaded_manifest.manifest,
+            )),
+            ExtensionRuntime::Process => None,
+        };
 
         for tool in &loaded_manifest.manifest.tools {
             let tool_name = tool.name.trim().to_string();
@@ -1066,11 +1277,14 @@ pub fn discover_extension_runtime_registrations(
                 name: tool_name,
                 description: tool.description.trim().to_string(),
                 parameters: tool.parameters.clone(),
+                runtime: runtime.clone(),
                 extension_id: loaded_manifest.summary.id.clone(),
                 extension_version: loaded_manifest.summary.version.clone(),
                 manifest_path: loaded_manifest.summary.manifest_path.clone(),
                 entrypoint: entrypoint.clone(),
                 timeout_ms: loaded_manifest.manifest.timeout_ms,
+                wasm_limits: wasm_limits.clone(),
+                wasm_capabilities: wasm_capabilities.clone(),
             });
         }
 
@@ -1130,11 +1344,14 @@ pub fn discover_extension_runtime_registrations(
                         .as_ref()
                         .map(|usage| usage.trim().to_string())
                         .filter(|usage| !usage.is_empty()),
+                    runtime: runtime.clone(),
                     extension_id: loaded_manifest.summary.id.clone(),
                     extension_version: loaded_manifest.summary.version.clone(),
                     manifest_path: loaded_manifest.summary.manifest_path.clone(),
                     entrypoint: entrypoint.clone(),
                     timeout_ms: loaded_manifest.manifest.timeout_ms,
+                    wasm_limits: wasm_limits.clone(),
+                    wasm_capabilities: wasm_capabilities.clone(),
                 });
         }
     }
@@ -1185,34 +1402,16 @@ pub fn dispatch_extension_registered_command(
     });
     let request_json = serde_json::to_string(&request)
         .context("failed to serialize extension command request payload")?;
-    let output =
-        run_extension_process_with_timeout(&command.entrypoint, &request_json, command.timeout_ms)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        if stderr.is_empty() {
-            bail!(
-                "extension command '{}' exited with non-zero status {}",
-                command.name,
-                output.status
-            );
-        }
-        bail!(
-            "extension command '{}' exited with non-zero status {}: {}",
-            command.name,
-            output.status,
-            stderr
-        );
-    }
-    let response_raw = String::from_utf8(output.stdout)
-        .context("extension command response is not valid UTF-8")?;
-    if response_raw.trim().is_empty() {
-        bail!(
-            "extension command '{}' returned empty response",
-            command.name
-        );
-    }
-    parse_extension_registered_command_response(&command.name, &response_raw).map(Some)
+    let runtime = parse_registered_extension_runtime(&command.runtime)?;
+    let execution = execute_extension_runtime_with_request(
+        &runtime,
+        &command.entrypoint,
+        &request_json,
+        command.timeout_ms,
+        command.wasm_limits.clone(),
+        command.wasm_capabilities.clone(),
+    )?;
+    parse_extension_registered_command_response(&command.name, &execution.response).map(Some)
 }
 
 pub fn execute_extension_registered_tool(
@@ -1235,31 +1434,16 @@ pub fn execute_extension_registered_tool(
     });
     let request_json = serde_json::to_string(&request)
         .context("failed to serialize extension tool request payload")?;
-    let output =
-        run_extension_process_with_timeout(&tool.entrypoint, &request_json, tool.timeout_ms)?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        if stderr.is_empty() {
-            bail!(
-                "extension tool '{}' exited with non-zero status {}",
-                tool.name,
-                output.status
-            );
-        }
-        bail!(
-            "extension tool '{}' exited with non-zero status {}: {}",
-            tool.name,
-            output.status,
-            stderr
-        );
-    }
-    let response_raw =
-        String::from_utf8(output.stdout).context("extension tool response is not valid UTF-8")?;
-    if response_raw.trim().is_empty() {
-        bail!("extension tool '{}' returned empty response", tool.name);
-    }
-    parse_extension_registered_tool_response(&tool.name, &response_raw)
+    let runtime = parse_registered_extension_runtime(&tool.runtime)?;
+    let execution = execute_extension_runtime_with_request(
+        &runtime,
+        &tool.entrypoint,
+        &request_json,
+        tool.timeout_ms,
+        tool.wasm_limits.clone(),
+        tool.wasm_capabilities.clone(),
+    )?;
+    parse_extension_registered_tool_response(&tool.name, &execution.response)
 }
 
 fn parse_extension_registered_command_response(
@@ -1479,7 +1663,7 @@ fn execute_extension_process_hook_with_loaded(
     hook: &ExtensionHook,
     payload: &Value,
 ) -> Result<ExtensionExecSummary> {
-    if manifest.runtime != ExtensionRuntime::Process {
+    if !is_supported_extension_runtime(&manifest.runtime) {
         bail!(
             "extension manifest runtime '{}' is not supported for extension exec",
             manifest.runtime.as_str()
@@ -1515,37 +1699,14 @@ fn execute_extension_process_hook_with_loaded(
         .context("failed to serialize extension execution request payload")?;
 
     let entrypoint = resolve_extension_entrypoint(&summary.manifest_path, &manifest.entrypoint)?;
-    let started_at = Instant::now();
-    let output =
-        run_extension_process_with_timeout(&entrypoint, &request_json, manifest.timeout_ms)?;
-    let duration_ms = started_at.elapsed().as_millis() as u64;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        if stderr.is_empty() {
-            bail!(
-                "extension process exited with non-zero status {}",
-                output.status
-            );
-        }
-        bail!(
-            "extension process exited with non-zero status {}: {}",
-            output.status,
-            stderr
-        );
-    }
-    let response_raw =
-        String::from_utf8(output.stdout).context("extension process output is not valid UTF-8")?;
-    if response_raw.trim().is_empty() {
-        bail!("extension process returned empty response");
-    }
-    let response_json = serde_json::from_str::<Value>(&response_raw)
-        .context("extension process response must be valid JSON")?;
-    if !response_json.is_object() {
-        bail!("extension process response must be a JSON object");
-    }
-    let response = serde_json::to_string(&response_json)
-        .context("failed to serialize extension process response JSON")?;
+    let execution = execute_extension_runtime_with_request(
+        &manifest.runtime,
+        &entrypoint,
+        &request_json,
+        manifest.timeout_ms,
+        Some(wasm_runtime_limits_from_manifest(manifest)),
+        Some(wasm_runtime_capabilities_from_manifest(manifest)),
+    )?;
 
     Ok(ExtensionExecSummary {
         manifest_path: summary.manifest_path.clone(),
@@ -1554,9 +1715,11 @@ fn execute_extension_process_hook_with_loaded(
         runtime: summary.runtime.clone(),
         hook: hook.as_str().to_string(),
         timeout_ms: manifest.timeout_ms,
-        duration_ms,
-        response_bytes: response.len(),
-        response,
+        duration_ms: execution.duration_ms,
+        response_bytes: execution.response_bytes,
+        response: execution.response,
+        reason_codes: execution.reason_codes,
+        diagnostics: execution.diagnostics,
     })
 }
 
@@ -1926,6 +2089,36 @@ fn validate_timeout_ms(timeout_ms: u64) -> Result<()> {
             "extension manifest 'timeout_ms' must be <= {}",
             EXTENSION_TIMEOUT_MS_MAX
         );
+    }
+    Ok(())
+}
+
+fn validate_wasm_runtime_config(manifest: &ExtensionManifest) -> Result<()> {
+    if manifest.runtime != ExtensionRuntime::Wasm {
+        return Ok(());
+    }
+    if let Some(fuel_limit) = manifest.wasm.fuel_limit {
+        if fuel_limit == 0 {
+            bail!("extension manifest wasm 'fuel_limit' must be greater than 0");
+        }
+    }
+    if let Some(memory_limit_bytes) = manifest.wasm.memory_limit_bytes {
+        if memory_limit_bytes == 0 {
+            bail!("extension manifest wasm 'memory_limit_bytes' must be greater than 0");
+        }
+    }
+    if let Some(max_response_bytes) = manifest.wasm.max_response_bytes {
+        if max_response_bytes == 0 {
+            bail!("extension manifest wasm 'max_response_bytes' must be greater than 0");
+        }
+    }
+    if manifest
+        .wasm
+        .env_allowlist
+        .iter()
+        .any(|name| name.trim().is_empty())
+    {
+        bail!("extension manifest wasm 'env_allowlist' entries must not be empty");
     }
     Ok(())
 }

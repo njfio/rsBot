@@ -35,6 +35,39 @@ cargo run -p tau-coding-agent -- \
   --extension-exec-payload-file ./examples/extensions/issue-assistant/payload.json
 ```
 
+### WASM extension runtime
+
+Extension manifests support `runtime: "wasm"` in addition to `runtime: "process"`.
+WASM modules are executed in a sandbox with:
+- Fuel metering
+- Memory ceiling
+- Timeout budget
+- Max response size
+- Deny-by-default filesystem/network/env capabilities
+
+WASM entrypoints must export:
+- `memory`
+- `tau_extension_alloc(i32) -> i32`
+- `tau_extension_invoke(i32, i32) -> i64` (packed pointer/length response)
+
+Optional manifest-level WASM controls:
+
+```json
+{
+  "runtime": "wasm",
+  "entrypoint": "hook.wasm",
+  "timeout_ms": 5000,
+  "wasm": {
+    "fuel_limit": 2000000,
+    "memory_limit_bytes": 33554432,
+    "max_response_bytes": 256000,
+    "filesystem_mode": "deny",
+    "network_mode": "deny",
+    "env_allowlist": []
+  }
+}
+```
+
 ## Package lifecycle
 
 Validate package manifest:
