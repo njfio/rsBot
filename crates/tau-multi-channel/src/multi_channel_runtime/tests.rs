@@ -2289,6 +2289,8 @@ async fn integration_runner_provider_outbound_posts_per_transport_adapter() {
         let mut config = build_config(temp.path());
         config.outbound.mode = MultiChannelOutboundMode::Provider;
         config.outbound.http_timeout_ms = 3_000;
+        config.outbound.ssrf_allow_http = true;
+        config.outbound.ssrf_allow_private_network = true;
         match scenario.transport {
             MultiChannelTransport::Telegram => {
                 config.outbound.telegram_api_base = server.base_url();
@@ -2356,6 +2358,8 @@ async fn regression_runner_provider_outbound_duplicate_event_suppresses_second_s
     config.outbound.mode = MultiChannelOutboundMode::Provider;
     config.outbound.telegram_api_base = server.base_url();
     config.outbound.telegram_bot_token = Some("telegram-token".to_string());
+    config.outbound.ssrf_allow_http = true;
+    config.outbound.ssrf_allow_private_network = true;
     config.telemetry.typing_presence_min_response_chars = 1;
     let event = sample_event(
         MultiChannelTransport::Telegram,
@@ -2409,6 +2413,8 @@ async fn regression_runner_provider_outbound_retry_exhaustion_surfaces_reason_co
     config.outbound.mode = MultiChannelOutboundMode::Provider;
     config.outbound.telegram_api_base = server.base_url();
     config.outbound.telegram_bot_token = Some("telegram-token".to_string());
+    config.outbound.ssrf_allow_http = true;
+    config.outbound.ssrf_allow_private_network = true;
     let event = sample_event(
         MultiChannelTransport::Telegram,
         "tg-retry-exhaust-1",
