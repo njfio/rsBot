@@ -122,6 +122,62 @@ scripts/dev/m22-compatibility-alias-validation.sh \
 Boundary decisions and staged consolidation sets:
 - `docs/guides/training-crate-boundary-plan.md`
 
+## M24 Live-Run RL Benchmark Protocol
+
+This section defines the benchmark proof protocol for M24 true RL work.
+It standardizes baseline-vs-trained evidence so maintainers can compare runs.
+
+Use this protocol with:
+
+- [Milestone #24](https://github.com/njfio/Tau/milestone/24)
+- [Issue #1697](https://github.com/njfio/Tau/issues/1697) benchmark fixtures
+- [Issue #1674](https://github.com/njfio/Tau/issues/1674) significance reporting
+
+### Protocol Steps
+
+1. Freeze benchmark inputs:
+   use the same benchmark fixture file, model/provider, and episode count for
+   both baseline and trained runs.
+2. Run baseline checkpoint:
+   execute benchmark suite against baseline policy/checkpoint and persist
+   `tasks/reports/m24-benchmark-baseline.json`.
+3. Run trained checkpoint:
+   execute benchmark suite against trained policy/checkpoint and persist
+   `tasks/reports/m24-benchmark-trained.json`.
+4. Compute significance:
+   produce `tasks/reports/m24-benchmark-significance.json` with p-value and
+   confidence-level fields.
+5. Publish consolidated proof artifact:
+   fill `scripts/demo/m24-rl-benchmark-proof-template.json` into a run-scoped
+   artifact (for example `tasks/reports/m24-benchmark-proof-<run_id>.json`).
+
+### Required Artifacts
+
+- baseline report JSON
+- trained report JSON
+- significance report JSON
+- consolidated benchmark proof JSON using the M24 template
+
+Validate the consolidated artifact:
+
+```bash
+scripts/demo/validate-m24-rl-benchmark-proof-template.sh \
+  tasks/reports/m24-benchmark-proof-<run_id>.json
+```
+
+### Pass/Fail Significance Criteria
+
+The benchmark proof is a pass only if all conditions hold:
+
+- reward improvement: `trained.mean_reward - baseline.mean_reward >= criteria.min_reward_delta`
+- safety regression bound:
+  `trained.mean_safety_penalty - baseline.mean_safety_penalty <= criteria.max_safety_regression`
+- statistical significance: `significance.p_value <= criteria.max_p_value`
+- confidence floor: `significance.confidence_level >= 0.95`
+
+If any criterion fails, mark `significance.pass=false` and treat the run as a
+regression or non-significant improvement.
+
 ## Ownership
 
 Primary ownership surfaces:
