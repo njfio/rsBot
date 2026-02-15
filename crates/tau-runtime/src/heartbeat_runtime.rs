@@ -597,19 +597,19 @@ fn execute_runtime_self_repair(
         return RuntimeSelfRepairSummary::default();
     }
 
-    let timeout_ms = u64::try_from(config.self_repair_timeout.as_millis()).unwrap_or(u64::MAX);
-    let max_retries = config.self_repair_max_retries.max(1);
-    let orphan_max_age_ms =
-        u64::try_from(config.self_repair_orphan_artifact_max_age.as_millis()).unwrap_or(u64::MAX);
+    let execution_config = RuntimeSelfRepairExecutionConfig {
+        now_unix_ms,
+        timeout_ms: u64::try_from(config.self_repair_timeout.as_millis()).unwrap_or(u64::MAX),
+        max_retries: config.self_repair_max_retries.max(1),
+        orphan_max_age_ms: u64::try_from(config.self_repair_orphan_artifact_max_age.as_millis())
+            .unwrap_or(u64::MAX),
+    };
 
     let mut summary = RuntimeSelfRepairSummary::default();
     process_repair_work_item_dir(
         config.jobs_dir.as_deref(),
         "job",
-        now_unix_ms,
-        timeout_ms,
-        max_retries,
-        orphan_max_age_ms,
+        &execution_config,
         diagnostics,
         reason_codes,
         &mut summary,
@@ -617,10 +617,7 @@ fn execute_runtime_self_repair(
     process_repair_work_item_dir(
         config.self_repair_tool_builds_dir.as_deref(),
         "tool_build",
-        now_unix_ms,
-        timeout_ms,
-        max_retries,
-        orphan_max_age_ms,
+        &execution_config,
         diagnostics,
         reason_codes,
         &mut summary,
@@ -629,14 +626,18 @@ fn execute_runtime_self_repair(
     summary
 }
 
-#[allow(clippy::too_many_arguments)]
-fn process_repair_work_item_dir(
-    dir: Option<&Path>,
-    kind: &str,
+#[derive(Debug, Clone, Copy)]
+struct RuntimeSelfRepairExecutionConfig {
     now_unix_ms: u64,
     timeout_ms: u64,
     max_retries: usize,
     orphan_max_age_ms: u64,
+}
+
+fn process_repair_work_item_dir(
+    dir: Option<&Path>,
+    kind: &str,
+    config: &RuntimeSelfRepairExecutionConfig,
     diagnostics: &mut Vec<String>,
     reason_codes: &mut Vec<String>,
     summary: &mut RuntimeSelfRepairSummary,
@@ -678,10 +679,7 @@ fn process_repair_work_item_dir(
         if let Err(error) = process_repair_work_item_manifest(
             &manifest_path,
             kind,
-            now_unix_ms,
-            timeout_ms,
-            max_retries,
-            orphan_max_age_ms,
+            config,
             diagnostics,
             reason_codes,
             summary,
@@ -722,18 +720,19 @@ fn collect_repair_manifest_paths(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn process_repair_work_item_manifest(
     manifest_path: &Path,
     kind: &str,
-    now_unix_ms: u64,
-    timeout_ms: u64,
-    max_retries: usize,
-    orphan_max_age_ms: u64,
+    config: &RuntimeSelfRepairExecutionConfig,
     diagnostics: &mut Vec<String>,
     reason_codes: &mut Vec<String>,
     summary: &mut RuntimeSelfRepairSummary,
 ) -> Result<()> {
+    let now_unix_ms = config.now_unix_ms;
+    let timeout_ms = config.timeout_ms;
+    let max_retries = config.max_retries;
+    let orphan_max_age_ms = config.orphan_max_age_ms;
+
     let raw = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
     let mut item = serde_json::from_str::<RuntimeRepairWorkItem>(&raw)
