@@ -1,0 +1,329 @@
+# Tau — What Needs To Be Done
+
+Based on 8 codebase reviews, IronClaw competitive analysis, KAMN integration planning, and honest real-vs-scaffold audit.
+
+**Current state**: 185K lines, 38 crates, 2,597 tests, ~130K lines real production code, ~5K lines scaffold.
+
+## Execution Status (2026-02-15)
+
+Source of truth is GitHub issue and PR history, not this file's original checkbox draft language.
+
+- [x] Phase 0 (scaffold-to-real execution wave) delivered via #1486, #1488, #1490, #1492, #1494.
+- [x] Phase 1 (security) delivered via #1431, #1433, #1435, #1436, #1440, #1442, #1439, #1445.
+- [x] Phase 2 (core tool gaps) delivered via #1447, #1572 (#1448/#1449), #1451, #1455, #1457.
+- [x] Phase 3 (memory and persistence) delivered via #1459, #1461, #1463, #1465.
+- [x] Phase 4 (sandbox and runtime) delivered via #1570 (#1438/#1439) and #1571 (#1444/#1445).
+- [x] Phase 5 (innovation) delivered via #1572 (#1448/#1449) and #1569 (#1452/#1453).
+- [x] Phase 6 (operations) delivered via #1467, #1469, #1471, #1473.
+- [x] Phase 7 (deployment and API) delivered via #1478, #1479, #1480, #1568.
+- [x] Phase 8/9 + cleanup execution delivered via #1497, #1499, #1501, #1503, #1505, #1507, #1510, #1512, #1514, #1516, #1518, #1520, #1522, #1524, #1525.
+- [x] Closing epics complete: #1425 and #1426.
+
+---
+
+## Phase 0: Finish What's Started (Scaffold → Real)
+
+These crates exist but contain only contract fixtures, not real implementations. Either implement them or remove them.
+
+### 0.1 Browser Automation — Implement or Remove
+- **Current**: 800 lines of fixture validation (URL/selector/action schemas). No browser.
+- **Action**: Integrate Playwright/Chromium via CDP protocol or headless Chrome subprocess. The `AgentTool` trait is ready — implement `BrowserNavigateTool`, `BrowserClickTool`, `BrowserReadTool` that make real CDP calls.
+- **Alternative**: Remove the crate if browser automation isn't a priority. Dead scaffold is worse than no scaffold.
+
+### 0.2 Custom Commands — Implement or Remove
+- **Current**: 600 lines of fixture validation. No command execution engine.
+- **Action**: Implement a custom command registry where users define named command sequences (shell scripts, tool chains, prompt templates) that can be invoked by name. The events system already has webhook/cron triggers — wire custom commands as event handlers.
+- **Alternative**: Remove if covered by skills system.
+
+### 0.3 Dashboard — Build Real UI or Scope Down
+- **Current**: 1,900 lines of widget definition validation. Gateway has a basic HTML webchat shell.
+- **Action**: Either build a real web dashboard (axum backend already exists, add a frontend) or explicitly scope this as "operator status API only" and remove the widget contract infrastructure.
+- **Files**: `crates/tau-dashboard/src/dashboard_contract.rs`, `dashboard_runtime.rs`
+
+### 0.4 Memory Crate — Consolidate or Differentiate
+- **Current**: `tau-memory` has 500 lines of fixture replay. Real memory recall lives in `tau-agent-core` (FNV1a hash + embedding API fallback).
+- **Action**: Either move agent-core's memory implementation into `tau-memory` as the real implementation, or remove `tau-memory` contract fixtures and let agent-core own memory entirely.
+
+### 0.5 Training "RL" — Be Honest About Scope
+- **Current**: 6 crates (~2,500 lines). APO algorithm is prompt search (LLM critique → edit → score → repeat), not reinforcement learning. Infrastructure is real (SQLite store, worker pool, telemetry).
+- **Action**: Rename from "training/RL" to "prompt optimization" or "automated prompt engineering." The infrastructure is solid — don't misrepresent it. If actual RL is planned, document a roadmap separately.
+
+---
+
+## Phase 1: Security (P0 — IronClaw's Strongest Dimension)
+
+These are the only areas where IronClaw is categorically superior. Close them first.
+
+### 1.1 Prompt Injection Detection
+- [x] Create `crates/tau-safety` crate
+- [x] Implement `Sanitizer` trait with Aho-Corasick multi-pattern scanning
+- [x] Ship default patterns: "ignore previous instructions", "system prompt override", role injection attempts
+- [x] Hook into agent-core: scan all inbound messages before LLM dispatch
+- [x] Hook into tool system: scan all tool outputs before returning to agent
+- [x] Make patterns configurable via profile TOML
+- [x] Add tests for known injection patterns
+
+### 1.2 Secret Leak Detection
+- [x] Add `LeakDetector` to `tau-safety`
+- [x] Regex patterns for: AWS keys (`AKIA...`), GitHub tokens (`ghp_...`), JWTs, PEM blocks, generic high-entropy strings
+- [x] Scan every `ToolExecutionResult` before caching or returning
+- [x] Scan outbound HTTP requests (when HTTP tool exists)
+- [x] Configurable action: block / redact / warn
+- [x] Tests with known secret patterns
+
+### 1.3 SSRF Protection
+- [x] Implement in `tau-safety` or alongside HTTP tool (see 2.1)
+- [x] Block RFC 1918 private IPs, loopback, link-local
+- [x] Block cloud metadata endpoints (169.254.169.254, GCP, Azure equivalents)
+- [x] DNS rebinding prevention (re-resolve after redirect)
+- [x] HTTPS-only by default
+
+### 1.4 Fail-Closed Sandbox Policy
+- [x] Add `sandbox_policy` field to `ToolPolicy`: `BestEffort` | `Required`
+- [x] `Required` mode: tool execution fails if sandbox unavailable
+- [x] Default `Required` in Strict/Hardened presets
+- [x] Update BashTool to check sandbox_policy before falling through
+
+### 1.5 Identity File Protection
+- [x] Add `protected_paths: Vec<PathBuf>` to `ToolPolicy`
+- [x] WriteTool/EditTool check against protected_paths before execution
+- [x] Default-protect: system prompt file, tool policy file, `.tau/` config
+- [x] Error message explains why the path is protected
+
+### 1.6 Protected Tool Names
+- [x] Maintain reserved tool name registry in `tau-tools`
+- [x] Reject registration of external tools (MCP, extensions) that collide with built-in names
+- [x] Error message lists the conflicting built-in tool
+
+---
+
+## Phase 2: Core Tool Gaps (P1)
+
+### 2.1 HTTP Client Tool
+- [x] Add `HttpTool` to `tau-tools`
+- [x] HTTPS-only by default
+- [x] Integrate SSRF protection from 1.3
+- [x] Configurable timeout and max response size
+- [x] Support GET/POST/PUT/DELETE with JSON body
+- [x] Add to all tool policy presets with appropriate limits
+- [x] Tests against httpbin or mock server
+
+### 2.2 Memory Tools (User-Facing)
+- [x] `MemorySearchTool` — agent explicitly searches memory
+- [x] `MemoryWriteTool` — agent explicitly stores information
+- [x] `MemoryReadTool` — agent reads specific memory entries
+- [x] `MemoryTreeTool` — agent browses memory namespace
+- [x] Wire to agent-core's existing memory system (or consolidated tau-memory)
+
+### 2.3 MCP Client Mode
+- [x] Add MCP client transport to `tau-tools` or new `tau-mcp-client` crate
+- [x] Support stdio transport (spawn external MCP server)
+- [x] Support HTTP+SSE transport
+- [x] Auto-discover and register external tools
+- [x] OAuth 2.1 PKCE flow for authenticated MCP servers (stretch)
+
+### 2.4 Undo/Redo Tool
+- [x] `UndoTool` — creates branch point at previous turn using session DAG
+- [x] `RedoTool` — navigates forward in session DAG
+- [x] Expose via AgentTool so agent can self-correct
+
+---
+
+## Phase 3: Memory & Persistence (P2)
+
+### 3.1 Real Vector Embeddings
+- [x] Integrate embedding provider (OpenAI `text-embedding-3-small` or local `fastembed`/`candle`)
+- [x] Replace FNV1a hash-based pseudo-embeddings with real vectors
+- [x] Store embeddings alongside memory entries
+- [x] Benchmark retrieval quality improvement
+
+### 3.2 Hybrid Search (BM25 + Vector)
+- [x] Add BM25 scoring (inverted index with TF-IDF)
+- [x] Combine with vector similarity via Reciprocal Rank Fusion: `score = Σ 1/(k + rank_i)`
+- [x] Improve recall for both keyword-exact and semantic queries
+- [x] Tests comparing retrieval quality vs current token-based matching
+
+### 3.3 Structured Database Persistence
+- [x] Add SQLite as default embedded backend (zero-config, single file)
+- [x] Migrate session store from JSONL to SQLite (keep JSONL as import/export format)
+- [x] Migrate memory store to SQLite
+- [x] Optional PostgreSQL backend for multi-instance deployments (stretch)
+
+### 3.4 Identity File System
+- [x] Look for `.tau/SOUL.md`, `.tau/AGENTS.md`, `.tau/USER.md` in workspace
+- [x] Compose into system prompt sections during startup
+- [x] Add to `tau-onboarding` startup resolution
+- [x] Protect these files per 1.5
+
+---
+
+## Phase 4: Sandbox & Runtime (P3)
+
+### 4.1 Docker-Level Sandboxing
+- [x] Add Docker sandbox backend alongside bubblewrap
+- [x] Credential isolation (mount secrets as env vars inside container)
+- [x] Resource limits (CPU, memory, network)
+- [x] Cross-platform (macOS/Windows via Docker Desktop)
+
+### 4.2 WASM Sandbox with Fuel Metering
+- [x] Add `wasmtime` as workspace dependency
+- [x] Build WASM execution runtime with fuel limits
+- [x] Capability-based permissions (filesystem, network, env) per WASM module
+- [x] Memory limits per module
+- [x] Use for channel plugins and user-created tools
+
+---
+
+## Phase 5: Innovation (P4 — Requires Phase 4)
+
+### 5.1 Self-Building Tools (LLM-Driven WASM Tool Generation)
+- [x] Requires WASM runtime (4.2) first
+- [x] `ToolBuilderTool` that takes natural language tool description
+- [x] Generates Rust WASM source implementing AgentTool trait
+- [x] Compiles via `cargo build --target wasm32-wasi`
+- [x] Retries on compilation error (feed compiler output back to LLM, up to N iterations)
+- [x] Auto-registers successful tool in current session
+- [x] Stores built tools in workspace for reuse
+
+### 5.2 Job Management System
+- [x] Add job queue (could leverage training-store's SQLite infrastructure)
+- [x] Jobs are agent turns that run in background tokio tasks
+- [x] `JobCreateTool`, `JobListTool`, `JobStatusTool`, `JobCancelTool`
+- [x] Job results stored and retrievable
+
+---
+
+## Phase 6: Operations (P5)
+
+### 6.1 Heartbeat System
+- [x] Add heartbeat scheduler to `tau-runtime`
+- [x] Configurable interval per profile
+- [x] On tick: check pending jobs, process queued events, run maintenance
+- [x] Enable/disable per profile
+
+### 6.2 Self-Repair
+- [x] Detect stuck jobs (exceeded timeout → mark failed)
+- [x] Attempt WASM tool rebuild if compilation env changed
+- [x] Clean up orphaned temp files
+- [x] Run on heartbeat tick
+
+### 6.3 Onboarding Wizard
+- [x] Detect first run (no config file exists)
+- [x] Interactive walkthrough: provider selection, API key entry, model selection
+- [x] Workspace setup, identity file creation
+- [x] Store in profile TOML
+- [x] Add to `tau-onboarding`
+
+### 6.4 Routine/Scheduling Engine
+- [x] Add `tau-routines` crate (or extend `tau-events`)
+- [x] Cron schedules (already have `cron` dependency)
+- [x] Event triggers (from `tau-events`)
+- [x] Webhook triggers (HTTP endpoint)
+- [x] Cooldown/dedup to prevent runaway execution
+- [x] Routines persist and survive restarts
+
+---
+
+## Phase 7: Deployment & API (P6)
+
+### 7.1 OpenAI-Compatible API Endpoint
+- [x] Add to `tau-gateway`: `POST /v1/chat/completions` (streaming + non-streaming)
+- [x] `GET /v1/models` — list available models
+- [x] Drop-in replacement for any OpenAI-compatible client
+- [x] Auth via existing gateway auth system
+
+### 7.2 Web UI
+- [x] Build in `tau-dashboard` using axum backend
+- [x] Conversation view with SSE streaming
+- [x] Tool execution visualization
+- [x] Session management (branches, merge, navigate)
+- [x] Configuration editor
+- [x] Memory browser (stretch)
+
+### 7.3 Multi-Platform Binary Releases
+- [x] Add release workflow to `.github/workflows/`
+- [x] Cross-compile: linux x64/arm64, macOS x64/arm64, Windows x64
+- [x] Use `cross` for cross-compilation
+- [x] Publish to GitHub Releases
+- [x] Shell/PowerShell install scripts
+
+---
+
+## Phase 8: KAMN Integration (Next Week)
+
+### 8.1 Agent Identity Upgrade
+- [x] Replace `agent_id: String` with KAMN DID (`kamn:did:agent:<id>`)
+- [x] Integrate with `tau-access/trust_roots.rs` (DID verification methods as trust root records)
+- [x] Map pairing records to DID service endpoints
+
+### 8.2 Reputation-Gated Routing
+- [x] Add trust score field to `MultiAgentRoleProfile`
+- [x] Feed KAMN trust engine scores into `MultiAgentRouteTable`
+- [x] Route decisions weighted by agent reputation
+
+### 8.3 Economic Coordination
+- [x] Escrow integration with orchestrator (fund on delegation, release on completion)
+- [x] Cost tracking tied to KAMN token settlement
+- [x] Agent-to-agent payment via task completion
+
+### 8.4 Secure Messaging
+- [x] Replace `AgentDirectMessagePolicy` allow-list with KAMN signed envelope protocol
+- [x] Replay protection via KAMN delivery guards
+- [x] Channel establishment via KAMN channel types
+
+### 8.5 WASM Deployment of Tau + KAMN
+- [x] Ensure `kamn-core` and `kamn-sdk` compile to `wasm32-unknown-unknown`
+- [x] Conditional compilation for WASM targets (`#[cfg(target_arch = "wasm32")]`)
+- [x] Browser-native agent identity (DID in WASM)
+- [x] Edge-deployable trusted agents (Cloudflare Workers, Deno Deploy)
+
+---
+
+## Phase 9: Documentation (Ongoing — Parallelize with all phases)
+
+### 9.1 Doc Comment Density
+- [x] Target: 1 `///` comment per 20 lines (~9,000 total, currently 845)
+- [x] Priority 1: `tau-agent-core` public API (AgentConfig, Agent, AgentTool, AgentEvent, AgentError)
+- [x] Priority 2: `tau-ai` types (LlmClient, ContentBlock, Message, ChatRequest)
+- [x] Priority 3: `tau-tools` (ToolPolicy, all tool implementations)
+- [x] Priority 4: `tau-orchestrator` (OrchestratorRuntime, route tables)
+- [x] Add executable doctests for key workflows
+
+### 9.2 Architecture Documentation
+- [x] Document the startup DI pipeline (closure-based injection, 3-stage resolution)
+- [x] Document the contract pattern (what it is, when to use it, how to add new contracts)
+- [x] Document the multi-channel event pipeline (inbound → policy → routing → execution → outbound)
+
+---
+
+## Cleanup Backlog
+
+### Code Quality
+- [x] Split `tools.rs` (4,138 lines) → `tool_policy.rs`, `session_tools.rs`, `bash_tool.rs`
+- [x] Split `tooling_skills.rs` (3,942 lines, 90 test functions) into domain-specific test modules
+- [x] Audit production `.expect()` calls (6,323 total) — convert production-path expects to `?` or `.ok_or_else()`
+- [x] Add rate limiting to tool policy system (per-principal request throttling)
+
+### Testing Gaps
+- [x] Add REPL integration test (spawn process, send input, verify output)
+- [x] Add MCP server integration test (JSON-RPC roundtrip)
+- [x] Add end-to-end test with mock HTTP server simulating real LLM API
+- [x] Add orchestrator integration test (plan → delegate → consolidate with mock LLM)
+
+---
+
+## Priority Order
+
+| Priority | Phase | Items | Rationale |
+|----------|-------|-------|-----------|
+| **Now** | 0 | Scaffold cleanup | Stop carrying dead weight |
+| **P0** | 1 | Security (1.1-1.6) | Only area IronClaw is categorically superior |
+| **P1** | 2 | Core tools (2.1-2.4) | Biggest functional gaps |
+| **P2** | 3 | Memory & persistence (3.1-3.4) | Quality leap in recall and durability |
+| **Next week** | 8 | KAMN integration (8.1-8.5) | Leapfrog competitive category |
+| **P3** | 4 | Sandbox (4.1-4.2) | Enables Phase 5 |
+| **P4** | 5 | Innovation (5.1-5.2) | Differentiators, requires Phase 4 |
+| **P5** | 6 | Operations (6.1-6.4) | Autonomous agent capabilities |
+| **P6** | 7 | Deployment (7.1-7.3) | Expand reach |
+| **Ongoing** | 9 | Documentation | Parallelize with everything |
+| **Ongoing** | — | Cleanup backlog | Opportunistic |

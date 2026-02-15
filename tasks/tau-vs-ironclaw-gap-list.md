@@ -1,0 +1,201 @@
+# Tau vs IronClaw — Gap List for Complete Superiority
+
+## Status Snapshot (2026-02-15)
+
+This document is the pre-execution baseline used to drive the delivery wave. The gap items are now implemented and tracked by merged PR and issue history:
+
+- Core delivery wave merged in PRs #1526 through #1572.
+- Child stories/tasks referenced from this plan were completed and closed.
+- Parent epics closed: #1425 (P3 Sandbox Hardening) and #1426 (P4 Innovation Layer).
+
+For current status, use GitHub issues and PRs as source of truth.
+
+## Tier 1: Security (IronClaw's Strongest Dimension)
+
+IronClaw's security posture is its defining advantage. Tau must match and exceed every layer.
+
+### 1.1 Prompt Injection Detection
+**IronClaw has**: Aho-Corasick multi-pattern + regex scanning on all user/tool inputs. Configurable patterns, runs before content reaches the LLM.
+**Tau has**: Nothing.
+**Implementation**: Add a `tau-safety` crate with a `Sanitizer` trait. Ship default patterns (ignore previous instructions, system prompt override, role injection). Run on all inbound messages and tool outputs. Make patterns configurable via profile TOML.
+
+### 1.2 Secret Leak Detection
+**IronClaw has**: Regex-based scanning of all tool outputs and outbound HTTP for API keys, tokens, passwords, private keys. Blocks or redacts before content leaves the system.
+**Tau has**: Nothing.
+**Implementation**: Add a `LeakDetector` to `tau-safety`. Scan every `ToolResult` and outbound request body. Ship patterns for AWS keys, GitHub tokens, JWTs, PEM blocks, generic high-entropy strings. Configurable action: block / redact / warn.
+
+### 1.3 SSRF Protection
+**IronClaw has**: Private IP blocking (RFC 1918, loopback, link-local), DNS rebinding prevention (re-resolve after redirect), cloud metadata endpoint blocking (169.254.169.254, GCP/Azure equivalents). Applied to all HTTP tool operations.
+**Tau has**: Nothing (no HTTP tool either).
+**Implementation**: When building the HTTP tool (see 2.1), integrate SSRF protection at the transport layer. Block private IPs pre-connect, re-validate after DNS resolution, block cloud metadata endpoints. HTTPS-only by default.
+
+### 1.4 Fail-Closed Sandbox Policy
+**IronClaw has**: If Docker sandbox is unavailable, tool execution fails entirely rather than falling through to unsandboxed execution.
+**Tau has**: Bubblewrap sandboxing on Linux, but falls through to unsandboxed execution when unavailable.
+**Implementation**: Add a `sandbox_policy` field to tool policy: `BestEffort` (current behavior) | `Required` (fail-closed). Default to `Required` in Strict/Hardened presets.
+
+### 1.5 Docker-Level Sandboxing
+**IronClaw has**: Full Docker container isolation with credential injection at network boundary, filesystem isolation, resource limits.
+**Tau has**: Bubblewrap (Linux only), no container-level isolation.
+**Implementation**: Add Docker sandbox backend alongside bubblewrap. Support credential isolation (mount secrets as env vars inside container, not on host). Support resource limits (CPU, memory, network). Cross-platform (works on macOS/Windows via Docker Desktop).
+
+### 1.6 Identity File Protection
+**IronClaw has**: Prevents tools from overwriting SOUL.md, AGENTS.md, USER.md (system prompt source files). Hardcoded protected paths.
+**Tau has**: No concept of protected files.
+**Implementation**: Add `protected_paths` to tool policy. WriteTool/EditTool check against the list before execution. Default-protect system prompt sources and tool policy files.
+
+### 1.7 Protected Tool Names
+**IronClaw has**: Prevents dynamically registered tools (MCP, WASM) from shadowing built-in tool names.
+**Tau has**: No name collision protection.
+**Implementation**: Maintain a reserved tool name registry in `tau-tools`. Reject registration of external tools that collide with built-in names.
+
+### 1.8 WASM Sandbox with Fuel Metering
+**IronClaw has**: wasmtime-based WASM execution with fuel limits (computation budget), capability-based permissions (filesystem, network, env).
+**Tau has**: `wasmparser` dependency exists but only for validation, not execution.
+**Implementation**: Add `wasmtime` as a workspace dependency. Build WASM execution runtime with fuel metering, capability grants per-tool, memory limits. Use for both channel plugins and user-created tools.
+
+---
+
+## Tier 2: Tool Ecosystem
+
+### 2.1 HTTP Client Tool
+**IronClaw has**: HTTPS-only HTTP tool with SSRF protection, configurable timeouts, response size limits.
+**Tau has**: No HTTP tool.
+**Implementation**: Add `HttpTool` to `tau-tools`. HTTPS-only, integrate SSRF protection from 1.3, configurable timeout and max response size. Support GET/POST/PUT/DELETE with JSON body.
+
+### 2.2 Self-Building Tools (LLM-Driven WASM Tool Generation)
+**IronClaw has**: LLM writes Rust WASM tools from natural language descriptions. Iterates up to 20 times on compilation errors. Auto-registers successful tools. This is IronClaw's most innovative feature.
+**Tau has**: Nothing comparable.
+**Implementation**: Requires WASM runtime (1.8) first. Add a `ToolBuilderTool` that: (a) takes a natural language tool description, (b) generates a Rust WASM source with the tool trait, (c) compiles via `cargo build --target wasm32-wasi`, (d) retries on error with compiler output fed back to LLM, (e) registers successful tool in the current session. Store built tools in workspace for reuse.
+
+### 2.3 Memory Tools (User-Facing)
+**IronClaw has**: `memory_search`, `memory_read`, `memory_write`, `memory_tree` tools that let the agent explicitly manage its own memory workspace.
+**Tau has**: Memory system exists in `tau-memory` but is implicit (auto-recall), not tool-accessible.
+**Implementation**: Expose memory operations as `AgentTool` implementations: `MemorySearchTool`, `MemoryReadTool`, `MemoryWriteTool`, `MemoryTreeTool`. Let the agent decide when to store/retrieve information.
+
+### 2.4 Job Management Tools
+**IronClaw has**: Background job system with create/list/status/cancel tools. Jobs run asynchronously and report results.
+**Tau has**: No background job concept.
+**Implementation**: Add a job queue to `tau-runtime` or new `tau-jobs` crate. Jobs are agent turns that run in background tokio tasks. Add `JobCreateTool`, `JobListTool`, `JobStatusTool`, `JobCancelTool`.
+
+### 2.5 MCP Client Mode (with OAuth 2.1)
+**IronClaw has**: Full MCP client with OAuth 2.1 authentication for connecting to external MCP servers.
+**Tau has**: MCP server (exposes tools) but no MCP client (cannot consume external MCP servers with auth).
+**Implementation**: Add MCP client transport to `tau-tools` or new `tau-mcp-client` crate. Support stdio and HTTP+SSE transports. Implement OAuth 2.1 PKCE flow for authenticated MCP servers. Auto-discover and register external tools.
+
+### 2.6 Undo/Redo Tool
+**IronClaw has**: Checkpoint-based conversation rollback. Agent can undo its own actions.
+**Tau has**: Session branching/DAG but no explicit undo tool.
+**Implementation**: Leverage existing session DAG. Add `UndoTool` that creates a branch point at the previous turn. Add `RedoTool` that navigates forward. Expose via tool interface so the agent can self-correct.
+
+---
+
+## Tier 3: Memory & Persistence
+
+### 3.1 Real Vector Embeddings
+**IronClaw has**: pgvector with real embedding vectors from embedding models.
+**Tau has**: FNV1a hash-based pseudo-embeddings with provider-backed embedding fallback.
+**Implementation**: Integrate an embedding provider (OpenAI `text-embedding-3-small`, or local via `fastembed`/`candle`). Generate real vector embeddings for all memory entries. Store in a vector-capable backend.
+
+### 3.2 Hybrid Search (BM25 + Vector via RRF)
+**IronClaw has**: Combined BM25 lexical search + pgvector cosine similarity, merged via Reciprocal Rank Fusion.
+**Tau has**: Token-based matching with recency/confidence weighting.
+**Implementation**: Add BM25 scoring (inverted index with TF-IDF). Combine with vector similarity via RRF formula: `score = Σ 1/(k + rank_i)`. This dramatically improves recall for both keyword-exact and semantic queries.
+
+### 3.3 Structured Database Persistence
+**IronClaw has**: PostgreSQL for sessions, memory, jobs, tools, configuration.
+**Tau has**: JSONL append-only files, in-memory stores.
+**Implementation**: Add SQLite as default embedded backend (zero-config, single file). Support optional PostgreSQL for multi-instance deployments. Migrate session store, memory store, job queue, tool registry to database-backed implementations.
+
+### 3.4 Identity File System (SOUL.md / AGENTS.md / USER.md)
+**IronClaw has**: Composable system prompt from workspace files. SOUL.md (personality), AGENTS.md (capabilities), USER.md (user preferences). Loaded and composed at startup.
+**Tau has**: Single system prompt string, no file-based composition.
+**Implementation**: Add identity file resolution to `tau-onboarding`. Look for `.tau/SOUL.md`, `.tau/AGENTS.md`, `.tau/USER.md` in workspace. Compose into system prompt sections. Protect these files per 1.6.
+
+---
+
+## Tier 4: Operational Features
+
+### 4.1 Heartbeat System
+**IronClaw has**: Periodic proactive execution. Agent wakes up on schedule, runs a checklist (check pending jobs, process new events, maintenance tasks).
+**Tau has**: Nothing. Agent is purely reactive.
+**Implementation**: Add a heartbeat scheduler to `tau-runtime`. Configurable interval. On tick: check pending jobs, process queued events, run maintenance. Enable/disable per profile.
+
+### 4.2 Self-Repair
+**IronClaw has**: Detects stuck jobs (exceeded timeout), rebuilds broken WASM tools, cleans up orphaned resources.
+**Tau has**: Nothing.
+**Implementation**: Add health checks to job system and tool registry. On heartbeat: detect stuck jobs (mark failed after timeout), attempt WASM tool rebuild if compilation env changed, clean up temp files.
+
+### 4.3 Onboarding Wizard
+**IronClaw has**: Interactive first-run setup that configures provider, model, workspace, identity files.
+**Tau has**: `tau-onboarding` crate exists but handles programmatic startup, not interactive first-run.
+**Implementation**: Add interactive first-run flow to `tau-onboarding`. Detect first run (no config file). Walk user through: provider selection, API key entry, model selection, workspace setup, identity file creation. Store in profile TOML.
+
+### 4.4 Routine/Scheduling Engine
+**IronClaw has**: Cron expressions, event triggers, webhook triggers with cooldown periods. Routines execute agent turns on schedule.
+**Tau has**: Nothing beyond heartbeat.
+**Implementation**: Add `tau-routines` crate. Support cron schedules (already have `cron` dependency), event triggers (from `tau-events`), webhook triggers (HTTP endpoint). Cooldown/dedup to prevent runaway execution. Routines are persisted and survive restarts.
+
+---
+
+## Tier 5: Deployment & API
+
+### 5.1 OpenAI-Compatible API Endpoint
+**IronClaw has**: `/v1/chat/completions` endpoint that makes the agent accessible as a drop-in OpenAI API replacement.
+**Tau has**: Gateway with WebSocket protocol, not REST API compatible.
+**Implementation**: Add OpenAI-compatible REST endpoints to `tau-gateway`. `/v1/chat/completions` (streaming and non-streaming), `/v1/models`, `/v1/completions`. This enables integration with any OpenAI-compatible client.
+
+### 5.2 Web UI
+**IronClaw has**: Full web interface with 40+ API endpoints, SSE streaming, conversation management, tool visualization, memory browser.
+**Tau has**: `tau-dashboard` crate exists but scope is unclear from previous reviews. TUI via `tau-tui`.
+**Implementation**: Build web UI in `tau-dashboard`. Axum-based backend (already a dependency). Serve static frontend (could be minimal HTML+JS or a framework). Key pages: conversation view with streaming, tool execution visualization, memory browser, session management, configuration.
+
+### 5.3 Multi-Platform Binary Releases
+**IronClaw has**: GitHub Actions releasing 5 platform binaries (linux x64/arm64, macOS x64/arm64, Windows x64).
+**Tau has**: CI builds and tests but no release pipeline.
+**Implementation**: Add release workflow to `.github/workflows/`. Use `cross` for cross-compilation. Publish to GitHub Releases. Add shell/PowerShell install scripts.
+
+---
+
+## Tier 6: Documentation
+
+### 6.1 Doc Comment Density
+**IronClaw has**: ~4,467 doc comments across 87K lines (1 per 19 lines).
+**Tau has**: ~829 doc comments across 180K lines (1 per 217 lines).
+**Implementation**: Target 1 doc comment per 20 lines (~9,000 total). Prioritize public API surfaces, trait definitions, complex algorithms. This is a 10x increase from current state.
+
+---
+
+## Implementation Priority Order
+
+| Priority | Items | Rationale |
+|----------|-------|-----------|
+| **P0 — Security** | 1.1, 1.2, 1.3, 1.4, 1.6, 1.7 | Security gaps are the only area where IronClaw is categorically superior. These are table stakes. |
+| **P1 — Core Tools** | 2.1, 2.3, 2.5, 2.6 | HTTP tool, memory tools, MCP client, and undo fill the most visible functional gaps. |
+| **P2 — Memory** | 3.1, 3.2, 3.3, 3.4 | Real embeddings + hybrid search + database persistence is a quality leap. |
+| **P3 — Sandbox** | 1.5, 1.8 | Docker and WASM sandboxing enable self-building tools and secure execution. |
+| **P4 — Innovation** | 2.2, 2.4 | Self-building tools and job system are differentiators. Require P3. |
+| **P5 — Operations** | 4.1, 4.2, 4.3, 4.4 | Heartbeat, self-repair, onboarding, routines make Tau autonomous. |
+| **P6 — Deployment** | 5.1, 5.2, 5.3 | OpenAI API compat, web UI, and binary releases expand reach. |
+| **P7 — Documentation** | 6.1 | Ongoing effort, parallelize with all other work. |
+
+---
+
+## What Tau Already Exceeds IronClaw On (No Gaps)
+
+These are areas where Tau is already superior — no work needed:
+
+- **Architecture**: 32-crate workspace vs monolith. Better separation of concerns.
+- **Provider coverage**: 3 providers native vs 5 via rig-core (Tau's are deeper integrated).
+- **Agent core sophistication**: Parallel tools, ReAct replanning, fork/parallel prompts, async events, direct messaging, scoped tools, cost tracking, streaming retry — IronClaw has none of these.
+- **Multi-channel**: 5 channel bridges with circuit breakers vs IronClaw's WASM channel plugins (different approach, Tau's is more battle-tested).
+- **Orchestration**: Plan-first multi-agent with role routing vs IronClaw's single-agent model.
+- **Session management**: DAG-based branching/merge vs linear history.
+- **Context management**: Auto-summarization + token budgets vs simple truncation.
+- **Tool policy**: 4-tier presets + RBAC + approval gates vs IronClaw's simpler policy engine.
+- **Test coverage**: 2,568 tests vs 656. CI with 60% coverage gate.
+- **Zero external runtime deps**: No PostgreSQL/Docker required for base operation.
+
+---
+
+**Total gap items: 25.** Closing P0–P2 (14 items) would eliminate IronClaw's meaningful advantages. Closing P3–P4 (4 items) would match IronClaw's most innovative features. P5–P7 (7 items) achieve complete operational and deployment parity.
