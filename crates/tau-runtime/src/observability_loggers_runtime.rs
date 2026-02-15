@@ -14,12 +14,58 @@ use tau_agent_core::AgentEvent;
 pub const PROMPT_TELEMETRY_RECORD_TYPE_V1: &str = "prompt_telemetry_v1";
 /// Current prompt telemetry diagnostics schema version emitted by runtime loggers.
 pub const PROMPT_TELEMETRY_SCHEMA_VERSION: u32 = 1;
+/// Stable record type for checkpoint promotion gate audit payloads.
+pub const CHECKPOINT_PROMOTION_GATE_RECORD_TYPE_V1: &str = "checkpoint_promotion_gate_v1";
+/// Current checkpoint promotion gate audit schema version.
+pub const CHECKPOINT_PROMOTION_GATE_SCHEMA_VERSION: u32 = 1;
 
 fn current_unix_timestamp_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+pub fn checkpoint_promotion_gate_audit_json(
+    checkpoint_id: &str,
+    baseline_safety_penalty: f64,
+    candidate_safety_penalty: f64,
+    max_safety_regression: f64,
+    promotion_allowed: bool,
+    reason_codes: &[String],
+) -> Result<Value> {
+    let checkpoint_id = checkpoint_id.trim();
+    if checkpoint_id.is_empty() {
+        return Err(anyhow!("checkpoint_id must be non-empty"));
+    }
+    if !baseline_safety_penalty.is_finite() || !candidate_safety_penalty.is_finite() {
+        return Err(anyhow!("safety penalties must be finite"));
+    }
+    if !max_safety_regression.is_finite() || max_safety_regression < 0.0 {
+        return Err(anyhow!(
+            "max_safety_regression must be finite and non-negative"
+        ));
+    }
+
+    let normalized_reason_codes = reason_codes
+        .iter()
+        .map(|code| code.trim())
+        .filter(|code| !code.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "record_type": CHECKPOINT_PROMOTION_GATE_RECORD_TYPE_V1,
+        "schema_version": CHECKPOINT_PROMOTION_GATE_SCHEMA_VERSION,
+        "timestamp_unix_ms": current_unix_timestamp_ms(),
+        "checkpoint_id": checkpoint_id,
+        "baseline_safety_penalty": baseline_safety_penalty,
+        "candidate_safety_penalty": candidate_safety_penalty,
+        "max_safety_regression": max_safety_regression,
+        "safety_regression": candidate_safety_penalty - baseline_safety_penalty,
+        "promotion_allowed": promotion_allowed,
+        "reason_codes": normalized_reason_codes,
+    }))
 }
 
 #[derive(Clone)]
@@ -433,7 +479,10 @@ pub fn tool_audit_event_json(
 
 #[cfg(test)]
 mod tests {
-    use super::{tool_audit_event_json, PromptTelemetryLogger, ToolAuditLogger};
+    use super::{
+        checkpoint_promotion_gate_audit_json, tool_audit_event_json, PromptTelemetryLogger,
+        ToolAuditLogger,
+    };
     use std::{collections::HashMap, time::Instant};
     use tau_agent_core::{AgentEvent, SafetyMode, SafetyStage, ToolExecutionResult};
     use tau_ai::ChatUsage;
@@ -500,6 +549,35 @@ mod tests {
         assert_eq!(payload["throttle_events_total"], 5);
         assert_eq!(payload["principal_throttle_events"], 2);
         assert_eq!(payload["throttle_principal"], "github:octocat");
+    }
+
+    #[test]
+    fn regression_checkpoint_promotion_gate_audit_json_reports_blocked_threshold_reason() {
+        let payload = checkpoint_promotion_gate_audit_json(
+            "checkpoint-7",
+            0.10,
+            0.19,
+            0.05,
+            false,
+            &["checkpoint_promotion_blocked_safety_regression".to_string()],
+        )
+        .expect("expected payload");
+        assert_eq!(payload["record_type"], "checkpoint_promotion_gate_v1");
+        assert_eq!(payload["promotion_allowed"], false);
+        assert_eq!(payload["checkpoint_id"], "checkpoint-7");
+        assert!(
+            (payload["max_safety_regression"]
+                .as_f64()
+                .unwrap_or_default()
+                - 0.05)
+                .abs()
+                < 1e-9
+        );
+        assert!((payload["safety_regression"].as_f64().unwrap_or_default() - 0.09).abs() < 1e-9);
+        assert_eq!(
+            payload["reason_codes"][0],
+            "checkpoint_promotion_blocked_safety_regression"
+        );
     }
 
     #[test]

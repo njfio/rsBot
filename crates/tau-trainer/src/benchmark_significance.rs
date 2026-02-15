@@ -47,6 +47,33 @@ impl Default for ReproducibilityBands {
     }
 }
 
+/// Safety threshold and reproducibility policy for checkpoint promotion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckpointPromotionPolicy {
+    pub max_safety_regression: f64,
+    pub require_seed_reproducibility: bool,
+    pub require_sample_size_sensitivity: bool,
+}
+
+impl Default for CheckpointPromotionPolicy {
+    fn default() -> Self {
+        Self {
+            max_safety_regression: 0.05,
+            require_seed_reproducibility: true,
+            require_sample_size_sensitivity: true,
+        }
+    }
+}
+
+/// Outcome of checkpoint promotion gate evaluation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckpointPromotionDecision {
+    pub promotion_allowed: bool,
+    pub safety_regression: f64,
+    pub max_safety_regression: f64,
+    pub reason_codes: Vec<String>,
+}
+
 /// Aggregate seeded-run reproducibility summary at fixed sample size.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeedReproducibilityReport {
@@ -183,6 +210,43 @@ pub fn evaluate_sample_size_sensitivity(
     })
 }
 
+/// Evaluates whether checkpoint promotion should proceed under safety and
+/// reproducibility requirements.
+pub fn evaluate_checkpoint_promotion_gate(
+    baseline_mean_safety_penalty: f64,
+    candidate_mean_safety_penalty: f64,
+    seeded_reproducibility_within_band: bool,
+    sample_sensitivity_within_band: bool,
+    policy: &CheckpointPromotionPolicy,
+) -> Result<CheckpointPromotionDecision> {
+    if !baseline_mean_safety_penalty.is_finite() || !candidate_mean_safety_penalty.is_finite() {
+        bail!("safety penalties must be finite");
+    }
+    if !policy.max_safety_regression.is_finite() || policy.max_safety_regression < 0.0 {
+        bail!("max_safety_regression must be finite and non-negative");
+    }
+
+    let safety_regression = candidate_mean_safety_penalty - baseline_mean_safety_penalty;
+    let mut reason_codes = Vec::new();
+
+    if safety_regression > policy.max_safety_regression {
+        reason_codes.push("checkpoint_promotion_blocked_safety_regression".to_string());
+    }
+    if policy.require_seed_reproducibility && !seeded_reproducibility_within_band {
+        reason_codes.push("checkpoint_promotion_blocked_seed_reproducibility".to_string());
+    }
+    if policy.require_sample_size_sensitivity && !sample_sensitivity_within_band {
+        reason_codes.push("checkpoint_promotion_blocked_sample_sensitivity".to_string());
+    }
+
+    Ok(CheckpointPromotionDecision {
+        promotion_allowed: reason_codes.is_empty(),
+        safety_regression,
+        max_safety_regression: policy.max_safety_regression,
+        reason_codes,
+    })
+}
+
 fn range(values: impl Iterator<Item = f64>) -> f64 {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
@@ -204,7 +268,8 @@ fn range(values: impl Iterator<Item = f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_sample_size_sensitivity, evaluate_seed_reproducibility, ReproducibilityBands,
+        evaluate_checkpoint_promotion_gate, evaluate_sample_size_sensitivity,
+        evaluate_seed_reproducibility, CheckpointPromotionPolicy, ReproducibilityBands,
         SignificanceObservation,
     };
 
@@ -266,5 +331,48 @@ mod tests {
         let report =
             evaluate_sample_size_sensitivity(&observations, 9, &bands).expect("sample report");
         assert!(!report.within_band);
+    }
+
+    #[test]
+    fn unit_checkpoint_promotion_gate_blocks_on_safety_regression_threshold() {
+        let policy = CheckpointPromotionPolicy {
+            max_safety_regression: 0.05,
+            ..CheckpointPromotionPolicy::default()
+        };
+        let decision =
+            evaluate_checkpoint_promotion_gate(0.10, 0.19, true, true, &policy).expect("decision");
+        assert!(!decision.promotion_allowed);
+        assert!((decision.safety_regression - 0.09).abs() < 1e-9);
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "checkpoint_promotion_blocked_safety_regression"));
+    }
+
+    #[test]
+    fn integration_checkpoint_promotion_gate_requires_significance_stability() {
+        let observations = vec![
+            SignificanceObservation::new(1, 256, 0.024, 0.15),
+            SignificanceObservation::new(2, 256, 0.029, 0.16),
+            SignificanceObservation::new(7, 128, 0.031, 0.14),
+            SignificanceObservation::new(7, 256, 0.027, 0.15),
+            SignificanceObservation::new(7, 512, 0.023, 0.16),
+        ];
+        let bands = ReproducibilityBands::default();
+        let seed_report =
+            evaluate_seed_reproducibility(&observations, 256, &bands).expect("seed report");
+        let sample_report =
+            evaluate_sample_size_sensitivity(&observations, 7, &bands).expect("sample report");
+        let policy = CheckpointPromotionPolicy::default();
+        let decision = evaluate_checkpoint_promotion_gate(
+            0.10,
+            0.12,
+            seed_report.within_band,
+            sample_report.within_band,
+            &policy,
+        )
+        .expect("decision");
+        assert!(decision.promotion_allowed);
+        assert!(decision.reason_codes.is_empty());
     }
 }
