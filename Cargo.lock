@@ -3306,6 +3306,7 @@ dependencies = [
  "tau-training-tracer",
  "tau-training-types",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
