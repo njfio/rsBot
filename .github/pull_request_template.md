@@ -12,6 +12,8 @@
 - Batch Size (`<open PR count in lane>` / `<lane max>`):
 - Review SLA (first review and merge target windows):
 - Exception Reference (`none` or `tasks/policies/pr-batch-exceptions.json#<exception_id>`):
+- Branch Freshness (`age_days`, `behind_commits`, `ok|warning|critical`):
+- Stale Alert Acknowledgement (`none` or link to acknowledgement comment/workflow update):
 
 ## Validation Evidence
 

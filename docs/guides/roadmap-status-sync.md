@@ -20,6 +20,11 @@ PR batch lane ownership boundaries are defined in:
 - `tasks/policies/pr-batch-exceptions.json`
 - `docs/guides/pr-batch-lane-boundaries.md`
 
+Stale-branch threshold and alert rules are defined in:
+
+- `tasks/policies/stale-branch-alert-policy.json`
+- `docs/guides/stale-branch-response-playbook.md`
+
 To preview hierarchy drift findings locally before CI:
 
 ```bash
