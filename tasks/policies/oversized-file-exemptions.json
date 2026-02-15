@@ -1,4 +1,23 @@
 {
   "schema_version": 1,
-  "exemptions": []
+  "exemptions": [
+    {
+      "path": "crates/tau-cli/src/cli_args.rs",
+      "threshold_lines": 4400,
+      "owner_issue": 1679,
+      "rationale": "Argument-domain split remains in progress for milestone 21.",
+      "approved_by": "runtime-maintainer",
+      "approved_at": "2026-02-15",
+      "expires_on": "2026-03-30"
+    },
+    {
+      "path": "crates/tau-tools/src/tools.rs",
+      "threshold_lines": 5600,
+      "owner_issue": 1750,
+      "rationale": "First-pass registry/core split is merged; second-pass domain extraction is active.",
+      "approved_by": "runtime-maintainer",
+      "approved_at": "2026-02-15",
+      "expires_on": "2026-03-30"
+    }
+  ]
 }

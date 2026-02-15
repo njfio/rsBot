@@ -209,6 +209,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/dev/roadmap-status-sync.sh --check --quiet
 
+      - name: Check oversized production file thresholds
+        run: |
+          python3 .github/scripts/oversized_file_guard.py \
+            --repo-root . \
+            --default-threshold 4000 \
+            --exemptions-file tasks/policies/oversized-file-exemptions.json \
+            --policy-guide docs/guides/oversized-file-policy.md \
+            --json-output-file ci-artifacts/oversized-file-guard.json
+
+      - name: Upload oversized-file guard artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: oversized-file-guard
+          path: ci-artifacts/oversized-file-guard.json
+          if-no-files-found: error
+
       - name: Check rust doc density thresholds
         if: steps.rust_scope.outputs.rust_changed == 'true'
         run: |
