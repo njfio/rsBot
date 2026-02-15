@@ -1,6 +1,13 @@
 //! Tests for tool catalog parsing, policy wiring, and runtime edge cases.
 
-use std::{fs, sync::Arc, time::Duration};
+use std::{
+    fs,
+    io::{Read, Write},
+    net::TcpListener,
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 
 use proptest::prelude::*;
 use tempfile::tempdir;
@@ -11,7 +18,7 @@ use super::{
     evaluate_tool_rate_limit_gate, evaluate_tool_rbac_gate, is_command_allowed,
     is_session_candidate_path, leading_executable, os_sandbox_mode_name,
     os_sandbox_policy_mode_name, redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool,
-    BashCommandProfile, BashTool, EditTool, OsSandboxMode, OsSandboxPolicyMode,
+    BashCommandProfile, BashTool, EditTool, HttpTool, OsSandboxMode, OsSandboxPolicyMode,
     SessionsHistoryTool, SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool,
     ToolExecutionResult, ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, WriteTool,
 };
@@ -33,6 +40,109 @@ fn make_executable(path: &Path) {
     }
 }
 
+fn http_response(status_line: &str, headers: &[(&str, String)], body: &str) -> String {
+    let mut response = format!("HTTP/1.1 {status_line}\r\n");
+    for (name, value) in headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("Connection: close\r\n");
+    response.push_str(format!("Content-Length: {}\r\n", body.len()).as_str());
+    response.push_str("\r\n");
+    response.push_str(body);
+    response
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set read timeout");
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let mut expected_total: Option<usize> = None;
+
+    loop {
+        let read = stream.read(&mut chunk).expect("read request bytes");
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+
+        if expected_total.is_none() {
+            if let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = &buffer[..header_end + 4];
+                let headers_text = String::from_utf8_lossy(headers);
+                let content_length = headers_text
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if !name.eq_ignore_ascii_case("Content-Length") {
+                            return None;
+                        }
+                        value.trim().parse::<usize>().ok()
+                    })
+                    .unwrap_or(0);
+                expected_total = Some(header_end + 4 + content_length);
+            }
+        }
+
+        if let Some(expected_total) = expected_total {
+            if buffer.len() >= expected_total {
+                break;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&buffer).to_string()
+}
+
+fn spawn_http_server_once(
+    response: String,
+) -> (String, Arc<Mutex<Option<String>>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test http listener");
+    let addr = listener.local_addr().expect("listener local addr");
+    let captured_request = Arc::new(Mutex::new(None));
+    let captured_request_thread = Arc::clone(&captured_request);
+    let handle = thread::spawn(move || {
+        let (mut stream, _peer) = listener.accept().expect("accept request");
+        let request = read_http_request(&mut stream);
+        *captured_request_thread
+            .lock()
+            .expect("capture request lock") = Some(request);
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response bytes");
+        stream.flush().expect("flush response bytes");
+    });
+    (format!("http://{}", addr), captured_request, handle)
+}
+
+fn spawn_http_server_sequence(
+    responses: Vec<String>,
+) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test http listener");
+    let addr = listener.local_addr().expect("listener local addr");
+    let captured_requests = Arc::new(Mutex::new(Vec::new()));
+    let captured_requests_thread = Arc::clone(&captured_requests);
+    let handle = thread::spawn(move || {
+        for response in responses {
+            let (mut stream, _peer) = listener.accept().expect("accept request");
+            let request = read_http_request(&mut stream);
+            captured_requests_thread
+                .lock()
+                .expect("capture requests lock")
+                .push(request);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response bytes");
+            stream.flush().expect("flush response bytes");
+        }
+    });
+    (format!("http://{}", addr), captured_requests, handle)
+}
+
 #[cfg(unix)]
 use std::os::unix::fs::symlink as symlink_file;
 use std::path::Path;
@@ -49,6 +159,11 @@ fn unit_tool_policy_hardened_preset_applies_expected_configuration() {
     assert_eq!(policy.max_command_output_bytes, 4_000);
     assert_eq!(policy.os_sandbox_mode, OsSandboxMode::Force);
     assert_eq!(policy.os_sandbox_policy_mode, OsSandboxPolicyMode::Required);
+    assert_eq!(policy.http_timeout_ms, 10_000);
+    assert_eq!(policy.http_max_response_bytes, 64_000);
+    assert_eq!(policy.http_max_redirects, 2);
+    assert!(!policy.http_allow_http);
+    assert!(!policy.http_allow_private_network);
     assert!(policy.enforce_regular_files);
     assert_eq!(policy.tool_rate_limit_max_requests, 30);
     assert_eq!(policy.tool_rate_limit_window_ms, 60_000);
@@ -78,6 +193,7 @@ fn unit_builtin_agent_tool_name_registry_includes_session_tools() {
     assert!(names.contains(&"sessions_search"));
     assert!(names.contains(&"sessions_stats"));
     assert!(names.contains(&"sessions_send"));
+    assert!(names.contains(&"http"));
     assert!(names.contains(&"bash"));
 }
 
@@ -203,6 +319,202 @@ fn unit_tool_rate_limit_gate_supports_defer_behavior() {
             .get("reason_code")
             .and_then(serde_json::Value::as_str),
         Some("rate_limit_deferred")
+    );
+}
+
+#[tokio::test]
+async fn unit_http_tool_rejects_json_payload_for_get_requests() {
+    let temp = tempdir().expect("tempdir");
+    let tool = HttpTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "url": "https://example.com/api",
+            "method": "GET",
+            "json": { "invalid": true }
+        }))
+        .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("http_body_not_allowed")
+    );
+}
+
+#[tokio::test]
+async fn functional_http_tool_posts_json_and_returns_structured_payload() {
+    let response = http_response(
+        "200 OK",
+        &[("Content-Type", "application/json".to_string())],
+        r#"{"ok":true,"source":"test-server"}"#,
+    );
+    let (base_url, captured, handle) = spawn_http_server_once(response);
+
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.http_allow_http = true;
+    policy.http_allow_private_network = true;
+    let tool = HttpTool::new(Arc::new(policy));
+    let result = tool
+        .execute(serde_json::json!({
+            "url": format!("{base_url}/submit"),
+            "method": "POST",
+            "headers": {
+                "X-Test": "1"
+            },
+            "json": {
+                "hello": "world"
+            }
+        }))
+        .await;
+    handle.join().expect("join http server thread");
+
+    assert!(!result.is_error);
+    assert_eq!(result.content["http_status"], 200);
+    assert_eq!(result.content["method"], "POST");
+    assert_eq!(result.content["response_json"]["ok"], true);
+    assert_eq!(result.content["redirect_count"], 0);
+    let request = captured
+        .lock()
+        .expect("captured request lock")
+        .clone()
+        .expect("captured request");
+    assert!(request.contains("POST /submit HTTP/1.1"));
+    assert!(request.contains("\"hello\":\"world\""));
+}
+
+#[tokio::test]
+async fn functional_http_tool_follows_redirects_with_per_hop_ssrf_validation() {
+    let first = http_response(
+        "307 Temporary Redirect",
+        &[("Location", "/redirected".to_string())],
+        "",
+    );
+    let second = http_response(
+        "200 OK",
+        &[("Content-Type", "application/json".to_string())],
+        r#"{"ok":true,"redirected":true}"#,
+    );
+    let (base_url, captured, handle) = spawn_http_server_sequence(vec![first, second]);
+
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.http_allow_http = true;
+    policy.http_allow_private_network = true;
+    let tool = HttpTool::new(Arc::new(policy));
+    let result = tool
+        .execute(serde_json::json!({
+            "url": format!("{base_url}/start"),
+            "method": "GET"
+        }))
+        .await;
+    handle.join().expect("join http server thread");
+
+    assert!(!result.is_error);
+    assert_eq!(result.content["http_status"], 200);
+    assert_eq!(result.content["redirect_count"], 1);
+    assert!(result
+        .content
+        .get("final_url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .ends_with("/redirected"));
+
+    let requests = captured.lock().expect("captured requests lock");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("GET /start HTTP/1.1"));
+    assert!(requests[1].contains("GET /redirected HTTP/1.1"));
+}
+
+#[tokio::test]
+async fn regression_http_tool_blocks_plain_http_without_policy_override() {
+    let temp = tempdir().expect("tempdir");
+    let tool = HttpTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "url": "http://example.com/path",
+            "method": "GET"
+        }))
+        .await;
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("delivery_ssrf_blocked_scheme")
+    );
+}
+
+#[tokio::test]
+async fn regression_http_tool_blocks_metadata_redirect_even_with_private_override() {
+    let response = http_response(
+        "302 Found",
+        &[(
+            "Location",
+            "http://169.254.169.254/latest/meta-data".to_string(),
+        )],
+        "",
+    );
+    let (base_url, _captured, handle) = spawn_http_server_once(response);
+
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.http_allow_http = true;
+    policy.http_allow_private_network = true;
+    let tool = HttpTool::new(Arc::new(policy));
+    let result = tool
+        .execute(serde_json::json!({
+            "url": format!("{base_url}/start"),
+            "method": "GET"
+        }))
+        .await;
+    handle.join().expect("join http server thread");
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("delivery_ssrf_blocked_metadata_endpoint")
+    );
+}
+
+#[tokio::test]
+async fn regression_http_tool_enforces_response_byte_cap() {
+    let response = http_response(
+        "200 OK",
+        &[("Content-Type", "text/plain".to_string())],
+        "01234567890123456789",
+    );
+    let (base_url, _captured, handle) = spawn_http_server_once(response);
+
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.http_allow_http = true;
+    policy.http_allow_private_network = true;
+    policy.http_max_response_bytes = 8;
+    let tool = HttpTool::new(Arc::new(policy));
+    let result = tool
+        .execute(serde_json::json!({
+            "url": format!("{base_url}/payload"),
+            "method": "GET"
+        }))
+        .await;
+    handle.join().expect("join http server thread");
+
+    assert!(result.is_error);
+    assert_eq!(
+        result
+            .content
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str),
+        Some("http_response_too_large")
     );
 }
 

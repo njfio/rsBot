@@ -287,8 +287,22 @@ fn test_render_options() -> RenderOptions {
 
 fn test_tool_policy_json() -> serde_json::Value {
     serde_json::json!({
+        "schema_version": 6,
+        "preset": "balanced",
         "allowed_roots": [],
+        "allowed_commands": [],
         "bash_profile": "balanced",
+        "os_sandbox_mode": "off",
+        "os_sandbox_policy_mode": "best-effort",
+        "bash_dry_run": false,
+        "enforce_regular_files": true,
+        "max_command_length": 4096,
+        "max_command_output_bytes": 16000,
+        "http_timeout_ms": 20000,
+        "http_max_response_bytes": 256000,
+        "http_max_redirects": 5,
+        "http_allow_http": false,
+        "http_allow_private_network": false,
     })
 }
 
@@ -500,6 +514,11 @@ pub(crate) fn test_cli() -> Cli {
             os_sandbox_mode: CliOsSandboxMode::Off,
             os_sandbox_command: vec![],
             os_sandbox_policy_mode: None,
+            http_timeout_ms: 20_000,
+            http_max_response_bytes: 256_000,
+            http_max_redirects: 5,
+            http_allow_http: false,
+            http_allow_private_network: false,
             enforce_regular_files: true,
         },
         deployment_status_inspect: false,

@@ -9,7 +9,7 @@ use crate::tools::{
     BashCommandProfile, OsSandboxMode, OsSandboxPolicyMode, ToolPolicy,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 5;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 6;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 
@@ -50,6 +50,21 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     }
     if !cli.os_sandbox_command.is_empty() {
         policy.os_sandbox_command = parse_sandbox_command_tokens(&cli.os_sandbox_command)?;
+    }
+    if cli.http_timeout_ms != 20_000 {
+        policy.http_timeout_ms = cli.http_timeout_ms.max(1);
+    }
+    if cli.http_max_response_bytes != 256_000 {
+        policy.http_max_response_bytes = cli.http_max_response_bytes.max(1);
+    }
+    if cli.http_max_redirects != 5 {
+        policy.http_max_redirects = cli.http_max_redirects;
+    }
+    if cli.http_allow_http {
+        policy.http_allow_http = true;
+    }
+    if cli.http_allow_private_network {
+        policy.http_allow_private_network = true;
     }
     if !cli.enforce_regular_files {
         policy.enforce_regular_files = false;
@@ -135,6 +150,11 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
         "os_sandbox_mode": format!("{:?}", policy.os_sandbox_mode).to_lowercase(),
         "os_sandbox_policy_mode": os_sandbox_policy_mode_name(policy.os_sandbox_policy_mode),
         "os_sandbox_command": policy.os_sandbox_command.clone(),
+        "http_timeout_ms": policy.http_timeout_ms,
+        "http_max_response_bytes": policy.http_max_response_bytes,
+        "http_max_redirects": policy.http_max_redirects,
+        "http_allow_http": policy.http_allow_http,
+        "http_allow_private_network": policy.http_allow_private_network,
         "enforce_regular_files": policy.enforce_regular_files,
         "bash_dry_run": policy.bash_dry_run,
         "tool_policy_trace": policy.tool_policy_trace,
@@ -246,9 +266,14 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 5);
+        assert_eq!(payload["schema_version"], 6);
         assert_eq!(payload["allow_protected_path_mutations"], true);
         assert_eq!(payload["os_sandbox_policy_mode"], "best-effort");
+        assert_eq!(payload["http_timeout_ms"], 20_000);
+        assert_eq!(payload["http_max_response_bytes"], 256_000);
+        assert_eq!(payload["http_max_redirects"], 5);
+        assert_eq!(payload["http_allow_http"], false);
+        assert_eq!(payload["http_allow_private_network"], false);
         assert!(payload["protected_paths"]
             .as_array()
             .map(|paths| {

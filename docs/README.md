@@ -14,6 +14,7 @@ This index maps Tau documentation by audience and task.
 | Runtime contributor | [Contract Pattern Lifecycle](guides/contract-pattern-lifecycle.md) | Shared fixture lifecycle, compatibility gates, extension checklist, anti-patterns |
 | Runtime contributor | [Tool Name Registry](guides/tool-name-registry.md) | Reserved built-in tool-name catalog and registration conflict behavior for extension + MCP external tools |
 | Runtime contributor | [Tool Policy Sandbox Mode](guides/tool-policy-sandbox-mode.md) | Fail-closed sandbox posture (`best-effort` vs `required`), preset defaults, and operator diagnostics |
+| Runtime contributor | [Tool Policy HTTP Client](guides/tool-policy-http-client.md) | `HttpTool` controls, SSRF/redirect guardrails, caps, and deterministic reason codes |
 | Runtime contributor | [Tool Policy Protected Paths](guides/tool-policy-protected-paths.md) | Protected identity/system file deny policy for write/edit with override controls and diagnostics |
 | Multi-channel contributor | [Multi-channel Event Pipeline](guides/multi-channel-event-pipeline.md) | Inbound normalization, policy/pairing, routing, persistence, outbound retry paths |
 | Runtime maintainer | [Doc Density Scorecard](guides/doc-density-scorecard.md) | Baseline/targets for public API docs coverage and CI regression guard policy |

@@ -3,10 +3,15 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
+use reqwest::{
+    header::{HeaderName, HeaderValue},
+    redirect::Policy as RedirectPolicy,
+    Method, StatusCode,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentTool, DefaultLeakDetector, LeakDetector, ToolExecutionResult};
@@ -14,6 +19,7 @@ use tau_ai::{Message, ToolDefinition};
 use tau_extensions::{
     evaluate_extension_policy_override, execute_extension_registered_tool, ExtensionRegisteredTool,
 };
+use tau_runtime::{SsrfGuard, SsrfProtectionConfig, SsrfViolation};
 use tokio::{process::Command, time::timeout};
 
 use tau_access::{
@@ -59,6 +65,18 @@ const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT: u32 = 60;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED: u32 = 30;
+const TOOL_HTTP_TIMEOUT_MS_PERMISSIVE: u64 = 60_000;
+const TOOL_HTTP_TIMEOUT_MS_BALANCED: u64 = 20_000;
+const TOOL_HTTP_TIMEOUT_MS_STRICT: u64 = 15_000;
+const TOOL_HTTP_TIMEOUT_MS_HARDENED: u64 = 10_000;
+const TOOL_HTTP_MAX_RESPONSE_BYTES_PERMISSIVE: usize = 1_000_000;
+const TOOL_HTTP_MAX_RESPONSE_BYTES_BALANCED: usize = 256_000;
+const TOOL_HTTP_MAX_RESPONSE_BYTES_STRICT: usize = 128_000;
+const TOOL_HTTP_MAX_RESPONSE_BYTES_HARDENED: usize = 64_000;
+const TOOL_HTTP_MAX_REDIRECTS_PERMISSIVE: usize = 8;
+const TOOL_HTTP_MAX_REDIRECTS_BALANCED: usize = 5;
+const TOOL_HTTP_MAX_REDIRECTS_STRICT: usize = 3;
+const TOOL_HTTP_MAX_REDIRECTS_HARDENED: usize = 2;
 const SANDBOX_REQUIRED_UNAVAILABLE_ERROR: &str =
     "OS sandbox policy mode 'required' is enabled but command would run without a sandbox launcher";
 const SANDBOX_FORCE_UNAVAILABLE_ERROR: &str =
@@ -80,6 +98,7 @@ const BUILTIN_AGENT_TOOL_NAMES: &[&str] = &[
     "sessions_search",
     "sessions_stats",
     "sessions_send",
+    "http",
     "bash",
 ];
 
@@ -299,6 +318,11 @@ pub struct ToolPolicy {
     pub os_sandbox_mode: OsSandboxMode,
     pub os_sandbox_policy_mode: OsSandboxPolicyMode,
     pub os_sandbox_command: Vec<String>,
+    pub http_timeout_ms: u64,
+    pub http_max_response_bytes: usize,
+    pub http_max_redirects: usize,
+    pub http_allow_http: bool,
+    pub http_allow_private_network: bool,
     pub enforce_regular_files: bool,
     pub bash_dry_run: bool,
     pub tool_policy_trace: bool,
@@ -332,6 +356,11 @@ impl ToolPolicy {
             os_sandbox_mode: OsSandboxMode::Off,
             os_sandbox_policy_mode: OsSandboxPolicyMode::BestEffort,
             os_sandbox_command: Vec::new(),
+            http_timeout_ms: TOOL_HTTP_TIMEOUT_MS_BALANCED,
+            http_max_response_bytes: TOOL_HTTP_MAX_RESPONSE_BYTES_BALANCED,
+            http_max_redirects: TOOL_HTTP_MAX_REDIRECTS_BALANCED,
+            http_allow_http: false,
+            http_allow_private_network: false,
             enforce_regular_files: true,
             bash_dry_run: false,
             tool_policy_trace: false,
@@ -388,6 +417,11 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Off;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::BestEffort;
                 self.os_sandbox_command.clear();
+                self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_PERMISSIVE;
+                self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_PERMISSIVE;
+                self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_PERMISSIVE;
+                self.http_allow_http = false;
+                self.http_allow_private_network = false;
                 self.enforce_regular_files = false;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE;
                 self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
@@ -404,6 +438,11 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Off;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::BestEffort;
                 self.os_sandbox_command.clear();
+                self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_BALANCED;
+                self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_BALANCED;
+                self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_BALANCED;
+                self.http_allow_http = false;
+                self.http_allow_private_network = false;
                 self.enforce_regular_files = true;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED;
                 self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
@@ -420,6 +459,11 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Auto;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
                 self.os_sandbox_command.clear();
+                self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_STRICT;
+                self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_STRICT;
+                self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_STRICT;
+                self.http_allow_http = false;
+                self.http_allow_private_network = false;
                 self.enforce_regular_files = true;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_STRICT;
                 self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
@@ -436,6 +480,11 @@ impl ToolPolicy {
                 self.os_sandbox_mode = OsSandboxMode::Force;
                 self.os_sandbox_policy_mode = OsSandboxPolicyMode::Required;
                 self.os_sandbox_command.clear();
+                self.http_timeout_ms = TOOL_HTTP_TIMEOUT_MS_HARDENED;
+                self.http_max_response_bytes = TOOL_HTTP_MAX_RESPONSE_BYTES_HARDENED;
+                self.http_max_redirects = TOOL_HTTP_MAX_REDIRECTS_HARDENED;
+                self.http_allow_http = false;
+                self.http_allow_private_network = false;
                 self.enforce_regular_files = true;
                 self.tool_rate_limit_max_requests = TOOL_RATE_LIMIT_MAX_REQUESTS_HARDENED;
                 self.tool_rate_limit_window_ms = TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT;
@@ -475,6 +524,7 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(SessionsSearchTool::new(policy.clone()));
     agent.register_tool(SessionsStatsTool::new(policy.clone()));
     agent.register_tool(SessionsSendTool::new(policy.clone()));
+    agent.register_tool(HttpTool::new(policy.clone()));
     agent.register_tool(BashTool::new(policy));
 }
 
@@ -1597,6 +1647,477 @@ impl AgentTool for SessionsSendTool {
             "appended_entries": after_entries.saturating_sub(before_entries),
             "message_preview": session_message_preview(&Message::user(message)),
         }))
+    }
+}
+
+/// Public struct `HttpTool` used across Tau components.
+pub struct HttpTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl HttpTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+
+    fn ssrf_guard(&self) -> SsrfGuard {
+        SsrfGuard::new(SsrfProtectionConfig {
+            enabled: true,
+            allow_http: self.policy.http_allow_http,
+            allow_private_network: self.policy.http_allow_private_network,
+        })
+    }
+
+    fn ssrf_violation_result(
+        &self,
+        method: &Method,
+        request_url: &str,
+        endpoint: &str,
+        violation: SsrfViolation,
+    ) -> ToolExecutionResult {
+        let retryable = violation.reason_code == "delivery_ssrf_dns_resolution_failed";
+        ToolExecutionResult::error(json!({
+            "policy_rule": "ssrf_guard",
+            "tool": "http",
+            "method": method.as_str(),
+            "url": request_url,
+            "final_url": endpoint,
+            "reason_code": violation.reason_code,
+            "retryable": retryable,
+            "error": violation.detail,
+        }))
+    }
+}
+
+#[async_trait]
+impl AgentTool for HttpTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "http".to_string(),
+            description:
+                "Send bounded outbound HTTP requests (GET/POST/PUT/DELETE) with SSRF guardrails"
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute target URL for the outbound request"
+                    },
+                    "method": {
+                        "type": "string",
+                        "description": "HTTP method: GET, POST, PUT, or DELETE (defaults to GET)"
+                    },
+                    "headers": {
+                        "type": "object",
+                        "description": "Optional string headers forwarded to the request",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "json": {
+                        "description": "Optional JSON payload for POST/PUT/DELETE requests"
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Optional per-request timeout (must be <= policy timeout cap)"
+                    },
+                    "max_response_bytes": {
+                        "type": "integer",
+                        "description": "Optional per-request response cap (must be <= policy response cap)"
+                    }
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let request_url = match required_string(&arguments, "url") {
+            Ok(url) => url,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        let method = match parse_http_method(&arguments) {
+            Ok(method) => method,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "http",
+                    "url": request_url.as_str(),
+                    "policy_rule": "http_method",
+                    "reason_code": "http_invalid_method",
+                    "error": error,
+                }))
+            }
+        };
+        let headers = match parse_http_headers(&arguments) {
+            Ok(headers) => headers,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "http",
+                    "method": method.as_str(),
+                    "url": request_url.as_str(),
+                    "policy_rule": "http_headers",
+                    "reason_code": "http_invalid_headers",
+                    "error": error,
+                }))
+            }
+        };
+        let header_names = headers
+            .iter()
+            .map(|(name, _value)| name.as_str().to_string())
+            .collect::<Vec<_>>();
+        let json_payload = arguments.get("json").cloned();
+        if method == Method::GET && json_payload.is_some() {
+            return ToolExecutionResult::error(json!({
+                "tool": "http",
+                "method": method.as_str(),
+                "url": request_url.as_str(),
+                "policy_rule": "http_method",
+                "reason_code": "http_body_not_allowed",
+                "error": "GET requests do not support a JSON payload",
+            }));
+        }
+
+        let timeout_override_ms = match optional_positive_u64(&arguments, "timeout_ms") {
+            Ok(value) => value,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        if let Some(timeout_override_ms) = timeout_override_ms {
+            if timeout_override_ms > self.policy.http_timeout_ms {
+                return ToolExecutionResult::error(json!({
+                    "tool": "http",
+                    "method": method.as_str(),
+                    "url": request_url.as_str(),
+                    "policy_rule": "http_timeout_ms",
+                    "reason_code": "http_timeout_exceeds_policy",
+                    "timeout_ms": timeout_override_ms,
+                    "max_timeout_ms": self.policy.http_timeout_ms,
+                    "error": format!(
+                        "requested timeout {} ms exceeds policy cap {} ms",
+                        timeout_override_ms,
+                        self.policy.http_timeout_ms
+                    ),
+                }));
+            }
+        }
+        let effective_timeout_ms = timeout_override_ms
+            .unwrap_or(self.policy.http_timeout_ms)
+            .max(1);
+
+        let response_limit_override =
+            match optional_positive_usize(&arguments, "max_response_bytes") {
+                Ok(value) => value,
+                Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+            };
+        if let Some(limit) = response_limit_override {
+            if limit > self.policy.http_max_response_bytes {
+                return ToolExecutionResult::error(json!({
+                    "tool": "http",
+                    "method": method.as_str(),
+                    "url": request_url.as_str(),
+                    "policy_rule": "http_max_response_bytes",
+                    "reason_code": "http_response_cap_exceeds_policy",
+                    "max_response_bytes": limit,
+                    "policy_max_response_bytes": self.policy.http_max_response_bytes,
+                    "error": format!(
+                        "requested response cap {} bytes exceeds policy cap {} bytes",
+                        limit,
+                        self.policy.http_max_response_bytes
+                    ),
+                }));
+            }
+        }
+        let effective_response_limit = response_limit_override
+            .unwrap_or(self.policy.http_max_response_bytes)
+            .max(1);
+
+        if let Some(rbac_result) = evaluate_tool_rbac_gate(
+            self.policy.rbac_principal.as_deref(),
+            "http",
+            self.policy.rbac_policy_path.as_deref(),
+            json!({
+                "method": method.as_str(),
+                "url": request_url.as_str(),
+                "timeout_ms": effective_timeout_ms,
+                "max_response_bytes": effective_response_limit,
+                "headers": header_names.clone(),
+                "has_json_payload": json_payload.is_some(),
+            }),
+        ) {
+            return rbac_result;
+        }
+
+        if let Some(rate_limit_result) = evaluate_tool_rate_limit_gate(
+            &self.policy,
+            "http",
+            json!({
+                "method": method.as_str(),
+                "url": request_url.as_str(),
+                "timeout_ms": effective_timeout_ms,
+                "max_response_bytes": effective_response_limit,
+            }),
+        ) {
+            return rate_limit_result;
+        }
+
+        let client = match reqwest::Client::builder()
+            .timeout(Duration::from_millis(effective_timeout_ms))
+            .redirect(RedirectPolicy::none())
+            .build()
+        {
+            Ok(client) => client,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "http",
+                    "method": method.as_str(),
+                    "url": request_url.as_str(),
+                    "reason_code": "http_client_build_failed",
+                    "error": format!("failed to initialize outbound HTTP client: {error}"),
+                }))
+            }
+        };
+
+        let ssrf_guard = self.ssrf_guard();
+        let mut endpoint = match ssrf_guard.parse_and_validate_url(&request_url).await {
+            Ok(url) => url,
+            Err(violation) => {
+                return self.ssrf_violation_result(
+                    &method,
+                    &request_url,
+                    request_url.as_str(),
+                    violation,
+                )
+            }
+        };
+
+        let started_at = Instant::now();
+        let mut redirect_count = 0usize;
+        loop {
+            let mut request_builder = client.request(method.clone(), endpoint.clone());
+            for (header_name, header_value) in &headers {
+                request_builder = request_builder.header(header_name, header_value);
+            }
+            if let Some(payload) = &json_payload {
+                request_builder = request_builder.json(payload);
+            }
+
+            let response = match request_builder.send().await {
+                Ok(response) => response,
+                Err(error) => {
+                    let reason_code = if error.is_timeout() {
+                        "http_request_timeout"
+                    } else {
+                        "http_transport_error"
+                    };
+                    let retryable = error.is_timeout() || error.is_connect();
+                    return ToolExecutionResult::error(json!({
+                        "tool": "http",
+                        "method": method.as_str(),
+                        "url": request_url.as_str(),
+                        "final_url": endpoint.as_str(),
+                        "reason_code": reason_code,
+                        "retryable": retryable,
+                        "error": error.to_string(),
+                        "duration_ms": started_at.elapsed().as_millis(),
+                    }));
+                }
+            };
+
+            let status = response.status();
+            if status.is_redirection() {
+                if redirect_count >= self.policy.http_max_redirects {
+                    return ToolExecutionResult::error(json!({
+                        "tool": "http",
+                        "method": method.as_str(),
+                        "url": request_url.as_str(),
+                        "final_url": endpoint.as_str(),
+                        "policy_rule": "http_max_redirects",
+                        "reason_code": "http_redirect_limit_exceeded",
+                        "redirect_count": redirect_count,
+                        "max_redirects": self.policy.http_max_redirects,
+                        "http_status": status.as_u16(),
+                        "error": format!(
+                            "redirect count exceeded configured max_redirects={} for endpoint '{}'",
+                            self.policy.http_max_redirects,
+                            endpoint,
+                        ),
+                    }));
+                }
+
+                let location_header = match response.headers().get(reqwest::header::LOCATION) {
+                    Some(location) => location,
+                    None => {
+                        return ToolExecutionResult::error(json!({
+                            "tool": "http",
+                            "method": method.as_str(),
+                            "url": request_url.as_str(),
+                            "final_url": endpoint.as_str(),
+                            "reason_code": "http_redirect_missing_location",
+                            "redirect_count": redirect_count,
+                            "http_status": status.as_u16(),
+                            "error": format!(
+                                "received redirect status {} without a Location header",
+                                status.as_u16()
+                            ),
+                        }))
+                    }
+                };
+
+                let location = match location_header.to_str() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return ToolExecutionResult::error(json!({
+                            "tool": "http",
+                            "method": method.as_str(),
+                            "url": request_url.as_str(),
+                            "final_url": endpoint.as_str(),
+                            "reason_code": "http_redirect_invalid_location",
+                            "redirect_count": redirect_count,
+                            "http_status": status.as_u16(),
+                            "error": format!("redirect Location header is not valid UTF-8: {error}"),
+                        }))
+                    }
+                };
+
+                let next_url = match endpoint.join(location) {
+                    Ok(next_url) => next_url,
+                    Err(error) => {
+                        return ToolExecutionResult::error(json!({
+                            "tool": "http",
+                            "method": method.as_str(),
+                            "url": request_url.as_str(),
+                            "final_url": endpoint.as_str(),
+                            "reason_code": "http_redirect_invalid_location",
+                            "redirect_count": redirect_count,
+                            "http_status": status.as_u16(),
+                            "error": format!(
+                                "redirect location '{}' could not be resolved against '{}': {error}",
+                                location,
+                                endpoint
+                            ),
+                        }))
+                    }
+                };
+
+                if let Err(violation) = ssrf_guard.validate_url(&next_url).await {
+                    return self.ssrf_violation_result(
+                        &method,
+                        &request_url,
+                        next_url.as_str(),
+                        violation,
+                    );
+                }
+
+                endpoint = next_url;
+                redirect_count = redirect_count.saturating_add(1);
+                continue;
+            }
+
+            let response_headers = response.headers().clone();
+            let mut response_bytes = Vec::new();
+            let mut observed_bytes = 0usize;
+            let mut response_stream = response;
+            loop {
+                let chunk = match response_stream.chunk().await {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        return ToolExecutionResult::error(json!({
+                            "tool": "http",
+                            "method": method.as_str(),
+                            "url": request_url.as_str(),
+                            "final_url": endpoint.as_str(),
+                            "reason_code": "http_response_read_error",
+                            "retryable": true,
+                            "error": error.to_string(),
+                            "duration_ms": started_at.elapsed().as_millis(),
+                        }));
+                    }
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                observed_bytes = observed_bytes.saturating_add(chunk.len());
+                if observed_bytes > effective_response_limit {
+                    return ToolExecutionResult::error(json!({
+                        "tool": "http",
+                        "method": method.as_str(),
+                        "url": request_url.as_str(),
+                        "final_url": endpoint.as_str(),
+                        "policy_rule": "http_max_response_bytes",
+                        "reason_code": "http_response_too_large",
+                        "response_bytes": observed_bytes,
+                        "max_response_bytes": effective_response_limit,
+                        "error": format!(
+                            "response exceeded max_response_bytes cap of {} bytes",
+                            effective_response_limit
+                        ),
+                    }));
+                }
+                response_bytes.extend_from_slice(&chunk);
+            }
+
+            let response_text = redact_secrets(&String::from_utf8_lossy(&response_bytes));
+            let response_content_type = response_headers
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(ToString::to_string);
+            let response_json = serde_json::from_slice::<Value>(&response_bytes).ok();
+            let duration_ms = started_at.elapsed().as_millis() as u64;
+
+            let mut payload = serde_json::Map::new();
+            payload.insert("tool".to_string(), json!("http"));
+            payload.insert("method".to_string(), json!(method.as_str()));
+            payload.insert("url".to_string(), json!(request_url.as_str()));
+            payload.insert("final_url".to_string(), json!(endpoint.as_str()));
+            payload.insert("http_status".to_string(), json!(status.as_u16()));
+            payload.insert("success".to_string(), json!(status.is_success()));
+            payload.insert("redirect_count".to_string(), json!(redirect_count));
+            payload.insert("duration_ms".to_string(), json!(duration_ms));
+            payload.insert("timeout_ms".to_string(), json!(effective_timeout_ms));
+            payload.insert(
+                "max_response_bytes".to_string(),
+                json!(effective_response_limit),
+            );
+            payload.insert("response_bytes".to_string(), json!(response_bytes.len()));
+            payload.insert("request_header_names".to_string(), json!(header_names));
+            payload.insert(
+                "has_json_payload".to_string(),
+                json!(json_payload.is_some()),
+            );
+            payload.insert("response_text".to_string(), json!(response_text));
+            payload.insert(
+                "ssrf_allow_http".to_string(),
+                json!(self.policy.http_allow_http),
+            );
+            payload.insert(
+                "ssrf_allow_private_network".to_string(),
+                json!(self.policy.http_allow_private_network),
+            );
+            payload.insert(
+                "max_redirects".to_string(),
+                json!(self.policy.http_max_redirects),
+            );
+            if let Some(content_type) = response_content_type {
+                payload.insert("content_type".to_string(), json!(content_type));
+            } else {
+                payload.insert("content_type".to_string(), Value::Null);
+            }
+            if let Some(response_json) = response_json {
+                payload.insert("response_json".to_string(), response_json);
+            }
+
+            if status.is_success() {
+                return ToolExecutionResult::ok(Value::Object(payload));
+            }
+
+            let (reason_code, retryable) = classify_http_status(status);
+            payload.insert("reason_code".to_string(), json!(reason_code));
+            payload.insert("retryable".to_string(), json!(retryable));
+            payload.insert(
+                "error".to_string(),
+                json!(format!("request returned HTTP status {}", status.as_u16())),
+            );
+            return ToolExecutionResult::error(Value::Object(payload));
+        }
     }
 }
 
@@ -2747,6 +3268,89 @@ fn optional_u64(arguments: &Value, key: &str) -> Result<Option<u64>, String> {
         .as_u64()
         .ok_or_else(|| format!("optional argument '{key}' must be an integer"))?;
     Ok(Some(parsed))
+}
+
+fn optional_positive_u64(arguments: &Value, key: &str) -> Result<Option<u64>, String> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .as_u64()
+        .ok_or_else(|| format!("optional argument '{key}' must be an integer"))?;
+    if parsed == 0 {
+        return Err(format!("optional argument '{key}' must be greater than 0"));
+    }
+    Ok(Some(parsed))
+}
+
+fn optional_positive_usize(arguments: &Value, key: &str) -> Result<Option<usize>, String> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let parsed_u64 = value
+        .as_u64()
+        .ok_or_else(|| format!("optional argument '{key}' must be an integer"))?;
+    if parsed_u64 == 0 {
+        return Err(format!("optional argument '{key}' must be greater than 0"));
+    }
+    let parsed = usize::try_from(parsed_u64)
+        .map_err(|_| format!("optional argument '{key}' exceeds host usize range"))?;
+    Ok(Some(parsed))
+}
+
+fn parse_http_method(arguments: &Value) -> Result<Method, String> {
+    let method = arguments
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET")
+        .trim()
+        .to_ascii_uppercase();
+    match method.as_str() {
+        "GET" => Ok(Method::GET),
+        "POST" => Ok(Method::POST),
+        "PUT" => Ok(Method::PUT),
+        "DELETE" => Ok(Method::DELETE),
+        _ => Err(format!(
+            "unsupported HTTP method '{method}'; supported values: GET, POST, PUT, DELETE"
+        )),
+    }
+}
+
+fn parse_http_headers(arguments: &Value) -> Result<Vec<(HeaderName, String)>, String> {
+    let Some(headers_value) = arguments.get("headers") else {
+        return Ok(Vec::new());
+    };
+    let header_map = headers_value
+        .as_object()
+        .ok_or_else(|| "optional argument 'headers' must be an object".to_string())?;
+    let mut headers = Vec::with_capacity(header_map.len());
+    for (name, raw_value) in header_map {
+        let value = raw_value
+            .as_str()
+            .ok_or_else(|| format!("header '{name}' must be a string value"))?;
+        if value.contains('\r') || value.contains('\n') {
+            return Err(format!("header '{name}' must not include CR/LF characters"));
+        }
+        let parsed_name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|error| format!("invalid header name '{name}': {error}"))?;
+        HeaderValue::from_str(value)
+            .map_err(|error| format!("invalid header value for '{name}': {error}"))?;
+        headers.push((parsed_name, value.to_string()));
+    }
+    Ok(headers)
+}
+
+fn classify_http_status(status: StatusCode) -> (&'static str, bool) {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return ("http_rate_limited", true);
+    }
+    if status.is_server_error() {
+        return ("http_status_server_error", true);
+    }
+    if status.is_client_error() {
+        return ("http_status_client_error", false);
+    }
+    ("http_status_unexpected", true)
 }
 
 fn optional_session_search_role(arguments: &Value, key: &str) -> Result<Option<String>, String> {

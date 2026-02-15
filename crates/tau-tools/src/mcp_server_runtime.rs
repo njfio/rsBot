@@ -14,7 +14,7 @@ use tau_agent_core::{AgentTool, ToolExecutionResult};
 use tau_cli::Cli;
 
 use crate::tool_policy_config::build_tool_policy;
-use crate::tools::{BashTool, EditTool, ReadTool, ToolPolicy, WriteTool};
+use crate::tools::{BashTool, EditTool, HttpTool, ReadTool, ToolPolicy, WriteTool};
 
 const MCP_JSONRPC_VERSION: &str = "2.0";
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -27,6 +27,7 @@ const MCP_TOOL_PREFIX_EXTERNAL: &str = "external.";
 const MCP_TOOL_READ: &str = "tau.read";
 const MCP_TOOL_WRITE: &str = "tau.write";
 const MCP_TOOL_EDIT: &str = "tau.edit";
+const MCP_TOOL_HTTP: &str = "tau.http";
 const MCP_TOOL_BASH: &str = "tau.bash";
 const MCP_TOOL_CONTEXT_SESSION: &str = "tau.context.session";
 const MCP_TOOL_CONTEXT_SKILLS: &str = "tau.context.skills";
@@ -43,6 +44,7 @@ const RESERVED_MCP_TOOL_NAMES: &[&str] = &[
     MCP_TOOL_READ,
     MCP_TOOL_WRITE,
     MCP_TOOL_EDIT,
+    MCP_TOOL_HTTP,
     MCP_TOOL_BASH,
     MCP_TOOL_CONTEXT_SESSION,
     MCP_TOOL_CONTEXT_SKILLS,
@@ -912,6 +914,9 @@ fn execute_builtin_tool_call(
         MCP_TOOL_EDIT => Ok(block_on_tool_future(
             EditTool::new(policy).execute(arguments),
         )),
+        MCP_TOOL_HTTP => Ok(block_on_tool_future(
+            HttpTool::new(policy).execute(arguments),
+        )),
         MCP_TOOL_BASH => Ok(block_on_tool_future(
             BashTool::new(policy).execute(arguments),
         )),
@@ -945,6 +950,7 @@ fn builtin_mcp_tools(state: &McpServerState) -> Vec<McpToolDescriptor> {
         agent_tool_descriptor(MCP_TOOL_READ, &ReadTool::new(policy.clone())),
         agent_tool_descriptor(MCP_TOOL_WRITE, &WriteTool::new(policy.clone())),
         agent_tool_descriptor(MCP_TOOL_EDIT, &EditTool::new(policy.clone())),
+        agent_tool_descriptor(MCP_TOOL_HTTP, &HttpTool::new(policy.clone())),
         agent_tool_descriptor(MCP_TOOL_BASH, &BashTool::new(policy)),
     ];
 
@@ -1266,6 +1272,7 @@ mod tests {
             .as_array()
             .expect("tools array");
         assert!(tools.iter().any(|tool| tool["name"] == "tau.read"));
+        assert!(tools.iter().any(|tool| tool["name"] == "tau.http"));
         assert!(tools
             .iter()
             .any(|tool| tool["name"] == "tau.context.session"));
@@ -1366,6 +1373,37 @@ mod tests {
         assert_eq!(
             responses[0]["result"]["structuredContent"]["reason_code"],
             "protected_path_denied"
+        );
+    }
+
+    #[test]
+    fn integration_tools_call_http_blocks_plain_http_scheme_by_default() {
+        let state = test_state();
+        let request_frames = vec![jsonrpc_request_frame(
+            Value::String("req-http".to_string()),
+            "tools/call",
+            serde_json::json!({
+                "name": "tau.http",
+                "arguments": {
+                    "url": "http://example.com",
+                    "method": "GET"
+                }
+            }),
+        )];
+        let raw = encode_frames(&request_frames);
+        let mut reader = std::io::BufReader::new(std::io::Cursor::new(raw));
+        let mut writer = Vec::new();
+        let report = serve_mcp_jsonrpc_reader(&mut reader, &mut writer, &state)
+            .expect("serve should succeed");
+        assert_eq!(report.processed_frames, 1);
+        assert_eq!(report.error_count, 0);
+
+        let responses = decode_frames(&writer);
+        assert_eq!(responses[0]["id"], "req-http");
+        assert_eq!(responses[0]["result"]["isError"], true);
+        assert_eq!(
+            responses[0]["result"]["structuredContent"]["reason_code"],
+            "delivery_ssrf_blocked_scheme"
         );
     }
 
@@ -1506,6 +1544,7 @@ done
         assert!(names.contains(super::MCP_TOOL_READ));
         assert!(names.contains(super::MCP_TOOL_WRITE));
         assert!(names.contains(super::MCP_TOOL_EDIT));
+        assert!(names.contains(super::MCP_TOOL_HTTP));
         assert!(names.contains(super::MCP_TOOL_BASH));
         assert!(names.contains(super::MCP_TOOL_CONTEXT_SESSION));
         assert!(names.contains(super::MCP_TOOL_CONTEXT_SKILLS));

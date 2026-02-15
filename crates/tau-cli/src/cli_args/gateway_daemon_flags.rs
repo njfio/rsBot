@@ -578,6 +578,54 @@ pub struct CliGatewayDaemonFlags {
     pub os_sandbox_policy_mode: Option<CliOsSandboxPolicyMode>,
 
     #[arg(
+        long = "http-timeout-ms",
+        env = "TAU_HTTP_TIMEOUT_MS",
+        default_value_t = 20_000,
+        help = "HTTP tool timeout in milliseconds"
+    )]
+    pub http_timeout_ms: u64,
+
+    #[arg(
+        long = "http-max-response-bytes",
+        env = "TAU_HTTP_MAX_RESPONSE_BYTES",
+        default_value_t = 256_000,
+        help = "HTTP tool maximum response body bytes"
+    )]
+    pub http_max_response_bytes: usize,
+
+    #[arg(
+        long = "http-max-redirects",
+        env = "TAU_HTTP_MAX_REDIRECTS",
+        default_value_t = 5,
+        help = "HTTP tool maximum redirect hops when following Location headers"
+    )]
+    pub http_max_redirects: usize,
+
+    #[arg(
+        long = "http-allow-http",
+        env = "TAU_HTTP_ALLOW_HTTP",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Allow plain HTTP scheme in HttpTool requests (HTTPS remains allowed)"
+    )]
+    pub http_allow_http: bool,
+
+    #[arg(
+        long = "http-allow-private-network",
+        env = "TAU_HTTP_ALLOW_PRIVATE_NETWORK",
+        default_value_t = false,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Allow HttpTool requests to private/loopback/link-local network targets"
+    )]
+    pub http_allow_private_network: bool,
+
+    #[arg(
         long,
         env = "TAU_ENFORCE_REGULAR_FILES",
         default_value_t = true,

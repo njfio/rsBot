@@ -18,6 +18,7 @@ Reserved agent tool names:
 - `sessions_search`
 - `sessions_stats`
 - `sessions_send`
+- `http`
 - `bash`
 
 Reserved MCP tool names:
@@ -25,6 +26,7 @@ Reserved MCP tool names:
 - `tau.read`
 - `tau.write`
 - `tau.edit`
+- `tau.http`
 - `tau.bash`
 - `tau.context.session`
 - `tau.context.skills`
@@ -42,4 +44,3 @@ Conflict errors/diagnostics include the exact reserved name so operators can rem
 
 - Extension diagnostics: `name conflicts with reserved built-in tool '<name>'`
 - MCP external discovery errors: `returned reserved built-in tool name '<name>'`
-

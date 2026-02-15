@@ -190,6 +190,36 @@ fn functional_cli_os_sandbox_policy_mode_accepts_required_override() {
 }
 
 #[test]
+fn unit_cli_http_tool_policy_flags_default_values_are_stable() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert_eq!(cli.http_timeout_ms, 20_000);
+    assert_eq!(cli.http_max_response_bytes, 256_000);
+    assert_eq!(cli.http_max_redirects, 5);
+    assert!(!cli.http_allow_http);
+    assert!(!cli.http_allow_private_network);
+}
+
+#[test]
+fn functional_cli_http_tool_policy_flags_accept_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--http-timeout-ms",
+        "9000",
+        "--http-max-response-bytes",
+        "4096",
+        "--http-max-redirects",
+        "2",
+        "--http-allow-http=true",
+        "--http-allow-private-network=true",
+    ]);
+    assert_eq!(cli.http_timeout_ms, 9000);
+    assert_eq!(cli.http_max_response_bytes, 4096);
+    assert_eq!(cli.http_max_redirects, 2);
+    assert!(cli.http_allow_http);
+    assert!(cli.http_allow_private_network);
+}
+
+#[test]
 fn unit_cli_openai_codex_backend_flags_default_to_enabled() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert!(cli.openai_codex_backend);

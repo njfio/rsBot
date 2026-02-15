@@ -716,6 +716,30 @@ fn render_orchestrator_policy_inheritance_context(
         .ok_or_else(|| {
             anyhow!("tool policy JSON missing numeric field 'max_command_output_bytes'")
         })?;
+    let http_timeout_ms = object
+        .get("http_timeout_ms")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("tool policy JSON missing numeric field 'http_timeout_ms'"))?;
+    let http_max_response_bytes = object
+        .get("http_max_response_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            anyhow!("tool policy JSON missing numeric field 'http_max_response_bytes'")
+        })?;
+    let http_max_redirects = object
+        .get("http_max_redirects")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("tool policy JSON missing numeric field 'http_max_redirects'"))?;
+    let http_allow_http = object
+        .get("http_allow_http")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| anyhow!("tool policy JSON missing boolean field 'http_allow_http'"))?;
+    let http_allow_private_network = object
+        .get("http_allow_private_network")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            anyhow!("tool policy JSON missing boolean field 'http_allow_private_network'")
+        })?;
     let allowed_roots = object
         .get("allowed_roots")
         .and_then(serde_json::Value::as_array)
@@ -726,7 +750,7 @@ fn render_orchestrator_policy_inheritance_context(
         .ok_or_else(|| anyhow!("tool policy JSON missing array field 'allowed_commands'"))?;
 
     Ok(format!(
-        "schema_version={schema_version};preset={preset};bash_profile={bash_profile};os_sandbox_mode={os_sandbox_mode};os_sandbox_policy_mode={os_sandbox_policy_mode};bash_dry_run={bash_dry_run};enforce_regular_files={enforce_regular_files};max_command_length={max_command_length};max_command_output_bytes={max_command_output_bytes};allowed_roots={};allowed_commands={};extension_runtime_hooks_enabled={}",
+        "schema_version={schema_version};preset={preset};bash_profile={bash_profile};os_sandbox_mode={os_sandbox_mode};os_sandbox_policy_mode={os_sandbox_policy_mode};bash_dry_run={bash_dry_run};enforce_regular_files={enforce_regular_files};max_command_length={max_command_length};max_command_output_bytes={max_command_output_bytes};http_timeout_ms={http_timeout_ms};http_max_response_bytes={http_max_response_bytes};http_max_redirects={http_max_redirects};http_allow_http={http_allow_http};http_allow_private_network={http_allow_private_network};allowed_roots={};allowed_commands={};extension_runtime_hooks_enabled={}",
         allowed_roots.len(),
         allowed_commands.len(),
         extension_runtime_hooks.enabled,
@@ -1101,6 +1125,11 @@ mod tests {
             "enforce_regular_files": true,
             "max_command_length": 4096,
             "max_command_output_bytes": 16000,
+            "http_timeout_ms": 20000,
+            "http_max_response_bytes": 256000,
+            "http_max_redirects": 5,
+            "http_allow_http": false,
+            "http_allow_private_network": false,
             "allowed_roots": ["/tmp/project"],
             "allowed_commands": ["cat", "ls"],
         });
@@ -1108,7 +1137,7 @@ mod tests {
             .expect("policy context should render");
         assert_eq!(
             context,
-            "schema_version=1;preset=balanced;bash_profile=balanced;os_sandbox_mode=off;os_sandbox_policy_mode=best-effort;bash_dry_run=false;enforce_regular_files=true;max_command_length=4096;max_command_output_bytes=16000;allowed_roots=1;allowed_commands=2;extension_runtime_hooks_enabled=true"
+            "schema_version=1;preset=balanced;bash_profile=balanced;os_sandbox_mode=off;os_sandbox_policy_mode=best-effort;bash_dry_run=false;enforce_regular_files=true;max_command_length=4096;max_command_output_bytes=16000;http_timeout_ms=20000;http_max_response_bytes=256000;http_max_redirects=5;http_allow_http=false;http_allow_private_network=false;allowed_roots=1;allowed_commands=2;extension_runtime_hooks_enabled=true"
         );
     }
 

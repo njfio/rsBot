@@ -1552,6 +1552,11 @@ fn build_tool_policy_includes_cwd_and_custom_root() {
         "best-effort"
     );
     assert!(policy.os_sandbox_command.is_empty());
+    assert_eq!(policy.http_timeout_ms, 20_000);
+    assert_eq!(policy.http_max_response_bytes, 256_000);
+    assert_eq!(policy.http_max_redirects, 5);
+    assert!(!policy.http_allow_http);
+    assert!(!policy.http_allow_private_network);
     assert!(policy.enforce_regular_files);
     assert_eq!(policy.policy_preset, ToolPolicyPreset::Balanced);
     assert!(!policy.bash_dry_run);
@@ -1570,11 +1575,16 @@ fn unit_tool_policy_to_json_includes_key_limits_and_modes() {
 
     let policy = build_tool_policy(&cli).expect("policy should build");
     let payload = tool_policy_to_json(&policy);
-    assert_eq!(payload["schema_version"], 5);
+    assert_eq!(payload["schema_version"], 6);
     assert_eq!(payload["preset"], "balanced");
     assert_eq!(payload["bash_profile"], "strict");
     assert_eq!(payload["os_sandbox_mode"], "auto");
     assert_eq!(payload["os_sandbox_policy_mode"], "best-effort");
+    assert_eq!(payload["http_timeout_ms"], 20_000);
+    assert_eq!(payload["http_max_response_bytes"], 256_000);
+    assert_eq!(payload["http_max_redirects"], 5);
+    assert_eq!(payload["http_allow_http"], false);
+    assert_eq!(payload["http_allow_private_network"], false);
     assert_eq!(payload["max_file_write_bytes"], 4096);
     assert_eq!(payload["enforce_regular_files"], true);
     assert_eq!(payload["bash_dry_run"], false);
@@ -1711,4 +1721,27 @@ fn functional_build_tool_policy_applies_sandbox_and_regular_file_settings() {
     );
     assert_eq!(policy.max_file_write_bytes, 4096);
     assert!(!policy.enforce_regular_files);
+}
+
+#[test]
+fn functional_build_tool_policy_applies_http_controls() {
+    let mut cli = test_cli();
+    cli.http_timeout_ms = 7500;
+    cli.http_max_response_bytes = 12_345;
+    cli.http_max_redirects = 2;
+    cli.http_allow_http = true;
+    cli.http_allow_private_network = true;
+
+    let policy = build_tool_policy(&cli).expect("policy should build");
+    let payload = tool_policy_to_json(&policy);
+    assert_eq!(policy.http_timeout_ms, 7500);
+    assert_eq!(policy.http_max_response_bytes, 12_345);
+    assert_eq!(policy.http_max_redirects, 2);
+    assert!(policy.http_allow_http);
+    assert!(policy.http_allow_private_network);
+    assert_eq!(payload["http_timeout_ms"], 7500);
+    assert_eq!(payload["http_max_response_bytes"], 12_345);
+    assert_eq!(payload["http_max_redirects"], 2);
+    assert_eq!(payload["http_allow_http"], true);
+    assert_eq!(payload["http_allow_private_network"], true);
 }
