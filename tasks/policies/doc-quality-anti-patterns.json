@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "policy_id": "doc-quality-anti-patterns",
+  "scope": "Rust doc-comment anti-pattern heuristics for M23 quality spot-audits",
+  "patterns": [
+    {
+      "id": "assignment_narration",
+      "description": "Low-value line-by-line narration phrase.",
+      "contains": "Assigns the value to the variable."
+    },
+    {
+      "id": "generic_sets_gets_returns",
+      "description": "Generic verb-first narration in doc comments.",
+      "regex": "^\\s*(Sets|Gets|Returns)\\b"
+    },
+    {
+      "id": "todo_marker",
+      "description": "TODO marker inside rustdoc comments should be reviewed.",
+      "regex": "\\bTODO\\b"
+    },
+    {
+      "id": "placeholder_marker",
+      "description": "Placeholder markers indicate incomplete docs.",
+      "regex": "\\b(TBD|FIXME)\\b"
+    }
+  ],
+  "suppressions": [
+    {
+      "id": "allow_scaffold_todo_example",
+      "pattern_id": "todo_marker",
+      "path_contains": "crates/tau-training-store/src/lib.rs",
+      "line_contains": "TODO",
+      "rationale": "Allowed temporarily for tracked migration TODO in scaffold boundary discussion."
+    }
+  ]
+}

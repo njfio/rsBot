@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T17:47:23Z",
+  "repo_root": ".",
+  "scan_root": "crates",
+  "policy_file": "tasks/policies/doc-quality-anti-patterns.json",
+  "summary": {
+    "scanned_files": 318,
+    "scanned_doc_lines": 1486,
+    "patterns_configured": 4,
+    "findings_count": 37,
+    "suppressed_count": 0
+  },
+  "findings": [
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 200,
+      "comment": "Returns true when cancellation has been requested."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 465,
+      "comment": "Returns true when the policy allows direct messages from `from_agent_id` to `to_agent_id`."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 639,
+      "comment": "Returns aggregate async event dispatch metrics for this agent instance."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 724,
+      "comment": "Returns true when a tool with `tool_name` is registered."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 729,
+      "comment": "Returns sorted registered tool names."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 754,
+      "comment": "Returns this agent's identifier for policy checks and direct messaging."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 759,
+      "comment": "Sets this agent's identifier when `agent_id` is non-empty after trimming."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 898,
+      "comment": "Returns the active runtime safety policy."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 913,
+      "comment": "Returns the current conversation history."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-agent-core/src/lib.rs",
+      "line": 944,
+      "comment": "Returns cumulative token usage and estimated model spend for this agent."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-core/src/time_utils.rs",
+      "line": 1,
+      "comment": "Returns the current Unix timestamp in milliseconds."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-core/src/time_utils.rs",
+      "line": 11,
+      "comment": "Returns the current Unix timestamp in seconds."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-core/src/time_utils.rs",
+      "line": 19,
+      "comment": "Returns true when `expires_unix` is present and no longer in the future."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 117,
+      "comment": "Returns true when `scope` satisfies the configured filter dimensions."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 308,
+      "comment": "Returns the store root directory."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 313,
+      "comment": "Returns the active storage backend."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 318,
+      "comment": "Returns the active storage backend label."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 323,
+      "comment": "Returns the backend selection reason code."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 328,
+      "comment": "Returns the resolved storage file path, when applicable."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 430,
+      "comment": "Returns latest records filtered by scope and bounded by `limit`."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-memory/src/runtime.rs",
+      "line": 767,
+      "comment": "Returns a hierarchical workspace/channel/actor tree for latest records."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-runtime/src/background_jobs_runtime.rs",
+      "line": 73,
+      "comment": "Returns the stable snake_case wire representation."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-runtime/src/background_jobs_runtime.rs",
+      "line": 84,
+      "comment": "Returns true when the job cannot transition any further."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-runtime/src/background_jobs_runtime.rs",
+      "line": 308,
+      "comment": "Returns the configured runtime state directory."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-runtime/src/background_jobs_runtime.rs",
+      "line": 313,
+      "comment": "Returns the persisted health snapshot path."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-runtime/src/background_jobs_runtime.rs",
+      "line": 318,
+      "comment": "Returns the append-only event log path."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-runtime/src/background_jobs_runtime.rs",
+      "line": 323,
+      "comment": "Returns the directory containing per-job manifests and outputs."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-runtime/src/background_jobs_runtime.rs",
+      "line": 432,
+      "comment": "Returns the latest runtime health counters snapshot."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-startup/src/startup_safety_policy.rs",
+      "line": 21,
+      "comment": "Returns the canonical safety-policy precedence contract."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-tools/src/tools/registry_core.rs",
+      "line": 569,
+      "comment": "Returns the reserved registry of built-in agent tool names."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-training-tracer/src/lib.rs",
+      "line": 289,
+      "comment": "Returns an in-memory snapshot of completed spans."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-training-types/src/lib.rs",
+      "line": 101,
+      "comment": "Returns true when this status can transition to `next`."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-training-types/src/lib.rs",
+      "line": 129,
+      "comment": "Returns an error if transitioning to `next` is not allowed."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-training-types/src/lib.rs",
+      "line": 142,
+      "comment": "Returns true when no further execution is expected."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-training-types/src/lib.rs",
+      "line": 161,
+      "comment": "Returns true when this status can transition to `next`."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-training-types/src/lib.rs",
+      "line": 181,
+      "comment": "Returns an error if transitioning to `next` is not allowed."
+    },
+    {
+      "pattern_id": "generic_sets_gets_returns",
+      "pattern_description": "Generic verb-first narration in doc comments.",
+      "path": "crates/tau-training-types/src/lib.rs",
+      "line": 194,
+      "comment": "Returns true when no further attempt work is expected."
+    }
+  ],
+  "suppressed": []
+}

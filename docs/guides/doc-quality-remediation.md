@@ -7,6 +7,8 @@ remediated, and closed with reproducible evidence for M23 gate reviews.
 
 - Policy: `tasks/policies/doc-quality-remediation-policy.json`
 - Tracker template: `tasks/templates/doc-quality-remediation-tracker.md`
+- Anti-pattern heuristics: `tasks/policies/doc-quality-anti-patterns.json`
+- Audit helper command: `scripts/dev/doc-quality-audit-helper.sh`
 
 ## Workflow
 
@@ -46,3 +48,24 @@ Run the contract test to verify policy/template/docs alignment:
 ```bash
 python3 -m unittest discover -s .github/scripts -p 'test_doc_quality_remediation_contract.py'
 ```
+
+Run the helper to generate low-value doc-comment findings:
+
+```bash
+scripts/dev/doc-quality-audit-helper.sh \
+  --repo-root . \
+  --scan-root crates \
+  --policy-file tasks/policies/doc-quality-anti-patterns.json \
+  --output-json tasks/reports/m23-doc-quality-audit-helper.json \
+  --output-md tasks/reports/m23-doc-quality-audit-helper.md
+```
+
+### False-Positive Handling
+
+1. Add or refine suppression entries in
+   `tasks/policies/doc-quality-anti-patterns.json` under `suppressions`.
+2. Suppression rules may scope by `path_contains`, `pattern_id`, and
+   `line_contains` (use narrow matching).
+3. Include rationale in suppression entries; avoid wildcard suppressions.
+4. Re-run helper and confirm suppressed findings move from `findings` to
+   `suppressed` in output artifacts.
