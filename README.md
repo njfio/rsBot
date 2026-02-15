@@ -1,51 +1,89 @@
 # Tau
 
-Pure Rust implementation of core upstream mono concepts.
+Tau is a pure-Rust agent runtime and operator control plane.
 
-This workspace mirrors the high-level package boundaries from the upstream mono baseline:
+The workspace includes core agent execution, multi-provider model access, transport bridges,
+gateway APIs, deterministic demo/contract workflows, and prompt-optimization training support.
 
-- `crates/tau-ai`: provider-agnostic message and tool model + OpenAI/Anthropic/Google adapters
-- `crates/tau-agent-core`: event-driven agent loop with tool execution
-- `crates/tau-tui`: terminal rendering primitives plus runnable demo binary
-- `crates/tau-coding-agent`: CLI harness with built-in tools and transport bridges
+## What Tau Includes Today
 
-## Documentation
+- Rust-first runtime architecture (no Node.js/TypeScript runtime dependency in core paths)
+- Provider-agnostic model routing (`openai/*`, `anthropic/*`, `google/*`) with multiple auth modes
+- Interactive prompt loop, one-shot prompt mode, and plan-first orchestration mode
+- Session persistence and lifecycle operations (branch, undo/redo, resume, export/import/repair)
+- Built-in tools and tool-policy controls (filesystem/shell/http/path/rate/sandbox controls)
+- GitHub Issues bridge and Slack Socket Mode bridge
+- Multi-channel runtime (Telegram/Discord/WhatsApp) with live-ingress and connector paths
+- Gateway OpenResponses/OpenAI-compatible HTTP APIs + websocket control plane + webchat shell
+- Prompt optimization mode with SQLite-backed rollout state and optional attribution proxy
+- Deterministic local demo scripts and CI smoke lanes
 
-Start with the docs index: [`docs/README.md`](docs/README.md)
+## Capability Status (Important)
 
-Focused guides:
+Some subsystems are fully runnable in production-like loops, while others are currently
+diagnostics-first or fixture/live-input driven:
 
-- Quickstart: [`docs/guides/quickstart.md`](docs/guides/quickstart.md)
-- Demo index: [`docs/guides/demo-index.md`](docs/guides/demo-index.md)
-- Gateway auth session smoke: [`docs/guides/gateway-auth-session-smoke.md`](docs/guides/gateway-auth-session-smoke.md)
-- Project index workflow: [`docs/guides/project-index.md`](docs/guides/project-index.md)
-- Transports (GitHub/Slack/RPC): [`docs/guides/transports.md`](docs/guides/transports.md)
-- Startup DI pipeline: [`docs/guides/startup-di-pipeline.md`](docs/guides/startup-di-pipeline.md)
-- Contract pattern lifecycle: [`docs/guides/contract-pattern-lifecycle.md`](docs/guides/contract-pattern-lifecycle.md)
-- Multi-channel event pipeline: [`docs/guides/multi-channel-event-pipeline.md`](docs/guides/multi-channel-event-pipeline.md)
-- Operator control summary: [`docs/guides/operator-control-summary.md`](docs/guides/operator-control-summary.md)
-- Doc density scorecard: [`docs/guides/doc-density-scorecard.md`](docs/guides/doc-density-scorecard.md)
-- Packages and extensions: [`docs/guides/packages.md`](docs/guides/packages.md)
-- Events and scheduler: [`docs/guides/events.md`](docs/guides/events.md)
+- Voice:
+  - `--voice-contract-runner` and `--voice-live-runner` are available.
+  - Live mode consumes normalized input fixtures/files and writes deterministic artifacts.
+  - Built-in microphone capture and end-user speech UX are not bundled in this repo.
+- Browser automation:
+  - `--browser-automation-live-runner` is available.
+  - Execution is delegated to an external Playwright-compatible CLI (`--browser-automation-playwright-cli`).
+  - No embedded browser engine/DOM automation runtime is built into Tau itself.
+- Dashboard:
+  - Gateway dashboard APIs and status/health inspection are available.
+  - `--dashboard-contract-runner` is removed.
+  - UI is a lightweight webchat shell plus API surfaces, not a full standalone rich dashboard app.
+- Custom commands:
+  - Status/health inspection and state artifacts are available.
+  - `--custom-command-contract-runner` is removed from active dispatch.
+  - Runtime crate includes command policy + execution primitives used by control-plane flows.
+- Memory:
+  - Runtime memory behavior is owned by `tau-agent-core`.
+  - `tau-memory` provides memory store/retrieval primitives and contract fixtures/helpers.
+  - `--memory-contract-runner` is removed.
 
-Contributor references:
+For operational details and rollout/rollback guidance, use the runbooks in `docs/guides/`.
 
-- `tau-coding-agent` architecture map: [`docs/tau-coding-agent/code-map.md`](docs/tau-coding-agent/code-map.md)
-- Provider auth capability matrix: [`docs/provider-auth/provider-auth-capability-matrix.md`](docs/provider-auth/provider-auth-capability-matrix.md)
+## Workspace Layout
+
+High-level crates:
+
+- `crates/tau-coding-agent`: main CLI runtime (`cargo run -p tau-coding-agent -- ...`)
+- `crates/tau-agent-core`: event-driven agent loop and runtime memory integration
+- `crates/tau-ai` + `crates/tau-provider`: model abstraction and provider auth/routing
+- `crates/tau-gateway`: HTTP/websocket gateway surfaces
+- `crates/tau-multi-channel`: Telegram/Discord/WhatsApp channel runtime
+- `crates/tau-github-issues-runtime` + `crates/tau-slack-runtime`: bridge runtimes
+- `crates/tau-training-*`, `crates/tau-algorithm`, `crates/tau-trainer`: prompt optimization pipeline
+- `crates/tau-tui`: standalone terminal UI demo
+
+Full workspace membership is defined in [`Cargo.toml`](Cargo.toml).
 
 ## Quickstart
 
 Run all commands from repository root.
 
-Build/test:
+Build and validate fast (changed-scope default):
 
 ```bash
 ./scripts/dev/fast-validate.sh
-# full pre-merge gate:
+```
+
+Faster local compile-only loop:
+
+```bash
+./scripts/dev/fast-validate.sh --check-only --direct-packages-only --skip-fmt
+```
+
+Full pre-merge gate:
+
+```bash
 ./scripts/dev/fast-validate.sh --full
 ```
 
-Bootstrap Tau workspace:
+Initialize workspace state:
 
 ```bash
 cargo run -p tau-coding-agent -- --onboard --onboard-non-interactive
@@ -69,93 +107,103 @@ Run the standalone TUI demo:
 cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ```
 
-Run deterministic local demos:
+## Demo Commands
+
+Fresh-clone validation index:
 
 ```bash
-# operator-focused fresh-clone validation path
 ./scripts/demo/index.sh
 ./scripts/demo/index.sh --list
-./scripts/demo/index.sh --only onboarding,gateway-auth --fail-fast
+./scripts/demo/index.sh --only onboarding,gateway-auth,gateway-remote-access --fail-fast
 ./scripts/demo/index.sh --json --report-file .tau/reports/demo-index-summary.json
-
-# all.sh prepares the binary once, then reuses it across selected wrappers.
-./scripts/demo/all.sh
-./scripts/demo/all.sh --list
-./scripts/demo/all.sh --only rpc,events --json
-./scripts/demo/all.sh --report-file .tau/reports/demo-summary.json
-./scripts/demo/all.sh --only local,rpc --fail-fast
-./scripts/demo/all.sh --only multi-agent --fail-fast
-./scripts/demo/all.sh --only gateway --fail-fast
-./scripts/demo/all.sh --only deployment --fail-fast
-./scripts/demo/all.sh --only custom-command --fail-fast
-./scripts/demo/all.sh --only voice --fail-fast
-./scripts/demo/all.sh --only local --timeout-seconds 30 --fail-fast
-./scripts/demo/local.sh
-./scripts/demo/rpc.sh
-./scripts/demo/events.sh
-./scripts/demo/package.sh
-./scripts/demo/multi-channel.sh
-./scripts/demo/multi-agent.sh
-./scripts/demo/memory.sh
-./scripts/demo/dashboard.sh
-./scripts/demo/gateway.sh
-./scripts/demo/gateway-auth.sh
-./scripts/demo/gateway-auth-session.sh
-./scripts/demo/deployment.sh
-./scripts/demo/custom-command.sh
-./scripts/demo/voice.sh
 ```
 
-`all.sh --json` and `--report-file` entries include `duration_ms` per wrapper.
+Run all wrappers (single build reuse, optional filtering):
 
-Clean generated local artifacts/noise:
+```bash
+./scripts/demo/all.sh
+./scripts/demo/all.sh --list
+./scripts/demo/all.sh --only local,rpc,events --fail-fast
+./scripts/demo/all.sh --only browser-automation,browser-automation-live --fail-fast
+./scripts/demo/all.sh --only deployment,voice --fail-fast
+./scripts/demo/all.sh --json --report-file .tau/reports/demo-summary.json
+```
+
+Individual wrappers:
+
+- `./scripts/demo/local.sh`
+- `./scripts/demo/rpc.sh`
+- `./scripts/demo/events.sh`
+- `./scripts/demo/package.sh`
+- `./scripts/demo/multi-channel.sh`
+- `./scripts/demo/multi-agent.sh`
+- `./scripts/demo/browser-automation.sh`
+- `./scripts/demo/browser-automation-live.sh`
+- `./scripts/demo/memory.sh`
+- `./scripts/demo/dashboard.sh`
+- `./scripts/demo/gateway.sh`
+- `./scripts/demo/gateway-auth.sh`
+- `./scripts/demo/gateway-auth-session.sh`
+- `./scripts/demo/gateway-remote-access.sh`
+- `./scripts/demo/deployment.sh`
+- `./scripts/demo/custom-command.sh`
+- `./scripts/demo/voice.sh`
+- `./scripts/demo/voice-live.sh`
+
+`all.sh --json` and `--report-file` include `duration_ms` per wrapper.
+
+Clean generated local artifacts:
 
 ```bash
 ./scripts/dev/clean-local-artifacts.sh
 ```
 
-Example assets referenced by guides and smoke tests:
+## Documentation
 
-- `./examples/starter/package.json`
-- `./examples/extensions`
-- `./examples/extensions/issue-assistant/extension.json`
-- `./examples/extensions/issue-assistant/payload.json`
-- `./examples/events`
-- `./examples/events-state.json`
+Start here: [`docs/README.md`](docs/README.md)
 
-## Current Scope
+Core guides:
 
-Implemented now:
+- Quickstart: [`docs/guides/quickstart.md`](docs/guides/quickstart.md)
+- Demo index: [`docs/guides/demo-index.md`](docs/guides/demo-index.md)
+- Transport surfaces: [`docs/guides/transports.md`](docs/guides/transports.md)
+- Operator control summary: [`docs/guides/operator-control-summary.md`](docs/guides/operator-control-summary.md)
+- Project index workflow: [`docs/guides/project-index.md`](docs/guides/project-index.md)
+- Startup DI pipeline: [`docs/guides/startup-di-pipeline.md`](docs/guides/startup-di-pipeline.md)
+- Contract lifecycle: [`docs/guides/contract-pattern-lifecycle.md`](docs/guides/contract-pattern-lifecycle.md)
+- Prompt optimization ops: [`docs/guides/training-ops.md`](docs/guides/training-ops.md)
+- Prompt optimization proxy ops: [`docs/guides/training-proxy-ops.md`](docs/guides/training-proxy-ops.md)
+- Memory ops: [`docs/guides/memory-ops.md`](docs/guides/memory-ops.md)
+- Dashboard ops: [`docs/guides/dashboard-ops.md`](docs/guides/dashboard-ops.md)
+- Custom command ops: [`docs/guides/custom-command-ops.md`](docs/guides/custom-command-ops.md)
+- Voice ops: [`docs/guides/voice-ops.md`](docs/guides/voice-ops.md)
+- Deployment ops: [`docs/guides/deployment-ops.md`](docs/guides/deployment-ops.md)
 
-- Rust-first runtime architecture (no Node/TypeScript runtime)
-- Multi-provider model routing (`openai/*`, `anthropic/*`, `google/*`)
-- OAuth/session login backend routing for Codex, Claude Code, and Gemini CLI flows
-- Interactive prompt mode, one-shot mode, and plan-first orchestration mode
-- Persistent JSONL sessions with branch/undo/redo/resume/repair/export/import tooling
-- Deterministic project index build/query/inspect workflow for local code search
-- Built-in filesystem and shell tools
-- Transport bridges for GitHub Issues and Slack Socket Mode
-- Startup DI, contract lifecycle, and multi-channel event pipeline architecture guides
-- RPC capabilities/dispatch/serve NDJSON protocol surfaces
-- Filesystem-backed scheduled events engine with webhook ingest
-- Extension and package lifecycle tooling (including signing and trust roots)
-- Deterministic local demo scripts and smoke coverage
-- Runnable `tau-tui` demo binary and smoke tests
+Contributor references:
+
+- `tau-coding-agent` code map: [`docs/tau-coding-agent/code-map.md`](docs/tau-coding-agent/code-map.md)
+- Provider auth matrix: [`docs/provider-auth/provider-auth-capability-matrix.md`](docs/provider-auth/provider-auth-capability-matrix.md)
 
 ## CI/CD
 
-GitHub Actions workflows:
-
 - CI: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-  - Linux quality gate (`fmt`, strict `clippy`, workspace tests)
-  - bounded checkout retry diagnostics in `quality-linux`
-  - codex-light demo-smoke lane
+  - Linux quality gate (`fmt`, strict `clippy`, tests)
+  - targeted `codex-light` and scoped smoke lanes
   - optional manual coverage and cross-platform compile smoke
 - Security: [`.github/workflows/security.yml`](.github/workflows/security.yml)
 - Release: [`.github/workflows/release.yml`](.github/workflows/release.yml)
-  - Multi-platform artifacts: linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), windows (`amd64`, `arm64`)
-  - Cross-arch release lanes are compile/package-only with explicit smoke-skip reason codes
-  - Optional signing/notarization hook integration (`scripts/release/hooks/*`)
-  - Installer helpers: `scripts/release/install-tau.sh`, `scripts/release/update-tau.sh`, `scripts/release/install-tau.ps1`, `scripts/release/update-tau.ps1`
+  - Linux/macOS/Windows artifacts (`amd64`, `arm64`)
+  - optional signing/notarization hooks (`scripts/release/hooks/*`)
+  - installer/update scripts for Unix and PowerShell
+- Dependabot: [`.github/dependabot.yml`](.github/dependabot.yml)
 
-Dependency automation: [`.github/dependabot.yml`](.github/dependabot.yml)
+## Contributing Workflow
+
+This repository follows issue-first execution:
+
+- Create or identify a GitHub issue before implementation.
+- Use scoped branches (`codex/issue-<id>-<topic>`).
+- Link issues in PRs (`Closes #<id>`) and include validation evidence.
+- Merge only after CI passes and acceptance criteria are met.
+
+Repository policy details are in [`AGENTS.md`](AGENTS.md).
