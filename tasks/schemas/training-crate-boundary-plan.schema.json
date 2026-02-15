@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Training Crate Boundary Plan",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "repository_root",
+    "schema_path",
+    "required_crates",
+    "summary",
+    "crates",
+    "first_pr_sets"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "repository_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_crates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_crates",
+        "retain_count",
+        "merge_count",
+        "ambiguous_count"
+      ],
+      "properties": {
+        "total_crates": { "type": "integer", "minimum": 0 },
+        "retain_count": { "type": "integer", "minimum": 0 },
+        "merge_count": { "type": "integer", "minimum": 0 },
+        "ambiguous_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "crates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "crate",
+          "decision",
+          "merge_target",
+          "owner_surface",
+          "rationale"
+        ],
+        "properties": {
+          "crate": { "type": "string", "minLength": 1 },
+          "decision": { "type": "string", "enum": ["retain", "merge"] },
+          "merge_target": {
+            "anyOf": [
+              { "type": "string", "minLength": 1 },
+              { "type": "null" }
+            ]
+          },
+          "owner_surface": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "first_pr_sets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "status",
+          "issues",
+          "scope",
+          "test_matrix"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "status": {
+            "type": "string",
+            "enum": ["planned", "in_progress", "completed"]
+          },
+          "issues": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "scope": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "test_matrix": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

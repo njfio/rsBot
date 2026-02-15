@@ -148,6 +148,16 @@ jobs:
             fast_validate:
               - "scripts/dev/fast-validate.sh"
               - "scripts/dev/test-fast-validate.sh"
+            training_boundary_plan:
+              - "scripts/dev/training-crate-boundary-plan.sh"
+              - "scripts/dev/test-training-crate-boundary-plan.sh"
+              - "tasks/schemas/training-crate-boundary-plan.schema.json"
+              - "docs/guides/training-crate-boundary-plan.md"
+              - "docs/guides/training-ops.md"
+              - "docs/guides/runbook-ownership-map.md"
+              - "docs/README.md"
+              - ".github/scripts/runbook_ownership_docs_check.py"
+              - ".github/scripts/test_runbook_ownership_docs_check.py"
             retained_proof_summary:
               - "scripts/dev/m21-retained-capability-proof-summary.sh"
               - "scripts/dev/test-m21-retained-capability-proof-summary.sh"
@@ -277,6 +287,25 @@ jobs:
       - name: Validate fast-validate script
         if: steps.fast_validate_scope.outputs.fast_validate_tests_needed == 'true'
         run: ./scripts/dev/test-fast-validate.sh
+
+      - name: Determine training boundary plan scope
+        id: training_boundary_plan_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          training_boundary_plan_tests_needed="${{ steps.change_scope.outputs.training_boundary_plan }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            training_boundary_plan_tests_needed="true"
+          elif [[ -z "${training_boundary_plan_tests_needed}" ]]; then
+            training_boundary_plan_tests_needed="false"
+          fi
+          echo "training_boundary_plan_tests_needed=${training_boundary_plan_tests_needed}" >> "$GITHUB_OUTPUT"
+          echo "### Training Boundary Plan Scope" >> "$GITHUB_STEP_SUMMARY"
+          echo "- training boundary plan tests needed: ${training_boundary_plan_tests_needed}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate training boundary plan script
+        if: steps.training_boundary_plan_scope.outputs.training_boundary_plan_tests_needed == 'true'
+        run: ./scripts/dev/test-training-crate-boundary-plan.sh
 
       - name: Determine retained-capability proof summary scope
         id: retained_proof_summary_scope

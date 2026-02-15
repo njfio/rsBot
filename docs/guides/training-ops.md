@@ -87,6 +87,9 @@ Gateway dashboard endpoints (`/dashboard/health`, `/dashboard/widgets`,
 - `--train-store-sqlite` -> `--prompt-optimization-store-sqlite`
 - `--train-json` -> `--prompt-optimization-json`
 
+Boundary decisions and staged consolidation sets:
+- `docs/guides/training-crate-boundary-plan.md`
+
 ## Ownership
 
 Primary ownership surfaces:
