@@ -6,6 +6,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 
+/// Current schema version used by RL core payload types.
+pub const RL_SCHEMA_VERSION_V1: u32 = 1;
+
+fn default_rl_schema_version() -> u32 {
+    RL_SCHEMA_VERSION_V1
+}
+
 /// Error returned when a status transition is invalid.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum StatusTransitionError {
@@ -15,6 +22,65 @@ pub enum StatusTransitionError {
         from: String,
         to: String,
     },
+}
+
+/// Validation error for RL trajectory, advantage, and checkpoint payloads.
+#[derive(Debug, Clone, PartialEq, Error)]
+pub enum RlSchemaError {
+    #[error(
+        "{type_name} schema_version={found} is unsupported (supported versions: {supported:?})"
+    )]
+    UnsupportedSchemaVersion {
+        type_name: &'static str,
+        found: u32,
+        supported: Vec<u32>,
+    },
+    #[error("{type_name} requires non-empty field '{field}'")]
+    EmptyField {
+        type_name: &'static str,
+        field: &'static str,
+    },
+    #[error("{type_name} field '{field}' must be in range [0.0, 1.0], found {value}")]
+    OutOfRange {
+        type_name: &'static str,
+        field: &'static str,
+        value: f64,
+    },
+    #[error(
+        "{type_name} length mismatch: '{left_field}'={left_len} does not match '{right_field}'={right_len}"
+    )]
+    LengthMismatch {
+        type_name: &'static str,
+        left_field: &'static str,
+        left_len: usize,
+        right_field: &'static str,
+        right_len: usize,
+    },
+    #[error(
+        "{type_name} expected step_index={expected} but found step_index={found} at position {position}"
+    )]
+    StepIndexMismatch {
+        type_name: &'static str,
+        expected: u32,
+        found: u32,
+        position: usize,
+    },
+    #[error("{type_name} field '{field}' must contain finite f64 values")]
+    NonFinite {
+        type_name: &'static str,
+        field: &'static str,
+    },
+}
+
+fn ensure_supported_rl_schema(type_name: &'static str, version: u32) -> Result<(), RlSchemaError> {
+    if version == RL_SCHEMA_VERSION_V1 {
+        return Ok(());
+    }
+    Err(RlSchemaError::UnsupportedSchemaVersion {
+        type_name,
+        found: version,
+        supported: vec![RL_SCHEMA_VERSION_V1],
+    })
 }
 
 /// Lifecycle state for a rollout.
@@ -322,6 +388,328 @@ pub struct Triplet {
     pub reward: Option<f64>,
 }
 
+/// Single state-action-reward transition used for RL policy updates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrajectoryStep {
+    /// Monotonic per-trajectory index.
+    pub step_index: u32,
+    /// Observation provided to the policy before action selection.
+    pub observation: Value,
+    /// Action selected by the policy.
+    pub action: Value,
+    /// Scalar reward received after executing the action.
+    pub reward: f64,
+    /// Marks terminal transition for an episode.
+    pub done: bool,
+    /// Optional policy log-probability of the action.
+    pub logprob: Option<f64>,
+    /// Optional value estimate at this step.
+    pub value_estimate: Option<f64>,
+    /// Optional RL-system metadata for this transition.
+    #[serde(default)]
+    pub metadata: HashMap<String, Value>,
+}
+
+impl TrajectoryStep {
+    /// Creates a trajectory step with required RL transition fields.
+    pub fn new(
+        step_index: u32,
+        observation: Value,
+        action: Value,
+        reward: f64,
+        done: bool,
+    ) -> Self {
+        Self {
+            step_index,
+            observation,
+            action,
+            reward,
+            done,
+            logprob: None,
+            value_estimate: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Validates numeric fields for serialization and RL math safety.
+    pub fn validate(&self) -> Result<(), RlSchemaError> {
+        if !self.reward.is_finite() {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "TrajectoryStep",
+                field: "reward",
+            });
+        }
+        if self.logprob.is_some_and(|value| !value.is_finite()) {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "TrajectoryStep",
+                field: "logprob",
+            });
+        }
+        if self.value_estimate.is_some_and(|value| !value.is_finite()) {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "TrajectoryStep",
+                field: "value_estimate",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Full episode trajectory containing ordered RL transition steps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EpisodeTrajectory {
+    /// Backward-compatible schema marker for serialization stability.
+    #[serde(default = "default_rl_schema_version")]
+    pub schema_version: u32,
+    /// Stable unique identifier for this trajectory.
+    pub trajectory_id: String,
+    /// Optional rollout correlation id.
+    pub rollout_id: Option<String>,
+    /// Optional episode identifier from task/dataset.
+    pub episode_id: Option<String>,
+    /// Ordered state-action transitions.
+    pub steps: Vec<TrajectoryStep>,
+    /// Discount factor used when computing returns/advantages.
+    pub discount_factor: f64,
+    /// Total return for convenience indexing.
+    pub total_return: f64,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Optional RL-system metadata.
+    #[serde(default)]
+    pub metadata: HashMap<String, Value>,
+}
+
+impl EpisodeTrajectory {
+    /// Creates a trajectory with schema defaults and precomputed total return.
+    pub fn new(
+        trajectory_id: impl Into<String>,
+        rollout_id: Option<String>,
+        episode_id: Option<String>,
+        steps: Vec<TrajectoryStep>,
+    ) -> Self {
+        let total_return = steps.iter().map(|step| step.reward).sum();
+        Self {
+            schema_version: RL_SCHEMA_VERSION_V1,
+            trajectory_id: trajectory_id.into(),
+            rollout_id,
+            episode_id,
+            steps,
+            discount_factor: 0.99,
+            total_return,
+            created_at: Utc::now(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Validates schema version and transition ordering constraints.
+    pub fn validate(&self) -> Result<(), RlSchemaError> {
+        ensure_supported_rl_schema("EpisodeTrajectory", self.schema_version)?;
+        if self.steps.is_empty() {
+            return Err(RlSchemaError::EmptyField {
+                type_name: "EpisodeTrajectory",
+                field: "steps",
+            });
+        }
+        if !(0.0..=1.0).contains(&self.discount_factor) {
+            return Err(RlSchemaError::OutOfRange {
+                type_name: "EpisodeTrajectory",
+                field: "discount_factor",
+                value: self.discount_factor,
+            });
+        }
+        if !self.total_return.is_finite() {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "EpisodeTrajectory",
+                field: "total_return",
+            });
+        }
+        for (position, step) in self.steps.iter().enumerate() {
+            let expected = position as u32;
+            if step.step_index != expected {
+                return Err(RlSchemaError::StepIndexMismatch {
+                    type_name: "EpisodeTrajectory",
+                    expected,
+                    found: step.step_index,
+                    position,
+                });
+            }
+            step.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// Batch tensor-aligned arrays produced for policy optimization updates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdvantageBatch {
+    /// Backward-compatible schema marker for serialization stability.
+    #[serde(default = "default_rl_schema_version")]
+    pub schema_version: u32,
+    /// Stable identifier for this advantage batch.
+    pub batch_id: String,
+    /// Source trajectory id used to compute this batch.
+    pub trajectory_id: String,
+    /// Advantage values aligned to trajectory steps.
+    pub advantages: Vec<f64>,
+    /// Return targets aligned to trajectory steps.
+    pub returns: Vec<f64>,
+    /// Optional value targets aligned to trajectory steps.
+    #[serde(default)]
+    pub value_targets: Vec<f64>,
+    /// Indicates whether advantages are normalized.
+    pub normalized: bool,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Optional RL-system metadata.
+    #[serde(default)]
+    pub metadata: HashMap<String, Value>,
+}
+
+impl AdvantageBatch {
+    /// Creates an advantage batch with schema defaults.
+    pub fn new(
+        batch_id: impl Into<String>,
+        trajectory_id: impl Into<String>,
+        advantages: Vec<f64>,
+        returns: Vec<f64>,
+    ) -> Self {
+        Self {
+            schema_version: RL_SCHEMA_VERSION_V1,
+            batch_id: batch_id.into(),
+            trajectory_id: trajectory_id.into(),
+            advantages,
+            returns,
+            value_targets: Vec::new(),
+            normalized: false,
+            created_at: Utc::now(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Validates schema version, vector alignment, and numeric safety.
+    pub fn validate(&self) -> Result<(), RlSchemaError> {
+        ensure_supported_rl_schema("AdvantageBatch", self.schema_version)?;
+        if self.advantages.is_empty() {
+            return Err(RlSchemaError::EmptyField {
+                type_name: "AdvantageBatch",
+                field: "advantages",
+            });
+        }
+        if self.advantages.len() != self.returns.len() {
+            return Err(RlSchemaError::LengthMismatch {
+                type_name: "AdvantageBatch",
+                left_field: "advantages",
+                left_len: self.advantages.len(),
+                right_field: "returns",
+                right_len: self.returns.len(),
+            });
+        }
+        if !self.value_targets.is_empty() && self.value_targets.len() != self.advantages.len() {
+            return Err(RlSchemaError::LengthMismatch {
+                type_name: "AdvantageBatch",
+                left_field: "value_targets",
+                left_len: self.value_targets.len(),
+                right_field: "advantages",
+                right_len: self.advantages.len(),
+            });
+        }
+        if self.advantages.iter().any(|value| !value.is_finite()) {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "AdvantageBatch",
+                field: "advantages",
+            });
+        }
+        if self.returns.iter().any(|value| !value.is_finite()) {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "AdvantageBatch",
+                field: "returns",
+            });
+        }
+        if self.value_targets.iter().any(|value| !value.is_finite()) {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "AdvantageBatch",
+                field: "value_targets",
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Versioned checkpoint descriptor for persisted RL policy artifacts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointRecord {
+    /// Backward-compatible schema marker for serialization stability.
+    #[serde(default = "default_rl_schema_version")]
+    pub schema_version: u32,
+    /// Stable checkpoint identifier.
+    pub checkpoint_id: String,
+    /// RL algorithm name (for example ppo).
+    pub algorithm: String,
+    /// Policy version string.
+    pub policy_version: String,
+    /// Global optimizer/environment step at checkpoint time.
+    pub global_step: u64,
+    /// Number of completed episodes.
+    pub episode_count: u64,
+    /// Optional moving-average reward metric.
+    pub mean_reward: Option<f64>,
+    /// Optional URI to persisted model artifact.
+    pub artifact_uri: Option<String>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Optional RL-system metadata.
+    #[serde(default)]
+    pub metadata: HashMap<String, Value>,
+}
+
+impl CheckpointRecord {
+    /// Creates a checkpoint record with schema defaults.
+    pub fn new(
+        checkpoint_id: impl Into<String>,
+        algorithm: impl Into<String>,
+        policy_version: impl Into<String>,
+        global_step: u64,
+    ) -> Self {
+        Self {
+            schema_version: RL_SCHEMA_VERSION_V1,
+            checkpoint_id: checkpoint_id.into(),
+            algorithm: algorithm.into(),
+            policy_version: policy_version.into(),
+            global_step,
+            episode_count: 0,
+            mean_reward: None,
+            artifact_uri: None,
+            created_at: Utc::now(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Validates schema version and required record fields.
+    pub fn validate(&self) -> Result<(), RlSchemaError> {
+        ensure_supported_rl_schema("CheckpointRecord", self.schema_version)?;
+        if self.algorithm.trim().is_empty() {
+            return Err(RlSchemaError::EmptyField {
+                type_name: "CheckpointRecord",
+                field: "algorithm",
+            });
+        }
+        if self.policy_version.trim().is_empty() {
+            return Err(RlSchemaError::EmptyField {
+                type_name: "CheckpointRecord",
+                field: "policy_version",
+            });
+        }
+        if self.mean_reward.is_some_and(|value| !value.is_finite()) {
+            return Err(RlSchemaError::NonFinite {
+                type_name: "CheckpointRecord",
+                field: "mean_reward",
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Filter used when listing rollouts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RolloutQuery {
@@ -344,7 +732,11 @@ pub struct WorkerState {
 
 #[cfg(test)]
 mod tests {
-    use super::{AttemptStatus, RolloutStatus};
+    use super::{
+        AdvantageBatch, AttemptStatus, CheckpointRecord, EpisodeTrajectory, RolloutStatus,
+        TrajectoryStep, RL_SCHEMA_VERSION_V1,
+    };
+    use serde_json::json;
 
     #[test]
     fn rollout_transitions_enforce_terminal_states() {
@@ -360,5 +752,75 @@ mod tests {
         assert!(AttemptStatus::Running.can_transition_to(AttemptStatus::Succeeded));
         assert!(AttemptStatus::Running.can_transition_to(AttemptStatus::Timeout));
         assert!(!AttemptStatus::Succeeded.can_transition_to(AttemptStatus::Running));
+    }
+
+    #[test]
+    fn episode_trajectory_validation_requires_ordered_steps() {
+        let mut trajectory = EpisodeTrajectory::new(
+            "trajectory-1",
+            Some("rollout-1".to_string()),
+            Some("episode-1".to_string()),
+            vec![
+                TrajectoryStep::new(0, json!({"s": 0}), json!({"a": 0}), 1.0, false),
+                TrajectoryStep::new(2, json!({"s": 1}), json!({"a": 1}), 1.0, true),
+            ],
+        );
+
+        assert!(trajectory.validate().is_err());
+
+        trajectory.steps[1].step_index = 1;
+        assert!(trajectory.validate().is_ok());
+    }
+
+    #[test]
+    fn advantage_batch_validation_requires_aligned_lengths() {
+        let mut batch = AdvantageBatch::new("batch-1", "trajectory-1", vec![1.0, 0.5], vec![1.2]);
+        assert!(batch.validate().is_err());
+
+        batch.returns = vec![1.2, 0.6];
+        batch.value_targets = vec![0.4, 0.2];
+        assert!(batch.validate().is_ok());
+    }
+
+    #[test]
+    fn checkpoint_record_validation_requires_required_fields() {
+        let mut checkpoint = CheckpointRecord::new("checkpoint-1", "", "policy-v1", 10);
+        assert!(checkpoint.validate().is_err());
+
+        checkpoint.algorithm = "ppo".to_string();
+        assert!(checkpoint.validate().is_ok());
+    }
+
+    #[test]
+    fn regression_schema_version_defaults_for_legacy_payloads() {
+        let payload = json!({
+            "trajectory_id": "trajectory-legacy",
+            "rollout_id": "rollout-1",
+            "episode_id": "episode-1",
+            "steps": [
+                {
+                    "step_index": 0,
+                    "observation": { "state": 1 },
+                    "action": { "tool": "step0" },
+                    "reward": 0.5,
+                    "done": false
+                },
+                {
+                    "step_index": 1,
+                    "observation": { "state": 2 },
+                    "action": { "tool": "step1" },
+                    "reward": 1.0,
+                    "done": true
+                }
+            ],
+            "discount_factor": 0.99,
+            "total_return": 1.5,
+            "created_at": "2026-02-15T00:00:00Z"
+        });
+
+        let decoded: EpisodeTrajectory =
+            serde_json::from_value(payload).expect("decode trajectory");
+        assert_eq!(decoded.schema_version, RL_SCHEMA_VERSION_V1);
+        assert!(decoded.validate().is_ok());
     }
 }
