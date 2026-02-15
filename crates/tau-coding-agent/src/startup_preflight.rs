@@ -46,6 +46,7 @@ use crate::rpc_protocol::{
     execute_rpc_dispatch_frame_command, execute_rpc_dispatch_ndjson_command,
     execute_rpc_serve_ndjson_command, execute_rpc_validate_frame_command,
 };
+use crate::training_runtime::execute_prompt_optimization_control_command;
 
 pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
     let callbacks = StartupPreflightCallbacks {
@@ -72,6 +73,7 @@ pub(crate) fn execute_startup_preflight(cli: &Cli) -> Result<bool> {
         execute_package_rollback_command,
         execute_package_conflicts_command,
         execute_package_activate_command,
+        execute_prompt_optimization_control_command,
         execute_qa_loop_preflight_command,
         execute_mcp_client_inspect_command,
         execute_mcp_server_command,

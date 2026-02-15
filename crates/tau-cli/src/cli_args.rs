@@ -1946,6 +1946,96 @@ pub struct Cli {
     pub prompt_optimization_proxy_timeout_ms: u64,
 
     #[arg(
+        long = "prompt-optimization-control-status",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_STATUS",
+        default_value_t = false,
+        help = "Show prompt-optimization lifecycle control status and exit"
+    )]
+    pub prompt_optimization_control_status: bool,
+
+    #[arg(
+        long = "prompt-optimization-control-pause",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_PAUSE",
+        default_value_t = false,
+        conflicts_with = "prompt_optimization_control_status",
+        conflicts_with = "prompt_optimization_control_resume",
+        conflicts_with = "prompt_optimization_control_cancel",
+        conflicts_with = "prompt_optimization_control_rollback",
+        help = "Request pause for prompt-optimization lifecycle control and exit"
+    )]
+    pub prompt_optimization_control_pause: bool,
+
+    #[arg(
+        long = "prompt-optimization-control-resume",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_RESUME",
+        default_value_t = false,
+        conflicts_with = "prompt_optimization_control_status",
+        conflicts_with = "prompt_optimization_control_pause",
+        conflicts_with = "prompt_optimization_control_cancel",
+        conflicts_with = "prompt_optimization_control_rollback",
+        help = "Request resume for prompt-optimization lifecycle control and exit"
+    )]
+    pub prompt_optimization_control_resume: bool,
+
+    #[arg(
+        long = "prompt-optimization-control-cancel",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_CANCEL",
+        default_value_t = false,
+        conflicts_with = "prompt_optimization_control_status",
+        conflicts_with = "prompt_optimization_control_pause",
+        conflicts_with = "prompt_optimization_control_resume",
+        conflicts_with = "prompt_optimization_control_rollback",
+        help = "Request cancel for prompt-optimization lifecycle control and exit"
+    )]
+    pub prompt_optimization_control_cancel: bool,
+
+    #[arg(
+        long = "prompt-optimization-control-rollback",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_ROLLBACK",
+        value_name = "path",
+        conflicts_with = "prompt_optimization_control_status",
+        conflicts_with = "prompt_optimization_control_pause",
+        conflicts_with = "prompt_optimization_control_resume",
+        conflicts_with = "prompt_optimization_control_cancel",
+        help = "Request rollback lifecycle action to a checkpoint payload path and exit"
+    )]
+    pub prompt_optimization_control_rollback: Option<PathBuf>,
+
+    #[arg(
+        long = "prompt-optimization-control-state-dir",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_STATE_DIR",
+        default_value = ".tau/training",
+        value_name = "path",
+        help = "State directory for prompt-optimization lifecycle control state and audit artifacts"
+    )]
+    pub prompt_optimization_control_state_dir: PathBuf,
+
+    #[arg(
+        long = "prompt-optimization-control-json",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_JSON",
+        default_value_t = false,
+        help = "Render prompt-optimization lifecycle control output as JSON"
+    )]
+    pub prompt_optimization_control_json: bool,
+
+    #[arg(
+        long = "prompt-optimization-control-principal",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_PRINCIPAL",
+        value_name = "principal",
+        help = "Principal override used for lifecycle control RBAC checks (defaults to local principal)"
+    )]
+    pub prompt_optimization_control_principal: Option<String>,
+
+    #[arg(
+        long = "prompt-optimization-control-rbac-policy",
+        env = "TAU_PROMPT_OPTIMIZATION_CONTROL_RBAC_POLICY",
+        default_value = ".tau/security/rbac.json",
+        value_name = "path",
+        help = "RBAC policy path for prompt-optimization lifecycle control authorization"
+    )]
+    pub prompt_optimization_control_rbac_policy: PathBuf,
+
+    #[arg(
         long = "mcp-server",
         env = "TAU_MCP_SERVER",
         default_value_t = false,

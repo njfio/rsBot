@@ -7,10 +7,16 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use std::{io::Write, path::PathBuf};
+use tau_access::{
+    enforce_rl_lifecycle_action_with_policy_path, resolve_local_principal, rl_lifecycle_action_key,
+    RlLifecycleAction,
+};
 use tau_agent_core::{AgentConfig, SafetyMode};
 use tau_ai::{LlmClient, ModelRef};
 use tau_cli::{Cli, CliPromptSanitizerMode};
 use tau_onboarding::startup_local_runtime::{build_local_runtime_agent, LocalRuntimeAgentSettings};
+use tau_trainer::checkpoint_store::load_policy_checkpoint;
 use tau_trainer::{Trainer, TrainerConfig};
 use tau_training_runner::TauAgentExecutor;
 use tau_training_store::{SqliteTrainingStore, TrainingStore};
@@ -20,6 +26,40 @@ use crate::tools::ToolPolicy;
 
 const TRAINING_STATUS_SCHEMA_VERSION: u32 = 1;
 const TRAINING_STATUS_FILE: &str = "status.json";
+const TRAINING_CONTROL_STATE_SCHEMA_VERSION: u32 = 1;
+const TRAINING_CONTROL_STATE_FILE: &str = "control-state.json";
+const TRAINING_CONTROL_AUDIT_FILE: &str = "control-audit.jsonl";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptOptimizationControlAction {
+    Status,
+    Pause,
+    Resume,
+    Cancel,
+    Rollback,
+}
+
+impl PromptOptimizationControlAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Cancel => "cancel",
+            Self::Rollback => "rollback",
+        }
+    }
+
+    fn as_rl_lifecycle_action(self) -> RlLifecycleAction {
+        match self {
+            Self::Status => RlLifecycleAction::Status,
+            Self::Pause => RlLifecycleAction::Pause,
+            Self::Resume => RlLifecycleAction::Resume,
+            Self::Cancel => RlLifecycleAction::Cancel,
+            Self::Rollback => RlLifecycleAction::Rollback,
+        }
+    }
+}
 
 fn resolve_safety_mode(mode: CliPromptSanitizerMode) -> SafetyMode {
     match mode {
@@ -72,6 +112,43 @@ struct TrainingStatusFile {
     succeeded: usize,
     failed: usize,
     cancelled: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct TrainingControlStateFile {
+    schema_version: u32,
+    updated_unix_ms: u64,
+    lifecycle_state: String,
+    last_action: String,
+    principal: String,
+    rollback_checkpoint: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TrainingControlAuditRecord {
+    schema_version: u32,
+    timestamp_unix_ms: u64,
+    principal: String,
+    action: String,
+    action_key: String,
+    lifecycle_state: String,
+    idempotent: bool,
+    rollback_checkpoint: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TrainingControlStatusReport {
+    schema_version: u32,
+    state_dir: String,
+    control_state_path: String,
+    control_audit_path: String,
+    action: String,
+    principal: String,
+    idempotent: Option<bool>,
+    rollback_checkpoint: Option<String>,
+    checkpoint_run_id: Option<String>,
+    control_state: Option<TrainingControlStateFile>,
+    training_status: Option<TrainingStatusFile>,
 }
 
 pub(crate) async fn run_prompt_optimization_mode_if_requested(
@@ -139,6 +216,384 @@ pub(crate) async fn run_prompt_optimization_mode_if_requested(
     persist_training_status_report(&report, &store_path)?;
     print_training_report(&report, cli.prompt_optimization_json)?;
     Ok(true)
+}
+
+pub(crate) fn execute_prompt_optimization_control_command(cli: &Cli) -> Result<()> {
+    if !prompt_optimization_control_mode_requested(cli) {
+        return Ok(());
+    }
+
+    validate_prompt_optimization_control_cli_request(cli)?;
+    let (action, rollback_checkpoint_path) = resolve_prompt_optimization_control_action(cli)?;
+    let principal = resolve_prompt_optimization_control_principal(cli)?;
+    enforce_rl_lifecycle_action_with_policy_path(
+        &principal,
+        action.as_rl_lifecycle_action(),
+        &cli.prompt_optimization_control_rbac_policy,
+    )
+    .with_context(|| {
+        format!(
+            "failed to authorize prompt-optimization lifecycle control action '{}'",
+            action.as_str()
+        )
+    })?;
+
+    let state_dir = cli.prompt_optimization_control_state_dir.as_path();
+    std::fs::create_dir_all(state_dir).with_context(|| {
+        format!(
+            "failed to create control state dir '{}'",
+            state_dir.display()
+        )
+    })?;
+    let control_state_path = state_dir.join(TRAINING_CONTROL_STATE_FILE);
+    let control_audit_path = state_dir.join(TRAINING_CONTROL_AUDIT_FILE);
+    let training_status_path = state_dir.join(TRAINING_STATUS_FILE);
+
+    let existing_control_state = load_training_control_state(&control_state_path)?;
+    let training_status = load_training_status_file(&training_status_path)?;
+
+    if action == PromptOptimizationControlAction::Status {
+        print_training_control_report(
+            &TrainingControlStatusReport {
+                schema_version: TRAINING_CONTROL_STATE_SCHEMA_VERSION,
+                state_dir: state_dir.display().to_string(),
+                control_state_path: control_state_path.display().to_string(),
+                control_audit_path: control_audit_path.display().to_string(),
+                action: action.as_str().to_string(),
+                principal,
+                idempotent: None,
+                rollback_checkpoint: None,
+                checkpoint_run_id: None,
+                control_state: existing_control_state,
+                training_status,
+            },
+            cli.prompt_optimization_control_json,
+        )?;
+        return Ok(());
+    }
+
+    let now_unix_ms = tau_core::current_unix_timestamp_ms();
+    let mut checkpoint_run_id = None;
+    let rollback_checkpoint = if action == PromptOptimizationControlAction::Rollback {
+        let checkpoint_path = rollback_checkpoint_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "--prompt-optimization-control-rollback requires a checkpoint payload path"
+            )
+        })?;
+        let checkpoint = load_policy_checkpoint(checkpoint_path).with_context(|| {
+            format!(
+                "failed to load rollback checkpoint '{}'",
+                checkpoint_path.display()
+            )
+        })?;
+        checkpoint_run_id = Some(checkpoint.run_id);
+        Some(checkpoint_path.display().to_string())
+    } else {
+        None
+    };
+
+    let mut next_state =
+        existing_control_state.unwrap_or_else(|| default_training_control_state(&principal));
+    let target_lifecycle_state = lifecycle_state_for_control_action(action);
+    let idempotent = next_state.lifecycle_state == target_lifecycle_state
+        && next_state.rollback_checkpoint == rollback_checkpoint;
+
+    next_state.schema_version = TRAINING_CONTROL_STATE_SCHEMA_VERSION;
+    next_state.updated_unix_ms = now_unix_ms;
+    next_state.lifecycle_state = target_lifecycle_state.to_string();
+    next_state.last_action = action.as_str().to_string();
+    next_state.principal = principal.clone();
+    next_state.rollback_checkpoint = rollback_checkpoint.clone();
+
+    persist_training_control_state(&control_state_path, &next_state)?;
+    append_training_control_audit(
+        &control_audit_path,
+        &TrainingControlAuditRecord {
+            schema_version: TRAINING_CONTROL_STATE_SCHEMA_VERSION,
+            timestamp_unix_ms: now_unix_ms,
+            principal: principal.clone(),
+            action: action.as_str().to_string(),
+            action_key: rl_lifecycle_action_key(action.as_rl_lifecycle_action()).to_string(),
+            lifecycle_state: target_lifecycle_state.to_string(),
+            idempotent,
+            rollback_checkpoint: rollback_checkpoint.clone(),
+        },
+    )?;
+
+    print_training_control_report(
+        &TrainingControlStatusReport {
+            schema_version: TRAINING_CONTROL_STATE_SCHEMA_VERSION,
+            state_dir: state_dir.display().to_string(),
+            control_state_path: control_state_path.display().to_string(),
+            control_audit_path: control_audit_path.display().to_string(),
+            action: action.as_str().to_string(),
+            principal,
+            idempotent: Some(idempotent),
+            rollback_checkpoint,
+            checkpoint_run_id,
+            control_state: Some(next_state),
+            training_status,
+        },
+        cli.prompt_optimization_control_json,
+    )?;
+
+    Ok(())
+}
+
+fn prompt_optimization_control_mode_requested(cli: &Cli) -> bool {
+    cli.prompt_optimization_control_status
+        || cli.prompt_optimization_control_pause
+        || cli.prompt_optimization_control_resume
+        || cli.prompt_optimization_control_cancel
+        || cli.prompt_optimization_control_rollback.is_some()
+}
+
+fn validate_prompt_optimization_control_cli_request(cli: &Cli) -> Result<()> {
+    let requested_action_count = usize::from(cli.prompt_optimization_control_status)
+        + usize::from(cli.prompt_optimization_control_pause)
+        + usize::from(cli.prompt_optimization_control_resume)
+        + usize::from(cli.prompt_optimization_control_cancel)
+        + usize::from(cli.prompt_optimization_control_rollback.is_some());
+
+    if requested_action_count != 1 {
+        bail!(
+            "prompt-optimization control mode requires exactly one action: --prompt-optimization-control-status, --prompt-optimization-control-pause, --prompt-optimization-control-resume, --prompt-optimization-control-cancel, or --prompt-optimization-control-rollback <path>"
+        );
+    }
+
+    let has_prompt_or_command_input = cli.prompt.is_some()
+        || cli.prompt_file.is_some()
+        || cli.prompt_template_file.is_some()
+        || cli.command_file.is_some();
+    if has_prompt_or_command_input {
+        bail!(
+            "prompt-optimization control commands cannot be combined with --prompt, --prompt-file, --prompt-template-file, or --command-file"
+        );
+    }
+
+    if cli.prompt_optimization_config.is_some() {
+        bail!(
+            "prompt-optimization control commands cannot be combined with --prompt-optimization-config"
+        );
+    }
+
+    if cli.prompt_optimization_proxy_server {
+        bail!(
+            "prompt-optimization control commands cannot be combined with --prompt-optimization-proxy-server"
+        );
+    }
+
+    let has_other_runtime_mode = cli.github_issues_bridge
+        || cli.slack_bridge
+        || cli.events_runner
+        || cli.multi_channel_contract_runner
+        || cli.multi_channel_live_runner
+        || cli.multi_channel_live_connectors_runner
+        || cli.multi_agent_contract_runner
+        || cli.browser_automation_contract_runner
+        || cli.memory_contract_runner
+        || cli.dashboard_contract_runner
+        || cli.gateway_contract_runner
+        || cli.deployment_contract_runner
+        || cli.custom_command_contract_runner
+        || cli.voice_contract_runner
+        || cli.gateway_openresponses_server;
+    if has_other_runtime_mode {
+        bail!(
+            "prompt-optimization control commands cannot be combined with active transport/runtime modes"
+        );
+    }
+
+    Ok(())
+}
+
+fn resolve_prompt_optimization_control_action(
+    cli: &Cli,
+) -> Result<(PromptOptimizationControlAction, Option<PathBuf>)> {
+    if cli.prompt_optimization_control_status {
+        return Ok((PromptOptimizationControlAction::Status, None));
+    }
+    if cli.prompt_optimization_control_pause {
+        return Ok((PromptOptimizationControlAction::Pause, None));
+    }
+    if cli.prompt_optimization_control_resume {
+        return Ok((PromptOptimizationControlAction::Resume, None));
+    }
+    if cli.prompt_optimization_control_cancel {
+        return Ok((PromptOptimizationControlAction::Cancel, None));
+    }
+    if let Some(path) = cli.prompt_optimization_control_rollback.as_ref() {
+        return Ok((
+            PromptOptimizationControlAction::Rollback,
+            Some(path.clone()),
+        ));
+    }
+    bail!(
+        "prompt-optimization control action not set; expected one of status|pause|resume|cancel|rollback"
+    )
+}
+
+fn resolve_prompt_optimization_control_principal(cli: &Cli) -> Result<String> {
+    if let Some(principal) = cli
+        .prompt_optimization_control_principal
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(principal.to_string());
+    }
+    Ok(resolve_local_principal())
+}
+
+fn lifecycle_state_for_control_action(action: PromptOptimizationControlAction) -> &'static str {
+    match action {
+        PromptOptimizationControlAction::Status => "unknown",
+        PromptOptimizationControlAction::Pause => "paused",
+        PromptOptimizationControlAction::Resume => "running",
+        PromptOptimizationControlAction::Cancel => "cancelled",
+        PromptOptimizationControlAction::Rollback => "rollback_requested",
+    }
+}
+
+fn default_training_control_state(principal: &str) -> TrainingControlStateFile {
+    TrainingControlStateFile {
+        schema_version: TRAINING_CONTROL_STATE_SCHEMA_VERSION,
+        updated_unix_ms: tau_core::current_unix_timestamp_ms(),
+        lifecycle_state: "running".to_string(),
+        last_action: "status".to_string(),
+        principal: principal.to_string(),
+        rollback_checkpoint: None,
+    }
+}
+
+fn load_training_status_file(path: &Path) -> Result<Option<TrainingStatusFile>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read training status file '{}'", path.display()))?;
+    let status = serde_json::from_str::<TrainingStatusFile>(&raw)
+        .with_context(|| format!("failed to parse training status file '{}'", path.display()))?;
+    if status.schema_version != TRAINING_STATUS_SCHEMA_VERSION {
+        bail!(
+            "unsupported training status schema version {} (expected {})",
+            status.schema_version,
+            TRAINING_STATUS_SCHEMA_VERSION
+        );
+    }
+    Ok(Some(status))
+}
+
+fn load_training_control_state(path: &Path) -> Result<Option<TrainingControlStateFile>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read training control state '{}'", path.display()))?;
+    let state = serde_json::from_str::<TrainingControlStateFile>(&raw).with_context(|| {
+        format!(
+            "failed to parse training control state '{}'",
+            path.display()
+        )
+    })?;
+    if state.schema_version != TRAINING_CONTROL_STATE_SCHEMA_VERSION {
+        bail!(
+            "unsupported training control schema version {} (expected {})",
+            state.schema_version,
+            TRAINING_CONTROL_STATE_SCHEMA_VERSION
+        );
+    }
+    Ok(Some(state))
+}
+
+fn persist_training_control_state(path: &Path, state: &TrainingControlStateFile) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create training control state parent '{}'",
+                parent.display()
+            )
+        })?;
+    }
+    let encoded =
+        serde_json::to_string_pretty(state).context("failed to encode training control state")?;
+    std::fs::write(path, encoded).with_context(|| {
+        format!(
+            "failed to write training control state '{}'",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn append_training_control_audit(path: &Path, record: &TrainingControlAuditRecord) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create training control audit parent '{}'",
+                parent.display()
+            )
+        })?;
+    }
+    let line =
+        serde_json::to_string(record).context("failed to encode training control audit record")?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open training control audit '{}'", path.display()))?;
+    writeln!(file, "{line}").with_context(|| {
+        format!(
+            "failed to append training control audit '{}'",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn print_training_control_report(
+    report: &TrainingControlStatusReport,
+    as_json: bool,
+) -> Result<()> {
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report)
+                .context("failed to encode training control report JSON")?
+        );
+        return Ok(());
+    }
+
+    let lifecycle_state = report
+        .control_state
+        .as_ref()
+        .map(|state| state.lifecycle_state.as_str())
+        .unwrap_or("unknown");
+    let training_state = report
+        .training_status
+        .as_ref()
+        .map(|status| status.run_state.as_str())
+        .unwrap_or("missing");
+    let idempotent = report
+        .idempotent
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    let rollback_checkpoint = report.rollback_checkpoint.as_deref().unwrap_or("none");
+    let checkpoint_run_id = report.checkpoint_run_id.as_deref().unwrap_or("none");
+    println!(
+        "prompt optimization lifecycle control: action={} principal={} lifecycle_state={} training_run_state={} idempotent={} rollback_checkpoint={} checkpoint_run_id={} state_dir={} state_file={} audit_file={}",
+        report.action,
+        report.principal,
+        lifecycle_state,
+        training_state,
+        idempotent,
+        rollback_checkpoint,
+        checkpoint_run_id,
+        report.state_dir,
+        report.control_state_path,
+        report.control_audit_path
+    );
+    Ok(())
 }
 
 fn persist_training_status_report(report: &TrainingRunReport, store_path: &Path) -> Result<()> {
@@ -371,7 +826,9 @@ fn print_training_report(report: &TrainingRunReport, as_json: bool) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::{
-        build_trainer_config, run_prompt_optimization_mode_if_requested, TrainingConfigFile,
+        build_trainer_config, execute_prompt_optimization_control_command,
+        run_prompt_optimization_mode_if_requested, TrainingConfigFile, TRAINING_CONTROL_AUDIT_FILE,
+        TRAINING_CONTROL_STATE_FILE,
     };
     use crate::model_catalog::ModelCatalog;
     use crate::tools::ToolPolicy;
@@ -383,6 +840,7 @@ mod tests {
     use std::time::Duration;
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, ModelRef, TauAiError};
     use tau_cli::Cli;
+    use tau_trainer::checkpoint_store::{save_policy_checkpoint, PolicyCheckpoint};
     use tau_training_store::{RolloutQuery, RolloutStatus, SqliteTrainingStore, TrainingStore};
     use tempfile::tempdir;
     use tokio::time::sleep;
@@ -422,6 +880,22 @@ mod tests {
                 finish_reason: Some("stop".to_string()),
                 usage: ChatUsage::default(),
             })
+        }
+    }
+
+    fn write_rbac_policy(path: &std::path::Path, payload: &serde_json::Value) {
+        std::fs::write(path, format!("{payload}\n")).expect("write rbac policy");
+    }
+
+    fn checkpoint_payload() -> PolicyCheckpoint {
+        PolicyCheckpoint {
+            checkpoint_version: 1,
+            run_id: "run-checkpoint-1".to_string(),
+            policy_state: json!({ "weights": [0.1, 0.2] }),
+            optimizer_state: json!({ "lr": 0.0003 }),
+            global_step: 12,
+            optimizer_step: 12,
+            saved_at_unix_seconds: 1_760_000_000,
         }
     }
 
@@ -573,5 +1047,191 @@ mod tests {
             serde_json::from_value(config).expect("parse legacy train/val config");
         assert_eq!(parsed.optimize.len(), 1);
         assert_eq!(parsed.validate.len(), 1);
+    }
+
+    #[test]
+    fn functional_prompt_optimization_control_pause_is_idempotent_and_audited() {
+        let temp = tempdir().expect("create tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_rbac_policy(
+            &policy_path,
+            &json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    { "principal": "local:rl-operator", "roles": ["rl-control"] }
+                ],
+                "roles": {
+                    "rl-control": {
+                        "allow": ["control:rl:*"]
+                    }
+                }
+            }),
+        );
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_control_pause = true;
+        cli.prompt_optimization_control_state_dir = temp.path().join("training");
+        cli.prompt_optimization_control_principal = Some("local:rl-operator".to_string());
+        cli.prompt_optimization_control_rbac_policy = policy_path;
+
+        execute_prompt_optimization_control_command(&cli).expect("first pause action");
+        execute_prompt_optimization_control_command(&cli).expect("second pause action");
+
+        let state_path = cli
+            .prompt_optimization_control_state_dir
+            .join(TRAINING_CONTROL_STATE_FILE);
+        let state_raw = std::fs::read_to_string(&state_path).expect("read control state");
+        let state_json: serde_json::Value =
+            serde_json::from_str(&state_raw).expect("parse control state");
+        assert_eq!(state_json["lifecycle_state"], "paused");
+        assert_eq!(state_json["last_action"], "pause");
+        assert_eq!(state_json["principal"], "local:rl-operator");
+
+        let audit_path = cli
+            .prompt_optimization_control_state_dir
+            .join(TRAINING_CONTROL_AUDIT_FILE);
+        let audit_lines = std::fs::read_to_string(&audit_path)
+            .expect("read control audit")
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(audit_lines.len(), 2);
+        let first: serde_json::Value =
+            serde_json::from_str(&audit_lines[0]).expect("parse first audit row");
+        let second: serde_json::Value =
+            serde_json::from_str(&audit_lines[1]).expect("parse second audit row");
+        assert_eq!(first["action"], "pause");
+        assert_eq!(first["idempotent"], false);
+        assert_eq!(second["action"], "pause");
+        assert_eq!(second["idempotent"], true);
+    }
+
+    #[test]
+    fn regression_prompt_optimization_control_blocks_unauthorized_action() {
+        let temp = tempdir().expect("create tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_rbac_policy(
+            &policy_path,
+            &json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    { "principal": "local:rl-viewer", "roles": ["rl-view"] }
+                ],
+                "roles": {
+                    "rl-view": {
+                        "allow": ["control:rl:status"]
+                    }
+                }
+            }),
+        );
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_control_pause = true;
+        cli.prompt_optimization_control_state_dir = temp.path().join("training");
+        cli.prompt_optimization_control_principal = Some("local:rl-viewer".to_string());
+        cli.prompt_optimization_control_rbac_policy = policy_path;
+
+        let error = execute_prompt_optimization_control_command(&cli)
+            .expect_err("unauthorized pause should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("unauthorized rl lifecycle action"));
+        assert!(message.contains("action=control:rl:pause"));
+    }
+
+    #[test]
+    fn functional_prompt_optimization_control_rollback_persists_checkpoint_target() {
+        let temp = tempdir().expect("create tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_rbac_policy(
+            &policy_path,
+            &json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    { "principal": "local:rl-operator", "roles": ["rl-control"] }
+                ],
+                "roles": {
+                    "rl-control": {
+                        "allow": ["control:rl:*"]
+                    }
+                }
+            }),
+        );
+        let checkpoint_path = temp.path().join("checkpoint.json");
+        save_policy_checkpoint(&checkpoint_path, &checkpoint_payload()).expect("save checkpoint");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_control_rollback = Some(checkpoint_path.clone());
+        cli.prompt_optimization_control_state_dir = temp.path().join("training");
+        cli.prompt_optimization_control_principal = Some("local:rl-operator".to_string());
+        cli.prompt_optimization_control_rbac_policy = policy_path;
+
+        execute_prompt_optimization_control_command(&cli).expect("rollback command");
+
+        let state_path = cli
+            .prompt_optimization_control_state_dir
+            .join(TRAINING_CONTROL_STATE_FILE);
+        let state_raw = std::fs::read_to_string(&state_path).expect("read control state");
+        let state_json: serde_json::Value =
+            serde_json::from_str(&state_raw).expect("parse control state");
+        assert_eq!(state_json["lifecycle_state"], "rollback_requested");
+        assert_eq!(
+            state_json["rollback_checkpoint"],
+            checkpoint_path.display().to_string()
+        );
+
+        let audit_path = cli
+            .prompt_optimization_control_state_dir
+            .join(TRAINING_CONTROL_AUDIT_FILE);
+        let audit_lines = std::fs::read_to_string(&audit_path)
+            .expect("read control audit")
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(audit_lines.len(), 1);
+        let row: serde_json::Value =
+            serde_json::from_str(&audit_lines[0]).expect("parse audit row");
+        assert_eq!(row["action"], "rollback");
+        assert_eq!(
+            row["rollback_checkpoint"],
+            checkpoint_path.display().to_string()
+        );
+    }
+
+    #[test]
+    fn regression_prompt_optimization_control_rollback_rejects_invalid_checkpoint_payload() {
+        let temp = tempdir().expect("create tempdir");
+        let policy_path = temp.path().join("rbac.json");
+        write_rbac_policy(
+            &policy_path,
+            &json!({
+                "schema_version": 1,
+                "team_mode": true,
+                "bindings": [
+                    { "principal": "local:rl-operator", "roles": ["rl-control"] }
+                ],
+                "roles": {
+                    "rl-control": {
+                        "allow": ["control:rl:*"]
+                    }
+                }
+            }),
+        );
+        let checkpoint_path = temp.path().join("invalid-checkpoint.json");
+        std::fs::write(&checkpoint_path, "{\"checkpoint_version\":1}\n")
+            .expect("write invalid checkpoint");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_control_rollback = Some(checkpoint_path.clone());
+        cli.prompt_optimization_control_state_dir = temp.path().join("training");
+        cli.prompt_optimization_control_principal = Some("local:rl-operator".to_string());
+        cli.prompt_optimization_control_rbac_policy = policy_path;
+
+        let error = execute_prompt_optimization_control_command(&cli)
+            .expect_err("invalid checkpoint should fail closed");
+        let message = format!("{error:#}");
+        assert!(message.contains("failed to load rollback checkpoint"));
     }
 }

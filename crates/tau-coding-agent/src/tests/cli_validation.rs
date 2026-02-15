@@ -2934,3 +2934,63 @@ fn regression_cli_prompt_optimization_proxy_bind_requires_proxy_server_flag() {
         .to_string()
         .contains("required arguments were not provided"));
 }
+
+#[test]
+fn unit_cli_prompt_optimization_control_flags_default_to_disabled() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert!(!cli.prompt_optimization_control_status);
+    assert!(!cli.prompt_optimization_control_pause);
+    assert!(!cli.prompt_optimization_control_resume);
+    assert!(!cli.prompt_optimization_control_cancel);
+    assert!(cli.prompt_optimization_control_rollback.is_none());
+    assert_eq!(
+        cli.prompt_optimization_control_state_dir,
+        PathBuf::from(".tau/training")
+    );
+    assert!(!cli.prompt_optimization_control_json);
+    assert!(cli.prompt_optimization_control_principal.is_none());
+    assert_eq!(
+        cli.prompt_optimization_control_rbac_policy,
+        PathBuf::from(".tau/security/rbac.json")
+    );
+}
+
+#[test]
+fn functional_cli_prompt_optimization_control_flags_accept_pause_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--prompt-optimization-control-pause",
+        "--prompt-optimization-control-state-dir",
+        "runtime-state/training",
+        "--prompt-optimization-control-json",
+        "--prompt-optimization-control-principal",
+        "local:rl-operator",
+        "--prompt-optimization-control-rbac-policy",
+        "runtime-state/security/rbac.json",
+    ]);
+    assert!(cli.prompt_optimization_control_pause);
+    assert_eq!(
+        cli.prompt_optimization_control_state_dir,
+        PathBuf::from("runtime-state/training")
+    );
+    assert!(cli.prompt_optimization_control_json);
+    assert_eq!(
+        cli.prompt_optimization_control_principal.as_deref(),
+        Some("local:rl-operator")
+    );
+    assert_eq!(
+        cli.prompt_optimization_control_rbac_policy,
+        PathBuf::from("runtime-state/security/rbac.json")
+    );
+}
+
+#[test]
+fn regression_cli_prompt_optimization_control_flags_reject_multiple_actions() {
+    let parse = try_parse_cli_with_stack([
+        "tau-rs",
+        "--prompt-optimization-control-pause",
+        "--prompt-optimization-control-resume",
+    ]);
+    let error = parse.expect_err("multiple control actions should fail");
+    assert!(error.to_string().contains("cannot be used with"));
+}

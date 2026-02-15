@@ -76,6 +76,7 @@ pub trait StartupPreflightActions {
     fn execute_package_rollback_command(&self, cli: &Cli) -> Result<()>;
     fn execute_package_conflicts_command(&self, cli: &Cli) -> Result<()>;
     fn execute_package_activate_command(&self, cli: &Cli) -> Result<()>;
+    fn execute_prompt_optimization_control_command(&self, cli: &Cli) -> Result<()>;
     fn execute_qa_loop_preflight_command(&self, cli: &Cli) -> Result<()>;
     fn execute_mcp_client_inspect_command(&self, cli: &Cli) -> Result<()>;
     fn execute_mcp_server_command(&self, cli: &Cli) -> Result<()>;
@@ -218,6 +219,16 @@ pub fn execute_startup_preflight(cli: &Cli, actions: &dyn StartupPreflightAction
         || cli.voice_status_inspect
     {
         actions.execute_channel_store_admin_command(cli)?;
+        return Ok(true);
+    }
+
+    if cli.prompt_optimization_control_status
+        || cli.prompt_optimization_control_pause
+        || cli.prompt_optimization_control_resume
+        || cli.prompt_optimization_control_cancel
+        || cli.prompt_optimization_control_rollback.is_some()
+    {
+        actions.execute_prompt_optimization_control_command(cli)?;
         return Ok(true);
     }
 

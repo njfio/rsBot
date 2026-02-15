@@ -1789,3 +1789,71 @@ fn functional_build_tool_policy_applies_http_controls() {
     assert_eq!(payload["http_allow_http"], true);
     assert_eq!(payload["http_allow_private_network"], true);
 }
+
+fn write_rl_control_policy(path: &Path, payload: &serde_json::Value) {
+    std::fs::write(path, format!("{payload}\n")).expect("write rl control policy");
+}
+
+#[test]
+fn integration_execute_startup_preflight_runs_prompt_optimization_control_status_command() {
+    let temp = tempdir().expect("tempdir");
+    let policy_path = temp.path().join("rbac.json");
+    write_rl_control_policy(
+        &policy_path,
+        &serde_json::json!({
+            "schema_version": 1,
+            "team_mode": true,
+            "bindings": [
+                { "principal": "local:rl-viewer", "roles": ["rl-view"] }
+            ],
+            "roles": {
+                "rl-view": {
+                    "allow": ["control:rl:status"]
+                }
+            }
+        }),
+    );
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.prompt_optimization_control_status = true;
+    cli.prompt_optimization_control_state_dir = temp.path().join("training");
+    cli.prompt_optimization_control_principal = Some("local:rl-viewer".to_string());
+    cli.prompt_optimization_control_rbac_policy = policy_path;
+
+    let handled = execute_startup_preflight(&cli).expect("status control preflight");
+    assert!(handled);
+}
+
+#[test]
+fn regression_execute_startup_preflight_prompt_optimization_control_fails_unauthorized_pause() {
+    let temp = tempdir().expect("tempdir");
+    let policy_path = temp.path().join("rbac.json");
+    write_rl_control_policy(
+        &policy_path,
+        &serde_json::json!({
+            "schema_version": 1,
+            "team_mode": true,
+            "bindings": [
+                { "principal": "local:rl-viewer", "roles": ["rl-view"] }
+            ],
+            "roles": {
+                "rl-view": {
+                    "allow": ["control:rl:status"]
+                }
+            }
+        }),
+    );
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.prompt_optimization_control_pause = true;
+    cli.prompt_optimization_control_state_dir = temp.path().join("training");
+    cli.prompt_optimization_control_principal = Some("local:rl-viewer".to_string());
+    cli.prompt_optimization_control_rbac_policy = policy_path;
+
+    let error = execute_startup_preflight(&cli).expect_err("unauthorized pause should fail");
+    let message = format!("{error:#}");
+    assert!(message.contains("unauthorized rl lifecycle action"));
+    assert!(message.contains("action=control:rl:pause"));
+}
