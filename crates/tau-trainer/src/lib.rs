@@ -144,6 +144,8 @@ impl Trainer {
                     heartbeat_interval: self.config.heartbeat_interval,
                     reassignment_interval: self.config.poll_interval,
                     worker_timeout: self.config.heartbeat_interval * 3,
+                    transient_error_backoff_initial: self.config.poll_interval,
+                    transient_error_backoff_max: self.config.poll_interval * 8,
                 },
             );
             let runner_shutdown = shutdown_rx.clone();

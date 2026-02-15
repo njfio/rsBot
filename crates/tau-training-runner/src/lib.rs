@@ -51,6 +51,8 @@ pub struct RunnerConfig {
     pub heartbeat_interval: Duration,
     pub reassignment_interval: Duration,
     pub worker_timeout: Duration,
+    pub transient_error_backoff_initial: Duration,
+    pub transient_error_backoff_max: Duration,
 }
 
 impl Default for RunnerConfig {
@@ -61,8 +63,37 @@ impl Default for RunnerConfig {
             heartbeat_interval: Duration::from_secs(1),
             reassignment_interval: Duration::from_millis(250),
             worker_timeout: Duration::from_secs(3),
+            transient_error_backoff_initial: Duration::from_millis(25),
+            transient_error_backoff_max: Duration::from_millis(500),
         }
     }
+}
+
+impl RunnerConfig {
+    /// Validates runner timing and retry-backoff configuration.
+    pub fn validate(&self) -> Result<()> {
+        if self.transient_error_backoff_initial.is_zero() {
+            anyhow::bail!("transient_error_backoff_initial must be greater than 0");
+        }
+        if self.transient_error_backoff_max.is_zero() {
+            anyhow::bail!("transient_error_backoff_max must be greater than 0");
+        }
+        if self.transient_error_backoff_max < self.transient_error_backoff_initial {
+            anyhow::bail!("transient_error_backoff_max must be >= transient_error_backoff_initial");
+        }
+        Ok(())
+    }
+}
+
+fn compute_poll_retry_delay(failure_count: u32, initial: Duration, max: Duration) -> Duration {
+    let mut delay = initial;
+    for _ in 1..failure_count {
+        delay = delay.saturating_mul(2);
+        if delay >= max {
+            return max;
+        }
+    }
+    std::cmp::min(delay, max)
 }
 
 /// Configures reward shaping from safety-policy events.
@@ -185,6 +216,9 @@ impl TrainingRunner {
         executor: Arc<dyn RolloutExecutor>,
         config: RunnerConfig,
     ) -> Self {
+        config
+            .validate()
+            .expect("invalid runner config: retry-backoff settings");
         Self {
             store,
             executor,
@@ -195,6 +229,7 @@ impl TrainingRunner {
     /// Runs the worker loop until `shutdown` flips to true.
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         self.store.register_worker(&self.config.worker_id).await?;
+        let mut poll_failure_count = 0u32;
 
         let mut heartbeat = tokio::time::interval(self.config.heartbeat_interval);
         let mut poll = tokio::time::interval(self.config.poll_interval);
@@ -218,7 +253,21 @@ impl TrainingRunner {
                         .await?;
                 }
                 _ = poll.tick() => {
-                    self.process_once().await?;
+                    match self.process_once().await {
+                        Ok(()) => {
+                            poll_failure_count = 0;
+                        }
+                        Err(error) => {
+                            poll_failure_count = poll_failure_count.saturating_add(1);
+                            let delay = compute_poll_retry_delay(
+                                poll_failure_count,
+                                self.config.transient_error_backoff_initial,
+                                self.config.transient_error_backoff_max,
+                            );
+                            let _ = error;
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
                 }
                 _ = reassignment.tick() => {
                     self.store
@@ -590,11 +639,16 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tau_agent_core::{Agent, AgentConfig, AgentEvent, SafetyMode, SafetyStage};
     use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
-    use tau_training_store::{InMemoryTrainingStore, RolloutQuery, TrainingStore};
+    use tau_training_store::{
+        Attempt, DequeuedRollout, InMemoryTrainingStore, ResourcesUpdate, RolloutQuery,
+        StoreResult, TrainingSpan, TrainingStore, TrainingStoreError, WorkerState,
+    };
     use tau_training_types::{AttemptStatus, Reward, Rollout, RolloutStatus};
     use tokio::sync::watch;
 
@@ -691,6 +745,156 @@ mod tests {
         }
     }
 
+    struct FlakyDequeueStore {
+        inner: InMemoryTrainingStore,
+        failures_remaining: AtomicUsize,
+    }
+
+    impl FlakyDequeueStore {
+        fn new(failures: usize) -> Self {
+            Self {
+                inner: InMemoryTrainingStore::new(),
+                failures_remaining: AtomicUsize::new(failures),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TrainingStore for FlakyDequeueStore {
+        async fn enqueue_rollout(&self, rollout: Rollout) -> StoreResult<()> {
+            self.inner.enqueue_rollout(rollout).await
+        }
+
+        async fn dequeue_rollout(&self, worker_id: &str) -> StoreResult<Option<DequeuedRollout>> {
+            let mut current = self.failures_remaining.load(Ordering::SeqCst);
+            while current > 0 {
+                match self.failures_remaining.compare_exchange(
+                    current,
+                    current - 1,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => {
+                        return Err(TrainingStoreError::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "simulated transient dequeue failure",
+                        )));
+                    }
+                    Err(observed) => current = observed,
+                }
+            }
+
+            self.inner.dequeue_rollout(worker_id).await
+        }
+
+        async fn update_rollout_status(
+            &self,
+            rollout_id: &str,
+            status: RolloutStatus,
+        ) -> StoreResult<()> {
+            self.inner.update_rollout_status(rollout_id, status).await
+        }
+
+        async fn cancel_rollout(&self, rollout_id: &str) -> StoreResult<()> {
+            self.inner.cancel_rollout(rollout_id).await
+        }
+
+        async fn add_span(&self, span: TrainingSpan) -> StoreResult<()> {
+            self.inner.add_span(span).await
+        }
+
+        async fn query_spans(
+            &self,
+            rollout_id: &str,
+            attempt_id: Option<&str>,
+        ) -> StoreResult<Vec<TrainingSpan>> {
+            self.inner.query_spans(rollout_id, attempt_id).await
+        }
+
+        async fn get_next_span_sequence_id(
+            &self,
+            rollout_id: &str,
+            attempt_id: &str,
+        ) -> StoreResult<u64> {
+            self.inner
+                .get_next_span_sequence_id(rollout_id, attempt_id)
+                .await
+        }
+
+        async fn update_resources(
+            &self,
+            resources: HashMap<String, serde_json::Value>,
+        ) -> StoreResult<ResourcesUpdate> {
+            self.inner.update_resources(resources).await
+        }
+
+        async fn get_latest_resources(&self) -> StoreResult<Option<ResourcesUpdate>> {
+            self.inner.get_latest_resources().await
+        }
+
+        async fn get_resources_by_id(
+            &self,
+            resources_id: &str,
+        ) -> StoreResult<Option<ResourcesUpdate>> {
+            self.inner.get_resources_by_id(resources_id).await
+        }
+
+        async fn query_rollouts(&self, query: RolloutQuery) -> StoreResult<Vec<Rollout>> {
+            self.inner.query_rollouts(query).await
+        }
+
+        async fn wait_for_rollouts(
+            &self,
+            statuses: &[RolloutStatus],
+            timeout: Duration,
+        ) -> StoreResult<Vec<Rollout>> {
+            self.inner.wait_for_rollouts(statuses, timeout).await
+        }
+
+        async fn register_worker(&self, worker_id: &str) -> StoreResult<WorkerState> {
+            self.inner.register_worker(worker_id).await
+        }
+
+        async fn update_worker_heartbeat(
+            &self,
+            worker_id: &str,
+            active_rollout_id: Option<String>,
+            active_attempt_id: Option<String>,
+        ) -> StoreResult<()> {
+            self.inner
+                .update_worker_heartbeat(worker_id, active_rollout_id, active_attempt_id)
+                .await
+        }
+
+        async fn reassign_timed_out_rollouts(
+            &self,
+            heartbeat_timeout: Duration,
+        ) -> StoreResult<Vec<String>> {
+            self.inner
+                .reassign_timed_out_rollouts(heartbeat_timeout)
+                .await
+        }
+
+        async fn query_workers(&self) -> StoreResult<Vec<WorkerState>> {
+            self.inner.query_workers().await
+        }
+
+        async fn update_attempt_status(
+            &self,
+            attempt_id: &str,
+            status: AttemptStatus,
+            error_message: Option<String>,
+        ) -> StoreResult<()> {
+            self.inner
+                .update_attempt_status(attempt_id, status, error_message)
+                .await
+        }
+
+        async fn get_attempt(&self, attempt_id: &str) -> StoreResult<Option<Attempt>> {
+            self.inner.get_attempt(attempt_id).await
+        }
+    }
+
     #[tokio::test]
     async fn runner_processes_rollout_and_persists_spans() {
         let store: Arc<dyn TrainingStore> = Arc::new(InMemoryTrainingStore::new());
@@ -712,6 +916,8 @@ mod tests {
                 heartbeat_interval: Duration::from_millis(50),
                 reassignment_interval: Duration::from_millis(20),
                 worker_timeout: Duration::from_millis(120),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
             },
         );
 
@@ -729,6 +935,109 @@ mod tests {
         assert!(spans
             .iter()
             .any(|span| span.name == "runner.execute_rollout"));
+    }
+
+    #[test]
+    fn spec_c02_compute_poll_retry_delay_is_bounded_exponential() {
+        let initial = Duration::from_millis(10);
+        let max = Duration::from_millis(40);
+
+        assert_eq!(
+            super::compute_poll_retry_delay(1, initial, max),
+            Duration::from_millis(10)
+        );
+        assert_eq!(
+            super::compute_poll_retry_delay(2, initial, max),
+            Duration::from_millis(20)
+        );
+        assert_eq!(
+            super::compute_poll_retry_delay(3, initial, max),
+            Duration::from_millis(40)
+        );
+        assert_eq!(
+            super::compute_poll_retry_delay(6, initial, max),
+            Duration::from_millis(40)
+        );
+    }
+
+    #[test]
+    fn spec_c03_poll_retry_delay_resets_after_success() {
+        let initial = Duration::from_millis(8);
+        let max = Duration::from_millis(64);
+        let mut failures = 0u32;
+
+        failures += 1;
+        let first = super::compute_poll_retry_delay(failures, initial, max);
+        failures += 1;
+        let second = super::compute_poll_retry_delay(failures, initial, max);
+        assert!(second > first);
+
+        failures = 0;
+        failures += 1;
+        let after_reset = super::compute_poll_retry_delay(failures, initial, max);
+        assert_eq!(after_reset, initial);
+    }
+
+    #[test]
+    fn spec_c04_runner_config_validation_rejects_invalid_retry_backoff() {
+        let mut config = RunnerConfig::default();
+        config.transient_error_backoff_initial = Duration::from_millis(0);
+        let initial_error = config.validate().expect_err("zero initial should fail");
+        assert!(initial_error
+            .to_string()
+            .contains("transient_error_backoff_initial"));
+
+        let mut config = RunnerConfig::default();
+        config.transient_error_backoff_max = Duration::from_millis(0);
+        let max_error = config.validate().expect_err("zero max should fail");
+        assert!(max_error
+            .to_string()
+            .contains("transient_error_backoff_max"));
+
+        let mut config = RunnerConfig::default();
+        config.transient_error_backoff_initial = Duration::from_millis(50);
+        config.transient_error_backoff_max = Duration::from_millis(10);
+        let order_error = config.validate().expect_err("max<initial should fail");
+        assert!(order_error
+            .to_string()
+            .contains("transient_error_backoff_max must be >= transient_error_backoff_initial"));
+    }
+
+    #[tokio::test]
+    async fn spec_c01_runner_recovers_from_transient_dequeue_failures() {
+        let store: Arc<dyn TrainingStore> = Arc::new(FlakyDequeueStore::new(1));
+        store
+            .enqueue_rollout(Rollout::new(
+                "r-flaky-1",
+                json!({ "prompt": "recover" }),
+                Some(tau_training_types::RolloutMode::Train),
+            ))
+            .await
+            .expect("enqueue");
+
+        let runner = TrainingRunner::new(
+            store.clone(),
+            Arc::new(StaticExecutor),
+            RunnerConfig {
+                worker_id: "worker-flaky".to_string(),
+                poll_interval: Duration::from_millis(10),
+                heartbeat_interval: Duration::from_millis(25),
+                reassignment_interval: Duration::from_millis(20),
+                worker_timeout: Duration::from_millis(120),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
+            },
+        );
+
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(async move { runner.run(rx).await });
+
+        wait_for_rollout_status(store.clone(), "r-flaky-1", RolloutStatus::Succeeded)
+            .await
+            .expect("status wait");
+
+        tx.send(true).expect("shutdown");
+        handle.await.expect("join").expect("runner");
     }
 
     #[tokio::test]
@@ -752,6 +1061,8 @@ mod tests {
                 heartbeat_interval: Duration::from_millis(200),
                 reassignment_interval: Duration::from_millis(20),
                 worker_timeout: Duration::from_millis(50),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
             },
         );
         let fast_runner = TrainingRunner::new(
@@ -763,6 +1074,8 @@ mod tests {
                 heartbeat_interval: Duration::from_millis(20),
                 reassignment_interval: Duration::from_millis(10),
                 worker_timeout: Duration::from_millis(50),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
             },
         );
 
@@ -831,6 +1144,8 @@ mod tests {
                 heartbeat_interval: Duration::from_millis(20),
                 reassignment_interval: Duration::from_millis(20),
                 worker_timeout: Duration::from_millis(80),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
             },
         );
         let fast_runner = TrainingRunner::new(
@@ -842,6 +1157,8 @@ mod tests {
                 heartbeat_interval: Duration::from_millis(20),
                 reassignment_interval: Duration::from_millis(10),
                 worker_timeout: Duration::from_millis(80),
+                transient_error_backoff_initial: Duration::from_millis(5),
+                transient_error_backoff_max: Duration::from_millis(20),
             },
         );
 
@@ -1174,6 +1491,8 @@ mod tests {
                     heartbeat_interval: Duration::from_millis(25),
                     reassignment_interval: Duration::from_millis(25),
                     worker_timeout: Duration::from_millis(150),
+                    transient_error_backoff_initial: Duration::from_millis(5),
+                    transient_error_backoff_max: Duration::from_millis(20),
                 },
             );
             let (tx, rx) = watch::channel(false);
