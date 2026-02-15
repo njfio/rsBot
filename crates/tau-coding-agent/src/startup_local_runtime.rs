@@ -7,6 +7,7 @@ use tau_agent_core::Agent;
 use tau_agent_core::{AgentConfig, AgentEvent, SafetyMode};
 use tau_ai::{LlmClient, ModelRef};
 use tau_cli::{Cli, CliPromptSanitizerMode};
+use tau_runtime::start_runtime_heartbeat_scheduler;
 use tau_session::initialize_session;
 
 use crate::commands::execute_command_file;
@@ -39,6 +40,7 @@ use tau_onboarding::startup_local_runtime::{
     RuntimeExtensionPipelineConfig as OnboardingRuntimeExtensionPipelineConfig,
     SessionBootstrapOutcome,
 };
+use tau_onboarding::startup_transport_modes::build_runtime_heartbeat_scheduler_config as build_onboarding_runtime_heartbeat_scheduler_config;
 
 pub(crate) struct LocalRuntimeConfig<'a> {
     pub(crate) cli: &'a Cli,
@@ -266,68 +268,78 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         command_context,
     };
 
-    if execute_onboarding_local_runtime_entry_mode_with_dispatch(
-        &entry_mode,
-        |entry_dispatch| async {
-            match entry_dispatch {
-                LocalRuntimeEntryDispatch::PlanFirstPrompt(prompt) => {
-                    run_plan_first_prompt_with_runtime_hooks(
-                        &mut agent,
-                        &mut session_runtime,
-                        PlanFirstPromptRuntimeHooksConfig {
-                            prompt: &prompt,
-                            turn_timeout_ms: interactive_defaults.turn_timeout_ms,
+    let mut runtime_heartbeat_handle = start_runtime_heartbeat_scheduler(
+        build_onboarding_runtime_heartbeat_scheduler_config(cli),
+    )?;
+    let run_result = async {
+        if execute_onboarding_local_runtime_entry_mode_with_dispatch(
+            &entry_mode,
+            |entry_dispatch| async {
+                match entry_dispatch {
+                    LocalRuntimeEntryDispatch::PlanFirstPrompt(prompt) => {
+                        run_plan_first_prompt_with_runtime_hooks(
+                            &mut agent,
+                            &mut session_runtime,
+                            PlanFirstPromptRuntimeHooksConfig {
+                                prompt: &prompt,
+                                turn_timeout_ms: interactive_defaults.turn_timeout_ms,
+                                render_options,
+                                orchestrator_max_plan_steps: interactive_defaults
+                                    .orchestrator_max_plan_steps,
+                                orchestrator_max_delegated_steps: interactive_defaults
+                                    .orchestrator_max_delegated_steps,
+                                orchestrator_max_executor_response_chars: interactive_defaults
+                                    .orchestrator_max_executor_response_chars,
+                                orchestrator_max_delegated_step_response_chars:
+                                    interactive_defaults
+                                        .orchestrator_max_delegated_step_response_chars,
+                                orchestrator_max_delegated_total_response_chars:
+                                    interactive_defaults
+                                        .orchestrator_max_delegated_total_response_chars,
+                                orchestrator_delegate_steps: interactive_defaults
+                                    .orchestrator_delegate_steps,
+                                orchestrator_route_table: &orchestrator_route_table,
+                                orchestrator_route_trace_log,
+                                tool_policy_json,
+                                extension_runtime_hooks: &extension_runtime_hooks,
+                            },
+                        )
+                        .await?;
+                    }
+                    LocalRuntimeEntryDispatch::Prompt(prompt) => {
+                        run_prompt(
+                            &mut agent,
+                            &mut session_runtime,
+                            &prompt,
+                            interactive_defaults.turn_timeout_ms,
                             render_options,
-                            orchestrator_max_plan_steps: interactive_defaults
-                                .orchestrator_max_plan_steps,
-                            orchestrator_max_delegated_steps: interactive_defaults
-                                .orchestrator_max_delegated_steps,
-                            orchestrator_max_executor_response_chars: interactive_defaults
-                                .orchestrator_max_executor_response_chars,
-                            orchestrator_max_delegated_step_response_chars: interactive_defaults
-                                .orchestrator_max_delegated_step_response_chars,
-                            orchestrator_max_delegated_total_response_chars: interactive_defaults
-                                .orchestrator_max_delegated_total_response_chars,
-                            orchestrator_delegate_steps: interactive_defaults
-                                .orchestrator_delegate_steps,
-                            orchestrator_route_table: &orchestrator_route_table,
-                            orchestrator_route_trace_log,
-                            tool_policy_json,
-                            extension_runtime_hooks: &extension_runtime_hooks,
-                        },
-                    )
-                    .await?;
+                            &extension_runtime_hooks,
+                        )
+                        .await?;
+                    }
+                    LocalRuntimeEntryDispatch::CommandFile(command_file_path) => {
+                        execute_command_file(
+                            &command_file_path,
+                            cli.command_file_error_mode,
+                            &mut agent,
+                            &mut session_runtime,
+                            command_context,
+                        )?;
+                    }
                 }
-                LocalRuntimeEntryDispatch::Prompt(prompt) => {
-                    run_prompt(
-                        &mut agent,
-                        &mut session_runtime,
-                        &prompt,
-                        interactive_defaults.turn_timeout_ms,
-                        render_options,
-                        &extension_runtime_hooks,
-                    )
-                    .await?;
-                }
-                LocalRuntimeEntryDispatch::CommandFile(command_file_path) => {
-                    execute_command_file(
-                        &command_file_path,
-                        cli.command_file_error_mode,
-                        &mut agent,
-                        &mut session_runtime,
-                        command_context,
-                    )?;
-                }
-            }
-            Ok(())
-        },
-    )
-    .await?
-    {
-        return Ok(());
-    }
+                Ok(())
+            },
+        )
+        .await?
+        {
+            return Ok(());
+        }
 
-    run_interactive(agent, session_runtime, interactive_config).await
+        run_interactive(agent, session_runtime, interactive_config).await
+    }
+    .await;
+    runtime_heartbeat_handle.shutdown().await;
+    run_result
 }
 
 #[cfg(test)]

@@ -180,6 +180,47 @@ curl -sS http://127.0.0.1:8787/gateway/status \
 - `rate_limit_window_seconds`
 - `rate_limit_max_requests`
 
+`/gateway/status` also includes a `runtime_heartbeat` block with:
+
+- `run_state` (`running|stopped|disabled|unknown`)
+- `reason_code`
+- `interval_ms`
+- `tick_count`
+- `queue_depth`
+- `pending_events`
+- `pending_jobs`
+- `temp_files_cleaned`
+- `reason_codes[]`
+- `diagnostics[]`
+
+## Runtime heartbeat scheduler
+
+Enable/disable and tune scheduler cadence:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-openresponses-server \
+  --gateway-openresponses-auth-mode token \
+  --gateway-openresponses-auth-token local-dev-token \
+  --runtime-heartbeat-enabled=true \
+  --runtime-heartbeat-interval-ms 5000
+```
+
+By default, gateway mode writes heartbeat diagnostics to:
+
+- `.tau/gateway/runtime-heartbeat/state.json`
+- `.tau/gateway/runtime-heartbeat/runtime-heartbeat-events.jsonl`
+
+Override state snapshot path explicitly:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-openresponses-server \
+  --gateway-openresponses-auth-mode token \
+  --gateway-openresponses-auth-token local-dev-token \
+  --runtime-heartbeat-state-path .tau/runtime-heartbeat/state.json
+```
+
 ## Health and observability signals
 
 Primary transport health signal:

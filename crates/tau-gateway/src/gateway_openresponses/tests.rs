@@ -76,6 +76,12 @@ fn test_state_with_auth(
             rate_limit_window_seconds,
             rate_limit_max_requests,
             max_input_chars,
+            runtime_heartbeat: RuntimeHeartbeatSchedulerConfig {
+                enabled: false,
+                interval: std::time::Duration::from_secs(5),
+                state_path: root.join(".tau/runtime-heartbeat/state.json"),
+                ..RuntimeHeartbeatSchedulerConfig::default()
+            },
         },
     ))
 }
@@ -883,6 +889,14 @@ async fn integration_gateway_status_endpoint_returns_service_snapshot() {
         Value::Number(serde_json::Number::from(0))
     );
     assert_eq!(payload["training"]["status_present"], Value::Bool(false));
+    assert_eq!(
+        payload["runtime_heartbeat"]["reason_code"],
+        Value::String("heartbeat_state_missing".to_string())
+    );
+    assert_eq!(
+        payload["runtime_heartbeat"]["run_state"],
+        Value::String("unknown".to_string())
+    );
 
     handle.abort();
 }
@@ -942,6 +956,71 @@ async fn integration_gateway_status_endpoint_returns_expanded_multi_channel_heal
         Value::Number(serde_json::Number::from(2))
     );
     assert_eq!(payload["training"]["status_present"], Value::Bool(false));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_gateway_status_endpoint_includes_runtime_heartbeat_snapshot_when_present() {
+    let temp = tempdir().expect("tempdir");
+    let heartbeat_state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+    std::fs::create_dir_all(
+        heartbeat_state_path
+            .parent()
+            .expect("heartbeat state parent"),
+    )
+    .expect("create heartbeat state parent");
+    std::fs::write(
+        &heartbeat_state_path,
+        r#"{
+  "schema_version": 1,
+  "updated_unix_ms": 7,
+  "enabled": true,
+  "run_state": "running",
+  "reason_code": "heartbeat_cycle_ok",
+  "interval_ms": 5000,
+  "tick_count": 3,
+  "last_tick_unix_ms": 7,
+  "queue_depth": 0,
+  "pending_events": 1,
+  "pending_jobs": 0,
+  "temp_files_cleaned": 0,
+  "reason_codes": ["heartbeat_cycle_clean"],
+  "diagnostics": ["events_checked: count=1"],
+  "state_path": ".tau/runtime-heartbeat/state.json"
+}
+"#,
+    )
+    .expect("write heartbeat state");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let payload = Client::new()
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("send status request")
+        .json::<Value>()
+        .await
+        .expect("parse status response");
+
+    assert_eq!(
+        payload["runtime_heartbeat"]["run_state"],
+        Value::String("running".to_string())
+    );
+    assert_eq!(
+        payload["runtime_heartbeat"]["reason_code"],
+        Value::String("heartbeat_cycle_ok".to_string())
+    );
+    assert_eq!(
+        payload["runtime_heartbeat"]["tick_count"],
+        Value::Number(3_u64.into())
+    );
+    assert_eq!(
+        payload["runtime_heartbeat"]["pending_events"],
+        Value::Number(1_u64.into())
+    );
 
     handle.abort();
 }
@@ -1347,6 +1426,12 @@ async fn regression_gateway_password_session_token_expires_and_fails_closed() {
             rate_limit_window_seconds: 60,
             rate_limit_max_requests: 120,
             max_input_chars: 10_000,
+            runtime_heartbeat: RuntimeHeartbeatSchedulerConfig {
+                enabled: false,
+                interval: std::time::Duration::from_secs(5),
+                state_path: temp.path().join(".tau/runtime-heartbeat/state.json"),
+                ..RuntimeHeartbeatSchedulerConfig::default()
+            },
         },
     ));
     let (addr, handle) = spawn_test_server(state).await.expect("spawn server");

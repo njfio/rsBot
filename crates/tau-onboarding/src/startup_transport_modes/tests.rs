@@ -8,7 +8,8 @@ use super::{
     build_multi_channel_live_connectors_config, build_multi_channel_live_runner_config,
     build_multi_channel_media_config, build_multi_channel_outbound_config,
     build_multi_channel_runtime_dependencies, build_multi_channel_telemetry_config,
-    build_slack_bridge_cli_config, build_transport_doctor_config, build_transport_runtime_defaults,
+    build_runtime_heartbeat_scheduler_config, build_slack_bridge_cli_config,
+    build_transport_doctor_config, build_transport_runtime_defaults,
     build_voice_contract_runner_config, build_voice_live_runner_config,
     execute_transport_runtime_mode, map_gateway_openresponses_auth_mode,
     resolve_bridge_transport_mode, resolve_contract_transport_mode,
@@ -920,6 +921,46 @@ fn functional_build_github_issues_bridge_cli_config_trims_required_labels() {
 }
 
 #[test]
+fn unit_build_runtime_heartbeat_scheduler_config_uses_expected_defaults() {
+    let cli = parse_cli_with_stack();
+    let config = build_runtime_heartbeat_scheduler_config(&cli);
+    assert!(config.enabled);
+    assert_eq!(config.interval, std::time::Duration::from_millis(5_000));
+    assert_eq!(
+        config.state_path,
+        PathBuf::from(".tau/runtime-heartbeat/state.json")
+    );
+    assert_eq!(config.events_dir, Some(PathBuf::from(".tau/events")));
+    assert_eq!(
+        config.jobs_dir,
+        Some(PathBuf::from(".tau/custom-command/jobs"))
+    );
+}
+
+#[test]
+fn functional_build_runtime_heartbeat_scheduler_config_accepts_overrides() {
+    let mut cli = parse_cli_with_stack();
+    cli.runtime_heartbeat_enabled = false;
+    cli.runtime_heartbeat_interval_ms = 900;
+    cli.runtime_heartbeat_state_path = PathBuf::from(".tau/ops/heartbeat-state.json");
+    cli.events_dir = PathBuf::from(".tau/events-alt");
+    cli.custom_command_state_dir = PathBuf::from(".tau/custom-commands-alt");
+
+    let config = build_runtime_heartbeat_scheduler_config(&cli);
+    assert!(!config.enabled);
+    assert_eq!(config.interval, std::time::Duration::from_millis(900));
+    assert_eq!(
+        config.state_path,
+        PathBuf::from(".tau/ops/heartbeat-state.json")
+    );
+    assert_eq!(config.events_dir, Some(PathBuf::from(".tau/events-alt")));
+    assert_eq!(
+        config.jobs_dir,
+        Some(PathBuf::from(".tau/custom-commands-alt/jobs"))
+    );
+}
+
+#[test]
 fn integration_build_gateway_openresponses_server_config_preserves_runtime_fields() {
     let mut cli = parse_cli_with_stack();
     cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
@@ -932,6 +973,9 @@ fn integration_build_gateway_openresponses_server_config_preserves_runtime_field
     cli.gateway_openresponses_rate_limit_window_seconds = 120;
     cli.gateway_openresponses_rate_limit_max_requests = 40;
     cli.gateway_openresponses_max_input_chars = 24_000;
+    cli.runtime_heartbeat_enabled = false;
+    cli.runtime_heartbeat_interval_ms = 2_500;
+    cli.runtime_heartbeat_state_path = PathBuf::from(".tau/gateway/custom-heartbeat/state.json");
 
     let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
     let client: Arc<dyn LlmClient> = Arc::new(NoopClient);
@@ -959,6 +1003,40 @@ fn integration_build_gateway_openresponses_server_config_preserves_runtime_field
     assert_eq!(config.rate_limit_window_seconds, 120);
     assert_eq!(config.rate_limit_max_requests, 40);
     assert_eq!(config.max_input_chars, 24_000);
+    assert!(!config.runtime_heartbeat.enabled);
+    assert_eq!(
+        config.runtime_heartbeat.interval,
+        std::time::Duration::from_millis(2_500)
+    );
+    assert_eq!(
+        config.runtime_heartbeat.state_path,
+        PathBuf::from(".tau/gateway/custom-heartbeat/state.json")
+    );
+}
+
+#[test]
+fn regression_build_gateway_openresponses_server_config_routes_default_heartbeat_path_to_gateway_state_dir(
+) {
+    let mut cli = parse_cli_with_stack();
+    cli.gateway_state_dir = PathBuf::from(".tau/gateway-ops");
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
+    cli.gateway_openresponses_auth_token = Some("token".to_string());
+
+    let model_ref = ModelRef::parse("openai/gpt-4o-mini").expect("model ref");
+    let client: Arc<dyn LlmClient> = Arc::new(NoopClient);
+    let tool_policy = ToolPolicy::new(vec![]);
+    let config = build_gateway_openresponses_server_config(
+        &cli,
+        client,
+        &model_ref,
+        "system prompt",
+        &tool_policy,
+    );
+
+    assert_eq!(
+        config.runtime_heartbeat.state_path,
+        PathBuf::from(".tau/gateway-ops/runtime-heartbeat/state.json")
+    );
 }
 
 #[tokio::test]

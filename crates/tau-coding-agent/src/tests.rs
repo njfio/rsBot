@@ -496,6 +496,9 @@ pub(crate) fn test_cli() -> Cli {
             branch_from: None,
             session_lock_wait_ms: 5_000,
             session_lock_stale_ms: 30_000,
+            runtime_heartbeat_enabled: true,
+            runtime_heartbeat_interval_ms: 5_000,
+            runtime_heartbeat_state_path: PathBuf::from(".tau/runtime-heartbeat/state.json"),
             allow_path: vec![],
             bash_timeout_ms: 500,
             max_tool_output_bytes: 1024,
@@ -863,6 +866,7 @@ fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     cli.channel_store_root = tau_root.join("channel-store");
     cli.events_dir = tau_root.join("events");
     cli.events_state_path = tau_root.join("events/state.json");
+    cli.runtime_heartbeat_state_path = tau_root.join("runtime-heartbeat/state.json");
     cli.multi_channel_state_dir = tau_root.join("multi-channel");
     cli.multi_agent_state_dir = tau_root.join("multi-agent");
     cli.browser_automation_state_dir = tau_root.join("browser-automation");

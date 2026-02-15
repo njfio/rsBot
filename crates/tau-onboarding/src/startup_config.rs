@@ -53,6 +53,24 @@ pub struct ProfilePolicyDefaults {
     pub max_file_read_bytes: usize,
     pub max_file_write_bytes: usize,
     pub allow_command_newlines: bool,
+    #[serde(default = "default_runtime_heartbeat_enabled")]
+    pub runtime_heartbeat_enabled: bool,
+    #[serde(default = "default_runtime_heartbeat_interval_ms")]
+    pub runtime_heartbeat_interval_ms: u64,
+    #[serde(default = "default_runtime_heartbeat_state_path")]
+    pub runtime_heartbeat_state_path: String,
+}
+
+fn default_runtime_heartbeat_enabled() -> bool {
+    true
+}
+
+fn default_runtime_heartbeat_interval_ms() -> u64 {
+    5_000
+}
+
+fn default_runtime_heartbeat_state_path() -> String {
+    ".tau/runtime-heartbeat/state.json".to_string()
 }
 
 fn default_profile_mcp_context_providers() -> Vec<String> {
@@ -137,6 +155,9 @@ pub fn build_profile_defaults(cli: &Cli) -> ProfileDefaults {
             max_file_read_bytes: cli.max_file_read_bytes,
             max_file_write_bytes: cli.max_file_write_bytes,
             allow_command_newlines: cli.allow_command_newlines,
+            runtime_heartbeat_enabled: cli.runtime_heartbeat_enabled,
+            runtime_heartbeat_interval_ms: cli.runtime_heartbeat_interval_ms,
+            runtime_heartbeat_state_path: cli.runtime_heartbeat_state_path.display().to_string(),
         },
         mcp: ProfileMcpDefaults {
             context_providers: if cli.mcp_context_provider.is_empty() {
@@ -154,5 +175,53 @@ pub fn build_profile_defaults(cli: &Cli) -> ProfileDefaults {
             anthropic: cli.anthropic_auth_mode.into(),
             google: cli.google_auth_mode.into(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    use std::path::PathBuf;
+    use std::thread;
+
+    use super::build_profile_defaults;
+    use tau_cli::Cli;
+
+    fn parse_cli_with_stack() -> Cli {
+        thread::Builder::new()
+            .name("tau-cli-parse".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| Cli::parse_from(["tau-rs"]))
+            .expect("spawn cli parse thread")
+            .join()
+            .expect("join cli parse thread")
+    }
+
+    #[test]
+    fn unit_build_profile_defaults_includes_runtime_heartbeat_policy_defaults() {
+        let cli = parse_cli_with_stack();
+        let defaults = build_profile_defaults(&cli);
+        assert!(defaults.policy.runtime_heartbeat_enabled);
+        assert_eq!(defaults.policy.runtime_heartbeat_interval_ms, 5_000);
+        assert_eq!(
+            defaults.policy.runtime_heartbeat_state_path,
+            ".tau/runtime-heartbeat/state.json".to_string()
+        );
+    }
+
+    #[test]
+    fn functional_build_profile_defaults_applies_runtime_heartbeat_overrides() {
+        let mut cli = parse_cli_with_stack();
+        cli.runtime_heartbeat_enabled = false;
+        cli.runtime_heartbeat_interval_ms = 1_200;
+        cli.runtime_heartbeat_state_path = PathBuf::from(".tau/runtime-heartbeat/custom.json");
+
+        let defaults = build_profile_defaults(&cli);
+        assert!(!defaults.policy.runtime_heartbeat_enabled);
+        assert_eq!(defaults.policy.runtime_heartbeat_interval_ms, 1_200);
+        assert_eq!(
+            defaults.policy.runtime_heartbeat_state_path,
+            ".tau/runtime-heartbeat/custom.json".to_string()
+        );
     }
 }

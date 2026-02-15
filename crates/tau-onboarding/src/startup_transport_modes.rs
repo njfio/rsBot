@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tau_ai::{LlmClient, ModelRef};
 use tau_browser_automation::browser_automation_contract::load_browser_automation_contract_fixture;
@@ -42,6 +42,7 @@ use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
 use tau_provider::{
     load_credential_store, resolve_credential_store_encryption_mode, AuthCommandConfig,
 };
+use tau_runtime::RuntimeHeartbeatSchedulerConfig;
 use tau_skills::default_skills_lock_path;
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
 use tau_voice::voice_runtime::{
@@ -242,6 +243,36 @@ pub fn build_transport_runtime_defaults(
     }
 }
 
+pub fn build_runtime_heartbeat_scheduler_config(cli: &Cli) -> RuntimeHeartbeatSchedulerConfig {
+    RuntimeHeartbeatSchedulerConfig {
+        enabled: cli.runtime_heartbeat_enabled,
+        interval: Duration::from_millis(cli.runtime_heartbeat_interval_ms.max(1)),
+        state_path: cli.runtime_heartbeat_state_path.clone(),
+        queue_state_paths: vec![
+            cli.multi_channel_state_dir.join("state.json"),
+            cli.multi_agent_state_dir.join("state.json"),
+            cli.gateway_state_dir.join("state.json"),
+            cli.deployment_state_dir.join("state.json"),
+            cli.custom_command_state_dir.join("state.json"),
+            cli.voice_state_dir.join("state.json"),
+            cli.dashboard_state_dir.join("state.json"),
+            cli.browser_automation_state_dir.join("state.json"),
+            cli.memory_state_dir.join("state.json"),
+        ],
+        events_dir: Some(cli.events_dir.clone()),
+        jobs_dir: Some(cli.custom_command_state_dir.join("jobs")),
+        maintenance_temp_dirs: vec![
+            PathBuf::from(".tau/tmp"),
+            cli.gateway_state_dir.join("tmp"),
+            cli.multi_channel_state_dir.join("tmp"),
+            cli.custom_command_state_dir.join("tmp"),
+            cli.deployment_state_dir.join("tmp"),
+            cli.voice_state_dir.join("tmp"),
+        ],
+        maintenance_temp_max_age: Duration::from_secs(3_600),
+    }
+}
+
 pub fn build_multi_channel_runtime_dependencies<
     THandlers,
     TPairingEvaluator,
@@ -399,6 +430,10 @@ pub fn build_gateway_openresponses_server_config(
 ) -> GatewayOpenResponsesServerConfig {
     let (auth_token, auth_password) = resolve_gateway_openresponses_auth(cli);
     let policy = tool_policy.clone();
+    let mut runtime_heartbeat = build_runtime_heartbeat_scheduler_config(cli);
+    if runtime_heartbeat.state_path == PathBuf::from(".tau/runtime-heartbeat/state.json") {
+        runtime_heartbeat.state_path = cli.gateway_state_dir.join("runtime-heartbeat/state.json");
+    }
     GatewayOpenResponsesServerConfig {
         client,
         model: model_ref.model.clone(),
@@ -419,6 +454,7 @@ pub fn build_gateway_openresponses_server_config(
         rate_limit_window_seconds: cli.gateway_openresponses_rate_limit_window_seconds,
         rate_limit_max_requests: cli.gateway_openresponses_rate_limit_max_requests,
         max_input_chars: cli.gateway_openresponses_max_input_chars,
+        runtime_heartbeat,
     }
 }
 

@@ -2388,6 +2388,12 @@ fn unit_cli_daemon_flags_default_to_disabled() {
     assert!(!cli.daemon_status_json);
     assert_eq!(cli.daemon_profile, CliDaemonProfile::Auto);
     assert_eq!(cli.daemon_state_dir, PathBuf::from(".tau/daemon"));
+    assert!(cli.runtime_heartbeat_enabled);
+    assert_eq!(cli.runtime_heartbeat_interval_ms, 5_000);
+    assert_eq!(
+        cli.runtime_heartbeat_state_path,
+        PathBuf::from(".tau/runtime-heartbeat/state.json")
+    );
 }
 
 #[test]
@@ -2409,6 +2415,31 @@ fn functional_cli_daemon_stop_accepts_reason_profile_and_state_dir_override() {
     );
     assert_eq!(cli.daemon_profile, CliDaemonProfile::SystemdUser);
     assert_eq!(cli.daemon_state_dir, PathBuf::from(".tau/daemon-service"));
+}
+
+#[test]
+fn functional_cli_runtime_heartbeat_flags_accept_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--runtime-heartbeat-enabled=false",
+        "--runtime-heartbeat-interval-ms",
+        "1500",
+        "--runtime-heartbeat-state-path",
+        ".tau/custom/heartbeat.json",
+    ]);
+    assert!(!cli.runtime_heartbeat_enabled);
+    assert_eq!(cli.runtime_heartbeat_interval_ms, 1_500);
+    assert_eq!(
+        cli.runtime_heartbeat_state_path,
+        PathBuf::from(".tau/custom/heartbeat.json")
+    );
+}
+
+#[test]
+fn regression_cli_runtime_heartbeat_interval_rejects_zero() {
+    let parse = try_parse_cli_with_stack(["tau-rs", "--runtime-heartbeat-interval-ms", "0"]);
+    let error = parse.expect_err("zero runtime heartbeat interval should fail");
+    assert!(error.to_string().contains("value must be greater than 0"));
 }
 
 #[test]

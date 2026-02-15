@@ -62,6 +62,24 @@ cargo run -p tau-coding-agent -- --daemon-uninstall --daemon-state-dir .tau/daem
 - launchd profile: `.tau/daemon/launchd/io.tau.coding-agent.plist`
 - systemd user profile: `.tau/daemon/systemd/tau-coding-agent.service`
 
+## Runtime heartbeat controls
+
+Local/runtime daemon sessions can run periodic maintenance probes (queues/events/jobs) with:
+
+- `--runtime-heartbeat-enabled` (default `true`)
+- `--runtime-heartbeat-interval-ms` (default `5000`)
+- `--runtime-heartbeat-state-path` (default `.tau/runtime-heartbeat/state.json`)
+
+Example:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --daemon-start \
+  --runtime-heartbeat-enabled=true \
+  --runtime-heartbeat-interval-ms 3000 \
+  --runtime-heartbeat-state-path .tau/runtime-heartbeat/state.json
+```
+
 ## Activate launchd profile (macOS)
 
 ```bash

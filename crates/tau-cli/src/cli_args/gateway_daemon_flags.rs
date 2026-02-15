@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args};
 
+use super::parse_positive_u64;
 use crate::{
     CliBashProfile, CliDaemonProfile, CliOsSandboxMode, CliOsSandboxPolicyMode,
     CliSessionImportMode, CliToolPolicyPreset,
@@ -431,6 +432,35 @@ pub struct CliGatewayDaemonFlags {
         help = "Lock-file age threshold in milliseconds before stale session locks are reclaimed (0 disables reclaim)"
     )]
     pub session_lock_stale_ms: u64,
+
+    #[arg(
+        long = "runtime-heartbeat-enabled",
+        env = "TAU_RUNTIME_HEARTBEAT_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Enable runtime heartbeat scheduler maintenance checks (queues/events/jobs)"
+    )]
+    pub runtime_heartbeat_enabled: bool,
+
+    #[arg(
+        long = "runtime-heartbeat-interval-ms",
+        env = "TAU_RUNTIME_HEARTBEAT_INTERVAL_MS",
+        default_value_t = 5_000,
+        value_parser = parse_positive_u64,
+        help = "Runtime heartbeat scheduler interval in milliseconds"
+    )]
+    pub runtime_heartbeat_interval_ms: u64,
+
+    #[arg(
+        long = "runtime-heartbeat-state-path",
+        env = "TAU_RUNTIME_HEARTBEAT_STATE_PATH",
+        default_value = ".tau/runtime-heartbeat/state.json",
+        help = "Path where runtime heartbeat scheduler persists state.json diagnostics"
+    )]
+    pub runtime_heartbeat_state_path: PathBuf,
 
     #[arg(
         long = "allow-path",

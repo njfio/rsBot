@@ -188,6 +188,25 @@ pub fn render_profile_diffs(current: &ProfileDefaults, loaded: &ProfileDefaults)
             current.policy.allow_command_newlines, loaded.policy.allow_command_newlines
         ));
     }
+    if current.policy.runtime_heartbeat_enabled != loaded.policy.runtime_heartbeat_enabled {
+        diffs.push(format!(
+            "diff: field=policy.runtime_heartbeat_enabled current={} loaded={}",
+            current.policy.runtime_heartbeat_enabled, loaded.policy.runtime_heartbeat_enabled
+        ));
+    }
+    if current.policy.runtime_heartbeat_interval_ms != loaded.policy.runtime_heartbeat_interval_ms {
+        diffs.push(format!(
+            "diff: field=policy.runtime_heartbeat_interval_ms current={} loaded={}",
+            current.policy.runtime_heartbeat_interval_ms,
+            loaded.policy.runtime_heartbeat_interval_ms
+        ));
+    }
+    if current.policy.runtime_heartbeat_state_path != loaded.policy.runtime_heartbeat_state_path {
+        diffs.push(format!(
+            "diff: field=policy.runtime_heartbeat_state_path current={} loaded={}",
+            current.policy.runtime_heartbeat_state_path, loaded.policy.runtime_heartbeat_state_path
+        ));
+    }
     if current.mcp.context_providers != loaded.mcp.context_providers {
         diffs.push(format!(
             "diff: field=mcp.context_providers current={} loaded={}",
@@ -310,6 +329,18 @@ pub fn render_profile_show(profile_path: &Path, name: &str, profile: &ProfileDef
     lines.push(format!(
         "value: policy.allow_command_newlines={}",
         profile.policy.allow_command_newlines
+    ));
+    lines.push(format!(
+        "value: policy.runtime_heartbeat_enabled={}",
+        profile.policy.runtime_heartbeat_enabled
+    ));
+    lines.push(format!(
+        "value: policy.runtime_heartbeat_interval_ms={}",
+        profile.policy.runtime_heartbeat_interval_ms
+    ));
+    lines.push(format!(
+        "value: policy.runtime_heartbeat_state_path={}",
+        profile.policy.runtime_heartbeat_state_path
     ));
     lines.push(format!(
         "value: mcp.context_providers={}",
@@ -480,6 +511,9 @@ mod tests {
                 max_file_read_bytes: 2048,
                 max_file_write_bytes: 2048,
                 allow_command_newlines: true,
+                runtime_heartbeat_enabled: true,
+                runtime_heartbeat_interval_ms: 5_000,
+                runtime_heartbeat_state_path: ".tau/runtime-heartbeat/state.json".to_string(),
             },
             mcp: ProfileMcpDefaults {
                 context_providers: vec![],

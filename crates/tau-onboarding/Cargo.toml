@@ -21,6 +21,7 @@ tau-gateway = { path = "../tau-gateway" }
 tau-multi-channel = { path = "../tau-multi-channel" }
 tau-provider = { path = "../tau-provider" }
 tau-release-channel = { path = "../tau-release-channel" }
+tau-runtime = { path = "../tau-runtime" }
 tau-skills = { path = "../tau-skills" }
 tau-startup = { path = "../tau-startup" }
 tau-tools = { path = "../tau-tools" }

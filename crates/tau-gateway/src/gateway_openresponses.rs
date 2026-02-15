@@ -21,7 +21,10 @@ use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentConfig, AgentEvent};
 use tau_ai::{LlmClient, StreamDeltaHandler};
 use tau_core::{current_unix_timestamp, current_unix_timestamp_ms};
-use tau_runtime::TransportHealthSnapshot;
+use tau_runtime::{
+    inspect_runtime_heartbeat, start_runtime_heartbeat_scheduler, RuntimeHeartbeatSchedulerConfig,
+    TransportHealthSnapshot,
+};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -133,6 +136,7 @@ pub struct GatewayOpenResponsesServerConfig {
     pub rate_limit_window_seconds: u64,
     pub rate_limit_max_requests: usize,
     pub max_input_chars: usize,
+    pub runtime_heartbeat: RuntimeHeartbeatSchedulerConfig,
 }
 
 #[derive(Clone)]
@@ -318,6 +322,8 @@ pub async fn run_gateway_openresponses_server(
     let local_addr = listener
         .local_addr()
         .context("failed to resolve bound openresponses server address")?;
+    let mut runtime_heartbeat_handle =
+        start_runtime_heartbeat_scheduler(config.runtime_heartbeat.clone())?;
 
     println!(
         "gateway openresponses server listening: endpoint={} addr={} state_dir={}",
@@ -329,12 +335,13 @@ pub async fn run_gateway_openresponses_server(
     let state_dir = config.state_dir.clone();
     let state = Arc::new(GatewayOpenResponsesServerState::new(config));
     let app = build_gateway_openresponses_router(state);
-    axum::serve(listener, app)
+    let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
-        .await
-        .context("gateway openresponses server exited unexpectedly")?;
+        .await;
+    runtime_heartbeat_handle.shutdown().await;
+    serve_result.context("gateway openresponses server exited unexpectedly")?;
 
     let stop_report = crate::gateway_runtime::stop_gateway_service_mode(
         &state_dir,
@@ -400,6 +407,7 @@ async fn handle_gateway_status(
         };
     let multi_channel_report = collect_gateway_multi_channel_status_report(&state.config.state_dir);
     let dashboard_snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
+    let runtime_heartbeat = inspect_runtime_heartbeat(&state.config.runtime_heartbeat.state_path);
 
     (
         StatusCode::OK,
@@ -408,6 +416,7 @@ async fn handle_gateway_status(
             "auth": collect_gateway_auth_status_report(&state),
             "multi_channel": multi_channel_report,
             "training": dashboard_snapshot.training,
+            "runtime_heartbeat": runtime_heartbeat,
             "gateway": {
                 "responses_endpoint": OPENRESPONSES_ENDPOINT,
                 "webchat_endpoint": WEBCHAT_ENDPOINT,
