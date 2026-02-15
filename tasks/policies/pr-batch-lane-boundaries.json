@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "policy_id": "pr-batch-lane-boundaries",
+  "description": "Lane ownership boundaries for parallel PR batching during milestone execution waves.",
+  "lanes": [
+    {
+      "id": "structural",
+      "purpose": "Runtime structural refactors, oversized-file decomposition, and crate-boundary hardening.",
+      "owned_path_prefixes": [
+        "crates/tau-cli/",
+        "crates/tau-coding-agent/",
+        "crates/tau-tools/",
+        "crates/tau-channel-store/",
+        "crates/tau-github-issues-runtime/",
+        "crates/tau-slack-runtime/",
+        "crates/tau-safety/"
+      ],
+      "shared_paths": [
+        "Cargo.toml",
+        "Cargo.lock",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "docs",
+      "purpose": "Documentation updates, roadmap status artifacts, and operator runbook alignment.",
+      "owned_path_prefixes": [
+        "docs/",
+        "tasks/todo.md",
+        "tasks/tau-vs-ironclaw-gap-list.md",
+        "tasks/reports/",
+        ".github/scripts/docs_link_check.py",
+        ".github/scripts/test_docs_link_check.py",
+        ".github/workflows/docs-quality.yml"
+      ],
+      "shared_paths": [
+        "README.md",
+        "docs/README.md",
+        "docs/guides/runbook-ownership-map.md"
+      ]
+    },
+    {
+      "id": "rl",
+      "purpose": "Training and reinforcement-learning runtime implementation, evaluation, and contract tests.",
+      "owned_path_prefixes": [
+        "crates/tau-algorithm/",
+        "crates/tau-trainer/",
+        "crates/tau-training-types/",
+        "crates/tau-training-store/",
+        "crates/tau-training-tracer/",
+        "crates/tau-training-runner/",
+        "crates/tau-training-proxy/",
+        "docs/guides/training-ops.md",
+        "docs/guides/training-proxy-ops.md",
+        "docs/guides/training-crate-boundary-plan.md"
+      ],
+      "shared_paths": [
+        "crates/tau-cli/src/cli_args.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".github/workflows/ci.yml"
+      ]
+    }
+  ],
+  "high_conflict_hotspots": [
+    {
+      "id": "hotspot.workspace-manifests",
+      "path": "Cargo.toml",
+      "reason": "All lanes change workspace dependencies/features, creating frequent merge conflicts and lockfile churn.",
+      "preferred_owner_lane": "structural",
+      "mitigation_steps": [
+        "Rebase lane branches onto latest master before opening merge-ready PRs.",
+        "Queue one manifest-changing PR at a time; hold others at ready-for-review until merged.",
+        "Include a short dependency delta summary in PR validation evidence."
+      ]
+    },
+    {
+      "id": "hotspot.workspace-lockfile",
+      "path": "Cargo.lock",
+      "reason": "Lockfile regeneration amplifies unrelated diffs when multiple lanes update dependencies in parallel.",
+      "preferred_owner_lane": "structural",
+      "mitigation_steps": [
+        "Regenerate lockfile in the final commit only after rebasing on master.",
+        "Avoid lockfile-only commits detached from dependency manifest updates.",
+        "When conflict markers appear, rerun a clean `cargo check` after resolution."
+      ]
+    },
+    {
+      "id": "hotspot.quality-workflow",
+      "path": ".github/workflows/ci.yml",
+      "reason": "Lane-specific checks are added in the same workflow file, creating rebase friction and accidental step drops.",
+      "preferred_owner_lane": "docs",
+      "mitigation_steps": [
+        "Group workflow edits by lane scope and preserve existing step ordering.",
+        "Keep contract tests in `.github/scripts/test_*.py` updated in the same PR.",
+        "Use focused path filters to avoid expanding quality-runtime cost."
+      ]
+    },
+    {
+      "id": "hotspot.roadmap-doc-blocks",
+      "path": "tasks/todo.md",
+      "reason": "Generated roadmap blocks drift when multiple PRs regenerate status snapshots simultaneously.",
+      "preferred_owner_lane": "docs",
+      "mitigation_steps": [
+        "Run `scripts/dev/roadmap-status-sync.sh` immediately before final push.",
+        "Keep manual edits outside generated marker blocks.",
+        "If conflicts occur, rerun sync instead of hand-merging generated sections."
+      ]
+    },
+    {
+      "id": "hotspot.runbook-ownership-map",
+      "path": "docs/guides/runbook-ownership-map.md",
+      "reason": "Structural and RL changes both require runbook ownership updates, producing frequent table conflicts.",
+      "preferred_owner_lane": "docs",
+      "mitigation_steps": [
+        "Batch ownership-map edits into docs lane PRs whenever feasible.",
+        "For structural/RL PRs, link pending ownership updates if not included directly.",
+        "Run `.github/scripts/runbook_ownership_docs_check.py` in every PR touching runbooks."
+      ]
+    }
+  ],
+  "pr_reference_contract": {
+    "template_path": ".github/pull_request_template.md",
+    "boundary_map_reference": "tasks/policies/pr-batch-lane-boundaries.json",
+    "required_pr_template_fields": [
+      "Lane",
+      "Boundary Map",
+      "Boundary Paths",
+      "Hotspot Mitigation"
+    ]
+  }
+}
