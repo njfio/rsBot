@@ -153,7 +153,8 @@ GitHub Actions workflows:
   - optional manual coverage and cross-platform compile smoke
 - Security: [`.github/workflows/security.yml`](.github/workflows/security.yml)
 - Release: [`.github/workflows/release.yml`](.github/workflows/release.yml)
-  - Multi-platform artifacts: linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), windows (`amd64`)
+  - Multi-platform artifacts: linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), windows (`amd64`, `arm64`)
+  - Cross-arch release lanes are compile/package-only with explicit smoke-skip reason codes
   - Optional signing/notarization hook integration (`scripts/release/hooks/*`)
   - Installer helpers: `scripts/release/install-tau.sh`, `scripts/release/update-tau.sh`, `scripts/release/install-tau.ps1`, `scripts/release/update-tau.ps1`
 

@@ -18,12 +18,25 @@ Default artifact matrix:
 - `macos-amd64` (`x86_64-apple-darwin`)
 - `macos-arm64` (`aarch64-apple-darwin`)
 - `windows-amd64` (`x86_64-pc-windows-msvc`)
+- `windows-arm64` (`aarch64-pc-windows-msvc`)
 
 The workflow publishes release archives plus checksum manifests to GitHub Releases:
 
 - `*.tar.gz` / `*.zip`
 - `*.sha256`
 - `SHA256SUMS`
+
+### Cross-arch smoke policy
+
+Release build lanes execute a `--help` smoke gate only when artifact architecture matches runner architecture.
+
+Cross-arch lanes are compiled/packaged without execution and emit deterministic reason codes:
+
+- `release_smoke_reason=cross_arch_linux_arm64_on_amd64_runner`
+- `release_smoke_reason=cross_arch_macos_amd64_on_arm64_runner`
+- `release_smoke_reason=cross_arch_windows_arm64_on_amd64_runner`
+
+Native-arch lanes execute smoke with `release_smoke_reason=native_arch` metadata in the matrix.
 
 ## Optional signing/notarization hooks
 
@@ -48,6 +61,12 @@ If disabled, release logs include:
 
 - `release_hook_reason=sign_hooks_disabled`
 - `release_hook_reason=notarization_hooks_disabled`
+
+Windows arm64 signing constraints:
+
+- The release workflow reuses `scripts/release/hooks/sign-windows.ps1` for both windows amd64 and windows arm64 lanes.
+- Hook scripts must select cert/signing profile by target triple (`x86_64-pc-windows-msvc` vs `aarch64-pc-windows-msvc`).
+- Hosted runners do not execute windows arm64 artifacts; signing hooks should validate signature metadata rather than binary execution.
 
 ## Installer helper scripts
 
@@ -120,3 +139,4 @@ Run helper-script tests:
 Run release workflow lint/validation via PR CI:
 
 - Release helper test scope is automatically triggered when `scripts/release/**` or `.github/workflows/release.yml` changes.
+- Workflow contract checks (matrix + smoke policy) run in `scripts/release/test-release-workflow-contract.sh`.
