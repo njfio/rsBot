@@ -614,7 +614,7 @@ fn regression_load_profile_store_backfills_auth_defaults_for_legacy_profiles() {
                     "fallback_models": [],
                     "session": {
                         "enabled": true,
-                        "path": ".tau/sessions/default.jsonl",
+                        "path": ".tau/sessions/default.sqlite",
                         "import_mode": "merge"
                     },
                     "policy": {
@@ -702,7 +702,7 @@ fn unit_render_profile_list_and_show_produce_deterministic_output() {
     assert!(show_output.contains("profile show: path=/tmp/profiles.json name=alpha status=found"));
     assert!(show_output.contains("value: model=google/gemini-2.5-pro"));
     assert!(show_output.contains("value: fallback_models=none"));
-    assert!(show_output.contains("value: session.path=.tau/sessions/default.jsonl"));
+    assert!(show_output.contains("value: session.path=.tau/sessions/default.sqlite"));
     assert!(show_output.contains("value: policy.max_command_length=4096"));
     assert!(show_output.contains("value: auth.openai=api_key"));
 }

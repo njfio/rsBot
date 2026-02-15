@@ -8,6 +8,8 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tempfile::{tempdir, TempDir};
+use tau_ai::Message;
+use tau_session::SessionStore;
 
 use super::*;
 
@@ -37,7 +39,7 @@ impl McpWorkspace {
         let temp = tempdir().expect("tempdir");
         let root = temp.path().to_path_buf();
         let tau_root = root.join(".tau");
-        let session_path = tau_root.join("sessions/default.jsonl");
+        let session_path = tau_root.join("sessions/default.sqlite");
         let skills_dir = tau_root.join("skills");
         let channel_store_root = tau_root.join("channel-store");
 
@@ -45,7 +47,10 @@ impl McpWorkspace {
             .expect("create session dir");
         fs::create_dir_all(&skills_dir).expect("create skills dir");
         fs::create_dir_all(channel_store_root.join("channels")).expect("create channel store dirs");
-        fs::write(&session_path, "{\"schema_version\":1}\n").expect("write session seed");
+        let mut store = SessionStore::load(&session_path).expect("load session");
+        store
+            .append_messages(None, &[Message::system("mcp-session-seed")])
+            .expect("seed session");
         fs::write(skills_dir.join("checklist.md"), "# Checklist\n- test\n").expect("write skill");
 
         Self {

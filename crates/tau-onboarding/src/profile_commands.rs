@@ -465,7 +465,7 @@ mod tests {
             fallback_models: vec![],
             session: ProfileSessionDefaults {
                 enabled: true,
-                path: Some(".tau/sessions/default.jsonl".to_string()),
+                path: Some(".tau/sessions/default.sqlite".to_string()),
                 import_mode: "merge".to_string(),
             },
             policy: ProfilePolicyDefaults {
@@ -578,7 +578,7 @@ mod tests {
                         "fallback_models": [],
                         "session": {
                             "enabled": true,
-                            "path": ".tau/sessions/default.jsonl",
+                            "path": ".tau/sessions/default.sqlite",
                             "import_mode": "merge"
                         },
                         "policy": {
@@ -666,7 +666,7 @@ mod tests {
         );
         assert!(show_output.contains("value: model=google/gemini-2.5-pro"));
         assert!(show_output.contains("value: fallback_models=none"));
-        assert!(show_output.contains("value: session.path=.tau/sessions/default.jsonl"));
+        assert!(show_output.contains("value: session.path=.tau/sessions/default.sqlite"));
         assert!(show_output.contains("value: policy.max_command_length=4096"));
         assert!(show_output.contains("value: auth.openai=api_key"));
     }

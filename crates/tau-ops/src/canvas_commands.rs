@@ -1834,7 +1834,7 @@ mod tests {
     #[test]
     fn integration_canvas_session_link_index_persists_session_head_association() {
         let temp = tempdir().expect("tempdir");
-        let session_path = temp.path().join(".tau/sessions/default.jsonl");
+        let session_path = temp.path().join(".tau/sessions/default.sqlite");
         let mut session_store = SessionStore::load(&session_path).expect("session load");
         let head = session_store
             .append_messages(None, &[tau_ai::Message::system("sys")])

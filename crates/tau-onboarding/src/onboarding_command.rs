@@ -156,7 +156,7 @@ mod tests {
 
     fn apply_workspace_paths(cli: &mut Cli, workspace: &Path) {
         let tau_root = workspace.join(".tau");
-        cli.session = tau_root.join("sessions/default.jsonl");
+        cli.session = tau_root.join("sessions/default.sqlite");
         cli.credential_store = tau_root.join("credentials.json");
         cli.skills_dir = tau_root.join("skills");
         cli.model_catalog_cache = tau_root.join("models/catalog.json");

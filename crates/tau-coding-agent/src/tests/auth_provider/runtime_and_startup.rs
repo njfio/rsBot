@@ -236,7 +236,7 @@ fn regression_resolve_system_prompt_rejects_empty_system_prompt_file() {
 
 #[test]
 fn pathbuf_from_cli_default_is_relative() {
-    let path = PathBuf::from(".tau/sessions/default.jsonl");
+    let path = PathBuf::from(".tau/sessions/default.sqlite");
     assert!(!path.is_absolute());
 }
 

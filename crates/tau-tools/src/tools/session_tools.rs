@@ -37,6 +37,8 @@ struct SessionInventoryEntry {
     path: String,
     entries: usize,
     head_id: Option<u64>,
+    storage_backend: String,
+    backend_reason_code: String,
     newest_role: String,
     newest_preview: String,
 }
@@ -800,6 +802,8 @@ fn collect_session_inventory(
                     path: path.display().to_string(),
                     entries: store.entries().len(),
                     head_id: store.head_id(),
+                    storage_backend: store.storage_backend().label().to_string(),
+                    backend_reason_code: store.storage_backend_reason_code().to_string(),
                     newest_role: newest
                         .map(|entry| session_message_role(&entry.message))
                         .unwrap_or_else(|| "none".to_string()),
@@ -895,7 +899,8 @@ fn discover_session_paths(policy: &ToolPolicy, limit: usize) -> Result<Vec<PathB
 }
 
 pub(super) fn is_session_candidate_path(path: &Path) -> bool {
-    if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+    let extension = path.extension().and_then(|value| value.to_str());
+    if extension != Some("jsonl") && extension != Some("sqlite") && extension != Some("db") {
         return false;
     }
 
@@ -904,7 +909,9 @@ pub(super) fn is_session_candidate_path(path: &Path) -> bool {
         .and_then(|value| value.to_str())
         .unwrap_or_default();
     if file_name == "default.jsonl"
+        || file_name == "default.sqlite"
         || file_name == "session.jsonl"
+        || file_name == "session.sqlite"
         || file_name.starts_with("issue-")
     {
         return true;

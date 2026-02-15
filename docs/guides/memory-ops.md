@@ -17,6 +17,12 @@ User-facing memory tools are available in runtime:
 
 These tools persist under `--memory-state-dir` (default `.tau/memory`).
 
+Persistence backend selection:
+
+- `TAU_MEMORY_BACKEND` (`auto`, `sqlite`, `jsonl`, `postgres`)
+- `auto` prefers SQLite and imports legacy `entries.jsonl` into `entries.sqlite` on first load
+- `postgres` is scaffolded only (explicit not-implemented path for multi-instance follow-up)
+
 Optional real-embedding configuration (runtime env):
 
 - `TAU_MEMORY_EMBEDDING_PROVIDER` (`openai` or `openai-compatible`)
@@ -68,8 +74,8 @@ cargo run -p tau-coding-agent -- \
 Primary state files:
 
 - `.tau/memory/state.json`
-- `.tau/memory/entries.jsonl`
-- Optional historical artifact logs under `.tau/memory/*.jsonl` if produced by older revisions.
+- `.tau/memory/entries.sqlite` (default backend)
+- `.tau/memory/entries.jsonl` (legacy artifact auto-import source)
 
 ## Deterministic demo path
 

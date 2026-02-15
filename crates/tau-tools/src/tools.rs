@@ -136,6 +136,8 @@ struct SessionInventoryEntry {
     path: String,
     entries: usize,
     head_id: Option<u64>,
+    storage_backend: String,
+    backend_reason_code: String,
     newest_role: String,
     newest_preview: String,
 }
@@ -1246,7 +1248,10 @@ impl AgentTool for MemoryWriteTool {
             self.policy.memory_state_dir.clone(),
             self.policy.memory_embedding_provider_config(),
         );
-        let entries_path = store.root_dir().join("entries.jsonl");
+        let storage_path = store
+            .storage_path()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| store.root_dir().join("memory.backend"));
 
         if let Some(rbac_result) = evaluate_tool_rbac_gate(
             self.policy.rbac_principal.as_deref(),
@@ -1268,7 +1273,7 @@ impl AgentTool for MemoryWriteTool {
         }
 
         if let Some(approval_result) = evaluate_tool_approval_gate(ApprovalAction::ToolWrite {
-            path: entries_path.display().to_string(),
+            path: storage_path.display().to_string(),
             content_bytes: summary.len(),
         }) {
             return approval_result;
@@ -1285,6 +1290,7 @@ impl AgentTool for MemoryWriteTool {
                 },
                 "summary_chars": summary.chars().count(),
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
             }),
         ) {
             return rate_limit_result;
@@ -1307,11 +1313,21 @@ impl AgentTool for MemoryWriteTool {
                 "embedding_model": result.record.embedding_model,
                 "embedding_reason_code": result.record.embedding_reason_code,
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
             })),
             Err(error) => ToolExecutionResult::error(json!({
                 "tool": "memory_write",
                 "reason_code": "memory_backend_error",
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
                 "error": error.to_string(),
             })),
         }
@@ -1374,6 +1390,11 @@ impl AgentTool for MemoryReadTool {
             return rbac_result;
         }
 
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
+
         if let Some(rate_limit_result) = evaluate_tool_rate_limit_gate(
             &self.policy,
             "memory_read",
@@ -1381,15 +1402,11 @@ impl AgentTool for MemoryReadTool {
                 "memory_id": memory_id.clone(),
                 "scope_filter": scope_filter.clone(),
                 "store_root": self.policy.memory_state_dir.display().to_string(),
+                "storage_backend": store.storage_backend_label(),
             }),
         ) {
             return rate_limit_result;
         }
-
-        let store = FileMemoryStore::new_with_embedding_provider(
-            self.policy.memory_state_dir.clone(),
-            self.policy.memory_embedding_provider_config(),
-        );
         match store.read_entry(memory_id.as_str(), scope_filter.as_ref()) {
             Ok(Some(record)) => ToolExecutionResult::ok(json!({
                 "tool": "memory_read",
@@ -1407,6 +1424,11 @@ impl AgentTool for MemoryReadTool {
                 "embedding_model": record.embedding_model,
                 "embedding_reason_code": record.embedding_reason_code,
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
             })),
             Ok(None) => ToolExecutionResult::ok(json!({
                 "tool": "memory_read",
@@ -1414,12 +1436,22 @@ impl AgentTool for MemoryReadTool {
                 "memory_id": memory_id,
                 "scope_filter": scope_filter.clone(),
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
             })),
             Err(error) => ToolExecutionResult::error(json!({
                 "tool": "memory_read",
                 "reason_code": "memory_backend_error",
                 "memory_id": memory_id,
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
                 "error": error.to_string(),
             })),
         }
@@ -1516,6 +1548,11 @@ impl AgentTool for MemorySearchTool {
             return rbac_result;
         }
 
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
+
         if let Some(rate_limit_result) = evaluate_tool_rate_limit_gate(
             &self.policy,
             "memory_search",
@@ -1524,15 +1561,11 @@ impl AgentTool for MemorySearchTool {
                 "limit": limit,
                 "scope_filter": scope.clone(),
                 "store_root": self.policy.memory_state_dir.display().to_string(),
+                "storage_backend": store.storage_backend_label(),
             }),
         ) {
             return rate_limit_result;
         }
-
-        let store = FileMemoryStore::new_with_embedding_provider(
-            self.policy.memory_state_dir.clone(),
-            self.policy.memory_embedding_provider_config(),
-        );
         match store.search(
             query.as_str(),
             &MemorySearchOptions {
@@ -1575,12 +1608,22 @@ impl AgentTool for MemorySearchTool {
                 "baseline_vector_overlap": result.baseline_vector_overlap,
                 "matches": result.matches,
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
             })),
             Err(error) => ToolExecutionResult::error(json!({
                 "tool": "memory_search",
                 "reason_code": "memory_backend_error",
                 "query": query,
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
                 "error": error.to_string(),
             })),
         }
@@ -1614,6 +1657,10 @@ impl AgentTool for MemoryTreeTool {
     }
 
     async fn execute(&self, _arguments: Value) -> ToolExecutionResult {
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
         if let Some(rbac_result) = evaluate_tool_rbac_gate(
             self.policy.rbac_principal.as_deref(),
             "memory_tree",
@@ -1629,26 +1676,32 @@ impl AgentTool for MemoryTreeTool {
             "memory_tree",
             json!({
                 "store_root": self.policy.memory_state_dir.display().to_string(),
+                "storage_backend": store.storage_backend_label(),
             }),
         ) {
             return rate_limit_result;
         }
-
-        let store = FileMemoryStore::new_with_embedding_provider(
-            self.policy.memory_state_dir.clone(),
-            self.policy.memory_embedding_provider_config(),
-        );
         match store.tree() {
             Ok(tree) => ToolExecutionResult::ok(json!({
                 "tool": "memory_tree",
                 "total_entries": tree.total_entries,
                 "workspaces": tree.workspaces,
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
             })),
             Err(error) => ToolExecutionResult::error(json!({
                 "tool": "memory_tree",
                 "reason_code": "memory_backend_error",
                 "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
                 "error": error.to_string(),
             })),
         }
@@ -3889,6 +3942,8 @@ fn collect_session_inventory(
                     path: path.display().to_string(),
                     entries: store.entries().len(),
                     head_id: store.head_id(),
+                    storage_backend: store.storage_backend().label().to_string(),
+                    backend_reason_code: store.storage_backend_reason_code().to_string(),
                     newest_role: newest
                         .map(|entry| session_message_role(&entry.message))
                         .unwrap_or_else(|| "none".to_string()),
@@ -3984,7 +4039,8 @@ fn discover_session_paths(policy: &ToolPolicy, limit: usize) -> Result<Vec<PathB
 }
 
 fn is_session_candidate_path(path: &Path) -> bool {
-    if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+    let extension = path.extension().and_then(|value| value.to_str());
+    if extension != Some("jsonl") && extension != Some("sqlite") && extension != Some("db") {
         return false;
     }
 
@@ -3993,7 +4049,9 @@ fn is_session_candidate_path(path: &Path) -> bool {
         .and_then(|value| value.to_str())
         .unwrap_or_default();
     if file_name == "default.jsonl"
+        || file_name == "default.sqlite"
         || file_name == "session.jsonl"
+        || file_name == "session.sqlite"
         || file_name.starts_with("issue-")
     {
         return true;

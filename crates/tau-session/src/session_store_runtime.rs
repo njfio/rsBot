@@ -12,11 +12,17 @@ impl SessionStore {
                 })?;
             }
         }
-        let entries = read_session_entries(&path)?;
+        let resolved_backend = resolve_session_backend(&path)?;
+        let backend = resolved_backend.backend;
+        let backend_reason_code = resolved_backend.reason_code;
+        let _imported_legacy_entries = maybe_import_legacy_jsonl_into_sqlite(&path, backend)?;
+        let entries = read_session_entries(&path, backend)?;
         let next_id = entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
 
         Ok(Self {
             path,
+            backend,
+            backend_reason_code,
             entries,
             next_id,
             lock_wait_ms: DEFAULT_LOCK_WAIT_MS,
@@ -26,6 +32,14 @@ impl SessionStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn storage_backend(&self) -> SessionStorageBackend {
+        self.backend
+    }
+
+    pub fn storage_backend_reason_code(&self) -> &str {
+        self.backend_reason_code.as_str()
     }
 
     pub fn entries(&self) -> &[SessionEntry] {
@@ -74,7 +88,7 @@ impl SessionStore {
             Duration::from_millis(self.lock_stale_ms),
         )?;
 
-        let mut entries = read_session_entries(&self.path)?;
+        let mut entries = read_session_entries(&self.path, self.backend)?;
         let mut next_id = entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
 
         if let Some(parent) = parent_id {
@@ -94,7 +108,7 @@ impl SessionStore {
             entries.push(entry);
         }
 
-        write_session_entries_atomic(&self.path, &entries)?;
+        write_session_entries_atomic(&self.path, &entries, self.backend)?;
         self.entries = entries;
         self.next_id = next_id;
 
@@ -144,7 +158,9 @@ impl SessionStore {
         destination: impl AsRef<Path>,
     ) -> Result<usize> {
         let lineage = self.lineage_entries(head_id)?;
-        write_session_entries_atomic(destination.as_ref(), &lineage)?;
+        let export_path = destination.as_ref();
+        let export_backend = resolve_session_backend(export_path)?.backend;
+        write_session_entries_atomic(export_path, &lineage, export_backend)?;
         Ok(lineage.len())
     }
 
@@ -167,7 +183,8 @@ impl SessionStore {
         mode: SessionImportMode,
     ) -> Result<ImportReport> {
         let source_path = source.as_ref();
-        let imported_entries = read_session_entries(source_path)?;
+        let source_backend = resolve_session_backend(source_path)?.backend;
+        let imported_entries = read_session_entries(source_path, source_backend)?;
         let source_report = validation_report_for_entries(&imported_entries);
         if !source_report.is_valid() {
             bail!(
@@ -187,12 +204,12 @@ impl SessionStore {
             Duration::from_millis(self.lock_stale_ms),
         )?;
 
-        let existing_entries = read_session_entries(&self.path)?;
+        let existing_entries = read_session_entries(&self.path, self.backend)?;
         let report = match mode {
             SessionImportMode::Merge => {
                 let (merged_entries, remapped_ids, active_head) =
                     merge_entries_with_remap(&existing_entries, &imported_entries)?;
-                write_session_entries_atomic(&self.path, &merged_entries)?;
+                write_session_entries_atomic(&self.path, &merged_entries, self.backend)?;
                 self.entries = merged_entries;
                 ImportReport {
                     imported_entries: imported_entries.len(),
@@ -204,7 +221,7 @@ impl SessionStore {
                 }
             }
             SessionImportMode::Replace => {
-                write_session_entries_atomic(&self.path, &imported_entries)?;
+                write_session_entries_atomic(&self.path, &imported_entries, self.backend)?;
                 self.entries = imported_entries;
                 ImportReport {
                     imported_entries: self.entries.len(),
@@ -234,7 +251,7 @@ impl SessionStore {
             Duration::from_millis(self.lock_stale_ms),
         )?;
 
-        let mut entries = read_session_entries(&self.path)?;
+        let mut entries = read_session_entries(&self.path, self.backend)?;
         let entry_by_id = entries
             .iter()
             .cloned()
@@ -329,7 +346,7 @@ impl SessionStore {
         };
 
         if appended_entries > 0 {
-            write_session_entries_atomic(&self.path, &entries)?;
+            write_session_entries_atomic(&self.path, &entries, self.backend)?;
         }
         self.entries = entries;
         self.next_id = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
@@ -373,7 +390,7 @@ impl SessionStore {
             Duration::from_millis(self.lock_stale_ms),
         )?;
 
-        let mut entries = read_session_entries(&self.path)?;
+        let mut entries = read_session_entries(&self.path, self.backend)?;
         entries.sort_by_key(|entry| entry.id);
 
         let mut report = RepairReport::default();
@@ -443,7 +460,7 @@ impl SessionStore {
         let mut repaired = id_to_entry.into_values().collect::<Vec<_>>();
         repaired.sort_by_key(|entry| entry.id);
 
-        write_session_entries_atomic(&self.path, &repaired)?;
+        write_session_entries_atomic(&self.path, &repaired, self.backend)?;
         self.entries = repaired;
         self.next_id = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
 
@@ -458,7 +475,7 @@ impl SessionStore {
             Duration::from_millis(self.lock_stale_ms),
         )?;
 
-        let entries = read_session_entries(&self.path)?;
+        let entries = read_session_entries(&self.path, self.backend)?;
         if entries.is_empty() {
             self.entries = entries;
             self.next_id = 1;
@@ -488,7 +505,7 @@ impl SessionStore {
             .collect::<Vec<_>>();
 
         let removed_entries = entries.len().saturating_sub(compacted.len());
-        write_session_entries_atomic(&self.path, &compacted)?;
+        write_session_entries_atomic(&self.path, &compacted, self.backend)?;
         self.entries = compacted;
         self.next_id = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
 

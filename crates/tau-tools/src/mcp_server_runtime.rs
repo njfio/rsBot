@@ -809,18 +809,33 @@ fn execute_context_provider_tool(state: &McpServerState, tool_name: &str) -> Res
                 );
             }
             let exists = state.session_path.exists();
-            let entries = if exists {
-                std::fs::read_to_string(&state.session_path)
-                    .map(|raw| raw.lines().filter(|line| !line.trim().is_empty()).count())
-                    .unwrap_or(0)
+            let (entries, storage_backend, backend_reason_code) = if exists {
+                match tau_session::SessionStore::load(&state.session_path) {
+                    Ok(store) => (
+                        store.entries().len(),
+                        store.storage_backend().label().to_string(),
+                        store.storage_backend_reason_code().to_string(),
+                    ),
+                    Err(_) => (
+                        0,
+                        "unknown".to_string(),
+                        "session_context_provider_load_failed".to_string(),
+                    ),
+                }
             } else {
-                0
+                (
+                    0,
+                    "unknown".to_string(),
+                    "session_context_provider_missing".to_string(),
+                )
             };
             Ok(json!({
                 "provider": MCP_CONTEXT_PROVIDER_SESSION,
                 "path": state.session_path.display().to_string(),
                 "exists": exists,
                 "entries": entries,
+                "storage_backend": storage_backend,
+                "backend_reason_code": backend_reason_code,
             }))
         }
         MCP_TOOL_CONTEXT_SKILLS => {
@@ -1202,10 +1217,14 @@ mod tests {
         std::fs::create_dir_all(tau_root.join("sessions")).expect("create sessions");
         std::fs::create_dir_all(tau_root.join("channel-store/channels"))
             .expect("create channel store");
-        std::fs::write(tau_root.join("sessions/default.jsonl"), "{}\n").expect("write session");
+        let session_path = tau_root.join("sessions/default.sqlite");
+        let mut store = tau_session::SessionStore::load(&session_path).expect("load session");
+        store
+            .append_messages(None, &[tau_ai::Message::system("mcp-session-seed")])
+            .expect("seed session");
         McpServerState {
             tool_policy: ToolPolicy::new(vec![temp.path().to_path_buf()]),
-            session_path: tau_root.join("sessions/default.jsonl"),
+            session_path,
             skills_dir: tau_root.join("skills"),
             channel_store_root: tau_root.join("channel-store"),
             context_providers: resolve_mcp_context_providers(&[])
@@ -1355,6 +1374,8 @@ mod tests {
         assert_eq!(result["provider"], MCP_CONTEXT_PROVIDER_SESSION);
         assert!(result["exists"].is_boolean());
         assert!(result["entries"].is_number());
+        assert!(result["storage_backend"].is_string());
+        assert!(result["backend_reason_code"].is_string());
     }
 
     #[test]
@@ -1365,10 +1386,14 @@ mod tests {
         std::fs::create_dir_all(tau_root.join("sessions")).expect("create sessions");
         std::fs::create_dir_all(tau_root.join("channel-store/channels"))
             .expect("create channel store");
-        std::fs::write(tau_root.join("sessions/default.jsonl"), "{}\n").expect("write session");
+        let session_path = tau_root.join("sessions/default.sqlite");
+        let mut store = tau_session::SessionStore::load(&session_path).expect("load session");
+        store
+            .append_messages(None, &[tau_ai::Message::system("mcp-session-seed")])
+            .expect("seed session");
         let state = McpServerState {
             tool_policy: ToolPolicy::new(vec![temp.path().to_path_buf()]),
-            session_path: tau_root.join("sessions/default.jsonl"),
+            session_path,
             skills_dir: tau_root.join("skills"),
             channel_store_root: tau_root.join("channel-store"),
             context_providers: resolve_mcp_context_providers(&[])
@@ -1537,7 +1562,7 @@ done
 
         let state = McpServerState {
             tool_policy: ToolPolicy::new(vec![temp.path().to_path_buf()]),
-            session_path: temp.path().join(".tau/sessions/default.jsonl"),
+            session_path: temp.path().join(".tau/sessions/default.sqlite"),
             skills_dir: temp.path().join(".tau/skills"),
             channel_store_root: temp.path().join(".tau/channel-store"),
             context_providers: resolve_mcp_context_providers(&[])

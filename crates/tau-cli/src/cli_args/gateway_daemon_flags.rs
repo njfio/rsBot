@@ -388,8 +388,8 @@ pub struct CliGatewayDaemonFlags {
     #[arg(
         long,
         env = "TAU_SESSION",
-        default_value = ".tau/sessions/default.jsonl",
-        help = "Session JSONL file"
+        default_value = ".tau/sessions/default.sqlite",
+        help = "Session store file (.jsonl or .sqlite)"
     )]
     pub session: PathBuf,
 

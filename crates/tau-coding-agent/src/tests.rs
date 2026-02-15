@@ -489,7 +489,7 @@ pub(crate) fn test_cli() -> Cli {
             slack_reconnect_delay_ms: 1_000,
             slack_retry_max_attempts: 4,
             slack_retry_base_delay_ms: 500,
-            session: PathBuf::from(".tau/sessions/default.jsonl"),
+            session: PathBuf::from(".tau/sessions/default.sqlite"),
             no_session: false,
             session_validate: false,
             session_import_mode: CliSessionImportMode::Merge,
@@ -856,7 +856,7 @@ where
 
 fn set_workspace_tau_paths(cli: &mut Cli, workspace: &Path) {
     let tau_root = workspace.join(".tau");
-    cli.session = tau_root.join("sessions/default.jsonl");
+    cli.session = tau_root.join("sessions/default.sqlite");
     cli.credential_store = tau_root.join("credentials.json");
     cli.skills_dir = tau_root.join("skills");
     cli.model_catalog_cache = tau_root.join("models/catalog.json");
@@ -951,7 +951,7 @@ fn skills_command_config(
             release_lookup_cache_ttl_ms: 900_000,
             browser_automation_playwright_cli: "playwright-cli".to_string(),
             session_enabled: true,
-            session_path: PathBuf::from(".tau/sessions/default.jsonl"),
+            session_path: PathBuf::from(".tau/sessions/default.sqlite"),
             skills_dir: skills_dir.to_path_buf(),
             skills_lock_path: lock_path.to_path_buf(),
             trust_root_path: trust_root_path.map(Path::to_path_buf),
