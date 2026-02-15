@@ -25,6 +25,7 @@ This index maps Tau documentation by audience and task.
 | Multi-channel contributor | [Multi-channel Event Pipeline](guides/multi-channel-event-pipeline.md) | Inbound normalization, policy/pairing, routing, persistence, outbound retry paths |
 | Runtime maintainer | [Doc Density Scorecard](guides/doc-density-scorecard.md) | Baseline/targets for public API docs coverage and CI regression guard policy |
 | Runtime maintainer | [Doc Quality Remediation Workflow](guides/doc-quality-remediation.md) | Severity taxonomy, SLA/checklist tracking, and standardized closure proof fields for doc audit findings |
+| Runtime maintainer | [RL Terminology Allowlist](guides/rl-terminology-allowlist.md) | Approved future-RL contexts, non-example stale wording, and scanner usage for M22 naming alignment |
 | Roadmap operator | [Roadmap Execution Index](guides/roadmap-execution-index.md) | End-to-end mapping from `tasks/todo.md` items to milestones/issues and execution wave ordering |
 | Roadmap operator | [Roadmap Status Sync](guides/roadmap-status-sync.md) | Generate/check roadmap status snapshots from tracked GitHub issue state |
 | Roadmap operator | [Hierarchy Graph Extraction](guides/roadmap-status-sync.md#hierarchy-graph-extraction-for-the-1678-execution-tree) | Generate JSON + Markdown hierarchy graph artifacts for roadmap dependency visibility |

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "policy_id": "rl-terms-allowlist",
+  "approved_terms": [
+    {
+      "term": "reinforcement learning",
+      "allowed_paths": [
+        "docs/planning/",
+        "docs/research/"
+      ],
+      "required_context": [
+        "future true-RL roadmap",
+        "future RL roadmap",
+        "Q3",
+        "planned"
+      ],
+      "rationale": "Allow forward-looking references for future true-RL planning documents only."
+    }
+  ],
+  "disallowed_defaults": [
+    "current RL mode",
+    "RL training loop"
+  ]
+}
