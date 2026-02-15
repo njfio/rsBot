@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "M21 Validation Matrix",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "repository",
+    "schema_path",
+    "milestone",
+    "summary",
+    "local_artifacts",
+    "issues"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "schema_path": {
+      "type": "string"
+    },
+    "milestone": {
+      "type": "object",
+      "required": ["number", "title", "state", "open_issues", "closed_issues"],
+      "properties": {
+        "number": { "type": "integer" },
+        "title": { "type": "string" },
+        "state": { "type": "string" },
+        "open_issues": { "type": "integer" },
+        "closed_issues": { "type": "integer" },
+        "due_on": { "type": ["string", "null"] }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_issues",
+        "open_issues",
+        "closed_issues",
+        "completion_percent",
+        "epics",
+        "stories",
+        "tasks",
+        "with_comments",
+        "testing_matrix_required",
+        "testing_matrix_closed",
+        "local_artifacts_total"
+      ],
+      "properties": {
+        "total_issues": { "type": "integer" },
+        "open_issues": { "type": "integer" },
+        "closed_issues": { "type": "integer" },
+        "completion_percent": { "type": "number" },
+        "epics": { "type": "integer" },
+        "stories": { "type": "integer" },
+        "tasks": { "type": "integer" },
+        "with_comments": { "type": "integer" },
+        "testing_matrix_required": { "type": "integer" },
+        "testing_matrix_closed": { "type": "integer" },
+        "local_artifacts_total": { "type": "integer" }
+      }
+    },
+    "local_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "name", "bytes", "modified_at", "status"],
+        "properties": {
+          "path": { "type": "string" },
+          "name": { "type": "string" },
+          "bytes": { "type": "integer" },
+          "modified_at": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "number",
+          "title",
+          "state",
+          "url",
+          "labels",
+          "type",
+          "comments",
+          "has_comments",
+          "testing_matrix_required"
+        ],
+        "properties": {
+          "number": { "type": "integer" },
+          "title": { "type": "string" },
+          "state": { "type": "string" },
+          "url": { "type": "string" },
+          "labels": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "type": { "type": "string" },
+          "comments": { "type": "integer" },
+          "has_comments": { "type": "boolean" },
+          "testing_matrix_required": { "type": "boolean" },
+          "parent_issue_url": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}
