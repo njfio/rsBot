@@ -8,9 +8,15 @@ use tau_training_types::ResourcesUpdate;
 
 mod adapters;
 mod apo;
+mod safety_penalty_calibration;
 
 pub use adapters::{SpansToMessages, SpansToTrajectories, SpansToTriplets, TraceAdapter};
 pub use apo::{ApoAlgorithm, ApoConfig, ApoTemplates, PromptEvaluator, VersionedPrompt};
+pub use safety_penalty_calibration::{
+    calibrate_safety_penalty_grid, select_default_safety_penalty_coefficient,
+    SafetyPenaltyCalibrationObservation, SafetyPenaltyCalibrationPolicy,
+    SafetyPenaltyCalibrationReport, SafetyPenaltyCalibrationSelection,
+};
 
 /// Input/output example used by prompt-oriented training algorithms.
 #[derive(Debug, Clone, PartialEq, Eq)]

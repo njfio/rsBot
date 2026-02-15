@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "observations": [
+    {
+      "coefficient": 0.08,
+      "mean_reward_delta": 0.14,
+      "mean_safety_penalty": 0.04
+    },
+    {
+      "coefficient": 0.12,
+      "mean_reward_delta": 0.17,
+      "mean_safety_penalty": 0.05
+    },
+    {
+      "coefficient": 0.18,
+      "mean_reward_delta": 0.16,
+      "mean_safety_penalty": 0.03
+    },
+    {
+      "coefficient": 0.24,
+      "mean_reward_delta": 0.09,
+      "mean_safety_penalty": 0.02
+    },
+    {
+      "coefficient": 0.30,
+      "mean_reward_delta": 0.22,
+      "mean_safety_penalty": 0.08
+    }
+  ]
+}
