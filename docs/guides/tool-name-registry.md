@@ -13,11 +13,21 @@ Reserved agent tool names:
 - `read`
 - `write`
 - `edit`
+- `memory_write`
+- `memory_read`
+- `memory_search`
+- `memory_tree`
 - `sessions_list`
 - `sessions_history`
 - `sessions_search`
 - `sessions_stats`
 - `sessions_send`
+- `jobs_create`
+- `jobs_list`
+- `jobs_status`
+- `jobs_cancel`
+- `undo`
+- `redo`
 - `http`
 - `bash`
 
@@ -26,6 +36,14 @@ Reserved MCP tool names:
 - `tau.read`
 - `tau.write`
 - `tau.edit`
+- `tau.memory_write`
+- `tau.memory_read`
+- `tau.memory_search`
+- `tau.memory_tree`
+- `tau.jobs_create`
+- `tau.jobs_list`
+- `tau.jobs_status`
+- `tau.jobs_cancel`
 - `tau.http`
 - `tau.bash`
 - `tau.context.session`

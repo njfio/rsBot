@@ -9,7 +9,7 @@ use crate::tools::{
     BashCommandProfile, OsSandboxMode, OsSandboxPolicyMode, ToolPolicy,
 };
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 9;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 10;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 const MEMORY_EMBEDDING_PROVIDER_ENV: &str = "TAU_MEMORY_EMBEDDING_PROVIDER";
@@ -112,6 +112,28 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
         cli.memory_state_dir.clone()
     } else {
         cwd.join(cli.memory_state_dir.as_path())
+    };
+    policy.jobs_enabled = cli.jobs_enabled;
+    policy.jobs_state_dir = if cli.jobs_state_dir.is_absolute() {
+        cli.jobs_state_dir.clone()
+    } else {
+        cwd.join(cli.jobs_state_dir.as_path())
+    };
+    policy.jobs_list_default_limit = cli.jobs_list_default_limit.max(1);
+    policy.jobs_list_max_limit = cli.jobs_list_max_limit.max(policy.jobs_list_default_limit);
+    policy.jobs_default_timeout_ms = cli.jobs_default_timeout_ms.max(1);
+    policy.jobs_max_timeout_ms = cli.jobs_max_timeout_ms.max(policy.jobs_default_timeout_ms);
+    policy.jobs_channel_store_root = if cli.channel_store_root.is_absolute() {
+        cli.channel_store_root.clone()
+    } else {
+        cwd.join(cli.channel_store_root.as_path())
+    };
+    policy.jobs_default_session_path = if cli.no_session {
+        None
+    } else if cli.session.is_absolute() {
+        Some(cli.session.clone())
+    } else {
+        Some(cwd.join(cli.session.as_path()))
     };
     if let Some(provider) = parse_optional_env_string(MEMORY_EMBEDDING_PROVIDER_ENV) {
         policy.memory_embedding_provider = Some(provider);
@@ -335,6 +357,41 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
     payload.insert(
         "memory_write_max_tag_chars".to_string(),
         serde_json::json!(policy.memory_write_max_tag_chars),
+    );
+    payload.insert(
+        "jobs_enabled".to_string(),
+        serde_json::json!(policy.jobs_enabled),
+    );
+    payload.insert(
+        "jobs_state_dir".to_string(),
+        serde_json::json!(policy.jobs_state_dir.display().to_string()),
+    );
+    payload.insert(
+        "jobs_list_default_limit".to_string(),
+        serde_json::json!(policy.jobs_list_default_limit),
+    );
+    payload.insert(
+        "jobs_list_max_limit".to_string(),
+        serde_json::json!(policy.jobs_list_max_limit),
+    );
+    payload.insert(
+        "jobs_default_timeout_ms".to_string(),
+        serde_json::json!(policy.jobs_default_timeout_ms),
+    );
+    payload.insert(
+        "jobs_max_timeout_ms".to_string(),
+        serde_json::json!(policy.jobs_max_timeout_ms),
+    );
+    payload.insert(
+        "jobs_channel_store_root".to_string(),
+        serde_json::json!(policy.jobs_channel_store_root.display().to_string()),
+    );
+    payload.insert(
+        "jobs_default_session_path".to_string(),
+        serde_json::json!(policy
+            .jobs_default_session_path
+            .as_ref()
+            .map(|path| path.display().to_string())),
     );
     payload.insert(
         "max_file_read_bytes".to_string(),
@@ -586,7 +643,7 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 9);
+        assert_eq!(payload["schema_version"], 10);
         assert_eq!(payload["allow_protected_path_mutations"], true);
         assert_eq!(payload["memory_search_default_limit"], 5);
         assert_eq!(payload["memory_search_max_limit"], 50);
@@ -633,6 +690,19 @@ mod tests {
         assert!(payload["memory_state_dir"]
             .as_str()
             .map(|value| value.ends_with(".tau/memory"))
+            .unwrap_or(false));
+        assert_eq!(payload["jobs_enabled"], true);
+        assert!(payload["jobs_state_dir"]
+            .as_str()
+            .map(|value| value.ends_with(".tau/jobs"))
+            .unwrap_or(false));
+        assert_eq!(payload["jobs_list_default_limit"], 20);
+        assert_eq!(payload["jobs_list_max_limit"], 200);
+        assert_eq!(payload["jobs_default_timeout_ms"], 30_000);
+        assert_eq!(payload["jobs_max_timeout_ms"], 900_000);
+        assert!(payload["jobs_channel_store_root"]
+            .as_str()
+            .map(|value| value.ends_with(".tau/channel-store"))
             .unwrap_or(false));
         assert_eq!(payload["os_sandbox_policy_mode"], "best-effort");
         assert_eq!(payload["http_timeout_ms"], 20_000);

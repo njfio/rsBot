@@ -18,11 +18,11 @@ use super::{
     evaluate_tool_rate_limit_gate, evaluate_tool_rbac_gate, is_command_allowed,
     is_session_candidate_path, leading_executable, os_sandbox_mode_name,
     os_sandbox_policy_mode_name, redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool,
-    BashCommandProfile, BashTool, EditTool, HttpTool, MemoryReadTool, MemorySearchTool,
-    MemoryTreeTool, MemoryWriteTool, OsSandboxMode, OsSandboxPolicyMode, RedoTool,
-    SessionsHistoryTool, SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool,
-    ToolExecutionResult, ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool,
-    WriteTool,
+    BashCommandProfile, BashTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool,
+    JobsStatusTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
+    OsSandboxMode, OsSandboxPolicyMode, RedoTool, SessionsHistoryTool, SessionsListTool,
+    SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolExecutionResult, ToolPolicy,
+    ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool, WriteTool,
 };
 use tau_access::ApprovalAction;
 use tau_ai::Message;
@@ -38,6 +38,17 @@ fn test_policy(path: &Path) -> Arc<ToolPolicy> {
 fn test_policy_with_memory(path: &Path) -> Arc<ToolPolicy> {
     let mut policy = ToolPolicy::new(vec![path.to_path_buf()]);
     policy.memory_state_dir = path.join(".tau/memory");
+    Arc::new(policy)
+}
+
+fn test_policy_with_jobs(path: &Path) -> Arc<ToolPolicy> {
+    let mut policy = ToolPolicy::new(vec![path.to_path_buf()]);
+    policy.jobs_enabled = true;
+    policy.jobs_state_dir = path.join(".tau/jobs");
+    policy.jobs_channel_store_root = path.join(".tau/channel-store");
+    policy.jobs_default_session_path = Some(path.join(".tau/sessions/default.sqlite"));
+    policy.jobs_default_timeout_ms = 5_000;
+    policy.jobs_max_timeout_ms = 10_000;
     Arc::new(policy)
 }
 
@@ -208,6 +219,10 @@ fn unit_builtin_agent_tool_name_registry_includes_session_tools() {
     assert!(names.contains(&"sessions_search"));
     assert!(names.contains(&"sessions_stats"));
     assert!(names.contains(&"sessions_send"));
+    assert!(names.contains(&"jobs_create"));
+    assert!(names.contains(&"jobs_list"));
+    assert!(names.contains(&"jobs_status"));
+    assert!(names.contains(&"jobs_cancel"));
     assert!(names.contains(&"undo"));
     assert!(names.contains(&"redo"));
     assert!(names.contains(&"http"));
@@ -1486,6 +1501,173 @@ async fn integration_memory_tools_fixture_roundtrip_is_deterministic() {
         tree_payload["total_entries"],
         expectations["tree_total_entries"]
     );
+}
+
+fn jobs_shell_command(script: &str) -> (String, Vec<String>) {
+    if cfg!(windows) {
+        (
+            "cmd".to_string(),
+            vec!["/C".to_string(), script.to_string()],
+        )
+    } else {
+        (
+            "sh".to_string(),
+            vec!["-lc".to_string(), script.to_string()],
+        )
+    }
+}
+
+fn jobs_sleep_script() -> &'static str {
+    if cfg!(windows) {
+        "ping -n 3 127.0.0.1 >NUL"
+    } else {
+        "sleep 1"
+    }
+}
+
+async fn wait_for_job_terminal_status(
+    status_tool: &JobsStatusTool,
+    job_id: &str,
+) -> serde_json::Value {
+    let timeout = tokio::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let status = status_tool
+            .execute(serde_json::json!({
+                "job_id": job_id,
+            }))
+            .await;
+        assert!(
+            !status.is_error,
+            "jobs_status should succeed: {}",
+            status.content
+        );
+        let state = status.content["job"]["status"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if matches!(state.as_str(), "succeeded" | "failed" | "cancelled") {
+            return status.content;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "job {job_id} did not reach terminal status"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+    }
+}
+
+#[tokio::test]
+async fn unit_jobs_create_tool_rejects_empty_command() {
+    let temp = tempdir().expect("tempdir");
+    let tool = JobsCreateTool::new(test_policy_with_jobs(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "   "
+        }))
+        .await;
+    assert!(result.is_error);
+    assert_eq!(result.content["reason_code"], "jobs_invalid_arguments");
+}
+
+#[tokio::test]
+async fn functional_jobs_create_and_status_tools_reach_succeeded_terminal_state() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_jobs(temp.path());
+    let create_tool = JobsCreateTool::new(policy.clone());
+    let status_tool = JobsStatusTool::new(policy);
+    let (command, args) = jobs_shell_command("echo tau-jobs-tool");
+    let created = create_tool
+        .execute(serde_json::json!({
+            "command": command,
+            "args": args,
+        }))
+        .await;
+    assert!(!created.is_error, "jobs_create failed: {}", created.content);
+    assert_eq!(created.content["reason_code"], "job_queued");
+    let job_id = created.content["job"]["job_id"]
+        .as_str()
+        .expect("job id")
+        .to_string();
+
+    let status = wait_for_job_terminal_status(&status_tool, &job_id).await;
+    assert_eq!(status["job"]["status"], "succeeded");
+    assert_eq!(status["reason_code"], "jobs_status_ok");
+    assert!(status["stdout_preview"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("tau-jobs-tool"));
+}
+
+#[tokio::test]
+async fn integration_jobs_cancel_and_list_tools_report_persisted_state() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_jobs(temp.path());
+    let create_tool = JobsCreateTool::new(policy.clone());
+    let list_tool = JobsListTool::new(policy.clone());
+    let cancel_tool = JobsCancelTool::new(policy.clone());
+    let status_tool = JobsStatusTool::new(policy);
+
+    let (first_command, first_args) = jobs_shell_command(jobs_sleep_script());
+    let first = create_tool
+        .execute(serde_json::json!({
+            "command": first_command,
+            "args": first_args,
+        }))
+        .await;
+    assert!(!first.is_error, "first create: {}", first.content);
+
+    let (second_command, second_args) = jobs_shell_command("echo second-job");
+    let second = create_tool
+        .execute(serde_json::json!({
+            "command": second_command,
+            "args": second_args,
+        }))
+        .await;
+    assert!(!second.is_error, "second create: {}", second.content);
+    let second_id = second.content["job"]["job_id"]
+        .as_str()
+        .expect("second id")
+        .to_string();
+
+    let cancelled = cancel_tool
+        .execute(serde_json::json!({
+            "job_id": second_id,
+        }))
+        .await;
+    assert!(!cancelled.is_error, "cancel failed: {}", cancelled.content);
+    assert_eq!(cancelled.content["job"]["status"], "cancelled");
+
+    let filtered = list_tool
+        .execute(serde_json::json!({
+            "status": "cancelled",
+            "limit": 10,
+        }))
+        .await;
+    assert!(!filtered.is_error, "list failed: {}", filtered.content);
+    assert!(filtered.content["jobs"]
+        .as_array()
+        .map(|jobs| jobs.iter().any(|job| job["status"] == "cancelled"))
+        .unwrap_or(false));
+
+    let first_id = first.content["job"]["job_id"]
+        .as_str()
+        .expect("first id")
+        .to_string();
+    let _ = wait_for_job_terminal_status(&status_tool, &first_id).await;
+}
+
+#[tokio::test]
+async fn regression_jobs_status_tool_reports_not_found_reason_code() {
+    let temp = tempdir().expect("tempdir");
+    let status_tool = JobsStatusTool::new(test_policy_with_jobs(temp.path()));
+    let result = status_tool
+        .execute(serde_json::json!({
+            "job_id": "job-does-not-exist",
+        }))
+        .await;
+    assert!(result.is_error);
+    assert_eq!(result.content["reason_code"], "job_not_found");
 }
 
 #[tokio::test]

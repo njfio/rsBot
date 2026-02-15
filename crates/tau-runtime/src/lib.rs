@@ -1,8 +1,10 @@
 //! Shared runtime adapters and helpers for Tau service components.
 //!
-//! Exposes channel-store, heartbeat scheduler, RPC, runtime output,
-//! observability, and transport health modules reused across runtimes.
+//! Exposes channel-store, background-jobs runtime, heartbeat scheduler, RPC,
+//! runtime output, observability, and transport health modules reused across
+//! runtimes.
 
+pub mod background_jobs_runtime;
 pub mod channel_store;
 pub mod heartbeat_runtime;
 pub mod observability_loggers_runtime;
@@ -14,6 +16,7 @@ pub mod ssrf_guard;
 pub mod transport_conformance_runtime;
 pub mod transport_health;
 
+pub use background_jobs_runtime::*;
 pub use channel_store::*;
 pub use heartbeat_runtime::*;
 pub use observability_loggers_runtime::*;

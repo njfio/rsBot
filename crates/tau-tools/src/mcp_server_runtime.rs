@@ -15,8 +15,9 @@ use tau_cli::Cli;
 
 use crate::tool_policy_config::build_tool_policy;
 use crate::tools::{
-    BashTool, EditTool, HttpTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool,
-    MemoryWriteTool, ReadTool, ToolPolicy, WriteTool,
+    BashTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool,
+    MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool, ReadTool, ToolPolicy,
+    WriteTool,
 };
 
 const MCP_JSONRPC_VERSION: &str = "2.0";
@@ -34,6 +35,10 @@ const MCP_TOOL_MEMORY_WRITE: &str = "tau.memory_write";
 const MCP_TOOL_MEMORY_READ: &str = "tau.memory_read";
 const MCP_TOOL_MEMORY_SEARCH: &str = "tau.memory_search";
 const MCP_TOOL_MEMORY_TREE: &str = "tau.memory_tree";
+const MCP_TOOL_JOBS_CREATE: &str = "tau.jobs_create";
+const MCP_TOOL_JOBS_LIST: &str = "tau.jobs_list";
+const MCP_TOOL_JOBS_STATUS: &str = "tau.jobs_status";
+const MCP_TOOL_JOBS_CANCEL: &str = "tau.jobs_cancel";
 const MCP_TOOL_HTTP: &str = "tau.http";
 const MCP_TOOL_BASH: &str = "tau.bash";
 const MCP_TOOL_CONTEXT_SESSION: &str = "tau.context.session";
@@ -55,6 +60,10 @@ const RESERVED_MCP_TOOL_NAMES: &[&str] = &[
     MCP_TOOL_MEMORY_READ,
     MCP_TOOL_MEMORY_SEARCH,
     MCP_TOOL_MEMORY_TREE,
+    MCP_TOOL_JOBS_CREATE,
+    MCP_TOOL_JOBS_LIST,
+    MCP_TOOL_JOBS_STATUS,
+    MCP_TOOL_JOBS_CANCEL,
     MCP_TOOL_HTTP,
     MCP_TOOL_BASH,
     MCP_TOOL_CONTEXT_SESSION,
@@ -952,6 +961,18 @@ fn execute_builtin_tool_call(
         MCP_TOOL_MEMORY_TREE => Ok(block_on_tool_future(
             MemoryTreeTool::new(policy).execute(arguments),
         )),
+        MCP_TOOL_JOBS_CREATE => Ok(block_on_tool_future(
+            JobsCreateTool::new(policy).execute(arguments),
+        )),
+        MCP_TOOL_JOBS_LIST => Ok(block_on_tool_future(
+            JobsListTool::new(policy).execute(arguments),
+        )),
+        MCP_TOOL_JOBS_STATUS => Ok(block_on_tool_future(
+            JobsStatusTool::new(policy).execute(arguments),
+        )),
+        MCP_TOOL_JOBS_CANCEL => Ok(block_on_tool_future(
+            JobsCancelTool::new(policy).execute(arguments),
+        )),
         MCP_TOOL_HTTP => Ok(block_on_tool_future(
             HttpTool::new(policy).execute(arguments),
         )),
@@ -995,6 +1016,10 @@ fn builtin_mcp_tools(state: &McpServerState) -> Vec<McpToolDescriptor> {
             &MemorySearchTool::new(policy.clone()),
         ),
         agent_tool_descriptor(MCP_TOOL_MEMORY_TREE, &MemoryTreeTool::new(policy.clone())),
+        agent_tool_descriptor(MCP_TOOL_JOBS_CREATE, &JobsCreateTool::new(policy.clone())),
+        agent_tool_descriptor(MCP_TOOL_JOBS_LIST, &JobsListTool::new(policy.clone())),
+        agent_tool_descriptor(MCP_TOOL_JOBS_STATUS, &JobsStatusTool::new(policy.clone())),
+        agent_tool_descriptor(MCP_TOOL_JOBS_CANCEL, &JobsCancelTool::new(policy.clone())),
         agent_tool_descriptor(MCP_TOOL_HTTP, &HttpTool::new(policy.clone())),
         agent_tool_descriptor(MCP_TOOL_BASH, &BashTool::new(policy)),
     ];
@@ -1325,6 +1350,10 @@ mod tests {
         assert!(tools.iter().any(|tool| tool["name"] == "tau.memory_read"));
         assert!(tools.iter().any(|tool| tool["name"] == "tau.memory_search"));
         assert!(tools.iter().any(|tool| tool["name"] == "tau.memory_tree"));
+        assert!(tools.iter().any(|tool| tool["name"] == "tau.jobs_create"));
+        assert!(tools.iter().any(|tool| tool["name"] == "tau.jobs_list"));
+        assert!(tools.iter().any(|tool| tool["name"] == "tau.jobs_status"));
+        assert!(tools.iter().any(|tool| tool["name"] == "tau.jobs_cancel"));
         assert!(tools.iter().any(|tool| tool["name"] == "tau.http"));
         assert!(tools
             .iter()

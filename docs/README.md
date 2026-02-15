@@ -10,6 +10,7 @@ This index maps Tau documentation by audience and task.
 | Prompt optimization integration operator | [Prompt Optimization Proxy Operations Guide](guides/training-proxy-ops.md) | OpenAI-compatible proxy mode with rollout/attempt attribution logs |
 | Workspace operator | [Project Index Guide](guides/project-index.md) | Build/query/inspect deterministic local code index |
 | Runtime operator / SRE | [Operator Control Summary](guides/operator-control-summary.md) | Unified control-plane status, policy posture, daemon/release checks, triage map |
+| Runtime operator / SRE | [Background Jobs Operations Guide](guides/background-jobs-ops.md) | Asynchronous job tool lifecycle, persisted state layout, reason-codes, and trace integration |
 | Release operator | [Release Automation Operations Guide](guides/release-automation-ops.md) | Multi-platform build/publish flow, hook contracts, installer scripts, reason-code diagnostics |
 | Runtime contributor | [Startup DI Pipeline](guides/startup-di-pipeline.md) | 3-stage startup resolution: preflight gate, dependency/context composition, mode dispatch |
 | Runtime contributor | [Contract Pattern Lifecycle](guides/contract-pattern-lifecycle.md) | Shared fixture lifecycle, compatibility gates, extension checklist, anti-patterns |

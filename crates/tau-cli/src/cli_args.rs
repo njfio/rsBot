@@ -3316,6 +3316,62 @@ pub struct Cli {
     pub memory_state_dir: PathBuf,
 
     #[arg(
+        long = "jobs-enabled",
+        env = "TAU_JOBS_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        help = "Enable built-in background job tooling (jobs_create/list/status/cancel)"
+    )]
+    pub jobs_enabled: bool,
+
+    #[arg(
+        long = "jobs-state-dir",
+        env = "TAU_JOBS_STATE_DIR",
+        default_value = ".tau/jobs",
+        help = "Directory for persisted background job manifests, output logs, and runtime health state"
+    )]
+    pub jobs_state_dir: PathBuf,
+
+    #[arg(
+        long = "jobs-list-default-limit",
+        env = "TAU_JOBS_LIST_DEFAULT_LIMIT",
+        default_value_t = 20,
+        value_parser = parse_positive_usize,
+        help = "Default number of jobs returned by jobs_list when limit is omitted"
+    )]
+    pub jobs_list_default_limit: usize,
+
+    #[arg(
+        long = "jobs-list-max-limit",
+        env = "TAU_JOBS_LIST_MAX_LIMIT",
+        default_value_t = 200,
+        value_parser = parse_positive_usize,
+        help = "Maximum number of jobs returned by jobs_list"
+    )]
+    pub jobs_list_max_limit: usize,
+
+    #[arg(
+        long = "jobs-default-timeout-ms",
+        env = "TAU_JOBS_DEFAULT_TIMEOUT_MS",
+        default_value_t = 30_000,
+        value_parser = parse_positive_u64,
+        help = "Default timeout in milliseconds applied to jobs_create when timeout_ms is omitted"
+    )]
+    pub jobs_default_timeout_ms: u64,
+
+    #[arg(
+        long = "jobs-max-timeout-ms",
+        env = "TAU_JOBS_MAX_TIMEOUT_MS",
+        default_value_t = 900_000,
+        value_parser = parse_positive_u64,
+        help = "Maximum allowed timeout in milliseconds for jobs_create"
+    )]
+    pub jobs_max_timeout_ms: u64,
+
+    #[arg(
         long = "memory-queue-limit",
         env = "TAU_MEMORY_QUEUE_LIMIT",
         default_value_t = 64,
