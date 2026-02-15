@@ -163,6 +163,13 @@ jobs:
               - "scripts/dev/test-wasm-smoke.sh"
               - "scripts/edge/**"
               - ".github/workflows/ci.yml"
+            demo_smoke:
+              - "crates/tau-coding-agent/**"
+              - ".github/demo-smoke-manifest.json"
+              - ".github/scripts/demo_smoke_runner.py"
+              - ".github/scripts/test_demo_smoke_runner.py"
+              - "scripts/demo-smoke.sh"
+              - ".github/workflows/ci.yml"
 
       - name: Determine rust scope
         id: rust_scope
@@ -269,6 +276,21 @@ jobs:
         if: steps.wasm_scope.outputs.wasm_smoke_needed == 'true'
         run: ./scripts/dev/test-wasm-smoke.sh
 
+      - name: Determine codex demo smoke scope
+        id: demo_smoke_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          demo_smoke_needed="${{ steps.change_scope.outputs.demo_smoke }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            demo_smoke_needed="true"
+          elif [[ -z "${demo_smoke_needed}" ]]; then
+            demo_smoke_needed="false"
+          fi
+          echo "demo_smoke_needed=${demo_smoke_needed}" >> "$GITHUB_OUTPUT"
+          echo "### Codex Demo Smoke Scope" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Demo smoke needed: ${demo_smoke_needed}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Determine quality mode
         id: quality_mode
         shell: bash
@@ -365,7 +387,7 @@ jobs:
           fi
 
       - name: Run codex light demo smoke
-        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light'
+        if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light' && steps.demo_smoke_scope.outputs.demo_smoke_needed == 'true'
         env:
           RUST_MIN_STACK: "8388608"
         run: |
@@ -378,7 +400,7 @@ jobs:
             --build
 
       - name: Upload codex light demo smoke logs
-        if: always() && steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light'
+        if: always() && steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light' && steps.demo_smoke_scope.outputs.demo_smoke_needed == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: demo-smoke-logs
