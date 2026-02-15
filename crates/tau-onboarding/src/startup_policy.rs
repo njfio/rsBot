@@ -1,23 +1,21 @@
 use anyhow::Result;
 use serde_json::Value;
 use tau_cli::Cli;
-use tau_tools::tool_policy_config::{build_tool_policy, tool_policy_to_json};
+use tau_startup::resolve_startup_safety_policy;
 use tau_tools::tools::ToolPolicy;
 
 /// Public struct `StartupPolicyBundle` used across Tau components.
 pub struct StartupPolicyBundle {
     pub tool_policy: ToolPolicy,
     pub tool_policy_json: Value,
+    pub precedence_layers: Vec<String>,
 }
 
 pub fn resolve_startup_policy(cli: &Cli) -> Result<StartupPolicyBundle> {
-    let tool_policy = build_tool_policy(cli)?;
-    let tool_policy_json = tool_policy_to_json(&tool_policy);
-    if cli.print_tool_policy {
-        println!("{tool_policy_json}");
-    }
+    let resolved = resolve_startup_safety_policy(cli)?;
     Ok(StartupPolicyBundle {
-        tool_policy,
-        tool_policy_json,
+        tool_policy: resolved.tool_policy,
+        tool_policy_json: resolved.tool_policy_json,
+        precedence_layers: resolved.precedence_layers,
     })
 }

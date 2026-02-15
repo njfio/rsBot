@@ -253,6 +253,10 @@ pub(crate) use crate::tool_policy_config::build_tool_policy;
 #[cfg(test)]
 pub(crate) use crate::tool_policy_config::parse_sandbox_command_tokens;
 #[cfg(test)]
+pub(crate) use crate::tool_policy_config::resolve_startup_safety_policy;
+#[cfg(test)]
+pub(crate) use crate::tool_policy_config::startup_safety_policy_precedence_layers;
+#[cfg(test)]
 pub(crate) use crate::tool_policy_config::tool_policy_to_json;
 #[cfg(test)]
 pub(crate) use crate::transport_health::TransportHealthSnapshot;

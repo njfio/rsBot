@@ -91,6 +91,7 @@ where
     let StartupPolicyBundle {
         tool_policy,
         tool_policy_json,
+        precedence_layers: _precedence_layers,
     } = startup_policy;
     if run_transport_mode_if_requested(
         cli,
@@ -565,6 +566,14 @@ mod tests {
         assert_eq!(context.identity_composition.loaded_count, 0);
         assert_eq!(context.identity_composition.missing_count, 3);
         assert!(context.startup_policy.tool_policy_json.is_object());
+        assert_eq!(
+            context.startup_policy.precedence_layers,
+            vec![
+                "profile_preset".to_string(),
+                "cli_flags_and_cli_env".to_string(),
+                "runtime_env_overrides".to_string(),
+            ]
+        );
     }
 
     #[test]

@@ -1659,6 +1659,38 @@ fn regression_build_tool_policy_explicit_profile_overrides_preset_profile() {
 }
 
 #[test]
+fn regression_resolve_startup_safety_policy_enforces_precedence_contract() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let snapshot = snapshot_env_vars(&["TAU_BASH_PROFILE"]);
+    std::env::set_var("TAU_BASH_PROFILE", "strict");
+
+    let mut cli = test_cli();
+    cli.tool_policy_preset = CliToolPolicyPreset::Hardened;
+    cli.bash_profile = CliBashProfile::Permissive;
+
+    let resolved =
+        tau_startup::resolve_startup_safety_policy(&cli).expect("resolve startup safety policy");
+    assert_eq!(
+        resolved.precedence_layers,
+        tau_startup::startup_safety_policy_precedence_layers()
+    );
+    assert_eq!(
+        resolved.tool_policy.policy_preset,
+        ToolPolicyPreset::Hardened
+    );
+    assert_eq!(
+        resolved.tool_policy.bash_profile,
+        BashCommandProfile::Permissive
+    );
+    assert_eq!(resolved.tool_policy_json["preset"], "hardened");
+    assert_eq!(resolved.tool_policy_json["bash_profile"], "permissive");
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
 fn functional_build_tool_policy_enables_trace_when_flag_set() {
     let mut cli = test_cli();
     cli.tool_policy_trace = true;

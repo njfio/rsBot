@@ -42,3 +42,9 @@ path = "../tau-runtime"
 
 [dependencies.tau-session]
 path = "../tau-session"
+
+[dependencies.tau-tools]
+path = "../tau-tools"
+
+[dev-dependencies]
+clap = { workspace = true }

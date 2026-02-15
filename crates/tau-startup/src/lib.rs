@@ -40,6 +40,8 @@ pub mod startup_multi_channel_adapters;
 pub mod startup_multi_channel_commands;
 /// RPC capabilities command rendering and dispatch helpers.
 pub mod startup_rpc_capabilities_command;
+/// Centralized startup safety-policy precedence resolver.
+pub mod startup_safety_policy;
 
 pub use runtime_types::*;
 pub use startup_command_file_runtime::*;
@@ -47,6 +49,7 @@ pub use startup_model_catalog::*;
 pub use startup_multi_channel_adapters::*;
 pub use startup_multi_channel_commands::*;
 pub use startup_rpc_capabilities_command::*;
+pub use startup_safety_policy::*;
 
 /// Trait contract for `StartupPreflightActions` behavior.
 pub trait StartupPreflightActions {
