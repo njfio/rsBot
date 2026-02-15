@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "policy_id": "stale-branch-alert-policy",
+  "description": "Objective stale-branch thresholds and automated alert conditions for merge throughput control.",
+  "thresholds": {
+    "warning": {
+      "age_days": 2,
+      "behind_commits": 25
+    },
+    "critical": {
+      "age_days": 5,
+      "behind_commits": 75
+    },
+    "unresolved_conflict_warning_hours": 12
+  },
+  "alert_conditions": [
+    {
+      "id": "stale.warning.age_or_behind",
+      "severity": "warning",
+      "trigger": "branch age or behind count reaches warning threshold",
+      "channels": [
+        "github.pr_comment",
+        "github.issue_comment:#1678"
+      ]
+    },
+    {
+      "id": "stale.critical.age_or_behind",
+      "severity": "error",
+      "trigger": "branch age or behind count reaches critical threshold",
+      "channels": [
+        "github.pr_comment",
+        "github.issue_comment:#1678",
+        "runtime.maintainer_page"
+      ]
+    },
+    {
+      "id": "stale.warning.unresolved_conflict",
+      "severity": "warning",
+      "trigger": "merge conflict remains unresolved beyond unresolved_conflict_warning_hours",
+      "channels": [
+        "github.pr_comment",
+        "github.issue_comment:#1678"
+      ]
+    }
+  ],
+  "acknowledge_resolve_workflow": {
+    "acknowledge_sla_hours": 4,
+    "required_ack_fields": [
+      "owner",
+      "acknowledged_at",
+      "next_update_at",
+      "mitigation_plan"
+    ],
+    "resolve_states": [
+      "rebased_and_green",
+      "merged",
+      "closed_not_planned"
+    ],
+    "status_tags": [
+      "stale-warning",
+      "stale-critical"
+    ]
+  },
+  "pr_reference_fields": [
+    "Branch Freshness",
+    "Stale Alert Acknowledgement"
+  ]
+}
