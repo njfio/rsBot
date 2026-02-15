@@ -30,6 +30,24 @@ Write deterministic JSON summary:
 ./scripts/demo/index.sh --json --report-file .tau/reports/demo-index-summary.json
 ```
 
+Generate a standard M21 proof-pack manifest alongside the report:
+
+```bash
+./scripts/demo/index.sh \
+  --json \
+  --report-file .tau/reports/demo-index-summary.json
+# auto-emits: .tau/reports/demo-index-summary.manifest.json
+```
+
+Override manifest destination explicitly:
+
+```bash
+./scripts/demo/index.sh \
+  --json \
+  --report-file .tau/reports/demo-index-summary.json \
+  --manifest-file .tau/reports/m21-live-proof-pack.json
+```
+
 ## Scenario matrix
 
 ### onboarding
@@ -89,3 +107,27 @@ commands that cover the same workflow classes:
 - deployment WASM package and inspect
 
 This keeps smoke runs deterministic while avoiding external-service dependencies.
+
+## Proof-pack manifest schema
+
+`scripts/demo/proof-pack-manifest.sh` defines the standard artifact manifest template used by
+`scripts/demo/index.sh` and `scripts/demo/all.sh` whenever `--report-file` is set.
+
+Required top-level fields:
+- `schema_version` (integer)
+- `generated_at` (UTC ISO-8601 timestamp)
+- `pack_name` (logical proof-pack identifier)
+- `milestone` (roadmap milestone label)
+- `issues` (array of linked issue IDs)
+- `producer.script` / `producer.mode` (emitting wrapper + list/run mode)
+- `artifacts[]` with:
+  - `name`
+  - `path`
+  - `required`
+  - `status` (`present` or `missing`)
+- `summary.status` (`pass`, `fail`, or `unknown`) with optional `total/passed/failed` counts
+
+Reviewer checklist:
+- confirm each required artifact entry is `present`
+- confirm `summary.status == "pass"` for closure-ready proof packs
+- verify `issues[]` links and `producer` metadata match the reviewed run

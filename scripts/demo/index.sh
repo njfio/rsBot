@@ -9,6 +9,7 @@ list_only="false"
 json_output="false"
 has_only_filter="false"
 report_file=""
+manifest_file=""
 fail_fast="false"
 timeout_seconds=""
 
@@ -342,7 +343,7 @@ print_summary_json() {
 
 print_usage() {
   cat <<EOF
-Usage: index.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only SCENARIOS] [--json] [--report-file PATH] [--fail-fast] [--timeout-seconds N] [--help]
+Usage: index.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only SCENARIOS] [--json] [--report-file PATH] [--manifest-file PATH] [--fail-fast] [--timeout-seconds N] [--help]
 
 Run the operator-focused demo index for fresh-clone validation:
 - onboarding
@@ -359,6 +360,8 @@ Options:
   --only SCENARIOS   Comma-separated subset (names: onboarding,gateway-auth,gateway-remote-access,multi-channel-live,deployment-wasm)
   --json             Emit deterministic JSON output for list/summary modes
   --report-file      Write deterministic JSON report artifact to path
+  --manifest-file    Write standardized proof-pack manifest artifact to path
+                     (requires --report-file)
   --fail-fast        Stop after first failed scenario
   --timeout-seconds  Positive integer timeout for each scenario wrapper
   --help             Show this usage message
@@ -427,6 +430,15 @@ while [[ $# -gt 0 ]]; do
       report_file="$2"
       shift 2
       ;;
+    --manifest-file)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        log_error "missing value for --manifest-file"
+        print_usage >&2
+        exit 2
+      fi
+      manifest_file="$2"
+      shift 2
+      ;;
     --fail-fast)
       fail_fast="true"
       shift
@@ -467,6 +479,19 @@ if [[ "${binary}" != /* ]]; then
   binary="${repo_root}/${binary}"
 fi
 
+if [[ -z "${manifest_file}" && -n "${report_file}" ]]; then
+  if [[ "${report_file}" == *.json ]]; then
+    manifest_file="${report_file%.json}.manifest.json"
+  else
+    manifest_file="${report_file}.manifest.json"
+  fi
+fi
+
+if [[ -n "${manifest_file}" && -z "${report_file}" ]]; then
+  log_error "--manifest-file requires --report-file"
+  exit 2
+fi
+
 if [[ ${#unknown_scenario_names[@]} -gt 0 ]]; then
   log_error "unknown scenario names in --only: ${unknown_scenario_names[*]}"
   exit 2
@@ -490,6 +515,15 @@ if [[ "${list_only}" == "true" ]]; then
   list_json_payload="$(print_scenario_list_json "${selected_scenarios[@]}")"
   if [[ -n "${report_file}" ]]; then
     write_report_file "${list_json_payload}" "${report_file}"
+  fi
+  if [[ -n "${manifest_file}" ]]; then
+    "${script_dir}/proof-pack-manifest.sh" \
+      --output "${manifest_file}" \
+      --pack-name "demo-index-live-proof-pack" \
+      --producer-script "scripts/demo/index.sh" \
+      --mode "list" \
+      --report-file "${report_file}" \
+      --issue "#1742"
   fi
   if [[ "${json_output}" == "true" ]]; then
     echo "${list_json_payload}"
@@ -559,6 +593,15 @@ done
 summary_json_payload="$(print_summary_json "${total}" "${passed}" "${failed}")"
 if [[ -n "${report_file}" ]]; then
   write_report_file "${summary_json_payload}" "${report_file}"
+fi
+if [[ -n "${manifest_file}" ]]; then
+  "${script_dir}/proof-pack-manifest.sh" \
+    --output "${manifest_file}" \
+    --pack-name "demo-index-live-proof-pack" \
+    --producer-script "scripts/demo/index.sh" \
+    --mode "run" \
+    --report-file "${report_file}" \
+    --issue "#1742"
 fi
 
 if [[ "${json_output}" == "true" ]]; then

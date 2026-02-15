@@ -513,12 +513,14 @@ class DemoScriptsTests(unittest.TestCase):
             binary_path = root / "bin" / "tau-coding-agent"
             trace_path = root / "trace.ndjson"
             report_path = root / "reports" / "all.json"
+            manifest_path = root / "reports" / "all.manifest.json"
             write_mock_binary(binary_path)
 
             completed = run_demo_script("all.sh", binary_path, trace_path, extra_args=["--report-file", str(report_path)])
             self.assertEqual(completed.returncode, 0, msg=completed.stderr)
             self.assertIn("[demo:all] summary: total=16 passed=16 failed=0", completed.stdout)
             self.assertTrue(report_path.exists())
+            self.assertTrue(manifest_path.exists())
 
             payload = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["summary"], {"total": 16, "passed": 16, "failed": 0})
@@ -545,6 +547,20 @@ class DemoScriptsTests(unittest.TestCase):
             )
             for entry in payload["demos"]:
                 assert_duration_ms_field(self, entry)
+
+            manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest_payload["schema_version"], 1)
+            self.assertEqual(manifest_payload["pack_name"], "demo-all-live-proof-pack")
+            self.assertEqual(manifest_payload["producer"]["script"], "scripts/demo/all.sh")
+            self.assertEqual(manifest_payload["producer"]["mode"], "run")
+            self.assertEqual(manifest_payload["summary"]["status"], "pass")
+            self.assertEqual(manifest_payload["summary"]["total"], 16)
+            self.assertEqual(manifest_payload["summary"]["passed"], 16)
+            self.assertEqual(manifest_payload["summary"]["failed"], 0)
+            self.assertEqual(len(manifest_payload["artifacts"]), 1)
+            self.assertEqual(manifest_payload["artifacts"][0]["name"], "report")
+            self.assertEqual(manifest_payload["artifacts"][0]["path"], str(report_path))
+            self.assertEqual(manifest_payload["artifacts"][0]["status"], "present")
 
     def test_functional_all_script_fail_fast_stops_after_first_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -880,6 +896,16 @@ class DemoScriptsTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2)
             self.assertIn("invalid value for --timeout-seconds", completed.stderr)
             self.assertFalse(trace_path.exists())
+
+    def test_regression_all_script_manifest_file_requires_report_file(self) -> None:
+        completed = subprocess.run(
+            [str(SCRIPTS_DIR / "all.sh"), "--list", "--manifest-file", "/tmp/m21-manifest.json"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--manifest-file requires --report-file", completed.stderr)
 
     def test_regression_voice_contract_demo_remains_contract_runner_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

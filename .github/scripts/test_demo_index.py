@@ -59,6 +59,7 @@ class DemoIndexTests(unittest.TestCase):
     def test_integration_demo_index_report_file_matches_json_payload(self):
         with tempfile.TemporaryDirectory(prefix="tau-demo-index-test-") as temp_dir:
             report_file = Path(temp_dir) / "report.json"
+            manifest_file = Path(temp_dir) / "report.manifest.json"
             result = run_command(
                 [
                     "bash",
@@ -71,9 +72,20 @@ class DemoIndexTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertTrue(report_file.exists())
+            self.assertTrue(manifest_file.exists())
             stdout_payload = json.loads(result.stdout)
             file_payload = json.loads(report_file.read_text(encoding="utf-8"))
             self.assertEqual(stdout_payload, file_payload)
+            manifest_payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+            self.assertEqual(manifest_payload["schema_version"], 1)
+            self.assertEqual(manifest_payload["pack_name"], "demo-index-live-proof-pack")
+            self.assertEqual(manifest_payload["producer"]["script"], "scripts/demo/index.sh")
+            self.assertEqual(manifest_payload["producer"]["mode"], "list")
+            self.assertEqual(manifest_payload["summary"]["status"], "unknown")
+            self.assertEqual(manifest_payload["summary"]["total"], None)
+            self.assertEqual(manifest_payload["artifacts"][0]["name"], "report")
+            self.assertEqual(manifest_payload["artifacts"][0]["path"], str(report_file))
+            self.assertEqual(manifest_payload["artifacts"][0]["status"], "present")
 
             all_list_result = run_command(
                 [
@@ -130,6 +142,19 @@ class DemoIndexTests(unittest.TestCase):
         )
         self.assertIn("deployment-wasm-package", command_names)
         self.assertIn("deployment-channel-store-inspect-edge-wasm", command_names)
+
+    def test_regression_demo_index_manifest_file_requires_report_file(self):
+        result = run_command(
+            [
+                "bash",
+                str(DEMO_INDEX_SCRIPT),
+                "--list",
+                "--manifest-file",
+                "/tmp/m21-index-manifest.json",
+            ]
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--manifest-file requires --report-file", result.stderr)
 
 
 if __name__ == "__main__":

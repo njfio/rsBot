@@ -9,6 +9,7 @@ list_only="false"
 json_output="false"
 has_only_filter="false"
 report_file=""
+manifest_file=""
 fail_fast="false"
 timeout_seconds=""
 
@@ -238,7 +239,7 @@ print_summary_json() {
 
 print_usage() {
   cat <<EOF
-Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--report-file PATH] [--fail-fast] [--timeout-seconds N] [--help]
+Usage: all.sh [--repo-root PATH] [--binary PATH] [--skip-build] [--list] [--only DEMOS] [--json] [--report-file PATH] [--manifest-file PATH] [--fail-fast] [--timeout-seconds N] [--help]
 
 Run checked-in Tau demo wrappers (local/rpc/events/package/multi-channel/multi-agent/browser-automation/browser-automation-live/memory/dashboard/gateway/gateway-auth/gateway-remote-access/deployment/custom-command/voice) with deterministic summary output.
 
@@ -250,6 +251,8 @@ Options:
   --only DEMOS      Comma-separated subset (names: local,rpc,events,package,multi-channel,multi-agent,browser-automation,browser-automation-live,memory,dashboard,gateway,gateway-auth,gateway-remote-access,deployment,custom-command,voice)
   --json            Emit deterministic JSON output for list/summary modes
   --report-file     Write deterministic JSON report artifact to path
+  --manifest-file   Write standardized proof-pack manifest artifact to path
+                    (requires --report-file)
   --fail-fast       Stop after first failed wrapper
   --timeout-seconds Positive integer timeout for each wrapper step
   --help            Show this usage message
@@ -318,6 +321,15 @@ while [[ $# -gt 0 ]]; do
       report_file="$2"
       shift 2
       ;;
+    --manifest-file)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        log_error "missing value for --manifest-file"
+        print_usage >&2
+        exit 2
+      fi
+      manifest_file="$2"
+      shift 2
+      ;;
     --fail-fast)
       fail_fast="true"
       shift
@@ -358,6 +370,19 @@ if [[ "${binary}" != /* ]]; then
   binary="${repo_root}/${binary}"
 fi
 
+if [[ -z "${manifest_file}" && -n "${report_file}" ]]; then
+  if [[ "${report_file}" == *.json ]]; then
+    manifest_file="${report_file%.json}.manifest.json"
+  else
+    manifest_file="${report_file}.manifest.json"
+  fi
+fi
+
+if [[ -n "${manifest_file}" && -z "${report_file}" ]]; then
+  log_error "--manifest-file requires --report-file"
+  exit 2
+fi
+
 if [[ ${#unknown_demo_names[@]} -gt 0 ]]; then
   log_error "unknown demo names in --only: ${unknown_demo_names[*]}"
   exit 2
@@ -381,6 +406,15 @@ if [[ "${list_only}" == "true" ]]; then
   list_json_payload="$(print_demo_list_json "${selected_demo_scripts[@]}")"
   if [[ -n "${report_file}" ]]; then
     write_report_file "${list_json_payload}" "${report_file}"
+  fi
+  if [[ -n "${manifest_file}" ]]; then
+    "${script_dir}/proof-pack-manifest.sh" \
+      --output "${manifest_file}" \
+      --pack-name "demo-all-live-proof-pack" \
+      --producer-script "scripts/demo/all.sh" \
+      --mode "list" \
+      --report-file "${report_file}" \
+      --issue "#1742"
   fi
   if [[ "${json_output}" == "true" ]]; then
     echo "${list_json_payload}"
@@ -447,6 +481,15 @@ done
 summary_json_payload="$(print_summary_json "${total}" "${passed}" "${failed}")"
 if [[ -n "${report_file}" ]]; then
   write_report_file "${summary_json_payload}" "${report_file}"
+fi
+if [[ -n "${manifest_file}" ]]; then
+  "${script_dir}/proof-pack-manifest.sh" \
+    --output "${manifest_file}" \
+    --pack-name "demo-all-live-proof-pack" \
+    --producer-script "scripts/demo/all.sh" \
+    --mode "run" \
+    --report-file "${report_file}" \
+    --issue "#1742"
 fi
 
 if [[ "${json_output}" == "true" ]]; then
