@@ -10,6 +10,16 @@ on:
         description: "Tag to release (for example: v1.2.3)"
         required: true
         type: string
+      enable_signing_hooks:
+        description: "Run optional signing hooks when hook scripts are present"
+        required: false
+        default: false
+        type: boolean
+      enable_notarization_hooks:
+        description: "Run optional macOS notarization hook when hook script is present"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -20,6 +30,8 @@ env:
   CARGO_TERM_COLOR: always
   APP_NAME: tau-coding-agent
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+  ENABLE_SIGNING_HOOKS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_signing_hooks || vars.RELEASE_ENABLE_SIGNING_HOOKS || 'false' }}
+  ENABLE_NOTARIZATION_HOOKS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.enable_notarization_hooks || vars.RELEASE_ENABLE_NOTARIZATION_HOOKS || 'false' }}
 
 jobs:
   build:
@@ -33,9 +45,17 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-amd64
             archive_ext: tar.gz
-          - os: macos-latest
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform: linux-arm64
+            archive_ext: tar.gz
+          - os: macos-14
             target: x86_64-apple-darwin
             platform: macos-amd64
+            archive_ext: tar.gz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            platform: macos-arm64
             archive_ext: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -53,12 +73,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install Linux ARM64 linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes gcc-aarch64-linux-gnu
+
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Build/package/smoke (Unix)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-gcc' || '' }}
         run: |
           set -euo pipefail
           cargo build --release -p "${APP_NAME}" --target "${{ matrix.target }}"
@@ -70,10 +100,38 @@ jobs:
           cp "${binary_path}" "${packaged_binary}"
           chmod +x "${packaged_binary}"
 
+          if [[ "${ENABLE_SIGNING_HOOKS}" == "true" ]]; then
+            if [[ "${RUNNER_OS}" == "Linux" ]]; then
+              hook_path="scripts/release/hooks/sign-linux.sh"
+            else
+              hook_path="scripts/release/hooks/sign-macos.sh"
+            fi
+
+            if [[ -x "${hook_path}" ]]; then
+              "${hook_path}" "${packaged_binary}" "${{ matrix.target }}" "${RELEASE_TAG}"
+            else
+              echo "release_hook_reason=sign_hook_missing hook=${hook_path}"
+            fi
+          else
+            echo "release_hook_reason=sign_hooks_disabled"
+          fi
+
           # Smoke test gate: artifact must execute and print help before publish.
           "${packaged_binary}" --help > /dev/null
 
-          tar -czf "dist/${APP_NAME}-${{ matrix.platform }}.tar.gz" -C dist "${APP_NAME}-${{ matrix.platform }}"
+          archive_path="dist/${APP_NAME}-${{ matrix.platform }}.tar.gz"
+          tar -czf "${archive_path}" -C dist "${APP_NAME}-${{ matrix.platform }}"
+
+          if [[ "${RUNNER_OS}" == "macOS" && "${ENABLE_NOTARIZATION_HOOKS}" == "true" ]]; then
+            hook_path="scripts/release/hooks/notarize-macos.sh"
+            if [[ -x "${hook_path}" ]]; then
+              "${hook_path}" "${archive_path}" "${{ matrix.target }}" "${RELEASE_TAG}"
+            else
+              echo "release_hook_reason=notarize_hook_missing hook=${hook_path}"
+            fi
+          elif [[ "${RUNNER_OS}" == "macOS" ]]; then
+            echo "release_hook_reason=notarization_hooks_disabled"
+          fi
 
       - name: Build/package/smoke (Windows)
         if: runner.os == 'Windows'
@@ -87,6 +145,17 @@ jobs:
           $packagedBinary = "dist\\$env:APP_NAME-${{ matrix.platform }}.exe"
 
           Copy-Item "$binaryPath" "$packagedBinary"
+
+          if ($env:ENABLE_SIGNING_HOOKS -eq "true") {
+            $hookPath = "scripts/release/hooks/sign-windows.ps1"
+            if (Test-Path $hookPath) {
+              & $hookPath -BinaryPath "$packagedBinary" -Target "${{ matrix.target }}" -Tag "$env:RELEASE_TAG"
+            } else {
+              Write-Output "release_hook_reason=sign_hook_missing hook=$hookPath"
+            }
+          } else {
+            Write-Output "release_hook_reason=sign_hooks_disabled"
+          }
 
           # Smoke test gate: artifact must execute and print help before publish.
           & "$packagedBinary" --help | Out-Null

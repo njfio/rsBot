@@ -147,6 +147,9 @@ jobs:
             fast_validate:
               - "scripts/dev/fast-validate.sh"
               - "scripts/dev/test-fast-validate.sh"
+            release_helpers:
+              - "scripts/release/**"
+              - ".github/workflows/release.yml"
             wasm_smoke:
               - "crates/kamn-core/**"
               - "crates/kamn-sdk/**"
@@ -219,6 +222,25 @@ jobs:
       - name: Validate fast-validate script
         if: steps.fast_validate_scope.outputs.fast_validate_tests_needed == 'true'
         run: ./scripts/dev/test-fast-validate.sh
+
+      - name: Determine release-helper scope
+        id: release_helper_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_helper_tests_needed="${{ steps.change_scope.outputs.release_helpers }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            release_helper_tests_needed="true"
+          elif [[ -z "${release_helper_tests_needed}" ]]; then
+            release_helper_tests_needed="false"
+          fi
+          echo "release_helper_tests_needed=${release_helper_tests_needed}" >> "$GITHUB_OUTPUT"
+          echo "### Release Helper Scope" >> "$GITHUB_STEP_SUMMARY"
+          echo "- release helper tests needed: ${release_helper_tests_needed}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate release install/update helper scripts
+        if: steps.release_helper_scope.outputs.release_helper_tests_needed == 'true'
+        run: ./scripts/release/test-install-helpers.sh
 
       - name: Determine wasm smoke scope
         id: wasm_scope
