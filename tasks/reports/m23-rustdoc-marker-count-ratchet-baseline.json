@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-15T18:30:01Z",
+  "repo_root": ".",
+  "scan_root": "crates",
+  "total_markers": 1964,
+  "crates": [
+    {
+      "crate": "kamn-core",
+      "markers": 4,
+      "files_scanned": 1
+    },
+    {
+      "crate": "kamn-sdk",
+      "markers": 3,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-access",
+      "markers": 21,
+      "files_scanned": 7
+    },
+    {
+      "crate": "tau-agent-core",
+      "markers": 283,
+      "files_scanned": 6
+    },
+    {
+      "crate": "tau-ai",
+      "markers": 26,
+      "files_scanned": 7
+    },
+    {
+      "crate": "tau-algorithm",
+      "markers": 17,
+      "files_scanned": 3
+    },
+    {
+      "crate": "tau-browser-automation",
+      "markers": 20,
+      "files_scanned": 3
+    },
+    {
+      "crate": "tau-cli",
+      "markers": 36,
+      "files_scanned": 9
+    },
+    {
+      "crate": "tau-coding-agent",
+      "markers": 166,
+      "files_scanned": 57
+    },
+    {
+      "crate": "tau-contract",
+      "markers": 40,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-core",
+      "markers": 10,
+      "files_scanned": 3
+    },
+    {
+      "crate": "tau-custom-command",
+      "markers": 17,
+      "files_scanned": 4
+    },
+    {
+      "crate": "tau-dashboard",
+      "markers": 22,
+      "files_scanned": 3
+    },
+    {
+      "crate": "tau-deployment",
+      "markers": 22,
+      "files_scanned": 6
+    },
+    {
+      "crate": "tau-diagnostics",
+      "markers": 22,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-events",
+      "markers": 27,
+      "files_scanned": 3
+    },
+    {
+      "crate": "tau-extensions",
+      "markers": 20,
+      "files_scanned": 2
+    },
+    {
+      "crate": "tau-gateway",
+      "markers": 62,
+      "files_scanned": 16
+    },
+    {
+      "crate": "tau-github-issues",
+      "markers": 29,
+      "files_scanned": 23
+    },
+    {
+      "crate": "tau-github-issues-runtime",
+      "markers": 39,
+      "files_scanned": 17
+    },
+    {
+      "crate": "tau-memory",
+      "markers": 48,
+      "files_scanned": 3
+    },
+    {
+      "crate": "tau-multi-channel",
+      "markers": 160,
+      "files_scanned": 15
+    },
+    {
+      "crate": "tau-onboarding",
+      "markers": 170,
+      "files_scanned": 23
+    },
+    {
+      "crate": "tau-ops",
+      "markers": 54,
+      "files_scanned": 13
+    },
+    {
+      "crate": "tau-orchestrator",
+      "markers": 23,
+      "files_scanned": 5
+    },
+    {
+      "crate": "tau-provider",
+      "markers": 104,
+      "files_scanned": 14
+    },
+    {
+      "crate": "tau-release-channel",
+      "markers": 15,
+      "files_scanned": 4
+    },
+    {
+      "crate": "tau-runtime",
+      "markers": 136,
+      "files_scanned": 14
+    },
+    {
+      "crate": "tau-safety",
+      "markers": 13,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-session",
+      "markers": 41,
+      "files_scanned": 11
+    },
+    {
+      "crate": "tau-skills",
+      "markers": 43,
+      "files_scanned": 4
+    },
+    {
+      "crate": "tau-slack-runtime",
+      "markers": 15,
+      "files_scanned": 7
+    },
+    {
+      "crate": "tau-startup",
+      "markers": 22,
+      "files_scanned": 8
+    },
+    {
+      "crate": "tau-tools",
+      "markers": 70,
+      "files_scanned": 10
+    },
+    {
+      "crate": "tau-trainer",
+      "markers": 8,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-training-proxy",
+      "markers": 5,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-training-runner",
+      "markers": 10,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-training-store",
+      "markers": 9,
+      "files_scanned": 2
+    },
+    {
+      "crate": "tau-training-tracer",
+      "markers": 9,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-training-types",
+      "markers": 77,
+      "files_scanned": 1
+    },
+    {
+      "crate": "tau-tui",
+      "markers": 17,
+      "files_scanned": 2
+    },
+    {
+      "crate": "tau-voice",
+      "markers": 29,
+      "files_scanned": 4
+    }
+  ]
+}
