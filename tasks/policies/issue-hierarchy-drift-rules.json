@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "required_metadata": {
+    "required_labels": [
+      "roadmap",
+      "testing-matrix"
+    ],
+    "hierarchy_labels": [
+      "epic",
+      "story",
+      "task"
+    ],
+    "milestone_required_for_hierarchy_labels": true,
+    "parent_link_field": "parent_issue_url",
+    "parent_rules": [
+      {
+        "child_label": "story",
+        "allowed_parent_labels": [
+          "epic"
+        ]
+      },
+      {
+        "child_label": "task",
+        "allowed_parent_labels": [
+          "story",
+          "epic"
+        ]
+      }
+    ]
+  },
+  "orphan_conditions": [
+    {
+      "id": "orphan.missing_parent_link",
+      "severity": "error",
+      "description": "Child issue has a hierarchy label but parent_issue_url metadata is missing."
+    },
+    {
+      "id": "orphan.parent_issue_not_found",
+      "severity": "error",
+      "description": "parent_issue_url points to a missing, inaccessible, or deleted issue."
+    },
+    {
+      "id": "orphan.parent_label_incompatible",
+      "severity": "error",
+      "description": "Child hierarchy label does not match allowed parent label contract."
+    }
+  ],
+  "drift_conditions": [
+    {
+      "id": "drift.missing_required_labels",
+      "severity": "warning",
+      "description": "Issue is missing one or more required labels from required_metadata.required_labels."
+    },
+    {
+      "id": "drift.missing_milestone",
+      "severity": "error",
+      "description": "Issue has a hierarchy label but no milestone assigned."
+    },
+    {
+      "id": "drift.parent_milestone_mismatch",
+      "severity": "warning",
+      "description": "Child and parent issues resolve to different milestones without explicit waiver."
+    },
+    {
+      "id": "drift.parent_child_state_mismatch",
+      "severity": "warning",
+      "description": "Parent and child issue states indicate lifecycle drift (for example, open child under closed parent)."
+    }
+  ],
+  "remediation": [
+    {
+      "condition_id": "orphan.missing_parent_link",
+      "steps": [
+        "Add parent_issue_url metadata in the tracked hierarchy source.",
+        "Confirm the linked parent issue is reachable with repository permissions."
+      ]
+    },
+    {
+      "condition_id": "orphan.parent_issue_not_found",
+      "steps": [
+        "Replace stale parent_issue_url with the canonical issue URL.",
+        "If parent was intentionally removed, re-parent child or close it with disposition notes."
+      ]
+    },
+    {
+      "condition_id": "orphan.parent_label_incompatible",
+      "steps": [
+        "Align child label to the intended hierarchy level (story/task).",
+        "Re-link to a parent issue with an allowed hierarchy label."
+      ]
+    },
+    {
+      "condition_id": "drift.missing_required_labels",
+      "steps": [
+        "Apply missing required labels (`roadmap`, `testing-matrix`) to restore policy baseline.",
+        "Re-run hierarchy drift checks after label correction."
+      ]
+    },
+    {
+      "condition_id": "drift.missing_milestone",
+      "steps": [
+        "Assign milestone matching the active execution wave.",
+        "Escalate to roadmap owner if no valid milestone exists."
+      ]
+    },
+    {
+      "condition_id": "drift.parent_milestone_mismatch",
+      "steps": [
+        "Move child into parent milestone unless explicit cross-wave dependency is approved.",
+        "Document approved exception in tracker comments when mismatch is intentional."
+      ]
+    },
+    {
+      "condition_id": "drift.parent_child_state_mismatch",
+      "steps": [
+        "Close or re-open child issue to match parent lifecycle intent.",
+        "If parent is complete but child remains open, re-parent child to current active story/task owner."
+      ]
+    }
+  ]
+}

@@ -9,6 +9,11 @@ Use `scripts/dev/roadmap-status-sync.sh` to avoid manual drift between docs and 
 
 Tracked roadmap groups/IDs are configured in `tasks/roadmap-status-config.json`.
 
+Hierarchy drift/orphan detection rules are defined in:
+
+- `tasks/policies/issue-hierarchy-drift-rules.json`
+- `docs/guides/issue-hierarchy-drift-rules.md`
+
 ## Prerequisites
 
 - `gh` authenticated for this repository.
