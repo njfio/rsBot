@@ -82,6 +82,81 @@ impl AgentTool for AdversarialUnsafeTool {
     }
 }
 
+const INBOUND_SAFETY_FIXTURE_CORPUS_JSON: &str = include_str!(
+    "../../../tau-coding-agent/testdata/inbound-safety-corpus/transport-sourced-prompt-injection.json"
+);
+
+#[derive(Debug)]
+struct InboundSafetyFixtureCorpus {
+    schema_version: u32,
+    cases: Vec<InboundSafetyFixtureCase>,
+}
+
+#[derive(Debug)]
+struct InboundSafetyFixtureCase {
+    case_id: String,
+    transport: String,
+    payload: String,
+    malicious: bool,
+    expected_reason_code: Option<String>,
+}
+
+fn inbound_safety_fixture_corpus() -> InboundSafetyFixtureCorpus {
+    let root: serde_json::Value =
+        serde_json::from_str(INBOUND_SAFETY_FIXTURE_CORPUS_JSON).expect("inbound safety fixture");
+    let schema_version = root
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .expect("schema_version");
+    let cases = root
+        .get("cases")
+        .and_then(serde_json::Value::as_array)
+        .expect("cases array")
+        .iter()
+        .map(|value| InboundSafetyFixtureCase {
+            case_id: value
+                .get("case_id")
+                .and_then(serde_json::Value::as_str)
+                .expect("case_id")
+                .to_string(),
+            transport: value
+                .get("transport")
+                .and_then(serde_json::Value::as_str)
+                .expect("transport")
+                .to_string(),
+            payload: value
+                .get("payload")
+                .and_then(serde_json::Value::as_str)
+                .expect("payload")
+                .to_string(),
+            malicious: value
+                .get("malicious")
+                .and_then(serde_json::Value::as_bool)
+                .expect("malicious"),
+            expected_reason_code: value
+                .get("expected_reason_code")
+                .and_then(serde_json::Value::as_str)
+                .map(ToString::to_string),
+        })
+        .collect::<Vec<_>>();
+    InboundSafetyFixtureCorpus {
+        schema_version,
+        cases,
+    }
+}
+
+fn prompt_ready_agent() -> Agent {
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("ok"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+    });
+    Agent::new(client, AgentConfig::default())
+}
+
 #[tokio::test]
 async fn functional_prompt_safety_block_rejects_inbound_prompt() {
     let client = Arc::new(MockClient {
@@ -441,4 +516,150 @@ fn regression_direct_message_safety_policy_blocks_malicious_content() {
         error,
         AgentDirectMessageError::SafetyViolation { .. }
     ));
+}
+
+#[tokio::test]
+async fn functional_inbound_safety_fixture_corpus_applies_warn_and_redact_modes() {
+    let corpus = inbound_safety_fixture_corpus();
+    assert_eq!(corpus.schema_version, 1);
+    assert!(corpus
+        .cases
+        .iter()
+        .any(|case| case.transport == "github_issue"));
+    assert!(corpus.cases.iter().any(|case| case.transport == "slack"));
+    assert!(corpus
+        .cases
+        .iter()
+        .any(|case| case.transport == "multi_channel"));
+
+    for case in &corpus.cases {
+        let mut warn_agent = prompt_ready_agent();
+        warn_agent.set_safety_policy(SafetyPolicy {
+            mode: SafetyMode::Warn,
+            ..SafetyPolicy::default()
+        });
+        warn_agent
+            .prompt(case.payload.as_str())
+            .await
+            .unwrap_or_else(|error| panic!("warn mode should not block {}: {error}", case.case_id));
+        let warn_user_message = warn_agent
+            .messages()
+            .iter()
+            .find(|message| matches!(message.role, tau_ai::MessageRole::User))
+            .expect("expected user message");
+        assert!(
+            warn_user_message
+                .text_content()
+                .contains(case.payload.as_str()),
+            "warn mode should retain original payload for {}",
+            case.case_id
+        );
+
+        let mut redact_agent = prompt_ready_agent();
+        redact_agent.set_safety_policy(SafetyPolicy {
+            mode: SafetyMode::Redact,
+            ..SafetyPolicy::default()
+        });
+        redact_agent
+            .prompt(case.payload.as_str())
+            .await
+            .unwrap_or_else(|error| {
+                panic!("redact mode should not block {}: {error}", case.case_id)
+            });
+        let redact_user_message = redact_agent
+            .messages()
+            .iter()
+            .find(|message| matches!(message.role, tau_ai::MessageRole::User))
+            .expect("expected user message");
+        if case.malicious {
+            assert!(redact_user_message
+                .text_content()
+                .contains("[TAU-SAFETY-REDACTED]"));
+            assert!(!redact_user_message
+                .text_content()
+                .contains(case.payload.as_str()));
+        } else {
+            assert_eq!(redact_user_message.text_content(), case.payload);
+        }
+    }
+}
+
+#[tokio::test]
+async fn integration_inbound_safety_fixture_corpus_blocks_malicious_cases() {
+    let corpus = inbound_safety_fixture_corpus();
+    for case in &corpus.cases {
+        let mut agent = prompt_ready_agent();
+        agent.set_safety_policy(SafetyPolicy {
+            mode: SafetyMode::Block,
+            ..SafetyPolicy::default()
+        });
+
+        if case.malicious {
+            let error = agent
+                .prompt(case.payload.as_str())
+                .await
+                .expect_err("malicious inbound payload should be blocked");
+            match error {
+                AgentError::SafetyViolation {
+                    stage,
+                    reason_codes,
+                } => {
+                    assert_eq!(stage, "inbound_message");
+                    if let Some(expected_reason_code) = &case.expected_reason_code {
+                        assert!(
+                            reason_codes.iter().any(|code| code == expected_reason_code),
+                            "expected reason code {} for {}",
+                            expected_reason_code,
+                            case.case_id
+                        );
+                    }
+                }
+                other => panic!(
+                    "expected inbound safety violation for {}: {other:?}",
+                    case.case_id
+                ),
+            }
+            continue;
+        }
+
+        agent
+            .prompt(case.payload.as_str())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "benign payload should pass in block mode {}: {error}",
+                    case.case_id
+                )
+            });
+        let user_message = agent
+            .messages()
+            .iter()
+            .find(|message| matches!(message.role, tau_ai::MessageRole::User))
+            .expect("expected user message");
+        assert_eq!(user_message.text_content(), case.payload);
+    }
+}
+
+#[tokio::test]
+async fn regression_inbound_safety_fixture_corpus_has_no_silent_pass_through_in_block_mode() {
+    let corpus = inbound_safety_fixture_corpus();
+    for case in corpus.cases.iter().filter(|case| case.malicious) {
+        let mut agent = prompt_ready_agent();
+        agent.set_safety_policy(SafetyPolicy {
+            mode: SafetyMode::Block,
+            ..SafetyPolicy::default()
+        });
+        let _ = agent
+            .prompt(case.payload.as_str())
+            .await
+            .expect_err("malicious inbound payload should be blocked");
+        assert!(
+            agent.messages().iter().all(|message| {
+                !matches!(message.role, tau_ai::MessageRole::User)
+                    || !message.text_content().contains(case.payload.as_str())
+            }),
+            "blocked payload should never be persisted verbatim for {}",
+            case.case_id
+        );
+    }
 }
