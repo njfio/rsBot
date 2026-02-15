@@ -29,5 +29,5 @@
 | Set | Status | Issues | Scope | Test Matrix |
 | --- | --- | --- | --- | --- |
 | `training-boundary-set-a` | completed | #1711 | Publish crate-by-crate retain/merge decisions.; Wire decision-plan checks and docs references. | unit, functional, integration, regression |
-| `training-boundary-set-b` | planned | #1712 | Remove stale training alias/docs paths after boundary confirmation.; Align CLI/help output with prompt-optimization naming. | unit, functional, integration, regression |
+| `training-boundary-set-b` | completed | #1712 | Remove stale training alias/docs paths after boundary confirmation.; Align CLI/help output with prompt-optimization naming. | unit, functional, integration, regression |
 | `training-boundary-set-c` | planned | #1628 | Implement merges only where future ambiguity appears or duplication emerges.; Preserve compile/test stability across trainer/runner/store/algorithm surfaces. | unit, functional, integration, regression |
