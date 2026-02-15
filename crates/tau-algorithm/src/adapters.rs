@@ -218,7 +218,14 @@ fn extract_value_by_keys(
 fn extract_observation(span: &TrainingSpan) -> Value {
     extract_value_by_keys(
         &span.attributes,
-        &["observation", "state", "prompt", "input"],
+        &[
+            "observation",
+            "state",
+            "prompt",
+            "input",
+            "tool_result",
+            "tool_output",
+        ],
     )
     .unwrap_or_else(|| {
         json!({
@@ -234,6 +241,7 @@ fn extract_action(span: &TrainingSpan) -> Value {
         &span.attributes,
         &[
             "action",
+            "tool_call",
             "response",
             "assistant_text",
             "output",
@@ -394,5 +402,72 @@ mod tests {
             error.to_string(),
             "trajectory adapter requires at least one span"
         );
+    }
+
+    #[test]
+    fn integration_tool_trace_fidelity_preserves_turn_semantics() {
+        let spans = vec![
+            span(
+                1,
+                "agent.turn.1",
+                HashMap::from([
+                    ("input".to_string(), json!({"user": "Find docs for Tau RL"})),
+                    (
+                        "tool_call".to_string(),
+                        json!({"name": "search", "args": {"q": "Tau RL docs"}}),
+                    ),
+                    ("reward".to_string(), json!(0.1)),
+                ]),
+            ),
+            span(
+                2,
+                "tool.result",
+                HashMap::from([
+                    (
+                        "observation".to_string(),
+                        json!({"tool_result": ["doc-a", "doc-b"]}),
+                    ),
+                    ("action".to_string(), json!({"name": "summarize"})),
+                    ("reward_value".to_string(), json!(0.25)),
+                ]),
+            ),
+            span(
+                3,
+                "agent.turn.2",
+                HashMap::from([
+                    (
+                        "observation".to_string(),
+                        json!({"summary_input": ["doc-a", "doc-b"]}),
+                    ),
+                    ("response".to_string(), json!("Tau RL pipeline summary...")),
+                    ("reward".to_string(), json!(0.8)),
+                    ("done".to_string(), json!(true)),
+                ]),
+            ),
+        ];
+
+        let trajectories = SpansToTrajectories
+            .adapt(&spans)
+            .expect("adapt trajectories");
+        assert_eq!(trajectories.len(), 1);
+        let trajectory = &trajectories[0];
+        assert_eq!(trajectory.steps.len(), 3);
+        assert_eq!(trajectory.steps[0].step_index, 0);
+        assert_eq!(trajectory.steps[1].step_index, 1);
+        assert_eq!(trajectory.steps[2].step_index, 2);
+        assert!(!trajectory.steps[0].done);
+        assert!(!trajectory.steps[1].done);
+        assert!(trajectory.steps[2].done);
+
+        assert_eq!(
+            trajectory.steps[0].action,
+            json!({"name": "search", "args": {"q": "Tau RL docs"}})
+        );
+        assert_eq!(trajectory.steps[1].action, json!({"name": "summarize"}));
+        assert_eq!(
+            trajectory.steps[2].action,
+            json!("Tau RL pipeline summary...")
+        );
+        assert!(trajectory.validate().is_ok());
     }
 }
