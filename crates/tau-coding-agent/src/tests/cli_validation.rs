@@ -7,8 +7,7 @@ use tau_cli::{
     CliCredentialStoreEncryptionMode, CliDaemonProfile, CliDeploymentWasmRuntimeProfile,
     CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile, CliMultiChannelLiveConnectorMode,
     CliMultiChannelOutboundMode, CliMultiChannelTransport, CliOsSandboxPolicyMode,
-    CliPromptSanitizerMode,
-    CliProviderAuthMode,
+    CliPromptSanitizerMode, CliProviderAuthMode,
 };
 
 use super::{parse_cli_with_stack, try_parse_cli_with_stack};
