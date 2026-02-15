@@ -4,7 +4,9 @@
 //! inferential statistics.
 
 use anyhow::{bail, Result};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use tracing::instrument;
 
 /// Single significance observation emitted by benchmark tooling.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +102,142 @@ pub struct SampleSizeSensitivityReport {
     pub max_p_value_drift: f64,
     pub max_reward_delta_drift: f64,
     pub within_band: bool,
+}
+
+/// Deterministic summary statistics for one benchmark sample vector.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SummaryStatistics {
+    pub count: usize,
+    pub mean: f64,
+    pub variance: f64,
+    pub std_dev: f64,
+    pub ci_low: f64,
+    pub ci_high: f64,
+    pub alpha: f64,
+}
+
+impl SummaryStatistics {
+    /// Serializes summary statistics to a machine-readable JSON object.
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "count": self.count,
+            "mean": self.mean,
+            "variance": self.variance,
+            "std_dev": self.std_dev,
+            "ci_low": self.ci_low,
+            "ci_high": self.ci_high,
+            "alpha": self.alpha
+        })
+    }
+}
+
+/// Comparative baseline-vs-candidate significance report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolicyImprovementReport {
+    pub baseline: SummaryStatistics,
+    pub candidate: SummaryStatistics,
+    pub mean_delta: f64,
+    pub delta_ci_low: f64,
+    pub delta_ci_high: f64,
+    pub pooled_std_dev: f64,
+    pub cohens_d: f64,
+    pub is_significant_improvement: bool,
+    pub alpha: f64,
+}
+
+impl PolicyImprovementReport {
+    /// Serializes the comparative report to machine-readable JSON.
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "baseline": self.baseline.to_json_value(),
+            "candidate": self.candidate.to_json_value(),
+            "mean_delta": self.mean_delta,
+            "delta_ci_low": self.delta_ci_low,
+            "delta_ci_high": self.delta_ci_high,
+            "pooled_std_dev": self.pooled_std_dev,
+            "cohens_d": self.cohens_d,
+            "is_significant_improvement": self.is_significant_improvement,
+            "alpha": self.alpha
+        })
+    }
+}
+
+/// Computes deterministic summary statistics, including an approximate two-sided
+/// confidence interval.
+#[instrument(skip(samples), fields(sample_count = samples.len(), alpha = alpha))]
+pub fn compute_summary_statistics(samples: &[f64], alpha: f64) -> Result<SummaryStatistics> {
+    if samples.len() < 2 {
+        bail!("summary statistics require at least two observations");
+    }
+    if !(0.0..1.0).contains(&alpha) || !alpha.is_finite() {
+        bail!("alpha must be finite and in (0, 1)");
+    }
+    for value in samples {
+        if !value.is_finite() {
+            bail!("summary statistics require finite observations");
+        }
+    }
+
+    let count = samples.len();
+    let mean = samples.iter().sum::<f64>() / count as f64;
+    let variance = samples.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (count as f64 - 1.0);
+    let std_dev = variance.sqrt();
+    let z_score = z_score_for_alpha(alpha)?;
+    let margin = z_score * (std_dev / (count as f64).sqrt());
+
+    Ok(SummaryStatistics {
+        count,
+        mean,
+        variance,
+        std_dev,
+        ci_low: mean - margin,
+        ci_high: mean + margin,
+        alpha,
+    })
+}
+
+/// Compares baseline and candidate benchmark vectors and reports confidence for
+/// improvement claims.
+#[instrument(skip(baseline, candidate), fields(baseline_count = baseline.len(), candidate_count = candidate.len(), alpha = alpha))]
+pub fn compare_policy_improvement(
+    baseline: &[f64],
+    candidate: &[f64],
+    alpha: f64,
+) -> Result<PolicyImprovementReport> {
+    let baseline_stats = compute_summary_statistics(baseline, alpha)?;
+    let candidate_stats = compute_summary_statistics(candidate, alpha)?;
+    let mean_delta = candidate_stats.mean - baseline_stats.mean;
+
+    let baseline_n = baseline_stats.count as f64;
+    let candidate_n = candidate_stats.count as f64;
+    let standard_error_delta =
+        (baseline_stats.variance / baseline_n + candidate_stats.variance / candidate_n).sqrt();
+    let z_score = z_score_for_alpha(alpha)?;
+    let delta_margin = z_score * standard_error_delta;
+    let delta_ci_low = mean_delta - delta_margin;
+    let delta_ci_high = mean_delta + delta_margin;
+
+    let pooled_variance = ((baseline_n - 1.0) * baseline_stats.variance
+        + (candidate_n - 1.0) * candidate_stats.variance)
+        / (baseline_n + candidate_n - 2.0);
+    let pooled_std_dev = pooled_variance.max(0.0).sqrt();
+    let cohens_d = if pooled_std_dev == 0.0 {
+        0.0
+    } else {
+        mean_delta / pooled_std_dev
+    };
+
+    Ok(PolicyImprovementReport {
+        baseline: baseline_stats,
+        candidate: candidate_stats,
+        mean_delta,
+        delta_ci_low,
+        delta_ci_high,
+        pooled_std_dev,
+        cohens_d,
+        is_significant_improvement: delta_ci_low > 0.0,
+        alpha,
+    })
 }
 
 /// Evaluates fixed-sample reproducibility across multiple seeds.
@@ -265,13 +403,26 @@ fn range(values: impl Iterator<Item = f64>) -> f64 {
     }
 }
 
+fn z_score_for_alpha(alpha: f64) -> Result<f64> {
+    if (alpha - 0.10).abs() < 1e-12 {
+        Ok(1.645)
+    } else if (alpha - 0.05).abs() < 1e-12 {
+        Ok(1.96)
+    } else if (alpha - 0.01).abs() < 1e-12 {
+        Ok(2.576)
+    } else {
+        bail!("unsupported alpha {alpha}; supported values are 0.10, 0.05, 0.01")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_checkpoint_promotion_gate, evaluate_sample_size_sensitivity,
-        evaluate_seed_reproducibility, CheckpointPromotionPolicy, ReproducibilityBands,
-        SignificanceObservation,
+        compare_policy_improvement, compute_summary_statistics, evaluate_checkpoint_promotion_gate,
+        evaluate_sample_size_sensitivity, evaluate_seed_reproducibility, CheckpointPromotionPolicy,
+        ReproducibilityBands, SignificanceObservation,
     };
+    use serde_json::Value;
 
     #[test]
     fn seeded_reproducibility_passes_when_ranges_within_band() {
@@ -374,5 +525,59 @@ mod tests {
         .expect("decision");
         assert!(decision.promotion_allowed);
         assert!(decision.reason_codes.is_empty());
+    }
+
+    #[test]
+    fn spec_c01_summary_statistics_match_reference_vector() {
+        let stats =
+            compute_summary_statistics(&[1.0, 2.0, 3.0, 4.0, 5.0], 0.05).expect("summary stats");
+        assert_eq!(stats.count, 5);
+        assert!((stats.mean - 3.0).abs() < 1e-12);
+        assert!((stats.variance - 2.5).abs() < 1e-12);
+        assert!((stats.std_dev - 1.581_138_830_084_189_8).abs() < 1e-12);
+        assert!((stats.ci_low - 1.614_070_708_874_366_9).abs() < 1e-9);
+        assert!((stats.ci_high - 4.385_929_291_125_633).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spec_c02_policy_comparison_reports_significant_improvement() {
+        let baseline = [0.10, 0.15, 0.20, 0.18, 0.16];
+        let candidate = [0.32, 0.35, 0.31, 0.36, 0.33];
+        let report = compare_policy_improvement(&baseline, &candidate, 0.05).expect("report");
+        assert!(report.mean_delta > 0.0);
+        assert!(report.delta_ci_low > 0.0);
+        assert!(report.is_significant_improvement);
+    }
+
+    #[test]
+    fn spec_c03_significance_report_is_machine_readable() {
+        let baseline = [0.21, 0.24, 0.22, 0.20, 0.25];
+        let candidate = [0.27, 0.29, 0.31, 0.28, 0.30];
+        let report = compare_policy_improvement(&baseline, &candidate, 0.05).expect("report");
+        let json = report.to_json_value();
+
+        let Value::Object(map) = json else {
+            panic!("report must serialize to JSON object");
+        };
+        assert!(map.contains_key("baseline"));
+        assert!(map.contains_key("candidate"));
+        assert!(map.contains_key("mean_delta"));
+        assert!(map.contains_key("delta_ci_low"));
+        assert!(map.contains_key("delta_ci_high"));
+        assert!(map.contains_key("is_significant_improvement"));
+    }
+
+    #[test]
+    fn regression_significance_statistics_reject_invalid_inputs() {
+        let empty = compute_summary_statistics(&[], 0.05).expect_err("empty sample must fail");
+        assert!(empty.to_string().contains("at least two observations"));
+
+        let non_finite =
+            compute_summary_statistics(&[1.0, f64::NAN, 2.0], 0.05).expect_err("nan must fail");
+        assert!(non_finite.to_string().contains("finite"));
+
+        let mismatched = compare_policy_improvement(&[0.1], &[0.2], 0.05)
+            .expect_err("single-entry vectors must fail");
+        assert!(mismatched.to_string().contains("at least two observations"));
     }
 }
