@@ -36,6 +36,11 @@ assert_contains "${output}" "full_workspace=0" "crate file should not force work
 assert_contains "${output}" "package=tau-cli" "crate file should map to tau-cli package"
 assert_contains "${output}" "package=tau-coding-agent" "tau-cli impact scope should include reverse dependents"
 
+output="$(printf 'crates/tau-cli/src/cli_args.rs\n' | "${FAST_VALIDATE}" --print-packages-from-stdin --direct-packages-only)"
+assert_contains "${output}" "full_workspace=0" "direct-only mode should not force workspace"
+assert_contains "${output}" "package=tau-cli" "direct-only mode should include directly changed crate"
+assert_not_contains "${output}" "package=tau-coding-agent" "direct-only mode should skip reverse dependents"
+
 output="$(printf 'Cargo.toml\n' | "${FAST_VALIDATE}" --print-packages-from-stdin)"
 assert_contains "${output}" "full_workspace=1" "workspace manifest should force full scope"
 
