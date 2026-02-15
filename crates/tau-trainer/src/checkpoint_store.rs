@@ -102,6 +102,25 @@ pub fn load_policy_checkpoint_with_rollback(
     }
 }
 
+/// Renders deterministic, operator-facing resume diagnostics for checkpoint
+/// restore flows.
+#[instrument(skip(result), fields(source = ?result.source, run_id = %result.checkpoint.run_id))]
+pub fn render_resume_operator_diagnostics(result: &ResumeCheckpointResult) -> String {
+    let mut lines = vec![format!(
+        "checkpoint_resume source={} run_id={} global_step={} optimizer_step={}",
+        source_label(result.source),
+        result.checkpoint.run_id,
+        result.checkpoint.global_step,
+        result.checkpoint.optimizer_step
+    )];
+
+    for diagnostic in &result.diagnostics {
+        lines.push(format!("checkpoint_resume diagnostic={diagnostic}"));
+    }
+
+    lines.join("\n")
+}
+
 fn checkpoint_to_value(checkpoint: &PolicyCheckpoint) -> Value {
     json!({
         "checkpoint_version": checkpoint.checkpoint_version,
@@ -201,11 +220,19 @@ fn validate_checkpoint(checkpoint: &PolicyCheckpoint) -> Result<()> {
     Ok(())
 }
 
+fn source_label(source: CheckpointSource) -> &'static str {
+    match source {
+        CheckpointSource::Primary => "primary",
+        CheckpointSource::Fallback => "fallback",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        load_policy_checkpoint, load_policy_checkpoint_with_rollback, save_policy_checkpoint,
-        CheckpointSource, PolicyCheckpoint,
+        load_policy_checkpoint, load_policy_checkpoint_with_rollback,
+        render_resume_operator_diagnostics, save_policy_checkpoint, CheckpointSource,
+        PolicyCheckpoint, ResumeCheckpointResult,
     };
     use serde_json::json;
     use std::path::PathBuf;
@@ -296,5 +323,60 @@ mod tests {
         let error = load_policy_checkpoint(&checkpoint_path).expect_err("unsupported version");
         assert!(error.to_string().contains("unsupported checkpoint_version"));
         std::fs::remove_dir_all(temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn spec_1726_c01_rollback_reports_both_primary_and_fallback_corruption_errors() {
+        let temp_dir = unique_temp_dir("checkpoint-dual-corruption");
+        let primary_path = temp_dir.join("primary-corrupt.json");
+        let fallback_path = temp_dir.join("fallback-corrupt.json");
+
+        std::fs::write(&primary_path, "{not-json").expect("write primary corruption");
+        std::fs::write(&fallback_path, "{also-not-json").expect("write fallback corruption");
+
+        let error = load_policy_checkpoint_with_rollback(&primary_path, &fallback_path)
+            .expect_err("dual corruption should fail");
+        let message = error.to_string();
+        assert!(message.contains("primary checkpoint load failed"));
+        assert!(message.contains("fallback checkpoint load failed"));
+        std::fs::remove_dir_all(temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn spec_1726_c02_primary_checkpoint_is_preferred_when_both_are_valid() {
+        let temp_dir = unique_temp_dir("checkpoint-primary-preferred");
+        let primary_path = temp_dir.join("primary-valid.json");
+        let fallback_path = temp_dir.join("fallback-valid.json");
+
+        let mut primary = make_checkpoint();
+        primary.global_step = 120;
+        let mut fallback = make_checkpoint();
+        fallback.global_step = 40;
+
+        save_policy_checkpoint(&primary_path, &primary).expect("save primary");
+        save_policy_checkpoint(&fallback_path, &fallback).expect("save fallback");
+
+        let resumed = load_policy_checkpoint_with_rollback(&primary_path, &fallback_path)
+            .expect("primary should be preferred");
+        assert_eq!(resumed.source, CheckpointSource::Primary);
+        assert!(resumed.diagnostics.is_empty());
+        assert_eq!(resumed.checkpoint.global_step, 120);
+        std::fs::remove_dir_all(temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn spec_1726_c03_operator_diagnostics_include_source_run_and_steps() {
+        let report = ResumeCheckpointResult {
+            checkpoint: make_checkpoint(),
+            source: CheckpointSource::Fallback,
+            diagnostics: vec!["primary checkpoint load failed: parse error".to_string()],
+        };
+
+        let rendered = render_resume_operator_diagnostics(&report);
+        assert!(rendered.contains("checkpoint_resume source=fallback"));
+        assert!(rendered.contains("run_id=run-1670"));
+        assert!(rendered.contains("global_step=42"));
+        assert!(rendered.contains("optimizer_step=19"));
+        assert!(rendered.contains("primary checkpoint load failed"));
     }
 }
