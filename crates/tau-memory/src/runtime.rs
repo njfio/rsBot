@@ -14,7 +14,6 @@ const MEMORY_RUNTIME_SCHEMA_VERSION: u32 = 1;
 const MEMORY_RUNTIME_ENTRIES_FILE_NAME: &str = "entries.jsonl";
 const MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME: &str = "entries.sqlite";
 const MEMORY_BACKEND_ENV: &str = "TAU_MEMORY_BACKEND";
-const MEMORY_POSTGRES_DSN_ENV: &str = "TAU_MEMORY_POSTGRES_DSN";
 const MEMORY_SCOPE_DEFAULT_WORKSPACE: &str = "default-workspace";
 const MEMORY_SCOPE_DEFAULT_CHANNEL: &str = "default-channel";
 const MEMORY_SCOPE_DEFAULT_ACTOR: &str = "default-actor";
@@ -34,7 +33,6 @@ const MEMORY_STORAGE_REASON_EXISTING_SQLITE: &str = "memory_storage_backend_exis
 const MEMORY_STORAGE_REASON_DEFAULT_SQLITE: &str = "memory_storage_backend_default_sqlite";
 const MEMORY_STORAGE_REASON_ENV_JSONL: &str = "memory_storage_backend_env_jsonl";
 const MEMORY_STORAGE_REASON_ENV_SQLITE: &str = "memory_storage_backend_env_sqlite";
-const MEMORY_STORAGE_REASON_ENV_POSTGRES: &str = "memory_storage_backend_env_postgres";
 const MEMORY_STORAGE_REASON_ENV_AUTO: &str = "memory_storage_backend_env_auto";
 const MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK: &str =
     "memory_storage_backend_env_invalid_fallback";
@@ -45,7 +43,6 @@ const MEMORY_STORAGE_REASON_INIT_IMPORT_FAILED: &str = "memory_storage_backend_i
 pub enum MemoryStorageBackend {
     Jsonl,
     Sqlite,
-    Postgres,
 }
 
 impl MemoryStorageBackend {
@@ -53,7 +50,6 @@ impl MemoryStorageBackend {
         match self {
             MemoryStorageBackend::Jsonl => "jsonl",
             MemoryStorageBackend::Sqlite => "sqlite",
-            MemoryStorageBackend::Postgres => "postgres",
         }
     }
 }
@@ -63,7 +59,6 @@ struct ResolvedMemoryBackend {
     backend: MemoryStorageBackend,
     storage_path: Option<PathBuf>,
     reason_code: String,
-    postgres_dsn: Option<String>,
 }
 
 fn default_embedding_source() -> String {
@@ -277,7 +272,6 @@ pub struct FileMemoryStore {
     storage_backend: MemoryStorageBackend,
     storage_path: Option<PathBuf>,
     backend_reason_code: String,
-    postgres_dsn: Option<String>,
     backend_init_error: Option<String>,
 }
 
@@ -300,7 +294,6 @@ impl FileMemoryStore {
             storage_backend: resolved.backend,
             storage_path: resolved.storage_path,
             backend_reason_code: resolved.reason_code,
-            postgres_dsn: resolved.postgres_dsn,
             backend_init_error: None,
         };
         if store.storage_backend == MemoryStorageBackend::Sqlite {
@@ -370,7 +363,6 @@ impl FileMemoryStore {
                 transaction.commit()?;
                 Ok(records.len())
             }
-            MemoryStorageBackend::Postgres => unreachable!("checked by ensure_backend_ready"),
         }
     }
 
@@ -856,21 +848,6 @@ impl FileMemoryStore {
                 error
             );
         }
-
-        if self.storage_backend == MemoryStorageBackend::Postgres {
-            let dsn = self.postgres_dsn.as_deref().unwrap_or_default();
-            if dsn.trim().is_empty() {
-                bail!(
-                    "{}=postgres requires non-empty {}",
-                    MEMORY_BACKEND_ENV,
-                    MEMORY_POSTGRES_DSN_ENV
-                );
-            }
-            bail!(
-                "memory postgres backend is scaffolded but not implemented (dsn_set=true); set {}=jsonl or sqlite",
-                MEMORY_BACKEND_ENV
-            );
-        }
         Ok(())
     }
 
@@ -892,7 +869,6 @@ impl FileMemoryStore {
             MemoryStorageBackend::Sqlite => {
                 append_record_sqlite(self.storage_path_required()?, record)
             }
-            MemoryStorageBackend::Postgres => unreachable!("checked by ensure_backend_ready"),
         }
     }
 
@@ -901,7 +877,6 @@ impl FileMemoryStore {
         match self.storage_backend {
             MemoryStorageBackend::Jsonl => load_records_jsonl(self.storage_path_required()?),
             MemoryStorageBackend::Sqlite => load_records_sqlite(self.storage_path_required()?),
-            MemoryStorageBackend::Postgres => unreachable!("checked by ensure_backend_ready"),
         }
     }
 
@@ -951,7 +926,7 @@ impl FileMemoryStore {
 
     fn legacy_jsonl_import_path(&self) -> Option<PathBuf> {
         match self.storage_backend {
-            MemoryStorageBackend::Jsonl | MemoryStorageBackend::Postgres => None,
+            MemoryStorageBackend::Jsonl => None,
             MemoryStorageBackend::Sqlite => {
                 if self.root_dir.extension().and_then(|value| value.to_str()) == Some("sqlite")
                     || self.root_dir.extension().and_then(|value| value.to_str()) == Some("db")
@@ -1388,11 +1363,7 @@ fn resolve_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
         .map(|value| value.trim().to_ascii_lowercase());
     let env_backend = env_backend.as_deref().unwrap_or("auto");
 
-    if env_backend != "auto"
-        && env_backend != "jsonl"
-        && env_backend != "sqlite"
-        && env_backend != "postgres"
-    {
+    if env_backend != "auto" && env_backend != "jsonl" && env_backend != "sqlite" {
         let mut inferred = infer_memory_backend(root_dir);
         inferred.reason_code = MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK.to_string();
         return inferred;
@@ -1403,7 +1374,6 @@ fn resolve_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
             backend: MemoryStorageBackend::Jsonl,
             storage_path: Some(resolve_jsonl_path(root_dir)),
             reason_code: MEMORY_STORAGE_REASON_ENV_JSONL.to_string(),
-            postgres_dsn: None,
         };
     }
 
@@ -1412,17 +1382,6 @@ fn resolve_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
             backend: MemoryStorageBackend::Sqlite,
             storage_path: Some(resolve_sqlite_path(root_dir)),
             reason_code: MEMORY_STORAGE_REASON_ENV_SQLITE.to_string(),
-            postgres_dsn: None,
-        };
-    }
-
-    if env_backend == "postgres" {
-        let dsn = std::env::var(MEMORY_POSTGRES_DSN_ENV).ok();
-        return ResolvedMemoryBackend {
-            backend: MemoryStorageBackend::Postgres,
-            storage_path: None,
-            reason_code: MEMORY_STORAGE_REASON_ENV_POSTGRES.to_string(),
-            postgres_dsn: dsn,
         };
     }
 
@@ -1444,7 +1403,6 @@ fn infer_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
             backend: MemoryStorageBackend::Jsonl,
             storage_path: Some(root_dir.to_path_buf()),
             reason_code: MEMORY_STORAGE_REASON_PATH_JSONL.to_string(),
-            postgres_dsn: None,
         };
     }
     if matches!(extension.as_deref(), Some("sqlite" | "db")) {
@@ -1452,7 +1410,6 @@ fn infer_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
             backend: MemoryStorageBackend::Sqlite,
             storage_path: Some(root_dir.to_path_buf()),
             reason_code: MEMORY_STORAGE_REASON_PATH_SQLITE.to_string(),
-            postgres_dsn: None,
         };
     }
 
@@ -1462,14 +1419,12 @@ fn infer_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
                 backend: MemoryStorageBackend::Sqlite,
                 storage_path: Some(root_dir.to_path_buf()),
                 reason_code: MEMORY_STORAGE_REASON_EXISTING_SQLITE.to_string(),
-                postgres_dsn: None,
             };
         }
         return ResolvedMemoryBackend {
             backend: MemoryStorageBackend::Jsonl,
             storage_path: Some(root_dir.to_path_buf()),
             reason_code: MEMORY_STORAGE_REASON_EXISTING_JSONL.to_string(),
-            postgres_dsn: None,
         };
     }
 
@@ -1479,7 +1434,6 @@ fn infer_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
             backend: MemoryStorageBackend::Sqlite,
             storage_path: Some(sqlite_candidate),
             reason_code: MEMORY_STORAGE_REASON_EXISTING_SQLITE.to_string(),
-            postgres_dsn: None,
         };
     }
 
@@ -1489,7 +1443,6 @@ fn infer_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
             backend: MemoryStorageBackend::Sqlite,
             storage_path: Some(resolve_sqlite_path(root_dir)),
             reason_code: MEMORY_STORAGE_REASON_EXISTING_JSONL.to_string(),
-            postgres_dsn: None,
         };
     }
 
@@ -1497,7 +1450,6 @@ fn infer_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
         backend: MemoryStorageBackend::Sqlite,
         storage_path: Some(resolve_sqlite_path(root_dir)),
         reason_code: MEMORY_STORAGE_REASON_DEFAULT_SQLITE.to_string(),
-        postgres_dsn: None,
     }
 }
 
@@ -1676,11 +1628,40 @@ mod tests {
     use super::{
         embed_text_vector, rank_text_candidates, rank_text_candidates_bm25, FileMemoryStore,
         MemoryEmbeddingProviderConfig, MemoryScopeFilter, MemorySearchOptions,
-        MemoryStorageBackend, RankedTextCandidate,
+        MemoryStorageBackend, RankedTextCandidate, MEMORY_BACKEND_ENV,
+        MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
     };
     use crate::memory_contract::{MemoryEntry, MemoryScope};
     use httpmock::{Method::POST, MockServer};
+    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(previous) => std::env::set_var(self.key, previous),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn memory_backend_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn unit_embed_text_vector_normalizes_non_empty_inputs() {
@@ -1707,6 +1688,22 @@ mod tests {
             .storage_path()
             .expect("sqlite storage path")
             .ends_with("entries.sqlite"));
+    }
+
+    #[test]
+    fn regression_memory_store_treats_postgres_env_backend_as_invalid_and_falls_back() {
+        let _guard = memory_backend_env_lock()
+            .lock()
+            .expect("memory backend env lock");
+        let _backend_env = ScopedEnvVar::set(MEMORY_BACKEND_ENV, "postgres");
+
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path().join(".tau/memory"));
+        assert_eq!(store.storage_backend(), MemoryStorageBackend::Sqlite);
+        assert_eq!(
+            store.storage_backend_reason_code(),
+            MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK
+        );
     }
 
     #[test]

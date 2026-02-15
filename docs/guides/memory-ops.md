@@ -19,9 +19,10 @@ These tools persist under `--memory-state-dir` (default `.tau/memory`).
 
 Persistence backend selection:
 
-- `TAU_MEMORY_BACKEND` (`auto`, `sqlite`, `jsonl`, `postgres`)
+- `TAU_MEMORY_BACKEND` (`auto`, `sqlite`, `jsonl`)
 - `auto` prefers SQLite and imports legacy `entries.jsonl` into `entries.sqlite` on first load
-- `postgres` is scaffolded only (explicit not-implemented path for multi-instance follow-up)
+- invalid backend values fall back to inferred backend with reason
+  `memory_storage_backend_env_invalid_fallback`
 
 Optional real-embedding configuration (runtime env):
 
