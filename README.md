@@ -5,12 +5,16 @@ Tau is a pure-Rust agent runtime and operator control plane.
 The workspace includes core agent execution, multi-provider model access, transport bridges,
 gateway APIs, deterministic demo/contract workflows, and prompt-optimization training support.
 
-Training roadmap boundary:
-- Current implemented training loop is prompt optimization.
-- Future true RL policy learning is tracked in [Epic #1657](https://github.com/njfio/Tau/issues/1657)
-  under [Milestone #24](https://github.com/njfio/Tau/milestone/24)
+Training boundary status:
+- Canonical CLI training mode today is prompt optimization (`--prompt-optimization-*`).
+- True-RL building blocks are also present in-repo (PPO/GAE components in `tau-algorithm`,
+  collector/reward shaping runtime in `tau-training-runner`, and M24 proof tooling under
+  `scripts/demo/m24-rl-*`).
+- Historical true-RL delivery trackers are closed:
+  [Epic #1657](https://github.com/njfio/Tau/issues/1657) and
+  [Milestone #24](https://github.com/njfio/Tau/milestone/24)
   (`True RL Wave 2026-Q3: Policy Learning in Production`).
-- Staged phase definitions are documented in
+- Staged architecture/phase reference is documented in
   [`docs/planning/true-rl-roadmap-skeleton.md`](docs/planning/true-rl-roadmap-skeleton.md).
 
 ## What Tau Includes Today
@@ -24,6 +28,7 @@ Training roadmap boundary:
 - Multi-channel runtime (Telegram/Discord/WhatsApp) with live-ingress and connector paths
 - Gateway OpenResponses/OpenAI-compatible HTTP APIs + websocket control plane + webchat shell
 - Prompt optimization mode with SQLite-backed rollout state and optional attribution proxy
+- True-RL algorithm and benchmark primitives (PPO/GAE + benchmark/safety proof scripts)
 - Deterministic local demo scripts and CI smoke lanes
 
 ## Capability Status (Important)
@@ -182,7 +187,7 @@ Core guides:
 - Multi-channel event pipeline: [`docs/guides/multi-channel-event-pipeline.md`](docs/guides/multi-channel-event-pipeline.md)
 - Prompt optimization ops: [`docs/guides/training-ops.md`](docs/guides/training-ops.md)
 - Prompt optimization proxy ops: [`docs/guides/training-proxy-ops.md`](docs/guides/training-proxy-ops.md)
-- Future true-RL staged roadmap: [`docs/planning/true-rl-roadmap-skeleton.md`](docs/planning/true-rl-roadmap-skeleton.md)
+- True-RL staged roadmap reference: [`docs/planning/true-rl-roadmap-skeleton.md`](docs/planning/true-rl-roadmap-skeleton.md)
 - Memory ops: [`docs/guides/memory-ops.md`](docs/guides/memory-ops.md)
 - Dashboard ops: [`docs/guides/dashboard-ops.md`](docs/guides/dashboard-ops.md)
 - Custom command ops: [`docs/guides/custom-command-ops.md`](docs/guides/custom-command-ops.md)
