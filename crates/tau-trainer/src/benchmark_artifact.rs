@@ -825,6 +825,79 @@ pub fn build_benchmark_artifact_gate_summary_report(
     })
 }
 
+/// Persists a summary gate report to a deterministic JSON file.
+#[instrument(skip(report, output_dir))]
+pub fn export_benchmark_artifact_gate_summary_report(
+    report: &BenchmarkArtifactGateSummaryReport,
+    output_dir: impl AsRef<Path>,
+) -> Result<BenchmarkArtifactExportSummary> {
+    let output_dir = output_dir.as_ref();
+
+    if output_dir.exists() && !output_dir.is_dir() {
+        bail!(
+            "benchmark summary gate report export destination is not a directory: {}",
+            output_dir.display()
+        );
+    }
+
+    std::fs::create_dir_all(output_dir).with_context(|| {
+        format!(
+            "failed to create benchmark summary gate report output directory {}",
+            output_dir.display()
+        )
+    })?;
+
+    let path = output_dir.join(deterministic_summary_gate_report_file_name(report));
+    let payload = serde_json::to_vec_pretty(&report.to_json_value())?;
+    std::fs::write(&path, &payload).with_context(|| {
+        format!(
+            "failed to write benchmark summary gate report {}",
+            path.display()
+        )
+    })?;
+
+    Ok(BenchmarkArtifactExportSummary {
+        path,
+        bytes_written: payload.len(),
+    })
+}
+
+/// Loads and validates an exported summary gate report JSON file.
+#[instrument(skip(path))]
+pub fn validate_exported_benchmark_artifact_gate_summary_report(
+    path: impl AsRef<Path>,
+) -> Result<Value> {
+    const REQUIRED_KEYS: [&str; 2] = ["summary", "quality"];
+
+    let path = path.as_ref();
+    let raw = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read benchmark summary gate report {}",
+            path.display()
+        )
+    })?;
+    let value: Value = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "failed to parse benchmark summary gate report {}",
+            path.display()
+        )
+    })?;
+
+    let Value::Object(object) = &value else {
+        bail!("benchmark summary gate report must be a top-level JSON object");
+    };
+
+    for key in REQUIRED_KEYS {
+        match object.get(key) {
+            Some(Value::Object(_)) => {}
+            Some(_) => bail!("benchmark summary gate report key '{key}' must be an object"),
+            None => bail!("benchmark summary gate report missing required key: {key}"),
+        }
+    }
+
+    Ok(value)
+}
+
 fn seed_reproducibility_to_json(report: &SeedReproducibilityReport) -> Value {
     json!({
         "sample_size": report.sample_size,
@@ -1008,6 +1081,18 @@ fn deterministic_gate_report_file_name(report: &BenchmarkArtifactGateReport) -> 
     )
 }
 
+fn deterministic_summary_gate_report_file_name(
+    report: &BenchmarkArtifactGateSummaryReport,
+) -> String {
+    format!(
+        "benchmark-artifact-gate-summary-report-v{}-pass-{}-fail-{}-invalid-{}.json",
+        report.summary.schema_version,
+        report.summary.pass_entries,
+        report.summary.fail_entries,
+        report.summary.invalid_files.len()
+    )
+}
+
 fn sanitize_file_component(value: &str) -> String {
     let mut slug = String::with_capacity(value.len());
     let mut previous_was_dash = false;
@@ -1038,9 +1123,11 @@ mod tests {
         build_benchmark_artifact_gate_summary_report, build_benchmark_artifact_manifest,
         build_benchmark_evaluation_artifact, evaluate_benchmark_gate_report_summary_quality,
         evaluate_benchmark_manifest_quality, export_benchmark_artifact_gate_report,
-        export_benchmark_evaluation_artifact, validate_exported_benchmark_artifact,
-        validate_exported_benchmark_artifact_gate_report, BenchmarkArtifactGateReportSummaryEntry,
-        BenchmarkArtifactGateReportSummaryInvalidFile, BenchmarkArtifactGateReportSummaryManifest,
+        export_benchmark_artifact_gate_summary_report, export_benchmark_evaluation_artifact,
+        validate_exported_benchmark_artifact, validate_exported_benchmark_artifact_gate_report,
+        validate_exported_benchmark_artifact_gate_summary_report,
+        BenchmarkArtifactGateReportSummaryEntry, BenchmarkArtifactGateReportSummaryInvalidFile,
+        BenchmarkArtifactGateReportSummaryManifest,
         BenchmarkArtifactGateReportSummaryQualityPolicy, BenchmarkArtifactManifestQualityInput,
         BenchmarkArtifactManifestQualityPolicy, BenchmarkEvaluationArtifactInput,
     };
@@ -2131,6 +2218,105 @@ mod tests {
         assert!(report.quality.fail_ratio.is_finite());
         assert!(report.quality.invalid_file_ratio.is_finite());
         assert!(!report.quality.pass);
+    }
+
+    #[test]
+    fn spec_1986_c01_summary_gate_report_export_writes_deterministic_file_and_summary() {
+        let output_dir = temp_output_dir("benchmark-summary-gate-export-c01");
+        let summary = sample_summary_manifest(1, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy::default(),
+        )
+        .expect("build summary gate report");
+
+        let export =
+            export_benchmark_artifact_gate_summary_report(&report, &output_dir).expect("export");
+        assert!(export.path.exists());
+        assert!(export
+            .path
+            .ends_with("benchmark-artifact-gate-summary-report-v1-pass-1-fail-0-invalid-0.json"));
+        assert!(export.bytes_written > 0);
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1986_c02_summary_gate_report_validator_accepts_exported_payload() {
+        let output_dir = temp_output_dir("benchmark-summary-gate-export-c02");
+        let summary = sample_summary_manifest(1, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy::default(),
+        )
+        .expect("build summary gate report");
+        let export =
+            export_benchmark_artifact_gate_summary_report(&report, &output_dir).expect("export");
+
+        let value =
+            validate_exported_benchmark_artifact_gate_summary_report(&export.path).expect("parse");
+        assert!(value["summary"].is_object());
+        assert!(value["quality"].is_object());
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1986_c03_summary_gate_report_validator_rejects_malformed_or_non_object_payloads() {
+        let output_dir = temp_output_dir("benchmark-summary-gate-export-c03");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+
+        let malformed_path = output_dir.join("malformed.json");
+        fs::write(&malformed_path, "{ malformed").expect("write malformed");
+        let malformed_error =
+            validate_exported_benchmark_artifact_gate_summary_report(&malformed_path)
+                .expect_err("malformed JSON must fail");
+        assert!(malformed_error.to_string().contains("failed to parse"));
+
+        let non_object_path = output_dir.join("non-object.json");
+        fs::write(&non_object_path, "[]").expect("write array");
+        let non_object_error =
+            validate_exported_benchmark_artifact_gate_summary_report(&non_object_path)
+                .expect_err("non-object JSON must fail");
+        assert!(non_object_error
+            .to_string()
+            .contains("top-level JSON object"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1986_c04_summary_gate_report_export_rejects_file_destination() {
+        let output_dir = temp_output_dir("benchmark-summary-gate-export-c04");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let summary = sample_summary_manifest(1, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy::default(),
+        )
+        .expect("build summary gate report");
+
+        let file_destination = output_dir.join("not-a-dir");
+        fs::write(&file_destination, "blocking file").expect("write file");
+        let error = export_benchmark_artifact_gate_summary_report(&report, &file_destination)
+            .expect_err("file destination should fail");
+        assert!(error.to_string().contains("not a directory"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn regression_summary_gate_report_validator_rejects_missing_sections() {
+        let output_dir = temp_output_dir("benchmark-summary-gate-export-regression");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let payload_path = output_dir.join("missing-sections.json");
+        fs::write(&payload_path, "{ \"summary\": {} }").expect("write payload");
+
+        let error = validate_exported_benchmark_artifact_gate_summary_report(&payload_path)
+            .expect_err("missing sections should fail");
+        assert!(error.to_string().contains("missing required key"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
     }
 
     fn sample_summary_manifest(
