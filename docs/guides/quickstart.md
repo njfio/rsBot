@@ -157,6 +157,19 @@ When block mode is configured, Tau enforces fail-closed behavior per stage:
   during scan preparation (including non-finite numeric fields such as `NaN`)
   with `secret_leak.payload_serialization_failed`.
 
+## Inbound and Tool-Output Safety Validation
+
+Use targeted deterministic tests to validate inbound corpus behavior and
+tool-output reinjection enforcement:
+
+```bash
+cargo test -p tau-agent-core functional_inbound_safety_fixture_corpus_applies_warn_and_redact_modes
+cargo test -p tau-agent-core integration_inbound_safety_fixture_corpus_blocks_malicious_cases
+cargo test -p tau-agent-core regression_inbound_safety_fixture_corpus_has_no_silent_pass_through_in_block_mode
+cargo test -p tau-agent-core integration_tool_output_reinjection_fixture_suite_blocks_fail_closed
+cargo test -p tau-agent-core regression_tool_output_reinjection_fixture_suite_emits_stable_stage_reason_codes
+```
+
 Plan-first orchestration mode:
 
 ```bash
