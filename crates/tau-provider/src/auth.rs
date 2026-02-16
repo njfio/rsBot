@@ -178,7 +178,7 @@ pub fn provider_auth_mode_flag(provider: Provider) -> &'static str {
 pub fn missing_provider_api_key_message(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAi => {
-            "missing OpenAI-compatible API key. Set OPENAI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, AZURE_OPENAI_API_KEY, TAU_API_KEY, --openai-api-key, or --api-key"
+            "missing OpenAI-compatible API key. Set OPENAI_API_KEY, OPENROUTER_API_KEY, TAU_OPENROUTER_API_KEY, DEEPSEEK_API_KEY, TAU_DEEPSEEK_API_KEY, GROQ_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, AZURE_OPENAI_API_KEY, TAU_API_KEY, --openai-api-key, or --api-key"
         }
         Provider::Anthropic => {
             "missing Anthropic API key. Set ANTHROPIC_API_KEY, TAU_API_KEY, --anthropic-api-key, or --api-key"
@@ -209,6 +209,15 @@ pub fn provider_api_key_candidates_with_inputs(
             (
                 "OPENROUTER_API_KEY",
                 std::env::var("OPENROUTER_API_KEY").ok(),
+            ),
+            (
+                "TAU_OPENROUTER_API_KEY",
+                std::env::var("TAU_OPENROUTER_API_KEY").ok(),
+            ),
+            ("DEEPSEEK_API_KEY", std::env::var("DEEPSEEK_API_KEY").ok()),
+            (
+                "TAU_DEEPSEEK_API_KEY",
+                std::env::var("TAU_DEEPSEEK_API_KEY").ok(),
             ),
             ("GROQ_API_KEY", std::env::var("GROQ_API_KEY").ok()),
             ("XAI_API_KEY", std::env::var("XAI_API_KEY").ok()),
@@ -429,4 +438,28 @@ pub fn resolve_auth_login_expires_unix(provider: Provider) -> Result<Option<u64>
         return Ok(Some(parsed));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_api_key_candidates_with_inputs;
+    use tau_ai::Provider;
+
+    #[test]
+    fn unit_provider_api_key_candidates_include_deepseek_env_vars_for_openai() {
+        let candidates =
+            provider_api_key_candidates_with_inputs(Provider::OpenAi, None, None, None, None);
+        let names = candidates
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<&str>>();
+        assert!(
+            names.contains(&"DEEPSEEK_API_KEY"),
+            "DEEPSEEK_API_KEY should be a valid OpenAI-compatible key source"
+        );
+        assert!(
+            names.contains(&"TAU_DEEPSEEK_API_KEY"),
+            "TAU_DEEPSEEK_API_KEY should be a valid OpenAI-compatible key source"
+        );
+    }
 }

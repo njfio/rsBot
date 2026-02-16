@@ -193,9 +193,8 @@ fn configured_auth_mode_for_provider(
 fn parse_provider_choice(raw: &str, default: OnboardingProvider) -> Option<OnboardingProvider> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "" => Some(default),
-        "1" | "openai" | "openrouter" | "azure" | "azure-openai" | "groq" | "xai" | "mistral" => {
-            Some(OnboardingProvider::OpenAi)
-        }
+        "1" | "openai" | "openrouter" | "deepseek" | "azure" | "azure-openai" | "groq" | "xai"
+        | "mistral" => Some(OnboardingProvider::OpenAi),
         "2" | "anthropic" => Some(OnboardingProvider::Anthropic),
         "3" | "google" | "gemini" => Some(OnboardingProvider::Google),
         _ => None,

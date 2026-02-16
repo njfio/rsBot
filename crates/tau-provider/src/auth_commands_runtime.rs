@@ -279,13 +279,20 @@ const AUTH_MATRIX_MODES: [ProviderAuthMethod; 4] = [
 /// Update this comment if behavior or integration expectations change.
 pub fn parse_auth_provider(token: &str) -> Result<Provider> {
     match token.trim().to_ascii_lowercase().as_str() {
-        "openai" | "openrouter" | "groq" | "xai" | "mistral" | "azure" | "azure-openai" => {
+        "openai"
+        | "openrouter"
+        | "deepseek"
+        | "groq"
+        | "xai"
+        | "mistral"
+        | "azure"
+        | "azure-openai" => {
             Ok(Provider::OpenAi)
         }
         "anthropic" => Ok(Provider::Anthropic),
         "google" => Ok(Provider::Google),
         other => bail!(
-            "unknown provider '{}'; supported providers: openai, openrouter (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google",
+            "unknown provider '{}'; supported providers: openai, openrouter (alias), deepseek (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google",
             other
         ),
     }

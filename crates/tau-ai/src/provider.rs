@@ -31,7 +31,7 @@ impl fmt::Display for Provider {
 pub enum ModelRefParseError {
     #[error("missing model identifier")]
     MissingModel,
-    #[error("unsupported provider '{0}'. Supported providers: openai, openrouter (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google")]
+    #[error("unsupported provider '{0}'. Supported providers: openai, openrouter (alias), deepseek (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google")]
     UnsupportedProvider(String),
 }
 
@@ -41,9 +41,8 @@ impl FromStr for Provider {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let normalized = value.trim().to_ascii_lowercase();
         match normalized.as_str() {
-            "openai" | "openrouter" | "groq" | "xai" | "mistral" | "azure" | "azure-openai" => {
-                Ok(Provider::OpenAi)
-            }
+            "openai" | "openrouter" | "deepseek" | "groq" | "xai" | "mistral" | "azure"
+            | "azure-openai" => Ok(Provider::OpenAi),
             "anthropic" => Ok(Provider::Anthropic),
             "google" | "gemini" => Ok(Provider::Google),
             _ => Err(ModelRefParseError::UnsupportedProvider(value.to_string())),
@@ -128,6 +127,13 @@ mod tests {
         let parsed = ModelRef::parse("mistral/mistral-large-latest").expect("valid model ref");
         assert_eq!(parsed.provider, Provider::OpenAi);
         assert_eq!(parsed.model, "mistral-large-latest");
+    }
+
+    #[test]
+    fn parses_deepseek_as_openai_alias() {
+        let parsed = ModelRef::parse("deepseek/deepseek-chat").expect("valid model ref");
+        assert_eq!(parsed.provider, Provider::OpenAi);
+        assert_eq!(parsed.model, "deepseek-chat");
     }
 
     #[test]

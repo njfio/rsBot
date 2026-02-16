@@ -79,6 +79,31 @@ identity sections in the runtime system prompt.
 | Anthropic | `--anthropic-auth-mode oauth-token` or `session-token` with Claude backend (`--anthropic-claude-backend=true`) | `--anthropic-auth-mode api-key` with `ANTHROPIC_API_KEY` |
 | Google | `--google-auth-mode oauth-token` (Gemini login) or `--google-auth-mode adc` (Vertex/ADC) with Gemini backend (`--google-gemini-backend=true`) | `--google-auth-mode api-key` with `GEMINI_API_KEY` |
 
+## Local Provider Keys (Safe Layout)
+
+Use a local key file under `.tau/` (already gitignored) for live provider smoke
+validation:
+
+```bash
+cp scripts/dev/provider-keys.env.example .tau/provider-keys.env
+chmod 600 .tau/provider-keys.env
+```
+
+Populate `.tau/provider-keys.env` with the keys you want to validate
+(OpenAI/Anthropic/Google and optional OpenRouter/DeepSeek/xAI/Mistral/Groq).
+
+Run live smoke checks:
+
+```bash
+./scripts/dev/provider-live-smoke.sh
+```
+
+Override key-file location if needed:
+
+```bash
+TAU_PROVIDER_KEYS_FILE=/absolute/path/to/provider-keys.env ./scripts/dev/provider-live-smoke.sh
+```
+
 Fail-closed subscription mode (disable automatic API-key fallback for non-API-key auth modes):
 
 ```bash
