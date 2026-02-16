@@ -1,11 +1,13 @@
 # Tasks #2048
 
-Status: Draft
+Status: Implemented
 Spec: specs/2048/spec.md
 Plan: specs/2048/plan.md
 
 ## Ordered Tasks
-- T1: Write conformance and failing tests from C-xx cases.
-- T2: Implement minimal code to satisfy ACs.
-- T3: Refactor and regression verification.
-- T4: Update docs/spec/ADR links and closure evidence.
+
+- T1 (RED): capture missing-policy/missing-gate failures (completed in `#2071`).
+- T2 (GREEN): implement policy + gate + diagnostics artifacts (completed in
+  `#2071`).
+- T3 (VERIFY): re-run shell and Python suites for task-level closure evidence.
+- T4 (CLOSE): publish conformance mapping and close `#2048`.
