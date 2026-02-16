@@ -518,6 +518,25 @@ impl BenchmarkArtifactGateSummaryReportManifestQualityDecision {
     }
 }
 
+/// Combined summary gate report manifest + manifest-quality decision report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkArtifactGateSummaryReportManifestReport {
+    /// Source summary gate report manifest produced by directory scan.
+    pub manifest: BenchmarkArtifactGateSummaryReportManifest,
+    /// Deterministic quality decision derived from the manifest.
+    pub quality: BenchmarkArtifactGateSummaryReportManifestQualityDecision,
+}
+
+impl BenchmarkArtifactGateSummaryReportManifestReport {
+    /// Projects the combined report into machine-readable JSON.
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "manifest": self.manifest.to_json_value(),
+            "quality": self.quality.to_json_value(),
+        })
+    }
+}
+
 impl BenchmarkEvaluationArtifact {
     /// Initial schema version for benchmark evaluation artifacts.
     pub const SCHEMA_VERSION_V1: u32 = 1;
@@ -1178,6 +1197,19 @@ pub fn evaluate_benchmark_gate_summary_report_manifest_quality(
     })
 }
 
+/// Builds a combined summary gate manifest report from manifest + quality policy.
+#[instrument(skip(manifest, policy))]
+pub fn build_benchmark_artifact_gate_summary_report_manifest_report(
+    manifest: &BenchmarkArtifactGateSummaryReportManifest,
+    policy: &BenchmarkArtifactGateSummaryReportManifestQualityPolicy,
+) -> Result<BenchmarkArtifactGateSummaryReportManifestReport> {
+    let quality = evaluate_benchmark_gate_summary_report_manifest_quality(manifest, policy)?;
+    Ok(BenchmarkArtifactGateSummaryReportManifestReport {
+        manifest: manifest.clone(),
+        quality,
+    })
+}
+
 fn seed_reproducibility_to_json(report: &SeedReproducibilityReport) -> Value {
     json!({
         "sample_size": report.sample_size,
@@ -1425,8 +1457,10 @@ mod tests {
         build_benchmark_artifact_gate_report,
         build_benchmark_artifact_gate_report_summary_manifest,
         build_benchmark_artifact_gate_summary_report,
-        build_benchmark_artifact_gate_summary_report_manifest, build_benchmark_artifact_manifest,
-        build_benchmark_evaluation_artifact, evaluate_benchmark_gate_report_summary_quality,
+        build_benchmark_artifact_gate_summary_report_manifest,
+        build_benchmark_artifact_gate_summary_report_manifest_report,
+        build_benchmark_artifact_manifest, build_benchmark_evaluation_artifact,
+        evaluate_benchmark_gate_report_summary_quality,
         evaluate_benchmark_gate_summary_report_manifest_quality,
         evaluate_benchmark_manifest_quality, export_benchmark_artifact_gate_report,
         export_benchmark_artifact_gate_summary_report, export_benchmark_evaluation_artifact,
@@ -2833,6 +2867,103 @@ mod tests {
         assert!(decision.fail_ratio.is_finite());
         assert!(decision.invalid_file_ratio.is_finite());
         assert!(!decision.pass);
+    }
+
+    #[test]
+    fn spec_1992_c01_manifest_report_contains_counters_and_quality_decision() {
+        let manifest = sample_summary_gate_report_manifest(2, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report_manifest_report(
+            &manifest,
+            &BenchmarkArtifactGateSummaryReportManifestQualityPolicy {
+                min_pass_reports: 1,
+                max_fail_ratio: 0.5,
+                max_invalid_file_ratio: 0.5,
+            },
+        )
+        .expect("build manifest report");
+
+        assert_eq!(report.manifest.pass_reports, 2);
+        assert_eq!(report.manifest.fail_reports, 0);
+        assert_eq!(report.manifest.invalid_files.len(), 0);
+        assert!(report.quality.pass);
+    }
+
+    #[test]
+    fn spec_1992_c02_manifest_report_preserves_quality_reason_codes() {
+        let manifest = sample_summary_gate_report_manifest(0, 2, 1);
+        let report = build_benchmark_artifact_gate_summary_report_manifest_report(
+            &manifest,
+            &BenchmarkArtifactGateSummaryReportManifestQualityPolicy {
+                min_pass_reports: 1,
+                max_fail_ratio: 0.1,
+                max_invalid_file_ratio: 0.0,
+            },
+        )
+        .expect("build manifest report");
+
+        assert!(!report.quality.pass);
+        assert!(report
+            .quality
+            .reason_codes
+            .iter()
+            .any(|code| code == "below_min_pass_reports"));
+        assert!(report
+            .quality
+            .reason_codes
+            .iter()
+            .any(|code| code == "fail_ratio_exceeded"));
+        assert!(report
+            .quality
+            .reason_codes
+            .iter()
+            .any(|code| code == "invalid_file_ratio_exceeded"));
+    }
+
+    #[test]
+    fn spec_1992_c03_manifest_report_json_is_machine_readable_with_nested_sections() {
+        let manifest = sample_summary_gate_report_manifest(1, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report_manifest_report(
+            &manifest,
+            &BenchmarkArtifactGateSummaryReportManifestQualityPolicy::default(),
+        )
+        .expect("build manifest report");
+        let payload = report.to_json_value();
+        assert!(payload["manifest"].is_object());
+        assert!(payload["quality"].is_object());
+        assert!(payload["manifest"]["pass_reports"].as_u64().is_some());
+        assert!(payload["quality"]["pass"].is_boolean());
+    }
+
+    #[test]
+    fn spec_1992_c04_manifest_report_rejects_invalid_quality_policy() {
+        let manifest = sample_summary_gate_report_manifest(1, 0, 0);
+        let error = build_benchmark_artifact_gate_summary_report_manifest_report(
+            &manifest,
+            &BenchmarkArtifactGateSummaryReportManifestQualityPolicy {
+                min_pass_reports: 1,
+                max_fail_ratio: 1.5,
+                max_invalid_file_ratio: 0.0,
+            },
+        )
+        .expect_err("invalid policy should fail");
+        assert!(error.to_string().contains("max_fail_ratio"));
+    }
+
+    #[test]
+    fn regression_manifest_report_handles_zero_manifest_entries() {
+        let manifest = sample_summary_gate_report_manifest(0, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report_manifest_report(
+            &manifest,
+            &BenchmarkArtifactGateSummaryReportManifestQualityPolicy {
+                min_pass_reports: 1,
+                max_fail_ratio: 0.5,
+                max_invalid_file_ratio: 0.5,
+            },
+        )
+        .expect("build manifest report");
+        assert!(report.quality.fail_ratio.is_finite());
+        assert!(report.quality.invalid_file_ratio.is_finite());
+        assert!(!report.quality.pass);
     }
 
     fn sample_summary_manifest(
