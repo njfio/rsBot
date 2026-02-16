@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tau.local/schemas/m21-scaffold-inventory.schema.json",
+  "title": "M21 Scaffold Inventory",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "source_candidates_path",
+    "summary",
+    "candidates"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "repository_root": { "type": "string" },
+    "schema_path": { "type": "string" },
+    "source_candidates_path": { "type": "string" },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_candidates",
+        "existing_crate_count",
+        "missing_owner_count",
+        "total_runtime_reference_hits",
+        "total_test_touchpoint_hits"
+      ],
+      "properties": {
+        "total_candidates": { "type": "integer", "minimum": 0 },
+        "existing_crate_count": { "type": "integer", "minimum": 0 },
+        "missing_owner_count": { "type": "integer", "minimum": 0 },
+        "total_runtime_reference_hits": { "type": "integer", "minimum": 0 },
+        "total_test_touchpoint_hits": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "surface",
+          "owner",
+          "action",
+          "crate_name",
+          "crate_path",
+          "crate_exists",
+          "src_rust_files",
+          "src_rust_loc",
+          "runtime_reference_hits",
+          "test_touchpoint_hits"
+        ],
+        "properties": {
+          "candidate_id": { "type": "string", "minLength": 1 },
+          "surface": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "minLength": 1 },
+          "action": { "type": "string", "minLength": 1 },
+          "crate_name": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+          "crate_path": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+          "crate_exists": { "type": "boolean" },
+          "src_rust_files": { "type": "integer", "minimum": 0 },
+          "src_rust_loc": { "type": "integer", "minimum": 0 },
+          "runtime_reference_hits": { "type": "integer", "minimum": 0 },
+          "test_touchpoint_hits": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
