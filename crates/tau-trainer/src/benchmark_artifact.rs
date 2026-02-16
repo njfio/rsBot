@@ -215,6 +215,50 @@ pub fn export_benchmark_evaluation_artifact(
     })
 }
 
+/// Loads and validates an exported benchmark artifact JSON file.
+#[instrument(skip(path))]
+pub fn validate_exported_benchmark_artifact(path: impl AsRef<Path>) -> Result<Value> {
+    const REQUIRED_KEYS: [&str; 9] = [
+        "schema_version",
+        "benchmark_suite_id",
+        "baseline_policy_id",
+        "candidate_policy_id",
+        "generated_at_epoch_ms",
+        "policy_improvement",
+        "seed_reproducibility",
+        "sample_size_sensitivity",
+        "checkpoint_promotion",
+    ];
+
+    let path = path.as_ref();
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read benchmark artifact {}", path.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse benchmark artifact {}", path.display()))?;
+
+    let Value::Object(object) = &value else {
+        bail!("benchmark artifact must be a top-level JSON object");
+    };
+
+    for key in REQUIRED_KEYS {
+        if !object.contains_key(key) {
+            bail!("benchmark artifact missing required key: {key}");
+        }
+    }
+
+    let Some(schema_version) = object.get("schema_version").and_then(Value::as_u64) else {
+        bail!("benchmark artifact schema_version must be an unsigned integer");
+    };
+    if schema_version != u64::from(BenchmarkEvaluationArtifact::SCHEMA_VERSION_V1) {
+        bail!(
+            "unsupported schema_version {schema_version}; expected {}",
+            BenchmarkEvaluationArtifact::SCHEMA_VERSION_V1
+        );
+    }
+
+    Ok(value)
+}
+
 /// Builds a deterministic artifact manifest from a benchmark export directory.
 #[instrument(skip(directory))]
 pub fn build_benchmark_artifact_manifest(
@@ -397,7 +441,8 @@ fn sanitize_file_component(value: &str) -> String {
 mod tests {
     use super::{
         build_benchmark_artifact_manifest, build_benchmark_evaluation_artifact,
-        export_benchmark_evaluation_artifact, BenchmarkEvaluationArtifactInput,
+        export_benchmark_evaluation_artifact, validate_exported_benchmark_artifact,
+        BenchmarkEvaluationArtifactInput,
     };
     use crate::benchmark_significance::{
         compare_policy_improvement, CheckpointPromotionDecision, SampleSizePoint,
@@ -656,6 +701,104 @@ mod tests {
         assert!(error.to_string().contains("not a directory"));
 
         fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1970_c01_validator_accepts_valid_exported_artifact() {
+        let artifact = sample_artifact();
+        let output_dir = temp_output_dir("benchmark-validate-c01");
+        let summary = export_benchmark_evaluation_artifact(&artifact, &output_dir).expect("export");
+
+        let validated = validate_exported_benchmark_artifact(&summary.path)
+            .expect("validate exported artifact");
+        assert_eq!(validated["schema_version"], json!(1));
+        assert_eq!(validated["benchmark_suite_id"], json!("reasoning-suite"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1970_c02_validator_rejects_malformed_json() {
+        let output_dir = temp_output_dir("benchmark-validate-c02");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let artifact_path = output_dir.join("invalid.json");
+        fs::write(&artifact_path, "{ invalid-json").expect("write malformed artifact");
+
+        let error = validate_exported_benchmark_artifact(&artifact_path)
+            .expect_err("malformed JSON should fail");
+        assert!(error.to_string().contains("failed to parse"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1970_c03_validator_reports_missing_required_keys() {
+        let output_dir = temp_output_dir("benchmark-validate-c03");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let artifact_path = output_dir.join("missing-key.json");
+        fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 1,
+                "baseline_policy_id": "policy-a"
+            }))
+            .expect("serialize malformed artifact"),
+        )
+        .expect("write malformed artifact");
+
+        let error = validate_exported_benchmark_artifact(&artifact_path)
+            .expect_err("missing keys should fail");
+        assert!(error.to_string().contains("missing required key"));
+        assert!(error.to_string().contains("benchmark_suite_id"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1970_c04_validator_rejects_unsupported_schema_versions() {
+        let output_dir = temp_output_dir("benchmark-validate-c04");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let artifact_path = output_dir.join("unsupported-schema.json");
+        fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": 99,
+                "benchmark_suite_id": "suite",
+                "baseline_policy_id": "policy-a",
+                "candidate_policy_id": "policy-b",
+                "generated_at_epoch_ms": 1,
+                "policy_improvement": {},
+                "seed_reproducibility": null,
+                "sample_size_sensitivity": null,
+                "checkpoint_promotion": {}
+            }))
+            .expect("serialize artifact"),
+        )
+        .expect("write artifact");
+
+        let error = validate_exported_benchmark_artifact(&artifact_path)
+            .expect_err("unsupported schema should fail");
+        assert!(error.to_string().contains("unsupported schema_version"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn regression_validator_rejects_non_object_payloads() {
+        let output_dir = temp_output_dir("benchmark-validate-regression");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let artifact_path = output_dir.join("array-payload.json");
+        fs::write(
+            &artifact_path,
+            serde_json::to_vec_pretty(&json!([1, 2, 3])).expect("serialize array"),
+        )
+        .expect("write payload");
+
+        let error = validate_exported_benchmark_artifact(&artifact_path)
+            .expect_err("non-object payload should fail");
+        assert!(error.to_string().contains("top-level JSON object"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
     }
 
     #[test]
