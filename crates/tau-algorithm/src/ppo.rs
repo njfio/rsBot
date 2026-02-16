@@ -318,10 +318,7 @@ fn ensure_loss_is_finite(loss: &PpoLossBreakdown) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        compute_ppo_loss, compute_ppo_update, PpoConfig, PpoLossBreakdown, PpoOptimizerStep,
-        PpoSample,
-    };
+    use super::{compute_ppo_loss, compute_ppo_update, PpoConfig, PpoLossBreakdown, PpoSample};
     use anyhow::{bail, Context, Result};
     use serde_json::Value;
 
@@ -935,10 +932,5 @@ mod tests {
             delta <= tolerance,
             "fixture case '{case_name}' field '{field}' delta {delta} exceeds tolerance {tolerance}; actual={actual}, expected={expected}"
         );
-    }
-
-    #[allow(dead_code)]
-    fn _assert_step_shape(step: &PpoOptimizerStep) {
-        assert!(step.loss.total_loss.is_finite());
     }
 }
