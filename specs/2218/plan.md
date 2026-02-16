@@ -1,6 +1,6 @@
 # Plan #2218
 
-Status: Draft
+Status: Implemented
 Spec: specs/2218/spec.md
 
 ## Approach
