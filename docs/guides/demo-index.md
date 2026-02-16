@@ -87,6 +87,17 @@ Override manifest destination explicitly:
 - Troubleshooting checkpoint:
   - verify fixture files in `crates/tau-multi-channel/testdata/multi-channel-live-ingress/raw`.
 
+### safety-smoke
+- Wrapper: `./scripts/demo/safety-smoke.sh`
+- Purpose: run deterministic fail-closed safety smoke checks with actionable
+  reason-code failure markers.
+- Expected markers:
+  - `[demo:safety-smoke] PASS safety-prompt-injection-block`
+  - `[demo:safety-smoke] summary: total=`
+- Troubleshooting checkpoint:
+  - rerun `./scripts/demo/safety-smoke.sh --fail-fast` and verify
+    `prompt_injection.ignore_instructions` appears in failure diagnostics.
+
 ### deployment-wasm
 - Wrapper: `./scripts/demo/deployment.sh`
 - Purpose: package WASM deployment artifact and verify inspect/status outputs.
@@ -103,6 +114,7 @@ commands that cover the same workflow classes:
 - onboarding bootstrap
 - gateway auth posture inspect
 - gateway remote plan export + fail-closed guardrail contract
+- safety fail-closed smoke (`safety-prompt-injection-block`)
 - multi-channel live ingress (Telegram/Discord/WhatsApp)
 - deployment WASM package and inspect
 
