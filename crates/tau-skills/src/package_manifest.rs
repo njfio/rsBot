@@ -1,12 +1,8 @@
-use std::{
-    path::{Component, Path, PathBuf},
-    str::FromStr,
-};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signature, VerifyingKey};
-use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tau_cli::Cli;
@@ -17,7 +13,18 @@ use crate::{
     save_trust_root_records, TrustedKey,
 };
 
-const PACKAGE_MANIFEST_SCHEMA_VERSION: u32 = 1;
+mod io;
+mod schema;
+mod validation;
+
+use io::{resolve_component_source_bytes, resolve_component_source_path};
+use schema::{
+    PackageActivationSelection, PackageComponent, PackageManifest, PACKAGE_MANIFEST_SCHEMA_VERSION,
+};
+use validation::{
+    is_semver_like, parse_component_source_url, parse_sha256_checksum, validate_component_set,
+    validate_relative_component_path,
+};
 
 fn resolve_skill_trust_roots(cli: &Cli) -> Result<Vec<TrustedKey>> {
     let has_store_mutation = !cli.skill_trust_add.is_empty()
@@ -244,43 +251,6 @@ impl FileUpsertOutcome {
             Self::Skipped => "skipped",
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageManifest {
-    schema_version: u32,
-    name: String,
-    version: String,
-    #[serde(default)]
-    signing_key: Option<String>,
-    #[serde(default)]
-    signature_file: Option<String>,
-    #[serde(default)]
-    templates: Vec<PackageComponent>,
-    #[serde(default)]
-    skills: Vec<PackageComponent>,
-    #[serde(default)]
-    extensions: Vec<PackageComponent>,
-    #[serde(default)]
-    themes: Vec<PackageComponent>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageComponent {
-    id: String,
-    path: String,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    sha256: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PackageActivationSelection {
-    kind: String,
-    path: String,
-    owner: String,
-    source: PathBuf,
 }
 
 pub fn execute_package_validate_command(cli: &Cli) -> Result<()> {
@@ -730,8 +700,7 @@ fn install_component_set(
 ) -> Result<()> {
     for component in components {
         let id = component.id.trim();
-        let relative_path = PathBuf::from_str(component.path.trim())
-            .map_err(|_| anyhow!("failed to parse {} path '{}'", kind, component.path.trim()))?;
+        let relative_path = PathBuf::from(component.path.trim());
         let source_content = resolve_component_source_bytes(
             kind,
             id,
@@ -747,161 +716,6 @@ fn install_component_set(
         }
     }
     Ok(())
-}
-
-fn resolve_component_source_path(
-    kind: &str,
-    id: &str,
-    relative_path: &Path,
-    canonical_manifest_dir: &Path,
-) -> Result<PathBuf> {
-    let joined = canonical_manifest_dir.join(relative_path);
-    let canonical_source = std::fs::canonicalize(&joined).with_context(|| {
-        format!(
-            "package manifest {} entry '{}' source '{}' does not exist",
-            kind,
-            id,
-            relative_path.display()
-        )
-    })?;
-    if !canonical_source.starts_with(canonical_manifest_dir) {
-        bail!(
-            "package manifest {} entry '{}' source '{}' resolves outside package manifest directory",
-            kind,
-            id,
-            relative_path.display()
-        );
-    }
-    let metadata = std::fs::metadata(&canonical_source).with_context(|| {
-        format!(
-            "failed to read metadata for package manifest {} entry '{}' source '{}'",
-            kind,
-            id,
-            canonical_source.display()
-        )
-    })?;
-    if !metadata.is_file() {
-        bail!(
-            "package manifest {} entry '{}' source '{}' must be a file",
-            kind,
-            id,
-            relative_path.display()
-        );
-    }
-    Ok(canonical_source)
-}
-
-fn resolve_component_source_bytes(
-    kind: &str,
-    id: &str,
-    component: &PackageComponent,
-    relative_path: &Path,
-    canonical_manifest_dir: &Path,
-) -> Result<Vec<u8>> {
-    let bytes = if let Some(raw_url) = component.url.as_deref() {
-        fetch_remote_component_source(kind, id, raw_url)?
-    } else {
-        load_local_component_source(kind, id, relative_path, canonical_manifest_dir)?
-    };
-    if let Some(raw_checksum) = component.sha256.as_deref() {
-        verify_component_checksum(kind, id, raw_checksum, &bytes)?;
-    }
-    Ok(bytes)
-}
-
-fn load_local_component_source(
-    kind: &str,
-    id: &str,
-    relative_path: &Path,
-    canonical_manifest_dir: &Path,
-) -> Result<Vec<u8>> {
-    let source_path =
-        resolve_component_source_path(kind, id, relative_path, canonical_manifest_dir)?;
-    std::fs::read(&source_path).with_context(|| {
-        format!(
-            "failed to read source file {} for package manifest {} entry '{}'",
-            source_path.display(),
-            kind,
-            id
-        )
-    })
-}
-
-fn fetch_remote_component_source(kind: &str, id: &str, raw_url: &str) -> Result<Vec<u8>> {
-    let source_url = parse_component_source_url(kind, id, raw_url)?;
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| {
-            handle.block_on(fetch_remote_component_source_async(kind, id, &source_url))
-        })
-    } else {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("failed to create runtime for package remote source download")?;
-        runtime.block_on(fetch_remote_component_source_async(kind, id, &source_url))
-    }
-}
-
-async fn fetch_remote_component_source_async(
-    kind: &str,
-    id: &str,
-    source_url: &Url,
-) -> Result<Vec<u8>> {
-    let response = reqwest::Client::new()
-        .get(source_url.clone())
-        .send()
-        .await
-        .with_context(|| {
-            format!(
-                "failed to fetch package manifest {} entry '{}' url '{}'",
-                kind, id, source_url
-            )
-        })?;
-    if !response.status().is_success() {
-        bail!(
-            "failed to fetch package manifest {} entry '{}' url '{}' with status {}",
-            kind,
-            id,
-            source_url,
-            response.status()
-        );
-    }
-    response
-        .bytes()
-        .await
-        .with_context(|| {
-            format!(
-                "failed to read response body for package manifest {} entry '{}' url '{}'",
-                kind, id, source_url
-            )
-        })
-        .map(|bytes| bytes.to_vec())
-}
-
-fn parse_component_source_url(kind: &str, id: &str, raw_url: &str) -> Result<Url> {
-    let trimmed = raw_url.trim();
-    if trimmed.is_empty() {
-        bail!(
-            "package manifest {} entry '{}' url must be non-empty",
-            kind,
-            id
-        );
-    }
-    let source_url = Url::parse(trimmed).with_context(|| {
-        format!(
-            "package manifest {} entry '{}' url '{}' is invalid",
-            kind, id, trimmed
-        )
-    })?;
-    if !matches!(source_url.scheme(), "http" | "https") {
-        bail!(
-            "package manifest {} entry '{}' url '{}' must use http or https",
-            kind,
-            id,
-            trimmed
-        );
-    }
-    Ok(source_url)
 }
 
 fn verify_component_checksum(kind: &str, id: &str, raw_checksum: &str, bytes: &[u8]) -> Result<()> {
@@ -924,18 +738,6 @@ fn verify_component_checksum(kind: &str, id: &str, raw_checksum: &str, bytes: &[
         );
     }
     Ok(())
-}
-
-fn parse_sha256_checksum(raw_checksum: &str) -> Result<String> {
-    let trimmed = raw_checksum.trim();
-    if trimmed.is_empty() {
-        bail!("sha256 checksum must be non-empty");
-    }
-    let hex = trimmed.strip_prefix("sha256:").unwrap_or(trimmed);
-    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        bail!("sha256 checksum must use format sha256:<64 hex characters>");
-    }
-    Ok(hex.to_ascii_lowercase())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1667,82 +1469,6 @@ fn append_component_section(lines: &mut Vec<String>, label: &str, components: &[
             component.path.trim()
         ));
     }
-}
-
-fn validate_component_set(kind: &str, components: &[PackageComponent]) -> Result<()> {
-    let mut seen_ids = std::collections::BTreeSet::new();
-    for component in components {
-        let id = component.id.trim();
-        if id.is_empty() {
-            bail!("package manifest {} entry id must be non-empty", kind);
-        }
-        if !seen_ids.insert(id.to_string()) {
-            bail!("duplicate {} id '{}'", kind, id);
-        }
-        validate_relative_component_path(kind, id, component.path.trim())?;
-        if let Some(raw_url) = component.url.as_deref() {
-            parse_component_source_url(kind, id, raw_url)?;
-        }
-        if let Some(raw_checksum) = component.sha256.as_deref() {
-            parse_sha256_checksum(raw_checksum).with_context(|| {
-                format!(
-                    "package manifest {} entry '{}' has invalid checksum '{}'",
-                    kind,
-                    id,
-                    raw_checksum.trim()
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn validate_relative_component_path(kind: &str, id: &str, raw_path: &str) -> Result<()> {
-    if raw_path.is_empty() {
-        bail!(
-            "package manifest {} entry '{}' path must be non-empty",
-            kind,
-            id
-        );
-    }
-    let path = PathBuf::from_str(raw_path)
-        .map_err(|_| anyhow!("failed to parse {} path '{}'", kind, raw_path))?;
-    if path.is_absolute() {
-        bail!(
-            "package manifest {} entry '{}' path '{}' must be relative",
-            kind,
-            id,
-            raw_path
-        );
-    }
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        bail!(
-            "package manifest {} entry '{}' path '{}' must not contain parent traversals",
-            kind,
-            id,
-            raw_path
-        );
-    }
-    Ok(())
-}
-
-fn is_semver_like(raw: &str) -> bool {
-    let mut parts = raw.split('.');
-    let major = parts.next();
-    let minor = parts.next();
-    let patch = parts.next();
-    if parts.next().is_some() {
-        return false;
-    }
-    [major, minor, patch].into_iter().all(|part| {
-        part.map(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
-            .unwrap_or(false)
-    })
 }
 
 #[cfg(test)]
