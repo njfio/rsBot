@@ -205,6 +205,83 @@ impl BenchmarkArtifactGateReport {
     }
 }
 
+/// Valid gate report entry discovered during summary-manifest scans.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkArtifactGateReportSummaryEntry {
+    /// Gate report file path.
+    pub path: PathBuf,
+    /// Quality pass/fail result.
+    pub pass: bool,
+    /// Number of valid artifacts counted by the gate decision.
+    pub valid_entries: usize,
+    /// Number of invalid artifacts counted by the gate decision.
+    pub invalid_entries: usize,
+    /// Number of scanned artifacts counted by the gate decision.
+    pub scanned_entries: usize,
+    /// Invalid ratio from the quality decision.
+    pub invalid_ratio: f64,
+    /// Deterministic reason codes from the quality decision.
+    pub reason_codes: Vec<String>,
+}
+
+/// Invalid gate report diagnostic emitted during summary-manifest scans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkArtifactGateReportSummaryInvalidFile {
+    /// Gate report file path.
+    pub path: PathBuf,
+    /// Deterministic diagnostic reason.
+    pub reason: String,
+}
+
+/// Directory-level gate report summary manifest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkArtifactGateReportSummaryManifest {
+    /// Summary manifest schema version.
+    pub schema_version: u32,
+    /// Scanned directory path.
+    pub directory: PathBuf,
+    /// Number of JSON files scanned.
+    pub scanned_json_files: usize,
+    /// Parsed valid gate report entries.
+    pub entries: Vec<BenchmarkArtifactGateReportSummaryEntry>,
+    /// Invalid gate report diagnostics.
+    pub invalid_files: Vec<BenchmarkArtifactGateReportSummaryInvalidFile>,
+    /// Number of passing entries.
+    pub pass_entries: usize,
+    /// Number of failing entries.
+    pub fail_entries: usize,
+}
+
+impl BenchmarkArtifactGateReportSummaryManifest {
+    /// Projects the summary manifest into machine-readable JSON.
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "schema_version": self.schema_version,
+            "directory": self.directory.display().to_string(),
+            "scanned_json_files": self.scanned_json_files,
+            "entries": self.entries.iter().map(|entry| {
+                json!({
+                    "path": entry.path.display().to_string(),
+                    "pass": entry.pass,
+                    "valid_entries": entry.valid_entries,
+                    "invalid_entries": entry.invalid_entries,
+                    "scanned_entries": entry.scanned_entries,
+                    "invalid_ratio": entry.invalid_ratio,
+                    "reason_codes": entry.reason_codes,
+                })
+            }).collect::<Vec<_>>(),
+            "invalid_files": self.invalid_files.iter().map(|entry| {
+                json!({
+                    "path": entry.path.display().to_string(),
+                    "reason": entry.reason,
+                })
+            }).collect::<Vec<_>>(),
+            "pass_entries": self.pass_entries,
+            "fail_entries": self.fail_entries,
+        })
+    }
+}
+
 impl BenchmarkEvaluationArtifact {
     /// Initial schema version for benchmark evaluation artifacts.
     pub const SCHEMA_VERSION_V1: u32 = 1;
@@ -521,6 +598,77 @@ pub fn validate_exported_benchmark_artifact_gate_report(path: impl AsRef<Path>) 
     Ok(value)
 }
 
+/// Builds a deterministic summary manifest from exported gate report files.
+#[instrument(skip(directory))]
+pub fn build_benchmark_artifact_gate_report_summary_manifest(
+    directory: impl AsRef<Path>,
+) -> Result<BenchmarkArtifactGateReportSummaryManifest> {
+    let directory = directory.as_ref();
+    if !directory.exists() {
+        bail!(
+            "benchmark gate report summary missing directory: {}",
+            directory.display()
+        );
+    }
+    if !directory.is_dir() {
+        bail!(
+            "benchmark gate report summary path is not a directory: {}",
+            directory.display()
+        );
+    }
+
+    let mut json_paths = Vec::new();
+    for entry in std::fs::read_dir(directory).with_context(|| {
+        format!(
+            "failed to scan benchmark gate report directory {}",
+            directory.display()
+        )
+    })? {
+        let path = entry
+            .with_context(|| {
+                format!(
+                    "failed to read benchmark gate report directory entry in {}",
+                    directory.display()
+                )
+            })?
+            .path();
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("json"))
+        {
+            json_paths.push(path);
+        }
+    }
+
+    json_paths.sort();
+    let scanned_json_files = json_paths.len();
+    let mut entries = Vec::new();
+    let mut invalid_files = Vec::new();
+    for path in json_paths {
+        match parse_gate_report_summary_entry(&path) {
+            Ok(entry) => entries.push(entry),
+            Err(error) => invalid_files.push(BenchmarkArtifactGateReportSummaryInvalidFile {
+                path,
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    let pass_entries = entries.iter().filter(|entry| entry.pass).count();
+    let fail_entries = entries.len().saturating_sub(pass_entries);
+
+    Ok(BenchmarkArtifactGateReportSummaryManifest {
+        schema_version: BenchmarkEvaluationArtifact::SCHEMA_VERSION_V1,
+        directory: directory.to_path_buf(),
+        scanned_json_files,
+        entries,
+        invalid_files,
+        pass_entries,
+        fail_entries,
+    })
+}
+
 fn seed_reproducibility_to_json(report: &SeedReproducibilityReport) -> Value {
     json!({
         "sample_size": report.sample_size,
@@ -585,6 +733,26 @@ fn parse_manifest_entry(path: &Path) -> Result<BenchmarkArtifactManifestEntry> {
     })
 }
 
+fn parse_gate_report_summary_entry(path: &Path) -> Result<BenchmarkArtifactGateReportSummaryEntry> {
+    let value = validate_exported_benchmark_artifact_gate_report(path)?;
+    let Value::Object(root) = value else {
+        bail!("benchmark gate report must be a top-level JSON object");
+    };
+    let Some(Value::Object(quality)) = root.get("quality") else {
+        bail!("benchmark gate report missing required key: quality");
+    };
+
+    Ok(BenchmarkArtifactGateReportSummaryEntry {
+        path: path.to_path_buf(),
+        pass: gate_report_required_bool(quality, "pass")?,
+        valid_entries: usize::try_from(gate_report_required_u64(quality, "valid_entries")?)?,
+        invalid_entries: usize::try_from(gate_report_required_u64(quality, "invalid_entries")?)?,
+        scanned_entries: usize::try_from(gate_report_required_u64(quality, "scanned_entries")?)?,
+        invalid_ratio: gate_report_required_f64(quality, "invalid_ratio")?,
+        reason_codes: gate_report_required_string_vec(quality, "reason_codes")?,
+    })
+}
+
 fn required_string(object: &serde_json::Map<String, Value>, key: &'static str) -> Result<String> {
     match object.get(key) {
         Some(Value::String(value)) if !value.trim().is_empty() => Ok(value.clone()),
@@ -601,6 +769,68 @@ fn required_u64(object: &serde_json::Map<String, Value>, key: &'static str) -> R
         }
         None => bail!("benchmark artifact missing required key: {key}"),
     }
+}
+
+fn gate_report_required_bool(
+    object: &serde_json::Map<String, Value>,
+    key: &'static str,
+) -> Result<bool> {
+    match object.get(key).and_then(Value::as_bool) {
+        Some(value) => Ok(value),
+        None if object.contains_key(key) => {
+            bail!("benchmark gate report key '{key}' must be a boolean")
+        }
+        None => bail!("benchmark gate report missing required key: {key}"),
+    }
+}
+
+fn gate_report_required_u64(
+    object: &serde_json::Map<String, Value>,
+    key: &'static str,
+) -> Result<u64> {
+    match object.get(key).and_then(Value::as_u64) {
+        Some(value) => Ok(value),
+        None if object.contains_key(key) => {
+            bail!("benchmark gate report key '{key}' must be an unsigned integer")
+        }
+        None => bail!("benchmark gate report missing required key: {key}"),
+    }
+}
+
+fn gate_report_required_f64(
+    object: &serde_json::Map<String, Value>,
+    key: &'static str,
+) -> Result<f64> {
+    match object.get(key).and_then(Value::as_f64) {
+        Some(value) if value.is_finite() => Ok(value),
+        Some(_) => bail!("benchmark gate report key '{key}' must be finite"),
+        None if object.contains_key(key) => {
+            bail!("benchmark gate report key '{key}' must be a number")
+        }
+        None => bail!("benchmark gate report missing required key: {key}"),
+    }
+}
+
+fn gate_report_required_string_vec(
+    object: &serde_json::Map<String, Value>,
+    key: &'static str,
+) -> Result<Vec<String>> {
+    let Some(value) = object.get(key) else {
+        bail!("benchmark gate report missing required key: {key}");
+    };
+
+    let Value::Array(items) = value else {
+        bail!("benchmark gate report key '{key}' must be an array");
+    };
+
+    let mut output = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::String(code) = item else {
+            bail!("benchmark gate report key '{key}' must contain only strings");
+        };
+        output.push(code.clone());
+    }
+    Ok(output)
 }
 
 fn deterministic_file_name(artifact: &BenchmarkEvaluationArtifact) -> String {
@@ -647,7 +877,8 @@ fn sanitize_file_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_benchmark_artifact_gate_report, build_benchmark_artifact_manifest,
+        build_benchmark_artifact_gate_report,
+        build_benchmark_artifact_gate_report_summary_manifest, build_benchmark_artifact_manifest,
         build_benchmark_evaluation_artifact, evaluate_benchmark_manifest_quality,
         export_benchmark_artifact_gate_report, export_benchmark_evaluation_artifact,
         validate_exported_benchmark_artifact, validate_exported_benchmark_artifact_gate_report,
@@ -1426,5 +1657,129 @@ mod tests {
         assert!(error.to_string().contains("missing required key"));
 
         fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1980_c01_gate_report_summary_manifest_is_sorted_with_pass_fail_totals() {
+        let summary_dir = temp_output_dir("benchmark-gate-report-summary-c01");
+        fs::create_dir_all(&summary_dir).expect("create summary dir");
+
+        let pass_artifact_dir = temp_output_dir("benchmark-gate-report-summary-c01-pass");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &pass_artifact_dir).expect("export");
+        let pass_manifest =
+            build_benchmark_artifact_manifest(&pass_artifact_dir).expect("build pass manifest");
+        let pass_report = build_benchmark_artifact_gate_report(
+            &pass_manifest,
+            &BenchmarkArtifactManifestQualityPolicy::default(),
+        )
+        .expect("build pass report");
+        export_benchmark_artifact_gate_report(&pass_report, &summary_dir).expect("export pass");
+
+        let fail_artifact_dir = temp_output_dir("benchmark-gate-report-summary-c01-fail");
+        fs::create_dir_all(&fail_artifact_dir).expect("create fail artifact dir");
+        fs::write(fail_artifact_dir.join("broken.json"), "{ malformed")
+            .expect("write malformed artifact");
+        let fail_manifest =
+            build_benchmark_artifact_manifest(&fail_artifact_dir).expect("build fail manifest");
+        let fail_report = build_benchmark_artifact_gate_report(
+            &fail_manifest,
+            &BenchmarkArtifactManifestQualityPolicy::default(),
+        )
+        .expect("build fail report");
+        export_benchmark_artifact_gate_report(&fail_report, &summary_dir).expect("export fail");
+
+        let summary =
+            build_benchmark_artifact_gate_report_summary_manifest(&summary_dir).expect("summary");
+        assert_eq!(summary.entries.len(), 2);
+        assert_eq!(summary.pass_entries, 1);
+        assert_eq!(summary.fail_entries, 1);
+        assert!(summary.entries[0].path <= summary.entries[1].path);
+
+        fs::remove_dir_all(summary_dir).expect("cleanup");
+        fs::remove_dir_all(pass_artifact_dir).expect("cleanup");
+        fs::remove_dir_all(fail_artifact_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1980_c02_gate_report_summary_manifest_records_invalid_files_without_abort() {
+        let summary_dir = temp_output_dir("benchmark-gate-report-summary-c02");
+        fs::create_dir_all(&summary_dir).expect("create summary dir");
+
+        let artifact_dir = temp_output_dir("benchmark-gate-report-summary-c02-source");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &artifact_dir).expect("export");
+        let manifest = build_benchmark_artifact_manifest(&artifact_dir).expect("build manifest");
+        let report = build_benchmark_artifact_gate_report(
+            &manifest,
+            &BenchmarkArtifactManifestQualityPolicy::default(),
+        )
+        .expect("build report");
+        export_benchmark_artifact_gate_report(&report, &summary_dir).expect("export report");
+        fs::write(summary_dir.join("broken.json"), "{ malformed").expect("write malformed file");
+
+        let summary =
+            build_benchmark_artifact_gate_report_summary_manifest(&summary_dir).expect("summary");
+        assert_eq!(summary.entries.len(), 1);
+        assert_eq!(summary.invalid_files.len(), 1);
+        assert!(summary.invalid_files[0]
+            .reason
+            .contains("failed to parse benchmark gate report"));
+
+        fs::remove_dir_all(summary_dir).expect("cleanup");
+        fs::remove_dir_all(artifact_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1980_c03_gate_report_summary_manifest_json_is_machine_readable() {
+        let summary_dir = temp_output_dir("benchmark-gate-report-summary-c03");
+        fs::create_dir_all(&summary_dir).expect("create summary dir");
+
+        let artifact_dir = temp_output_dir("benchmark-gate-report-summary-c03-source");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &artifact_dir).expect("export");
+        let manifest = build_benchmark_artifact_manifest(&artifact_dir).expect("build manifest");
+        let report = build_benchmark_artifact_gate_report(
+            &manifest,
+            &BenchmarkArtifactManifestQualityPolicy::default(),
+        )
+        .expect("build report");
+        export_benchmark_artifact_gate_report(&report, &summary_dir).expect("export report");
+
+        let summary =
+            build_benchmark_artifact_gate_report_summary_manifest(&summary_dir).expect("summary");
+        let payload = summary.to_json_value();
+        assert!(payload["entries"].is_array());
+        assert!(payload["invalid_files"].is_array());
+        assert!(payload["pass_entries"].as_u64().is_some());
+        assert!(payload["fail_entries"].as_u64().is_some());
+
+        fs::remove_dir_all(summary_dir).expect("cleanup");
+        fs::remove_dir_all(artifact_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1980_c04_gate_report_summary_manifest_rejects_missing_directory() {
+        let output_dir = temp_output_dir("benchmark-gate-report-summary-c04");
+        let missing = output_dir.join("missing");
+        let error = build_benchmark_artifact_gate_report_summary_manifest(&missing)
+            .expect_err("missing directory should fail");
+        assert!(error.to_string().contains("missing directory"));
+    }
+
+    #[test]
+    fn regression_gate_report_summary_manifest_ignores_non_json_files() {
+        let summary_dir = temp_output_dir("benchmark-gate-report-summary-regression");
+        fs::create_dir_all(&summary_dir).expect("create summary dir");
+        fs::write(summary_dir.join("README.txt"), "ignore me").expect("write text file");
+
+        let summary =
+            build_benchmark_artifact_gate_report_summary_manifest(&summary_dir).expect("summary");
+        assert_eq!(summary.entries.len(), 0);
+        assert_eq!(summary.invalid_files.len(), 0);
+        assert_eq!(summary.pass_entries, 0);
+        assert_eq!(summary.fail_entries, 0);
+
+        fs::remove_dir_all(summary_dir).expect("cleanup");
     }
 }
