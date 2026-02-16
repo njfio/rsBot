@@ -11,6 +11,7 @@ impl Drop for LockGuard {
     }
 }
 
+/// Acquire filesystem lock with timeout and stale-lock reclamation policy.
 pub(super) fn acquire_lock(
     path: &Path,
     timeout: Duration,

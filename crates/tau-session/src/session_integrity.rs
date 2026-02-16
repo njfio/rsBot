@@ -1,6 +1,7 @@
 //! Session lineage/integrity helpers (validation, cycle detection, import remap).
 use super::*;
 
+/// Detect whether lineage traversal from start id forms a cycle.
 pub(super) fn has_cycle(start_id: u64, entries: &HashMap<u64, SessionEntry>) -> bool {
     let mut visited = HashSet::new();
     let mut current = Some(start_id);
@@ -16,6 +17,7 @@ pub(super) fn has_cycle(start_id: u64, entries: &HashMap<u64, SessionEntry>) -> 
     false
 }
 
+/// Collect lineage ids reachable from head, failing on unknown ids or cycles.
 pub(super) fn collect_lineage_ids(entries: &[SessionEntry], head_id: u64) -> Result<HashSet<u64>> {
     let id_to_entry = entries
         .iter()
@@ -93,6 +95,7 @@ pub(super) fn validation_report_for_entries(entries: &[SessionEntry]) -> Session
 
 pub(super) type MergeImportResult = (Vec<SessionEntry>, Vec<(u64, u64)>, Option<u64>);
 
+/// Merge imported entries into existing session graph with id remapping on collisions.
 pub(super) fn merge_entries_with_remap(
     existing_entries: &[SessionEntry],
     imported_entries: &[SessionEntry],

@@ -15,6 +15,7 @@ use super::{
     MEMORY_STORAGE_REASON_PATH_SQLITE,
 };
 
+/// Resolve memory storage backend from env override, path hints, and existing artifacts.
 pub(super) fn resolve_memory_backend(root_dir: &Path) -> ResolvedMemoryBackend {
     let env_backend = std::env::var(MEMORY_BACKEND_ENV)
         .ok()
@@ -241,6 +242,7 @@ pub(super) fn load_records_sqlite(path: &Path) -> Result<Vec<RuntimeMemoryRecord
     Ok(records)
 }
 
+/// Open SQLite memory store connection with WAL pragmas and busy timeout.
 pub(super) fn open_memory_sqlite_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -258,6 +260,7 @@ pub(super) fn open_memory_sqlite_connection(path: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
+/// Ensure SQLite memory schema and indexes exist before reads/writes.
 pub(super) fn initialize_memory_sqlite_schema(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         r#"

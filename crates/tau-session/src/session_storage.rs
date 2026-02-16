@@ -8,6 +8,7 @@ pub(super) struct ResolvedSessionBackend {
     pub reason_code: String,
 }
 
+/// Resolve session storage backend from env override, path hints, and existing artifacts.
 pub(super) fn resolve_session_backend(path: &Path) -> Result<ResolvedSessionBackend> {
     let env_value = env::var(SESSION_BACKEND_ENV).ok();
     if let Some(raw) = env_value
@@ -94,6 +95,7 @@ fn infer_session_backend(path: &Path) -> Result<ResolvedSessionBackend> {
     })
 }
 
+/// Import legacy JSONL session snapshot into SQLite backend when destination is empty.
 pub(super) fn maybe_import_legacy_jsonl_into_sqlite(
     path: &Path,
     backend: SessionStorageBackend,
@@ -125,6 +127,7 @@ pub(super) fn maybe_import_legacy_jsonl_into_sqlite(
     Ok(entries.len())
 }
 
+/// Read session entries from selected backend implementation.
 pub(super) fn read_session_entries(
     path: &Path,
     backend: SessionStorageBackend,

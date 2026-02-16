@@ -36,6 +36,10 @@ gateway_openai_compat_file="crates/tau-gateway/src/gateway_openresponses/openai_
 gateway_request_translation_file="crates/tau-gateway/src/gateway_openresponses/request_translation.rs"
 gateway_types_file="crates/tau-gateway/src/gateway_openresponses/types.rs"
 gateway_dashboard_status_file="crates/tau-gateway/src/gateway_openresponses/dashboard_status.rs"
+session_locking_file="crates/tau-session/src/session_locking.rs"
+session_storage_file="crates/tau-session/src/session_storage.rs"
+session_integrity_file="crates/tau-session/src/session_integrity.rs"
+memory_runtime_backend_file="crates/tau-memory/src/runtime/backend.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -79,7 +83,11 @@ for file in \
   "${gateway_openai_compat_file}" \
   "${gateway_request_translation_file}" \
   "${gateway_types_file}" \
-  "${gateway_dashboard_status_file}"; do
+  "${gateway_dashboard_status_file}" \
+  "${session_locking_file}" \
+  "${session_storage_file}" \
+  "${session_integrity_file}" \
+  "${memory_runtime_backend_file}"; do
   if [[ ! -f "${file}" ]]; then
     echo "assertion failed (missing file): ${file}" >&2
     exit 1
@@ -118,6 +126,10 @@ gateway_openai_compat_contents="$(cat "${gateway_openai_compat_file}")"
 gateway_request_translation_contents="$(cat "${gateway_request_translation_file}")"
 gateway_types_contents="$(cat "${gateway_types_file}")"
 gateway_dashboard_status_contents="$(cat "${gateway_dashboard_status_file}")"
+session_locking_contents="$(cat "${session_locking_file}")"
+session_storage_contents="$(cat "${session_storage_file}")"
+session_integrity_contents="$(cat "${session_integrity_file}")"
+memory_runtime_backend_contents="$(cat "${memory_runtime_backend_file}")"
 
 assert_contains "${issue_runtime_contents}" "/// Normalize a repository-relative channel artifact path for persisted pointers." "issue runtime normalize doc"
 assert_contains "${issue_runtime_contents}" "/// Render a stable artifact pointer line for issue comments and logs." "issue runtime pointer doc"
@@ -182,5 +194,15 @@ assert_contains "${gateway_types_contents}" "/// Normalized OpenResponses respon
 assert_contains "${gateway_types_contents}" "/// Server-sent-event frame variants emitted by streaming endpoints." "gateway types sse frame doc"
 assert_contains "${gateway_dashboard_status_contents}" "/// Collect dashboard snapshot from persisted runtime/training state artifacts." "gateway dashboard snapshot doc"
 assert_contains "${gateway_dashboard_status_contents}" "/// Apply dashboard control action and persist audit/control state updates." "gateway dashboard action doc"
+assert_contains "${session_locking_contents}" "/// Acquire filesystem lock with timeout and stale-lock reclamation policy." "session locking acquire lock doc"
+assert_contains "${session_storage_contents}" "/// Resolve session storage backend from env override, path hints, and existing artifacts." "session storage resolve backend doc"
+assert_contains "${session_storage_contents}" "/// Import legacy JSONL session snapshot into SQLite backend when destination is empty." "session storage import legacy doc"
+assert_contains "${session_storage_contents}" "/// Read session entries from selected backend implementation." "session storage read entries doc"
+assert_contains "${session_integrity_contents}" "/// Detect whether lineage traversal from start id forms a cycle." "session integrity has cycle doc"
+assert_contains "${session_integrity_contents}" "/// Collect lineage ids reachable from head, failing on unknown ids or cycles." "session integrity collect lineage doc"
+assert_contains "${session_integrity_contents}" "/// Merge imported entries into existing session graph with id remapping on collisions." "session integrity merge remap doc"
+assert_contains "${memory_runtime_backend_contents}" "/// Resolve memory storage backend from env override, path hints, and existing artifacts." "memory runtime backend resolve backend doc"
+assert_contains "${memory_runtime_backend_contents}" "/// Open SQLite memory store connection with WAL pragmas and busy timeout." "memory runtime backend open sqlite doc"
+assert_contains "${memory_runtime_backend_contents}" "/// Ensure SQLite memory schema and indexes exist before reads/writes." "memory runtime backend initialize schema doc"
 
 echo "split-module-rustdoc tests passed"
