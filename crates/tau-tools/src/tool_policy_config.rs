@@ -36,6 +36,7 @@ const MEMORY_ENABLE_EMBEDDING_MIGRATION_ENV: &str = "TAU_MEMORY_ENABLE_EMBEDDING
 const MEMORY_BENCHMARK_AGAINST_HASH_ENV: &str = "TAU_MEMORY_BENCHMARK_AGAINST_HASH";
 const MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY_ENV: &str = "TAU_MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY";
 
+/// Build runtime tool policy from CLI arguments and environment overrides.
 pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     let cwd = std::env::current_dir().context("failed to resolve current directory")?;
     let mut roots = vec![cwd.clone()];
@@ -243,6 +244,7 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     Ok(policy)
 }
 
+/// Parse --os-sandbox-command values into normalized command tokens.
 pub fn parse_sandbox_command_tokens(raw_tokens: &[String]) -> Result<Vec<String>> {
     let mut parsed = Vec::new();
     for raw in raw_tokens {
@@ -261,6 +263,7 @@ pub fn parse_sandbox_command_tokens(raw_tokens: &[String]) -> Result<Vec<String>
     Ok(parsed)
 }
 
+/// Convert tool policy into JSON payload for diagnostics and audit output.
 pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
     let rate_limit_counters = policy.rate_limit_counters();
     let mut payload = serde_json::Map::new();

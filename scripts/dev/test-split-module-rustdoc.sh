@@ -28,6 +28,10 @@ onboarding_command_file="crates/tau-onboarding/src/onboarding_command.rs"
 onboarding_daemon_file="crates/tau-onboarding/src/onboarding_daemon.rs"
 onboarding_paths_file="crates/tau-onboarding/src/onboarding_paths.rs"
 onboarding_profile_bootstrap_file="crates/tau-onboarding/src/onboarding_profile_bootstrap.rs"
+startup_daemon_preflight_file="crates/tau-onboarding/src/startup_daemon_preflight.rs"
+startup_resolution_file="crates/tau-onboarding/src/startup_resolution.rs"
+tool_policy_config_file="crates/tau-tools/src/tool_policy_config.rs"
+tools_runtime_helpers_file="crates/tau-tools/src/tools/runtime_helpers.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -63,7 +67,11 @@ for file in \
   "${onboarding_command_file}" \
   "${onboarding_daemon_file}" \
   "${onboarding_paths_file}" \
-  "${onboarding_profile_bootstrap_file}"; do
+  "${onboarding_profile_bootstrap_file}" \
+  "${startup_daemon_preflight_file}" \
+  "${startup_resolution_file}" \
+  "${tool_policy_config_file}" \
+  "${tools_runtime_helpers_file}"; do
   if [[ ! -f "${file}" ]]; then
     echo "assertion failed (missing file): ${file}" >&2
     exit 1
@@ -94,6 +102,10 @@ onboarding_command_contents="$(cat "${onboarding_command_file}")"
 onboarding_daemon_contents="$(cat "${onboarding_daemon_file}")"
 onboarding_paths_contents="$(cat "${onboarding_paths_file}")"
 onboarding_profile_bootstrap_contents="$(cat "${onboarding_profile_bootstrap_file}")"
+startup_daemon_preflight_contents="$(cat "${startup_daemon_preflight_file}")"
+startup_resolution_contents="$(cat "${startup_resolution_file}")"
+tool_policy_config_contents="$(cat "${tool_policy_config_file}")"
+tools_runtime_helpers_contents="$(cat "${tools_runtime_helpers_file}")"
 
 assert_contains "${issue_runtime_contents}" "/// Normalize a repository-relative channel artifact path for persisted pointers." "issue runtime normalize doc"
 assert_contains "${issue_runtime_contents}" "/// Render a stable artifact pointer line for issue comments and logs." "issue runtime pointer doc"
@@ -138,5 +150,15 @@ assert_contains "${onboarding_paths_contents}" "/// Resolve Tau root directory u
 assert_contains "${onboarding_paths_contents}" "/// Collect deduplicated onboarding bootstrap directories derived from CLI paths." "onboarding paths collect directories doc"
 assert_contains "${onboarding_profile_bootstrap_contents}" "/// Resolve onboarding profile name, applying default when input is blank." "onboarding profile resolve name doc"
 assert_contains "${onboarding_profile_bootstrap_contents}" "/// Ensure onboarding profile store contains requested profile defaults." "onboarding profile ensure store doc"
+assert_contains "${startup_daemon_preflight_contents}" "/// Handle daemon CLI commands during startup preflight and short-circuit when executed." "startup daemon preflight handle doc"
+assert_contains "${startup_resolution_contents}" "/// Resolve startup system prompt, optionally loading content from file path." "startup resolution system prompt doc"
+assert_contains "${startup_resolution_contents}" "/// Ensure resolved startup text is non-empty after trimming whitespace." "startup resolution non-empty doc"
+assert_contains "${startup_resolution_contents}" "/// Resolve trusted skill roots from inline flags and optional trust-root store." "startup resolution trust roots doc"
+assert_contains "${startup_resolution_contents}" "/// Apply trust-root add/revoke/rotate mutations against in-memory records." "startup resolution trust mutation doc"
+assert_contains "${tool_policy_config_contents}" "/// Build runtime tool policy from CLI arguments and environment overrides." "tool policy config build doc"
+assert_contains "${tool_policy_config_contents}" "/// Parse --os-sandbox-command values into normalized command tokens." "tool policy config parse sandbox tokens doc"
+assert_contains "${tool_policy_config_contents}" "/// Convert tool policy into JSON payload for diagnostics and audit output." "tool policy config json doc"
+assert_contains "${tools_runtime_helpers_contents}" "/// Return stable string label for OS sandbox policy mode." "tools runtime helpers policy mode name doc"
+assert_contains "${tools_runtime_helpers_contents}" "/// Return stable string label for OS sandbox docker network mode." "tools runtime helpers docker network name doc"
 
 echo "split-module-rustdoc tests passed"

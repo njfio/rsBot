@@ -11,6 +11,7 @@ use tau_ops::{
     stop_tau_daemon, tau_daemon_mode_requested, uninstall_tau_daemon, TauDaemonConfig,
 };
 
+/// Handle daemon CLI commands during startup preflight and short-circuit when executed.
 pub fn handle_daemon_commands(cli: &Cli) -> Result<bool> {
     if !tau_daemon_mode_requested(cli) {
         return Ok(false);

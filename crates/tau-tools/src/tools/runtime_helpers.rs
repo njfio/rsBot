@@ -851,6 +851,7 @@ pub(super) fn os_sandbox_mode_name(mode: OsSandboxMode) -> &'static str {
     }
 }
 
+/// Return stable string label for OS sandbox policy mode.
 pub fn os_sandbox_policy_mode_name(mode: OsSandboxPolicyMode) -> &'static str {
     match mode {
         OsSandboxPolicyMode::BestEffort => "best-effort",
@@ -858,6 +859,7 @@ pub fn os_sandbox_policy_mode_name(mode: OsSandboxPolicyMode) -> &'static str {
     }
 }
 
+/// Return stable string label for OS sandbox docker network mode.
 pub fn os_sandbox_docker_network_name(mode: OsSandboxDockerNetwork) -> &'static str {
     match mode {
         OsSandboxDockerNetwork::None => "none",

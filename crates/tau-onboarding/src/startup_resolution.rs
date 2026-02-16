@@ -13,6 +13,7 @@ use tau_access::trust_roots::{
 use tau_cli::Cli;
 use tau_core::{current_unix_timestamp, is_expired_unix};
 
+/// Resolve startup system prompt, optionally loading content from file path.
 pub fn resolve_system_prompt(cli: &Cli) -> Result<String> {
     let Some(path) = cli.system_prompt_file.as_ref() else {
         return Ok(cli.system_prompt.clone());
@@ -27,6 +28,7 @@ pub fn resolve_system_prompt(cli: &Cli) -> Result<String> {
     )
 }
 
+/// Ensure resolved startup text is non-empty after trimming whitespace.
 pub fn ensure_non_empty_text(text: String, source: String) -> Result<String> {
     if text.trim().is_empty() {
         bail!("{source} is empty");
@@ -34,6 +36,7 @@ pub fn ensure_non_empty_text(text: String, source: String) -> Result<String> {
     Ok(text)
 }
 
+/// Resolve trusted skill roots from inline flags and optional trust-root store.
 pub fn resolve_skill_trust_roots(cli: &Cli) -> Result<Vec<tau_skills::TrustedKey>> {
     let has_store_mutation = !cli.skill_trust_add.is_empty()
         || !cli.skill_trust_revoke.is_empty()
@@ -83,6 +86,7 @@ pub fn resolve_skill_trust_roots(cli: &Cli) -> Result<Vec<tau_skills::TrustedKey
         .collect())
 }
 
+/// Apply trust-root add/revoke/rotate mutations against in-memory records.
 pub fn apply_trust_root_mutations(
     records: &mut Vec<TrustedRootRecord>,
     cli: &Cli,
