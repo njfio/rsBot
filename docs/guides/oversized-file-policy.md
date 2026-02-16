@@ -59,3 +59,24 @@ Policy-validation output must include this guide path:
 - `docs/guides/oversized-file-policy.md`
 
 This keeps failure messages actionable and makes exemption decisions auditable.
+
+## CI Guardrail Workflow Contract
+
+CI enforces oversized-file thresholds in `.github/workflows/ci.yml` via:
+
+```bash
+python3 .github/scripts/oversized_file_guard.py \
+  --repo-root . \
+  --default-threshold 4000 \
+  --exemptions-file tasks/policies/oversized-file-exemptions.json \
+  --policy-guide docs/guides/oversized-file-policy.md \
+  --json-output-file ci-artifacts/oversized-file-guard.json
+```
+
+Expected CI behavior:
+
+- step `Check oversized production file thresholds` fails the job on violations
+- step `Upload oversized-file guard artifact` publishes
+  `ci-artifacts/oversized-file-guard.json`
+- remediation output references this guide and exemption metadata path
+  (`tasks/policies/oversized-file-exemptions.json`)
