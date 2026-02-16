@@ -239,7 +239,7 @@ jobs:
 
       - name: Validate CI helper scripts
         if: steps.helper_scope.outputs.helper_tests_needed == 'true'
-        run: python3 -m unittest discover -s .github/scripts -p "test_*.py"
+        run: python3 .github/scripts/ci_helper_parallel_runner.py --workers 4 --start-dir .github/scripts --pattern "test_*.py"
 
       - name: Validate rustdoc marker scripts
         run: |
@@ -551,6 +551,9 @@ jobs:
       - name: Cache Cargo
         if: steps.rust_scope.outputs.rust_changed == 'true'
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-quality-linux-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          cache-on-failure: true
 
       - name: Check formatting
         if: steps.rust_scope.outputs.rust_changed == 'true' && steps.quality_mode.outputs.mode == 'codex-light'
@@ -704,6 +707,9 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-wasm-smoke-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          cache-on-failure: true
 
       - name: Run wasm smoke harness
         run: ./scripts/dev/wasm-smoke.sh
@@ -747,6 +753,9 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-cross-platform-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          cache-on-failure: true
 
       - name: Compile release target smoke
         run: cargo build --release -p tau-coding-agent --target ${{ matrix.target }}
@@ -769,6 +778,9 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-coverage-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          cache-on-failure: true
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@v2
