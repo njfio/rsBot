@@ -206,12 +206,12 @@ def default_plan() -> dict:
             },
             {
                 "id": "training-boundary-set-c",
-                "title": "Consolidation execution follow-through",
-                "status": "planned",
+                "title": "Retention decision closure and ownership confirmation",
+                "status": "completed",
                 "issues": ["#1628"],
                 "scope": [
-                    "Implement merges only where future ambiguity appears or duplication emerges.",
-                    "Preserve compile/test stability across trainer/runner/store/algorithm surfaces.",
+                    "Confirm retain-first split with explicit ownership and zero ambiguous boundaries.",
+                    "Regenerate boundary artifacts and run scoped training crate verification commands.",
                 ],
                 "test_matrix": ["unit", "functional", "integration", "regression"],
             },

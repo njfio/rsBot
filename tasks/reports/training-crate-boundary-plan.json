@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-02-15T00:00:00Z",
+  "generated_at": "2026-02-16T00:00:00Z",
   "repository_root": ".",
   "schema_path": "tasks/schemas/training-crate-boundary-plan.schema.json",
   "required_crates": [
@@ -108,14 +108,14 @@
     },
     {
       "id": "training-boundary-set-c",
-      "title": "Consolidation execution follow-through",
-      "status": "planned",
+      "title": "Retention decision closure and ownership confirmation",
+      "status": "completed",
       "issues": [
         "#1628"
       ],
       "scope": [
-        "Implement merges only where future ambiguity appears or duplication emerges.",
-        "Preserve compile/test stability across trainer/runner/store/algorithm surfaces."
+        "Confirm retain-first split with explicit ownership and zero ambiguous boundaries.",
+        "Regenerate boundary artifacts and run scoped training crate verification commands."
       ],
       "test_matrix": [
         "unit",

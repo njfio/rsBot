@@ -66,6 +66,8 @@ assert_equals "0" "$(jq -r '.summary.merge_count' "${output_json}")" "functional
 assert_equals "0" "$(jq -r '.summary.ambiguous_count' "${output_json}")" "functional ambiguous count"
 assert_equals "retain" "$(jq -r '.crates[] | select(.crate == "tau-training-store") | .decision' "${output_json}")" "functional store decision"
 assert_equals "completed" "$(jq -r '.first_pr_sets[] | select(.id == "training-boundary-set-a") | .status' "${output_json}")" "functional first set status"
+assert_equals "completed" "$(jq -r '.first_pr_sets[] | select(.id == "training-boundary-set-c") | .status' "${output_json}")" "functional set-c status"
+assert_equals "#1628" "$(jq -r '.first_pr_sets[] | select(.id == "training-boundary-set-c") | .issues[0]' "${output_json}")" "functional set-c issue linkage"
 assert_contains "$(cat "${output_md}")" "## Decision Matrix" "functional markdown section"
 
 # Unit/Regression: invalid decision should fail closed.

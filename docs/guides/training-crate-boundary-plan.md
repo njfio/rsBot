@@ -50,7 +50,9 @@ The plan publishes explicit PR sets with issue linkage:
 2. `training-boundary-set-b` (`#1712`)  
    Remove stale training flag/docs references after boundary confirmation (completed).
 3. `training-boundary-set-c` (`#1628`)  
-   Follow-through consolidation changes only when ambiguity/duplication appears.
+   Completed: retain-first split confirmed with explicit ownership and scoped
+   training crate verification (`cargo test -p tau-training-types`,
+   `cargo test -p tau-training-store`, `cargo test -p tau-trainer`).
 
 ## Ownership
 

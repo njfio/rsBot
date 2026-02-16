@@ -1,6 +1,6 @@
 # Training Crate Boundary Plan
 
-- Generated: 2026-02-15T00:00:00Z
+- Generated: 2026-02-16T00:00:00Z
 - Scope: tau-training-* crates + tau-trainer + tau-algorithm
 
 ## Summary
@@ -30,4 +30,4 @@
 | --- | --- | --- | --- | --- |
 | `training-boundary-set-a` | completed | #1711 | Publish crate-by-crate retain/merge decisions.; Wire decision-plan checks and docs references. | unit, functional, integration, regression |
 | `training-boundary-set-b` | completed | #1712 | Remove stale training alias/docs paths after boundary confirmation.; Align CLI/help output with prompt-optimization naming. | unit, functional, integration, regression |
-| `training-boundary-set-c` | planned | #1628 | Implement merges only where future ambiguity appears or duplication emerges.; Preserve compile/test stability across trainer/runner/store/algorithm surfaces. | unit, functional, integration, regression |
+| `training-boundary-set-c` | completed | #1628 | Confirm retain-first split with explicit ownership and zero ambiguous boundaries.; Regenerate boundary artifacts and run scoped training crate verification commands. | unit, functional, integration, regression |
