@@ -48,6 +48,8 @@ provider_auth_anthropic_backend_file="crates/tau-provider/src/auth_commands_runt
 provider_auth_openai_backend_file="crates/tau-provider/src/auth_commands_runtime/openai_backend.rs"
 provider_auth_google_backend_file="crates/tau-provider/src/auth_commands_runtime/google_backend.rs"
 provider_auth_shared_runtime_core_file="crates/tau-provider/src/auth_commands_runtime/shared_runtime_core.rs"
+github_issues_demo_index_runtime_file="crates/tau-github-issues-runtime/src/github_issues_runtime/demo_index_runtime.rs"
+github_issues_issue_command_rendering_file="crates/tau-github-issues-runtime/src/github_issues_runtime/issue_command_rendering.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -103,7 +105,9 @@ for file in \
   "${provider_auth_anthropic_backend_file}" \
   "${provider_auth_openai_backend_file}" \
   "${provider_auth_google_backend_file}" \
-  "${provider_auth_shared_runtime_core_file}"; do
+  "${provider_auth_shared_runtime_core_file}" \
+  "${github_issues_demo_index_runtime_file}" \
+  "${github_issues_issue_command_rendering_file}"; do
   if [[ ! -f "${file}" ]]; then
     echo "assertion failed (missing file): ${file}" >&2
     exit 1
@@ -154,6 +158,8 @@ provider_auth_anthropic_backend_contents="$(cat "${provider_auth_anthropic_backe
 provider_auth_openai_backend_contents="$(cat "${provider_auth_openai_backend_file}")"
 provider_auth_google_backend_contents="$(cat "${provider_auth_google_backend_file}")"
 provider_auth_shared_runtime_core_contents="$(cat "${provider_auth_shared_runtime_core_file}")"
+github_issues_demo_index_runtime_contents="$(cat "${github_issues_demo_index_runtime_file}")"
+github_issues_issue_command_rendering_contents="$(cat "${github_issues_issue_command_rendering_file}")"
 
 assert_contains "${issue_runtime_contents}" "/// Normalize a repository-relative channel artifact path for persisted pointers." "issue runtime normalize doc"
 assert_contains "${issue_runtime_contents}" "/// Render a stable artifact pointer line for issue comments and logs." "issue runtime pointer doc"
@@ -244,5 +250,10 @@ assert_contains "${provider_auth_google_backend_contents}" "/// Execute Google l
 assert_contains "${provider_auth_shared_runtime_core_contents}" "/// Collect trimmed non-empty secret values from optional candidate list." "provider auth shared collect secrets doc"
 assert_contains "${provider_auth_shared_runtime_core_contents}" "/// Build auth login launch spec for provider/mode pair and validate support matrix." "provider auth shared build launch spec doc"
 assert_contains "${provider_auth_shared_runtime_core_contents}" "/// Execute auth login launch command with timeout and explicit status handling." "provider auth shared execute launch doc"
+assert_contains "${github_issues_demo_index_runtime_contents}" "/// Render demo-index scenario inventory and latest report pointers for one issue." "github issues demo-index inventory doc"
+assert_contains "${github_issues_demo_index_runtime_contents}" "/// Execute demo-index scenarios and persist report/log artifacts for one issue." "github issues demo-index run doc"
+assert_contains "${github_issues_issue_command_rendering_contents}" "/// Build artifact index summary for one issue including latest record pointers." "github issues command rendering summary doc"
+assert_contains "${github_issues_issue_command_rendering_contents}" "/// Render operational status lines for one issue run lifecycle and chat continuity." "github issues command rendering status doc"
+assert_contains "${github_issues_issue_command_rendering_contents}" "/// Execute GitHub issue auth subcommand and format response lines." "github issues command rendering auth doc"
 
 echo "split-module-rustdoc tests passed"

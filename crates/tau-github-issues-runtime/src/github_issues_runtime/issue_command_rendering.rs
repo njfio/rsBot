@@ -1,6 +1,7 @@
 use super::*;
 
 impl GithubIssuesBridgeRuntime {
+    /// Build artifact index summary for one issue including latest record pointers.
     pub(super) fn issue_artifact_summary(&self, issue_number: u64) -> Result<IssueArtifactSummary> {
         let store = ChannelStore::open(
             &self.repository_state_dir.join("channel-store"),
@@ -57,6 +58,7 @@ impl GithubIssuesBridgeRuntime {
         })
     }
 
+    /// Render operational status lines for one issue run lifecycle and chat continuity.
     pub(super) fn render_issue_status(&self, issue_number: u64) -> String {
         let active = self.active_runs.get(&issue_number);
         let latest = self.latest_runs.get(&issue_number);
@@ -436,6 +438,7 @@ impl GithubIssuesBridgeRuntime {
         Ok(lines.join("\n"))
     }
 
+    /// Execute GitHub issue auth subcommand and format response lines.
     pub(super) fn execute_issue_auth_command(
         &self,
         issue_number: u64,

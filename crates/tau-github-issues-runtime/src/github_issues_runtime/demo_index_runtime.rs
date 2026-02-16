@@ -32,6 +32,7 @@ impl GithubIssuesBridgeRuntime {
         })
     }
 
+    /// Render demo-index scenario inventory and latest report pointers for one issue.
     pub(super) async fn render_demo_index_inventory(&self, issue_number: u64) -> Result<String> {
         let args = vec!["--list".to_string(), "--json".to_string()];
         let output = self.execute_demo_index_script(&args, false).await?;
@@ -72,6 +73,7 @@ impl GithubIssuesBridgeRuntime {
         Ok(lines.join("\n"))
     }
 
+    /// Execute demo-index scenarios and persist report/log artifacts for one issue.
     pub(super) async fn execute_demo_index_run(
         &self,
         issue_number: u64,
@@ -185,6 +187,7 @@ impl GithubIssuesBridgeRuntime {
         })
     }
 
+    /// Render recent non-expired demo-index report artifact pointers for one issue.
     pub(super) fn render_issue_demo_index_reports(&self, issue_number: u64) -> Result<String> {
         let store = ChannelStore::open(
             &self.repository_state_dir.join("channel-store"),
