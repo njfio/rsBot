@@ -170,6 +170,20 @@ cargo test -p tau-agent-core integration_tool_output_reinjection_fixture_suite_b
 cargo test -p tau-agent-core regression_tool_output_reinjection_fixture_suite_emits_stable_stage_reason_codes
 ```
 
+## Outbound Payload Safety Validation
+
+Use targeted deterministic tests to validate outbound leak blocking, redaction,
+fixture-matrix coverage, and stable reason codes:
+
+```bash
+cargo test -p tau-agent-core integration_secret_leak_policy_blocks_outbound_http_payload
+cargo test -p tau-agent-core functional_secret_leak_policy_redacts_outbound_http_payload
+cargo test -p tau-agent-core integration_outbound_secret_fixture_matrix_blocks_all_cases
+cargo test -p tau-agent-core functional_outbound_secret_fixture_matrix_redacts_all_cases
+cargo test -p tau-agent-core regression_outbound_secret_fixture_matrix_reason_codes_are_stable
+cargo test -p tau-agent-core regression_secret_leak_block_fails_closed_when_outbound_payload_serialization_fails
+```
+
 Plan-first orchestration mode:
 
 ```bash
