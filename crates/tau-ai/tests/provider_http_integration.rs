@@ -103,6 +103,218 @@ async fn openai_client_sends_expected_http_request() {
 }
 
 #[tokio::test]
+async fn integration_openai_client_routes_codex_models_to_responses_endpoint() {
+    let server = MockServer::start();
+    let responses_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/responses")
+            .header("authorization", "Bearer test-openai-key")
+            .header_exists("x-tau-request-id")
+            .header("x-tau-retry-attempt", "0")
+            .json_body_includes(
+                json!({
+                    "model": "gpt-5.2-codex",
+                    "input": [{"role": "user", "content": "hello codex"}]
+                })
+                .to_string(),
+            );
+
+        then.status(200).json_body(json!({
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {"type":"output_text","text":"codex ok"}
+                ]
+            }],
+            "usage": {
+                "input_tokens": 6,
+                "output_tokens": 2,
+                "total_tokens": 8
+            }
+        }));
+    });
+    let chat_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/chat/completions");
+        then.status(500).json_body(json!({
+            "error": {"message":"chat endpoint should not be called for codex direct route test"}
+        }));
+    });
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: format!("{}/v1", server.base_url()),
+        api_key: "test-openai-key".to_string(),
+        organization: None,
+        request_timeout_ms: 5_000,
+        max_retries: 0,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
+    })
+    .expect("openai client should be created");
+
+    let response = client
+        .complete(ChatRequest {
+            model: "gpt-5.2-codex".to_string(),
+            messages: vec![Message::user("hello codex")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        })
+        .await
+        .expect("codex request should route to responses endpoint");
+
+    responses_mock.assert_calls(1);
+    chat_mock.assert_calls(0);
+    assert_eq!(response.message.text_content(), "codex ok");
+    assert_eq!(response.finish_reason.as_deref(), Some("completed"));
+    assert_eq!(response.usage.total_tokens, 8);
+}
+
+#[tokio::test]
+async fn integration_openai_client_falls_back_to_responses_when_chat_reports_endpoint_mismatch() {
+    let server = MockServer::start();
+    let chat_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .header("x-tau-retry-attempt", "0");
+        then.status(400).json_body(json!({
+            "error": {
+                "message": "This model is not supported in the v1/chat/completions endpoint. Use this model with the Responses API."
+            }
+        }));
+    });
+    let responses_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/responses")
+            .header("authorization", "Bearer test-openai-key")
+            .header("x-tau-retry-attempt", "0")
+            .json_body_includes(
+                json!({
+                    "model": "gpt-4o-mini"
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type":"output_text","text":"fallback ok"}]
+            }],
+            "usage": {
+                "input_tokens": 9,
+                "output_tokens": 3,
+                "total_tokens": 12
+            }
+        }));
+    });
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: format!("{}/v1", server.base_url()),
+        api_key: "test-openai-key".to_string(),
+        organization: None,
+        request_timeout_ms: 5_000,
+        max_retries: 0,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
+    })
+    .expect("openai client should be created");
+
+    let response = client
+        .complete(ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        })
+        .await
+        .expect("chat endpoint mismatch should fallback to responses endpoint");
+
+    chat_mock.assert_calls(1);
+    responses_mock.assert_calls(1);
+    assert_eq!(response.message.text_content(), "fallback ok");
+    assert_eq!(response.usage.total_tokens, 12);
+}
+
+#[tokio::test]
+async fn regression_openai_client_falls_back_to_chat_when_responses_endpoint_is_missing() {
+    let server = MockServer::start();
+    let responses_mock = server.mock(|when, then| {
+        when.method(POST).path("/v1/responses");
+        then.status(404).json_body(json!({
+            "error": {
+                "message": "No route for /v1/responses"
+            }
+        }));
+    });
+    let chat_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v1/chat/completions")
+            .header("authorization", "Bearer test-openai-key")
+            .header("x-tau-retry-attempt", "0")
+            .json_body_includes(
+                json!({
+                    "model": "gpt-5.2-codex"
+                })
+                .to_string(),
+            );
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "chat fallback ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "total_tokens": 10
+            }
+        }));
+    });
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: format!("{}/v1", server.base_url()),
+        api_key: "test-openai-key".to_string(),
+        organization: None,
+        request_timeout_ms: 5_000,
+        max_retries: 0,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
+    })
+    .expect("openai client should be created");
+
+    let response = client
+        .complete(ChatRequest {
+            model: "gpt-5.2-codex".to_string(),
+            messages: vec![Message::user("hello codex")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        })
+        .await
+        .expect("missing responses endpoint should fallback to chat endpoint");
+
+    responses_mock.assert_calls(1);
+    chat_mock.assert_calls(1);
+    assert_eq!(response.message.text_content(), "chat fallback ok");
+    assert_eq!(response.usage.total_tokens, 10);
+}
+
+#[tokio::test]
 async fn functional_openai_client_outbound_secret_fixture_matrix_preserves_usage_telemetry_fields()
 {
     for (index, (case_id, payload)) in outbound_secret_fixture_cases().into_iter().enumerate() {

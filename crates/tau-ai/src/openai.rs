@@ -99,6 +99,18 @@ impl OpenAiClient {
 
         format!("{base}/chat/completions")
     }
+
+    fn responses_url(&self) -> String {
+        let base = self.config.api_base.trim_end_matches('/');
+        if base.ends_with("/responses") {
+            return base.to_string();
+        }
+        if let Some(prefix) = base.strip_suffix("/chat/completions") {
+            return format!("{prefix}/responses");
+        }
+
+        format!("{base}/responses")
+    }
 }
 
 #[async_trait]
@@ -122,7 +134,34 @@ impl OpenAiClient {
         request: ChatRequest,
         on_delta: Option<StreamDeltaHandler>,
     ) -> Result<ChatResponse, TauAiError> {
-        let mut body = build_chat_request_body(&request)?;
+        if model_prefers_responses_api(&request.model) {
+            match self
+                .complete_via_responses(&request, on_delta.clone())
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) if should_fallback_responses_error_to_chat(&error) => {
+                    return self.complete_via_chat(&request, on_delta).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        match self.complete_via_chat(&request, on_delta.clone()).await {
+            Ok(response) => Ok(response),
+            Err(error) if should_fallback_chat_error_to_responses(&error) => {
+                self.complete_via_responses(&request, on_delta).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn complete_via_chat(
+        &self,
+        request: &ChatRequest,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, TauAiError> {
+        let mut body = build_chat_request_body(request)?;
         let stream_mode = on_delta.is_some();
         if stream_mode {
             body["stream"] = json!(true);
@@ -219,6 +258,91 @@ impl OpenAiClient {
             "request retry loop terminated unexpectedly".to_string(),
         ))
     }
+
+    async fn complete_via_responses(
+        &self,
+        request: &ChatRequest,
+        on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, TauAiError> {
+        let body = build_responses_request_body(request)?;
+        let url = self.responses_url();
+        let started = std::time::Instant::now();
+        let max_retries = self.config.max_retries;
+
+        for attempt in 0..=max_retries {
+            let request_id = new_request_id();
+            let mut request_builder = self
+                .client
+                .post(&url)
+                .header("x-tau-request-id", request_id)
+                .header("x-tau-retry-attempt", attempt.to_string());
+            if let Some(api_version) = self.config.api_version.as_deref() {
+                request_builder = request_builder.query(&[("api-version", api_version)]);
+            }
+            let response = request_builder.json(&body).send().await;
+
+            match response {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        let raw = response.text().await?;
+                        let parsed = parse_responses_api_response(&raw)?;
+                        if let Some(delta_handler) = on_delta.clone() {
+                            let text = parsed.message.text_content();
+                            if !text.is_empty() {
+                                delta_handler(text);
+                            }
+                        }
+                        return Ok(parsed);
+                    }
+
+                    let retry_after_ms = parse_retry_after_ms(response.headers());
+                    let raw = response.text().await?;
+                    if attempt < max_retries && should_retry_status(status.as_u16()) {
+                        let backoff_ms = provider_retry_delay_ms(
+                            attempt,
+                            self.config.retry_jitter,
+                            retry_after_ms,
+                        );
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        if retry_budget_allows_delay(
+                            elapsed_ms,
+                            backoff_ms,
+                            self.config.retry_budget_ms,
+                        ) {
+                            sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+                    }
+
+                    return Err(TauAiError::HttpStatus {
+                        status: status.as_u16(),
+                        body: raw,
+                    });
+                }
+                Err(error) => {
+                    if attempt < max_retries && is_retryable_http_error(&error) {
+                        let backoff_ms =
+                            provider_retry_delay_ms(attempt, self.config.retry_jitter, None);
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        if retry_budget_allows_delay(
+                            elapsed_ms,
+                            backoff_ms,
+                            self.config.retry_budget_ms,
+                        ) {
+                            sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+                    }
+                    return Err(TauAiError::Http(error));
+                }
+            }
+        }
+
+        Err(TauAiError::InvalidResponse(
+            "request retry loop terminated unexpectedly".to_string(),
+        ))
+    }
 }
 
 fn build_chat_request_body(request: &ChatRequest) -> Result<Value, TauAiError> {
@@ -248,11 +372,74 @@ fn build_chat_request_body(request: &ChatRequest) -> Result<Value, TauAiError> {
         body["max_tokens"] = json!(max_tokens);
     }
 
-    if let Some(temperature) = request.temperature {
-        body["temperature"] = json!(temperature);
+    Ok(body)
+}
+
+fn build_responses_request_body(request: &ChatRequest) -> Result<Value, TauAiError> {
+    let input = to_openai_responses_input(&request.messages)?;
+    let mut body = json!({
+        "model": request.model,
+        "input": input,
+    });
+
+    if !request.tools.is_empty() {
+        body["tools"] = to_openai_responses_tools(&request.tools);
+    }
+
+    if let Some(tool_choice) = request.tool_choice.as_ref() {
+        if !request.tools.is_empty() || matches!(tool_choice, ToolChoice::None) {
+            body["tool_choice"] = to_openai_responses_tool_choice(tool_choice);
+        }
+    }
+
+    if request.json_mode {
+        body["text"] = json!({
+            "format": {
+                "type": "json_object",
+            }
+        });
+    }
+
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_output_tokens"] = json!(max_tokens);
     }
 
     Ok(body)
+}
+
+fn model_prefers_responses_api(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("codex")
+}
+
+fn should_fallback_chat_error_to_responses(error: &TauAiError) -> bool {
+    let TauAiError::HttpStatus { status, body } = error else {
+        return false;
+    };
+    if !matches!(status, 400 | 404 | 422) {
+        return false;
+    }
+
+    let normalized = body.to_ascii_lowercase();
+    normalized.contains("not supported in the v1/chat/completions endpoint")
+        || normalized.contains("use this model with the responses api")
+        || (normalized.contains("chat/completions") && normalized.contains("responses"))
+}
+
+fn should_fallback_responses_error_to_chat(error: &TauAiError) -> bool {
+    let TauAiError::HttpStatus { status, body } = error else {
+        return false;
+    };
+    if !matches!(status, 400 | 404 | 405) {
+        return false;
+    }
+
+    let normalized = body.to_ascii_lowercase();
+    (normalized.contains("/responses")
+        && (normalized.contains("no route")
+            || normalized.contains("not found")
+            || normalized.contains("unsupported")
+            || normalized.contains("unknown")))
+        || normalized.contains("unknown url")
 }
 
 fn to_openai_tool_choice(tool_choice: &ToolChoice) -> Value {
@@ -265,6 +452,18 @@ fn to_openai_tool_choice(tool_choice: &ToolChoice) -> Value {
             "function": {
                 "name": name,
             }
+        }),
+    }
+}
+
+fn to_openai_responses_tool_choice(tool_choice: &ToolChoice) -> Value {
+    match tool_choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Tool { name } => json!({
+            "type": "function",
+            "name": name,
         }),
     }
 }
@@ -285,6 +484,71 @@ fn to_openai_tools(tools: &[ToolDefinition]) -> Value {
             })
             .collect(),
     )
+}
+
+fn to_openai_responses_tools(tools: &[ToolDefinition]) -> Value {
+    Value::Array(
+        tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn to_openai_responses_input(messages: &[Message]) -> Result<Value, TauAiError> {
+    let mut input_items = Vec::new();
+
+    for message in messages {
+        match message.role {
+            MessageRole::System | MessageRole::User | MessageRole::Assistant => {
+                let text = flatten_message_with_media_markers(message);
+                if !text.trim().is_empty() {
+                    input_items.push(json!({
+                        "role": to_openai_role_name(message.role),
+                        "content": text,
+                    }));
+                }
+
+                if matches!(message.role, MessageRole::Assistant) {
+                    for tool_call in message.tool_calls() {
+                        input_items.push(json!({
+                            "type": "function_call",
+                            "call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "arguments": stringify_tool_arguments(&tool_call.arguments),
+                        }));
+                    }
+                }
+            }
+            MessageRole::Tool => {
+                let Some(tool_call_id) = message.tool_call_id.as_deref() else {
+                    return Err(TauAiError::InvalidResponse(
+                        "tool message is missing tool_call_id".to_string(),
+                    ));
+                };
+
+                let output = flatten_message_with_media_markers(message);
+                input_items.push(json!({
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": output,
+                }));
+            }
+        }
+    }
+
+    if input_items.is_empty() {
+        return Ok(Value::String(String::new()));
+    }
+
+    Ok(Value::Array(input_items))
 }
 
 fn to_openai_messages(messages: &[Message]) -> Result<Vec<Value>, TauAiError> {
@@ -401,6 +665,22 @@ fn to_openai_user_content(message: &Message) -> Value {
     }
 }
 
+fn to_openai_role_name(role: MessageRole) -> &'static str {
+    match role {
+        MessageRole::System => "system",
+        MessageRole::User => "user",
+        MessageRole::Assistant => "assistant",
+        MessageRole::Tool => "tool",
+    }
+}
+
+fn stringify_tool_arguments(arguments: &Value) -> String {
+    match arguments {
+        Value::String(value) => value.clone(),
+        value => value.to_string(),
+    }
+}
+
 fn to_openai_image_part(source: &MediaSource) -> Value {
     match source {
         MediaSource::Url { url } => json!({
@@ -497,6 +777,91 @@ fn parse_chat_response(raw: &str) -> Result<ChatResponse, TauAiError> {
         finish_reason: choice.finish_reason,
         usage,
     })
+}
+
+fn parse_responses_api_response(raw: &str) -> Result<ChatResponse, TauAiError> {
+    let parsed: OpenAiResponsesResponse = serde_json::from_str(raw)?;
+    let mut content = Vec::new();
+
+    if let Some(output_items) = parsed.output {
+        for output_item in output_items {
+            match output_item.item_type.as_deref() {
+                Some("message") => {
+                    content.extend(parse_openai_content_blocks(&output_item.content));
+                }
+                Some("function_call") => {
+                    let Some(name) = output_item.name else {
+                        continue;
+                    };
+                    let id = output_item
+                        .call_id
+                        .or(output_item.id)
+                        .unwrap_or_else(|| "response_function_call".to_string());
+                    let arguments = parse_tool_call_arguments(output_item.arguments.as_deref());
+                    content.push(ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text { .. }))
+    {
+        if let Some(output_text) = parsed.output_text {
+            if !output_text.trim().is_empty() {
+                content.insert(0, ContentBlock::Text { text: output_text });
+            }
+        }
+    }
+
+    let usage = parsed
+        .usage
+        .map(|usage| {
+            let input_tokens = usage
+                .input_tokens
+                .or(usage.prompt_tokens)
+                .unwrap_or_default();
+            let output_tokens = usage
+                .output_tokens
+                .or(usage.completion_tokens)
+                .unwrap_or_default();
+            let total_tokens = usage.total_tokens.unwrap_or(input_tokens + output_tokens);
+            ChatUsage {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            }
+        })
+        .unwrap_or_default();
+
+    Ok(ChatResponse {
+        message: Message {
+            role: MessageRole::Assistant,
+            content,
+            tool_call_id: None,
+            tool_name: None,
+            is_error: false,
+        },
+        finish_reason: parsed.status,
+        usage,
+    })
+}
+
+fn parse_tool_call_arguments(arguments: Option<&str>) -> Value {
+    let Some(arguments) = arguments else {
+        return Value::Null;
+    };
+
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(value) => value,
+        Err(_) => Value::String(arguments.to_string()),
+    }
 }
 
 async fn parse_chat_stream_response(
@@ -805,6 +1170,34 @@ fn parse_openai_audio_from_part(part: &serde_json::Map<String, Value>) -> Option
 }
 
 #[derive(Debug, Deserialize)]
+struct OpenAiResponsesResponse {
+    status: Option<String>,
+    output: Option<Vec<OpenAiResponsesOutputItem>>,
+    output_text: Option<String>,
+    usage: Option<OpenAiResponsesUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiResponsesOutputItem {
+    #[serde(rename = "type")]
+    item_type: Option<String>,
+    id: Option<String>,
+    name: Option<String>,
+    call_id: Option<String>,
+    arguments: Option<String>,
+    content: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiResponsesUsage {
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenAiChatResponse {
     choices: Vec<OpenAiChoice>,
     usage: Option<OpenAiUsage>,
@@ -887,7 +1280,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::{
-        apply_stream_data, build_chat_request_body, finalize_stream_response, parse_chat_response,
+        apply_stream_data, build_chat_request_body, build_responses_request_body,
+        finalize_stream_response, parse_chat_response, parse_responses_api_response,
     };
     use crate::{ChatRequest, ContentBlock, Message, MessageRole, ToolChoice, ToolDefinition};
 
@@ -1151,5 +1545,76 @@ mod tests {
         assert!(error
             .to_string()
             .contains("failed to parse OpenAI stream chunk"));
+    }
+
+    #[test]
+    fn unit_parses_responses_api_text_and_function_call_output() {
+        let raw = r#"{
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type":"output_text","text":"call tool"}]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "read_file",
+                    "arguments": "{\"path\":\"README.md\"}"
+                }
+            ],
+            "usage": {
+                "input_tokens": 9,
+                "output_tokens": 4,
+                "total_tokens": 13
+            }
+        }"#;
+
+        let response = parse_responses_api_response(raw).expect("responses payload should parse");
+        assert_eq!(response.message.text_content(), "call tool");
+        assert_eq!(response.message.tool_calls().len(), 1);
+        assert_eq!(response.message.tool_calls()[0].name, "read_file");
+        assert_eq!(
+            response.message.tool_calls()[0].arguments,
+            json!({"path":"README.md"})
+        );
+        assert_eq!(response.finish_reason.as_deref(), Some("completed"));
+        assert_eq!(response.usage.total_tokens, 13);
+    }
+
+    #[test]
+    fn conformance_builds_responses_body_with_function_call_output_items() {
+        let request = ChatRequest {
+            model: "gpt-5.2-codex".to_string(),
+            messages: vec![
+                Message::system("You are helpful"),
+                Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: json!({"path":"README.md"}),
+                }]),
+                Message::tool_result("call_1", "read_file", "contents", false),
+            ],
+            tools: vec![ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read a file".to_string(),
+                parameters: json!({"type":"object"}),
+            }],
+            tool_choice: Some(ToolChoice::Auto),
+            json_mode: false,
+            max_tokens: Some(64),
+            temperature: Some(0.0),
+        };
+
+        let body =
+            build_responses_request_body(&request).expect("responses request body must serialize");
+        assert_eq!(body["model"], "gpt-5.2-codex");
+        assert_eq!(body["input"][0]["role"], "system");
+        assert_eq!(body["input"][1]["type"], "function_call");
+        assert_eq!(body["input"][1]["name"], "read_file");
+        assert_eq!(body["input"][2]["type"], "function_call_output");
+        assert_eq!(body["input"][2]["call_id"], "call_1");
+        assert_eq!(body["tools"][0]["name"], "read_file");
     }
 }
