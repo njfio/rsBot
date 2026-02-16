@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "max_fast_lane_median_ms": 1050,
+  "min_improvement_percent": 0.5,
+  "max_regression_percent": 0.0,
+  "enforcement_mode": "fail",
+  "remediation": {
+    "fast_lane_median_ms": "Trim wrapper scope or improve cache hit rate before widening loop coverage.",
+    "improvement_percent": "Revisit wrapper set and remove slow commands from the fast lane.",
+    "regression_percent": "Investigate newly regressed wrapper and update baseline only after root-cause analysis."
+  }
+}

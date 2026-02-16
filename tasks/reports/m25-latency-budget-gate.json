@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-16T15:10:00Z",
+  "repository": "njfio/Tau",
+  "policy_path": "tasks/policies/m25-latency-budget-policy.json",
+  "report_path": "tasks/reports/m25-fast-lane-loop-comparison.json",
+  "status": "pass",
+  "checks": [
+    {
+      "metric": "fast_lane_median_ms",
+      "threshold": "<= 1050",
+      "observed": 995,
+      "result": "pass",
+      "remediation": "Trim wrapper scope or improve cache hit rate before widening loop coverage."
+    },
+    {
+      "metric": "improvement_percent",
+      "threshold": ">= 0.5",
+      "observed": 1.09,
+      "result": "pass",
+      "remediation": "Revisit wrapper set and remove slow commands from the fast lane."
+    },
+    {
+      "metric": "regression_percent",
+      "threshold": "<= 0.0",
+      "observed": 0.0,
+      "result": "pass",
+      "remediation": "Investigate newly regressed wrapper and update baseline only after root-cause analysis."
+    }
+  ],
+  "violations": [],
+  "report_summary": {
+    "baseline_median_ms": 1006,
+    "fast_lane_median_ms": 995,
+    "improvement_percent": 1.09
+  }
+}
