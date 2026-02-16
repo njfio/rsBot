@@ -1,6 +1,6 @@
 # Spec #2226
 
-Status: Draft
+Status: Implemented
 Milestone: specs/milestones/m43/index.md
 Issue: https://github.com/njfio/Tau/issues/2226
 
