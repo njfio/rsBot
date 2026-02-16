@@ -46,8 +46,14 @@ assert_contains "${workflow_contents}" "Upload oversized-file guard artifact" "w
 assert_contains "${workflow_contents}" "ci-artifacts/oversized-file-guard.json" "workflow artifact path"
 
 assert_contains "${exemptions_contents}" "\"schema_version\": 1" "exemptions schema version"
-assert_contains "${exemptions_contents}" "\"owner_issue\"" "exemptions owner issue metadata"
-assert_contains "${exemptions_contents}" "\"expires_on\"" "exemptions expiry metadata"
+if ! jq -e '.schema_version == 1 and (.exemptions | type == "array")' "${exemptions_json}" >/dev/null; then
+  echo "assertion failed (exemptions json shape): expected schema_version=1 with exemptions array" >&2
+  exit 1
+fi
+if ! jq -e 'all(.exemptions[]?; (.owner_issue | type == "number") and (.expires_on | type == "string"))' "${exemptions_json}" >/dev/null; then
+  echo "assertion failed (exemptions entry metadata): expected owner_issue/expires_on on each exemption entry" >&2
+  exit 1
+fi
 
 assert_contains "${policy_doc_contents}" "## CI Guardrail Workflow Contract" "policy docs ci guardrail heading"
 assert_contains "${policy_doc_contents}" "oversized_file_guard.py" "policy docs guard script reference"

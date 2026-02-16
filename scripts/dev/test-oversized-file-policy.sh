@@ -32,22 +32,13 @@ trap 'rm -rf "${tmp_dir}"' EXIT
 valid_json="${tmp_dir}/valid.json"
 expired_json="${tmp_dir}/expired.json"
 duplicate_json="${tmp_dir}/duplicate.json"
+stale_json="${tmp_dir}/stale.json"
 output_md="${tmp_dir}/policy.md"
 
 cat >"${valid_json}" <<'EOF'
 {
   "schema_version": 1,
-  "exemptions": [
-    {
-      "path": "crates/tau-tools/src/tools.rs",
-      "threshold_lines": 5600,
-      "owner_issue": 1749,
-      "rationale": "first-pass split landed; second pass in progress",
-      "approved_by": "runtime-maintainer",
-      "approved_at": "2026-02-10",
-      "expires_on": "2026-03-10"
-    }
-  ]
+  "exemptions": []
 }
 EOF
 
@@ -108,7 +99,7 @@ if [[ ! -f "${output_md}" ]]; then
   exit 1
 fi
 assert_contains "$(cat "${output_md}")" "docs/guides/oversized-file-policy.md" "functional markdown policy link"
-assert_contains "$(cat "${output_md}")" "| crates/tau-tools/src/tools.rs | 5600 | 1749 | 2026-03-10 | runtime-maintainer |" "functional markdown row"
+assert_contains "$(cat "${output_md}")" "| _none_ | - | - | - | - |" "functional markdown none row"
 
 # Regression: expired exemptions fail validation with explicit reason.
 set +e
@@ -139,5 +130,37 @@ if [[ ${duplicate_exit} -eq 0 ]]; then
   exit 1
 fi
 assert_contains "${duplicate_output}" "duplicate exemption path" "regression duplicate message"
+
+# Regression: stale exemptions fail when file is not above default threshold.
+cat >"${stale_json}" <<'EOF'
+{
+  "schema_version": 1,
+  "exemptions": [
+    {
+      "path": "crates/tau-tools/src/tools.rs",
+      "threshold_lines": 5600,
+      "owner_issue": 2089,
+      "rationale": "stale exemption fixture",
+      "approved_by": "runtime-maintainer",
+      "approved_at": "2026-02-15",
+      "expires_on": "2026-03-15"
+    }
+  ]
+}
+EOF
+
+set +e
+stale_output="$(
+  "${POLICY_SCRIPT}" \
+    --exemptions-json "${stale_json}" \
+    --today 2026-02-15 2>&1
+)"
+stale_exit=$?
+set -e
+if [[ ${stale_exit} -eq 0 ]]; then
+  echo "assertion failed (regression stale exemption): expected non-zero exit" >&2
+  exit 1
+fi
+assert_contains "${stale_output}" "is stale because current line count" "regression stale message"
 
 echo "oversized-file-policy tests passed"

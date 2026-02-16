@@ -34,6 +34,7 @@ The validator script enforces:
 - schema version
 - required fields
 - threshold bounds (`> default`, `<= max`)
+- active-size eligibility (exemption path must currently be above the default threshold)
 - non-expired exemptions
 - no duplicate file-path exemptions
 

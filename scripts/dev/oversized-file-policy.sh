@@ -153,6 +153,20 @@ for ((i = 0; i < exemption_count; i++)); do
     errors+=("exemptions[${i}].path is required")
   fi
 
+  if [[ -n "${path_value}" ]]; then
+    repo_file_path="${REPO_ROOT}/${path_value}"
+    if [[ ! -f "${repo_file_path}" ]]; then
+      errors+=("exemptions[${i}] (${path_value}) path does not exist in repository")
+    else
+      current_line_count="$(wc -l < "${repo_file_path}" | tr -d '[:space:]')"
+      if ! [[ "${current_line_count}" =~ ^[0-9]+$ ]]; then
+        errors+=("exemptions[${i}] (${path_value}) current line count could not be determined")
+      elif (( current_line_count <= DEFAULT_THRESHOLD_LINES )); then
+        errors+=("exemptions[${i}] (${path_value}) is stale because current line count ${current_line_count} is not above default threshold (${DEFAULT_THRESHOLD_LINES})")
+      fi
+    fi
+  fi
+
   if ! [[ "${threshold_value}" =~ ^[0-9]+$ ]]; then
     errors+=("exemptions[${i}].threshold_lines must be a positive integer")
   else
