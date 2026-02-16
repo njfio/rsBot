@@ -1,16 +1,19 @@
 use anyhow::{Context, Result};
 use tau_cli::Cli;
 
+/// Re-exports for deployment WASM package/inspect command integration.
 pub use crate::deployment_wasm::{
     inspect_deployment_wasm_deliverable, package_deployment_wasm_artifact,
     render_deployment_wasm_inspect_report, render_deployment_wasm_package_report,
     DeploymentWasmPackageConfig,
 };
+/// Re-exports for browser DID initialization command integration.
 pub use crate::deployment_wasm_identity::{
     initialize_deployment_wasm_browser_did, render_deployment_wasm_browser_did_report,
     DeploymentWasmBrowserDidConfig,
 };
 
+/// Execute WASM package command when --deployment-wasm-package-module is set.
 pub fn execute_deployment_wasm_package_command(cli: &Cli) -> Result<()> {
     let Some(module_path) = cli.deployment_wasm_package_module.clone() else {
         return Ok(());
@@ -37,6 +40,7 @@ pub fn execute_deployment_wasm_package_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Execute WASM inspect command when --deployment-wasm-inspect-manifest is set.
 pub fn execute_deployment_wasm_inspect_command(cli: &Cli) -> Result<()> {
     let Some(manifest_path) = cli.deployment_wasm_inspect_manifest.clone() else {
         return Ok(());
@@ -54,6 +58,7 @@ pub fn execute_deployment_wasm_inspect_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Execute browser DID initialization command for deployment WASM runtime.
 pub fn execute_deployment_wasm_browser_did_init_command(cli: &Cli) -> Result<()> {
     if !cli.deployment_wasm_browser_did_init {
         return Ok(());

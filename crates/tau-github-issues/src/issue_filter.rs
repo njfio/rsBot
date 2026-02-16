@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 
+/// Normalize issue label filters for case-insensitive matching.
 pub fn normalize_issue_label(raw: &str) -> String {
     raw.trim().to_ascii_lowercase()
 }
 
+/// Build the normalized set of required labels from CLI or configuration values.
 pub fn build_required_issue_labels<'a>(
     labels: impl IntoIterator<Item = &'a str>,
 ) -> HashSet<String> {
@@ -14,10 +16,12 @@ pub fn build_required_issue_labels<'a>(
         .collect::<HashSet<_>>()
 }
 
+/// Return true when required issue-number filters are empty or contain the issue.
 pub fn issue_matches_required_numbers(issue_number: u64, required: &HashSet<u64>) -> bool {
     required.is_empty() || required.contains(&issue_number)
 }
 
+/// Return true when issue labels satisfy required label filters.
 pub fn issue_matches_required_labels<'a>(
     labels: impl IntoIterator<Item = &'a str>,
     required: &HashSet<String>,

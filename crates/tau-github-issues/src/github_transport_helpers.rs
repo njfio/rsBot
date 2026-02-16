@@ -1,11 +1,13 @@
 use std::time::Duration;
 
+/// Parse GitHub Retry-After header value as a duration.
 pub fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let raw = headers.get("retry-after")?.to_str().ok()?;
     let seconds = raw.trim().parse::<u64>().ok()?;
     Some(Duration::from_secs(seconds))
 }
 
+/// Compute retry delay using either retry-after floor or capped exponential backoff.
 pub fn retry_delay(base_delay_ms: u64, attempt: usize, retry_after: Option<Duration>) -> Duration {
     if let Some(delay) = retry_after {
         return delay.max(Duration::from_millis(base_delay_ms));
@@ -15,14 +17,17 @@ pub fn retry_delay(base_delay_ms: u64, attempt: usize, retry_after: Option<Durat
     Duration::from_millis(scaled.min(30_000))
 }
 
+/// Return true when a reqwest transport failure should be retried.
 pub fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect() || error.is_request()
 }
 
+/// Determine whether a GitHub HTTP status is retryable.
 pub fn is_retryable_github_status(status: u16) -> bool {
     status == 429 || status >= 500
 }
 
+/// Truncate error text without breaking unicode boundaries and append ellipsis.
 pub fn truncate_for_error(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_string();

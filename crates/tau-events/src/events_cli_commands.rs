@@ -10,6 +10,7 @@ use crate::{
     EventsValidateReport,
 };
 
+/// Execute events inspect mode and print either JSON or text report.
 pub fn execute_events_inspect_command(cli: &Cli) -> Result<()> {
     let report = inspect_events(
         &EventsInspectConfig {
@@ -33,6 +34,7 @@ pub fn execute_events_inspect_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Execute events validate mode and fail when invalid definition files are found.
 pub fn execute_events_validate_command(cli: &Cli) -> Result<()> {
     let report = validate_events_definitions(
         &EventsValidateConfig {
@@ -63,6 +65,7 @@ pub fn execute_events_validate_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Execute events template-write mode and emit generated template metadata.
 pub fn execute_events_template_write_command(cli: &Cli) -> Result<()> {
     let target_path = cli
         .execution_domain
@@ -137,6 +140,7 @@ pub fn execute_events_template_write_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Execute events simulation mode for due/horizon posture inspection.
 pub fn execute_events_simulate_command(cli: &Cli) -> Result<()> {
     let report = simulate_events(
         &EventsSimulateConfig {
@@ -160,6 +164,7 @@ pub fn execute_events_simulate_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Execute events dry-run mode and enforce configured gate thresholds.
 pub fn execute_events_dry_run_command(cli: &Cli) -> Result<()> {
     let report = dry_run_events(
         &EventsDryRunConfig {
