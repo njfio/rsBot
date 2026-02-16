@@ -6,6 +6,7 @@ cd "${REPO_ROOT}"
 
 cli_args_file="crates/tau-cli/src/cli_args.rs"
 tail_flags_file="crates/tau-cli/src/cli_args/runtime_tail_flags.rs"
+execution_flags_file="crates/tau-cli/src/cli_args/execution_domain_flags.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -27,16 +28,25 @@ if [[ ! -f "${tail_flags_file}" ]]; then
   echo "assertion failed (domain extraction file): missing ${tail_flags_file}" >&2
   exit 1
 fi
+if [[ ! -f "${execution_flags_file}" ]]; then
+  echo "assertion failed (domain extraction file): missing ${execution_flags_file}" >&2
+  exit 1
+fi
 
 cli_contents="$(cat "${cli_args_file}")"
 tail_contents="$(cat "${tail_flags_file}")"
+execution_contents="$(cat "${execution_flags_file}")"
 
 assert_contains "${cli_contents}" "mod runtime_tail_flags;" "cli module marker"
+assert_contains "${cli_contents}" "mod execution_domain_flags;" "cli execution module marker"
 assert_contains "${cli_contents}" "pub runtime_tail: CliRuntimeTailFlags," "cli runtime tail flatten marker"
+assert_contains "${cli_contents}" "pub execution_domain: CliExecutionDomainFlags," "cli execution flatten marker"
 assert_contains "${tail_contents}" "pub custom_command_contract_runner: bool," "tail custom command marker"
 assert_contains "${tail_contents}" "pub voice_contract_runner: bool," "tail voice marker"
 assert_contains "${tail_contents}" "pub github_issues_bridge: bool," "tail github marker"
 assert_contains "${tail_contents}" "pub struct CliRuntimeTailFlags {" "tail struct marker"
 assert_contains "${tail_contents}" "pub gateway_daemon: CliGatewayDaemonFlags," "tail gateway flatten marker"
+assert_contains "${execution_contents}" "pub events_inspect: bool," "execution events inspect marker"
+assert_contains "${execution_contents}" "pub events_template_timezone: String," "execution events template marker"
 
 echo "cli-args-domain-split tests passed"

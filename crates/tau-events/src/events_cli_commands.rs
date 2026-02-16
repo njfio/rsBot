@@ -21,7 +21,7 @@ pub fn execute_events_inspect_command(cli: &Cli) -> Result<()> {
         current_unix_timestamp_ms(),
     )?;
 
-    if cli.events_inspect_json {
+    if cli.execution_domain.events_inspect_json {
         println!(
             "{}",
             serde_json::to_string_pretty(&report)
@@ -42,7 +42,7 @@ pub fn execute_events_validate_command(cli: &Cli) -> Result<()> {
         current_unix_timestamp_ms(),
     )?;
 
-    if cli.events_validate_json {
+    if cli.execution_domain.events_validate_json {
         println!(
             "{}",
             serde_json::to_string_pretty(&report)
@@ -65,20 +65,25 @@ pub fn execute_events_validate_command(cli: &Cli) -> Result<()> {
 
 pub fn execute_events_template_write_command(cli: &Cli) -> Result<()> {
     let target_path = cli
+        .execution_domain
         .events_template_write
         .as_ref()
         .ok_or_else(|| anyhow!("--events-template-write is required"))?;
 
     let now_unix_ms = current_unix_timestamp_ms();
-    let schedule = match cli.events_template_schedule {
+    let schedule = match cli.execution_domain.events_template_schedule {
         CliEventTemplateSchedule::Immediate => EventTemplateSchedule::Immediate,
         CliEventTemplateSchedule::At => EventTemplateSchedule::At,
         CliEventTemplateSchedule::Periodic => EventTemplateSchedule::Periodic,
     };
 
-    let at_unix_ms = if matches!(cli.events_template_schedule, CliEventTemplateSchedule::At) {
+    let at_unix_ms = if matches!(
+        cli.execution_domain.events_template_schedule,
+        CliEventTemplateSchedule::At
+    ) {
         Some(
-            cli.events_template_at_unix_ms
+            cli.execution_domain
+                .events_template_at_unix_ms
                 .unwrap_or_else(|| now_unix_ms.saturating_add(300_000)),
         )
     } else {
@@ -86,11 +91,12 @@ pub fn execute_events_template_write_command(cli: &Cli) -> Result<()> {
     };
 
     let cron = if matches!(
-        cli.events_template_schedule,
+        cli.execution_domain.events_template_schedule,
         CliEventTemplateSchedule::Periodic
     ) {
         Some(
-            cli.events_template_cron
+            cli.execution_domain
+                .events_template_cron
                 .clone()
                 .unwrap_or_else(|| "0 0/15 * * * * *".to_string()),
         )
@@ -100,17 +106,22 @@ pub fn execute_events_template_write_command(cli: &Cli) -> Result<()> {
 
     let config = EventsTemplateConfig {
         target_path: target_path.to_path_buf(),
-        overwrite: cli.events_template_overwrite,
+        overwrite: cli.execution_domain.events_template_overwrite,
         schedule,
         channel: cli
+            .execution_domain
             .events_template_channel
             .clone()
             .unwrap_or_else(|| "slack/C123".to_string()),
-        prompt: cli.events_template_prompt.clone().unwrap_or_default(),
-        event_id: cli.events_template_id.clone(),
+        prompt: cli
+            .execution_domain
+            .events_template_prompt
+            .clone()
+            .unwrap_or_default(),
+        event_id: cli.execution_domain.events_template_id.clone(),
         at_unix_ms,
         cron,
-        timezone: Some(cli.events_template_timezone.clone()),
+        timezone: Some(cli.execution_domain.events_template_timezone.clone()),
     };
 
     let report = write_event_template(&config, now_unix_ms)?;
@@ -131,13 +142,13 @@ pub fn execute_events_simulate_command(cli: &Cli) -> Result<()> {
         &EventsSimulateConfig {
             events_dir: cli.events_dir.clone(),
             state_path: cli.events_state_path.clone(),
-            horizon_seconds: cli.events_simulate_horizon_seconds,
+            horizon_seconds: cli.execution_domain.events_simulate_horizon_seconds,
             stale_immediate_max_age_seconds: cli.events_stale_immediate_max_age_seconds,
         },
         current_unix_timestamp_ms(),
     )?;
 
-    if cli.events_simulate_json {
+    if cli.execution_domain.events_simulate_json {
         println!(
             "{}",
             serde_json::to_string_pretty(&report)
@@ -160,7 +171,7 @@ pub fn execute_events_dry_run_command(cli: &Cli) -> Result<()> {
         current_unix_timestamp_ms(),
     )?;
 
-    if cli.events_dry_run_json {
+    if cli.execution_domain.events_dry_run_json {
         println!(
             "{}",
             serde_json::to_string_pretty(&report)
@@ -170,15 +181,17 @@ pub fn execute_events_dry_run_command(cli: &Cli) -> Result<()> {
         println!("{}", render_events_dry_run_report(&report));
     }
 
-    let max_error_rows = if cli.events_dry_run_strict {
+    let max_error_rows = if cli.execution_domain.events_dry_run_strict {
         Some(0)
     } else {
-        cli.events_dry_run_max_error_rows
+        cli.execution_domain
+            .events_dry_run_max_error_rows
             .map(|value| value as usize)
     };
     let gate_config = EventsDryRunGateConfig {
         max_error_rows,
         max_execute_rows: cli
+            .execution_domain
             .events_dry_run_max_execute_rows
             .map(|value| value as usize),
     };

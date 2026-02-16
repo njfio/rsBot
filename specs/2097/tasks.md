@@ -1,6 +1,6 @@
 # Tasks #2097
 
-Status: Ready
+Status: Implemented
 Spec: specs/2097/spec.md
 Plan: specs/2097/plan.md
 

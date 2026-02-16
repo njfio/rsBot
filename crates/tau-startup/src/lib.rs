@@ -494,27 +494,27 @@ pub fn execute_startup_preflight(cli: &Cli, actions: &dyn StartupPreflightAction
         return Ok(true);
     }
 
-    if cli.events_inspect {
+    if cli.execution_domain.events_inspect {
         actions.execute_events_inspect_command(cli)?;
         return Ok(true);
     }
 
-    if cli.events_validate {
+    if cli.execution_domain.events_validate {
         actions.execute_events_validate_command(cli)?;
         return Ok(true);
     }
 
-    if cli.events_simulate {
+    if cli.execution_domain.events_simulate {
         actions.execute_events_simulate_command(cli)?;
         return Ok(true);
     }
 
-    if cli.events_dry_run {
+    if cli.execution_domain.events_dry_run {
         actions.execute_events_dry_run_command(cli)?;
         return Ok(true);
     }
 
-    if cli.events_template_write.is_some() {
+    if cli.execution_domain.events_template_write.is_some() {
         actions.execute_events_template_write_command(cli)?;
         return Ok(true);
     }

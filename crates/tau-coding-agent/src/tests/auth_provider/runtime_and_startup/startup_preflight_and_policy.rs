@@ -1085,8 +1085,8 @@ fn functional_execute_startup_preflight_runs_events_inspect_mode() {
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_inspect = true;
-    cli.events_inspect_json = true;
+    cli.execution_domain.events_inspect = true;
+    cli.execution_domain.events_inspect_json = true;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
@@ -1112,8 +1112,8 @@ fn integration_execute_startup_preflight_runs_events_validate_mode() {
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_validate = true;
-    cli.events_validate_json = true;
+    cli.execution_domain.events_validate = true;
+    cli.execution_domain.events_validate_json = true;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
@@ -1138,7 +1138,7 @@ fn regression_execute_startup_preflight_events_validate_fails_on_invalid_entry()
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_validate = true;
+    cli.execution_domain.events_validate = true;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
@@ -1164,9 +1164,9 @@ fn functional_execute_startup_preflight_runs_events_template_write_mode() {
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
     let target = cli.events_dir.join("template-periodic.json");
-    cli.events_template_write = Some(target.clone());
-    cli.events_template_schedule = CliEventTemplateSchedule::Periodic;
-    cli.events_template_channel = Some("github/owner/repo#77".to_string());
+    cli.execution_domain.events_template_write = Some(target.clone());
+    cli.execution_domain.events_template_schedule = CliEventTemplateSchedule::Periodic;
+    cli.execution_domain.events_template_channel = Some("github/owner/repo#77".to_string());
 
     let handled = execute_startup_preflight(&cli).expect("events template preflight");
     assert!(handled);
@@ -1182,7 +1182,7 @@ fn regression_execute_startup_preflight_events_template_write_requires_overwrite
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(&target, "{\"existing\":true}\n").expect("seed existing template");
 
-    cli.events_template_write = Some(target);
+    cli.execution_domain.events_template_write = Some(target);
     let error = execute_startup_preflight(&cli).expect_err("overwrite should be required");
     assert!(error.to_string().contains("template path already exists"));
 }
@@ -1192,9 +1192,9 @@ fn functional_execute_startup_preflight_runs_events_simulate_mode() {
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_simulate = true;
-    cli.events_simulate_json = true;
-    cli.events_simulate_horizon_seconds = 300;
+    cli.execution_domain.events_simulate = true;
+    cli.execution_domain.events_simulate_json = true;
+    cli.execution_domain.events_simulate_horizon_seconds = 300;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
@@ -1219,7 +1219,7 @@ fn regression_execute_startup_preflight_events_simulate_reports_invalid_entries(
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_simulate = true;
+    cli.execution_domain.events_simulate = true;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
@@ -1244,9 +1244,9 @@ fn functional_execute_startup_preflight_runs_events_dry_run_mode() {
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_dry_run = true;
-    cli.events_dry_run_json = true;
-    cli.events_dry_run_strict = true;
+    cli.execution_domain.events_dry_run = true;
+    cli.execution_domain.events_dry_run_json = true;
+    cli.execution_domain.events_dry_run_strict = true;
     cli.events_queue_limit = 4;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
@@ -1274,7 +1274,7 @@ fn regression_execute_startup_preflight_events_dry_run_reports_invalid_entries()
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_dry_run = true;
+    cli.execution_domain.events_dry_run = true;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
@@ -1299,8 +1299,8 @@ fn integration_execute_startup_preflight_events_dry_run_strict_fails_on_invalid_
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_dry_run = true;
-    cli.events_dry_run_strict = true;
+    cli.execution_domain.events_dry_run = true;
+    cli.execution_domain.events_dry_run_strict = true;
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
@@ -1328,8 +1328,8 @@ fn integration_execute_startup_preflight_events_dry_run_max_execute_rows_fails()
     let temp = tempdir().expect("tempdir");
     let mut cli = test_cli();
     set_workspace_tau_paths(&mut cli, temp.path());
-    cli.events_dry_run = true;
-    cli.events_dry_run_max_execute_rows = Some(1);
+    cli.execution_domain.events_dry_run = true;
+    cli.execution_domain.events_dry_run_max_execute_rows = Some(1);
 
     std::fs::create_dir_all(&cli.events_dir).expect("create events dir");
     std::fs::write(
