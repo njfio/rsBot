@@ -254,11 +254,29 @@ fn extract_system_text(messages: &[Message]) -> String {
 }
 
 fn to_google_function_declaration(tool: &ToolDefinition) -> Value {
+    let sanitized_parameters = sanitize_google_schema(&tool.parameters);
     json!({
         "name": tool.name,
         "description": tool.description,
-        "parameters": tool.parameters,
+        "parameters": sanitized_parameters,
     })
+}
+
+fn sanitize_google_schema(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut sanitized = serde_json::Map::new();
+            for (key, nested) in map {
+                if key == "additionalProperties" {
+                    continue;
+                }
+                sanitized.insert(key.clone(), sanitize_google_schema(nested));
+            }
+            Value::Object(sanitized)
+        }
+        Value::Array(values) => Value::Array(values.iter().map(sanitize_google_schema).collect()),
+        _ => value.clone(),
+    }
 }
 
 fn to_google_function_calling_config(tool_choice: &ToolChoice) -> Value {
@@ -798,6 +816,47 @@ mod tests {
             .as_f64()
             .expect("temperature should serialize as f64");
         assert!((temperature - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn conformance_google_function_declaration_strips_additional_properties() {
+        let request = ChatRequest {
+            model: "gemini-2.5-pro".to_string(),
+            messages: vec![Message::user("schema test")],
+            tools: vec![ToolDefinition {
+                name: "write_file".to_string(),
+                description: "Writes a file".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "options": {
+                            "type": "object",
+                            "properties": {
+                                "mode": { "type": "string" }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }),
+            }],
+            tool_choice: Some(ToolChoice::Auto),
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let body = build_generate_content_body(&request);
+        let parameters = &body["tools"][0]["functionDeclarations"][0]["parameters"];
+        assert!(
+            !parameters.to_string().contains("additionalProperties"),
+            "google function schema should omit unsupported additionalProperties keys"
+        );
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["properties"]["path"]["type"], "string");
+        assert_eq!(parameters["properties"]["options"]["type"], "object");
     }
 
     #[test]
