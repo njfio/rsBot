@@ -1,0 +1,84 @@
+{
+  "current_line_count": 2898,
+  "estimated_lines_to_extract": 1340,
+  "extraction_phases": [
+    {
+      "depends_on": [],
+      "id": "phase-1-operator-control-summary-diff",
+      "line_reduction_estimate": 760,
+      "modules": [
+        "channel_store_admin/operator_control_helpers.rs"
+      ],
+      "notes": "Move summary/diff aggregation logic without changing status gates, reason codes, or snapshot semantics.",
+      "owner": "ops-runtime-control-plane",
+      "title": "Operator control summary and diff workflows"
+    },
+    {
+      "depends_on": [
+        "phase-1-operator-control-summary-diff"
+      ],
+      "id": "phase-2-status-collector-domains",
+      "line_reduction_estimate": 360,
+      "modules": [
+        "channel_store_admin/status_collectors.rs",
+        "channel_store_admin/status_types.rs"
+      ],
+      "notes": "Preserve report fields and rollout-gate classification behavior for each component status collector.",
+      "owner": "ops-runtime-collectors",
+      "title": "Status collector domains for dashboard/multi/gateway/deployment"
+    },
+    {
+      "depends_on": [
+        "phase-2-status-collector-domains"
+      ],
+      "id": "phase-3-cycle-summary-loaders",
+      "line_reduction_estimate": 220,
+      "modules": [
+        "channel_store_admin/cycle_summary_loaders.rs",
+        "channel_store_admin/log_summary_loaders.rs"
+      ],
+      "notes": "Keep fail-closed parse behavior, invalid-line counting, and summary counters stable.",
+      "owner": "ops-runtime-observability",
+      "title": "Cycle-report and log-summary loader helpers"
+    }
+  ],
+  "generated_at": "2026-02-16T00:00:00Z",
+  "import_impact": [
+    "Introduce focused modules under crates/tau-ops/src/channel_store_admin/ with selective imports from channel_store_admin.rs.",
+    "Keep existing helper-module boundaries for command parsing, rendering, and transport health while adding operator-control extraction boundaries.",
+    "Limit cross-module coupling by centralizing shared count/normalization helpers in channel_store_admin.rs."
+  ],
+  "line_gap_to_target": 698,
+  "post_split_estimated_line_count": 1558,
+  "public_api_impact": [
+    "Keep execute_channel_store_admin_command entrypoint behavior and CLI contract stable.",
+    "Preserve rendered/JSON report field names for dashboard, multi-channel, multi-agent, gateway, custom-command, voice, deployment, and operator summary views.",
+    "Retain operator summary snapshot save/load and drift diff semantics."
+  ],
+  "schema_version": 1,
+  "source_file": "crates/tau-ops/src/channel_store_admin.rs",
+  "target_line_budget": 2200,
+  "test_migration_plan": [
+    {
+      "command": "scripts/dev/test-channel-store-admin-domain-split.sh",
+      "description": "Raise channel_store_admin split guardrail from legacy <3000 to M25 target <2200 and assert extracted module markers.",
+      "expected_signal": "channel_store_admin.rs fails closed when line budget or module markers regress",
+      "id": "guardrail-threshold-enforcement",
+      "order": 1
+    },
+    {
+      "command": "cargo test -p tau-ops channel_store_admin::tests::<targeted_test>",
+      "description": "Run focused channel-store admin tests by unit/functional/integration/regression slices.",
+      "expected_signal": "operator summary/reporting behavior remains stable after extraction",
+      "id": "ops-crate-targeted-regression",
+      "order": 2
+    },
+    {
+      "command": "cargo test -p tau-ops channel_store_admin::tests::integration_operator_control_summary_snapshot_roundtrip_and_compare -- --nocapture",
+      "description": "Validate operator summary snapshot roundtrip and compare flows remain deterministic.",
+      "expected_signal": "snapshot persistence and diff generation parity is maintained",
+      "id": "operator-summary-roundtrip-validation",
+      "order": 3
+    }
+  ]
+}
