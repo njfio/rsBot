@@ -96,6 +96,7 @@ impl MultiChannelPairingEvaluator for MultiChannelPairingEvaluatorAdapter {
     }
 }
 
+/// Build multi-channel command handlers backed by startup auth/doctor configs.
 pub fn build_multi_channel_command_handlers(
     auth_config: AuthCommandConfig,
     doctor_config: DoctorCommandConfig,
@@ -111,6 +112,7 @@ pub fn build_multi_channel_command_handlers(
     }
 }
 
+/// Build pairing evaluator adapter for multi-channel policy checks.
 pub fn build_multi_channel_pairing_evaluator() -> Arc<dyn MultiChannelPairingEvaluator> {
     Arc::new(MultiChannelPairingEvaluatorAdapter)
 }

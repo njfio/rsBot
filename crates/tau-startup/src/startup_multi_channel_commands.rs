@@ -4,6 +4,7 @@ use tau_provider::{
     load_credential_store, resolve_credential_store_encryption_mode, resolve_non_empty_cli_value,
 };
 
+/// Execute multi-channel send command from CLI runtime configuration.
 pub fn execute_multi_channel_send_command(cli: &Cli) -> Result<()> {
     let transport: tau_multi_channel::MultiChannelTransport = cli
         .multi_channel_send
@@ -72,6 +73,7 @@ pub fn execute_multi_channel_send_command(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Execute multi-channel channel lifecycle command for login/logout/status/probe.
 pub fn execute_multi_channel_channel_lifecycle_command(cli: &Cli) -> Result<()> {
     let (action, transport, json_output) = if let Some(transport) = cli.multi_channel_channel_status
     {

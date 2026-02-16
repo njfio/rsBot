@@ -1,6 +1,7 @@
 use anyhow::Result;
 use tau_cli::Cli;
 
+/// Execute RPC capabilities command and print negotiated payload when requested.
 pub fn execute_rpc_capabilities_command(cli: &Cli) -> Result<()> {
     if !cli.rpc_capabilities {
         return Ok(());

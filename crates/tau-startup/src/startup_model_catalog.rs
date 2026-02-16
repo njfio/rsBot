@@ -6,6 +6,7 @@ use tau_provider::{
     ModelCatalogLoadOptions,
 };
 
+/// Resolve startup model catalog using CLI cache/refresh settings.
 pub async fn resolve_startup_model_catalog(cli: &Cli) -> Result<ModelCatalog> {
     let options = ModelCatalogLoadOptions {
         cache_path: cli.model_catalog_cache.clone(),
@@ -22,6 +23,7 @@ pub async fn resolve_startup_model_catalog(cli: &Cli) -> Result<ModelCatalog> {
     Ok(catalog)
 }
 
+/// Validate startup primary and fallback models support required tool calling.
 pub fn validate_startup_model_catalog(
     catalog: &ModelCatalog,
     primary: &ModelRef,

@@ -20,6 +20,10 @@ rpc_transport_file="crates/tau-runtime/src/rpc_protocol_runtime/transport.rs"
 rpc_dispatch_file="crates/tau-runtime/src/rpc_protocol_runtime/dispatch.rs"
 rpc_parsing_file="crates/tau-runtime/src/rpc_protocol_runtime/parsing.rs"
 runtime_output_file="crates/tau-runtime/src/runtime_output_runtime.rs"
+startup_model_catalog_file="crates/tau-startup/src/startup_model_catalog.rs"
+startup_multi_channel_adapters_file="crates/tau-startup/src/startup_multi_channel_adapters.rs"
+startup_multi_channel_commands_file="crates/tau-startup/src/startup_multi_channel_commands.rs"
+startup_rpc_capabilities_command_file="crates/tau-startup/src/startup_rpc_capabilities_command.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -47,7 +51,11 @@ for file in \
   "${rpc_transport_file}" \
   "${rpc_dispatch_file}" \
   "${rpc_parsing_file}" \
-  "${runtime_output_file}"; do
+  "${runtime_output_file}" \
+  "${startup_model_catalog_file}" \
+  "${startup_multi_channel_adapters_file}" \
+  "${startup_multi_channel_commands_file}" \
+  "${startup_rpc_capabilities_command_file}"; do
   if [[ ! -f "${file}" ]]; then
     echo "assertion failed (missing file): ${file}" >&2
     exit 1
@@ -70,6 +78,10 @@ rpc_transport_contents="$(cat "${rpc_transport_file}")"
 rpc_dispatch_contents="$(cat "${rpc_dispatch_file}")"
 rpc_parsing_contents="$(cat "${rpc_parsing_file}")"
 runtime_output_contents="$(cat "${runtime_output_file}")"
+startup_model_catalog_contents="$(cat "${startup_model_catalog_file}")"
+startup_multi_channel_adapters_contents="$(cat "${startup_multi_channel_adapters_file}")"
+startup_multi_channel_commands_contents="$(cat "${startup_multi_channel_commands_file}")"
+startup_rpc_capabilities_command_contents="$(cat "${startup_rpc_capabilities_command_file}")"
 
 assert_contains "${issue_runtime_contents}" "/// Normalize a repository-relative channel artifact path for persisted pointers." "issue runtime normalize doc"
 assert_contains "${issue_runtime_contents}" "/// Render a stable artifact pointer line for issue comments and logs." "issue runtime pointer doc"
@@ -101,5 +113,12 @@ assert_contains "${rpc_parsing_contents}" "/// Parse one raw JSON RPC frame stri
 assert_contains "${rpc_parsing_contents}" "/// Load and validate one RPC frame JSON file from disk." "rpc parsing file doc"
 assert_contains "${runtime_output_contents}" "/// Summarize one chat message for compact operator-facing logs." "runtime output summarize doc"
 assert_contains "${runtime_output_contents}" "/// Convert one agent event into deterministic JSON for logs and snapshots." "runtime output event json doc"
+assert_contains "${startup_model_catalog_contents}" "/// Resolve startup model catalog using CLI cache/refresh settings." "startup model catalog resolve doc"
+assert_contains "${startup_model_catalog_contents}" "/// Validate startup primary and fallback models support required tool calling." "startup model catalog validate doc"
+assert_contains "${startup_multi_channel_adapters_contents}" "/// Build multi-channel command handlers backed by startup auth/doctor configs." "startup adapters handlers doc"
+assert_contains "${startup_multi_channel_adapters_contents}" "/// Build pairing evaluator adapter for multi-channel policy checks." "startup adapters pairing evaluator doc"
+assert_contains "${startup_multi_channel_commands_contents}" "/// Execute multi-channel send command from CLI runtime configuration." "startup multi-channel send doc"
+assert_contains "${startup_multi_channel_commands_contents}" "/// Execute multi-channel channel lifecycle command for login/logout/status/probe." "startup multi-channel lifecycle doc"
+assert_contains "${startup_rpc_capabilities_command_contents}" "/// Execute RPC capabilities command and print negotiated payload when requested." "startup rpc capabilities command doc"
 
 echo "split-module-rustdoc tests passed"
