@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-16T02:13:51Z",
+  "artifacts": {
+    "parity_json": "/Users/n/RustroverProjects/rust_pi_issue1697/ci-artifacts/tool-dispatch-parity.json",
+    "parity_md": "/Users/n/RustroverProjects/rust_pi_issue1697/ci-artifacts/tool-dispatch-parity.md",
+    "performance_json": "/Users/n/RustroverProjects/rust_pi_issue1697/ci-artifacts/tool-split-performance-smoke.json"
+  },
+  "parity": {
+    "passed": 5,
+    "failed": 0,
+    "total_elapsed_ms": 45447,
+    "entries": [
+      {
+        "behavior": "Built-in registry contains split session tools",
+        "command": "cargo test -p tau-tools tools::tests::unit_builtin_agent_tool_name_registry_includes_session_tools -- --exact",
+        "pass_criteria": "Test exits 0 and asserts all expected built-in tool names are present.",
+        "status": "pass",
+        "elapsed_ms": 40343,
+        "exit_code": 0
+      },
+      {
+        "behavior": "Session history dispatch returns bounded lineage",
+        "command": "cargo test -p tau-tools tools::tests::integration_sessions_history_tool_returns_bounded_lineage -- --exact",
+        "pass_criteria": "Test exits 0 and asserts lineage entry count/order invariants.",
+        "status": "pass",
+        "elapsed_ms": 1856,
+        "exit_code": 0
+      },
+      {
+        "behavior": "HTTP tool dispatch preserves JSON request/response contract",
+        "command": "cargo test -p tau-tools tools::tests::functional_http_tool_posts_json_and_returns_structured_payload -- --exact",
+        "pass_criteria": "Test exits 0 and asserts HTTP JSON body and structured response invariants.",
+        "status": "pass",
+        "elapsed_ms": 1051,
+        "exit_code": 0
+      },
+      {
+        "behavior": "Bash tool dispatch preserves dry-run policy contract",
+        "command": "cargo test -p tau-tools tools::tests::integration_bash_tool_dry_run_validates_without_execution -- --exact",
+        "pass_criteria": "Test exits 0 and asserts dry-run policy response metadata invariants.",
+        "status": "pass",
+        "elapsed_ms": 1122,
+        "exit_code": 0
+      },
+      {
+        "behavior": "Memory tool dispatch preserves write/read round-trip contract",
+        "command": "cargo test -p tau-tools tools::tests::functional_memory_write_and_read_tools_round_trip_record -- --exact",
+        "pass_criteria": "Test exits 0 and asserts persisted memory record can be read back correctly.",
+        "status": "pass",
+        "elapsed_ms": 1075,
+        "exit_code": 0
+      }
+    ]
+  },
+  "performance": {
+    "status": "pass",
+    "sample_total_ms": 3170,
+    "baseline_total_ms": 3000,
+    "drift_ms": 170,
+    "drift_percent": 5.67,
+    "thresholds": {
+      "warn_percent": 75,
+      "fail_percent": 200,
+      "warn_total_ms": 5250,
+      "fail_total_ms": 9000
+    }
+  },
+  "decision": {
+    "status": "pass",
+    "reason_codes": [
+      "all_checks_passed"
+    ]
+  }
+}
