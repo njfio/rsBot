@@ -349,6 +349,25 @@ impl BenchmarkArtifactGateReportSummaryQualityDecision {
     }
 }
 
+/// Combined summary-manifest + summary-quality decision report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkArtifactGateSummaryReport {
+    /// Source summary manifest produced by directory scan.
+    pub summary: BenchmarkArtifactGateReportSummaryManifest,
+    /// Deterministic quality decision derived from the summary manifest.
+    pub quality: BenchmarkArtifactGateReportSummaryQualityDecision,
+}
+
+impl BenchmarkArtifactGateSummaryReport {
+    /// Projects the summary gate report into machine-readable JSON.
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "summary": self.summary.to_json_value(),
+            "quality": self.quality.to_json_value(),
+        })
+    }
+}
+
 impl BenchmarkEvaluationArtifact {
     /// Initial schema version for benchmark evaluation artifacts.
     pub const SCHEMA_VERSION_V1: u32 = 1;
@@ -793,6 +812,19 @@ pub fn evaluate_benchmark_gate_report_summary_quality(
     })
 }
 
+/// Builds a combined summary-quality gate report from a summary manifest.
+#[instrument(skip(summary, policy))]
+pub fn build_benchmark_artifact_gate_summary_report(
+    summary: &BenchmarkArtifactGateReportSummaryManifest,
+    policy: &BenchmarkArtifactGateReportSummaryQualityPolicy,
+) -> Result<BenchmarkArtifactGateSummaryReport> {
+    let quality = evaluate_benchmark_gate_report_summary_quality(summary, policy)?;
+    Ok(BenchmarkArtifactGateSummaryReport {
+        summary: summary.clone(),
+        quality,
+    })
+}
+
 fn seed_reproducibility_to_json(report: &SeedReproducibilityReport) -> Value {
     json!({
         "sample_size": report.sample_size,
@@ -1002,7 +1034,8 @@ fn sanitize_file_component(value: &str) -> String {
 mod tests {
     use super::{
         build_benchmark_artifact_gate_report,
-        build_benchmark_artifact_gate_report_summary_manifest, build_benchmark_artifact_manifest,
+        build_benchmark_artifact_gate_report_summary_manifest,
+        build_benchmark_artifact_gate_summary_report, build_benchmark_artifact_manifest,
         build_benchmark_evaluation_artifact, evaluate_benchmark_gate_report_summary_quality,
         evaluate_benchmark_manifest_quality, export_benchmark_artifact_gate_report,
         export_benchmark_evaluation_artifact, validate_exported_benchmark_artifact,
@@ -2001,6 +2034,103 @@ mod tests {
         assert!(decision.fail_ratio.is_finite());
         assert!(decision.invalid_file_ratio.is_finite());
         assert!(!decision.pass);
+    }
+
+    #[test]
+    fn spec_1984_c01_summary_gate_report_contains_counters_and_quality_decision() {
+        let summary = sample_summary_manifest(2, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy {
+                min_pass_entries: 1,
+                max_fail_ratio: 0.5,
+                max_invalid_file_ratio: 0.5,
+            },
+        )
+        .expect("build summary gate report");
+
+        assert_eq!(report.summary.pass_entries, 2);
+        assert_eq!(report.summary.fail_entries, 0);
+        assert_eq!(report.summary.invalid_files.len(), 0);
+        assert!(report.quality.pass);
+    }
+
+    #[test]
+    fn spec_1984_c02_summary_gate_report_preserves_quality_reason_codes() {
+        let summary = sample_summary_manifest(0, 2, 1);
+        let report = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy {
+                min_pass_entries: 1,
+                max_fail_ratio: 0.10,
+                max_invalid_file_ratio: 0.0,
+            },
+        )
+        .expect("build summary gate report");
+
+        assert!(!report.quality.pass);
+        assert!(report
+            .quality
+            .reason_codes
+            .iter()
+            .any(|code| code == "below_min_pass_entries"));
+        assert!(report
+            .quality
+            .reason_codes
+            .iter()
+            .any(|code| code == "fail_ratio_exceeded"));
+        assert!(report
+            .quality
+            .reason_codes
+            .iter()
+            .any(|code| code == "invalid_file_ratio_exceeded"));
+    }
+
+    #[test]
+    fn spec_1984_c03_summary_gate_report_json_is_machine_readable_with_nested_sections() {
+        let summary = sample_summary_manifest(1, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy::default(),
+        )
+        .expect("build summary gate report");
+        let payload = report.to_json_value();
+        assert!(payload["summary"].is_object());
+        assert!(payload["quality"].is_object());
+        assert!(payload["summary"]["pass_entries"].as_u64().is_some());
+        assert!(payload["quality"]["pass"].is_boolean());
+    }
+
+    #[test]
+    fn spec_1984_c04_summary_gate_report_rejects_invalid_quality_policy() {
+        let summary = sample_summary_manifest(1, 0, 0);
+        let error = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy {
+                min_pass_entries: 1,
+                max_fail_ratio: 1.5,
+                max_invalid_file_ratio: 0.0,
+            },
+        )
+        .expect_err("invalid policy should fail");
+        assert!(error.to_string().contains("max_fail_ratio"));
+    }
+
+    #[test]
+    fn regression_summary_gate_report_handles_zero_summary_entries() {
+        let summary = sample_summary_manifest(0, 0, 0);
+        let report = build_benchmark_artifact_gate_summary_report(
+            &summary,
+            &BenchmarkArtifactGateReportSummaryQualityPolicy {
+                min_pass_entries: 1,
+                max_fail_ratio: 0.5,
+                max_invalid_file_ratio: 0.5,
+            },
+        )
+        .expect("build summary gate report");
+        assert!(report.quality.fail_ratio.is_finite());
+        assert!(report.quality.invalid_file_ratio.is_finite());
+        assert!(!report.quality.pass);
     }
 
     fn sample_summary_manifest(
