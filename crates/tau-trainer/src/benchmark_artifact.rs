@@ -186,6 +186,25 @@ impl BenchmarkArtifactManifestQualityDecision {
     }
 }
 
+/// Combined manifest + quality decision gate report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkArtifactGateReport {
+    /// Source manifest produced by directory scan.
+    pub manifest: BenchmarkArtifactManifest,
+    /// Deterministic quality decision derived from the manifest.
+    pub quality: BenchmarkArtifactManifestQualityDecision,
+}
+
+impl BenchmarkArtifactGateReport {
+    /// Projects the gate report into machine-readable JSON.
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "manifest": self.manifest.to_json_value(),
+            "quality": self.quality.to_json_value(),
+        })
+    }
+}
+
 impl BenchmarkEvaluationArtifact {
     /// Initial schema version for benchmark evaluation artifacts.
     pub const SCHEMA_VERSION_V1: u32 = 1;
@@ -426,6 +445,23 @@ pub fn evaluate_benchmark_manifest_quality(
     })
 }
 
+/// Builds a combined quality gate report from a scanned artifact manifest.
+#[instrument(skip(manifest, policy))]
+pub fn build_benchmark_artifact_gate_report(
+    manifest: &BenchmarkArtifactManifest,
+    policy: &BenchmarkArtifactManifestQualityPolicy,
+) -> Result<BenchmarkArtifactGateReport> {
+    let quality_input = BenchmarkArtifactManifestQualityInput {
+        valid_entries: manifest.valid_entries.len(),
+        invalid_entries: manifest.invalid_files.len(),
+    };
+    let quality = evaluate_benchmark_manifest_quality(&quality_input, policy)?;
+    Ok(BenchmarkArtifactGateReport {
+        manifest: manifest.clone(),
+        quality,
+    })
+}
+
 fn seed_reproducibility_to_json(report: &SeedReproducibilityReport) -> Value {
     json!({
         "sample_size": report.sample_size,
@@ -543,10 +579,11 @@ fn sanitize_file_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_benchmark_artifact_manifest, build_benchmark_evaluation_artifact,
-        evaluate_benchmark_manifest_quality, export_benchmark_evaluation_artifact,
-        validate_exported_benchmark_artifact, BenchmarkArtifactManifestQualityInput,
-        BenchmarkArtifactManifestQualityPolicy, BenchmarkEvaluationArtifactInput,
+        build_benchmark_artifact_gate_report, build_benchmark_artifact_manifest,
+        build_benchmark_evaluation_artifact, evaluate_benchmark_manifest_quality,
+        export_benchmark_evaluation_artifact, validate_exported_benchmark_artifact,
+        BenchmarkArtifactManifestQualityInput, BenchmarkArtifactManifestQualityPolicy,
+        BenchmarkEvaluationArtifactInput,
     };
     use crate::benchmark_significance::{
         compare_policy_improvement, CheckpointPromotionDecision, SampleSizePoint,
@@ -1105,5 +1142,115 @@ mod tests {
 
         assert!(decision.invalid_ratio.is_finite());
         assert!(!decision.pass);
+    }
+
+    #[test]
+    fn spec_1976_c01_gate_report_contains_manifest_counters_and_quality_decision() {
+        let output_dir = temp_output_dir("benchmark-gate-report-c01");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &output_dir).expect("export artifact");
+
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+        let report = build_benchmark_artifact_gate_report(
+            &manifest,
+            &BenchmarkArtifactManifestQualityPolicy {
+                min_valid_entries: 1,
+                max_invalid_ratio: 0.5,
+            },
+        )
+        .expect("build gate report");
+
+        assert_eq!(report.manifest.scanned_json_files, 1);
+        assert_eq!(report.manifest.valid_entries.len(), 1);
+        assert!(report.quality.pass);
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1976_c02_gate_report_preserves_quality_reason_codes() {
+        let output_dir = temp_output_dir("benchmark-gate-report-c02");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        fs::write(output_dir.join("broken.json"), "{ malformed").expect("write malformed artifact");
+
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+        let report = build_benchmark_artifact_gate_report(
+            &manifest,
+            &BenchmarkArtifactManifestQualityPolicy {
+                min_valid_entries: 1,
+                max_invalid_ratio: 0.5,
+            },
+        )
+        .expect("build gate report");
+
+        assert!(!report.quality.pass);
+        assert!(report
+            .quality
+            .reason_codes
+            .iter()
+            .any(|code| code == "no_valid_artifacts"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1976_c03_gate_report_json_is_machine_readable_with_nested_sections() {
+        let output_dir = temp_output_dir("benchmark-gate-report-c03");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &output_dir).expect("export artifact");
+
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+        let report = build_benchmark_artifact_gate_report(
+            &manifest,
+            &BenchmarkArtifactManifestQualityPolicy::default(),
+        )
+        .expect("build gate report");
+        let payload = report.to_json_value();
+        assert!(payload["manifest"].is_object());
+        assert!(payload["quality"].is_object());
+        assert!(payload["manifest"]["scanned_json_files"].as_u64().is_some());
+        assert!(payload["quality"]["pass"].is_boolean());
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1976_c04_gate_report_rejects_invalid_quality_policy() {
+        let output_dir = temp_output_dir("benchmark-gate-report-c04");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &output_dir).expect("export artifact");
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+
+        let error = build_benchmark_artifact_gate_report(
+            &manifest,
+            &BenchmarkArtifactManifestQualityPolicy {
+                min_valid_entries: 1,
+                max_invalid_ratio: 1.5,
+            },
+        )
+        .expect_err("invalid policy should fail");
+        assert!(error.to_string().contains("max_invalid_ratio"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn regression_gate_report_handles_zero_scan_manifest() {
+        let output_dir = temp_output_dir("benchmark-gate-report-regression");
+        fs::create_dir_all(&output_dir).expect("create output dir");
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+
+        let report = build_benchmark_artifact_gate_report(
+            &manifest,
+            &BenchmarkArtifactManifestQualityPolicy {
+                min_valid_entries: 1,
+                max_invalid_ratio: 0.5,
+            },
+        )
+        .expect("build gate report");
+        assert_eq!(report.quality.invalid_ratio, 0.0);
+        assert!(!report.quality.pass);
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
     }
 }
