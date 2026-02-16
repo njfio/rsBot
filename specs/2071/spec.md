@@ -1,6 +1,6 @@
 # Spec #2071
 
-Status: Accepted
+Status: Implemented
 Milestone: specs/milestones/m25/index.md
 Issue: https://github.com/njfio/Tau/issues/2071
 
