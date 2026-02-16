@@ -54,6 +54,74 @@ pub struct BenchmarkArtifactExportSummary {
     pub bytes_written: usize,
 }
 
+/// Valid artifact entry discovered during manifest scans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkArtifactManifestEntry {
+    /// Artifact file path.
+    pub path: PathBuf,
+    /// Artifact schema version.
+    pub schema_version: u32,
+    /// Benchmark suite id from artifact payload.
+    pub benchmark_suite_id: String,
+    /// Baseline policy id from artifact payload.
+    pub baseline_policy_id: String,
+    /// Candidate policy id from artifact payload.
+    pub candidate_policy_id: String,
+    /// Artifact generation timestamp from payload.
+    pub generated_at_epoch_ms: u64,
+}
+
+/// Invalid artifact file diagnostic emitted during manifest scans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkArtifactInvalidFile {
+    /// Artifact file path.
+    pub path: PathBuf,
+    /// Deterministic diagnostic reason.
+    pub reason: String,
+}
+
+/// Directory-level benchmark artifact manifest summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkArtifactManifest {
+    /// Manifest schema version.
+    pub schema_version: u32,
+    /// Scanned directory path.
+    pub directory: PathBuf,
+    /// Number of JSON files scanned.
+    pub scanned_json_files: usize,
+    /// Parsed valid artifact entries.
+    pub valid_entries: Vec<BenchmarkArtifactManifestEntry>,
+    /// Invalid artifact diagnostics.
+    pub invalid_files: Vec<BenchmarkArtifactInvalidFile>,
+}
+
+impl BenchmarkArtifactManifest {
+    /// Projects the manifest into machine-readable JSON.
+    pub fn to_json_value(&self) -> Value {
+        json!({
+            "schema_version": self.schema_version,
+            "directory": self.directory.display().to_string(),
+            "scanned_json_files": self.scanned_json_files,
+            "valid_entries": self.valid_entries.iter().map(|entry| {
+                json!({
+                    "path": entry.path.display().to_string(),
+                    "schema_version": entry.schema_version,
+                    "benchmark_suite_id": entry.benchmark_suite_id,
+                    "baseline_policy_id": entry.baseline_policy_id,
+                    "candidate_policy_id": entry.candidate_policy_id,
+                    "generated_at_epoch_ms": entry.generated_at_epoch_ms,
+                })
+            }).collect::<Vec<_>>(),
+            "invalid_files": self.invalid_files.iter().map(|entry| {
+                json!({
+                    "path": entry.path.display().to_string(),
+                    "reason": entry.reason,
+                })
+            }).collect::<Vec<_>>(),
+        })
+    }
+}
+
 impl BenchmarkEvaluationArtifact {
     /// Initial schema version for benchmark evaluation artifacts.
     pub const SCHEMA_VERSION_V1: u32 = 1;
@@ -191,6 +259,70 @@ pub fn validate_exported_benchmark_artifact(path: impl AsRef<Path>) -> Result<Va
     Ok(value)
 }
 
+/// Builds a deterministic artifact manifest from a benchmark export directory.
+#[instrument(skip(directory))]
+pub fn build_benchmark_artifact_manifest(
+    directory: impl AsRef<Path>,
+) -> Result<BenchmarkArtifactManifest> {
+    let directory = directory.as_ref();
+    if !directory.exists() {
+        bail!(
+            "benchmark artifact manifest missing directory: {}",
+            directory.display()
+        );
+    }
+    if !directory.is_dir() {
+        bail!(
+            "benchmark artifact manifest path is not a directory: {}",
+            directory.display()
+        );
+    }
+
+    let mut json_paths = Vec::new();
+    for entry in std::fs::read_dir(directory)
+        .with_context(|| format!("failed to scan benchmark directory {}", directory.display()))?
+    {
+        let path = entry
+            .with_context(|| {
+                format!(
+                    "failed to read benchmark directory entry in {}",
+                    directory.display()
+                )
+            })?
+            .path();
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("json"))
+        {
+            json_paths.push(path);
+        }
+    }
+
+    json_paths.sort();
+    let scanned_json_files = json_paths.len();
+
+    let mut valid_entries = Vec::new();
+    let mut invalid_files = Vec::new();
+    for path in json_paths {
+        match parse_manifest_entry(&path) {
+            Ok(entry) => valid_entries.push(entry),
+            Err(error) => invalid_files.push(BenchmarkArtifactInvalidFile {
+                path,
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(BenchmarkArtifactManifest {
+        schema_version: BenchmarkEvaluationArtifact::SCHEMA_VERSION_V1,
+        directory: directory.to_path_buf(),
+        scanned_json_files,
+        valid_entries,
+        invalid_files,
+    })
+}
+
 fn seed_reproducibility_to_json(report: &SeedReproducibilityReport) -> Value {
     json!({
         "sample_size": report.sample_size,
@@ -224,6 +356,53 @@ fn checkpoint_promotion_to_json(decision: &CheckpointPromotionDecision) -> Value
         "max_safety_regression": decision.max_safety_regression,
         "reason_codes": decision.reason_codes,
     })
+}
+
+fn parse_manifest_entry(path: &Path) -> Result<BenchmarkArtifactManifestEntry> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read benchmark artifact {}", path.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse benchmark artifact {}", path.display()))?;
+    let Value::Object(object) = value else {
+        bail!("benchmark artifact must be a top-level JSON object");
+    };
+
+    let schema_version_raw = required_u64(&object, "schema_version")?;
+    let schema_version = u32::try_from(schema_version_raw)
+        .with_context(|| format!("schema_version out of range in {}", path.display()))?;
+    if schema_version != BenchmarkEvaluationArtifact::SCHEMA_VERSION_V1 {
+        bail!(
+            "unsupported schema_version {schema_version}; expected {}",
+            BenchmarkEvaluationArtifact::SCHEMA_VERSION_V1
+        );
+    }
+
+    Ok(BenchmarkArtifactManifestEntry {
+        path: path.to_path_buf(),
+        schema_version,
+        benchmark_suite_id: required_string(&object, "benchmark_suite_id")?,
+        baseline_policy_id: required_string(&object, "baseline_policy_id")?,
+        candidate_policy_id: required_string(&object, "candidate_policy_id")?,
+        generated_at_epoch_ms: required_u64(&object, "generated_at_epoch_ms")?,
+    })
+}
+
+fn required_string(object: &serde_json::Map<String, Value>, key: &'static str) -> Result<String> {
+    match object.get(key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value.clone()),
+        Some(_) => bail!("benchmark artifact key '{key}' must be a non-empty string"),
+        None => bail!("benchmark artifact missing required key: {key}"),
+    }
+}
+
+fn required_u64(object: &serde_json::Map<String, Value>, key: &'static str) -> Result<u64> {
+    match object.get(key).and_then(Value::as_u64) {
+        Some(value) => Ok(value),
+        None if object.contains_key(key) => {
+            bail!("benchmark artifact key '{key}' must be an unsigned integer")
+        }
+        None => bail!("benchmark artifact missing required key: {key}"),
+    }
 }
 
 fn deterministic_file_name(artifact: &BenchmarkEvaluationArtifact) -> String {
@@ -261,8 +440,9 @@ fn sanitize_file_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_benchmark_evaluation_artifact, export_benchmark_evaluation_artifact,
-        validate_exported_benchmark_artifact, BenchmarkEvaluationArtifactInput,
+        build_benchmark_artifact_manifest, build_benchmark_evaluation_artifact,
+        export_benchmark_evaluation_artifact, validate_exported_benchmark_artifact,
+        BenchmarkEvaluationArtifactInput,
     };
     use crate::benchmark_significance::{
         compare_policy_improvement, CheckpointPromotionDecision, SampleSizePoint,
@@ -617,6 +797,106 @@ mod tests {
         let error = validate_exported_benchmark_artifact(&artifact_path)
             .expect_err("non-object payload should fail");
         assert!(error.to_string().contains("top-level JSON object"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1972_c01_manifest_builder_returns_sorted_deterministic_entries() {
+        let output_dir = temp_output_dir("benchmark-manifest-c01");
+        let artifact_b = sample_artifact();
+        let artifact_a = build_benchmark_evaluation_artifact(BenchmarkEvaluationArtifactInput {
+            benchmark_suite_id: "alpha-suite".to_string(),
+            baseline_policy_id: "policy-1".to_string(),
+            candidate_policy_id: "policy-2".to_string(),
+            generated_at_epoch_ms: 1_706_000_010_000,
+            policy_improvement: sample_policy_report(),
+            seed_reproducibility: None,
+            sample_size_sensitivity: None,
+            checkpoint_promotion: CheckpointPromotionDecision {
+                promotion_allowed: true,
+                safety_regression: 0.0,
+                max_safety_regression: 0.05,
+                reason_codes: Vec::new(),
+            },
+        })
+        .expect("artifact");
+
+        // Export in reverse order to assert deterministic manifest sorting.
+        export_benchmark_evaluation_artifact(&artifact_b, &output_dir).expect("export artifact b");
+        export_benchmark_evaluation_artifact(&artifact_a, &output_dir).expect("export artifact a");
+
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+        assert_eq!(manifest.valid_entries.len(), 2);
+
+        let first = manifest.valid_entries[0]
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("first filename");
+        let second = manifest.valid_entries[1]
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("second filename");
+        assert!(first < second);
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1972_c02_manifest_builder_reports_invalid_files_without_aborting_scan() {
+        let output_dir = temp_output_dir("benchmark-manifest-c02");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &output_dir).expect("export artifact");
+
+        let malformed_path = output_dir.join("broken-artifact.json");
+        fs::write(&malformed_path, "{ malformed").expect("write malformed artifact");
+
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+        assert_eq!(manifest.scanned_json_files, 2);
+        assert_eq!(manifest.valid_entries.len(), 1);
+        assert_eq!(manifest.invalid_files.len(), 1);
+        assert!(manifest.invalid_files[0].reason.contains("parse"));
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1972_c03_manifest_json_is_machine_readable_with_totals_and_diagnostics() {
+        let output_dir = temp_output_dir("benchmark-manifest-c03");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &output_dir).expect("export artifact");
+
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+        let payload = manifest.to_json_value();
+        assert_eq!(payload["schema_version"], json!(1));
+        assert!(payload["valid_entries"].is_array());
+        assert!(payload["invalid_files"].is_array());
+        assert!(payload["scanned_json_files"].as_u64().is_some());
+
+        fs::remove_dir_all(output_dir).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_1972_c04_manifest_builder_rejects_missing_directory() {
+        let missing = temp_output_dir("benchmark-manifest-c04");
+        let error =
+            build_benchmark_artifact_manifest(&missing).expect_err("missing directory must fail");
+        assert!(error.to_string().contains("missing directory"));
+    }
+
+    #[test]
+    fn regression_manifest_builder_ignores_non_json_files() {
+        let output_dir = temp_output_dir("benchmark-manifest-regression");
+        let artifact = sample_artifact();
+        export_benchmark_evaluation_artifact(&artifact, &output_dir).expect("export artifact");
+        fs::write(output_dir.join("notes.txt"), "not a benchmark artifact").expect("write notes");
+
+        let manifest = build_benchmark_artifact_manifest(&output_dir).expect("build manifest");
+        assert_eq!(manifest.scanned_json_files, 1);
+        assert_eq!(manifest.valid_entries.len(), 1);
+        assert_eq!(manifest.invalid_files.len(), 0);
 
         fs::remove_dir_all(output_dir).expect("cleanup");
     }
