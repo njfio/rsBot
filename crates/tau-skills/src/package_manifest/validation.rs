@@ -8,6 +8,7 @@ use reqwest::Url;
 
 use super::PackageComponent;
 
+/// Validate one component set for non-empty ids, safe paths, and optional source metadata.
 pub(super) fn validate_component_set(kind: &str, components: &[PackageComponent]) -> Result<()> {
     let mut seen_ids = std::collections::BTreeSet::new();
     for component in components {
@@ -36,6 +37,7 @@ pub(super) fn validate_component_set(kind: &str, components: &[PackageComponent]
     Ok(())
 }
 
+/// Validate component path is relative and does not escape package root.
 pub(super) fn validate_relative_component_path(kind: &str, id: &str, raw_path: &str) -> Result<()> {
     if raw_path.is_empty() {
         bail!(
@@ -70,6 +72,7 @@ pub(super) fn validate_relative_component_path(kind: &str, id: &str, raw_path: &
     Ok(())
 }
 
+/// Parse component source URL and enforce http/https schemes.
 pub(super) fn parse_component_source_url(kind: &str, id: &str, raw_url: &str) -> Result<Url> {
     let trimmed = raw_url.trim();
     if trimmed.is_empty() {
@@ -96,6 +99,7 @@ pub(super) fn parse_component_source_url(kind: &str, id: &str, raw_url: &str) ->
     Ok(source_url)
 }
 
+/// Parse sha256 checksum in canonical 64-hex format.
 pub(super) fn parse_sha256_checksum(raw_checksum: &str) -> Result<String> {
     let trimmed = raw_checksum.trim();
     if trimmed.is_empty() {

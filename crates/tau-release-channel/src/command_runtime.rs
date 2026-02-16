@@ -26,6 +26,7 @@ use update_state::{
     load_release_update_state_file, save_release_update_state_file, ReleaseUpdateStateFile,
 };
 
+/// CLI usage string for /release-channel command and subcommands.
 pub const RELEASE_CHANNEL_USAGE: &str =
     "usage: /release-channel [show|set <stable|beta|dev>|check|plan [--target <version>] [--dry-run]|apply [--target <version>] [--dry-run]|cache <show|clear|refresh|prune>]";
 pub(crate) const RELEASE_UPDATE_STATE_SCHEMA_VERSION: u32 = 1;
@@ -854,6 +855,7 @@ fn execute_release_channel_apply_with_lookup_options(
     )
 }
 
+/// Execute /release-channel command against persistent channel state file.
 pub fn execute_release_channel_command(command_args: &str, path: &Path) -> String {
     execute_release_channel_command_with_lookup_options(
         command_args,

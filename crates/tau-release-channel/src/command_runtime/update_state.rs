@@ -6,6 +6,7 @@ use tau_core::write_text_atomic;
 
 use super::{ReleaseChannel, RELEASE_UPDATE_STATE_SCHEMA_VERSION};
 
+/// Persisted release update plan/apply state record stored beside channel config.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct ReleaseUpdateStateFile {
     pub(super) schema_version: u32,
@@ -26,6 +27,7 @@ pub(super) struct ReleaseUpdateStateFile {
     pub(super) rollback_version: Option<String>,
 }
 
+/// Load release update state file and enforce supported schema version.
 pub(super) fn load_release_update_state_file(
     path: &Path,
 ) -> Result<Option<ReleaseUpdateStateFile>> {
@@ -47,6 +49,7 @@ pub(super) fn load_release_update_state_file(
     Ok(Some(parsed))
 }
 
+/// Save release update state file atomically with trailing newline.
 pub(super) fn save_release_update_state_file(
     path: &Path,
     state: &ReleaseUpdateStateFile,

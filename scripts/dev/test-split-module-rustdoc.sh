@@ -40,6 +40,10 @@ session_locking_file="crates/tau-session/src/session_locking.rs"
 session_storage_file="crates/tau-session/src/session_storage.rs"
 session_integrity_file="crates/tau-session/src/session_integrity.rs"
 memory_runtime_backend_file="crates/tau-memory/src/runtime/backend.rs"
+release_channel_command_runtime_file="crates/tau-release-channel/src/command_runtime.rs"
+release_channel_update_state_file="crates/tau-release-channel/src/command_runtime/update_state.rs"
+skills_package_manifest_schema_file="crates/tau-skills/src/package_manifest/schema.rs"
+skills_package_manifest_validation_file="crates/tau-skills/src/package_manifest/validation.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -87,7 +91,11 @@ for file in \
   "${session_locking_file}" \
   "${session_storage_file}" \
   "${session_integrity_file}" \
-  "${memory_runtime_backend_file}"; do
+  "${memory_runtime_backend_file}" \
+  "${release_channel_command_runtime_file}" \
+  "${release_channel_update_state_file}" \
+  "${skills_package_manifest_schema_file}" \
+  "${skills_package_manifest_validation_file}"; do
   if [[ ! -f "${file}" ]]; then
     echo "assertion failed (missing file): ${file}" >&2
     exit 1
@@ -130,6 +138,10 @@ session_locking_contents="$(cat "${session_locking_file}")"
 session_storage_contents="$(cat "${session_storage_file}")"
 session_integrity_contents="$(cat "${session_integrity_file}")"
 memory_runtime_backend_contents="$(cat "${memory_runtime_backend_file}")"
+release_channel_command_runtime_contents="$(cat "${release_channel_command_runtime_file}")"
+release_channel_update_state_contents="$(cat "${release_channel_update_state_file}")"
+skills_package_manifest_schema_contents="$(cat "${skills_package_manifest_schema_file}")"
+skills_package_manifest_validation_contents="$(cat "${skills_package_manifest_validation_file}")"
 
 assert_contains "${issue_runtime_contents}" "/// Normalize a repository-relative channel artifact path for persisted pointers." "issue runtime normalize doc"
 assert_contains "${issue_runtime_contents}" "/// Render a stable artifact pointer line for issue comments and logs." "issue runtime pointer doc"
@@ -204,5 +216,15 @@ assert_contains "${session_integrity_contents}" "/// Merge imported entries into
 assert_contains "${memory_runtime_backend_contents}" "/// Resolve memory storage backend from env override, path hints, and existing artifacts." "memory runtime backend resolve backend doc"
 assert_contains "${memory_runtime_backend_contents}" "/// Open SQLite memory store connection with WAL pragmas and busy timeout." "memory runtime backend open sqlite doc"
 assert_contains "${memory_runtime_backend_contents}" "/// Ensure SQLite memory schema and indexes exist before reads/writes." "memory runtime backend initialize schema doc"
+assert_contains "${release_channel_command_runtime_contents}" "/// CLI usage string for /release-channel command and subcommands." "release channel command runtime usage doc"
+assert_contains "${release_channel_command_runtime_contents}" "/// Execute /release-channel command against persistent channel state file." "release channel command runtime execute doc"
+assert_contains "${release_channel_update_state_contents}" "/// Persisted release update plan/apply state record stored beside channel config." "release channel update state struct doc"
+assert_contains "${release_channel_update_state_contents}" "/// Load release update state file and enforce supported schema version." "release channel update state load doc"
+assert_contains "${release_channel_update_state_contents}" "/// Save release update state file atomically with trailing newline." "release channel update state save doc"
+assert_contains "${skills_package_manifest_schema_contents}" "/// Parsed package manifest containing component inventories and optional signing metadata." "skills package manifest schema manifest doc"
+assert_contains "${skills_package_manifest_schema_contents}" "/// One package component entry referencing local path or optional remote source." "skills package manifest schema component doc"
+assert_contains "${skills_package_manifest_validation_contents}" "/// Validate one component set for non-empty ids, safe paths, and optional source metadata." "skills package manifest validation component set doc"
+assert_contains "${skills_package_manifest_validation_contents}" "/// Parse component source URL and enforce http/https schemes." "skills package manifest validation parse url doc"
+assert_contains "${skills_package_manifest_validation_contents}" "/// Parse sha256 checksum in canonical 64-hex format." "skills package manifest validation parse checksum doc"
 
 echo "split-module-rustdoc tests passed"
