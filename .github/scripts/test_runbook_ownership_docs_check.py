@@ -29,7 +29,8 @@ class RunbookOwnershipDocsCheckTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(completed.returncode, 0, msg=completed.stdout + completed.stderr)
-        self.assertIn("checked_docs=9", completed.stdout)
+        expected_checked_docs = len(runbook_ownership_docs_check.OWNERSHIP_SPECS) + 1
+        self.assertIn(f"checked_docs={expected_checked_docs}", completed.stdout)
         self.assertIn("issues=0", completed.stdout)
 
     def test_integration_collect_ownership_issues_returns_empty_for_repository(self):
