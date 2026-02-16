@@ -14,6 +14,7 @@ use super::{
     RPC_FRAME_SCHEMA_VERSION, RPC_PROTOCOL_VERSION, RPC_STUB_MODE,
 };
 
+/// Dispatch one validated RPC frame into a response envelope.
 pub fn dispatch_rpc_frame_impl(frame: &RpcFrame) -> Result<RpcResponseFrame> {
     match frame.kind {
         RpcFrameKind::CapabilitiesRequest => {

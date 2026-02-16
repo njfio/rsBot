@@ -1,5 +1,6 @@
 use crate::github_transport_helpers::truncate_for_error;
 
+/// Render GitHub issue comment body for failed Tau run events.
 pub fn render_issue_run_error_comment(
     event_key: &str,
     run_id: &str,

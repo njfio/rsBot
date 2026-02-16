@@ -14,6 +14,7 @@ struct RawRpcFrame {
     payload: Value,
 }
 
+/// Parse one raw JSON RPC frame string into validated runtime frame.
 pub fn parse_rpc_frame_impl(raw: &str) -> Result<RpcFrame> {
     let frame =
         serde_json::from_str::<RawRpcFrame>(raw).context("failed to parse rpc frame JSON")?;
@@ -46,6 +47,7 @@ pub fn parse_rpc_frame_impl(raw: &str) -> Result<RpcFrame> {
     })
 }
 
+/// Load and validate one RPC frame JSON file from disk.
 pub fn validate_rpc_frame_file_impl(path: &Path) -> Result<RpcFrame> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read rpc frame file {}", path.display()))?;
