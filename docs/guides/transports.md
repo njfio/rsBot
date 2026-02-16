@@ -12,6 +12,15 @@ cargo run -p tau-coding-agent -- \
 
 Troubleshooting map and field details: `docs/guides/operator-control-summary.md`.
 
+## Removed Contract Runner Migration Matrix
+
+| Removed Flag | Status | Replacement Path |
+| --- | --- | --- |
+| `--memory-contract-runner` | removed | Use built-in memory tools (`memory_write`, `memory_read`, `memory_search`, `memory_tree`) with `--memory-state-dir` and `--transport-health-inspect memory`. |
+| `--dashboard-contract-runner` | removed | Use gateway/API surfaces (`--gateway-openresponses-server`) with dashboard diagnostics (`--dashboard-status-inspect`, `--transport-health-inspect dashboard`). |
+| `--browser-automation-contract-runner` | removed | Use `--browser-automation-live-runner` plus `--browser-automation-live-fixture` and `--browser-automation-playwright-cli`. |
+| `--custom-command-contract-runner` | removed | Preserve `--custom-command-state-dir` data and use `--custom-command-status-inspect` with `--transport-health-inspect custom-command`. |
+
 ## GitHub Issues bridge
 
 ```bash
