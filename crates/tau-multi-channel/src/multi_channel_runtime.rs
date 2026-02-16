@@ -5,21 +5,22 @@
 //! telemetry so failed deliveries can be diagnosed and replayed safely.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+
+mod ingress;
+mod outbound;
+mod routing;
 
 use crate::multi_channel_contract::{
     event_contract_key, load_multi_channel_contract_fixture, MultiChannelContractFixture,
     MultiChannelEventKind, MultiChannelInboundEvent, MultiChannelTransport,
 };
-use crate::multi_channel_live_ingress::parse_multi_channel_live_inbound_envelope;
 use crate::multi_channel_media::{
     process_media_attachments, render_media_prompt_context, MultiChannelMediaUnderstandingConfig,
 };
@@ -42,6 +43,19 @@ use tau_access::{
 use tau_core::{current_unix_timestamp_ms, write_text_atomic};
 use tau_orchestrator::multi_agent_router::{load_multi_agent_route_table, MultiAgentRouteTable};
 use tau_runtime::{ChannelContextEntry, ChannelLogEntry, ChannelStore, TransportHealthSnapshot};
+
+use ingress::{build_user_context_text, load_multi_channel_live_events, normalize_processed_keys};
+#[cfg(test)]
+use outbound::retry_delay_ms;
+use outbound::{
+    append_delivery_failure_log, apply_retry_delay, context_contains_entry,
+    log_contains_event_direction, log_contains_outbound_response, log_contains_outbound_status,
+    render_response, simulated_transient_failures, DeliveryFailureLogContext,
+};
+use routing::{
+    append_multi_channel_cycle_report, append_multi_channel_route_trace,
+    build_transport_health_snapshot, cycle_reason_codes,
+};
 
 const MULTI_CHANNEL_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
 const MULTI_CHANNEL_RUNTIME_EVENTS_LOG_FILE: &str = "runtime-events.jsonl";
@@ -1796,301 +1810,6 @@ fn increment_counter_u64_map(map: &mut BTreeMap<String, u64>, key: &str, delta: 
     *entry = entry.saturating_add(delta);
 }
 
-fn log_contains_event_direction(
-    logs: &[ChannelLogEntry],
-    event_key: &str,
-    direction: &str,
-) -> bool {
-    logs.iter()
-        .any(|entry| entry.direction == direction && entry.event_key.as_deref() == Some(event_key))
-}
-
-fn log_contains_outbound_status(logs: &[ChannelLogEntry], event_key: &str, status: &str) -> bool {
-    logs.iter().any(|entry| {
-        entry.direction == "outbound"
-            && entry.event_key.as_deref() == Some(event_key)
-            && entry.payload.get("status").and_then(Value::as_str) == Some(status)
-    })
-}
-
-fn log_contains_outbound_response(
-    logs: &[ChannelLogEntry],
-    event_key: &str,
-    response: &str,
-) -> bool {
-    logs.iter().any(|entry| {
-        entry.direction == "outbound"
-            && entry.event_key.as_deref() == Some(event_key)
-            && entry.payload.get("response").and_then(Value::as_str) == Some(response)
-    })
-}
-
-fn context_contains_entry(entries: &[ChannelContextEntry], role: &str, text: &str) -> bool {
-    entries
-        .iter()
-        .any(|entry| entry.role == role && entry.text == text)
-}
-
-struct DeliveryFailureLogContext<'a> {
-    event: &'a MultiChannelInboundEvent,
-    event_key: &'a str,
-    route_decision: &'a MultiChannelRouteDecision,
-    route_payload: &'a Value,
-    pairing_payload: &'a Value,
-    secure_messaging_payload: &'a Value,
-    channel_policy_payload: &'a Value,
-    delivery_mode: &'a str,
-    command_payload: Option<&'a Value>,
-}
-
-fn append_delivery_failure_log(
-    store: &ChannelStore,
-    context: &DeliveryFailureLogContext<'_>,
-    error: &MultiChannelOutboundDeliveryError,
-) -> Result<()> {
-    let mut payload = json!({
-        "status": "delivery_failed",
-        "reason_code": error.reason_code,
-        "detail": error.detail,
-        "retryable": error.retryable,
-        "chunk_index": error.chunk_index,
-        "chunk_count": error.chunk_count,
-        "endpoint": error.endpoint,
-        "http_status": error.http_status,
-        "request_body": error.request_body,
-        "delivery_mode": context.delivery_mode,
-        "event_key": context.event_key,
-        "transport": context.event.transport.as_str(),
-        "conversation_id": context.event.conversation_id.trim(),
-        "route_session_key": context.route_decision.session_key.as_str(),
-        "route": context.route_payload,
-        "pairing": context.pairing_payload,
-        "secure_messaging": context.secure_messaging_payload,
-        "channel_policy": context.channel_policy_payload,
-    });
-    if let Some(command_payload) = context.command_payload {
-        if let Value::Object(map) = &mut payload {
-            map.insert("command".to_string(), command_payload.clone());
-        }
-    }
-    store.append_log_entry(&ChannelLogEntry {
-        timestamp_unix_ms: current_unix_timestamp_ms(),
-        direction: "outbound".to_string(),
-        event_key: Some(context.event_key.to_string()),
-        source: "tau-multi-channel-runner".to_string(),
-        payload,
-    })
-}
-
-fn load_multi_channel_live_events(ingress_dir: &Path) -> Result<Vec<MultiChannelInboundEvent>> {
-    std::fs::create_dir_all(ingress_dir)
-        .with_context(|| format!("failed to create {}", ingress_dir.display()))?;
-    let mut events = Vec::new();
-    for (transport, file_name) in MULTI_CHANNEL_LIVE_INGRESS_SOURCES {
-        let path = ingress_dir.join(file_name);
-        if !path.exists() {
-            continue;
-        }
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        for (index, line) in raw.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            match parse_multi_channel_live_inbound_envelope(trimmed) {
-                Ok(event) => {
-                    if event.transport.as_str() != transport {
-                        eprintln!(
-                            "multi-channel live ingress skipped event: file={} line={} reason=transport_mismatch expected={} actual={}",
-                            path.display(),
-                            index + 1,
-                            transport,
-                            event.transport.as_str()
-                        );
-                        continue;
-                    }
-                    events.push(event);
-                }
-                Err(error) => {
-                    eprintln!(
-                        "multi-channel live ingress parse failure: file={} line={} reason_code={} detail={}",
-                        path.display(),
-                        index + 1,
-                        error.code.as_str(),
-                        error.message
-                    );
-                }
-            }
-        }
-    }
-    Ok(events)
-}
-
-fn build_transport_health_snapshot(
-    summary: &MultiChannelRuntimeSummary,
-    cycle_duration_ms: u64,
-    previous_failure_streak: usize,
-) -> TransportHealthSnapshot {
-    let backlog_events = summary
-        .discovered_events
-        .saturating_sub(summary.queued_events);
-    let failure_streak = if summary.failed_events > 0 {
-        previous_failure_streak.saturating_add(1)
-    } else {
-        0
-    };
-    TransportHealthSnapshot {
-        updated_unix_ms: current_unix_timestamp_ms(),
-        cycle_duration_ms,
-        queue_depth: backlog_events,
-        active_runs: 0,
-        failure_streak,
-        last_cycle_discovered: summary.discovered_events,
-        last_cycle_processed: summary
-            .completed_events
-            .saturating_add(summary.failed_events)
-            .saturating_add(summary.duplicate_skips),
-        last_cycle_completed: summary.completed_events,
-        last_cycle_failed: summary.failed_events,
-        last_cycle_duplicates: summary.duplicate_skips,
-    }
-}
-
-fn cycle_reason_codes(summary: &MultiChannelRuntimeSummary) -> Vec<String> {
-    let mut codes = Vec::new();
-    let mut operational_issue_detected = false;
-    if summary.discovered_events > summary.queued_events {
-        operational_issue_detected = true;
-        codes.push("queue_backpressure_applied".to_string());
-    }
-    if summary.duplicate_skips > 0 {
-        operational_issue_detected = true;
-        codes.push("duplicate_events_skipped".to_string());
-    }
-    if summary.retry_attempts > 0 {
-        operational_issue_detected = true;
-        codes.push("retry_attempted".to_string());
-    }
-    if summary.transient_failures > 0 {
-        operational_issue_detected = true;
-        codes.push("transient_failures_observed".to_string());
-    }
-    if summary.failed_events > 0 {
-        operational_issue_detected = true;
-        codes.push("event_processing_failed".to_string());
-    }
-    if !operational_issue_detected {
-        codes.push("healthy_cycle".to_string());
-    }
-    if summary.policy_checked_events > 0 {
-        if summary.policy_enforced_events > 0 {
-            codes.push("pairing_policy_enforced".to_string());
-        } else {
-            codes.push("pairing_policy_permissive".to_string());
-        }
-    }
-    if summary.policy_denied_events > 0 {
-        codes.push("pairing_policy_denied_events".to_string());
-    }
-    if summary.typing_events_emitted > 0 || summary.presence_events_emitted > 0 {
-        codes.push("telemetry_lifecycle_emitted".to_string());
-    }
-    if summary.usage_summary_records > 0 {
-        codes.push("telemetry_usage_summary_emitted".to_string());
-    }
-    codes
-}
-
-fn append_multi_channel_cycle_report(
-    path: &Path,
-    summary: &MultiChannelRuntimeSummary,
-    health: &TransportHealthSnapshot,
-    health_reason: &str,
-    reason_codes: &[String],
-) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-    }
-    let payload = MultiChannelRuntimeCycleReport {
-        timestamp_unix_ms: current_unix_timestamp_ms(),
-        health_state: health.classify().state.as_str().to_string(),
-        health_reason: health_reason.to_string(),
-        reason_codes: reason_codes.to_vec(),
-        discovered_events: summary.discovered_events,
-        queued_events: summary.queued_events,
-        completed_events: summary.completed_events,
-        duplicate_skips: summary.duplicate_skips,
-        transient_failures: summary.transient_failures,
-        retry_attempts: summary.retry_attempts,
-        failed_events: summary.failed_events,
-        policy_checked_events: summary.policy_checked_events,
-        policy_enforced_events: summary.policy_enforced_events,
-        policy_allowed_events: summary.policy_allowed_events,
-        policy_denied_events: summary.policy_denied_events,
-        typing_events_emitted: summary.typing_events_emitted,
-        presence_events_emitted: summary.presence_events_emitted,
-        usage_summary_records: summary.usage_summary_records,
-        usage_response_chars: summary.usage_response_chars,
-        usage_chunks: summary.usage_chunks,
-        usage_estimated_cost_micros: summary.usage_estimated_cost_micros,
-        backlog_events: summary
-            .discovered_events
-            .saturating_sub(summary.queued_events),
-        failure_streak: health.failure_streak,
-    };
-    let line = serde_json::to_string(&payload).context("serialize multi-channel runtime report")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
-    Ok(())
-}
-
-fn append_multi_channel_route_trace(path: &Path, payload: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-    }
-    let line = serde_json::to_string(payload).context("serialize multi-channel route trace")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
-    Ok(())
-}
-
-fn build_user_context_text(
-    event: &MultiChannelInboundEvent,
-    media_prompt_context: Option<&str>,
-) -> Option<String> {
-    let text = event.text.trim();
-    let media = media_prompt_context.map(str::trim).unwrap_or_default();
-    if text.is_empty() && media.is_empty() {
-        return None;
-    }
-    if media.is_empty() {
-        return Some(text.to_string());
-    }
-    if text.is_empty() {
-        return Some(media.to_string());
-    }
-    Some(format!("{text}\n\n{media}"))
-}
-
 fn parse_multi_channel_tau_command(
     command_text: &str,
 ) -> std::result::Result<Option<MultiChannelTauCommand>, String> {
@@ -2336,82 +2055,6 @@ fn multi_channel_command_payload(execution: &MultiChannelCommandExecution) -> Va
         "status": execution.status,
         "reason_code": execution.reason_code,
     })
-}
-
-fn render_response(event: &MultiChannelInboundEvent) -> String {
-    let transport = event.transport.as_str();
-    let event_id = event.event_id.trim();
-    if matches!(event.event_kind, MultiChannelEventKind::Command)
-        || event.text.trim().starts_with('/')
-    {
-        return format!(
-            "command acknowledged: transport={} event_id={} conversation={}",
-            transport, event_id, event.conversation_id
-        );
-    }
-    format!(
-        "message processed: transport={} event_id={} text_chars={}",
-        transport,
-        event_id,
-        event.text.chars().count()
-    )
-}
-
-fn normalize_processed_keys(raw: &[String], cap: usize) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut normalized = Vec::new();
-    for key in raw {
-        let trimmed = key.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let owned = trimmed.to_string();
-        if seen.insert(owned.clone()) {
-            normalized.push(owned);
-        }
-    }
-    if cap == 0 {
-        return Vec::new();
-    }
-    if normalized.len() > cap {
-        normalized.drain(0..normalized.len().saturating_sub(cap));
-    }
-    normalized
-}
-
-fn simulated_transient_failures(event: &MultiChannelInboundEvent) -> usize {
-    event
-        .metadata
-        .get("simulate_transient_failures")
-        .and_then(|value| value.as_u64())
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(0)
-}
-
-fn retry_delay_ms(base_delay_ms: u64, jitter_ms: u64, attempt: usize, jitter_seed: &str) -> u64 {
-    if base_delay_ms == 0 {
-        return 0;
-    }
-    let exponent = attempt.saturating_sub(1).min(10) as u32;
-    let base_delay = base_delay_ms.saturating_mul(1_u64 << exponent);
-    if jitter_ms == 0 {
-        return base_delay;
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(jitter_seed.as_bytes());
-    hasher.update(attempt.to_le_bytes());
-    let digest = hasher.finalize();
-    let mut seed_bytes = [0_u8; 8];
-    seed_bytes.copy_from_slice(&digest[..8]);
-    let deterministic_jitter = u64::from_le_bytes(seed_bytes) % jitter_ms.saturating_add(1);
-    base_delay.saturating_add(deterministic_jitter)
-}
-
-async fn apply_retry_delay(base_delay_ms: u64, jitter_ms: u64, attempt: usize, jitter_seed: &str) {
-    let delay_ms = retry_delay_ms(base_delay_ms, jitter_ms, attempt, jitter_seed);
-    if delay_ms > 0 {
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-    }
 }
 
 fn load_multi_channel_runtime_state(path: &Path) -> Result<MultiChannelRuntimeState> {
