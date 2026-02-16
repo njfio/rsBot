@@ -12,3 +12,9 @@ Plan: specs/2235/plan.md
   chat-completions stream behavior for non-Codex models.
 - T4 (VERIFY): Run `cargo test -p tau-ai` and targeted provider checks.
 - T5 (DOC/TRACE): Update issue status logs and include AC-to-test mapping in PR.
+- T6 (RED/GREEN): Add and pass regressions for Anthropic model-specific
+  `max_tokens` defaults and unknown-model fallback.
+- T7 (RED/GREEN): Add and pass local runtime startup regression asserting
+  `max_tokens` propagation from runtime settings.
+- T8 (INTEGRATION): Add repeatable live capability matrix harness and
+  deterministic harness test with untracked output location.
