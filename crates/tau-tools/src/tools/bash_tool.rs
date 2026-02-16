@@ -18,8 +18,9 @@ use tau_extensions::evaluate_extension_policy_override;
 use tokio::{process::Command, time::timeout};
 
 use super::{
-    required_string, resolve_and_validate_path, validate_directory_target, BashCommandProfile,
-    OsSandboxMode, PathMode, ToolPolicy,
+    bash_profile_name, is_command_allowed, leading_executable, os_sandbox_mode_name,
+    redact_secrets, required_string, resolve_and_validate_path, resolve_sandbox_spec,
+    truncate_bytes, validate_directory_target, PathMode, ToolPolicy, ToolRateLimitExceededBehavior,
 };
 
 const SAFE_BASH_ENV_VARS: &[&str] = &[
@@ -27,12 +28,6 @@ const SAFE_BASH_ENV_VARS: &[&str] = &[
     "TZ",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BashSandboxSpec {
-    pub(super) program: String,
-    pub(super) args: Vec<String>,
-    pub(super) sandboxed: bool,
-}
 /// Public struct `BashTool` used across Tau components.
 pub struct BashTool {
     policy: Arc<ToolPolicy>,
@@ -104,6 +99,68 @@ fn bash_policy_error(
     }
     attach_policy_trace(&mut payload, trace_enabled, trace, "deny");
     ToolExecutionResult::error(Value::Object(payload))
+}
+
+fn current_unix_timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn resolve_rate_limit_principal(policy: &ToolPolicy) -> String {
+    policy
+        .rbac_principal
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(resolve_local_principal)
+}
+
+pub(super) fn evaluate_tool_rate_limit_gate(
+    policy: &ToolPolicy,
+    tool_name: &str,
+    action_payload: Value,
+) -> Option<ToolExecutionResult> {
+    if policy.tool_rate_limit_max_requests == 0 || policy.tool_rate_limit_window_ms == 0 {
+        return None;
+    }
+
+    let principal = resolve_rate_limit_principal(policy);
+    let now_unix_ms = current_unix_timestamp_ms();
+    let (retry_after_ms, principal_throttle_events, throttle_events_total) =
+        policy.evaluate_rate_limit(principal.as_str(), now_unix_ms)?;
+
+    let (decision_label, reason_code, error) = match policy.tool_rate_limit_exceeded_behavior {
+        ToolRateLimitExceededBehavior::Reject => (
+            "reject",
+            "rate_limit_rejected",
+            "tool rate limit exceeded for principal",
+        ),
+        ToolRateLimitExceededBehavior::Defer => (
+            "defer",
+            "rate_limit_deferred",
+            "tool execution deferred by rate limit for principal",
+        ),
+    };
+
+    Some(ToolExecutionResult::error(json!({
+        "policy_rule": "rate_limit",
+        "decision": decision_label,
+        "reason_code": reason_code,
+        "principal": principal,
+        "action": format!("tool:{tool_name}"),
+        "payload": action_payload,
+        "max_requests": policy.tool_rate_limit_max_requests,
+        "window_ms": policy.tool_rate_limit_window_ms,
+        "retry_after_ms": retry_after_ms,
+        "window_resets_unix_ms": now_unix_ms.saturating_add(retry_after_ms),
+        "principal_throttle_events": principal_throttle_events,
+        "throttle_events_total": throttle_events_total,
+        "error": format!("{error} '{principal}'"),
+        "hint": "retry after retry_after_ms or adjust tool policy rate-limit settings",
+    })))
 }
 
 pub(super) fn evaluate_tool_approval_gate(action: ApprovalAction) -> Option<ToolExecutionResult> {
@@ -665,242 +722,4 @@ impl AgentTool for BashTool {
         attach_policy_trace(&mut payload, trace_enabled, &trace, "allow");
         ToolExecutionResult::ok(Value::Object(payload))
     }
-}
-pub(super) fn resolve_sandbox_spec(
-    policy: &ToolPolicy,
-    shell: &str,
-    command: &str,
-    cwd: &Path,
-) -> Result<BashSandboxSpec, String> {
-    if !policy.os_sandbox_command.is_empty() {
-        return build_spec_from_command_template(&policy.os_sandbox_command, shell, command, cwd);
-    }
-
-    match policy.os_sandbox_mode {
-        OsSandboxMode::Off => Ok(BashSandboxSpec {
-            program: shell.to_string(),
-            args: vec!["-lc".to_string(), command.to_string()],
-            sandboxed: false,
-        }),
-        OsSandboxMode::Auto => {
-            if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
-                Ok(spec)
-            } else {
-                Ok(BashSandboxSpec {
-                    program: shell.to_string(),
-                    args: vec!["-lc".to_string(), command.to_string()],
-                    sandboxed: false,
-                })
-            }
-        }
-        OsSandboxMode::Force => {
-            if let Some(spec) = auto_sandbox_spec(shell, command, cwd) {
-                Ok(spec)
-            } else {
-                Err("OS sandbox mode 'force' is enabled but no sandbox launcher is configured or available".to_string())
-            }
-        }
-    }
-}
-
-pub(super) fn build_spec_from_command_template(
-    template: &[String],
-    shell: &str,
-    command: &str,
-    cwd: &Path,
-) -> Result<BashSandboxSpec, String> {
-    let Some(program_template) = template.first() else {
-        return Err("sandbox command template is empty".to_string());
-    };
-    let mut args = Vec::new();
-    let mut has_shell = false;
-    let mut has_command = false;
-    for token in &template[1..] {
-        if token == "{shell}" {
-            has_shell = true;
-            args.push(shell.to_string());
-            continue;
-        }
-        if token == "{command}" {
-            has_command = true;
-            args.push(command.to_string());
-            continue;
-        }
-        args.push(token.replace("{cwd}", &cwd.display().to_string()));
-    }
-
-    let program = program_template.replace("{cwd}", &cwd.display().to_string());
-    if !has_shell {
-        args.push(shell.to_string());
-    }
-    if !has_command {
-        args.push("-lc".to_string());
-        args.push(command.to_string());
-    }
-
-    Ok(BashSandboxSpec {
-        program,
-        args,
-        sandboxed: true,
-    })
-}
-
-fn auto_sandbox_spec(shell: &str, command: &str, cwd: &Path) -> Option<BashSandboxSpec> {
-    #[cfg(not(target_os = "linux"))]
-    let _ = (shell, command, cwd);
-
-    #[cfg(target_os = "linux")]
-    {
-        if command_available("bwrap") {
-            let mut args = vec![
-                "--die-with-parent".to_string(),
-                "--new-session".to_string(),
-                "--unshare-all".to_string(),
-                "--proc".to_string(),
-                "/proc".to_string(),
-                "--dev".to_string(),
-                "/dev".to_string(),
-                "--tmpfs".to_string(),
-                "/tmp".to_string(),
-            ];
-            for mount in ["/usr", "/bin", "/lib", "/lib64"] {
-                if Path::new(mount).exists() {
-                    args.extend_from_slice(&[
-                        "--ro-bind".to_string(),
-                        mount.to_string(),
-                        mount.to_string(),
-                    ]);
-                }
-            }
-            args.extend_from_slice(&[
-                "--bind".to_string(),
-                cwd.display().to_string(),
-                cwd.display().to_string(),
-                "--chdir".to_string(),
-                cwd.display().to_string(),
-                shell.to_string(),
-                "-lc".to_string(),
-                command.to_string(),
-            ]);
-            return Some(BashSandboxSpec {
-                program: "bwrap".to_string(),
-                args,
-                sandboxed: true,
-            });
-        }
-    }
-
-    None
-}
-
-#[cfg(any(test, target_os = "linux"))]
-pub(super) fn command_available(command: &str) -> bool {
-    let path = std::env::var_os("PATH");
-    let Some(path) = path else {
-        return false;
-    };
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(command);
-        if candidate.exists() {
-            return true;
-        }
-    }
-    false
-}
-
-pub(super) fn leading_executable(command: &str) -> Option<String> {
-    let tokens = shell_words::split(command).ok()?;
-    for token in tokens {
-        if is_shell_assignment(&token) {
-            continue;
-        }
-
-        return Some(
-            Path::new(&token)
-                .file_name()
-                .map(|file_name| file_name.to_string_lossy().to_string())
-                .unwrap_or(token),
-        );
-    }
-    None
-}
-
-fn is_shell_assignment(token: &str) -> bool {
-    let Some((name, _value)) = token.split_once('=') else {
-        return false;
-    };
-
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-
-    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-pub(super) fn is_command_allowed(executable: &str, allowlist: &[String]) -> bool {
-    allowlist.iter().any(|entry| {
-        if let Some(prefix) = entry.strip_suffix('*') {
-            executable.starts_with(prefix)
-        } else {
-            executable == entry
-        }
-    })
-}
-
-pub(super) fn bash_profile_name(profile: BashCommandProfile) -> &'static str {
-    match profile {
-        BashCommandProfile::Permissive => "permissive",
-        BashCommandProfile::Balanced => "balanced",
-        BashCommandProfile::Strict => "strict",
-    }
-}
-
-pub(super) fn os_sandbox_mode_name(mode: OsSandboxMode) -> &'static str {
-    match mode {
-        OsSandboxMode::Off => "off",
-        OsSandboxMode::Auto => "auto",
-        OsSandboxMode::Force => "force",
-    }
-}
-
-pub(super) fn truncate_bytes(value: &str, limit: usize) -> String {
-    if value.len() <= limit {
-        return value.to_string();
-    }
-
-    if limit == 0 {
-        return "<output truncated>".to_string();
-    }
-
-    let mut end = limit.min(value.len());
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-
-    let mut output = value[..end].to_string();
-    output.push_str("\n<output truncated>");
-    output
-}
-
-pub(super) fn redact_secrets(text: &str) -> String {
-    let mut redacted = text.to_string();
-
-    for (name, value) in std::env::vars() {
-        let upper = name.to_ascii_uppercase();
-        let is_sensitive = upper.ends_with("_KEY")
-            || upper.ends_with("_TOKEN")
-            || upper.ends_with("_SECRET")
-            || upper.ends_with("_PASSWORD");
-        if !is_sensitive || value.trim().len() < 6 {
-            continue;
-        }
-
-        redacted = redacted.replace(&value, "[REDACTED]");
-    }
-
-    redacted
 }

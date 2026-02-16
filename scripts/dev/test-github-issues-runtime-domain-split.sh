@@ -5,7 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 runtime_file="crates/tau-github-issues-runtime/src/github_issues_runtime.rs"
-runtime_dir="crates/tau-github-issues-runtime/src/github_issues_runtime"
+rendering_module_file="crates/tau-github-issues-runtime/src/github_issues_runtime/issue_command_rendering.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -18,37 +18,25 @@ assert_contains() {
 }
 
 runtime_line_count="$(wc -l < "${runtime_file}" | tr -d ' ')"
-if (( runtime_line_count >= 4000 )); then
-  echo "assertion failed (line budget): expected ${runtime_file} < 4000 lines, got ${runtime_line_count}" >&2
+if (( runtime_line_count >= 3000 )); then
+  echo "assertion failed (line budget): expected ${runtime_file} < 3000 lines, got ${runtime_line_count}" >&2
   exit 1
 fi
 
-if [[ ! -d "${runtime_dir}" ]]; then
-  echo "assertion failed (runtime module dir): missing ${runtime_dir}" >&2
+if [[ ! -f "${rendering_module_file}" ]]; then
+  echo "assertion failed (domain extraction file): missing ${rendering_module_file}" >&2
   exit 1
 fi
 
 runtime_contents="$(cat "${runtime_file}")"
-assert_contains "${runtime_contents}" "mod github_api_client;" "module marker: github_api_client"
-assert_contains "${runtime_contents}" "mod issue_command_helpers;" "module marker: issue_command_helpers"
-assert_contains "${runtime_contents}" "mod issue_render_helpers;" "module marker: issue_render_helpers"
-assert_contains "${runtime_contents}" "mod issue_run_task;" "module marker: issue_run_task"
-assert_contains "${runtime_contents}" "mod issue_state_store;" "module marker: issue_state_store"
-assert_contains "${runtime_contents}" "mod issue_session_runtime;" "module marker: issue_session_runtime"
-assert_contains "${runtime_contents}" "mod prompt_execution;" "module marker: prompt_execution"
+rendering_contents="$(cat "${rendering_module_file}")"
 
-for extracted_file in \
-  "github_api_client.rs" \
-  "issue_command_helpers.rs" \
-  "issue_render_helpers.rs" \
-  "issue_run_task.rs" \
-  "issue_state_store.rs" \
-  "issue_session_runtime.rs" \
-  "prompt_execution.rs"; do
-  if [[ ! -f "${runtime_dir}/${extracted_file}" ]]; then
-    echo "assertion failed (domain extraction file): missing ${runtime_dir}/${extracted_file}" >&2
-    exit 1
-  fi
-done
+assert_contains "${runtime_contents}" "mod issue_command_rendering;" "runtime module marker"
+assert_contains "${runtime_contents}" "#[cfg(test)]" "runtime cfg-test marker"
+assert_contains "${runtime_contents}" "mod tests;" "runtime tests module marker"
+
+assert_contains "${rendering_contents}" "impl GithubIssuesBridgeRuntime {" "rendering impl marker"
+assert_contains "${rendering_contents}" "fn render_issue_status(&self, issue_number: u64) -> String {" "rendering status marker"
+assert_contains "${rendering_contents}" "async fn post_issue_command_comment(" "rendering async marker"
 
 echo "github-issues-runtime-domain-split tests passed"
