@@ -11,6 +11,7 @@ use tau_agent_core::AgentEvent;
 use tau_ai::{Message, MessageRole};
 use tau_session::SessionRuntime;
 
+/// Summarize one chat message for compact operator-facing logs.
 pub fn summarize_message(message: &Message) -> String {
     let text = message.text_content().replace('\n', " ");
     if text.trim().is_empty() {
@@ -91,6 +92,7 @@ pub fn stream_text_chunks(text: &str) -> Vec<&str> {
     text.split_inclusive(char::is_whitespace).collect()
 }
 
+/// Convert one agent event into deterministic JSON for logs and snapshots.
 pub fn event_to_json(event: &AgentEvent) -> serde_json::Value {
     match event {
         AgentEvent::AgentStart => serde_json::json!({ "type": "agent_start" }),
