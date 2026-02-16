@@ -1266,9 +1266,29 @@ impl Agent {
     }
 
     fn sanitize_outbound_http_request(&self, request: &mut ChatRequest) -> Result<(), AgentError> {
+        let fail_closed_on_unscannable_payload = self
+            .leak_stage_enabled(SafetyStage::OutboundHttpPayload)
+            && self.safety_policy.secret_leak_mode == SafetyMode::Block;
+        if fail_closed_on_unscannable_payload
+            && matches!(request.temperature, Some(temperature) if !temperature.is_finite())
+        {
+            return Err(AgentError::SafetyViolation {
+                stage: SafetyStage::OutboundHttpPayload.as_str().to_string(),
+                reason_codes: vec!["secret_leak.payload_serialization_failed".to_string()],
+            });
+        }
+
         let payload = match serde_json::to_string(request) {
             Ok(payload) => payload,
-            Err(_) => return Ok(()),
+            Err(_) => {
+                if fail_closed_on_unscannable_payload {
+                    return Err(AgentError::SafetyViolation {
+                        stage: SafetyStage::OutboundHttpPayload.as_str().to_string(),
+                        reason_codes: vec!["secret_leak.payload_serialization_failed".to_string()],
+                    });
+                }
+                return Ok(());
+            }
         };
         let Some(inspection) =
             self.inspect_secret_leak_text(SafetyStage::OutboundHttpPayload, &payload)

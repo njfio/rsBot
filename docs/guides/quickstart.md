@@ -144,6 +144,19 @@ cargo run -p tau-coding-agent -- \
   --secret-leak-detector-mode block
 ```
 
+## Safety Fail-Closed Semantics
+
+When block mode is configured, Tau enforces fail-closed behavior per stage:
+
+- `inbound_message`: prompt-sanitizer matches stop execution before malicious
+  user text is persisted or sent to the model.
+- `tool_output`: unsafe tool results are converted into blocked tool error
+  messages and are not reinjected into model context.
+- `outbound_http_payload`: secret-leak checks block outbound model payloads on
+  matched secret material and also fail closed if payload serialization fails
+  during scan preparation (including non-finite numeric fields such as `NaN`)
+  with `secret_leak.payload_serialization_failed`.
+
 Plan-first orchestration mode:
 
 ```bash

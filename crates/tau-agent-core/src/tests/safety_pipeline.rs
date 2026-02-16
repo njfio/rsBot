@@ -490,6 +490,41 @@ async fn integration_secret_leak_policy_blocks_outbound_http_payload() {
 }
 
 #[tokio::test]
+async fn regression_secret_leak_block_fails_closed_when_outbound_payload_serialization_fails() {
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("should never be returned"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+    });
+    let mut config = AgentConfig::default();
+    config.temperature = Some(f32::NAN);
+    let mut agent = Agent::new(client, config);
+    agent.set_safety_policy(SafetyPolicy {
+        secret_leak_mode: SafetyMode::Block,
+        ..SafetyPolicy::default()
+    });
+
+    let error = agent
+        .prompt("safe prompt but non-finite request payload")
+        .await
+        .expect_err("serialization failure should fail closed in block mode");
+    match error {
+        AgentError::SafetyViolation {
+            stage,
+            reason_codes,
+        } => {
+            assert_eq!(stage, "outbound_http_payload");
+            assert!(reason_codes
+                .iter()
+                .any(|code| code == "secret_leak.payload_serialization_failed"));
+        }
+        other => panic!("expected outbound payload safety violation, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn functional_secret_leak_policy_redacts_outbound_http_payload() {
     let client = Arc::new(CapturingMockClient {
         responses: AsyncMutex::new(VecDeque::from([ChatResponse {
