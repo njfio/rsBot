@@ -1,0 +1,44 @@
+name: Roadmap Status Artifacts
+
+on:
+  schedule:
+    - cron: "20 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: roadmap-status-artifacts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  roadmap-status-artifacts:
+    name: Generate roadmap status artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Generate deterministic roadmap status artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-artifacts
+          scripts/dev/roadmap-status-artifact.sh \
+            --repo "${GITHUB_REPOSITORY}" \
+            --output-json ci-artifacts/roadmap-status-artifact.json \
+            --output-md ci-artifacts/roadmap-status-artifact.md
+
+      - name: Upload roadmap status artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: roadmap-status-artifacts
+          path: |
+            ci-artifacts/roadmap-status-artifact.json
+            ci-artifacts/roadmap-status-artifact.md
+          if-no-files-found: error

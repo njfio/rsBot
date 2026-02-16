@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-16T08:28:41Z",
+  "total_milestones": 25,
+  "covered": 25,
+  "missing": 0,
+  "rows": [
+    {
+      "number": 1,
+      "title": "Roadmap Q1-Q2 2026",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m1/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 2,
+      "title": "OpenClaw Capability Wave 2026",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m2/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 3,
+      "title": "OpenClaw Capability Wave 2026 - Control Plane & Live Integrations",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m3/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 4,
+      "title": "Tau Monolith Split Wave 1",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m4/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 5,
+      "title": "Tau monolith split (Phase 1)",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m5/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 6,
+      "title": "Agent Lightning Prompt Optimization Port (Tau)",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m6/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 7,
+      "title": "Scaffold-to-Live Wave 1: Foundations",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m7/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 8,
+      "title": "Scaffold-to-Live Wave 3: Validation, Hardening, and Rollout",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m8/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 9,
+      "title": "Scaffold-to-Live Wave 2: Live Integrations",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m9/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 10,
+      "title": "Gap List P0 Security",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m10/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 11,
+      "title": "Gap List P1 Core Tools",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m11/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 12,
+      "title": "Gap List P2 Memory Persistence",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m12/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 13,
+      "title": "Gap List P3 Sandbox",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m13/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 14,
+      "title": "Gap List P4 Innovation",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m14/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 15,
+      "title": "Gap List P5 Operations",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m15/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 16,
+      "title": "Gap List P6 Deployment API",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m16/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 17,
+      "title": "Gap List P7 Documentation",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m17/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 18,
+      "title": "Gap List P-Now Scaffold Cleanup",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m18/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 19,
+      "title": "Gap List P8 KAMN Integration",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m19/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 20,
+      "title": "Gap List Cleanup Backlog",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m20/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 21,
+      "title": "Gap Closure Wave 2026-03: Structural Runtime Hardening",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m21/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 22,
+      "title": "Gap Closure Wave 2026-04: Prompt Optimization Naming Alignment",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m22/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 23,
+      "title": "Gap Closure Wave 2026-05: Documentation Trajectory to 3,000+",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m23/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 24,
+      "title": "True RL Wave 2026-Q3: Policy Learning in Production",
+      "state": "closed",
+      "spec_index_path": "specs/milestones/m24/index.md",
+      "spec_index_exists": true
+    },
+    {
+      "number": 25,
+      "title": "M25 Governance + Decomposition + Velocity",
+      "state": "open",
+      "spec_index_path": "specs/milestones/m25/index.md",
+      "spec_index_exists": true
+    }
+  ]
+}

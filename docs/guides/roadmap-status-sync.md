@@ -45,6 +45,12 @@ Critical-path cadence enforcement policy and checklist:
 - `tasks/templates/critical-path-cadence-checklist.md`
 - `scripts/dev/critical-path-cadence-check.sh`
 
+Roadmap status artifact generator + schema + workflow:
+
+- `scripts/dev/roadmap-status-artifact.sh`
+- `tasks/schemas/roadmap-status-artifact.schema.json`
+- `.github/workflows/roadmap-status-artifacts.yml`
+
 To preview hierarchy drift findings locally before CI:
 
 ```bash
