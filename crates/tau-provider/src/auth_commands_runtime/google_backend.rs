@@ -8,6 +8,7 @@ use super::shared_runtime_core::{
     build_auth_login_launch_spec, execute_auth_login_launch, render_launch_command,
 };
 
+/// Execute Google login flow when Gemini backend prerequisites are available.
 pub(super) fn execute_google_login_backend_ready(
     config: &AuthCommandConfig,
     mode: ProviderAuthMethod,

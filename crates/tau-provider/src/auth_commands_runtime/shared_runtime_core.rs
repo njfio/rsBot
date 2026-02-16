@@ -8,6 +8,7 @@ use wait_timeout::ChildExt;
 
 use crate::{AuthCommandConfig, ProviderAuthMethod};
 
+/// Collect trimmed non-empty secret values from optional candidate list.
 pub(super) fn collect_non_empty_secrets(
     candidates: Vec<(&'static str, Option<String>)>,
 ) -> Vec<String> {
@@ -58,6 +59,7 @@ pub(super) fn render_launch_command(executable: &str, args: &[String]) -> String
     parts.join(" ")
 }
 
+/// Execute auth login launch command with timeout and explicit status handling.
 pub(super) fn execute_auth_login_launch(
     spec: &AuthLoginLaunchSpec,
 ) -> Result<AuthLoginLaunchResult> {
@@ -101,6 +103,7 @@ pub(super) fn execute_auth_login_launch(
     })
 }
 
+/// Build auth login launch spec for provider/mode pair and validate support matrix.
 pub(super) fn build_auth_login_launch_spec(
     config: &AuthCommandConfig,
     provider: Provider,

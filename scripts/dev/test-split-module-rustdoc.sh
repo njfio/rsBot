@@ -44,6 +44,10 @@ release_channel_command_runtime_file="crates/tau-release-channel/src/command_run
 release_channel_update_state_file="crates/tau-release-channel/src/command_runtime/update_state.rs"
 skills_package_manifest_schema_file="crates/tau-skills/src/package_manifest/schema.rs"
 skills_package_manifest_validation_file="crates/tau-skills/src/package_manifest/validation.rs"
+provider_auth_anthropic_backend_file="crates/tau-provider/src/auth_commands_runtime/anthropic_backend.rs"
+provider_auth_openai_backend_file="crates/tau-provider/src/auth_commands_runtime/openai_backend.rs"
+provider_auth_google_backend_file="crates/tau-provider/src/auth_commands_runtime/google_backend.rs"
+provider_auth_shared_runtime_core_file="crates/tau-provider/src/auth_commands_runtime/shared_runtime_core.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -95,7 +99,11 @@ for file in \
   "${release_channel_command_runtime_file}" \
   "${release_channel_update_state_file}" \
   "${skills_package_manifest_schema_file}" \
-  "${skills_package_manifest_validation_file}"; do
+  "${skills_package_manifest_validation_file}" \
+  "${provider_auth_anthropic_backend_file}" \
+  "${provider_auth_openai_backend_file}" \
+  "${provider_auth_google_backend_file}" \
+  "${provider_auth_shared_runtime_core_file}"; do
   if [[ ! -f "${file}" ]]; then
     echo "assertion failed (missing file): ${file}" >&2
     exit 1
@@ -142,6 +150,10 @@ release_channel_command_runtime_contents="$(cat "${release_channel_command_runti
 release_channel_update_state_contents="$(cat "${release_channel_update_state_file}")"
 skills_package_manifest_schema_contents="$(cat "${skills_package_manifest_schema_file}")"
 skills_package_manifest_validation_contents="$(cat "${skills_package_manifest_validation_file}")"
+provider_auth_anthropic_backend_contents="$(cat "${provider_auth_anthropic_backend_file}")"
+provider_auth_openai_backend_contents="$(cat "${provider_auth_openai_backend_file}")"
+provider_auth_google_backend_contents="$(cat "${provider_auth_google_backend_file}")"
+provider_auth_shared_runtime_core_contents="$(cat "${provider_auth_shared_runtime_core_file}")"
 
 assert_contains "${issue_runtime_contents}" "/// Normalize a repository-relative channel artifact path for persisted pointers." "issue runtime normalize doc"
 assert_contains "${issue_runtime_contents}" "/// Render a stable artifact pointer line for issue comments and logs." "issue runtime pointer doc"
@@ -226,5 +238,11 @@ assert_contains "${skills_package_manifest_schema_contents}" "/// One package co
 assert_contains "${skills_package_manifest_validation_contents}" "/// Validate one component set for non-empty ids, safe paths, and optional source metadata." "skills package manifest validation component set doc"
 assert_contains "${skills_package_manifest_validation_contents}" "/// Parse component source URL and enforce http/https schemes." "skills package manifest validation parse url doc"
 assert_contains "${skills_package_manifest_validation_contents}" "/// Parse sha256 checksum in canonical 64-hex format." "skills package manifest validation parse checksum doc"
+assert_contains "${provider_auth_anthropic_backend_contents}" "/// Execute Anthropic login flow when Claude backend prerequisites are available." "provider auth anthropic execute doc"
+assert_contains "${provider_auth_openai_backend_contents}" "/// Execute OpenAI login flow when Codex backend prerequisites are available." "provider auth openai execute doc"
+assert_contains "${provider_auth_google_backend_contents}" "/// Execute Google login flow when Gemini backend prerequisites are available." "provider auth google execute doc"
+assert_contains "${provider_auth_shared_runtime_core_contents}" "/// Collect trimmed non-empty secret values from optional candidate list." "provider auth shared collect secrets doc"
+assert_contains "${provider_auth_shared_runtime_core_contents}" "/// Build auth login launch spec for provider/mode pair and validate support matrix." "provider auth shared build launch spec doc"
+assert_contains "${provider_auth_shared_runtime_core_contents}" "/// Execute auth login launch command with timeout and explicit status handling." "provider auth shared execute launch doc"
 
 echo "split-module-rustdoc tests passed"
