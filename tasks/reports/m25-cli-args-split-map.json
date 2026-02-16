@@ -1,0 +1,103 @@
+{
+  "current_line_count": 3954,
+  "estimated_lines_to_extract": 1070,
+  "extraction_phases": [
+    {
+      "depends_on": [],
+      "id": "phase-1-provider-auth",
+      "line_reduction_estimate": 300,
+      "modules": [
+        "cli_args/provider_model_flags.rs",
+        "cli_args/provider_auth_flags.rs"
+      ],
+      "notes": "Preserve Cli top-level field names via #[command(flatten)] wrappers.",
+      "owner": "cli-platform",
+      "title": "Provider/auth and model catalog flags"
+    },
+    {
+      "depends_on": [
+        "phase-1-provider-auth"
+      ],
+      "id": "phase-2-gateway-runtime",
+      "line_reduction_estimate": 260,
+      "modules": [
+        "cli_args/gateway_remote_flags.rs",
+        "cli_args/gateway_service_flags.rs"
+      ],
+      "notes": "Keep existing gateway daemon sub-struct wiring intact and additive.",
+      "owner": "runtime-gateway",
+      "title": "Gateway remote/service and transport flags"
+    },
+    {
+      "depends_on": [
+        "phase-2-gateway-runtime"
+      ],
+      "id": "phase-3-package-events-extension",
+      "line_reduction_estimate": 230,
+      "modules": [
+        "cli_args/package_flags.rs",
+        "cli_args/events_flags.rs",
+        "cli_args/extension_flags.rs",
+        "cli_args/skills_flags.rs"
+      ],
+      "notes": "Group related command surfaces to reduce import fan-out in cli_args.rs.",
+      "owner": "runtime-packaging",
+      "title": "Package/events/extensions and skill policy flags"
+    },
+    {
+      "depends_on": [
+        "phase-3-package-events-extension"
+      ],
+      "id": "phase-4-multichannel-dashboard-voice",
+      "line_reduction_estimate": 280,
+      "modules": [
+        "cli_args/multi_channel_flags.rs",
+        "cli_args/dashboard_flags.rs",
+        "cli_args/memory_flags.rs",
+        "cli_args/voice_flags.rs"
+      ],
+      "notes": "Final phase targets high-volume flag groups to push below the 3000 line budget.",
+      "owner": "runtime-integrations",
+      "title": "Multi-channel, dashboard, memory, and voice surfaces"
+    }
+  ],
+  "generated_at": "2026-02-16T08:47:54Z",
+  "import_impact": [
+    "Add new module declarations under crates/tau-cli/src/cli_args/ with targeted pub re-exports.",
+    "Move domain-specific clap argument definitions from cli_args.rs into phase modules.",
+    "Keep root-level helper parsers in cli_args.rs until all phases are complete to avoid churn."
+  ],
+  "line_gap_to_target": 954,
+  "post_split_estimated_line_count": 2884,
+  "public_api_impact": [
+    "Keep pub struct Cli as the single externally consumed parser type.",
+    "Retain existing flag names, clap aliases, defaults, and env bindings.",
+    "Introduce internal flattened sub-structs only; no external crate API renames."
+  ],
+  "schema_version": 1,
+  "source_file": "crates/tau-cli/src/cli_args.rs",
+  "target_line_budget": 3000,
+  "test_migration_plan": [
+    {
+      "command": "scripts/dev/test-cli-args-domain-split.sh",
+      "description": "Lower cli_args split guardrail from <4000 to staged thresholds ending at <3000.",
+      "expected_signal": "line budget checks enforce progressive reduction and final <3000 gate",
+      "id": "update-guardrail-threshold",
+      "order": 1
+    },
+    {
+      "command": "cargo test -p tau-cli",
+      "description": "Run crate-scoped CLI parsing and validation tests after each phase extraction.",
+      "expected_signal": "all clap parser and validation tests pass",
+      "id": "cli-crate-coverage",
+      "order": 2
+    },
+    {
+      "command": "cargo test -p tau-coding-agent",
+      "description": "Run cross-crate runtime command integration tests that consume Cli fields.",
+      "expected_signal": "no regressions in command wiring and runtime behavior",
+      "id": "workspace-integration",
+      "order": 3
+    }
+  ]
+}

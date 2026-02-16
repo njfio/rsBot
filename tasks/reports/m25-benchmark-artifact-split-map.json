@@ -1,0 +1,99 @@
+{
+  "current_line_count": 3868,
+  "estimated_lines_to_extract": 950,
+  "extraction_phases": [
+    {
+      "depends_on": [],
+      "id": "phase-1-schema-types",
+      "line_reduction_estimate": 220,
+      "modules": [
+        "benchmark_artifact/schema.rs",
+        "benchmark_artifact/types.rs"
+      ],
+      "notes": "Preserve externally consumed artifact JSON schema and field names.",
+      "owner": "trainer-core",
+      "title": "Benchmark schema/types and serde payload structures"
+    },
+    {
+      "depends_on": [
+        "phase-1-schema-types"
+      ],
+      "id": "phase-2-io-persistence",
+      "line_reduction_estimate": 260,
+      "modules": [
+        "benchmark_artifact/io.rs",
+        "benchmark_artifact/persistence.rs"
+      ],
+      "notes": "Keep filesystem contracts and error surface stable for callers.",
+      "owner": "trainer-runtime",
+      "title": "Artifact IO, path handling, and persistence utilities"
+    },
+    {
+      "depends_on": [
+        "phase-2-io-persistence"
+      ],
+      "id": "phase-3-report-rendering",
+      "line_reduction_estimate": 230,
+      "modules": [
+        "benchmark_artifact/reporting.rs",
+        "benchmark_artifact/render.rs"
+      ],
+      "notes": "Separate formatting logic from core benchmark artifact state.",
+      "owner": "trainer-observability",
+      "title": "Markdown/JSON reporting and presentation helpers"
+    },
+    {
+      "depends_on": [
+        "phase-3-report-rendering"
+      ],
+      "id": "phase-4-validation-compare",
+      "line_reduction_estimate": 240,
+      "modules": [
+        "benchmark_artifact/validation.rs",
+        "benchmark_artifact/compare.rs"
+      ],
+      "notes": "Retain benchmark conformance semantics and regression reason-code behavior.",
+      "owner": "trainer-quality",
+      "title": "Validation, comparison, and regression guard logic"
+    }
+  ],
+  "generated_at": "2026-02-16T09:21:38Z",
+  "import_impact": [
+    "Introduce benchmark_artifact module tree under crates/tau-trainer/src/benchmark_artifact/.",
+    "Move domain-specific helpers into phased modules while preserving root re-exports.",
+    "Minimize cross-module imports by grouping schema/IO/report/validation concerns."
+  ],
+  "line_gap_to_target": 868,
+  "post_split_estimated_line_count": 2918,
+  "public_api_impact": [
+    "Retain current benchmark artifact struct names and serialized field contracts.",
+    "Keep public constructor/loader entrypoints stable for trainer and CLI callers.",
+    "Confine extraction changes behind module boundaries without changing call signatures."
+  ],
+  "schema_version": 1,
+  "source_file": "crates/tau-trainer/src/benchmark_artifact.rs",
+  "target_line_budget": 3000,
+  "test_migration_plan": [
+    {
+      "command": "cargo test -p tau-trainer benchmark_artifact",
+      "description": "Run benchmark artifact conformance tests after each extraction phase.",
+      "expected_signal": "benchmark artifact conformance tests remain green",
+      "id": "benchmark-conformance-suite",
+      "order": 1
+    },
+    {
+      "command": "cargo test -p tau-trainer",
+      "description": "Run trainer integration tests that persist/load benchmark artifacts.",
+      "expected_signal": "trainer integration flows preserve artifact behavior",
+      "id": "trainer-integration-suite",
+      "order": 2
+    },
+    {
+      "command": "python3 -m unittest discover -s .github/scripts -p test_*.py",
+      "description": "Run workspace-level governance/contract checks for generated artifacts.",
+      "expected_signal": "contract suite remains green after module extraction",
+      "id": "workspace-regression-suite",
+      "order": 3
+    }
+  ]
+}

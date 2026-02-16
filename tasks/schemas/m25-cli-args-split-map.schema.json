@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tau.njf.io/schemas/m25-cli-args-split-map.schema.json",
+  "title": "M25 CLI Args Split Map",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "source_file",
+    "target_line_budget",
+    "current_line_count",
+    "line_gap_to_target",
+    "estimated_lines_to_extract",
+    "post_split_estimated_line_count",
+    "extraction_phases",
+    "public_api_impact",
+    "import_impact",
+    "test_migration_plan"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_line_budget": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "current_line_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "line_gap_to_target": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "estimated_lines_to_extract": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "post_split_estimated_line_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "extraction_phases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "owner",
+          "line_reduction_estimate",
+          "modules",
+          "depends_on",
+          "notes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "line_reduction_estimate": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "modules": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "public_api_impact": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "import_impact": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "test_migration_plan": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "order",
+          "id",
+          "description",
+          "command",
+          "expected_signal"
+        ],
+        "properties": {
+          "order": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_signal": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

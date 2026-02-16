@@ -1,0 +1,87 @@
+{
+  "current_line_count": 3390,
+  "estimated_lines_to_extract": 450,
+  "extraction_phases": [
+    {
+      "depends_on": [],
+      "id": "phase-1-webhook-validation-ingest",
+      "line_reduction_estimate": 170,
+      "modules": [
+        "github_issues_runtime/webhook_validation.rs",
+        "github_issues_runtime/ingest.rs"
+      ],
+      "notes": "Preserve webhook signature/shape validation and deterministic ingest diagnostics.",
+      "owner": "github-issues-ingest",
+      "title": "Webhook payload validation and ingest normalization"
+    },
+    {
+      "depends_on": [
+        "phase-1-webhook-validation-ingest"
+      ],
+      "id": "phase-2-session-sync-routing",
+      "line_reduction_estimate": 150,
+      "modules": [
+        "github_issues_runtime/session_projection.rs",
+        "github_issues_runtime/comment_sync.rs",
+        "github_issues_runtime/routing.rs"
+      ],
+      "notes": "Keep issue-to-session mapping and message emission order stable.",
+      "owner": "github-issues-sync",
+      "title": "Session projection, comment sync, and routing helpers"
+    },
+    {
+      "depends_on": [
+        "phase-2-session-sync-routing"
+      ],
+      "id": "phase-3-error-policy-rate-limit",
+      "line_reduction_estimate": 130,
+      "modules": [
+        "github_issues_runtime/policy.rs",
+        "github_issues_runtime/rate_limit.rs",
+        "github_issues_runtime/errors.rs"
+      ],
+      "notes": "Retain fail-closed behavior and reason-code mapping for moderation and retry signals.",
+      "owner": "github-issues-policy",
+      "title": "Policy guards, rate-limits, and error-envelope mapping"
+    }
+  ],
+  "generated_at": "2026-02-16T00:00:00Z",
+  "import_impact": [
+    "Introduce module declarations under crates/tau-github-issues-runtime/src/github_issues_runtime/ with selective re-exports.",
+    "Move ingest/sync/policy helper domains out of github_issues_runtime.rs in phases.",
+    "Keep shared bridge utility helpers centralized to minimize cross-module import churn."
+  ],
+  "line_gap_to_target": 390,
+  "post_split_estimated_line_count": 2940,
+  "public_api_impact": [
+    "Keep GitHub Issues runtime public entrypoints and bridge configuration surfaces stable.",
+    "Preserve webhook ingest and issue-comment processing payload contracts.",
+    "Maintain existing reason-code/error-envelope behavior exposed to callers."
+  ],
+  "schema_version": 1,
+  "source_file": "crates/tau-github-issues-runtime/src/github_issues_runtime.rs",
+  "target_line_budget": 3000,
+  "test_migration_plan": [
+    {
+      "command": "scripts/dev/test-github-issues-runtime-domain-split.sh",
+      "description": "Introduce and enforce github_issues_runtime.rs split guardrail ending at <3000.",
+      "expected_signal": "github_issues_runtime.rs threshold checks fail closed until split target is reached",
+      "id": "guardrail-threshold-enforcement",
+      "order": 1
+    },
+    {
+      "command": "cargo test -p tau-github-issues-runtime",
+      "description": "Run crate-scoped GitHub Issues runtime tests after each extraction phase.",
+      "expected_signal": "bridge ingest/sync behavior and reason-code tests stay green",
+      "id": "runtime-crate-coverage",
+      "order": 2
+    },
+    {
+      "command": "cargo test -p tau-coding-agent",
+      "description": "Run cross-crate integration suites that consume GitHub Issues runtime surfaces.",
+      "expected_signal": "no regressions in issue bridge wiring and end-to-end command flows",
+      "id": "runtime-integration",
+      "order": 3
+    }
+  ]
+}

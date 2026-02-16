@@ -1,0 +1,87 @@
+{
+  "current_line_count": 3646,
+  "estimated_lines_to_extract": 990,
+  "extraction_phases": [
+    {
+      "depends_on": [],
+      "id": "phase-1-fs-edit-memory",
+      "line_reduction_estimate": 410,
+      "modules": [
+        "tools/fs_tools.rs",
+        "tools/edit_tools.rs",
+        "tools/memory_tools.rs"
+      ],
+      "notes": "Keep read/write/edit/memory tool JSON contracts and policy hooks stable.",
+      "owner": "tools-runtime",
+      "title": "Filesystem/edit and memory domain tools"
+    },
+    {
+      "depends_on": [
+        "phase-1-fs-edit-memory"
+      ],
+      "id": "phase-2-jobs-history-http",
+      "line_reduction_estimate": 320,
+      "modules": [
+        "tools/jobs_tools.rs",
+        "tools/history_tools.rs",
+        "tools/http_tools.rs"
+      ],
+      "notes": "Preserve queue/status/cancel behavior and HTTP safety options across call sites.",
+      "owner": "tools-orchestration",
+      "title": "Jobs/history/http command tool surfaces"
+    },
+    {
+      "depends_on": [
+        "phase-2-jobs-history-http"
+      ],
+      "id": "phase-3-bash-policy-gates",
+      "line_reduction_estimate": 260,
+      "modules": [
+        "tools/bash_tool.rs",
+        "tools/policy_gates.rs"
+      ],
+      "notes": "Keep approval, RBAC, protected-path, and rate-limit gates behaviorally identical.",
+      "owner": "tools-safety",
+      "title": "Bash execution and policy/approval gate logic"
+    }
+  ],
+  "generated_at": "2026-02-16T00:00:00Z",
+  "import_impact": [
+    "Introduce module declarations under crates/tau-tools/src/tools/ with selective re-exports.",
+    "Move domain-specific tool implementations from tools.rs into phased modules.",
+    "Keep shared helper functions centralized to reduce import fan-out during phased extraction."
+  ],
+  "line_gap_to_target": 646,
+  "post_split_estimated_line_count": 2656,
+  "public_api_impact": [
+    "Keep exported tool type names and trait implementations stable for runtime callers.",
+    "Preserve JSON argument/return contracts for all moved tools.",
+    "Maintain existing policy gate result semantics and error envelopes."
+  ],
+  "schema_version": 1,
+  "source_file": "crates/tau-tools/src/tools.rs",
+  "target_line_budget": 3000,
+  "test_migration_plan": [
+    {
+      "command": "scripts/dev/test-tools-domain-split.sh",
+      "description": "Introduce and enforce tools.rs split guardrail ending at <3000.",
+      "expected_signal": "tools.rs threshold checks fail closed until split target is reached",
+      "id": "guardrail-threshold-enforcement",
+      "order": 1
+    },
+    {
+      "command": "cargo test -p tau-tools",
+      "description": "Run crate-scoped tau-tools tests after each extraction phase.",
+      "expected_signal": "tool behavior, safety checks, and serialization tests stay green",
+      "id": "tools-crate-coverage",
+      "order": 2
+    },
+    {
+      "command": "cargo test -p tau-coding-agent",
+      "description": "Run cross-crate runtime integration suites that consume tau-tools surfaces.",
+      "expected_signal": "no regressions in tool wiring and end-to-end command flows",
+      "id": "runtime-integration",
+      "order": 3
+    }
+  ]
+}
