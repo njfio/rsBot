@@ -9,6 +9,7 @@ use super::{
     RpcServeSessionState, RPC_ERROR_KIND,
 };
 
+/// Dispatch one raw RPC frame string and always return a response envelope.
 pub fn dispatch_rpc_raw_with_error_envelope_impl(raw: &str) -> RpcResponseFrame {
     match parse_rpc_frame(raw) {
         Ok(frame) => match dispatch_rpc_frame(&frame) {
@@ -81,6 +82,7 @@ pub fn dispatch_rpc_ndjson_input_impl(raw: &str) -> RpcNdjsonDispatchReport {
     }
 }
 
+/// Serve NDJSON RPC frames from a reader and stream responses to writer.
 pub fn serve_rpc_ndjson_reader_impl<R, W>(
     mut reader: R,
     writer: &mut W,

@@ -1,3 +1,4 @@
+/// Collect non-empty assistant reply text from message history.
 pub fn collect_assistant_reply(messages: &[tau_ai::Message]) -> String {
     let content = messages
         .iter()
@@ -13,6 +14,7 @@ pub fn collect_assistant_reply(messages: &[tau_ai::Message]) -> String {
     }
 }
 
+/// Build summarize prompt for one issue thread with optional focus.
 pub fn build_summarize_prompt(repo_slug: &str, issue_number: u64, focus: Option<&str>) -> String {
     match focus {
         Some(focus) => format!(

@@ -69,6 +69,7 @@ const RPC_LIFECYCLE_TERMINAL_TRANSITIONS: &[(&str, &str, &str, &str)] = &[
     ("run.timeout", "run.timed_out", "timed_out", "run.timed_out"),
 ];
 
+/// Build canonical RPC capabilities payload for CLI and NDJSON protocol clients.
 pub fn rpc_capabilities_payload() -> Value {
     let error_codes = rpc_error_contracts()
         .iter()
@@ -133,6 +134,7 @@ pub fn rpc_capabilities_payload() -> Value {
     })
 }
 
+/// Render RPC capabilities payload as pretty JSON text.
 pub fn render_rpc_capabilities_payload_pretty() -> Result<String> {
     serde_json::to_string_pretty(&rpc_capabilities_payload())
         .context("failed to serialize rpc capabilities payload")

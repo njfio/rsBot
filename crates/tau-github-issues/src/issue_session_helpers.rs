@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use tau_session::SessionStore;
 
+/// Compact one issue session store to active lineage while honoring lock policy.
 pub fn compact_issue_session(
     session_path: &Path,
     lock_wait_ms: u64,
@@ -19,6 +20,7 @@ pub fn compact_issue_session(
     store.compact_to_lineage(store.head_id())
 }
 
+/// Ensure issue session store exists and is initialized with system prompt.
 pub fn ensure_issue_session_initialized(
     session_path: &Path,
     system_prompt: &str,
@@ -39,6 +41,7 @@ pub fn ensure_issue_session_initialized(
     Ok((before_entries, after_entries, head))
 }
 
+/// Remove issue session and lock files when present and report what was removed.
 pub fn reset_issue_session_files(session_path: &Path) -> Result<(bool, bool)> {
     let mut removed_session = false;
     if session_path.exists() {
