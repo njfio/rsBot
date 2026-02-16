@@ -1,6 +1,6 @@
 # Milestone M26: Oversized Policy Hardening + Exemption Burn-Down
 
-Status: Draft
+Status: Implemented
 
 ## Objective
 
