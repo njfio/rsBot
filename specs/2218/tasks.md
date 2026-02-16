@@ -1,6 +1,6 @@
 # Tasks #2218
 
-Status: Draft
+Status: Implemented
 Spec: specs/2218/spec.md
 Plan: specs/2218/plan.md
 
