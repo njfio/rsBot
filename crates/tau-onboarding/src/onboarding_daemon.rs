@@ -12,6 +12,7 @@ use tau_ops::{inspect_tau_daemon, install_tau_daemon, start_tau_daemon, TauDaemo
 
 use crate::onboarding_report::OnboardingDaemonBootstrapReport;
 
+/// Run onboarding daemon bootstrap flow and return readiness report.
 pub fn run_onboarding_daemon_bootstrap(cli: &Cli) -> Result<OnboardingDaemonBootstrapReport> {
     let config = TauDaemonConfig {
         state_dir: cli.daemon_state_dir.clone(),

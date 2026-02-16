@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tau_cli::Cli;
 
+/// Resolve Tau root directory used for onboarding bootstrap artifacts.
 pub fn resolve_tau_root(cli: &Cli) -> PathBuf {
     if let Some(session_parent) = cli
         .session
@@ -36,6 +37,7 @@ pub fn resolve_tau_root(cli: &Cli) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".tau"))
 }
 
+/// Collect deduplicated onboarding bootstrap directories derived from CLI paths.
 pub fn collect_bootstrap_directories(cli: &Cli, tau_root: &Path) -> Vec<PathBuf> {
     let mut directories = BTreeSet::new();
     maybe_insert_directory(&mut directories, Some(tau_root));

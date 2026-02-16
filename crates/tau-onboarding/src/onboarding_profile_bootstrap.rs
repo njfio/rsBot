@@ -13,6 +13,7 @@ use crate::startup_config::ProfileDefaults;
 
 pub const ONBOARDING_DEFAULT_PROFILE: &str = "default";
 
+/// Resolve onboarding profile name, applying default when input is blank.
 pub fn resolve_onboarding_profile_name(raw: &str) -> Result<String> {
     let trimmed = raw.trim();
     let profile_name = if trimmed.is_empty() {
@@ -45,6 +46,7 @@ pub fn ensure_directory(
     Ok(())
 }
 
+/// Ensure onboarding profile store contains requested profile defaults.
 pub fn ensure_profile_store_entry(
     profile_store_path: &Path,
     profile_name: &str,

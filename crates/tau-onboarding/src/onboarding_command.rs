@@ -41,6 +41,7 @@ enum OnboardingMode {
     NonInteractive,
 }
 
+/// Execute onboarding command and persist onboarding summary report.
 pub fn execute_onboarding_command(cli: &Cli) -> Result<()> {
     let entrypoint = resolve_onboarding_entrypoint(cli);
     let first_run = detect_onboarding_first_run_state(cli);

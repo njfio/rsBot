@@ -24,6 +24,10 @@ startup_model_catalog_file="crates/tau-startup/src/startup_model_catalog.rs"
 startup_multi_channel_adapters_file="crates/tau-startup/src/startup_multi_channel_adapters.rs"
 startup_multi_channel_commands_file="crates/tau-startup/src/startup_multi_channel_commands.rs"
 startup_rpc_capabilities_command_file="crates/tau-startup/src/startup_rpc_capabilities_command.rs"
+onboarding_command_file="crates/tau-onboarding/src/onboarding_command.rs"
+onboarding_daemon_file="crates/tau-onboarding/src/onboarding_daemon.rs"
+onboarding_paths_file="crates/tau-onboarding/src/onboarding_paths.rs"
+onboarding_profile_bootstrap_file="crates/tau-onboarding/src/onboarding_profile_bootstrap.rs"
 
 assert_contains() {
   local haystack="$1"
@@ -55,7 +59,11 @@ for file in \
   "${startup_model_catalog_file}" \
   "${startup_multi_channel_adapters_file}" \
   "${startup_multi_channel_commands_file}" \
-  "${startup_rpc_capabilities_command_file}"; do
+  "${startup_rpc_capabilities_command_file}" \
+  "${onboarding_command_file}" \
+  "${onboarding_daemon_file}" \
+  "${onboarding_paths_file}" \
+  "${onboarding_profile_bootstrap_file}"; do
   if [[ ! -f "${file}" ]]; then
     echo "assertion failed (missing file): ${file}" >&2
     exit 1
@@ -82,6 +90,10 @@ startup_model_catalog_contents="$(cat "${startup_model_catalog_file}")"
 startup_multi_channel_adapters_contents="$(cat "${startup_multi_channel_adapters_file}")"
 startup_multi_channel_commands_contents="$(cat "${startup_multi_channel_commands_file}")"
 startup_rpc_capabilities_command_contents="$(cat "${startup_rpc_capabilities_command_file}")"
+onboarding_command_contents="$(cat "${onboarding_command_file}")"
+onboarding_daemon_contents="$(cat "${onboarding_daemon_file}")"
+onboarding_paths_contents="$(cat "${onboarding_paths_file}")"
+onboarding_profile_bootstrap_contents="$(cat "${onboarding_profile_bootstrap_file}")"
 
 assert_contains "${issue_runtime_contents}" "/// Normalize a repository-relative channel artifact path for persisted pointers." "issue runtime normalize doc"
 assert_contains "${issue_runtime_contents}" "/// Render a stable artifact pointer line for issue comments and logs." "issue runtime pointer doc"
@@ -120,5 +132,11 @@ assert_contains "${startup_multi_channel_adapters_contents}" "/// Build pairing 
 assert_contains "${startup_multi_channel_commands_contents}" "/// Execute multi-channel send command from CLI runtime configuration." "startup multi-channel send doc"
 assert_contains "${startup_multi_channel_commands_contents}" "/// Execute multi-channel channel lifecycle command for login/logout/status/probe." "startup multi-channel lifecycle doc"
 assert_contains "${startup_rpc_capabilities_command_contents}" "/// Execute RPC capabilities command and print negotiated payload when requested." "startup rpc capabilities command doc"
+assert_contains "${onboarding_command_contents}" "/// Execute onboarding command and persist onboarding summary report." "onboarding command execute doc"
+assert_contains "${onboarding_daemon_contents}" "/// Run onboarding daemon bootstrap flow and return readiness report." "onboarding daemon bootstrap doc"
+assert_contains "${onboarding_paths_contents}" "/// Resolve Tau root directory used for onboarding bootstrap artifacts." "onboarding paths resolve root doc"
+assert_contains "${onboarding_paths_contents}" "/// Collect deduplicated onboarding bootstrap directories derived from CLI paths." "onboarding paths collect directories doc"
+assert_contains "${onboarding_profile_bootstrap_contents}" "/// Resolve onboarding profile name, applying default when input is blank." "onboarding profile resolve name doc"
+assert_contains "${onboarding_profile_bootstrap_contents}" "/// Ensure onboarding profile store contains requested profile defaults." "onboarding profile ensure store doc"
 
 echo "split-module-rustdoc tests passed"
