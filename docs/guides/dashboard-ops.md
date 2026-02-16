@@ -112,3 +112,12 @@ Stream reconnect semantics:
   Action: run demo or targeted fixture to refresh runtime state and confirm status signal freshness.
 - Symptom: non-zero `queue_depth`.
   Action: increase `--dashboard-queue-limit` or reduce fixture batch size to avoid backlog drops.
+
+## Ownership
+
+Primary ownership surfaces:
+- `crates/tau-dashboard` (dashboard state/event processing, status artifacts)
+- `crates/tau-gateway` (dashboard API and SSE transport surfaces)
+- `crates/tau-coding-agent` (CLI dispatch and diagnostics entrypoints)
+
+Ownership map: `docs/guides/runbook-ownership-map.md`.

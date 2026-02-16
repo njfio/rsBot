@@ -76,6 +76,24 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
         ),
     ),
     OwnershipSpec(
+        path="docs/guides/dashboard-ops.md",
+        required_tokens=(
+            "## Ownership",
+            "`crates/tau-dashboard`",
+            "`crates/tau-gateway`",
+            "docs/guides/runbook-ownership-map.md",
+        ),
+    ),
+    OwnershipSpec(
+        path="docs/guides/custom-command-ops.md",
+        required_tokens=(
+            "## Ownership",
+            "`crates/tau-custom-command`",
+            "`crates/tau-coding-agent`",
+            "docs/guides/runbook-ownership-map.md",
+        ),
+    ),
+    OwnershipSpec(
         path="docs/guides/consolidated-runtime-rollback-drill.md",
         required_tokens=(
             "## Ownership",
@@ -94,6 +112,8 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
             "docs/guides/training-crate-boundary-plan.md",
             "docs/guides/transports.md",
             "docs/guides/memory-ops.md",
+            "docs/guides/dashboard-ops.md",
+            "docs/guides/custom-command-ops.md",
             "docs/guides/consolidated-runtime-rollback-drill.md",
         ),
     ),
@@ -103,6 +123,8 @@ OWNERSHIP_SPECS: tuple[OwnershipSpec, ...] = (
 README_EXPECTED_LINKS: tuple[str, ...] = (
     "guides/runbook-ownership-map.md",
     "guides/training-crate-boundary-plan.md",
+    "guides/dashboard-ops.md",
+    "guides/custom-command-ops.md",
 )
 
 

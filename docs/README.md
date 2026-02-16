@@ -16,6 +16,8 @@ This index maps Tau documentation by audience and task.
 | Prompt optimization maintainer | [Training Crate Boundary Plan](guides/training-crate-boundary-plan.md) | Explicit merge/retain decisions, staged PR sets, and boundary validation artifacts |
 | Workspace operator | [Project Index Guide](guides/project-index.md) | Build/query/inspect deterministic local code index |
 | Runtime operator / SRE | [Operator Control Summary](guides/operator-control-summary.md) | Unified control-plane status, policy posture, daemon/release checks, triage map |
+| Runtime operator / SRE | [Dashboard Operations Runbook](guides/dashboard-ops.md) | Dashboard diagnostics, gateway-backed API/SSE surfaces, rollout and rollback guardrails |
+| Runtime operator / SRE | [Custom Command Operations Runbook](guides/custom-command-ops.md) | Custom-command diagnostics/status signals, preserved state artifacts, and rollout/rollback guardrails |
 | Runtime operator / SRE | [Background Jobs Operations Guide](guides/background-jobs-ops.md) | Asynchronous job tool lifecycle, persisted state layout, reason-codes, and trace integration |
 | Release operator | [Release Automation Operations Guide](guides/release-automation-ops.md) | Multi-platform build/publish flow, hook contracts, installer scripts, reason-code diagnostics |
 | Runtime contributor | [Startup DI Pipeline](guides/startup-di-pipeline.md) | 3-stage startup resolution: preflight gate, dependency/context composition, mode dispatch |

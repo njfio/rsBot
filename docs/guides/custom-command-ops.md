@@ -91,3 +91,12 @@ Guardrail interpretation:
   Action: confirm fixture operations include `create`, `update`, or `delete`.
 - Symptom: high duplicate counts.
   Action: inspect processed-case keys and verify fixture case identifiers are unique.
+
+## Ownership
+
+Primary ownership surfaces:
+- `crates/tau-custom-command` (policy/runtime state and status signal contracts)
+- `crates/tau-coding-agent` (CLI dispatch and diagnostics entrypoints)
+- `crates/tau-tools` (tool-policy and execution primitives consumed by custom-command flows)
+
+Ownership map: `docs/guides/runbook-ownership-map.md`.
