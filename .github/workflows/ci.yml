@@ -476,6 +476,7 @@ jobs:
         if: steps.release_helper_scope.outputs.release_helper_tests_needed == 'true'
         run: |
           ./scripts/release/test-install-helpers.sh
+          ./scripts/release/test-homebrew-formula.sh
           ./scripts/release/test-release-workflow-contract.sh
 
       - name: Determine docker packaging scope

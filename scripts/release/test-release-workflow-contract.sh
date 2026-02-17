@@ -44,4 +44,10 @@ assert_contains_file "${RELEASE_WORKFLOW}" "ghcr.io" "release ghcr repository"
 assert_contains_file "${RELEASE_WORKFLOW}" ':${{ env.RELEASE_TAG }}' "release version container tag"
 assert_contains_file "${RELEASE_WORKFLOW}" ":latest" "release latest container tag"
 
+# Conformance: release workflow must render/publish Homebrew formula from checksums.
+assert_contains_file "${RELEASE_WORKFLOW}" "Download checksums for Homebrew formula" "homebrew checksum download step"
+assert_contains_file "${RELEASE_WORKFLOW}" "Render Homebrew formula" "homebrew formula render step"
+assert_contains_file "${RELEASE_WORKFLOW}" "scripts/release/render-homebrew-formula.sh" "homebrew render script invocation"
+assert_contains_file "${RELEASE_WORKFLOW}" "dist/tau.rb" "homebrew formula release asset"
+
 echo "release workflow contract tests passed"

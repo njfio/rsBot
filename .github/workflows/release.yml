@@ -239,6 +239,11 @@ jobs:
       - build
       - checksums
     steps:
+      - name: Checkout tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
       - name: Download release artifacts
         uses: actions/download-artifact@v7
         with:
@@ -246,11 +251,20 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Download checksums
+      - name: Download checksums for Homebrew formula
         uses: actions/download-artifact@v7
         with:
           name: release-checksums
           path: dist
+
+      - name: Render Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/release/render-homebrew-formula.sh \
+            "${RELEASE_TAG}" \
+            dist/SHA256SUMS \
+            "${GITHUB_REPOSITORY}" > dist/tau.rb
 
       - name: Verify staged files
         shell: bash
@@ -266,6 +280,7 @@ jobs:
             dist/*.zip
             dist/*.sha256
             dist/SHA256SUMS
+            dist/tau.rb
 
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
@@ -277,6 +292,7 @@ jobs:
             dist/*.zip
             dist/*.sha256
             dist/SHA256SUMS
+            dist/tau.rb
 
   publish-container:
     name: Publish container image

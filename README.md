@@ -134,6 +134,22 @@ Run the image directly:
 docker run --rm --entrypoint tau-coding-agent tau-coding-agent:local-smoke --help
 ```
 
+## Homebrew Packaging
+
+Each tagged release publishes a deterministic Homebrew formula asset (`tau.rb`)
+generated from release `SHA256SUMS`.
+
+```bash
+# Install a pinned release formula directly from GitHub Releases
+brew install --formula https://github.com/<owner>/Tau/releases/download/<release-tag>/tau.rb
+
+# Upgrade installed formula (when newer formula/release exists)
+brew upgrade tau
+
+# Remove Tau from Homebrew
+brew uninstall tau
+```
+
 ## Demo Commands
 
 Fresh-clone validation index:
@@ -224,6 +240,7 @@ Contributor references:
 - Release: [`.github/workflows/release.yml`](.github/workflows/release.yml)
   - Linux/macOS/Windows artifacts (`amd64`, `arm64`)
   - GHCR Docker image publish (`ghcr.io/<owner>/tau-coding-agent:<release-tag>`, `latest`)
+  - Homebrew formula asset publish (`tau.rb`) derived from `SHA256SUMS`
   - optional signing/notarization hooks (`scripts/release/hooks/*`)
   - installer/update scripts for Unix and PowerShell
 - Dependabot: [`.github/dependabot.yml`](.github/dependabot.yml)
