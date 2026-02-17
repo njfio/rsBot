@@ -2772,6 +2772,14 @@ pub struct Cli {
     pub multi_channel_retry_jitter_ms: u64,
 
     #[arg(
+        long = "multi-channel-coalescing-window-ms",
+        env = "TAU_MULTI_CHANNEL_COALESCING_WINDOW_MS",
+        default_value_t = 2_500,
+        help = "Coalescing window in milliseconds for batching same-conversation rapid inbound messages (0 disables coalescing)"
+    )]
+    pub multi_channel_coalescing_window_ms: u64,
+
+    #[arg(
         long = "multi-channel-telemetry-typing-presence",
         env = "TAU_MULTI_CHANNEL_TELEMETRY_TYPING_PRESENCE",
         default_value_t = true,
