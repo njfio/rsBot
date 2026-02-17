@@ -189,6 +189,7 @@ pub struct MultiChannelRuntimeConfig {
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
     pub retry_jitter_ms: u64,
+    pub coalescing_window_ms: u64,
     pub outbound: MultiChannelOutboundConfig,
     pub telemetry: MultiChannelTelemetryConfig,
     pub media: MultiChannelMediaUnderstandingConfig,
@@ -207,6 +208,7 @@ pub struct MultiChannelLiveRuntimeConfig {
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
     pub retry_jitter_ms: u64,
+    pub coalescing_window_ms: u64,
     pub outbound: MultiChannelOutboundConfig,
     pub telemetry: MultiChannelTelemetryConfig,
     pub media: MultiChannelMediaUnderstandingConfig,
@@ -386,6 +388,13 @@ struct PersistEventOutcome {
     usage_estimated_cost_micros: u64,
 }
 
+#[derive(Debug, Clone)]
+struct CoalescedInboundEvent {
+    event: MultiChannelInboundEvent,
+    source_event_keys: Vec<String>,
+    source_event_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MultiChannelTauCommand {
     Help,
@@ -474,6 +483,7 @@ pub async fn run_multi_channel_live_runner(config: MultiChannelLiveRuntimeConfig
         retry_max_attempts: config.retry_max_attempts,
         retry_base_delay_ms: config.retry_base_delay_ms,
         retry_jitter_ms: config.retry_jitter_ms,
+        coalescing_window_ms: config.coalescing_window_ms,
         outbound: config.outbound.clone(),
         telemetry: config.telemetry.clone(),
         media: config.media.clone(),
@@ -602,6 +612,8 @@ impl MultiChannelRuntime {
         });
         queued_events.truncate(self.config.queue_limit);
         summary.queued_events = queued_events.len();
+        let coalesced_events =
+            coalesce_inbound_events(&queued_events, self.config.coalescing_window_ms);
         let channel_policy = match load_multi_channel_policy_for_state_dir(&self.config.state_dir) {
             Ok(policy) => Some(policy),
             Err(error) => {
@@ -613,10 +625,20 @@ impl MultiChannelRuntime {
             }
         };
 
-        for event in queued_events {
-            let event_key = event_contract_key(&event);
-            if self.processed_event_keys.contains(&event_key) {
-                summary.duplicate_skips = summary.duplicate_skips.saturating_add(1);
+        for coalesced in coalesced_events {
+            let event = coalesced.event;
+            let source_event_keys = coalesced.source_event_keys;
+            let event_key = source_event_keys
+                .first()
+                .cloned()
+                .unwrap_or_else(|| event_contract_key(&event));
+            if source_event_keys
+                .iter()
+                .all(|source_key| self.processed_event_keys.contains(source_key))
+            {
+                summary.duplicate_skips = summary
+                    .duplicate_skips
+                    .saturating_add(source_event_keys.len());
                 continue;
             }
             let now_unix_ms = current_unix_timestamp_ms();
@@ -655,7 +677,9 @@ impl MultiChannelRuntime {
                     .await
                 {
                     Ok(outcome) => {
-                        self.record_processed_event(&event_key);
+                        for source_event_key in &source_event_keys {
+                            self.record_processed_event(source_event_key);
+                        }
                         summary.completed_events = summary.completed_events.saturating_add(1);
                         summary.typing_events_emitted = summary
                             .typing_events_emitted
@@ -1710,6 +1734,96 @@ fn channel_presence_signal(transport: MultiChannelTransport, active: bool) -> &'
         (MultiChannelTransport::Whatsapp, true) => "whatsapp:available",
         (MultiChannelTransport::Whatsapp, false) => "whatsapp:idle",
     }
+}
+
+fn coalesce_inbound_events(
+    source_events: &[MultiChannelInboundEvent],
+    coalescing_window_ms: u64,
+) -> Vec<CoalescedInboundEvent> {
+    let mut batches: Vec<CoalescedInboundEvent> = Vec::new();
+    for source_event in source_events {
+        let source_key = event_contract_key(source_event);
+        if let Some(last) = batches.last_mut() {
+            if should_coalesce_events(&last.event, source_event, coalescing_window_ms) {
+                if !source_event.text.trim().is_empty() {
+                    if !last.event.text.is_empty() {
+                        last.event.text.push('\n');
+                    }
+                    last.event.text.push_str(source_event.text.as_str());
+                }
+                if !source_event.attachments.is_empty() {
+                    last.event
+                        .attachments
+                        .extend(source_event.attachments.clone());
+                }
+                last.event.timestamp_ms = source_event.timestamp_ms;
+                last.source_event_keys.push(source_key);
+                last.source_event_ids
+                    .push(source_event.event_id.trim().to_string());
+                annotate_coalesced_event_metadata(last, coalescing_window_ms);
+                continue;
+            }
+        }
+        let mut batch = CoalescedInboundEvent {
+            event: source_event.clone(),
+            source_event_keys: vec![source_key],
+            source_event_ids: vec![source_event.event_id.trim().to_string()],
+        };
+        annotate_coalesced_event_metadata(&mut batch, coalescing_window_ms);
+        batches.push(batch);
+    }
+    batches
+}
+
+fn should_coalesce_events(
+    previous: &MultiChannelInboundEvent,
+    current: &MultiChannelInboundEvent,
+    coalescing_window_ms: u64,
+) -> bool {
+    if coalescing_window_ms == 0 {
+        return false;
+    }
+    if previous.transport != current.transport {
+        return false;
+    }
+    if previous.conversation_id.trim() != current.conversation_id.trim() {
+        return false;
+    }
+    if previous.actor_id.trim() != current.actor_id.trim() {
+        return false;
+    }
+    if current.timestamp_ms < previous.timestamp_ms {
+        return false;
+    }
+    current.timestamp_ms.saturating_sub(previous.timestamp_ms) <= coalescing_window_ms
+}
+
+fn annotate_coalesced_event_metadata(batch: &mut CoalescedInboundEvent, coalescing_window_ms: u64) {
+    let count = batch.source_event_ids.len();
+    if count <= 1 {
+        batch.event.metadata.remove("coalesced_batch_size");
+        batch.event.metadata.remove("coalescing_window_ms");
+        batch.event.metadata.remove("coalesced_source_event_ids");
+        return;
+    }
+    batch.event.metadata.insert(
+        "coalesced_batch_size".to_string(),
+        Value::from(u64::try_from(count).unwrap_or(u64::MAX)),
+    );
+    batch.event.metadata.insert(
+        "coalescing_window_ms".to_string(),
+        Value::from(coalescing_window_ms),
+    );
+    batch.event.metadata.insert(
+        "coalesced_source_event_ids".to_string(),
+        Value::Array(
+            batch
+                .source_event_ids
+                .iter()
+                .map(|event_id| Value::String(event_id.clone()))
+                .collect(),
+        ),
+    );
 }
 
 struct TelemetryLifecyclePayloadContext<'a> {
