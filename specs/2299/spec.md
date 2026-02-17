@@ -1,6 +1,6 @@
 # Spec #2299
 
-Status: Accepted
+Status: Implemented
 Milestone: specs/milestones/m47/index.md
 Issue: https://github.com/njfio/Tau/issues/2299
 
