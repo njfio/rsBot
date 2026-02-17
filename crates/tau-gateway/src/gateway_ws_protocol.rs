@@ -708,4 +708,65 @@ mod tests {
             GATEWAY_WS_ERROR_CODE_INVALID_PAYLOAD
         );
     }
+
+    fn deterministic_fuzz_bytes(mut seed: u64, len: usize) -> Vec<u8> {
+        let mut output = Vec::with_capacity(len);
+        for _ in 0..len {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            output.push((seed & 0xFF) as u8);
+        }
+        output
+    }
+
+    fn deterministic_fuzz_string(seed: u64, len: usize) -> String {
+        String::from_utf8_lossy(&deterministic_fuzz_bytes(seed, len)).to_string()
+    }
+
+    fn run_gateway_ws_parse_fuzz_iterations(iterations: usize) -> usize {
+        for index in 0..iterations {
+            let len = (index.wrapping_mul(37) % 320).saturating_add(1);
+            let raw = deterministic_fuzz_string(0xBADC_0FFE_u64 ^ index as u64, len);
+            let maybe_request_id = best_effort_gateway_ws_request_id(&raw);
+            match parse_gateway_ws_request_frame(&raw) {
+                Ok(frame) => {
+                    assert!(!frame.request_id.trim().is_empty());
+                    assert!(!frame.payload.contains_key(""));
+                }
+                Err(error) => {
+                    let code = classify_gateway_ws_parse_error(&error.to_string());
+                    assert!(
+                        matches!(
+                            code,
+                            super::GATEWAY_WS_ERROR_CODE_INVALID_JSON
+                                | super::GATEWAY_WS_ERROR_CODE_UNSUPPORTED_SCHEMA
+                                | super::GATEWAY_WS_ERROR_CODE_UNSUPPORTED_KIND
+                                | super::GATEWAY_WS_ERROR_CODE_INVALID_REQUEST_ID
+                                | super::GATEWAY_WS_ERROR_CODE_INVALID_PAYLOAD
+                                | super::GATEWAY_WS_ERROR_CODE_INTERNAL_ERROR
+                        ),
+                        "unexpected gateway parse classification: {code}"
+                    );
+                    let request_id = maybe_request_id
+                        .as_deref()
+                        .unwrap_or("fuzz-request")
+                        .to_string();
+                    let error_frame =
+                        build_gateway_ws_error_frame(&request_id, code, error.to_string().as_str());
+                    assert_eq!(error_frame.kind, "error");
+                }
+            }
+        }
+        iterations
+    }
+
+    #[test]
+    fn spec_c03_gateway_ws_parse_fuzz_conformance_no_panic_for_10000_inputs() {
+        let executed = run_gateway_ws_parse_fuzz_iterations(10_000);
+        assert!(
+            executed >= 10_000,
+            "expected >=10000 iterations for conformance, got {executed}"
+        );
+    }
 }

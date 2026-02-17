@@ -12,6 +12,26 @@ Run all commands from repository root.
 ./scripts/dev/fast-validate.sh --full
 ```
 
+## Fuzz Conformance Contract
+
+Run deterministic fuzz-conformance coverage for untrusted parser surfaces:
+
+```bash
+./scripts/qa/test-fuzz-contract.sh
+```
+
+Covered surfaces:
+
+- `tau-runtime` RPC raw envelope parser/dispatcher (`spec_c01`).
+- `tau-runtime` RPC NDJSON dispatch parser flow (`spec_c02`).
+- `tau-gateway` websocket request parse/classification flow (`spec_c03`).
+
+Override target directory when needed:
+
+```bash
+CARGO_TARGET_DIR=target-fast-2267 ./scripts/qa/test-fuzz-contract.sh
+```
+
 ## Onboarding
 
 First-run default startup (`cargo run -p tau-coding-agent --`) now auto-enters the

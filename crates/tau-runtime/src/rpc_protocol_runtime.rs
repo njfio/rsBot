@@ -623,7 +623,7 @@ mod tests {
         RpcResponseFrame, RpcServeSessionState, RPC_ERROR_CODE_INVALID_JSON,
         RPC_ERROR_CODE_INVALID_PAYLOAD, RPC_ERROR_CODE_INVALID_REQUEST_ID,
         RPC_ERROR_CODE_UNSUPPORTED_KIND, RPC_ERROR_CODE_UNSUPPORTED_SCHEMA,
-        RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY,
+        RPC_FRAME_SCHEMA_VERSION, RPC_SERVE_CLOSED_RUN_STATUS_CAPACITY,
     };
 
     const RPC_SCHEMA_COMPAT_FIXTURE_SCHEMA_VERSION: u32 = 1;
@@ -2270,5 +2270,68 @@ not-json
             RPC_ERROR_CODE_UNSUPPORTED_SCHEMA
         );
         assert_eq!(responses[1]["kind"], "run.accepted");
+    }
+
+    fn deterministic_fuzz_bytes(mut seed: u64, len: usize) -> Vec<u8> {
+        let mut output = Vec::with_capacity(len);
+        for _ in 0..len {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            output.push((seed & 0xFF) as u8);
+        }
+        output
+    }
+
+    fn deterministic_fuzz_string(seed: u64, len: usize) -> String {
+        String::from_utf8_lossy(&deterministic_fuzz_bytes(seed, len)).to_string()
+    }
+
+    fn run_rpc_raw_fuzz_iterations(iterations: usize) -> usize {
+        for index in 0..iterations {
+            let len = (index.wrapping_mul(53) % 384).saturating_add(1);
+            let raw = deterministic_fuzz_string(0x5EED_CAFE_u64 ^ index as u64, len);
+            let response = dispatch_rpc_raw_with_error_envelope(&raw);
+            assert_eq!(response.schema_version, RPC_FRAME_SCHEMA_VERSION);
+            assert!(!response.kind.trim().is_empty());
+            assert!(!response.request_id.trim().is_empty());
+            assert!(response.payload.is_object());
+        }
+        iterations
+    }
+
+    fn run_rpc_ndjson_fuzz_iterations(iterations: usize) -> usize {
+        for index in 0..iterations {
+            let line_count = (index % 4).saturating_add(1);
+            let mut input = String::new();
+            for line_index in 0..line_count {
+                let seed = 0xA11C_0DED_u64 ^ (index as u64) ^ ((line_index as u64) << 9);
+                let len = ((index + line_index).wrapping_mul(41) % 320).saturating_add(1);
+                input.push_str(deterministic_fuzz_string(seed, len).as_str());
+                input.push('\n');
+            }
+            let report = dispatch_rpc_ndjson_input(&input);
+            assert!(report.processed_lines >= report.responses.len());
+            assert!(report.error_count <= report.processed_lines);
+        }
+        iterations
+    }
+
+    #[test]
+    fn spec_c01_rpc_raw_fuzz_conformance_no_panic_for_10000_inputs() {
+        let executed = run_rpc_raw_fuzz_iterations(10_000);
+        assert!(
+            executed >= 10_000,
+            "expected >=10000 iterations for conformance, got {executed}"
+        );
+    }
+
+    #[test]
+    fn spec_c02_rpc_ndjson_fuzz_conformance_no_panic_for_10000_inputs() {
+        let executed = run_rpc_ndjson_fuzz_iterations(10_000);
+        assert!(
+            executed >= 10_000,
+            "expected >=10000 iterations for conformance, got {executed}"
+        );
     }
 }
