@@ -18,7 +18,7 @@ impl SessionStore {
         let backend_reason_code = resolved_backend.reason_code;
         let _imported_legacy_entries = maybe_import_legacy_jsonl_into_sqlite(&path, backend)?;
         let entries = read_session_entries(&path, backend)?;
-        let usage_summary = read_session_usage_summary(&path)?;
+        let usage_summary = read_session_usage_summary(&path, backend)?;
         let next_id = entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
         debug!(
             target: "tau.session",
@@ -146,13 +146,13 @@ impl SessionStore {
             Duration::from_millis(self.lock_stale_ms),
         )?;
 
-        let mut summary = read_session_usage_summary(&self.path)?;
+        let mut summary = read_session_usage_summary(&self.path, self.backend)?;
         summary.input_tokens = summary.input_tokens.saturating_add(delta.input_tokens);
         summary.output_tokens = summary.output_tokens.saturating_add(delta.output_tokens);
         summary.total_tokens = summary.total_tokens.saturating_add(delta.total_tokens);
         summary.estimated_cost_usd += delta.estimated_cost_usd.max(0.0);
 
-        write_session_usage_summary_atomic(&self.path, &summary)?;
+        write_session_usage_summary_atomic(&self.path, &summary, self.backend)?;
         self.usage_summary = summary;
         debug!(
             target: "tau.session",

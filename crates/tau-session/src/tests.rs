@@ -1,8 +1,8 @@
 //! Session store tests covering unit, functional, integration, and regression cases.
 use std::{
+    cell::Cell,
     collections::HashSet,
-    env,
-    fs,
+    env, fs,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
     thread,
@@ -12,18 +12,55 @@ use std::{
 use tempfile::tempdir;
 
 use super::{
-    acquire_lock, CompactReport, RepairReport, SessionEntry, SessionImportMode,
-    SessionMergeStrategy, SessionRecord, SessionStorageBackend, SessionStore,
+    acquire_lock, resolve_session_backend, CompactReport, RepairReport, SessionEntry,
+    SessionImportMode, SessionMergeStrategy, SessionRecord, SessionStorageBackend, SessionStore,
     SessionUsageSummary, SessionValidationReport, SESSION_BACKEND_ENV, SESSION_POSTGRES_DSN_ENV,
-    resolve_session_backend,
 };
 
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+thread_local! {
+    static ENV_LOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+struct EnvLockGuard {
+    guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+fn env_lock() -> EnvLockGuard {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("environment lock")
+    let guard = ENV_LOCK_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current.saturating_add(1));
+        if current > 0 {
+            None
+        } else {
+            Some(
+                ENV_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .expect("environment lock"),
+            )
+        }
+    });
+    EnvLockGuard { guard }
+}
+
+impl Drop for EnvLockGuard {
+    fn drop(&mut self) {
+        let should_unlock = ENV_LOCK_DEPTH.with(|depth| {
+            let current = depth.get();
+            let next = current.saturating_sub(1);
+            depth.set(next);
+            next == 0
+        });
+        if should_unlock {
+            let _ = self.guard.take();
+        }
+    }
+}
+
+fn load_store(path: impl AsRef<std::path::Path>) -> anyhow::Result<SessionStore> {
+    let _env_guard = env_lock();
+    SessionStore::load(path)
 }
 
 struct ScopedEnvVar {
@@ -60,7 +97,7 @@ fn appends_and_restores_lineage() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -78,7 +115,7 @@ fn appends_and_restores_lineage() {
     assert_eq!(lineage.len(), 3);
     assert_eq!(lineage[0].text_content(), "sys");
 
-    let reloaded = SessionStore::load(&path).expect("reload");
+    let reloaded = load_store(&path).expect("reload");
     assert_eq!(reloaded.entries().len(), 3);
 }
 
@@ -87,7 +124,7 @@ fn supports_branching_from_older_id() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -128,7 +165,7 @@ fn unit_merge_branches_append_replays_source_unique_entries_on_target_head() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session-merge-append.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let root = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append")
@@ -181,7 +218,7 @@ fn functional_merge_branches_squash_creates_single_summary_entry() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session-merge-squash.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let root = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append")
@@ -219,7 +256,7 @@ fn integration_merge_branches_fast_forward_moves_head_without_writes() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session-merge-fast-forward.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let root = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append")
@@ -257,7 +294,7 @@ fn regression_merge_branches_fast_forward_rejects_diverged_branches() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session-merge-fast-forward-error.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let root = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append")
@@ -283,7 +320,7 @@ fn functional_export_lineage_writes_schema_valid_snapshot() {
     let path = temp.path().join("session.jsonl");
     let export = temp.path().join("export.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -302,7 +339,7 @@ fn functional_export_lineage_writes_schema_valid_snapshot() {
         .expect("lineage export should succeed");
     assert_eq!(exported, 3);
 
-    let snapshot = SessionStore::load(&export).expect("load export");
+    let snapshot = load_store(&export).expect("load export");
     assert_eq!(snapshot.entries().len(), 3);
     assert_eq!(snapshot.entries()[0].message.text_content(), "sys");
     assert_eq!(snapshot.entries()[1].message.text_content(), "q1");
@@ -313,7 +350,7 @@ fn functional_export_lineage_writes_schema_valid_snapshot() {
 fn unit_export_lineage_jsonl_includes_meta_and_entries() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.jsonl");
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -338,7 +375,7 @@ fn unit_import_snapshot_merge_remaps_colliding_ids() {
     let target = temp.path().join("target.jsonl");
     let source = temp.path().join("source.jsonl");
 
-    let mut target_store = SessionStore::load(&target).expect("load target");
+    let mut target_store = load_store(&target).expect("load target");
     let target_head = target_store
         .append_messages(None, &[tau_ai::Message::system("target-root")])
         .expect("append target root");
@@ -346,7 +383,7 @@ fn unit_import_snapshot_merge_remaps_colliding_ids() {
         .append_messages(target_head, &[tau_ai::Message::user("target-user")])
         .expect("append target user");
 
-    let mut source_store = SessionStore::load(&source).expect("load source");
+    let mut source_store = load_store(&source).expect("load source");
     let source_head = source_store
         .append_messages(None, &[tau_ai::Message::system("import-root")])
         .expect("append source root");
@@ -384,7 +421,7 @@ fn integration_export_import_roundtrip_merge_produces_valid_session_graph() {
     let target_path = temp.path().join("roundtrip-target.jsonl");
     let export_path = temp.path().join("roundtrip-export.jsonl");
 
-    let mut source_store = SessionStore::load(&source_path).expect("load source");
+    let mut source_store = load_store(&source_path).expect("load source");
     let source_head = source_store
         .append_messages(None, &[tau_ai::Message::system("source-root")])
         .expect("append source root");
@@ -401,7 +438,7 @@ fn integration_export_import_roundtrip_merge_produces_valid_session_graph() {
         .export_lineage(source_head, &export_path)
         .expect("export source lineage");
 
-    let mut target_store = SessionStore::load(&target_path).expect("load target");
+    let mut target_store = load_store(&target_path).expect("load target");
     target_store
         .append_messages(None, &[tau_ai::Message::system("target-root")])
         .expect("append target");
@@ -434,7 +471,7 @@ fn functional_export_import_roundtrip_replace_overwrites_target_graph() {
     let target_path = temp.path().join("replace-roundtrip-target.jsonl");
     let export_path = temp.path().join("replace-roundtrip-export.jsonl");
 
-    let mut source_store = SessionStore::load(&source_path).expect("load source");
+    let mut source_store = load_store(&source_path).expect("load source");
     let source_head = source_store
         .append_messages(None, &[tau_ai::Message::system("source-root")])
         .expect("append source");
@@ -445,7 +482,7 @@ fn functional_export_import_roundtrip_replace_overwrites_target_graph() {
         .export_lineage(source_store.head_id(), &export_path)
         .expect("export source");
 
-    let mut target_store = SessionStore::load(&target_path).expect("load target");
+    let mut target_store = load_store(&target_path).expect("load target");
     let target_head = target_store
         .append_messages(None, &[tau_ai::Message::system("target-root")])
         .expect("append target");
@@ -481,7 +518,7 @@ fn functional_import_snapshot_replace_overwrites_entries() {
     let target = temp.path().join("replace-target.jsonl");
     let source = temp.path().join("replace-source.jsonl");
 
-    let mut target_store = SessionStore::load(&target).expect("load target");
+    let mut target_store = load_store(&target).expect("load target");
     let head = target_store
         .append_messages(None, &[tau_ai::Message::system("target-root")])
         .expect("append target root");
@@ -525,7 +562,7 @@ fn integration_import_snapshot_replace_with_empty_source_clears_session() {
     let target = temp.path().join("replace-empty-target.jsonl");
     let source = temp.path().join("replace-empty-source.jsonl");
 
-    let mut target_store = SessionStore::load(&target).expect("load target");
+    let mut target_store = load_store(&target).expect("load target");
     target_store
         .append_messages(None, &[tau_ai::Message::system("target-root")])
         .expect("append target");
@@ -556,7 +593,7 @@ fn regression_import_snapshot_rejects_invalid_source_and_preserves_target() {
     let target = temp.path().join("invalid-target.jsonl");
     let source = temp.path().join("invalid-source.jsonl");
 
-    let mut target_store = SessionStore::load(&target).expect("load target");
+    let mut target_store = load_store(&target).expect("load target");
     target_store
         .append_messages(None, &[tau_ai::Message::system("target-root")])
         .expect("append target");
@@ -599,7 +636,7 @@ fn unit_validation_report_detects_duplicates_invalid_parents_and_cycles() {
         .join("\n");
     fs::write(&path, format!("{raw}\n")).expect("write invalid session");
 
-    let store = SessionStore::load(&path).expect("load");
+    let store = load_store(&path).expect("load");
     let report = store.validation_report();
     assert_eq!(
         report,
@@ -618,7 +655,7 @@ fn regression_validation_report_for_valid_session_is_clean() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("validate-valid.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -650,7 +687,7 @@ fn append_rejects_unknown_parent_id() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let error = store
         .append_messages(Some(42), &[tau_ai::Message::user("hello")])
         .expect_err("must fail for unknown parent");
@@ -673,7 +710,7 @@ fn detects_cycles_in_session_lineage() {
         .join("\n");
     fs::write(&path, format!("{raw}\n")).expect("write session file");
 
-    let store = SessionStore::load(&path).expect("load");
+    let store = load_store(&path).expect("load");
     let error = store
         .lineage_messages(Some(1))
         .expect_err("lineage should fail for cycle");
@@ -685,7 +722,7 @@ fn writes_schema_meta_record() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -712,7 +749,7 @@ fn loads_legacy_session_entry_lines_without_meta() {
     )
     .expect("write legacy");
 
-    let store = SessionStore::load(&path).expect("load legacy");
+    let store = load_store(&path).expect("load legacy");
     assert_eq!(store.entries().len(), 1);
     assert_eq!(store.entries()[0].message.text_content(), "legacy");
 }
@@ -732,7 +769,7 @@ fn repair_removes_invalid_and_cycle_entries() {
         .join("\n");
     fs::write(&path, format!("{raw}\n")).expect("write malformed session");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let report = store.repair().expect("repair should succeed");
 
     assert_eq!(
@@ -755,7 +792,7 @@ fn functional_compact_to_lineage_prunes_other_branches() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("compact.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -795,7 +832,7 @@ fn functional_compact_to_lineage_prunes_other_branches() {
     assert_eq!(store.branch_tips().len(), 1);
     assert_eq!(store.branch_tips()[0].id, head);
 
-    let reloaded = SessionStore::load(&path).expect("reload");
+    let reloaded = load_store(&path).expect("reload");
     assert_eq!(reloaded.entries().len(), 5);
     assert!(!reloaded.contains(head + 1));
     assert!(!reloaded.contains(head + 2));
@@ -806,7 +843,7 @@ fn integration_compact_then_append_preserves_next_id_progression() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("compact-append.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append")
@@ -837,7 +874,7 @@ fn regression_compact_to_lineage_errors_for_unknown_head() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("compact-unknown-head.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -860,7 +897,7 @@ fn regression_compact_to_lineage_fails_on_cycle() {
         .join("\n");
     fs::write(&path, format!("{raw}\n")).expect("write cycle session");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let error = store
         .compact_to_lineage(Some(1))
         .expect_err("cycle should fail");
@@ -872,7 +909,7 @@ fn unit_compact_empty_store_is_noop() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("compact-empty.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let report = store.compact_to_lineage(None).expect("compact");
     assert_eq!(
         report,
@@ -890,7 +927,7 @@ fn concurrent_appends_are_serialized_with_locking() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("concurrent.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("init");
@@ -900,7 +937,7 @@ fn concurrent_appends_are_serialized_with_locking() {
 
     let worker = |path: PathBuf, label: &'static str| {
         thread::spawn(move || {
-            let mut store = SessionStore::load(&path).expect("load worker");
+            let mut store = load_store(&path).expect("load worker");
             let head = store.head_id();
             store
                 .append_messages(head, &[tau_ai::Message::user(label)])
@@ -913,7 +950,7 @@ fn concurrent_appends_are_serialized_with_locking() {
     t1.join().expect("thread 1");
     t2.join().expect("thread 2");
 
-    let store = SessionStore::load(&path).expect("reload");
+    let store = load_store(&path).expect("reload");
     assert_eq!(store.entries().len(), 3);
 }
 
@@ -922,7 +959,7 @@ fn stress_parallel_appends_high_volume_remain_consistent() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("stress-concurrent.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("init");
@@ -936,7 +973,7 @@ fn stress_parallel_appends_high_volume_remain_consistent() {
             for append_index in 0..appends_per_worker {
                 let mut retries = 0usize;
                 loop {
-                    let mut store = SessionStore::load(&path).expect("load worker");
+                    let mut store = load_store(&path).expect("load worker");
                     let head = store.head_id();
                     match store.append_messages(
                         head,
@@ -963,7 +1000,7 @@ fn stress_parallel_appends_high_volume_remain_consistent() {
         handle.join().expect("worker join");
     }
 
-    let reloaded = SessionStore::load(&path).expect("reload");
+    let reloaded = load_store(&path).expect("reload");
     assert_eq!(reloaded.entries().len(), 1 + workers * appends_per_worker);
     let unique_ids = reloaded
         .entries()
@@ -978,7 +1015,7 @@ fn repair_command_is_idempotent_for_valid_session() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("idempotent.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -996,7 +1033,7 @@ fn lock_file_is_cleaned_up_after_append() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("lock-cleanup.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -1010,7 +1047,7 @@ fn session_file_remains_parseable_after_multiple_writes() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("atomic.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     for i in 0..10 {
         let head = store.head_id();
         store
@@ -1018,7 +1055,7 @@ fn session_file_remains_parseable_after_multiple_writes() {
             .expect("append");
     }
 
-    let reloaded = SessionStore::load(&path).expect("reload");
+    let reloaded = load_store(&path).expect("reload");
     assert_eq!(reloaded.entries().len(), 10);
 }
 
@@ -1026,7 +1063,7 @@ fn session_file_remains_parseable_after_multiple_writes() {
 fn regression_lineage_unknown_id_still_errors() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("unknown-id.jsonl");
-    let store = SessionStore::load(&path).expect("load");
+    let store = load_store(&path).expect("load");
 
     let error = store
         .lineage_messages(Some(999))
@@ -1039,7 +1076,7 @@ fn functional_branch_tips_returns_all_leaf_nodes() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("tips.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append")
@@ -1065,7 +1102,7 @@ fn integration_load_after_external_rewrite_keeps_consistency() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("external.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -1078,13 +1115,13 @@ fn integration_load_after_external_rewrite_keeps_consistency() {
         .join("\n");
     fs::write(&path, format!("{external_raw}\n")).expect("external write");
 
-    let mut reloaded = SessionStore::load(&path).expect("reload");
+    let mut reloaded = load_store(&path).expect("reload");
     let head = reloaded.head_id();
     reloaded
         .append_messages(head, &[tau_ai::Message::assistant_text("local")])
         .expect("append");
 
-    let final_store = SessionStore::load(&path).expect("final load");
+    let final_store = load_store(&path).expect("final load");
     assert_eq!(final_store.entries().len(), 3);
 }
 
@@ -1106,7 +1143,7 @@ fn regression_repair_handles_duplicate_ids() {
         .join("\n");
     fs::write(&path, format!("{raw}\n")).expect("write dupes");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let report = store.repair().expect("repair");
     assert_eq!(report.removed_duplicates, 1);
     assert_eq!(report.duplicate_ids, vec![1]);
@@ -1119,7 +1156,7 @@ fn unit_append_messages_updates_internal_next_id() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("next-id.jsonl");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -1146,7 +1183,7 @@ fn regression_repair_retains_root_nodes() {
         .join("\n");
     fs::write(&path, format!("{raw}\n")).expect("write roots");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let report = store.repair().expect("repair");
     assert_eq!(report, RepairReport::default());
     assert_eq!(store.entries().len(), 2);
@@ -1156,7 +1193,7 @@ fn regression_repair_retains_root_nodes() {
 fn functional_lineage_for_none_head_returns_empty() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("none-head.jsonl");
-    let store = SessionStore::load(&path).expect("load");
+    let store = load_store(&path).expect("load");
 
     let lineage = store.lineage_messages(None).expect("lineage");
     assert!(lineage.is_empty());
@@ -1167,7 +1204,7 @@ fn integration_parallel_stores_append_consistent_ids() {
     let temp = tempdir().expect("tempdir");
     let path = Arc::new(temp.path().join("parallel-ids.jsonl"));
 
-    let mut store = SessionStore::load(&*path).expect("load");
+    let mut store = load_store(&*path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -1176,7 +1213,7 @@ fn integration_parallel_stores_append_consistent_ids() {
         .map(|i| {
             let path = path.clone();
             thread::spawn(move || {
-                let mut store = SessionStore::load(&*path).expect("load thread");
+                let mut store = load_store(&*path).expect("load thread");
                 let head = store.head_id();
                 store
                     .append_messages(head, &[tau_ai::Message::user(format!("u{i}"))])
@@ -1189,7 +1226,7 @@ fn integration_parallel_stores_append_consistent_ids() {
         handle.join().expect("thread join");
     }
 
-    let store = SessionStore::load(&*path).expect("reload");
+    let store = load_store(&*path).expect("reload");
     let mut ids = store
         .entries()
         .iter()
@@ -1213,7 +1250,7 @@ fn regression_repair_report_counts_invalid_cycles() {
         .join("\n");
     fs::write(&path, format!("{raw}\n")).expect("write cycles");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let report = store.repair().expect("repair");
     assert_eq!(report.removed_invalid_parent, 0);
     assert_eq!(report.removed_cycles, 2);
@@ -1227,7 +1264,7 @@ fn regression_lock_timeout_when_lock_file_persists() {
     let lock_path = path.with_extension("lock");
     fs::write(&lock_path, "stale").expect("write lock");
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store.set_lock_policy(150, 0);
     let error = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
@@ -1245,7 +1282,7 @@ fn functional_stale_lock_file_is_reclaimed_after_threshold() {
     fs::write(&lock_path, "stale").expect("write lock");
     thread::sleep(Duration::from_millis(30));
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store.set_lock_policy(1_000, 10);
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
@@ -1277,7 +1314,7 @@ fn functional_append_messages_creates_missing_session_parent_directory() {
     let parent = path.parent().expect("session parent");
     assert!(!parent.exists());
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append");
@@ -1293,7 +1330,7 @@ fn regression_default_tau_session_initialization_succeeds_without_existing_dir()
     let parent = path.parent().expect("session parent");
     assert!(!parent.exists());
 
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     let head = store.ensure_initialized("system").expect("initialize");
     assert_eq!(head, Some(1));
     assert!(parent.exists());
@@ -1307,7 +1344,7 @@ fn regression_session_load_precreates_default_tau_parent_directory() {
     let parent = path.parent().expect("session parent");
     assert!(!parent.exists());
 
-    let store = SessionStore::load(&path).expect("load");
+    let store = load_store(&path).expect("load");
     assert!(store.entries().is_empty());
     assert!(parent.exists());
 }
@@ -1316,7 +1353,7 @@ fn regression_session_load_precreates_default_tau_parent_directory() {
 fn functional_sqlite_backend_round_trip_preserves_lineage() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.sqlite");
-    let mut store = SessionStore::load(&path).expect("load sqlite store");
+    let mut store = load_store(&path).expect("load sqlite store");
     assert_eq!(store.storage_backend(), SessionStorageBackend::Sqlite);
 
     let head = store
@@ -1330,7 +1367,7 @@ fn functional_sqlite_backend_round_trip_preserves_lineage() {
     assert_eq!(lineage[0].text_content(), "sqlite-root");
     assert_eq!(lineage[1].text_content(), "sqlite-reply");
 
-    let reloaded = SessionStore::load(&path).expect("reload sqlite store");
+    let reloaded = load_store(&path).expect("reload sqlite store");
     assert_eq!(reloaded.storage_backend(), SessionStorageBackend::Sqlite);
     assert_eq!(reloaded.entries().len(), 2);
 }
@@ -1341,7 +1378,7 @@ fn integration_sqlite_backend_auto_imports_legacy_jsonl_snapshot() {
     let legacy_path = temp.path().join("legacy.jsonl");
     let sqlite_path = temp.path().join("legacy.sqlite");
 
-    let mut legacy_store = SessionStore::load(&legacy_path).expect("load legacy jsonl store");
+    let mut legacy_store = load_store(&legacy_path).expect("load legacy jsonl store");
     let head = legacy_store
         .append_messages(None, &[tau_ai::Message::system("legacy-root")])
         .expect("append root");
@@ -1349,7 +1386,7 @@ fn integration_sqlite_backend_auto_imports_legacy_jsonl_snapshot() {
         .append_messages(head, &[tau_ai::Message::assistant_text("legacy-reply")])
         .expect("append reply");
 
-    let sqlite_store = SessionStore::load(&sqlite_path).expect("load sqlite store");
+    let sqlite_store = load_store(&sqlite_path).expect("load sqlite store");
     assert_eq!(
         sqlite_store.storage_backend(),
         SessionStorageBackend::Sqlite
@@ -1368,7 +1405,7 @@ fn integration_sqlite_backend_auto_imports_legacy_jsonl_snapshot() {
 fn integration_session_usage_summary_persists_across_store_reload() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("usage-ledger.jsonl");
-    let mut store = SessionStore::load(&path).expect("load");
+    let mut store = load_store(&path).expect("load");
     store
         .append_messages(None, &[tau_ai::Message::system("sys")])
         .expect("append root");
@@ -1396,7 +1433,7 @@ fn integration_session_usage_summary_persists_across_store_reload() {
     assert_eq!(usage.total_tokens, 35);
     assert!((usage.estimated_cost_usd - 0.014).abs() < 1e-12);
 
-    let reloaded = SessionStore::load(&path).expect("reload");
+    let reloaded = load_store(&path).expect("reload");
     let reloaded_usage = reloaded.usage_summary();
     assert_eq!(reloaded_usage.input_tokens, 25);
     assert_eq!(reloaded_usage.output_tokens, 10);
@@ -1427,7 +1464,7 @@ fn spec_c05_postgres_invalid_dsn_reports_backend_error_not_scaffold() {
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("session.pg");
 
-    let error = SessionStore::load(&path).expect_err("invalid dsn should fail");
+    let error = load_store(&path).expect_err("invalid dsn should fail");
     let message = error.to_string();
     assert!(
         !message.contains("scaffolded but not implemented"),
@@ -1447,12 +1484,14 @@ fn integration_spec_c02_postgres_round_trip_preserves_lineage_when_dsn_provided(
     };
 
     let _env_guard = env_lock();
-    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
     let _dsn_env = ScopedEnvVar::set(SESSION_POSTGRES_DSN_ENV, dsn.as_str());
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("spec-c02-postgres-roundtrip");
 
-    let mut store = SessionStore::load(&path).expect("load postgres store");
+    let mut store = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path).expect("load postgres store")
+    };
     assert_eq!(store.storage_backend(), SessionStorageBackend::Postgres);
     let head = store
         .append_messages(None, &[tau_ai::Message::system("postgres-root")])
@@ -1465,7 +1504,10 @@ fn integration_spec_c02_postgres_round_trip_preserves_lineage_when_dsn_provided(
     assert_eq!(lineage[0].text_content(), "postgres-root");
     assert_eq!(lineage[1].text_content(), "postgres-reply");
 
-    let reloaded = SessionStore::load(&path).expect("reload postgres store");
+    let reloaded = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path).expect("reload postgres store")
+    };
     assert_eq!(reloaded.entries().len(), 2);
 }
 
@@ -1477,12 +1519,14 @@ fn integration_spec_c03_postgres_usage_summary_persists_when_dsn_provided() {
     };
 
     let _env_guard = env_lock();
-    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
     let _dsn_env = ScopedEnvVar::set(SESSION_POSTGRES_DSN_ENV, dsn.as_str());
     let temp = tempdir().expect("tempdir");
     let path = temp.path().join("spec-c03-postgres-usage");
 
-    let mut store = SessionStore::load(&path).expect("load postgres store");
+    let mut store = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path).expect("load postgres store")
+    };
     store
         .append_messages(None, &[tau_ai::Message::system("root")])
         .expect("append");
@@ -1495,7 +1539,10 @@ fn integration_spec_c03_postgres_usage_summary_persists_when_dsn_provided() {
         })
         .expect("record usage");
 
-    let reloaded = SessionStore::load(&path).expect("reload");
+    let reloaded = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path).expect("reload")
+    };
     let usage = reloaded.usage_summary();
     assert_eq!(usage.input_tokens, 10);
     assert_eq!(usage.output_tokens, 3);
@@ -1511,24 +1558,35 @@ fn integration_spec_c04_postgres_session_paths_are_isolated_when_dsn_provided() 
     };
 
     let _env_guard = env_lock();
-    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
     let _dsn_env = ScopedEnvVar::set(SESSION_POSTGRES_DSN_ENV, dsn.as_str());
     let temp = tempdir().expect("tempdir");
     let path_a = temp.path().join("spec-c04-a");
     let path_b = temp.path().join("spec-c04-b");
 
-    let mut store_a = SessionStore::load(&path_a).expect("load A");
+    let mut store_a = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path_a).expect("load A")
+    };
     store_a
         .append_messages(None, &[tau_ai::Message::system("A")])
         .expect("append A");
 
-    let mut store_b = SessionStore::load(&path_b).expect("load B");
+    let mut store_b = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path_b).expect("load B")
+    };
     store_b
         .append_messages(None, &[tau_ai::Message::system("B")])
         .expect("append B");
 
-    let reloaded_a = SessionStore::load(&path_a).expect("reload A");
-    let reloaded_b = SessionStore::load(&path_b).expect("reload B");
+    let reloaded_a = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path_a).expect("reload A")
+    };
+    let reloaded_b = {
+        let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+        load_store(&path_b).expect("reload B")
+    };
     assert_eq!(reloaded_a.entries().len(), 1);
     assert_eq!(reloaded_b.entries().len(), 1);
     assert_eq!(reloaded_a.entries()[0].message.text_content(), "A");

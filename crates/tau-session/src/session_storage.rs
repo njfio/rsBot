@@ -1,5 +1,6 @@
 //! Session persistence helpers with JSONL and SQLite backends.
 use super::*;
+use postgres::{Client, NoTls};
 use rusqlite::{params, Connection};
 use std::env;
 
@@ -146,10 +147,7 @@ pub(super) fn read_session_entries(
     match backend {
         SessionStorageBackend::Jsonl => read_session_entries_jsonl(path),
         SessionStorageBackend::Sqlite => read_session_entries_sqlite(path),
-        SessionStorageBackend::Postgres => bail!(
-            "session postgres backend is scaffolded but not implemented; set {}=jsonl or sqlite",
-            SESSION_BACKEND_ENV
-        ),
+        SessionStorageBackend::Postgres => read_session_entries_postgres(path),
     }
 }
 
@@ -161,15 +159,24 @@ pub(super) fn write_session_entries_atomic(
     match backend {
         SessionStorageBackend::Jsonl => write_session_entries_atomic_jsonl(path, entries),
         SessionStorageBackend::Sqlite => write_session_entries_sqlite(path, entries),
-        SessionStorageBackend::Postgres => bail!(
-            "session postgres backend is scaffolded but not implemented; set {}=jsonl or sqlite",
-            SESSION_BACKEND_ENV
-        ),
+        SessionStorageBackend::Postgres => write_session_entries_postgres(path, entries),
     }
 }
 
 /// Read persisted usage summary for a session store.
-pub(super) fn read_session_usage_summary(path: &Path) -> Result<SessionUsageSummary> {
+pub(super) fn read_session_usage_summary(
+    path: &Path,
+    backend: SessionStorageBackend,
+) -> Result<SessionUsageSummary> {
+    match backend {
+        SessionStorageBackend::Postgres => read_session_usage_summary_postgres(path),
+        SessionStorageBackend::Jsonl | SessionStorageBackend::Sqlite => {
+            read_session_usage_summary_json(path)
+        }
+    }
+}
+
+fn read_session_usage_summary_json(path: &Path) -> Result<SessionUsageSummary> {
     let usage_path = session_usage_path(path);
     if !usage_path.exists() {
         return Ok(SessionUsageSummary::default());
@@ -215,7 +222,17 @@ pub(super) fn read_session_usage_summary(path: &Path) -> Result<SessionUsageSumm
 pub(super) fn write_session_usage_summary_atomic(
     path: &Path,
     usage: &SessionUsageSummary,
+    backend: SessionStorageBackend,
 ) -> Result<()> {
+    match backend {
+        SessionStorageBackend::Postgres => write_session_usage_summary_postgres(path, usage),
+        SessionStorageBackend::Jsonl | SessionStorageBackend::Sqlite => {
+            write_session_usage_summary_atomic_json(path, usage)
+        }
+    }
+}
+
+fn write_session_usage_summary_atomic_json(path: &Path, usage: &SessionUsageSummary) -> Result<()> {
     let usage_path = session_usage_path(path);
     if let Some(parent) = usage_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -432,6 +449,207 @@ fn write_session_entries_sqlite(path: &Path, entries: &[SessionEntry]) -> Result
     Ok(())
 }
 
+fn read_session_entries_postgres(path: &Path) -> Result<Vec<SessionEntry>> {
+    let session_path_key = session_path_key(path)?;
+    let mut client = open_session_postgres_client()?;
+    let rows = client
+        .query(
+            r#"
+            SELECT id, parent_id, message_json
+            FROM tau_session_entries
+            WHERE session_path_key = $1
+            ORDER BY id ASC
+            "#,
+            &[&session_path_key],
+        )
+        .context("failed to query postgres session entries")?;
+
+    let mut entries = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id_raw: i64 = row.get(0);
+        let parent_raw: Option<i64> = row.get(1);
+        let message_json: String = row.get(2);
+        let id = u64::try_from(id_raw).with_context(|| {
+            format!(
+                "invalid postgres session id {} for key {}",
+                id_raw, session_path_key
+            )
+        })?;
+        let parent_id = match parent_raw {
+            Some(value) => Some(u64::try_from(value).with_context(|| {
+                format!(
+                    "invalid postgres parent id {} for key {}",
+                    value, session_path_key
+                )
+            })?),
+            None => None,
+        };
+        let message = serde_json::from_str::<Message>(&message_json).with_context(|| {
+            format!(
+                "failed to decode postgres session message for id {} and key {}",
+                id, session_path_key
+            )
+        })?;
+        entries.push(SessionEntry {
+            id,
+            parent_id,
+            message,
+        });
+    }
+    Ok(entries)
+}
+
+fn write_session_entries_postgres(path: &Path, entries: &[SessionEntry]) -> Result<()> {
+    let session_path_key = session_path_key(path)?;
+    let mut client = open_session_postgres_client()?;
+    let mut transaction = client
+        .transaction()
+        .context("failed to start postgres session transaction")?;
+    transaction
+        .execute(
+            "DELETE FROM tau_session_entries WHERE session_path_key = $1",
+            &[&session_path_key],
+        )
+        .context("failed to clear postgres session entries")?;
+    for entry in entries {
+        let id = i64::try_from(entry.id)
+            .with_context(|| format!("session id {} exceeds postgres bigint", entry.id))?;
+        let parent_id = match entry.parent_id {
+            Some(value) => Some(
+                i64::try_from(value)
+                    .with_context(|| format!("parent id {} exceeds postgres bigint", value))?,
+            ),
+            None => None,
+        };
+        let message_json =
+            serde_json::to_string(&entry.message).context("failed to encode session message")?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO tau_session_entries (session_path_key, id, parent_id, message_json)
+                VALUES ($1, $2, $3, $4)
+                "#,
+                &[&session_path_key, &id, &parent_id, &message_json],
+            )
+            .context("failed to write postgres session entry")?;
+    }
+    transaction
+        .commit()
+        .context("failed to commit postgres session entries")?;
+    Ok(())
+}
+
+fn read_session_usage_summary_postgres(path: &Path) -> Result<SessionUsageSummary> {
+    let session_path_key = session_path_key(path)?;
+    let mut client = open_session_postgres_client()?;
+    let row = client
+        .query_opt(
+            r#"
+            SELECT schema_version, input_tokens, output_tokens, total_tokens, estimated_cost_usd
+            FROM tau_session_usage
+            WHERE session_path_key = $1
+            "#,
+            &[&session_path_key],
+        )
+        .context("failed to query postgres session usage summary")?;
+
+    let Some(row) = row else {
+        return Ok(SessionUsageSummary::default());
+    };
+
+    let schema_version: i32 = row.get(0);
+    if schema_version < 0 || schema_version as u32 > SESSION_USAGE_SCHEMA_VERSION {
+        bail!(
+            "unsupported postgres session usage schema version {} for key {} (supported up to {})",
+            schema_version,
+            session_path_key,
+            SESSION_USAGE_SCHEMA_VERSION
+        );
+    }
+
+    let input_tokens = u64::try_from(row.get::<_, i64>(1)).with_context(|| {
+        format!(
+            "invalid postgres input_tokens for session key {}",
+            session_path_key
+        )
+    })?;
+    let output_tokens = u64::try_from(row.get::<_, i64>(2)).with_context(|| {
+        format!(
+            "invalid postgres output_tokens for session key {}",
+            session_path_key
+        )
+    })?;
+    let total_tokens = u64::try_from(row.get::<_, i64>(3)).with_context(|| {
+        format!(
+            "invalid postgres total_tokens for session key {}",
+            session_path_key
+        )
+    })?;
+    let estimated_cost_usd: f64 = row.get(4);
+
+    Ok(SessionUsageSummary {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        estimated_cost_usd,
+    })
+}
+
+fn write_session_usage_summary_postgres(path: &Path, usage: &SessionUsageSummary) -> Result<()> {
+    let session_path_key = session_path_key(path)?;
+    let mut client = open_session_postgres_client()?;
+    let input_tokens = i64::try_from(usage.input_tokens).with_context(|| {
+        format!(
+            "input_tokens {} exceeds postgres bigint",
+            usage.input_tokens
+        )
+    })?;
+    let output_tokens = i64::try_from(usage.output_tokens).with_context(|| {
+        format!(
+            "output_tokens {} exceeds postgres bigint",
+            usage.output_tokens
+        )
+    })?;
+    let total_tokens = i64::try_from(usage.total_tokens).with_context(|| {
+        format!(
+            "total_tokens {} exceeds postgres bigint",
+            usage.total_tokens
+        )
+    })?;
+    let schema_version = i32::try_from(SESSION_USAGE_SCHEMA_VERSION)
+        .context("session usage schema version exceeds postgres integer")?;
+    client
+        .execute(
+            r#"
+            INSERT INTO tau_session_usage (
+                session_path_key,
+                schema_version,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                estimated_cost_usd
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (session_path_key) DO UPDATE SET
+                schema_version = EXCLUDED.schema_version,
+                input_tokens = EXCLUDED.input_tokens,
+                output_tokens = EXCLUDED.output_tokens,
+                total_tokens = EXCLUDED.total_tokens,
+                estimated_cost_usd = EXCLUDED.estimated_cost_usd
+            "#,
+            &[
+                &session_path_key,
+                &schema_version,
+                &input_tokens,
+                &output_tokens,
+                &total_tokens,
+                &usage.estimated_cost_usd,
+            ],
+        )
+        .context("failed to upsert postgres session usage summary")?;
+    Ok(())
+}
+
 fn open_session_sqlite_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -450,6 +668,62 @@ fn open_session_sqlite_connection(path: &Path) -> Result<Connection> {
         "#,
     )?;
     Ok(connection)
+}
+
+fn open_session_postgres_client() -> Result<Client> {
+    let dsn = env::var(SESSION_POSTGRES_DSN_ENV)
+        .map(|value| value.trim().to_string())
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "{}=postgres requires non-empty {}",
+                SESSION_BACKEND_ENV,
+                SESSION_POSTGRES_DSN_ENV
+            )
+        })?;
+    let mut client = Client::connect(&dsn, NoTls)
+        .context("failed to connect to postgres session store backend")?;
+    initialize_session_postgres_schema(&mut client)?;
+    Ok(client)
+}
+
+fn initialize_session_postgres_schema(client: &mut Client) -> Result<()> {
+    client
+        .batch_execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS tau_session_entries (
+                session_path_key TEXT NOT NULL,
+                id BIGINT NOT NULL,
+                parent_id BIGINT NULL,
+                message_json TEXT NOT NULL,
+                PRIMARY KEY (session_path_key, id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tau_session_entries_parent
+                ON tau_session_entries(session_path_key, parent_id);
+            CREATE TABLE IF NOT EXISTS tau_session_usage (
+                session_path_key TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                input_tokens BIGINT NOT NULL,
+                output_tokens BIGINT NOT NULL,
+                total_tokens BIGINT NOT NULL,
+                estimated_cost_usd DOUBLE PRECISION NOT NULL
+            );
+            "#,
+        )
+        .context("failed to initialize postgres session schema")?;
+    Ok(())
+}
+
+fn session_path_key(path: &Path) -> Result<String> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Ok(canonical.to_string_lossy().to_string());
+    }
+    if path.is_absolute() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    let current_dir = std::env::current_dir().context("failed to resolve current directory")?;
+    Ok(current_dir.join(path).to_string_lossy().to_string())
 }
 
 fn initialize_session_sqlite_schema(connection: &Connection) -> Result<()> {
