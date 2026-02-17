@@ -328,6 +328,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         }
     }
 

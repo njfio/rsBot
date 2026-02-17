@@ -545,6 +545,7 @@ fn integration_prompt_telemetry_logger_persists_completed_record() {
                 input_tokens: 4,
                 output_tokens: 2,
                 total_tokens: 6,
+                cached_input_tokens: 0,
             },
             finish_reason: Some("stop".to_string()),
         })
@@ -586,6 +587,7 @@ fn regression_prompt_telemetry_logger_marks_interrupted_runs() {
                 input_tokens: 1,
                 output_tokens: 1,
                 total_tokens: 2,
+                cached_input_tokens: 0,
             },
             finish_reason: Some("length".to_string()),
         })
@@ -706,6 +708,7 @@ async fn functional_run_prompt_with_cancellation_records_session_usage_and_cost(
             input_tokens: 30,
             output_tokens: 10,
             total_tokens: 40,
+            cached_input_tokens: 0,
         },
     }]);
     let mut agent = Agent::new(
@@ -714,6 +717,7 @@ async fn functional_run_prompt_with_cancellation_records_session_usage_and_cost(
         }),
         AgentConfig {
             model_input_cost_per_million: Some(10.0),
+            model_cached_input_cost_per_million: None,
             model_output_cost_per_million: Some(20.0),
             ..AgentConfig::default()
         },

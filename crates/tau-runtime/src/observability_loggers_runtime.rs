@@ -630,6 +630,7 @@ mod tests {
                     input_tokens: 1,
                     output_tokens: 1,
                     total_tokens: 2,
+                    cached_input_tokens: 0,
                 },
                 finish_reason: Some("length".to_string()),
             })
@@ -672,6 +673,7 @@ mod tests {
                     input_tokens: 100,
                     output_tokens: 40,
                     total_tokens: 140,
+                    cached_input_tokens: 0,
                 },
                 finish_reason: Some("stop".to_string()),
             })

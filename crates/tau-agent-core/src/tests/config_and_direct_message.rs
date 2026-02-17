@@ -257,6 +257,7 @@ fn unit_estimate_chat_request_tokens_accounts_for_tools_and_max_tokens() {
         json_mode: false,
         max_tokens: Some(64),
         temperature: Some(0.0),
+        prompt_cache: Default::default(),
     };
 
     let estimate = estimate_chat_request_tokens(&request);
@@ -277,6 +278,7 @@ fn functional_estimate_chat_request_tokens_accounts_for_media_blocks() {
         json_mode: false,
         max_tokens: Some(32),
         temperature: None,
+        prompt_cache: Default::default(),
     };
     let with_media = ChatRequest {
         model: "openai/gpt-4o-mini".to_string(),
@@ -296,6 +298,7 @@ fn functional_estimate_chat_request_tokens_accounts_for_media_blocks() {
         json_mode: false,
         max_tokens: Some(32),
         temperature: None,
+        prompt_cache: Default::default(),
     };
 
     let baseline_estimate = estimate_chat_request_tokens(&baseline);

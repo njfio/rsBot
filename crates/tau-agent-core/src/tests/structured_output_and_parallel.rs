@@ -38,6 +38,7 @@ async fn turn_end_events_include_usage_finish_reason_and_request_duration() {
         input_tokens: 3,
         output_tokens: 2,
         total_tokens: 5,
+        cached_input_tokens: 0,
     };
     let client = Arc::new(MockClient {
         responses: AsyncMutex::new(VecDeque::from([ChatResponse {

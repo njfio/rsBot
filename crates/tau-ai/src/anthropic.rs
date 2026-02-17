@@ -208,9 +208,13 @@ fn build_messages_request_body(request: &ChatRequest) -> Value {
         if !system.is_empty() {
             system_segments.push(system);
         }
-        body["system"] = json!(system_segments.join("\n\n"));
+        set_anthropic_system_prompt(
+            &mut body,
+            system_segments.join("\n\n"),
+            &request.prompt_cache,
+        );
     } else if !system.is_empty() {
-        body["system"] = json!(system);
+        set_anthropic_system_prompt(&mut body, system, &request.prompt_cache);
     }
 
     if !request.tools.is_empty() {
@@ -229,6 +233,31 @@ fn build_messages_request_body(request: &ChatRequest) -> Value {
     }
 
     body
+}
+
+fn set_anthropic_system_prompt(
+    body: &mut Value,
+    system_prompt: String,
+    prompt_cache: &crate::PromptCacheConfig,
+) {
+    if !prompt_cache.enabled {
+        body["system"] = json!(system_prompt);
+        return;
+    }
+
+    let mut system_block = json!({
+        "type": "text",
+        "text": system_prompt,
+        "cache_control": {
+            "type": "ephemeral",
+        }
+    });
+    if let Some(retention) = prompt_cache.retention.as_ref() {
+        if !retention.trim().is_empty() {
+            system_block["cache_control"]["ttl"] = json!(retention);
+        }
+    }
+    body["system"] = json!([system_block]);
 }
 
 fn default_max_tokens_for_model(model: &str) -> u32 {
@@ -475,6 +504,7 @@ fn parse_messages_response(raw: &str) -> Result<ChatResponse, TauAiError> {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             total_tokens: usage.input_tokens + usage.output_tokens,
+            cached_input_tokens: usage.cache_read_input_tokens.unwrap_or_default(),
         })
         .unwrap_or_default();
 
@@ -605,6 +635,16 @@ fn apply_anthropic_stream_event(
                 usage.input_tokens = input_tokens;
                 usage.total_tokens = usage.input_tokens + usage.output_tokens;
             }
+            if let Some(cache_read_input_tokens) = payload
+                .get("message")
+                .and_then(Value::as_object)
+                .and_then(|message| message.get("usage"))
+                .and_then(Value::as_object)
+                .and_then(|usage| usage.get("cache_read_input_tokens"))
+                .and_then(Value::as_u64)
+            {
+                usage.cached_input_tokens = cache_read_input_tokens;
+            }
         }
         "content_block_start" => {
             let Some(index) = payload.get("index").and_then(Value::as_u64) else {
@@ -686,6 +726,14 @@ fn apply_anthropic_stream_event(
             {
                 usage.output_tokens = output_tokens;
                 usage.total_tokens = usage.input_tokens + usage.output_tokens;
+            }
+            if let Some(cache_read_input_tokens) = payload
+                .get("usage")
+                .and_then(Value::as_object)
+                .and_then(|usage| usage.get("cache_read_input_tokens"))
+                .and_then(Value::as_u64)
+            {
+                usage.cached_input_tokens = cache_read_input_tokens;
             }
         }
         _ => {}
@@ -785,6 +833,7 @@ enum AnthropicMediaSource {
 struct AnthropicUsage {
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -804,7 +853,10 @@ mod tests {
         apply_anthropic_stream_event, build_messages_request_body,
         finalize_anthropic_stream_response, parse_messages_response,
     };
-    use crate::{ChatRequest, ContentBlock, Message, MessageRole, ToolChoice, ToolDefinition};
+    use crate::{
+        ChatRequest, ContentBlock, Message, MessageRole, PromptCacheConfig, ToolChoice,
+        ToolDefinition,
+    };
 
     #[test]
     fn serializes_tool_messages() {
@@ -829,6 +881,7 @@ mod tests {
             json_mode: true,
             max_tokens: Some(512),
             temperature: Some(0.0),
+            prompt_cache: Default::default(),
         };
 
         let body = build_messages_request_body(&request);
@@ -859,11 +912,38 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: PromptCacheConfig::default(),
         };
 
         let body = build_messages_request_body(&request);
         assert_eq!(body["tool_choice"]["type"], "tool");
         assert_eq!(body["tool_choice"]["name"], "read");
+    }
+
+    #[test]
+    fn spec_c02_anthropic_serializes_system_cache_control_when_enabled() {
+        let request = ChatRequest {
+            model: "claude-sonnet-4-20250514".to_string(),
+            messages: vec![
+                Message::system("Stable operating policy"),
+                Message::user("hello"),
+            ],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+            prompt_cache: PromptCacheConfig {
+                enabled: true,
+                cache_key: None,
+                retention: Some("5m".to_string()),
+                google_cached_content: None,
+            },
+        };
+
+        let body = build_messages_request_body(&request);
+        assert_eq!(body["system"][0]["type"], "text");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]
@@ -880,6 +960,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_messages_request_body(&request);
@@ -907,6 +988,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_messages_request_body(&request);
@@ -923,6 +1005,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_messages_request_body(&request);
@@ -947,6 +1030,22 @@ mod tests {
     }
 
     #[test]
+    fn spec_c05_anthropic_parses_cache_read_tokens_from_usage() {
+        let raw = r#"{
+            "content": [
+                {"type":"text","text":"cached"}
+            ],
+            "stop_reason":"end_turn",
+            "usage":{"input_tokens":200,"output_tokens":20,"cache_read_input_tokens":160}
+        }"#;
+
+        let response = parse_messages_response(raw).expect("response should parse");
+        assert_eq!(response.usage.input_tokens, 200);
+        assert_eq!(response.usage.cached_input_tokens, 160);
+        assert_eq!(response.usage.total_tokens, 220);
+    }
+
+    #[test]
     fn unit_serializes_multimodal_blocks_for_anthropic() {
         let request = ChatRequest {
             model: "claude-sonnet-4-20250514".to_string(),
@@ -966,6 +1065,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_messages_request_body(&request);

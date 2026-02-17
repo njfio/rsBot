@@ -41,6 +41,7 @@ impl LlmClient for StaticReplyClient {
                 input_tokens: 13,
                 output_tokens: 8,
                 total_tokens: 21,
+                cached_input_tokens: 0,
             },
         })
     }
@@ -59,6 +60,7 @@ impl LlmClient for SlowReplyClient {
                 input_tokens: 5,
                 output_tokens: 3,
                 total_tokens: 8,
+                cached_input_tokens: 0,
             },
         })
     }

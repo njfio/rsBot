@@ -90,6 +90,7 @@ async fn openai_client_sends_expected_http_request() {
         json_mode: true,
         max_tokens: Some(128),
         temperature: Some(0.0),
+        prompt_cache: Default::default(),
     };
 
     let response = client
@@ -164,6 +165,7 @@ async fn integration_openai_client_routes_codex_models_to_responses_endpoint() {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect("codex request should route to responses endpoint");
@@ -237,6 +239,7 @@ async fn integration_openai_client_falls_back_to_responses_when_chat_reports_end
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect("chat endpoint mismatch should fallback to responses endpoint");
@@ -304,6 +307,7 @@ async fn regression_openai_client_falls_back_to_chat_when_responses_endpoint_is_
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect("missing responses endpoint should fallback to chat endpoint");
@@ -373,6 +377,7 @@ async fn functional_openai_client_outbound_secret_fixture_matrix_preserves_usage
                 json_mode: false,
                 max_tokens: None,
                 temperature: None,
+                prompt_cache: Default::default(),
             })
             .await
             .unwrap_or_else(|error| panic!("completion should succeed for {case_id}: {error}"));
@@ -437,6 +442,7 @@ async fn integration_openai_client_supports_azure_api_key_header_and_api_version
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect("azure-compatible completion should succeed");
@@ -499,6 +505,7 @@ async fn anthropic_client_sends_expected_http_request() {
         json_mode: false,
         max_tokens: Some(128),
         temperature: Some(0.0),
+        prompt_cache: Default::default(),
     };
 
     let response = client
@@ -571,6 +578,7 @@ async fn google_client_sends_expected_http_request() {
         json_mode: true,
         max_tokens: Some(128),
         temperature: Some(0.0),
+        prompt_cache: Default::default(),
     };
 
     let response = client
@@ -613,6 +621,7 @@ async fn openai_client_surfaces_http_status_error() {
         json_mode: false,
         max_tokens: None,
         temperature: None,
+        prompt_cache: Default::default(),
     };
 
     let error = client
@@ -673,6 +682,7 @@ async fn openai_client_retries_on_rate_limit_then_succeeds() {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect("retry should eventually succeed");
@@ -729,6 +739,7 @@ async fn integration_openai_client_respects_retry_after_header_floor() {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect("retry should eventually succeed");
@@ -787,6 +798,7 @@ async fn openai_client_retry_budget_can_block_retries() {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect_err("retry budget should block retry");
@@ -841,6 +853,7 @@ async fn regression_openai_client_returns_timeout_error_when_server_is_slow() {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         })
         .await
         .expect_err("request should timeout");
@@ -903,6 +916,7 @@ async fn integration_openai_client_streams_incremental_text_deltas() {
                 json_mode: false,
                 max_tokens: None,
                 temperature: None,
+                prompt_cache: Default::default(),
             },
             Some(sink),
         )
@@ -972,6 +986,7 @@ async fn integration_anthropic_client_streams_incremental_text_deltas() {
                 json_mode: false,
                 max_tokens: None,
                 temperature: None,
+                prompt_cache: Default::default(),
             },
             Some(sink),
         )
@@ -1028,6 +1043,7 @@ async fn integration_google_client_streams_incremental_text_deltas() {
                 json_mode: false,
                 max_tokens: None,
                 temperature: None,
+                prompt_cache: Default::default(),
             },
             Some(sink),
         )

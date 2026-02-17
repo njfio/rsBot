@@ -62,6 +62,7 @@ fn tool_request(model: &str) -> ChatRequest {
         json_mode: false,
         max_tokens: Some(128),
         temperature: Some(0.0),
+        prompt_cache: Default::default(),
     }
 }
 
@@ -74,6 +75,7 @@ fn prompt_request(model: &str) -> ChatRequest {
         json_mode: false,
         max_tokens: None,
         temperature: None,
+        prompt_cache: Default::default(),
     }
 }
 
@@ -141,6 +143,7 @@ fn unit_normalize_tool_contract_extracts_stable_shape() {
             input_tokens: 8,
             output_tokens: 6,
             total_tokens: 14,
+            cached_input_tokens: 0,
         },
     };
 

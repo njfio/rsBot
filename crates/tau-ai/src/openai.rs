@@ -372,6 +372,8 @@ fn build_chat_request_body(request: &ChatRequest) -> Result<Value, TauAiError> {
         body["max_tokens"] = json!(max_tokens);
     }
 
+    apply_openai_prompt_cache_fields(&mut body, request);
+
     Ok(body)
 }
 
@@ -404,7 +406,25 @@ fn build_responses_request_body(request: &ChatRequest) -> Result<Value, TauAiErr
         body["max_output_tokens"] = json!(max_tokens);
     }
 
+    apply_openai_prompt_cache_fields(&mut body, request);
+
     Ok(body)
+}
+
+fn apply_openai_prompt_cache_fields(body: &mut Value, request: &ChatRequest) {
+    if !request.prompt_cache.enabled {
+        return;
+    }
+    if let Some(cache_key) = request.prompt_cache.cache_key.as_ref() {
+        if !cache_key.trim().is_empty() {
+            body["prompt_cache_key"] = json!(cache_key);
+        }
+    }
+    if let Some(retention) = request.prompt_cache.retention.as_ref() {
+        if !retention.trim().is_empty() {
+            body["prompt_cache_retention"] = json!(retention);
+        }
+    }
 }
 
 fn model_prefers_responses_api(model: &str) -> bool {
@@ -769,6 +789,11 @@ fn parse_chat_response(raw: &str) -> Result<ChatResponse, TauAiError> {
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
             total_tokens: usage.total_tokens,
+            cached_input_tokens: usage
+                .prompt_tokens_details
+                .as_ref()
+                .and_then(|details| details.cached_tokens)
+                .unwrap_or_default(),
         })
         .unwrap_or_default();
 
@@ -836,6 +861,11 @@ fn parse_responses_api_response(raw: &str) -> Result<ChatResponse, TauAiError> {
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                cached_input_tokens: usage
+                    .input_tokens_details
+                    .as_ref()
+                    .and_then(|details| details.cached_tokens)
+                    .unwrap_or_default(),
             }
         })
         .unwrap_or_default();
@@ -953,6 +983,11 @@ fn apply_stream_data(
         usage.input_tokens = chunk_usage.prompt_tokens;
         usage.output_tokens = chunk_usage.completion_tokens;
         usage.total_tokens = chunk_usage.total_tokens;
+        usage.cached_input_tokens = chunk_usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens)
+            .unwrap_or_default();
     }
 
     for choice in chunk.choices {
@@ -1195,6 +1230,7 @@ struct OpenAiResponsesUsage {
     total_tokens: Option<u64>,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    input_tokens_details: Option<OpenAiInputTokenDetails>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1234,6 +1270,12 @@ struct OpenAiUsage {
     prompt_tokens: u64,
     completion_tokens: u64,
     total_tokens: u64,
+    prompt_tokens_details: Option<OpenAiInputTokenDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiInputTokenDetails {
+    cached_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1283,7 +1325,10 @@ mod tests {
         apply_stream_data, build_chat_request_body, build_responses_request_body,
         finalize_stream_response, parse_chat_response, parse_responses_api_response,
     };
-    use crate::{ChatRequest, ContentBlock, Message, MessageRole, ToolChoice, ToolDefinition};
+    use crate::{
+        ChatRequest, ContentBlock, Message, MessageRole, PromptCacheConfig, ToolChoice,
+        ToolDefinition,
+    };
 
     #[test]
     fn serializes_assistant_tool_calls_for_openai() {
@@ -1314,6 +1359,7 @@ mod tests {
             json_mode: true,
             max_tokens: Some(512),
             temperature: Some(0.0),
+            prompt_cache: Default::default(),
         };
 
         let body = build_chat_request_body(&request).expect("request body must serialize");
@@ -1343,11 +1389,34 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: PromptCacheConfig::default(),
         };
 
         let body = build_chat_request_body(&request).expect("request body must serialize");
         assert_eq!(body["tool_choice"]["type"], "function");
         assert_eq!(body["tool_choice"]["function"]["name"], "read");
+    }
+
+    #[test]
+    fn spec_c01_openai_serializes_prompt_cache_key_when_enabled() {
+        let request = ChatRequest {
+            model: "gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+            prompt_cache: PromptCacheConfig {
+                enabled: true,
+                cache_key: Some("session:turn-prefix".to_string()),
+                retention: None,
+                google_cached_content: None,
+            },
+        };
+
+        let body = build_chat_request_body(&request).expect("request body must serialize");
+        assert_eq!(body["prompt_cache_key"], "session:turn-prefix");
     }
 
     #[test]
@@ -1360,6 +1429,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_chat_request_body(&request).expect("request body must serialize");
@@ -1397,6 +1467,32 @@ mod tests {
     }
 
     #[test]
+    fn spec_c04_openai_parses_cached_prompt_tokens_from_usage() {
+        let raw = r#"{
+            "choices": [{
+                "message": {
+                    "content": "cached reply",
+                    "tool_calls": null
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 12,
+                "total_tokens": 132,
+                "prompt_tokens_details": {
+                    "cached_tokens": 96
+                }
+            }
+        }"#;
+
+        let response = parse_chat_response(raw).expect("response must parse");
+        assert_eq!(response.usage.input_tokens, 120);
+        assert_eq!(response.usage.cached_input_tokens, 96);
+        assert_eq!(response.usage.total_tokens, 132);
+    }
+
+    #[test]
     fn unit_serializes_user_multimodal_parts_for_openai() {
         let multimodal_message = Message {
             role: MessageRole::User,
@@ -1417,6 +1513,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_chat_request_body(&request).expect("request body must serialize");
@@ -1605,6 +1702,7 @@ mod tests {
             json_mode: false,
             max_tokens: Some(64),
             temperature: Some(0.0),
+            prompt_cache: Default::default(),
         };
 
         let body =

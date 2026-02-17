@@ -102,19 +102,27 @@ fn estimate_text_tokens(text: &str) -> u32 {
 pub(crate) fn estimate_usage_cost_usd(
     usage: &ChatUsage,
     input_cost_per_million: Option<f64>,
+    cached_input_cost_per_million: Option<f64>,
     output_cost_per_million: Option<f64>,
 ) -> f64 {
+    let cached_input_tokens = usage.cached_input_tokens.min(usage.input_tokens);
+    let uncached_input_tokens = usage.input_tokens.saturating_sub(cached_input_tokens);
     let input = input_cost_per_million
         .unwrap_or(0.0)
         .max(0.0)
-        .mul_add(usage.input_tokens as f64, 0.0)
+        .mul_add(uncached_input_tokens as f64, 0.0)
+        / 1_000_000.0;
+    let cached_input = cached_input_cost_per_million
+        .unwrap_or_else(|| input_cost_per_million.unwrap_or(0.0))
+        .max(0.0)
+        .mul_add(cached_input_tokens as f64, 0.0)
         / 1_000_000.0;
     let output = output_cost_per_million
         .unwrap_or(0.0)
         .max(0.0)
         .mul_add(usage.output_tokens as f64, 0.0)
         / 1_000_000.0;
-    input + output
+    input + cached_input + output
 }
 
 pub(crate) fn normalize_cost_alert_thresholds(thresholds: &[u8]) -> Vec<u8> {

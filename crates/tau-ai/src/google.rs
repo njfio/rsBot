@@ -240,6 +240,14 @@ fn build_generate_content_body(request: &ChatRequest) -> Value {
         body["generationConfig"] = generation_config;
     }
 
+    if request.prompt_cache.enabled {
+        if let Some(cached_content) = request.prompt_cache.google_cached_content.as_ref() {
+            if !cached_content.trim().is_empty() {
+                body["cachedContent"] = json!(cached_content);
+            }
+        }
+    }
+
     body
 }
 
@@ -480,6 +488,7 @@ fn parse_generate_content_response(raw: &str) -> Result<ChatResponse, TauAiError
             input_tokens: usage.prompt_token_count.unwrap_or(0),
             output_tokens: usage.candidates_token_count.unwrap_or(0),
             total_tokens: usage.total_token_count.unwrap_or(0),
+            cached_input_tokens: usage.cached_content_token_count.unwrap_or(0),
         })
         .unwrap_or_default();
 
@@ -569,6 +578,9 @@ fn apply_google_stream_data(
             .candidates_token_count
             .unwrap_or(usage.output_tokens);
         usage.total_tokens = chunk_usage.total_token_count.unwrap_or(usage.total_tokens);
+        usage.cached_input_tokens = chunk_usage
+            .cached_content_token_count
+            .unwrap_or(usage.cached_input_tokens);
     }
 
     if let Some(candidates) = chunk.candidates {
@@ -713,6 +725,8 @@ struct GenerateContentUsage {
     candidates_token_count: Option<u64>,
     #[serde(rename = "totalTokenCount")]
     total_token_count: Option<u64>,
+    #[serde(rename = "cachedContentTokenCount")]
+    cached_content_token_count: Option<u64>,
 }
 
 #[cfg(test)]
@@ -724,7 +738,10 @@ mod tests {
         apply_google_stream_data, build_generate_content_body, finalize_google_stream_response,
         parse_generate_content_response,
     };
-    use crate::{ChatRequest, ContentBlock, Message, MessageRole, ToolChoice, ToolDefinition};
+    use crate::{
+        ChatRequest, ContentBlock, Message, MessageRole, PromptCacheConfig, ToolChoice,
+        ToolDefinition,
+    };
 
     #[test]
     fn serializes_tool_calls_and_responses() {
@@ -751,6 +768,7 @@ mod tests {
             json_mode: true,
             max_tokens: Some(256),
             temperature: Some(0.1),
+            prompt_cache: Default::default(),
         };
 
         let body = build_generate_content_body(&request);
@@ -788,10 +806,38 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: PromptCacheConfig::default(),
         };
 
         let body = build_generate_content_body(&request);
         assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "NONE");
+    }
+
+    #[test]
+    fn spec_c03_google_serializes_cached_content_reference_when_enabled() {
+        let request = ChatRequest {
+            model: "gemini-2.5-pro".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+            prompt_cache: PromptCacheConfig {
+                enabled: true,
+                cache_key: None,
+                retention: None,
+                google_cached_content: Some(
+                    "cachedContents/projects/demo/locations/us/cachedContents/abc123".to_string(),
+                ),
+            },
+        };
+
+        let body = build_generate_content_body(&request);
+        assert_eq!(
+            body["cachedContent"],
+            "cachedContents/projects/demo/locations/us/cachedContents/abc123"
+        );
     }
 
     #[test]
@@ -804,6 +850,7 @@ mod tests {
             json_mode: true,
             max_tokens: Some(64),
             temperature: Some(0.2),
+            prompt_cache: Default::default(),
         };
 
         let body = build_generate_content_body(&request);
@@ -846,6 +893,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_generate_content_body(&request);
@@ -884,6 +932,29 @@ mod tests {
     }
 
     #[test]
+    fn spec_c06_google_parses_cached_content_tokens_from_usage_metadata() {
+        let raw = r#"{
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "cached"}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 8,
+                "totalTokenCount": 128,
+                "cachedContentTokenCount": 96
+            }
+        }"#;
+
+        let response = parse_generate_content_response(raw).expect("response must parse");
+        assert_eq!(response.usage.input_tokens, 120);
+        assert_eq!(response.usage.cached_input_tokens, 96);
+        assert_eq!(response.usage.total_tokens, 128);
+    }
+
+    #[test]
     fn unit_serializes_multimodal_parts_for_google() {
         let request = ChatRequest {
             model: "gemini-2.5-pro".to_string(),
@@ -903,6 +974,7 @@ mod tests {
             json_mode: false,
             max_tokens: None,
             temperature: None,
+            prompt_cache: Default::default(),
         };
 
         let body = build_generate_content_body(&request);

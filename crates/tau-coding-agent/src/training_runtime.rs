@@ -1141,6 +1141,8 @@ fn build_executor(
         tool_timeout_ms: agent_defaults.tool_timeout_ms,
         model_input_cost_per_million: model_catalog_entry
             .and_then(|entry| entry.input_cost_per_million),
+        model_cached_input_cost_per_million: model_catalog_entry
+            .and_then(|entry| entry.cached_input_cost_per_million),
         model_output_cost_per_million: model_catalog_entry
             .and_then(|entry| entry.output_cost_per_million),
         cost_budget_usd: cli.agent_cost_budget_usd,

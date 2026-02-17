@@ -23,6 +23,7 @@ fn unit_agent_config_defaults_include_request_and_tool_timeouts() {
     assert!(config.tool_result_cache_enabled);
     assert_eq!(config.tool_result_cache_max_entries, 256);
     assert_eq!(config.model_input_cost_per_million, None);
+    assert_eq!(config.model_cached_input_cost_per_million, None);
     assert_eq!(config.model_output_cost_per_million, None);
     assert_eq!(config.cost_budget_usd, None);
     assert_eq!(config.cost_alert_thresholds_percent, vec![80, 100]);
@@ -394,9 +395,23 @@ fn unit_estimate_usage_cost_usd_applies_input_and_output_rates() {
         input_tokens: 2_000,
         output_tokens: 500,
         total_tokens: 2_500,
+        cached_input_tokens: 0,
     };
-    let cost = estimate_usage_cost_usd(&usage, Some(1.5), Some(6.0));
+    let cost = estimate_usage_cost_usd(&usage, Some(1.5), None, Some(6.0));
     let expected = (2_000.0 * 1.5 + 500.0 * 6.0) / 1_000_000.0;
+    assert!((cost - expected).abs() < 1e-12);
+}
+
+#[test]
+fn spec_c07_estimate_usage_cost_uses_cached_input_rate_for_cached_tokens() {
+    let usage = ChatUsage {
+        input_tokens: 2_000,
+        output_tokens: 500,
+        total_tokens: 2_500,
+        cached_input_tokens: 1_200,
+    };
+    let cost = estimate_usage_cost_usd(&usage, Some(2.0), Some(0.2), Some(6.0));
+    let expected = ((800.0 * 2.0) + (1_200.0 * 0.2) + (500.0 * 6.0)) / 1_000_000.0;
     assert!((cost - expected).abs() < 1e-12);
 }
 
@@ -419,6 +434,7 @@ async fn functional_prompt_emits_cost_update_event_when_model_pricing_present() 
                 input_tokens: 200,
                 output_tokens: 100,
                 total_tokens: 300,
+                cached_input_tokens: 0,
             },
         }])),
     });
@@ -482,6 +498,7 @@ async fn integration_budget_alerts_emit_once_per_threshold_across_multiple_promp
                     input_tokens: 80_000,
                     output_tokens: 0,
                     total_tokens: 80_000,
+                    cached_input_tokens: 0,
                 },
             },
             ChatResponse {
@@ -491,6 +508,7 @@ async fn integration_budget_alerts_emit_once_per_threshold_across_multiple_promp
                     input_tokens: 40_000,
                     output_tokens: 0,
                     total_tokens: 40_000,
+                    cached_input_tokens: 0,
                 },
             },
             ChatResponse {
@@ -500,6 +518,7 @@ async fn integration_budget_alerts_emit_once_per_threshold_across_multiple_promp
                     input_tokens: 40_000,
                     output_tokens: 0,
                     total_tokens: 40_000,
+                    cached_input_tokens: 0,
                 },
             },
         ])),
@@ -554,6 +573,7 @@ async fn regression_cost_budget_alert_threshold_normalization_avoids_duplicates(
                 input_tokens: 150_000,
                 output_tokens: 0,
                 total_tokens: 150_000,
+                cached_input_tokens: 0,
             },
         }])),
     });
