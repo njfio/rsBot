@@ -2217,6 +2217,7 @@ async fn execute_openresponses_request(
         });
     }
 
+    let preflight_input_tokens = derive_gateway_preflight_token_limit(state.config.max_input_chars);
     let mut agent = Agent::new(
         state.config.client.clone(),
         AgentConfig {
@@ -2225,6 +2226,8 @@ async fn execute_openresponses_request(
             max_turns: state.config.max_turns,
             temperature: Some(0.0),
             max_tokens: None,
+            max_estimated_input_tokens: preflight_input_tokens,
+            max_estimated_total_tokens: preflight_input_tokens,
             ..AgentConfig::default()
         },
     );
@@ -2358,6 +2361,14 @@ async fn execute_openresponses_request(
     };
 
     Ok(OpenResponsesExecutionResult { response })
+}
+
+fn derive_gateway_preflight_token_limit(max_input_chars: usize) -> Option<u32> {
+    if max_input_chars == 0 {
+        return None;
+    }
+    let chars = u32::try_from(max_input_chars).unwrap_or(u32::MAX);
+    Some(chars.saturating_add(3) / 4)
 }
 
 #[cfg(test)]
