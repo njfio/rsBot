@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -14,7 +13,9 @@ use crate::dashboard_contract::{
     DASHBOARD_ERROR_EMPTY_INPUT, DASHBOARD_ERROR_INVALID_ACTION, DASHBOARD_ERROR_INVALID_FILTER,
     DASHBOARD_ERROR_INVALID_SCOPE,
 };
-use tau_core::{current_unix_timestamp_ms, write_text_atomic};
+use tau_core::{
+    append_line_with_rotation, current_unix_timestamp_ms, write_text_atomic, LogRotationPolicy,
+};
 use tau_runtime::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
 use tau_runtime::transport_health::TransportHealthSnapshot;
 
@@ -562,14 +563,8 @@ fn append_dashboard_cycle_report(
         failure_streak: health.failure_streak,
     };
     let line = serde_json::to_string(&payload).context("serialize dashboard runtime report")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }
 

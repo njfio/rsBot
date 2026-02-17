@@ -5,7 +5,6 @@
 //! reasoned failure reporting for contract validation runs.
 
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -18,7 +17,9 @@ use crate::gateway_contract::{
     validate_gateway_case_result_against_contract, GatewayContractCase, GatewayContractFixture,
     GatewayReplayResult, GatewayReplayStep,
 };
-use tau_core::{current_unix_timestamp_ms, write_text_atomic};
+use tau_core::{
+    append_line_with_rotation, current_unix_timestamp_ms, write_text_atomic, LogRotationPolicy,
+};
 use tau_runtime::{ChannelContextEntry, ChannelLogEntry, ChannelStore, TransportHealthSnapshot};
 
 const GATEWAY_RUNTIME_STATE_SCHEMA_VERSION: u32 = 1;
@@ -792,14 +793,8 @@ fn append_gateway_cycle_report(
         failure_streak: health.failure_streak,
     };
     let line = serde_json::to_string(&payload).context("serialize gateway runtime report")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }
 
@@ -934,9 +929,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        evaluate_gateway_rollout_guardrail, inspect_gateway_service_mode,
-        load_gateway_runtime_state, render_gateway_service_status_report, retry_delay_ms,
-        start_gateway_service_mode, stop_gateway_service_mode, GatewayRuntime,
+        append_gateway_cycle_report, evaluate_gateway_rollout_guardrail,
+        inspect_gateway_service_mode, load_gateway_runtime_state,
+        render_gateway_service_status_report, retry_delay_ms, start_gateway_service_mode,
+        stop_gateway_service_mode, GatewayRolloutGuardrailState, GatewayRuntime,
         GatewayRuntimeConfig, GatewayRuntimeSummary, GATEWAY_RUNTIME_EVENTS_LOG_FILE,
     };
     use crate::gateway_contract::{load_gateway_contract_fixture, parse_gateway_contract_fixture};
@@ -1003,6 +999,59 @@ mod tests {
         assert_eq!(
             hold_failure.reason_code,
             "failure_streak_threshold_exceeded"
+        );
+    }
+
+    #[test]
+    fn spec_c04_gateway_cycle_report_rotates_and_keeps_latest_record() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("runtime-events.jsonl");
+        let large_reason = "g".repeat(6 * 1024 * 1024);
+        let summary = GatewayRuntimeSummary {
+            discovered_cases: 1,
+            queued_cases: 1,
+            applied_cases: 1,
+            duplicate_skips: 0,
+            malformed_cases: 0,
+            retryable_failures: 0,
+            retry_attempts: 0,
+            failed_cases: 0,
+            upserted_requests: 1,
+        };
+        let health = TransportHealthSnapshot::default();
+        let guardrail = GatewayRolloutGuardrailState::default();
+
+        append_gateway_cycle_report(
+            &log_path,
+            &summary,
+            &health,
+            &guardrail,
+            "cycle-one",
+            &[large_reason.clone()],
+        )
+        .expect("append first gateway cycle report");
+        append_gateway_cycle_report(
+            &log_path,
+            &summary,
+            &health,
+            &guardrail,
+            "cycle-two",
+            &[large_reason],
+        )
+        .expect("append second gateway cycle report");
+
+        let rotated = PathBuf::from(format!("{}.1", log_path.display()));
+        assert!(rotated.exists(), "expected rotated gateway runtime backup");
+
+        let active = std::fs::read_to_string(&log_path).expect("read active gateway events");
+        assert!(
+            active.contains("cycle-two"),
+            "active events should contain latest cycle report"
+        );
+        let backup = std::fs::read_to_string(rotated).expect("read rotated gateway events");
+        assert!(
+            backup.contains("cycle-one"),
+            "backup events should contain earlier cycle report"
         );
     }
 

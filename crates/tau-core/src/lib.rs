@@ -5,10 +5,13 @@
 
 /// Atomic file-write helpers for durable state updates.
 pub mod atomic_io;
+/// Size-based NDJSON log rotation helpers for operational runtime files.
+pub mod log_rotation;
 /// Unix timestamp utilities used across runtime policy/state logic.
 pub mod time_utils;
 
 pub use atomic_io::write_text_atomic;
+pub use log_rotation::{append_line_with_rotation, LogRotationPolicy};
 pub use time_utils::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
 
 #[cfg(test)]

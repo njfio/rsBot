@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
-    io::Write,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -17,7 +16,9 @@ use serde_json::json;
 use tokio::{process::Command, time::Duration};
 
 use tau_ai::Message;
-use tau_core::{current_unix_timestamp_ms, write_text_atomic};
+use tau_core::{
+    append_line_with_rotation, current_unix_timestamp_ms, write_text_atomic, LogRotationPolicy,
+};
 use tau_session::SessionStore;
 
 use crate::channel_store::{ChannelLogEntry, ChannelStore};
@@ -1311,14 +1312,8 @@ where
     T: Serialize,
 {
     let line = serde_json::to_string(value).context("failed to encode JSONL record")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }
 

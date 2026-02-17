@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -19,7 +18,9 @@ use crate::custom_command_contract::{
 use crate::custom_command_policy::{
     is_valid_env_key, validate_custom_command_template_and_arguments, CustomCommandExecutionPolicy,
 };
-use tau_core::{current_unix_timestamp_ms, write_text_atomic};
+use tau_core::{
+    append_line_with_rotation, current_unix_timestamp_ms, write_text_atomic, LogRotationPolicy,
+};
 use tau_runtime::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
 use tau_runtime::transport_health::TransportHealthSnapshot;
 
@@ -1221,14 +1222,8 @@ fn append_custom_command_cycle_report(
     };
     let line =
         serde_json::to_string(&payload).context("serialize custom-command runtime report")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }
 

@@ -12,6 +12,28 @@ cargo run -p tau-coding-agent -- \
 
 Troubleshooting map and field details: `docs/guides/operator-control-summary.md`.
 
+## Runtime Log Rotation
+
+Runtime JSONL logs use size-based rotation with bounded retained files.
+
+- `TAU_LOG_ROTATION_MAX_BYTES`: max bytes for active log before rollover
+  (default `10485760` / 10 MiB).
+- `TAU_LOG_ROTATION_MAX_FILES`: retained file count including active file
+  (default `5`).
+
+Retained files are named:
+
+- Active: `<name>.jsonl`
+- Backups: `<name>.jsonl.1`, `<name>.jsonl.2`, ...
+
+Examples:
+
+```bash
+# Keep active + 2 backups, rotate every 2 MiB.
+export TAU_LOG_ROTATION_MAX_BYTES=2097152
+export TAU_LOG_ROTATION_MAX_FILES=3
+```
+
 ## Removed Contract Runner Migration Matrix
 
 | Removed Flag | Status | Replacement Path |

@@ -4,14 +4,15 @@
 //! operator tooling. Maintenance and repair transitions are expected to be
 //! deterministic and audit-friendly.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tau_core::{current_unix_timestamp_ms, write_text_atomic};
+use tau_core::{
+    append_line_with_rotation, current_unix_timestamp_ms, write_text_atomic, LogRotationPolicy,
+};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -1240,15 +1241,8 @@ fn append_runtime_heartbeat_cycle_report(
     }
     let line =
         serde_json::to_string(report).context("failed to serialize runtime heartbeat cycle")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(events_log_path)
-        .with_context(|| format!("failed to open {}", events_log_path.display()))?;
-    writeln!(file, "{line}")
+    append_line_with_rotation(events_log_path, &line, LogRotationPolicy::from_env())
         .with_context(|| format!("failed to append {}", events_log_path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", events_log_path.display()))?;
     Ok(())
 }
 
@@ -1273,11 +1267,12 @@ fn push_unique_reason_code(reason_codes: &mut Vec<String>, reason_code: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        inspect_runtime_heartbeat, start_runtime_heartbeat_scheduler,
+        append_runtime_heartbeat_cycle_report, inspect_runtime_heartbeat,
+        start_runtime_heartbeat_scheduler, RuntimeHeartbeatCycleReport,
         RuntimeHeartbeatSchedulerConfig,
     };
     use serde_json::Value;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -1325,6 +1320,69 @@ mod tests {
             .diagnostics
             .iter()
             .any(|line| line.contains("state_missing")));
+    }
+
+    #[test]
+    fn spec_c04_runtime_heartbeat_cycle_report_rotates_and_keeps_latest_record() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("runtime-heartbeat-events.jsonl");
+        let large_reason = "r".repeat(6 * 1024 * 1024);
+
+        append_runtime_heartbeat_cycle_report(
+            &log_path,
+            &RuntimeHeartbeatCycleReport {
+                timestamp_unix_ms: 1,
+                run_state: "running".to_string(),
+                reason_code: "heartbeat_cycle_ok_1".to_string(),
+                reason_codes: vec![large_reason.clone()],
+                queue_depth: 0,
+                pending_events: 0,
+                pending_jobs: 0,
+                temp_files_cleaned: 0,
+                stuck_jobs: 0,
+                stuck_tool_builds: 0,
+                repair_actions: 0,
+                retries_queued: 0,
+                retries_exhausted: 0,
+                orphan_artifacts_cleaned: 0,
+                diagnostics: vec![],
+            },
+        )
+        .expect("append first report");
+        append_runtime_heartbeat_cycle_report(
+            &log_path,
+            &RuntimeHeartbeatCycleReport {
+                timestamp_unix_ms: 2,
+                run_state: "running".to_string(),
+                reason_code: "heartbeat_cycle_ok_2".to_string(),
+                reason_codes: vec![large_reason],
+                queue_depth: 0,
+                pending_events: 0,
+                pending_jobs: 0,
+                temp_files_cleaned: 0,
+                stuck_jobs: 0,
+                stuck_tool_builds: 0,
+                repair_actions: 0,
+                retries_queued: 0,
+                retries_exhausted: 0,
+                orphan_artifacts_cleaned: 0,
+                diagnostics: vec![],
+            },
+        )
+        .expect("append second report");
+
+        let rotated = PathBuf::from(format!("{}.1", log_path.display()));
+        assert!(rotated.exists(), "expected rotated heartbeat backup");
+        let active = std::fs::read_to_string(&log_path).expect("read active heartbeat log");
+        assert!(
+            active.contains("heartbeat_cycle_ok_2"),
+            "active log should keep latest record"
+        );
+        let backup = std::fs::read_to_string(rotated).expect("read backup heartbeat log");
+        assert!(
+            backup.contains("heartbeat_cycle_ok_1"),
+            "backup should keep first record"
+        );
     }
 
     #[tokio::test]

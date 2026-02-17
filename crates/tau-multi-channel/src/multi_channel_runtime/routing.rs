@@ -1,8 +1,8 @@
-use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use tau_core::{append_line_with_rotation, LogRotationPolicy};
 
 use super::{
     current_unix_timestamp_ms, MultiChannelRuntimeCycleReport, MultiChannelRuntimeSummary,
@@ -125,14 +125,8 @@ pub(super) fn append_multi_channel_cycle_report(
         failure_streak: health.failure_streak,
     };
     let line = serde_json::to_string(&payload).context("serialize multi-channel runtime report")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }
 
@@ -144,13 +138,7 @@ pub(super) fn append_multi_channel_route_trace(path: &Path, payload: &Value) -> 
         }
     }
     let line = serde_json::to_string(payload).context("serialize multi-channel route trace")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }

@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io::Write,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -9,6 +8,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use tau_agent_core::AgentEvent;
+use tau_core::{append_line_with_rotation, LogRotationPolicy};
 
 /// Stable record type for prompt telemetry diagnostics payloads.
 pub const PROMPT_TELEMETRY_RECORD_TYPE_V1: &str = "prompt_telemetry_v1";
@@ -72,7 +72,7 @@ pub fn checkpoint_promotion_gate_audit_json(
 /// Public struct `ToolAuditLogger` used across Tau components.
 pub struct ToolAuditLogger {
     path: PathBuf,
-    file: Arc<Mutex<std::fs::File>>,
+    write_lock: Arc<Mutex<()>>,
     starts: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
@@ -88,14 +88,14 @@ impl ToolAuditLogger {
                 })?;
             }
         }
-        let file = std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to open tool audit log {}", path.display()))?;
         Ok(Self {
             path,
-            file: Arc::new(Mutex::new(file)),
+            write_lock: Arc::new(Mutex::new(())),
             starts: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -113,14 +113,12 @@ impl ToolAuditLogger {
             return Ok(());
         };
         let line = serde_json::to_string(&payload).context("failed to encode tool audit event")?;
-        let mut file = self
-            .file
+        let _guard = self
+            .write_lock
             .lock()
-            .map_err(|_| anyhow!("tool audit file lock is poisoned"))?;
-        writeln!(file, "{line}")
+            .map_err(|_| anyhow!("tool audit write lock is poisoned"))?;
+        append_line_with_rotation(&self.path, &line, LogRotationPolicy::from_env())
             .with_context(|| format!("failed to write tool audit log {}", self.path.display()))?;
-        file.flush()
-            .with_context(|| format!("failed to flush tool audit log {}", self.path.display()))?;
         Ok(())
     }
 }
@@ -157,7 +155,7 @@ pub struct PromptTelemetryLogger {
     path: PathBuf,
     provider: String,
     model: String,
-    file: Arc<Mutex<std::fs::File>>,
+    write_lock: Arc<Mutex<()>>,
     state: Arc<Mutex<PromptTelemetryState>>,
 }
 
@@ -173,7 +171,7 @@ impl PromptTelemetryLogger {
                 })?;
             }
         }
-        let file = std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
@@ -182,7 +180,7 @@ impl PromptTelemetryLogger {
             path,
             provider: provider.to_string(),
             model: model.to_string(),
-            file: Arc::new(Mutex::new(file)),
+            write_lock: Arc::new(Mutex::new(())),
             state: Arc::new(Mutex::new(PromptTelemetryState::default())),
         })
     }
@@ -348,19 +346,18 @@ impl PromptTelemetryLogger {
         if records.is_empty() {
             return Ok(());
         }
-        let mut file = self
-            .file
+        let _guard = self
+            .write_lock
             .lock()
-            .map_err(|_| anyhow!("telemetry file lock is poisoned"))?;
+            .map_err(|_| anyhow!("telemetry write lock is poisoned"))?;
         for record in records {
             let line =
                 serde_json::to_string(&record).context("failed to encode telemetry event")?;
-            writeln!(file, "{line}").with_context(|| {
-                format!("failed to write telemetry log {}", self.path.display())
-            })?;
+            append_line_with_rotation(&self.path, &line, LogRotationPolicy::from_env())
+                .with_context(|| {
+                    format!("failed to write telemetry log {}", self.path.display())
+                })?;
         }
-        file.flush()
-            .with_context(|| format!("failed to flush telemetry log {}", self.path.display()))?;
         Ok(())
     }
 }
@@ -483,7 +480,7 @@ mod tests {
         checkpoint_promotion_gate_audit_json, tool_audit_event_json, PromptTelemetryLogger,
         ToolAuditLogger,
     };
-    use std::{collections::HashMap, time::Instant};
+    use std::{collections::HashMap, path::PathBuf, time::Instant};
     use tau_agent_core::{AgentEvent, SafetyMode, SafetyStage, ToolExecutionResult};
     use tau_ai::ChatUsage;
     use tempfile::tempdir;
@@ -609,6 +606,44 @@ mod tests {
         assert_eq!(first["event"], "tool_execution_start");
         assert_eq!(second["event"], "tool_execution_end");
         assert_eq!(second["is_error"], false);
+    }
+
+    #[test]
+    fn spec_c04_tool_audit_logger_rotates_and_keeps_writing_after_threshold() {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("tool-audit-rotation.jsonl");
+        let logger = ToolAuditLogger::open(log_path.clone()).expect("logger should open");
+        let payload = "x".repeat(6 * 1024 * 1024);
+
+        logger
+            .log_event(&AgentEvent::ToolExecutionStart {
+                tool_call_id: format!("call-rotation-1-{payload}"),
+                tool_name: "bash".to_string(),
+                arguments: serde_json::json!({ "command": "pwd" }),
+            })
+            .expect("write first large event");
+        logger
+            .log_event(&AgentEvent::ToolExecutionStart {
+                tool_call_id: format!("call-rotation-2-{payload}"),
+                tool_name: "bash".to_string(),
+                arguments: serde_json::json!({ "command": "pwd" }),
+            })
+            .expect("write second large event");
+
+        let rotated = PathBuf::from(format!("{}.1", log_path.display()));
+        assert!(rotated.exists(), "expected rotated backup log");
+
+        let active = std::fs::read_to_string(&log_path).expect("read active log");
+        assert!(
+            active.contains("call-rotation-2"),
+            "active should keep latest line"
+        );
+
+        let backup = std::fs::read_to_string(rotated).expect("read rotated log");
+        assert!(
+            backup.contains("call-rotation-1"),
+            "backup should keep prior line"
+        );
     }
 
     #[test]

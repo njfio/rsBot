@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -13,6 +12,7 @@ use crate::multi_agent_contract::{
     MultiAgentContractFixture, MultiAgentReplayStep,
 };
 use tau_core::atomic_io::write_text_atomic;
+use tau_core::log_rotation::{append_line_with_rotation, LogRotationPolicy};
 use tau_core::time_utils::current_unix_timestamp_ms;
 use tau_runtime::channel_store::{ChannelContextEntry, ChannelLogEntry, ChannelStore};
 use tau_runtime::transport_health::TransportHealthSnapshot;
@@ -1043,14 +1043,8 @@ fn append_multi_agent_cycle_report(
         failure_streak: health.failure_streak,
     };
     let line = serde_json::to_string(&payload).context("serialize multi-agent runtime report")?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }
 
@@ -1067,14 +1061,8 @@ fn append_ndjson_event<T: Serialize>(
     }
 
     let line = serde_json::to_string(payload).with_context(|| serialization_context.to_string())?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    writeln!(file, "{line}").with_context(|| format!("failed to append {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
+    append_line_with_rotation(path, &line, LogRotationPolicy::from_env())
+        .with_context(|| format!("failed to append {}", path.display()))?;
     Ok(())
 }
 
