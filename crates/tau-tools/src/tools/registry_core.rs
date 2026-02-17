@@ -511,10 +511,30 @@ impl ToolPolicy {
 
     pub fn memory_embedding_provider_config(&self) -> Option<MemoryEmbeddingProviderConfig> {
         let provider = self.memory_embedding_provider.as_ref()?.trim();
+        if provider.is_empty() {
+            return None;
+        }
+        if provider.eq_ignore_ascii_case("local") {
+            let model = self
+                .memory_embedding_model
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("local-hash");
+            return Some(MemoryEmbeddingProviderConfig {
+                provider: "local".to_string(),
+                model: model.to_string(),
+                api_base: String::new(),
+                api_key: String::new(),
+                dimensions: self.memory_embedding_dimensions.max(1),
+                timeout_ms: self.memory_embedding_timeout_ms.max(1),
+            });
+        }
+
         let model = self.memory_embedding_model.as_ref()?.trim();
         let api_base = self.memory_embedding_api_base.as_ref()?.trim();
         let api_key = self.memory_embedding_api_key.as_ref()?.trim();
-        if provider.is_empty() || model.is_empty() || api_base.is_empty() || api_key.is_empty() {
+        if model.is_empty() || api_base.is_empty() || api_key.is_empty() {
             return None;
         }
 

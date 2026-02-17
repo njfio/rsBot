@@ -1457,6 +1457,93 @@ async fn unit_memory_write_tool_rejects_empty_summary() {
     assert_eq!(result.content["reason_code"], "memory_empty_summary");
 }
 
+#[test]
+fn spec_c01_memory_embedding_provider_config_accepts_local_without_remote_fields() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.memory_embedding_provider = Some("local".to_string());
+    policy.memory_embedding_dimensions = 0;
+    policy.memory_embedding_timeout_ms = 0;
+
+    let config = policy
+        .memory_embedding_provider_config()
+        .expect("local provider mode should resolve without remote fields");
+    assert_eq!(config.provider, "local");
+    assert_eq!(config.model, "local-hash");
+    assert_eq!(config.api_base, "");
+    assert_eq!(config.api_key, "");
+    assert_eq!(config.dimensions, 1);
+    assert_eq!(config.timeout_ms, 1);
+}
+
+#[tokio::test]
+async fn spec_c02_memory_write_tool_local_provider_mode_uses_hash_backend() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.memory_state_dir = temp.path().join(".tau/memory");
+    policy.memory_embedding_provider = Some("local".to_string());
+    policy.memory_embedding_model = Some("local-hash".to_string());
+    policy.memory_embedding_dimensions = 64;
+    policy.memory_embedding_timeout_ms = 500;
+
+    let config = policy
+        .memory_embedding_provider_config()
+        .expect("local provider mode should resolve");
+    assert_eq!(config.provider, "local");
+
+    let tool = MemoryWriteTool::new(Arc::new(policy));
+    let result = tool
+        .execute(serde_json::json!({
+            "memory_id": "memory-local",
+            "summary": "local embeddings should stay offline",
+            "workspace_id": "workspace-a",
+            "channel_id": "deploy",
+            "actor_id": "assistant"
+        }))
+        .await;
+
+    assert!(
+        !result.is_error,
+        "local mode write should succeed: {}",
+        result.content
+    );
+    assert_eq!(result.content["embedding_source"], "hash-fnv1a");
+    assert_eq!(
+        result.content["embedding_reason_code"],
+        "memory_embedding_hash_only"
+    );
+    assert!(result.content["embedding_model"].is_null());
+}
+
+#[test]
+fn spec_c03_memory_embedding_provider_config_preserves_remote_provider_fields() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.memory_embedding_provider = Some("openai-compatible".to_string());
+    policy.memory_embedding_model = Some("text-embedding-3-small".to_string());
+    policy.memory_embedding_api_base = Some("https://example.invalid/v1".to_string());
+    policy.memory_embedding_api_key = Some("test-key".to_string());
+    policy.memory_embedding_dimensions = 256;
+    policy.memory_embedding_timeout_ms = 42_000;
+
+    let config = policy
+        .memory_embedding_provider_config()
+        .expect("remote provider config should resolve");
+    assert_eq!(config.provider, "openai-compatible");
+    assert_eq!(config.model, "text-embedding-3-small");
+    assert_eq!(config.api_base, "https://example.invalid/v1");
+    assert_eq!(config.api_key, "test-key");
+    assert_eq!(config.dimensions, 256);
+    assert_eq!(config.timeout_ms, 42_000);
+}
+
+#[test]
+fn spec_c04_memory_embedding_provider_config_without_policy_is_none() {
+    let temp = tempdir().expect("tempdir");
+    let policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    assert_eq!(policy.memory_embedding_provider_config(), None);
+}
+
 #[tokio::test]
 async fn functional_memory_write_and_read_tools_round_trip_record() {
     let temp = tempdir().expect("tempdir");
