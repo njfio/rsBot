@@ -1,13 +1,59 @@
 //! Session store tests covering unit, functional, integration, and regression cases.
-use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, thread, time::Duration};
+use std::{
+    collections::HashSet,
+    env,
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
+    thread,
+    time::Duration,
+};
 
 use tempfile::tempdir;
 
 use super::{
     acquire_lock, CompactReport, RepairReport, SessionEntry, SessionImportMode,
-    SessionMergeStrategy, SessionRecord, SessionStorageBackend, SessionStore, SessionUsageSummary,
-    SessionValidationReport,
+    SessionMergeStrategy, SessionRecord, SessionStorageBackend, SessionStore,
+    SessionUsageSummary, SessionValidationReport, SESSION_BACKEND_ENV, SESSION_POSTGRES_DSN_ENV,
+    resolve_session_backend,
 };
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("environment lock")
+}
+
+struct ScopedEnvVar {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = env::var(key).ok();
+        // SAFETY: test-only scoped mutation guarded by `env_lock`.
+        unsafe { env::set_var(key, value) };
+        Self { key, previous }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => {
+                // SAFETY: test-only scoped mutation guarded by `env_lock`.
+                unsafe { env::set_var(self.key, value) };
+            }
+            None => {
+                // SAFETY: test-only scoped mutation guarded by `env_lock`.
+                unsafe { env::remove_var(self.key) };
+            }
+        }
+    }
+}
 
 #[test]
 fn appends_and_restores_lineage() {
@@ -1356,4 +1402,135 @@ fn integration_session_usage_summary_persists_across_store_reload() {
     assert_eq!(reloaded_usage.output_tokens, 10);
     assert_eq!(reloaded_usage.total_tokens, 35);
     assert!((reloaded_usage.estimated_cost_usd - 0.014).abs() < 1e-12);
+}
+
+#[test]
+fn spec_c01_postgres_backend_resolution_uses_env_configuration() {
+    let _env_guard = env_lock();
+    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+    let _dsn_env = ScopedEnvVar::set(SESSION_POSTGRES_DSN_ENV, "postgres://localhost:1/tau");
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("session.any");
+    let resolved = resolve_session_backend(&path).expect("resolve backend");
+    assert_eq!(resolved.backend, SessionStorageBackend::Postgres);
+    assert_eq!(resolved.reason_code, "session_backend_env_postgres");
+}
+
+#[test]
+fn spec_c05_postgres_invalid_dsn_reports_backend_error_not_scaffold() {
+    let _env_guard = env_lock();
+    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+    let _dsn_env = ScopedEnvVar::set(
+        SESSION_POSTGRES_DSN_ENV,
+        "postgres://127.0.0.1:1/tau?connect_timeout=1",
+    );
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("session.pg");
+
+    let error = SessionStore::load(&path).expect_err("invalid dsn should fail");
+    let message = error.to_string();
+    assert!(
+        !message.contains("scaffolded but not implemented"),
+        "unexpected scaffold error: {message}"
+    );
+    assert!(
+        message.contains("postgres") || message.contains("Postgres"),
+        "expected postgres-oriented error, got: {message}"
+    );
+}
+
+#[test]
+fn integration_spec_c02_postgres_round_trip_preserves_lineage_when_dsn_provided() {
+    let dsn = match std::env::var("TAU_TEST_POSTGRES_DSN") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+
+    let _env_guard = env_lock();
+    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+    let _dsn_env = ScopedEnvVar::set(SESSION_POSTGRES_DSN_ENV, dsn.as_str());
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("spec-c02-postgres-roundtrip");
+
+    let mut store = SessionStore::load(&path).expect("load postgres store");
+    assert_eq!(store.storage_backend(), SessionStorageBackend::Postgres);
+    let head = store
+        .append_messages(None, &[tau_ai::Message::system("postgres-root")])
+        .expect("append root");
+    let head = store
+        .append_messages(head, &[tau_ai::Message::assistant_text("postgres-reply")])
+        .expect("append reply");
+    let lineage = store.lineage_messages(head).expect("lineage");
+    assert_eq!(lineage.len(), 2);
+    assert_eq!(lineage[0].text_content(), "postgres-root");
+    assert_eq!(lineage[1].text_content(), "postgres-reply");
+
+    let reloaded = SessionStore::load(&path).expect("reload postgres store");
+    assert_eq!(reloaded.entries().len(), 2);
+}
+
+#[test]
+fn integration_spec_c03_postgres_usage_summary_persists_when_dsn_provided() {
+    let dsn = match std::env::var("TAU_TEST_POSTGRES_DSN") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+
+    let _env_guard = env_lock();
+    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+    let _dsn_env = ScopedEnvVar::set(SESSION_POSTGRES_DSN_ENV, dsn.as_str());
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("spec-c03-postgres-usage");
+
+    let mut store = SessionStore::load(&path).expect("load postgres store");
+    store
+        .append_messages(None, &[tau_ai::Message::system("root")])
+        .expect("append");
+    store
+        .record_usage_delta(SessionUsageSummary {
+            input_tokens: 10,
+            output_tokens: 3,
+            total_tokens: 13,
+            estimated_cost_usd: 0.007,
+        })
+        .expect("record usage");
+
+    let reloaded = SessionStore::load(&path).expect("reload");
+    let usage = reloaded.usage_summary();
+    assert_eq!(usage.input_tokens, 10);
+    assert_eq!(usage.output_tokens, 3);
+    assert_eq!(usage.total_tokens, 13);
+    assert!((usage.estimated_cost_usd - 0.007).abs() < 1e-12);
+}
+
+#[test]
+fn integration_spec_c04_postgres_session_paths_are_isolated_when_dsn_provided() {
+    let dsn = match std::env::var("TAU_TEST_POSTGRES_DSN") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+
+    let _env_guard = env_lock();
+    let _backend_env = ScopedEnvVar::set(SESSION_BACKEND_ENV, "postgres");
+    let _dsn_env = ScopedEnvVar::set(SESSION_POSTGRES_DSN_ENV, dsn.as_str());
+    let temp = tempdir().expect("tempdir");
+    let path_a = temp.path().join("spec-c04-a");
+    let path_b = temp.path().join("spec-c04-b");
+
+    let mut store_a = SessionStore::load(&path_a).expect("load A");
+    store_a
+        .append_messages(None, &[tau_ai::Message::system("A")])
+        .expect("append A");
+
+    let mut store_b = SessionStore::load(&path_b).expect("load B");
+    store_b
+        .append_messages(None, &[tau_ai::Message::system("B")])
+        .expect("append B");
+
+    let reloaded_a = SessionStore::load(&path_a).expect("reload A");
+    let reloaded_b = SessionStore::load(&path_b).expect("reload B");
+    assert_eq!(reloaded_a.entries().len(), 1);
+    assert_eq!(reloaded_b.entries().len(), 1);
+    assert_eq!(reloaded_a.entries()[0].message.text_content(), "A");
+    assert_eq!(reloaded_b.entries()[0].message.text_content(), "B");
 }
