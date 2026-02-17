@@ -46,6 +46,7 @@ use tau_ops::TransportHealthSnapshot;
 use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
 use tau_provider::{
     load_credential_store, resolve_credential_store_encryption_mode, AuthCommandConfig,
+    ModelCatalog,
 };
 use tau_runtime::RuntimeHeartbeatSchedulerConfig;
 use tau_skills::default_skills_lock_path;
@@ -438,6 +439,8 @@ pub fn build_gateway_openresponses_server_config(
     tool_policy: &ToolPolicy,
 ) -> GatewayOpenResponsesServerConfig {
     let (auth_token, auth_password) = resolve_gateway_openresponses_auth(cli);
+    let model_catalog = ModelCatalog::built_in();
+    let model_catalog_entry = model_catalog.find_model_ref(model_ref);
     let policy = tool_policy.clone();
     let mut runtime_heartbeat = build_runtime_heartbeat_scheduler_config(cli);
     if runtime_heartbeat.state_path == PathBuf::from(".tau/runtime-heartbeat/state.json") {
@@ -446,6 +449,12 @@ pub fn build_gateway_openresponses_server_config(
     GatewayOpenResponsesServerConfig {
         client,
         model: model_ref.model.clone(),
+        model_input_cost_per_million: model_catalog_entry
+            .and_then(|entry| entry.input_cost_per_million),
+        model_cached_input_cost_per_million: model_catalog_entry
+            .and_then(|entry| entry.cached_input_cost_per_million),
+        model_output_cost_per_million: model_catalog_entry
+            .and_then(|entry| entry.output_cost_per_million),
         system_prompt: system_prompt.to_string(),
         max_turns: cli.max_turns,
         tool_registrar: Arc::new(GatewayToolRegistrarFn::new(move |agent| {

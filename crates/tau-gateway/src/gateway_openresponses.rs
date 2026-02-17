@@ -156,6 +156,9 @@ impl GatewayToolRegistrar for GatewayToolRegistrarFn {
 pub struct GatewayOpenResponsesServerConfig {
     pub client: Arc<dyn LlmClient>,
     pub model: String,
+    pub model_input_cost_per_million: Option<f64>,
+    pub model_cached_input_cost_per_million: Option<f64>,
+    pub model_output_cost_per_million: Option<f64>,
     pub system_prompt: String,
     pub max_turns: usize,
     pub tool_registrar: Arc<dyn GatewayToolRegistrar>,
@@ -2222,6 +2225,9 @@ async fn execute_openresponses_request(
         state.config.client.clone(),
         AgentConfig {
             model: state.config.model.clone(),
+            model_input_cost_per_million: state.config.model_input_cost_per_million,
+            model_cached_input_cost_per_million: state.config.model_cached_input_cost_per_million,
+            model_output_cost_per_million: state.config.model_output_cost_per_million,
             system_prompt: state.config.system_prompt.clone(),
             max_turns: state.config.max_turns,
             temperature: Some(0.0),
