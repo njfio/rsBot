@@ -1,6 +1,6 @@
 # Tasks #2258
 
-Status: In Progress
+Status: Completed
 Spec: specs/2258/spec.md
 Plan: specs/2258/plan.md
 
