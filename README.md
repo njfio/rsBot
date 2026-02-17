@@ -120,6 +120,20 @@ Run the standalone TUI demo:
 cargo run -p tau-tui -- --frames 2 --sleep-ms 0 --width 56 --no-color
 ```
 
+## Container Packaging
+
+Build and smoke-test the first-party Docker image locally:
+
+```bash
+./scripts/dev/docker-image-smoke.sh --tag tau-coding-agent:local-smoke
+```
+
+Run the image directly:
+
+```bash
+docker run --rm --entrypoint tau-coding-agent tau-coding-agent:local-smoke --help
+```
+
 ## Demo Commands
 
 Fresh-clone validation index:
@@ -209,6 +223,7 @@ Contributor references:
 - Security: [`.github/workflows/security.yml`](.github/workflows/security.yml)
 - Release: [`.github/workflows/release.yml`](.github/workflows/release.yml)
   - Linux/macOS/Windows artifacts (`amd64`, `arm64`)
+  - GHCR Docker image publish (`ghcr.io/<owner>/tau-coding-agent:<release-tag>`, `latest`)
   - optional signing/notarization hooks (`scripts/release/hooks/*`)
   - installer/update scripts for Unix and PowerShell
 - Dependabot: [`.github/dependabot.yml`](.github/dependabot.yml)

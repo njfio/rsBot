@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.vscode
+.DS_Store
+.tau
+target
+target-fast
+target-fast-*
+target-rustup-wasm
+dist
+ci-artifacts
+coverage
+*.log
+*.tmp
+*.swp
+tmp

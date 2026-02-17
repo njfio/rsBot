@@ -185,6 +185,13 @@ jobs:
             release_helpers:
               - "scripts/release/**"
               - ".github/workflows/release.yml"
+            docker_packaging:
+              - "Dockerfile"
+              - ".dockerignore"
+              - "scripts/dev/docker-image-smoke.sh"
+              - "scripts/dev/test-docker-image-packaging.sh"
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/release.yml"
             wasm_smoke:
               - "crates/kamn-core/**"
               - "crates/kamn-sdk/**"
@@ -471,6 +478,33 @@ jobs:
         run: |
           ./scripts/release/test-install-helpers.sh
           ./scripts/release/test-release-workflow-contract.sh
+
+      - name: Determine docker packaging scope
+        id: docker_packaging_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker_packaging_needed="${{ steps.change_scope.outputs.docker_packaging }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            docker_packaging_needed="false"
+          elif [[ -z "${docker_packaging_needed}" ]]; then
+            docker_packaging_needed="false"
+          fi
+          echo "docker_packaging_needed=${docker_packaging_needed}" >> "$GITHUB_OUTPUT"
+          echo "### Docker Packaging Scope" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Docker packaging checks needed: ${docker_packaging_needed}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate Docker packaging contracts
+        if: steps.docker_packaging_scope.outputs.docker_packaging_needed == 'true'
+        run: ./scripts/dev/test-docker-image-packaging.sh
+
+      - name: Run Docker image smoke
+        if: steps.docker_packaging_scope.outputs.docker_packaging_needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/dev/docker-image-smoke.sh \
+            --tag "tau-coding-agent:ci-${{ github.run_id }}-${{ github.run_attempt }}"
 
       - name: Determine wasm smoke scope
         id: wasm_scope

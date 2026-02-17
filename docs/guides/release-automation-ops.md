@@ -26,6 +26,12 @@ The workflow publishes release archives plus checksum manifests to GitHub Releas
 - `*.sha256`
 - `SHA256SUMS`
 
+The workflow also publishes a GHCR container image:
+
+- `ghcr.io/<owner>/tau-coding-agent:<release-tag>`
+- `ghcr.io/<owner>/tau-coding-agent:latest`
+- Platforms: `linux/amd64`, `linux/arm64`
+
 ### Cross-arch smoke policy
 
 Release build lanes execute a `--help` smoke gate only when artifact architecture matches runner architecture.
@@ -130,6 +136,13 @@ Installer scripts emit JSON log lines with `reason_code` values, including:
 
 ## Local validation
 
+Run Docker packaging contract + smoke checks:
+
+```bash
+./scripts/dev/test-docker-image-packaging.sh
+./scripts/dev/docker-image-smoke.sh --tag tau-coding-agent:local-smoke
+```
+
 Run helper-script tests:
 
 ```bash
@@ -140,3 +153,5 @@ Run release workflow lint/validation via PR CI:
 
 - Release helper test scope is automatically triggered when `scripts/release/**` or `.github/workflows/release.yml` changes.
 - Workflow contract checks (matrix + smoke policy) run in `scripts/release/test-release-workflow-contract.sh`.
+- Docker packaging scope is automatically triggered when `Dockerfile`, `.dockerignore`,
+  Docker packaging scripts, or release workflow files change.

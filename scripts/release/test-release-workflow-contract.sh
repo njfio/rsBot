@@ -37,4 +37,11 @@ assert_contains_file "${CI_WORKFLOW}" "name: windows-arm64" "ci cross-platform l
 assert_contains_file "${CI_WORKFLOW}" "target: aarch64-pc-windows-msvc" "ci cross-platform target"
 assert_contains_file "${CI_WORKFLOW}" "cargo build --release -p tau-coding-agent --target" "ci compile smoke command"
 
+# Conformance: release workflow must publish GHCR image tags for release and latest.
+assert_contains_file "${RELEASE_WORKFLOW}" "publish-container:" "release container publish job"
+assert_contains_file "${RELEASE_WORKFLOW}" "docker/build-push-action@v6" "release docker build-push action"
+assert_contains_file "${RELEASE_WORKFLOW}" "ghcr.io" "release ghcr repository"
+assert_contains_file "${RELEASE_WORKFLOW}" ':${{ env.RELEASE_TAG }}' "release version container tag"
+assert_contains_file "${RELEASE_WORKFLOW}" ":latest" "release latest container tag"
+
 echo "release workflow contract tests passed"
