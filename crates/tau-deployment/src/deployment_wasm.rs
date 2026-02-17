@@ -19,6 +19,8 @@ const DEPLOYMENT_WASM_CHANNEL_AUTOMATION_TARGET_ROLE: &str = "channel_automation
 const DEPLOYMENT_WASM_MODULE_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
 const DEPLOYMENT_WASM_DEFAULT_MAX_ARTIFACT_SIZE_BYTES: u64 = 2 * 1024 * 1024;
 const DEPLOYMENT_WASM_CHANNEL_AUTOMATION_MAX_ARTIFACT_SIZE_BYTES: u64 = 1024 * 1024;
+const DEPLOYMENT_WASM_REQUIRED_ABI_PREVIEW2_PATTERN: &str = "wasi:*";
+const DEPLOYMENT_WASM_FORBIDDEN_PREVIEW1_IMPORT: &str = "wasi_snapshot_preview1";
 
 fn deployment_wasm_manifest_schema_version() -> u32 {
     DEPLOYMENT_WASM_MANIFEST_SCHEMA_VERSION
@@ -59,11 +61,17 @@ fn default_channel_automation_required_feature_gates() -> Vec<String> {
 }
 
 fn default_allowed_import_modules() -> Vec<String> {
-    vec!["wasi_snapshot_preview1".to_string(), "env".to_string()]
+    vec![
+        DEPLOYMENT_WASM_REQUIRED_ABI_PREVIEW2_PATTERN.to_string(),
+        "env".to_string(),
+    ]
 }
 
 fn default_forbidden_import_modules() -> Vec<String> {
-    vec!["wasi_unstable".to_string()]
+    vec![
+        DEPLOYMENT_WASM_FORBIDDEN_PREVIEW1_IMPORT.to_string(),
+        "wasi_unstable".to_string(),
+    ]
 }
 
 fn default_runtime_constraints() -> DeploymentWasmRuntimeConstraintProfile {
@@ -72,7 +80,7 @@ fn default_runtime_constraints() -> DeploymentWasmRuntimeConstraintProfile {
         profile_id: DEPLOYMENT_WASM_CONTROL_PLANE_PROFILE_ID.to_string(),
         target_role: DEPLOYMENT_WASM_CONTROL_PLANE_TARGET_ROLE.to_string(),
         required_runtime_profile: "wasm_wasi".to_string(),
-        required_abi: "wasi_snapshot_preview1".to_string(),
+        required_abi: DEPLOYMENT_WASM_REQUIRED_ABI_PREVIEW2_PATTERN.to_string(),
         required_feature_gates: default_required_feature_gates(),
         allowed_import_modules: default_allowed_import_modules(),
         forbidden_import_modules: default_forbidden_import_modules(),
@@ -86,7 +94,7 @@ fn default_channel_automation_runtime_constraints() -> DeploymentWasmRuntimeCons
         profile_id: DEPLOYMENT_WASM_CHANNEL_AUTOMATION_PROFILE_ID.to_string(),
         target_role: DEPLOYMENT_WASM_CHANNEL_AUTOMATION_TARGET_ROLE.to_string(),
         required_runtime_profile: "channel_automation_wasi".to_string(),
-        required_abi: "wasi_snapshot_preview1".to_string(),
+        required_abi: DEPLOYMENT_WASM_REQUIRED_ABI_PREVIEW2_PATTERN.to_string(),
         required_feature_gates: default_channel_automation_required_feature_gates(),
         allowed_import_modules: default_allowed_import_modules(),
         forbidden_import_modules: default_forbidden_import_modules(),
@@ -660,21 +668,26 @@ fn evaluate_runtime_constraint_compliance(
         reason_codes.push("abi_assumed_no_imports".to_string());
     } else if !import_modules
         .iter()
-        .any(|module| module == &profile.required_abi)
+        .any(|module| module_matches_constraint(module, profile.required_abi.as_str()))
     {
         reason_codes.push("required_abi_missing".to_string());
     }
     if !profile.allowed_import_modules.is_empty()
-        && import_modules
-            .iter()
-            .any(|module| !profile.allowed_import_modules.contains(module))
+        && import_modules.iter().any(|module| {
+            !profile
+                .allowed_import_modules
+                .iter()
+                .any(|constraint| module_matches_constraint(module, constraint))
+        })
     {
         reason_codes.push("import_module_not_allowlisted".to_string());
     }
-    if import_modules
-        .iter()
-        .any(|module| profile.forbidden_import_modules.contains(module))
-    {
+    if import_modules.iter().any(|module| {
+        profile
+            .forbidden_import_modules
+            .iter()
+            .any(|constraint| module_matches_constraint(module, constraint))
+    }) {
         reason_codes.push("import_module_forbidden".to_string());
     }
 
@@ -685,6 +698,17 @@ fn evaluate_runtime_constraint_compliance(
         compliant,
         reason_codes,
     }
+}
+
+fn module_matches_constraint(module: &str, constraint: &str) -> bool {
+    let normalized_constraint = constraint.trim();
+    if normalized_constraint.is_empty() {
+        return false;
+    }
+    if let Some(prefix) = normalized_constraint.strip_suffix('*') {
+        return module.starts_with(prefix);
+    }
+    module == normalized_constraint
 }
 
 fn collect_wasm_import_modules(bytes: &[u8]) -> Result<Vec<String>> {
@@ -976,6 +1000,54 @@ mod tests {
     }
 
     #[test]
+    fn spec_c01_runtime_constraints_default_to_wasi_preview2_abi_pattern() {
+        let profile = super::default_runtime_constraints();
+        assert_eq!(profile.required_abi, "wasi:*");
+        assert!(profile
+            .allowed_import_modules
+            .contains(&"wasi:*".to_string()));
+        assert!(profile
+            .forbidden_import_modules
+            .contains(&"wasi_snapshot_preview1".to_string()));
+    }
+
+    #[test]
+    fn spec_c02_wasi_preview2_wildcard_matcher_allows_wasi_namespace_modules() {
+        let profile = super::default_runtime_constraints();
+        let compliance = super::evaluate_runtime_constraint_compliance(
+            &profile,
+            "wasm_wasi",
+            8,
+            &[String::from("wasi:cli/environment@0.2.0")],
+            &super::default_required_feature_gates(),
+        );
+        assert!(compliance.compliant);
+        assert!(compliance.reason_codes.is_empty());
+    }
+
+    #[test]
+    fn spec_c03_wasi_preview2_compliance_rejects_preview1_import_modules() {
+        let profile = super::default_runtime_constraints();
+        let compliance = super::evaluate_runtime_constraint_compliance(
+            &profile,
+            "wasm_wasi",
+            8,
+            &[String::from("wasi_snapshot_preview1")],
+            &super::default_required_feature_gates(),
+        );
+        assert!(!compliance.compliant);
+        assert!(compliance
+            .reason_codes
+            .contains(&"required_abi_missing".to_string()));
+        assert!(compliance
+            .reason_codes
+            .contains(&"import_module_not_allowlisted".to_string()));
+        assert!(compliance
+            .reason_codes
+            .contains(&"import_module_forbidden".to_string()));
+    }
+
+    #[test]
     fn integration_load_deployment_wasm_manifest_verifies_hash_and_constraints() {
         let temp = tempdir().expect("tempdir");
         let module_path = temp.path().join("edge.wasm");
@@ -1021,7 +1093,7 @@ mod tests {
         assert_eq!(inspect.constraint_profile_id, "control_plane_gateway_v1");
         assert_eq!(inspect.constraint_target_role, "control_plane_gateway");
         assert_eq!(inspect.required_runtime_profile, "wasm_wasi");
-        assert_eq!(inspect.required_abi, "wasi_snapshot_preview1");
+        assert_eq!(inspect.required_abi, "wasi:*");
         assert!(inspect
             .reason_codes
             .iter()
@@ -1055,7 +1127,7 @@ mod tests {
         );
         assert_eq!(inspect.constraint_target_role, "channel_automation_runtime");
         assert_eq!(inspect.required_runtime_profile, "channel_automation_wasi");
-        assert_eq!(inspect.required_abi, "wasi_snapshot_preview1");
+        assert_eq!(inspect.required_abi, "wasi:*");
         assert!(inspect
             .required_feature_gates
             .contains(&"channel_event_dispatch_host_capability".to_string()));

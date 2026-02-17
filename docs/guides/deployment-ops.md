@@ -94,6 +94,8 @@ Compatibility matrix:
 - Supported runtime profile(s): `wasm_wasi`, `channel_automation_wasi`
 - Runtime constraint profile (`wasm_wasi`): `control_plane_gateway_v1`
 - Runtime constraint profile (`channel_automation_wasi`): `channel_automation_runtime_v1`
+- Required WASI ABI family: `wasi:*` (preview2 namespace pattern)
+- Forbidden legacy WASI imports: `wasi_snapshot_preview1`, `wasi_unstable`
 - Required module format: valid WASM binary magic header (`\\0asm`)
 - Unsupported in this path: native/container image packaging, host capability negotiation, and runtime sandbox policy synthesis
 
