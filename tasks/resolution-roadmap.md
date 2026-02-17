@@ -50,7 +50,7 @@ Functional/distribution/ops claims (5-15) were revalidated with
 | Claim | Status | Evidence |
 |---|---|---|
 | OpenRouter still alias, not first-class provider | Resolved | `cargo test -p tau-ai spec_c01_parses_openrouter_as_first_class_provider -- --nocapture`; `cargo test -p tau-ai spec_c06_openrouter_route_applies_dedicated_headers_when_configured -- --nocapture` |
-| PostgreSQL session backend scaffolded/not implemented | Partial | `cargo test -p tau-session spec_c05_postgres_invalid_dsn_reports_backend_error_not_scaffold -- --nocapture`; `cargo test -p tau-session integration_spec_c03_postgres_usage_summary_persists_when_dsn_provided -- --nocapture` (live persistence path requires `TAU_TEST_POSTGRES_DSN`) |
+| PostgreSQL session backend scaffolded/not implemented | Resolved | `cargo test -p tau-session spec_c05_postgres_invalid_dsn_reports_backend_error_not_scaffold -- --nocapture`; `scripts/dev/verify-session-postgres-live.sh` (boots ephemeral docker postgres and runs `integration_spec_c02..c04`) |
 | Onboarding wizard partial (state detection only) | Resolved | `cargo test -p tau-onboarding functional_spec_c01_c02_execute_onboarding_command_guided_flow_is_deterministic_and_applies_selected_workspace -- --nocapture` |
 | Dashboard scaffold only | Partial | `cargo test -p tau-gateway integration_dashboard_endpoints_return_state_health_widgets_timeline_and_alerts -- --nocapture` (runtime/dashboard APIs present; rich standalone UI scope remains product decision) |
 | WASI preview 1, not preview 2 | Resolved | `cargo test -p tau-deployment spec_c03_wasi_preview2_compliance_rejects_preview1_import_modules -- --nocapture` |
