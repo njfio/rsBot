@@ -1,6 +1,6 @@
 # Spec #2260
 
-Status: Accepted
+Status: Implemented
 Milestone: specs/milestones/m46/index.md
 Issue: https://github.com/njfio/Tau/issues/2260
 
