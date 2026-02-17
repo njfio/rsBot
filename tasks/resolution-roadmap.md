@@ -58,7 +58,7 @@ Functional/distribution/ops claims (5-15) were revalidated with
 | No Homebrew formula | Resolved | `scripts/release/test-release-workflow-contract.sh` (checks Homebrew render + `dist/tau.rb` release asset wiring) |
 | No shell completions | Resolved | `scripts/release/test-release-workflow-contract.sh` (checks generation and release assets for bash/zsh/fish) |
 | No systemd unit | Resolved | `cargo test -p tau-ops spec_c01_render_systemd_user_unit_includes_required_sections_and_gateway_flags -- --nocapture` |
-| No fuzz testing | Partial | `cargo test -p tau-runtime spec_c01_rpc_raw_fuzz_conformance_no_panic_for_10000_inputs -- --nocapture`; `cargo test -p tau-runtime spec_c02_rpc_ndjson_fuzz_conformance_no_panic_for_10000_inputs -- --nocapture`; `cargo test -p tau-gateway spec_c03_gateway_ws_parse_fuzz_conformance_no_panic_for_10000_inputs -- --nocapture` (deterministic fuzz-conformance exists; dedicated `cargo-fuzz` harness still optional follow-up) |
+| No fuzz testing | Resolved | `TAU_CARGO_FUZZ_RUNS=200 scripts/dev/verify-cargo-fuzz-baseline.sh`; `cargo test -p tau-runtime spec_c01_rpc_raw_fuzz_conformance_no_panic_for_10000_inputs -- --nocapture`; `cargo test -p tau-runtime spec_c02_rpc_ndjson_fuzz_conformance_no_panic_for_10000_inputs -- --nocapture`; `cargo test -p tau-gateway spec_c03_gateway_ws_parse_fuzz_conformance_no_panic_for_10000_inputs -- --nocapture` |
 | No log rotation | Resolved | `cargo test -p tau-runtime spec_c04_tool_audit_logger_rotates_and_keeps_writing_after_threshold -- --nocapture`; `cargo test -p tau-gateway spec_c04_gateway_cycle_report_rotates_and_keeps_latest_record -- --nocapture` |
 
 ---

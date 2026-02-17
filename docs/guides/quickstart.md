@@ -32,6 +32,27 @@ Override target directory when needed:
 CARGO_TARGET_DIR=target-fast-2267 ./scripts/qa/test-fuzz-contract.sh
 ```
 
+## Cargo-Fuzz Baseline Contract
+
+Run true libFuzzer harness coverage for the same untrusted parser surfaces:
+
+```bash
+rustup run nightly cargo install cargo-fuzz
+TAU_CARGO_FUZZ_RUNS=200 ./scripts/dev/verify-cargo-fuzz-baseline.sh
+```
+
+Covered harness targets:
+
+- `rpc_raw_dispatch` for tau-runtime raw RPC dispatch.
+- `rpc_ndjson_dispatch` for tau-runtime NDJSON dispatch.
+- `gateway_ws_parse` for tau-gateway websocket request parsing.
+
+Override target directory when needed:
+
+```bash
+CARGO_TARGET_DIR=target-fast-cargo-fuzz TAU_CARGO_FUZZ_RUNS=200 ./scripts/dev/verify-cargo-fuzz-baseline.sh
+```
+
 ## Onboarding
 
 First-run default startup (`cargo run -p tau-coding-agent --`) now auto-enters the
