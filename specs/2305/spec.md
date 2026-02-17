@@ -1,6 +1,6 @@
 # Spec #2305
 
-Status: Accepted
+Status: Implemented
 Milestone: specs/milestones/m48/index.md
 Issue: https://github.com/njfio/Tau/issues/2305
 
