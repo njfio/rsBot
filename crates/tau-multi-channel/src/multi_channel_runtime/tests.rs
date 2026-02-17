@@ -678,10 +678,35 @@ fn spec_c01_coalescer_merges_same_actor_and_conversation_inside_window() {
     );
     first.timestamp_ms = 1_000;
     second.timestamp_ms = 2_000;
+    second.attachments.push(MultiChannelAttachment {
+        attachment_id: "att-merged-1".to_string(),
+        url: "https://example.com/merged.png".to_string(),
+        content_type: "image/png".to_string(),
+        file_name: "merged.png".to_string(),
+        size_bytes: 42,
+    });
     let batches = super::coalesce_inbound_events(&[first, second], 3_000);
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].event.text, "first line\nsecond line");
     assert_eq!(batches[0].source_event_keys.len(), 2);
+    assert_eq!(batches[0].event.attachments.len(), 1);
+    assert_eq!(
+        batches[0]
+            .event
+            .metadata
+            .get("coalesced_batch_size")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        batches[0]
+            .event
+            .metadata
+            .get("coalesced_source_event_ids")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
 }
 
 #[test]
@@ -712,6 +737,28 @@ fn spec_c02_coalescer_keeps_events_separate_when_window_or_key_differs() {
     third.timestamp_ms = 9_000;
     let batches = super::coalesce_inbound_events(&[first, second, third], 2_000);
     assert_eq!(batches.len(), 3);
+}
+
+#[test]
+fn regression_coalescer_merges_equal_timestamps_within_window() {
+    let mut first = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-equal-1",
+        "chat-equal",
+        "user-1",
+        "same time one",
+    );
+    let mut second = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-equal-2",
+        "chat-equal",
+        "user-1",
+        "same time two",
+    );
+    first.timestamp_ms = 5_000;
+    second.timestamp_ms = 5_000;
+    let batches = super::coalesce_inbound_events(&[first, second], 2_000);
+    assert_eq!(batches.len(), 1);
 }
 
 #[test]
