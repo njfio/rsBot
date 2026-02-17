@@ -8,6 +8,7 @@ const DEFAULT_LOG_ROTATION_MAX_FILES: usize = 5;
 
 /// Configuration for size-based log rotation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Configuration for size-based log rotation.
 pub struct LogRotationPolicy {
     pub max_bytes: u64,
     pub max_files: usize,

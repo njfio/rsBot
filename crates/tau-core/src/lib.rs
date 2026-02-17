@@ -10,8 +10,11 @@ pub mod log_rotation;
 /// Unix timestamp utilities used across runtime policy/state logic.
 pub mod time_utils;
 
+/// Re-export of atomic text file write helper.
 pub use atomic_io::write_text_atomic;
+/// Re-exports for log append and rotation policy helpers.
 pub use log_rotation::{append_line_with_rotation, LogRotationPolicy};
+/// Re-exports for Unix timestamp and expiry helper utilities.
 pub use time_utils::{current_unix_timestamp, current_unix_timestamp_ms, is_expired_unix};
 
 #[cfg(test)]
