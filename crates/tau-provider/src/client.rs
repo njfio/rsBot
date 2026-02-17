@@ -26,6 +26,33 @@ use crate::credentials::{
 use crate::gemini_cli_client::{GeminiCliClient, GeminiCliConfig};
 use crate::types::ProviderAuthMethod;
 
+const DEFAULT_OPENAI_API_BASE: &str = "https://api.openai.com/v1";
+const DEFAULT_OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn resolve_openrouter_api_base(configured_api_base: &str) -> String {
+    non_empty_env("TAU_OPENROUTER_API_BASE").unwrap_or_else(|| {
+        if configured_api_base
+            .trim()
+            .eq_ignore_ascii_case(DEFAULT_OPENAI_API_BASE)
+        {
+            DEFAULT_OPENROUTER_API_BASE.to_string()
+        } else {
+            configured_api_base.to_string()
+        }
+    })
+}
+
 fn resolved_secret_for_provider(
     resolved: &ProviderAuthCredential,
     provider: Provider,
@@ -68,7 +95,7 @@ fn should_use_subscription_backend_fallback(
         return false;
     }
     match provider {
-        Provider::OpenAi => cli.openai_codex_backend,
+        Provider::OpenAi | Provider::OpenRouter => cli.openai_codex_backend,
         Provider::Anthropic => cli.anthropic_claude_backend,
         Provider::Google => cli.google_gemini_backend,
     }
@@ -87,22 +114,22 @@ fn openai_codex_backend_enabled(cli: &Cli, auth_mode: ProviderAuthMethod) -> boo
         )
 }
 
-fn openai_credential_store_missing_provider_entry(cli: &Cli) -> bool {
+fn openai_credential_store_missing_provider_entry(cli: &Cli, provider: Provider) -> bool {
     let key = cli.credential_store_key.as_deref();
     let default_mode = resolve_credential_store_encryption_mode(cli);
     load_credential_store(&cli.credential_store, default_mode, key)
-        .map(|store| !store.providers.contains_key(Provider::OpenAi.as_str()))
+        .map(|store| !store.providers.contains_key(provider.as_str()))
         .unwrap_or(false)
 }
 
-fn build_openai_codex_client(cli: &Cli) -> Result<Arc<dyn LlmClient>> {
+fn build_openai_codex_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn LlmClient>> {
     let client = CodexCliClient::new(CodexCliConfig {
         executable: cli.openai_codex_cli.clone(),
         extra_args: cli.openai_codex_args.clone(),
         timeout_ms: cli.openai_codex_timeout_ms.max(1),
     })?;
     tracing::debug!(
-        provider = Provider::OpenAi.as_str(),
+        provider = provider.as_str(),
         auth_mode = "codex_backend",
         auth_source = "codex_cli",
         "provider auth resolved"
@@ -203,11 +230,16 @@ fn resolve_api_key_fallback_credential(
 fn build_openai_http_client(
     cli: &Cli,
     resolved: &ProviderAuthCredential,
+    provider: Provider,
 ) -> Result<Arc<dyn LlmClient>> {
-    let api_key = resolved_secret_for_provider(resolved, Provider::OpenAi)?;
-    let azure_mode = is_azure_openai_endpoint(&cli.api_base);
+    let api_key = resolved_secret_for_provider(resolved, provider)?;
+    let api_base = match provider {
+        Provider::OpenRouter => resolve_openrouter_api_base(&cli.api_base),
+        Provider::OpenAi | Provider::Anthropic | Provider::Google => cli.api_base.clone(),
+    };
+    let azure_mode = provider == Provider::OpenAi && is_azure_openai_endpoint(&api_base);
     let client = OpenAiClient::new(OpenAiConfig {
-        api_base: cli.api_base.clone(),
+        api_base,
         api_key,
         organization: None,
         request_timeout_ms: cli.request_timeout_ms.max(1),
@@ -226,7 +258,7 @@ fn build_openai_http_client(
         },
     })?;
     let auth_source = resolved.source.as_deref().unwrap_or("none");
-    log_provider_auth_resolution(Provider::OpenAi, resolved, auth_source);
+    log_provider_auth_resolution(provider, resolved, auth_source);
     Ok(Arc::new(client))
 }
 
@@ -285,7 +317,7 @@ pub fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn Ll
     }
 
     match provider {
-        Provider::OpenAi => {
+        Provider::OpenAi | Provider::OpenRouter => {
             let resolver = CliProviderCredentialResolver { cli };
             let resolved = match resolver.resolve(provider, auth_mode) {
                 Ok(resolved) => Some(resolved),
@@ -301,16 +333,16 @@ pub fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn Ll
                             provider = provider.as_str(),
                             auth_mode = auth_mode.as_str(),
                             auth_source = "codex_cli",
-                            "openai api-key auth missing key; falling back to codex cli backend"
+                            "openai-compatible api-key auth missing key; falling back to codex cli backend"
                         );
                         None
                     } else if openai_codex_backend_enabled(cli, auth_mode)
-                        && openai_credential_store_missing_provider_entry(cli)
+                        && openai_credential_store_missing_provider_entry(cli, provider)
                     {
                         tracing::debug!(
                             provider = provider.as_str(),
                             auth_mode = auth_mode.as_str(),
-                            "openai credential store entry missing; falling back to codex cli backend"
+                            "openai-compatible credential store entry missing; falling back to codex cli backend"
                         );
                         None
                     } else {
@@ -320,10 +352,10 @@ pub fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn Ll
             };
 
             if let Some(resolved) = resolved {
-                return build_openai_http_client(cli, &resolved);
+                return build_openai_http_client(cli, &resolved, provider);
             }
 
-            build_openai_codex_client(cli)
+            build_openai_codex_client(cli, provider)
         }
         Provider::Anthropic => {
             if matches!(
@@ -420,6 +452,47 @@ pub fn build_provider_client(cli: &Cli, provider: Provider) -> Result<Arc<dyn Ll
                 return build_google_gemini_client(cli, ProviderAuthMethod::OauthToken);
             };
             build_google_http_client(cli, &resolved)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_openrouter_api_base;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn spec_c05_openrouter_uses_default_route_when_openai_default_is_configured() {
+        let _guard = env_lock().lock().expect("acquire env lock");
+        let prior = std::env::var("TAU_OPENROUTER_API_BASE").ok();
+        std::env::remove_var("TAU_OPENROUTER_API_BASE");
+
+        let resolved = resolve_openrouter_api_base("https://api.openai.com/v1");
+        assert_eq!(resolved, "https://openrouter.ai/api/v1");
+
+        match prior {
+            Some(value) => std::env::set_var("TAU_OPENROUTER_API_BASE", value),
+            None => std::env::remove_var("TAU_OPENROUTER_API_BASE"),
+        }
+    }
+
+    #[test]
+    fn regression_openrouter_respects_explicit_base_override() {
+        let _guard = env_lock().lock().expect("acquire env lock");
+        let prior = std::env::var("TAU_OPENROUTER_API_BASE").ok();
+        std::env::remove_var("TAU_OPENROUTER_API_BASE");
+
+        let resolved = resolve_openrouter_api_base("http://127.0.0.1:8080/v1");
+        assert_eq!(resolved, "http://127.0.0.1:8080/v1");
+
+        match prior {
+            Some(value) => std::env::set_var("TAU_OPENROUTER_API_BASE", value),
+            None => std::env::remove_var("TAU_OPENROUTER_API_BASE"),
         }
     }
 }

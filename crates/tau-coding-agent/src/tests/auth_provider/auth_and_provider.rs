@@ -172,7 +172,7 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
     assert_eq!(
         openrouter_login,
         AuthCommand::Login {
-            provider: Provider::OpenAi,
+            provider: Provider::OpenRouter,
             mode: Some(ProviderAuthMethod::ApiKey),
             launch: false,
             json_output: false,
@@ -246,6 +246,22 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
         AuthCommand::Matrix {
             provider: Some(Provider::OpenAi),
             mode: Some(ProviderAuthMethod::OauthToken),
+            mode_support: AuthMatrixModeSupportFilter::All,
+            availability: AuthMatrixAvailabilityFilter::All,
+            state: None,
+            source_kind: AuthSourceKindFilter::All,
+            revoked: AuthRevokedFilter::All,
+            json_output: true,
+        }
+    );
+
+    let openrouter_matrix = parse_auth_command("matrix openrouter --mode api-key --json")
+        .expect("parse openrouter auth matrix");
+    assert_eq!(
+        openrouter_matrix,
+        AuthCommand::Matrix {
+            provider: Some(Provider::OpenRouter),
+            mode: Some(ProviderAuthMethod::ApiKey),
             mode_support: AuthMatrixModeSupportFilter::All,
             availability: AuthMatrixAvailabilityFilter::All,
             state: None,
@@ -335,6 +351,20 @@ fn unit_parse_auth_command_supports_login_status_logout_and_json() {
             json_output: true,
         }
     );
+}
+
+#[test]
+fn spec_c04_auth_matrix_accepts_openrouter_provider_filter() {
+    let mut config = test_auth_command_config();
+    config.openai_api_key = Some("openrouter-matrix-key".to_string());
+
+    let output = execute_auth_command(&config, "matrix openrouter --mode api-key --json");
+    let payload: serde_json::Value = serde_json::from_str(&output).expect("json output");
+    assert_eq!(payload["command"], "auth.matrix");
+    assert_eq!(payload["provider_filter"], "openrouter");
+    assert_eq!(payload["entries"].as_array().map(Vec::len), Some(1));
+    assert_eq!(payload["entries"][0]["provider"], "openrouter");
+    assert_eq!(payload["entries"][0]["mode"], "api_key");
 }
 
 #[test]

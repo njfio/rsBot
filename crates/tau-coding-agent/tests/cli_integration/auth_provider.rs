@@ -289,7 +289,7 @@ fn fallback_model_flag_routes_to_secondary_model_on_retryable_failure() {
 }
 
 #[test]
-fn integration_openrouter_alias_uses_openai_compatible_runtime_with_env_key() {
+fn integration_openrouter_provider_uses_openrouter_headers_with_env_key() {
     let server = MockServer::start();
     let openrouter = server.mock(|_, then| {
         then.status(200).json_body(json!({
@@ -305,13 +305,17 @@ fn integration_openrouter_alias_uses_openai_compatible_runtime_with_env_key() {
     cmd.args([
         "--model",
         "openrouter/openai/gpt-4o-mini",
-        "--api-base",
-        &format!("{}/v1", server.base_url()),
         "--prompt",
         "hello",
         "--no-session",
     ])
-    .env("OPENROUTER_API_KEY", "test-openrouter-key");
+    .env("OPENROUTER_API_KEY", "test-openrouter-key")
+    .env(
+        "TAU_OPENROUTER_API_BASE",
+        format!("{}/api/v1", server.base_url()),
+    )
+    .env("TAU_OPENROUTER_X_TITLE", "Tau Integration Tests")
+    .env("TAU_OPENROUTER_HTTP_REFERER", "https://tau.rs/tests");
 
     cmd.assert()
         .success()

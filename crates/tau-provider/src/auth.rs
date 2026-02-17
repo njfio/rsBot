@@ -90,6 +90,7 @@ const GOOGLE_AUTH_CAPABILITIES: &[ProviderAuthCapability] = &[
 fn provider_auth_capabilities(provider: Provider) -> &'static [ProviderAuthCapability] {
     match provider {
         Provider::OpenAi => OPENAI_AUTH_CAPABILITIES,
+        Provider::OpenRouter => OPENAI_AUTH_CAPABILITIES,
         Provider::Anthropic => ANTHROPIC_AUTH_CAPABILITIES,
         Provider::Google => GOOGLE_AUTH_CAPABILITIES,
     }
@@ -136,6 +137,7 @@ pub fn provider_supported_auth_modes(provider: Provider) -> Vec<ProviderAuthMeth
 pub fn configured_provider_auth_method(cli: &Cli, provider: Provider) -> ProviderAuthMethod {
     match provider {
         Provider::OpenAi => cli.openai_auth_mode.into(),
+        Provider::OpenRouter => cli.openai_auth_mode.into(),
         Provider::Anthropic => cli.anthropic_auth_mode.into(),
         Provider::Google => cli.google_auth_mode.into(),
     }
@@ -152,6 +154,7 @@ pub fn configured_provider_auth_method_from_config(
 ) -> ProviderAuthMethod {
     match provider {
         Provider::OpenAi => config.openai_auth_mode,
+        Provider::OpenRouter => config.openai_auth_mode,
         Provider::Anthropic => config.anthropic_auth_mode,
         Provider::Google => config.google_auth_mode,
     }
@@ -165,6 +168,7 @@ pub fn configured_provider_auth_method_from_config(
 pub fn provider_auth_mode_flag(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAi => "--openai-auth-mode",
+        Provider::OpenRouter => "--openai-auth-mode",
         Provider::Anthropic => "--anthropic-auth-mode",
         Provider::Google => "--google-auth-mode",
     }
@@ -179,6 +183,9 @@ pub fn missing_provider_api_key_message(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAi => {
             "missing OpenAI-compatible API key. Set OPENAI_API_KEY, OPENROUTER_API_KEY, TAU_OPENROUTER_API_KEY, DEEPSEEK_API_KEY, TAU_DEEPSEEK_API_KEY, GROQ_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, AZURE_OPENAI_API_KEY, TAU_API_KEY, --openai-api-key, or --api-key"
+        }
+        Provider::OpenRouter => {
+            "missing OpenRouter API key. Set OPENROUTER_API_KEY, TAU_OPENROUTER_API_KEY, OPENAI_API_KEY, TAU_API_KEY, --openai-api-key, or --api-key"
         }
         Provider::Anthropic => {
             "missing Anthropic API key. Set ANTHROPIC_API_KEY, TAU_API_KEY, --anthropic-api-key, or --api-key"
@@ -226,6 +233,20 @@ pub fn provider_api_key_candidates_with_inputs(
                 "AZURE_OPENAI_API_KEY",
                 std::env::var("AZURE_OPENAI_API_KEY").ok(),
             ),
+            ("TAU_API_KEY", std::env::var("TAU_API_KEY").ok()),
+        ],
+        Provider::OpenRouter => vec![
+            ("--openai-api-key", openai_api_key),
+            ("--api-key", api_key),
+            (
+                "OPENROUTER_API_KEY",
+                std::env::var("OPENROUTER_API_KEY").ok(),
+            ),
+            (
+                "TAU_OPENROUTER_API_KEY",
+                std::env::var("TAU_OPENROUTER_API_KEY").ok(),
+            ),
+            ("OPENAI_API_KEY", std::env::var("OPENAI_API_KEY").ok()),
             ("TAU_API_KEY", std::env::var("TAU_API_KEY").ok()),
         ],
         Provider::Anthropic => vec![
@@ -311,6 +332,16 @@ pub fn provider_login_access_token_candidates(
                 std::env::var("OPENAI_ACCESS_TOKEN").ok(),
             ),
         ],
+        Provider::OpenRouter => vec![
+            (
+                "TAU_AUTH_ACCESS_TOKEN",
+                std::env::var("TAU_AUTH_ACCESS_TOKEN").ok(),
+            ),
+            (
+                "OPENAI_ACCESS_TOKEN",
+                std::env::var("OPENAI_ACCESS_TOKEN").ok(),
+            ),
+        ],
         Provider::Anthropic => vec![
             (
                 "TAU_AUTH_ACCESS_TOKEN",
@@ -353,6 +384,16 @@ pub fn provider_login_refresh_token_candidates(
                 std::env::var("OPENAI_REFRESH_TOKEN").ok(),
             ),
         ],
+        Provider::OpenRouter => vec![
+            (
+                "TAU_AUTH_REFRESH_TOKEN",
+                std::env::var("TAU_AUTH_REFRESH_TOKEN").ok(),
+            ),
+            (
+                "OPENAI_REFRESH_TOKEN",
+                std::env::var("OPENAI_REFRESH_TOKEN").ok(),
+            ),
+        ],
         Provider::Anthropic => vec![
             (
                 "TAU_AUTH_REFRESH_TOKEN",
@@ -386,6 +427,16 @@ pub fn provider_login_expires_candidates(
 ) -> Vec<(&'static str, Option<String>)> {
     match provider {
         Provider::OpenAi => vec![
+            (
+                "TAU_AUTH_EXPIRES_UNIX",
+                std::env::var("TAU_AUTH_EXPIRES_UNIX").ok(),
+            ),
+            (
+                "OPENAI_AUTH_EXPIRES_UNIX",
+                std::env::var("OPENAI_AUTH_EXPIRES_UNIX").ok(),
+            ),
+        ],
+        Provider::OpenRouter => vec![
             (
                 "TAU_AUTH_EXPIRES_UNIX",
                 std::env::var("TAU_AUTH_EXPIRES_UNIX").ok(),

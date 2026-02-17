@@ -531,6 +531,7 @@ pub fn parse_doctor_command_args(command_args: &str) -> Result<DoctorCommandArgs
 pub fn provider_key_env_var(provider: Provider) -> &'static str {
     match provider {
         Provider::OpenAi => "OPENAI_API_KEY",
+        Provider::OpenRouter => "OPENROUTER_API_KEY",
         Provider::Anthropic => "ANTHROPIC_API_KEY",
         Provider::Google => "GEMINI_API_KEY",
     }
@@ -541,6 +542,13 @@ pub fn provider_key_present(cli: &Cli, provider: Provider) -> bool {
         Provider::OpenAi => {
             resolve_api_key(vec![cli.openai_api_key.clone(), cli.api_key.clone()]).is_some()
         }
+        Provider::OpenRouter => resolve_api_key(vec![
+            cli.openai_api_key.clone(),
+            cli.api_key.clone(),
+            std::env::var("OPENROUTER_API_KEY").ok(),
+            std::env::var("TAU_OPENROUTER_API_KEY").ok(),
+        ])
+        .is_some(),
         Provider::Anthropic => {
             resolve_api_key(vec![cli.anthropic_api_key.clone(), cli.api_key.clone()]).is_some()
         }

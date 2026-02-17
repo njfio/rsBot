@@ -14,6 +14,33 @@ use crate::{
     MessageRole, StreamDeltaHandler, TauAiError, ToolChoice, ToolDefinition,
 };
 
+const DEFAULT_OPENROUTER_X_TITLE: &str = "tau-rs";
+
+fn non_empty_env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn is_openrouter_route(api_base: &str) -> bool {
+    let normalized = api_base.trim().trim_end_matches('/').to_ascii_lowercase();
+    if normalized.contains("openrouter.ai") {
+        return true;
+    }
+
+    let Some(configured_base) = non_empty_env_var("TAU_OPENROUTER_API_BASE") else {
+        return false;
+    };
+    configured_base
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case(normalized.as_str())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 /// Enumerates supported `OpenAiAuthScheme` values.
 pub enum OpenAiAuthScheme {
@@ -67,6 +94,27 @@ impl OpenAiClient {
                     "api-key",
                     HeaderValue::from_str(config.api_key.trim()).map_err(|e| {
                         TauAiError::InvalidResponse(format!("invalid API key header: {e}"))
+                    })?,
+                );
+            }
+        }
+
+        if is_openrouter_route(&config.api_base) {
+            let title = non_empty_env_var("TAU_OPENROUTER_X_TITLE")
+                .unwrap_or_else(|| DEFAULT_OPENROUTER_X_TITLE.to_string());
+            headers.insert(
+                "X-Title",
+                HeaderValue::from_str(&title).map_err(|e| {
+                    TauAiError::InvalidResponse(format!("invalid OpenRouter X-Title header: {e}"))
+                })?,
+            );
+            if let Some(referer) = non_empty_env_var("TAU_OPENROUTER_HTTP_REFERER") {
+                headers.insert(
+                    "HTTP-Referer",
+                    HeaderValue::from_str(&referer).map_err(|e| {
+                        TauAiError::InvalidResponse(format!(
+                            "invalid OpenRouter HTTP-Referer header: {e}"
+                        ))
                     })?,
                 );
             }

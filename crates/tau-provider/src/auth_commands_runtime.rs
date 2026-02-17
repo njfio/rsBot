@@ -279,20 +279,14 @@ const AUTH_MATRIX_MODES: [ProviderAuthMethod; 4] = [
 /// Update this comment if behavior or integration expectations change.
 pub fn parse_auth_provider(token: &str) -> Result<Provider> {
     match token.trim().to_ascii_lowercase().as_str() {
-        "openai"
-        | "openrouter"
-        | "deepseek"
-        | "groq"
-        | "xai"
-        | "mistral"
-        | "azure"
-        | "azure-openai" => {
+        "openai" | "deepseek" | "groq" | "xai" | "mistral" | "azure" | "azure-openai" => {
             Ok(Provider::OpenAi)
         }
+        "openrouter" => Ok(Provider::OpenRouter),
         "anthropic" => Ok(Provider::Anthropic),
         "google" => Ok(Provider::Google),
         other => bail!(
-            "unknown provider '{}'; supported providers: openai, openrouter (alias), deepseek (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google",
+            "unknown provider '{}'; supported providers: openai, openrouter, deepseek (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google",
             other
         ),
     }
@@ -832,7 +826,7 @@ pub fn execute_auth_login_command(
         return execute_google_login_backend_ready(config, mode, launch, json_output);
     }
 
-    if provider == Provider::OpenAi
+    if matches!(provider, Provider::OpenAi | Provider::OpenRouter)
         && matches!(
             mode,
             ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken
@@ -842,7 +836,7 @@ pub fn execute_auth_login_command(
             resolve_non_empty_secret_with_source(provider_login_access_token_candidates(provider))
                 .is_some();
         if launch || !has_env_access_token {
-            return execute_openai_login_backend_ready(config, mode, launch, json_output);
+            return execute_openai_login_backend_ready(config, provider, mode, launch, json_output);
         }
     }
 
@@ -1277,13 +1271,14 @@ fn auth_backend_probe(
     method: ProviderAuthMethod,
 ) -> AuthBackendProbe {
     match (provider, method) {
-        (Provider::OpenAi, ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken) => {
-            auth_backend_probe_from_cli_state(
-                "codex_cli",
-                config.openai_codex_backend,
-                &config.openai_codex_cli,
-            )
-        }
+        (
+            Provider::OpenAi | Provider::OpenRouter,
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
+        ) => auth_backend_probe_from_cli_state(
+            "codex_cli",
+            config.openai_codex_backend,
+            &config.openai_codex_cli,
+        ),
         (
             Provider::Anthropic,
             ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
@@ -1339,7 +1334,7 @@ fn auth_backend_probe_from_cli_state(
 
 fn provider_auth_recovery_order(provider: Provider) -> Vec<ProviderAuthMethod> {
     match provider {
-        Provider::OpenAi | Provider::Anthropic => vec![
+        Provider::OpenAi | Provider::OpenRouter | Provider::Anthropic => vec![
             ProviderAuthMethod::OauthToken,
             ProviderAuthMethod::SessionToken,
             ProviderAuthMethod::ApiKey,
@@ -1362,7 +1357,10 @@ fn format_auth_reauth_command(provider: Provider, method: ProviderAuthMethod) ->
 
 fn provider_reauth_prerequisites(provider: Provider, method: ProviderAuthMethod) -> String {
     match (provider, method) {
-        (Provider::OpenAi, ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken) => {
+        (
+            Provider::OpenAi | Provider::OpenRouter,
+            ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
+        ) => {
             "codex cli installed; run codex --login; --openai-codex-backend=true".to_string()
         }
         (
@@ -1496,12 +1494,14 @@ fn auth_next_action(snapshot: &ProviderAuthSnapshot) -> String {
     match snapshot.state.as_str() {
         "missing_api_key" => missing_provider_api_key_message(snapshot.provider).to_string(),
         "backend_disabled" => match snapshot.provider {
-            Provider::OpenAi => "set --openai-codex-backend=true".to_string(),
+            Provider::OpenAi | Provider::OpenRouter => {
+                "set --openai-codex-backend=true".to_string()
+            }
             Provider::Anthropic => "set --anthropic-claude-backend=true".to_string(),
             Provider::Google => "set --google-gemini-backend=true".to_string(),
         },
         "backend_unavailable" => match snapshot.provider {
-            Provider::OpenAi => {
+            Provider::OpenAi | Provider::OpenRouter => {
                 "install codex or set --openai-codex-cli to an available executable".to_string()
             }
             Provider::Anthropic => {
@@ -1896,7 +1896,7 @@ fn auth_config_with_provider_mode(
 ) -> AuthCommandConfig {
     let mut overridden = config.clone();
     match provider {
-        Provider::OpenAi => overridden.openai_auth_mode = mode,
+        Provider::OpenAi | Provider::OpenRouter => overridden.openai_auth_mode = mode,
         Provider::Anthropic => overridden.anthropic_auth_mode = mode,
         Provider::Google => overridden.google_auth_mode = mode,
     }

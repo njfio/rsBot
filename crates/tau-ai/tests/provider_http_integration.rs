@@ -1,6 +1,6 @@
 use httpmock::prelude::*;
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tau_ai::{
     AnthropicClient, AnthropicConfig, ChatRequest, GoogleClient, GoogleConfig, LlmClient, Message,
@@ -28,6 +28,18 @@ fn outbound_secret_fixture_cases() -> Vec<(String, String)> {
             )
         })
         .collect::<Vec<_>>()
+}
+
+fn env_lock() -> &'static Mutex<()> {
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn restore_env_var(name: &str, prior: Option<String>) {
+    match prior {
+        Some(value) => std::env::set_var(name, value),
+        None => std::env::remove_var(name),
+    }
 }
 
 #[tokio::test]
@@ -101,6 +113,74 @@ async fn openai_client_sends_expected_http_request() {
     mock.assert();
     assert_eq!(response.message.text_content(), "openai ok");
     assert_eq!(response.usage.total_tokens, 8);
+}
+
+#[tokio::test]
+async fn spec_c06_openrouter_route_applies_dedicated_headers_when_configured() {
+    let _guard = env_lock().lock().expect("acquire env lock");
+    let prior_base = std::env::var("TAU_OPENROUTER_API_BASE").ok();
+    let prior_title = std::env::var("TAU_OPENROUTER_X_TITLE").ok();
+    let prior_referer = std::env::var("TAU_OPENROUTER_HTTP_REFERER").ok();
+
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/api/v1/chat/completions")
+            .header("authorization", "Bearer test-openrouter-key")
+            .header("x-title", "Tau Integration Tests")
+            .header("http-referer", "https://tau.rs/tests")
+            .header("x-tau-retry-attempt", "0");
+        then.status(200).json_body(json!({
+            "choices": [{
+                "message": {"content": "openrouter headers ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 2,
+                "total_tokens": 7
+            }
+        }));
+    });
+
+    let openrouter_base = format!("{}/api/v1", server.base_url());
+    std::env::set_var("TAU_OPENROUTER_API_BASE", &openrouter_base);
+    std::env::set_var("TAU_OPENROUTER_X_TITLE", "Tau Integration Tests");
+    std::env::set_var("TAU_OPENROUTER_HTTP_REFERER", "https://tau.rs/tests");
+
+    let client = OpenAiClient::new(OpenAiConfig {
+        api_base: openrouter_base,
+        api_key: "test-openrouter-key".to_string(),
+        organization: None,
+        request_timeout_ms: 5_000,
+        max_retries: 0,
+        retry_budget_ms: 0,
+        retry_jitter: false,
+        auth_scheme: OpenAiAuthScheme::Bearer,
+        api_version: None,
+    })
+    .expect("openrouter-compatible openai client should be created");
+
+    let response = client
+        .complete(ChatRequest {
+            model: "openai/gpt-4o-mini".to_string(),
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+            tool_choice: None,
+            json_mode: false,
+            max_tokens: None,
+            temperature: None,
+            prompt_cache: Default::default(),
+        })
+        .await
+        .expect("openrouter completion should succeed");
+
+    mock.assert_calls(1);
+    assert_eq!(response.message.text_content(), "openrouter headers ok");
+
+    restore_env_var("TAU_OPENROUTER_API_BASE", prior_base);
+    restore_env_var("TAU_OPENROUTER_X_TITLE", prior_title);
+    restore_env_var("TAU_OPENROUTER_HTTP_REFERER", prior_referer);
 }
 
 #[tokio::test]

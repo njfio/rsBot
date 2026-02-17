@@ -11,6 +11,7 @@ use super::shared_runtime_core::{
 /// Execute OpenAI login flow when Codex backend prerequisites are available.
 pub(super) fn execute_openai_login_backend_ready(
     config: &AuthCommandConfig,
+    provider: Provider,
     mode: ProviderAuthMethod,
     launch: bool,
     json_output: bool,
@@ -21,7 +22,7 @@ pub(super) fn execute_openai_login_backend_ready(
         if json_output {
             return serde_json::json!({
                 "command": "auth.login",
-                "provider": Provider::OpenAi.as_str(),
+                "provider": provider.as_str(),
                 "mode": mode.as_str(),
                 "status": "error",
                 "reason": reason,
@@ -30,7 +31,7 @@ pub(super) fn execute_openai_login_backend_ready(
         }
         return format!(
             "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
-            Provider::OpenAi.as_str(),
+            provider.as_str(),
             mode.as_str(),
             launch
         );
@@ -44,7 +45,7 @@ pub(super) fn execute_openai_login_backend_ready(
         if json_output {
             return serde_json::json!({
                 "command": "auth.login",
-                "provider": Provider::OpenAi.as_str(),
+                "provider": provider.as_str(),
                 "mode": mode.as_str(),
                 "status": "error",
                 "reason": reason,
@@ -53,20 +54,20 @@ pub(super) fn execute_openai_login_backend_ready(
         }
         return format!(
             "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={reason}",
-            Provider::OpenAi.as_str(),
+            provider.as_str(),
             mode.as_str(),
             launch
         );
     }
 
     let action = "run codex --login";
-    let launch_spec = match build_auth_login_launch_spec(config, Provider::OpenAi, mode) {
+    let launch_spec = match build_auth_login_launch_spec(config, provider, mode) {
         Ok(spec) => spec,
         Err(error) => {
             if json_output {
                 return serde_json::json!({
                     "command": "auth.login",
-                    "provider": Provider::OpenAi.as_str(),
+                    "provider": provider.as_str(),
                     "mode": mode.as_str(),
                     "status": "error",
                     "reason": error.to_string(),
@@ -77,7 +78,7 @@ pub(super) fn execute_openai_login_backend_ready(
             }
             return format!(
                 "auth login error: provider={} mode={} launch_requested={} launch_executed=false error={error}",
-                Provider::OpenAi.as_str(),
+                provider.as_str(),
                 mode.as_str(),
                 launch
             );
@@ -91,7 +92,7 @@ pub(super) fn execute_openai_login_backend_ready(
                 if json_output {
                     serde_json::json!({
                         "command": "auth.login",
-                        "provider": Provider::OpenAi.as_str(),
+                        "provider": provider.as_str(),
                         "mode": mode.as_str(),
                         "status": "launched",
                         "source": "codex_cli",
@@ -106,7 +107,7 @@ pub(super) fn execute_openai_login_backend_ready(
                 } else {
                     format!(
                         "auth login: provider={} mode={} status=launched source=codex_cli backend_cli={} persisted=false action={} launch_requested=true launch_executed=true launch_command={}",
-                        Provider::OpenAi.as_str(),
+                        provider.as_str(),
                         mode.as_str(),
                         config.openai_codex_cli,
                         action,
@@ -118,7 +119,7 @@ pub(super) fn execute_openai_login_backend_ready(
                 if json_output {
                     serde_json::json!({
                         "command": "auth.login",
-                        "provider": Provider::OpenAi.as_str(),
+                        "provider": provider.as_str(),
                         "mode": mode.as_str(),
                         "status": "error",
                         "reason": error.to_string(),
@@ -130,7 +131,7 @@ pub(super) fn execute_openai_login_backend_ready(
                 } else {
                     format!(
                         "auth login error: provider={} mode={} launch_requested=true launch_executed=false launch_command={} error={error}",
-                        Provider::OpenAi.as_str(),
+                        provider.as_str(),
                         mode.as_str(),
                         launch_command
                     )
@@ -142,7 +143,7 @@ pub(super) fn execute_openai_login_backend_ready(
     if json_output {
         return serde_json::json!({
             "command": "auth.login",
-            "provider": Provider::OpenAi.as_str(),
+            "provider": provider.as_str(),
             "mode": mode.as_str(),
             "status": "ready",
             "source": "codex_cli",
@@ -157,7 +158,7 @@ pub(super) fn execute_openai_login_backend_ready(
     }
     format!(
         "auth login: provider={} mode={} status=ready source=codex_cli backend_cli={} persisted=false action={} launch_requested=false launch_executed=false launch_command={}",
-        Provider::OpenAi.as_str(),
+        provider.as_str(),
         mode.as_str(),
         config.openai_codex_cli,
         action,

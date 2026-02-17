@@ -112,7 +112,7 @@ pub(super) fn build_auth_login_launch_spec(
     let timeout_ms = AUTH_LOGIN_LAUNCH_TIMEOUT_MS;
     match (provider, mode) {
         (
-            Provider::OpenAi,
+            Provider::OpenAi | Provider::OpenRouter,
             ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken,
         ) => Ok(AuthLoginLaunchSpec {
             executable: config.openai_codex_cli.clone(),
@@ -142,7 +142,7 @@ pub(super) fn build_auth_login_launch_spec(
             timeout_ms,
         }),
         _ => bail!(
-            "--launch is only supported for openai oauth-token/session-token, anthropic oauth-token/session-token, and google oauth-token/adc"
+            "--launch is only supported for openai/openrouter oauth-token/session-token, anthropic oauth-token/session-token, and google oauth-token/adc"
         ),
     }
 }

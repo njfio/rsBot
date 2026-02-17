@@ -566,7 +566,7 @@ pub fn provider_auth_snapshot_for_status(
             };
         }
 
-        if provider == Provider::OpenAi
+        if matches!(provider, Provider::OpenAi | Provider::OpenRouter)
             && matches!(
                 mode,
                 ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken

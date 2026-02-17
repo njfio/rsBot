@@ -6,6 +6,7 @@ use thiserror::Error;
 /// Enumerates supported `Provider` values.
 pub enum Provider {
     OpenAi,
+    OpenRouter,
     Anthropic,
     Google,
 }
@@ -14,6 +15,7 @@ impl Provider {
     pub fn as_str(&self) -> &'static str {
         match self {
             Provider::OpenAi => "openai",
+            Provider::OpenRouter => "openrouter",
             Provider::Anthropic => "anthropic",
             Provider::Google => "google",
         }
@@ -31,7 +33,7 @@ impl fmt::Display for Provider {
 pub enum ModelRefParseError {
     #[error("missing model identifier")]
     MissingModel,
-    #[error("unsupported provider '{0}'. Supported providers: openai, openrouter (alias), deepseek (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google")]
+    #[error("unsupported provider '{0}'. Supported providers: openai, openrouter, deepseek (alias), groq (alias), xai (alias), mistral (alias), azure/azure-openai (alias), anthropic, google")]
     UnsupportedProvider(String),
 }
 
@@ -41,8 +43,10 @@ impl FromStr for Provider {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let normalized = value.trim().to_ascii_lowercase();
         match normalized.as_str() {
-            "openai" | "openrouter" | "deepseek" | "groq" | "xai" | "mistral" | "azure"
-            | "azure-openai" => Ok(Provider::OpenAi),
+            "openai" | "deepseek" | "groq" | "xai" | "mistral" | "azure" | "azure-openai" => {
+                Ok(Provider::OpenAi)
+            }
+            "openrouter" => Ok(Provider::OpenRouter),
             "anthropic" => Ok(Provider::Anthropic),
             "google" | "gemini" => Ok(Provider::Google),
             _ => Err(ModelRefParseError::UnsupportedProvider(value.to_string())),
@@ -102,9 +106,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_openrouter_as_openai_alias() {
+    fn spec_c01_parses_openrouter_as_first_class_provider() {
         let parsed = ModelRef::parse("openrouter/openai/gpt-4o-mini").expect("valid model ref");
-        assert_eq!(parsed.provider, Provider::OpenAi);
+        assert_eq!(parsed.provider, Provider::OpenRouter);
         assert_eq!(parsed.model, "openai/gpt-4o-mini");
     }
 

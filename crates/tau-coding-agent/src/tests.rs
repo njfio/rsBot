@@ -1059,7 +1059,7 @@ fn set_provider_auth_mode(
     mode: ProviderAuthMethod,
 ) {
     match provider {
-        Provider::OpenAi => config.openai_auth_mode = mode,
+        Provider::OpenAi | Provider::OpenRouter => config.openai_auth_mode = mode,
         Provider::Anthropic => config.anthropic_auth_mode = mode,
         Provider::Google => config.google_auth_mode = mode,
     }
@@ -1067,7 +1067,7 @@ fn set_provider_auth_mode(
 
 fn set_provider_api_key(config: &mut AuthCommandConfig, provider: Provider, value: &str) {
     match provider {
-        Provider::OpenAi => config.openai_api_key = Some(value.to_string()),
+        Provider::OpenAi | Provider::OpenRouter => config.openai_api_key = Some(value.to_string()),
         Provider::Anthropic => config.anthropic_api_key = Some(value.to_string()),
         Provider::Google => config.google_api_key = Some(value.to_string()),
     }
