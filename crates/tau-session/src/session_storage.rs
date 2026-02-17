@@ -3,9 +3,20 @@ use super::*;
 use rusqlite::{params, Connection};
 use std::env;
 
+const SESSION_USAGE_SCHEMA_VERSION: u32 = 1;
+
 pub(super) struct ResolvedSessionBackend {
     pub backend: SessionStorageBackend,
     pub reason_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionUsageRecord {
+    schema_version: u32,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    estimated_cost_usd: f64,
 }
 
 /// Resolve session storage backend from env override, path hints, and existing artifacts.
@@ -155,6 +166,102 @@ pub(super) fn write_session_entries_atomic(
             SESSION_BACKEND_ENV
         ),
     }
+}
+
+/// Read persisted usage summary for a session store.
+pub(super) fn read_session_usage_summary(path: &Path) -> Result<SessionUsageSummary> {
+    let usage_path = session_usage_path(path);
+    if !usage_path.exists() {
+        return Ok(SessionUsageSummary::default());
+    }
+
+    let raw = fs::read_to_string(&usage_path)
+        .with_context(|| format!("failed to read session usage file {}", usage_path.display()))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(SessionUsageSummary::default());
+    }
+
+    match serde_json::from_str::<SessionUsageRecord>(trimmed) {
+        Ok(record) => {
+            if record.schema_version > SESSION_USAGE_SCHEMA_VERSION {
+                bail!(
+                    "unsupported session usage schema version {} in {} (supported up to {})",
+                    record.schema_version,
+                    usage_path.display(),
+                    SESSION_USAGE_SCHEMA_VERSION
+                );
+            }
+            Ok(SessionUsageSummary {
+                input_tokens: record.input_tokens,
+                output_tokens: record.output_tokens,
+                total_tokens: record.total_tokens,
+                estimated_cost_usd: record.estimated_cost_usd,
+            })
+        }
+        Err(_) => {
+            // Backward compatibility for schema-less files.
+            serde_json::from_str::<SessionUsageSummary>(trimmed).with_context(|| {
+                format!(
+                    "failed to parse session usage summary in {}",
+                    usage_path.display()
+                )
+            })
+        }
+    }
+}
+
+/// Persist usage summary atomically for a session store.
+pub(super) fn write_session_usage_summary_atomic(
+    path: &Path,
+    usage: &SessionUsageSummary,
+) -> Result<()> {
+    let usage_path = session_usage_path(path);
+    if let Some(parent) = usage_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create session usage directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+
+    let file_name = usage_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "session.usage.json".to_string());
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_file_name = format!(".{file_name}.{timestamp}.tmp");
+    let temp_path = usage_path.with_file_name(temp_file_name);
+
+    let record = SessionUsageRecord {
+        schema_version: SESSION_USAGE_SCHEMA_VERSION,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        total_tokens: usage.total_tokens,
+        estimated_cost_usd: usage.estimated_cost_usd,
+    };
+    let serialized =
+        serde_json::to_string_pretty(&record).context("failed to encode session usage summary")?;
+    fs::write(&temp_path, format!("{serialized}\n"))
+        .with_context(|| format!("failed to write session usage temp {}", temp_path.display()))?;
+    fs::rename(&temp_path, &usage_path).with_context(|| {
+        format!(
+            "failed to atomically replace session usage file {} with {}",
+            usage_path.display(),
+            temp_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn session_usage_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.usage.json", path.display()))
 }
 
 fn read_session_entries_jsonl(path: &Path) -> Result<Vec<SessionEntry>> {

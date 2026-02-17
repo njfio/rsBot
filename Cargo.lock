@@ -3772,6 +3772,7 @@ dependencies = [
  "tau-ai",
  "tau-core",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

@@ -33,8 +33,8 @@ use session_integrity::{
 };
 use session_locking::acquire_lock;
 use session_storage::{
-    maybe_import_legacy_jsonl_into_sqlite, read_session_entries, resolve_session_backend,
-    write_session_entries_atomic,
+    maybe_import_legacy_jsonl_into_sqlite, read_session_entries, read_session_usage_summary,
+    resolve_session_backend, write_session_entries_atomic, write_session_usage_summary_atomic,
 };
 
 const SESSION_SCHEMA_VERSION: u32 = 1;
@@ -67,6 +67,15 @@ pub struct SessionEntry {
     pub id: u64,
     pub parent_id: Option<u64>,
     pub message: Message,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+/// Public struct `SessionUsageSummary` used across Tau components.
+pub struct SessionUsageSummary {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub estimated_cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +178,7 @@ pub struct SessionStore {
     backend: SessionStorageBackend,
     backend_reason_code: String,
     entries: Vec<SessionEntry>,
+    usage_summary: SessionUsageSummary,
     next_id: u64,
     lock_wait_ms: u64,
     lock_stale_ms: u64,

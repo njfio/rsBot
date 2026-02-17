@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use anyhow::{anyhow, bail, Context, Result};
 use tau_ai::Message;
 
-use crate::{SessionEntry, SessionRuntime};
+use crate::{SessionEntry, SessionRuntime, SessionUsageSummary};
 
 pub const SESSION_SEARCH_DEFAULT_RESULTS: usize = 50;
 const SESSION_SEARCH_MAX_RESULTS: usize = 200;
@@ -433,7 +433,7 @@ pub fn execute_session_diff_command(runtime: &SessionRuntime, heads: Option<(u64
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 /// Public struct `SessionStats` used across Tau components.
 pub struct SessionStats {
     pub entries: usize,
@@ -446,6 +446,7 @@ pub struct SessionStats {
     pub latest_head: Option<u64>,
     pub active_is_latest: bool,
     pub role_counts: BTreeMap<String, usize>,
+    pub usage: SessionUsageSummary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -549,6 +550,7 @@ pub fn compute_session_stats(runtime: &SessionRuntime) -> Result<SessionStats> {
         latest_head,
         active_is_latest: runtime.active_head == latest_head,
         role_counts,
+        usage: runtime.store.usage_summary(),
     })
 }
 
@@ -580,6 +582,13 @@ pub fn render_session_stats(stats: &SessionStats) -> String {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_string())
     ));
+    lines.push(format!(
+        "usage: input_tokens={} output_tokens={} total_tokens={} estimated_cost_usd={}",
+        stats.usage.input_tokens,
+        stats.usage.output_tokens,
+        stats.usage.total_tokens,
+        stats.usage.estimated_cost_usd
+    ));
 
     if stats.role_counts.is_empty() {
         lines.push("roles: none".to_string());
@@ -604,6 +613,12 @@ pub fn render_session_stats_json(stats: &SessionStats) -> String {
         "latest_head": stats.latest_head,
         "active_is_latest": stats.active_is_latest,
         "role_counts": stats.role_counts,
+        "usage": {
+            "input_tokens": stats.usage.input_tokens,
+            "output_tokens": stats.usage.output_tokens,
+            "total_tokens": stats.usage.total_tokens,
+            "estimated_cost_usd": stats.usage.estimated_cost_usd,
+        },
     })
     .to_string()
 }

@@ -1,6 +1,7 @@
 //! Core `SessionStore` runtime and merge/import implementation.
 
 use super::*;
+use tracing::debug;
 
 impl SessionStore {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -17,13 +18,23 @@ impl SessionStore {
         let backend_reason_code = resolved_backend.reason_code;
         let _imported_legacy_entries = maybe_import_legacy_jsonl_into_sqlite(&path, backend)?;
         let entries = read_session_entries(&path, backend)?;
+        let usage_summary = read_session_usage_summary(&path)?;
         let next_id = entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
+        debug!(
+            target: "tau.session",
+            path = %path.display(),
+            backend = %backend.label(),
+            usage_total_tokens = usage_summary.total_tokens,
+            usage_estimated_cost_usd = usage_summary.estimated_cost_usd,
+            "loaded session store"
+        );
 
         Ok(Self {
             path,
             backend,
             backend_reason_code,
             entries,
+            usage_summary,
             next_id,
             lock_wait_ms: DEFAULT_LOCK_WAIT_MS,
             lock_stale_ms: DEFAULT_LOCK_STALE_MS,
@@ -44,6 +55,10 @@ impl SessionStore {
 
     pub fn entries(&self) -> &[SessionEntry] {
         &self.entries
+    }
+
+    pub fn usage_summary(&self) -> SessionUsageSummary {
+        self.usage_summary
     }
 
     pub fn head_id(&self) -> Option<u64> {
@@ -113,6 +128,44 @@ impl SessionStore {
         self.next_id = next_id;
 
         Ok(parent_id)
+    }
+
+    pub fn record_usage_delta(&mut self, delta: SessionUsageSummary) -> Result<()> {
+        if delta.input_tokens == 0
+            && delta.output_tokens == 0
+            && delta.total_tokens == 0
+            && delta.estimated_cost_usd.abs() <= f64::EPSILON
+        {
+            return Ok(());
+        }
+
+        let lock_path = self.lock_path();
+        let _lock = acquire_lock(
+            &lock_path,
+            Duration::from_millis(self.lock_wait_ms),
+            Duration::from_millis(self.lock_stale_ms),
+        )?;
+
+        let mut summary = read_session_usage_summary(&self.path)?;
+        summary.input_tokens = summary.input_tokens.saturating_add(delta.input_tokens);
+        summary.output_tokens = summary.output_tokens.saturating_add(delta.output_tokens);
+        summary.total_tokens = summary.total_tokens.saturating_add(delta.total_tokens);
+        summary.estimated_cost_usd += delta.estimated_cost_usd.max(0.0);
+
+        write_session_usage_summary_atomic(&self.path, &summary)?;
+        self.usage_summary = summary;
+        debug!(
+            target: "tau.session",
+            path = %self.path.display(),
+            delta_input_tokens = delta.input_tokens,
+            delta_output_tokens = delta.output_tokens,
+            delta_total_tokens = delta.total_tokens,
+            delta_estimated_cost_usd = delta.estimated_cost_usd,
+            cumulative_total_tokens = self.usage_summary.total_tokens,
+            cumulative_estimated_cost_usd = self.usage_summary.estimated_cost_usd,
+            "recorded session usage delta"
+        );
+        Ok(())
     }
 
     pub fn lineage_messages(&self, head_id: Option<u64>) -> Result<Vec<Message>> {

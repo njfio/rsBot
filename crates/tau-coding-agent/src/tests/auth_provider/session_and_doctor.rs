@@ -24,6 +24,7 @@ use super::super::{
     SessionStatsOutputFormat, SessionStore, SESSION_SEARCH_DEFAULT_RESULTS,
     SESSION_SEARCH_PREVIEW_CHARS,
 };
+use tau_session::SessionUsageSummary;
 
 #[test]
 fn unit_resolve_prompt_input_uses_inline_prompt() {
@@ -552,6 +553,7 @@ fn functional_render_session_stats_includes_heads_depths_and_roles() {
         latest_head: Some(3),
         active_is_latest: true,
         role_counts,
+        usage: SessionUsageSummary::default(),
     };
 
     let rendered = render_session_stats(&stats);
@@ -592,6 +594,7 @@ fn unit_render_session_stats_json_includes_counts_and_roles() {
         latest_head: Some(3),
         active_is_latest: true,
         role_counts,
+        usage: SessionUsageSummary::default(),
     };
 
     let json = render_session_stats_json(&stats);
@@ -655,6 +658,44 @@ fn integration_execute_session_stats_command_summarizes_branched_session() {
     assert_eq!(value["role_counts"]["assistant"], 1);
     assert_eq!(value["role_counts"]["system"], 1);
     assert_eq!(value["role_counts"]["user"], 2);
+}
+
+#[test]
+fn integration_execute_session_stats_command_includes_usage_totals() {
+    let temp = tempdir().expect("tempdir");
+    let mut store =
+        SessionStore::load(temp.path().join("session-usage-stats.jsonl")).expect("load");
+    let root = store
+        .append_messages(None, &[Message::system("sys")])
+        .expect("append root")
+        .expect("root id");
+    let active_head = store
+        .append_messages(Some(root), &[Message::user("hello usage")])
+        .expect("append user")
+        .expect("active head");
+    store
+        .record_usage_delta(SessionUsageSummary {
+            input_tokens: 80,
+            output_tokens: 20,
+            total_tokens: 100,
+            estimated_cost_usd: 0.0125,
+        })
+        .expect("record usage");
+    let runtime = SessionRuntime {
+        store,
+        active_head: Some(active_head),
+    };
+
+    let output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Text);
+    assert!(output.contains("usage: input_tokens=80 output_tokens=20 total_tokens=100"));
+    assert!(output.contains("estimated_cost_usd=0.0125"));
+
+    let json_output = execute_session_stats_command(&runtime, SessionStatsOutputFormat::Json);
+    let value = serde_json::from_str::<serde_json::Value>(&json_output).expect("parse json");
+    assert_eq!(value["usage"]["input_tokens"], 80);
+    assert_eq!(value["usage"]["output_tokens"], 20);
+    assert_eq!(value["usage"]["total_tokens"], 100);
+    assert_eq!(value["usage"]["estimated_cost_usd"], 0.0125);
 }
 
 #[test]

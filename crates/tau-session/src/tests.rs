@@ -5,7 +5,7 @@ use tempfile::tempdir;
 
 use super::{
     acquire_lock, CompactReport, RepairReport, SessionEntry, SessionImportMode,
-    SessionMergeStrategy, SessionRecord, SessionStorageBackend, SessionStore,
+    SessionMergeStrategy, SessionRecord, SessionStorageBackend, SessionStore, SessionUsageSummary,
     SessionValidationReport,
 };
 
@@ -1316,4 +1316,44 @@ fn integration_sqlite_backend_auto_imports_legacy_jsonl_snapshot() {
             .text_content(),
         "legacy-root"
     );
+}
+
+#[test]
+fn integration_session_usage_summary_persists_across_store_reload() {
+    let temp = tempdir().expect("tempdir");
+    let path = temp.path().join("usage-ledger.jsonl");
+    let mut store = SessionStore::load(&path).expect("load");
+    store
+        .append_messages(None, &[tau_ai::Message::system("sys")])
+        .expect("append root");
+
+    store
+        .record_usage_delta(SessionUsageSummary {
+            input_tokens: 20,
+            output_tokens: 8,
+            total_tokens: 28,
+            estimated_cost_usd: 0.011,
+        })
+        .expect("record first usage delta");
+    store
+        .record_usage_delta(SessionUsageSummary {
+            input_tokens: 5,
+            output_tokens: 2,
+            total_tokens: 7,
+            estimated_cost_usd: 0.003,
+        })
+        .expect("record second usage delta");
+
+    let usage = store.usage_summary();
+    assert_eq!(usage.input_tokens, 25);
+    assert_eq!(usage.output_tokens, 10);
+    assert_eq!(usage.total_tokens, 35);
+    assert!((usage.estimated_cost_usd - 0.014).abs() < 1e-12);
+
+    let reloaded = SessionStore::load(&path).expect("reload");
+    let reloaded_usage = reloaded.usage_summary();
+    assert_eq!(reloaded_usage.input_tokens, 25);
+    assert_eq!(reloaded_usage.output_tokens, 10);
+    assert_eq!(reloaded_usage.total_tokens, 35);
+    assert!((reloaded_usage.estimated_cost_usd - 0.014).abs() < 1e-12);
 }

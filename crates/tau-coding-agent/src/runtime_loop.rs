@@ -25,13 +25,13 @@ use rustyline::{
     validate::Validator,
     Config as ReadlineConfig, Context as ReadlineContext, Editor, Helper,
 };
-use tau_agent_core::{Agent, AgentError, CooperativeCancellationToken};
+use tau_agent_core::{Agent, AgentCostSnapshot, AgentError, CooperativeCancellationToken};
 use tau_ai::StreamDeltaHandler;
 use tau_cli::{Cli, CliOrchestratorMode};
 use tau_core::current_unix_timestamp_ms;
 use tau_extensions::{apply_extension_message_transforms, dispatch_extension_runtime_hook};
 use tau_onboarding::startup_resolution::ensure_non_empty_text;
-use tau_session::SessionRuntime;
+use tau_session::{SessionRuntime, SessionUsageSummary};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
@@ -838,6 +838,7 @@ where
     F: Future,
 {
     let checkpoint = agent.messages().to_vec();
+    let pre_prompt_cost = agent.cost_snapshot();
     let cancellation_token = CooperativeCancellationToken::new();
     agent.set_cancellation_token(Some(cancellation_token.clone()));
     let streamed_output = Arc::new(AtomicBool::new(false));
@@ -932,6 +933,8 @@ where
         }
         Err(error) => return Err(error.into()),
     };
+    let post_prompt_cost = agent.cost_snapshot();
+    persist_session_usage_delta(session_runtime, &pre_prompt_cost, &post_prompt_cost)?;
     persist_messages(session_runtime, &new_messages)?;
     print_assistant_messages(
         &new_messages,
@@ -939,6 +942,31 @@ where
         streamed_output.load(Ordering::Relaxed),
     );
     Ok(PromptRunStatus::Completed)
+}
+
+fn persist_session_usage_delta(
+    session_runtime: &mut Option<SessionRuntime>,
+    pre_prompt_cost: &AgentCostSnapshot,
+    post_prompt_cost: &AgentCostSnapshot,
+) -> Result<()> {
+    let Some(runtime) = session_runtime.as_mut() else {
+        return Ok(());
+    };
+    let delta = SessionUsageSummary {
+        input_tokens: post_prompt_cost
+            .input_tokens
+            .saturating_sub(pre_prompt_cost.input_tokens),
+        output_tokens: post_prompt_cost
+            .output_tokens
+            .saturating_sub(pre_prompt_cost.output_tokens),
+        total_tokens: post_prompt_cost
+            .total_tokens
+            .saturating_sub(pre_prompt_cost.total_tokens),
+        estimated_cost_usd: (post_prompt_cost.estimated_cost_usd
+            - pre_prompt_cost.estimated_cost_usd)
+            .max(0.0),
+    };
+    runtime.store.record_usage_delta(delta)
 }
 
 pub(crate) fn resolve_prompt_input(cli: &Cli) -> Result<Option<String>> {
