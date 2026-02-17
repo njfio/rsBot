@@ -81,21 +81,34 @@ impl OrchestratorRuntime for OrchestratorRuntimeAdapter<'_> {
     async fn run_prompt_with_cancellation(
         &mut self,
         prompt: &str,
+        model_override: Option<&str>,
         turn_timeout_ms: u64,
         render_options: OrchestratorRenderOptions,
     ) -> Result<OrchestratorPromptRunStatus> {
-        let status = run_prompt_with_cancellation(
-            self.agent,
-            self.session_runtime,
+        let agent = &mut *self.agent;
+        let session_runtime = &mut *self.session_runtime;
+        let mapped_render_options = RenderOptions {
+            stream_output: render_options.stream_output,
+            stream_delay_ms: render_options.stream_delay_ms,
+        };
+        let normalized_model_override = model_override
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let previous_model = normalized_model_override
+            .map(|model_override| agent.swap_dispatch_model(model_override.to_string()));
+        let prompt_status = run_prompt_with_cancellation(
+            agent,
+            session_runtime,
             prompt,
             turn_timeout_ms,
             tokio::signal::ctrl_c(),
-            RenderOptions {
-                stream_output: render_options.stream_output,
-                stream_delay_ms: render_options.stream_delay_ms,
-            },
+            mapped_render_options,
         )
-        .await?;
+        .await;
+        if let Some(previous_model) = previous_model {
+            agent.restore_dispatch_model(previous_model);
+        }
+        let status = prompt_status?;
         Ok(match status {
             crate::runtime_loop::PromptRunStatus::Completed => {
                 OrchestratorPromptRunStatus::Completed

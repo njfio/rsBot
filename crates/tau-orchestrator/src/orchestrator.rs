@@ -33,6 +33,7 @@ pub trait OrchestratorRuntime {
     async fn run_prompt_with_cancellation(
         &mut self,
         prompt: &str,
+        model_override: Option<&str>,
         turn_timeout_ms: u64,
         render_options: OrchestratorRenderOptions,
     ) -> Result<OrchestratorPromptRunStatus>;
@@ -481,7 +482,12 @@ async fn run_routed_prompt_with_fallback<R: OrchestratorRuntime>(
 
         let attempt_prompt = build_multi_agent_role_prompt(base_prompt, phase, role, &profile);
         let attempt_status = match runtime
-            .run_prompt_with_cancellation(&attempt_prompt, turn_timeout_ms, render_options)
+            .run_prompt_with_cancellation(
+                &attempt_prompt,
+                profile.model.as_deref(),
+                turn_timeout_ms,
+                render_options,
+            )
             .await
         {
             Ok(status) => status,

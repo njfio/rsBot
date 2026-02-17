@@ -920,6 +920,23 @@ impl Agent {
         result
     }
 
+    /// Replaces the active dispatch model and returns the previous model value.
+    pub fn swap_dispatch_model(&mut self, model: impl Into<String>) -> String {
+        let normalized = model.into().trim().to_string();
+        if normalized.is_empty() {
+            return self.config.model.clone();
+        }
+        std::mem::replace(&mut self.config.model, normalized)
+    }
+
+    /// Restores the active dispatch model from a previously saved value.
+    pub fn restore_dispatch_model(&mut self, previous_model: String) {
+        if previous_model.trim().is_empty() {
+            return;
+        }
+        self.config.model = previous_model;
+    }
+
     /// Installs or clears a cooperative cancellation token for subsequent runs.
     pub fn set_cancellation_token(&mut self, token: Option<CooperativeCancellationToken>) {
         self.cancellation_token = token;
