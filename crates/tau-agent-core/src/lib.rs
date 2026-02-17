@@ -92,6 +92,7 @@ pub struct AgentConfig {
     pub tool_result_cache_enabled: bool,
     pub tool_result_cache_max_entries: usize,
     pub model_input_cost_per_million: Option<f64>,
+    pub model_cached_input_cost_per_million: Option<f64>,
     pub model_output_cost_per_million: Option<f64>,
     pub cost_budget_usd: Option<f64>,
     pub cost_alert_thresholds_percent: Vec<u8>,
@@ -133,6 +134,7 @@ impl Default for AgentConfig {
             tool_result_cache_enabled: true,
             tool_result_cache_max_entries: 256,
             model_input_cost_per_million: None,
+            model_cached_input_cost_per_million: None,
             model_output_cost_per_million: None,
             cost_budget_usd: None,
             cost_alert_thresholds_percent: vec![80, 100],
@@ -1503,6 +1505,7 @@ impl Agent {
         let turn_cost_usd = estimate_usage_cost_usd(
             usage,
             self.config.model_input_cost_per_million,
+            self.config.model_cached_input_cost_per_million,
             self.config.model_output_cost_per_million,
         );
         self.cumulative_cost_usd += turn_cost_usd;
@@ -1626,6 +1629,12 @@ impl Agent {
                 tools,
                 max_tokens: self.config.max_tokens,
                 temperature: self.config.temperature,
+                prompt_cache: tau_ai::PromptCacheConfig {
+                    enabled: true,
+                    cache_key: Some(self.config.agent_id.clone()),
+                    retention: None,
+                    google_cached_content: None,
+                },
             };
             self.sanitize_outbound_http_request(&mut request)?;
             self.enforce_token_budget(&request)?;

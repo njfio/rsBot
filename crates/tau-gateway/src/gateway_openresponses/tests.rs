@@ -43,6 +43,7 @@ impl LlmClient for MockGatewayLlmClient {
                 input_tokens: message_count as u64,
                 output_tokens: 2,
                 total_tokens: message_count as u64 + 2,
+                cached_input_tokens: 0,
             },
         })
     }

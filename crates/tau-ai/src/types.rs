@@ -227,6 +227,21 @@ pub struct ChatRequest {
     pub json_mode: bool,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    #[serde(default)]
+    pub prompt_cache: PromptCacheConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Provider-agnostic prompt caching controls.
+pub struct PromptCacheConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retention: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_cached_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -235,6 +250,12 @@ pub struct ChatUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub cached_input_tokens: u64,
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

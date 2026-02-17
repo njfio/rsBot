@@ -67,6 +67,7 @@ fn test_request(prompt: &str) -> ChatRequest {
         json_mode: false,
         max_tokens: None,
         temperature: None,
+        prompt_cache: Default::default(),
     }
 }
 
