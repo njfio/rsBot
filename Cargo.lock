@@ -3364,6 +3364,7 @@ dependencies = [
  "tau-access",
  "tau-agent-core",
  "tau-ai",
+ "tau-algorithm",
  "tau-browser-automation",
  "tau-cli",
  "tau-core",

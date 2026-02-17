@@ -346,6 +346,7 @@ async fn request_text_completion(
         json_mode: false,
         max_tokens,
         temperature,
+        prompt_cache: Default::default(),
     };
 
     let response = client.complete(request).await?;
