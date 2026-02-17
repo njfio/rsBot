@@ -25,12 +25,34 @@ The workflow publishes release archives plus checksum manifests to GitHub Releas
 - `*.tar.gz` / `*.zip`
 - `*.sha256`
 - `SHA256SUMS`
+- `tau.rb` (Homebrew formula rendered from `SHA256SUMS`)
 
 The workflow also publishes a GHCR container image:
 
 - `ghcr.io/<owner>/tau-coding-agent:<release-tag>`
 - `ghcr.io/<owner>/tau-coding-agent:latest`
 - Platforms: `linux/amd64`, `linux/arm64`
+
+### Homebrew formula publishing
+
+The publish job renders `dist/tau.rb` using
+[`scripts/release/render-homebrew-formula.sh`](../../scripts/release/render-homebrew-formula.sh)
+with:
+
+- `RELEASE_TAG`
+- `dist/SHA256SUMS`
+- `${GITHUB_REPOSITORY}` for deterministic release asset URLs
+
+Operator usage:
+
+```bash
+# Install pinned release formula directly from release assets
+brew install --formula https://github.com/<owner>/Tau/releases/download/<release-tag>/tau.rb
+
+# Upgrade/remove
+brew upgrade tau
+brew uninstall tau
+```
 
 ### Cross-arch smoke policy
 
@@ -147,6 +169,8 @@ Run helper-script tests:
 
 ```bash
 ./scripts/release/test-install-helpers.sh
+./scripts/release/test-homebrew-formula.sh
+./scripts/release/render-homebrew-formula.sh v0.1.0 dist/SHA256SUMS <owner>/Tau > dist/tau.rb
 ```
 
 Run release workflow lint/validation via PR CI:
