@@ -1,0 +1,3 @@
+{"schema_version":1,"request_id":"seed-ndjson-cap","kind":"capabilities.request","payload":{}}
+{"schema_version":1,"request_id":"seed-ndjson-start","kind":"run.start","payload":{"prompt":"hello"}}
+not-json

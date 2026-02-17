@@ -1,4 +1,7 @@
 /target
+/fuzz/target
+/fuzz/artifacts
+/fuzz/corpus/*/[0-9a-f][0-9a-f]*
 **/*.rs.bk
 .env
 .tau/
