@@ -58,6 +58,7 @@ pub struct SlackBridgeRuntimeConfig {
     pub detail_thread_threshold_chars: usize,
     pub processed_event_cap: usize,
     pub max_event_age_seconds: u64,
+    pub coalescing_window_ms: u64,
     pub reconnect_delay: Duration,
     pub retry_max_attempts: usize,
     pub retry_base_delay_ms: u64,
@@ -616,10 +617,14 @@ impl SlackBridgeRuntime {
             if self.active_runs.contains_key(&channel) {
                 continue;
             }
-            let Some(queue) = self.channel_queues.get_mut(&channel) else {
-                continue;
-            };
-            let Some(event) = queue.pop_front() else {
+            let now_unix_ms = current_unix_timestamp_ms();
+            let Some(event) = self.channel_queues.get_mut(&channel).and_then(|queue| {
+                dequeue_coalesced_event_for_run(
+                    queue,
+                    now_unix_ms,
+                    self.config.coalescing_window_ms,
+                )
+            }) else {
                 continue;
             };
 
@@ -1096,6 +1101,87 @@ impl SlackBridgeRuntime {
 
         Ok(())
     }
+}
+
+fn should_coalesce_events(
+    previous: &SlackBridgeEvent,
+    current: &SlackBridgeEvent,
+    coalescing_window_ms: u64,
+) -> bool {
+    if coalescing_window_ms == 0 {
+        return false;
+    }
+    if previous.user_id.trim() != current.user_id.trim() {
+        return false;
+    }
+    if previous.thread_ts.as_deref().unwrap_or_default()
+        != current.thread_ts.as_deref().unwrap_or_default()
+    {
+        return false;
+    }
+    if current.occurred_unix_ms < previous.occurred_unix_ms {
+        return false;
+    }
+    current
+        .occurred_unix_ms
+        .saturating_sub(previous.occurred_unix_ms)
+        <= coalescing_window_ms
+}
+
+fn coalesced_batch_len(queue: &VecDeque<SlackBridgeEvent>, coalescing_window_ms: u64) -> usize {
+    let Some(mut previous) = queue.front() else {
+        return 0;
+    };
+    if coalescing_window_ms == 0 {
+        return 1;
+    }
+    let mut len = 1;
+    while let Some(current) = queue.get(len) {
+        if !should_coalesce_events(previous, current, coalescing_window_ms) {
+            break;
+        }
+        len = len.saturating_add(1);
+        previous = current;
+    }
+    len
+}
+
+fn merge_coalesced_event(target: &mut SlackBridgeEvent, source: SlackBridgeEvent) {
+    if !source.text.is_empty() {
+        if !target.text.is_empty() {
+            target.text.push('\n');
+        }
+        target.text.push_str(&source.text);
+    }
+    target.files.extend(source.files);
+    target.occurred_unix_ms = source.occurred_unix_ms;
+    target.ts = source.ts;
+}
+
+fn dequeue_coalesced_event_for_run(
+    queue: &mut VecDeque<SlackBridgeEvent>,
+    now_unix_ms: u64,
+    coalescing_window_ms: u64,
+) -> Option<SlackBridgeEvent> {
+    queue.front()?;
+
+    let batch_len = coalesced_batch_len(queue, coalescing_window_ms);
+    if batch_len == 0 {
+        return None;
+    }
+    let last = queue.get(batch_len.saturating_sub(1))?;
+    if now_unix_ms.saturating_sub(last.occurred_unix_ms) < coalescing_window_ms {
+        return None;
+    }
+
+    let mut event = queue.pop_front()?;
+    for _ in 1..batch_len {
+        let Some(next) = queue.pop_front() else {
+            break;
+        };
+        merge_coalesced_event(&mut event, next);
+    }
+    Some(event)
 }
 
 struct SlackRunTaskParams {

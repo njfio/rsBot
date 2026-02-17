@@ -512,6 +512,7 @@ pub(crate) fn test_cli() -> Cli {
                 slack_thread_detail_threshold_chars: 1500,
                 slack_processed_event_cap: 10_000,
                 slack_max_event_age_seconds: 7_200,
+                slack_coalescing_window_ms: 2_000,
                 slack_reconnect_delay_ms: 1_000,
                 slack_retry_max_attempts: 4,
                 slack_retry_base_delay_ms: 500,

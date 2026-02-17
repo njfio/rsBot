@@ -360,6 +360,15 @@ pub struct CliGatewayDaemonFlags {
     pub slack_max_event_age_seconds: u64,
 
     #[arg(
+        long = "slack-coalescing-window-ms",
+        env = "TAU_SLACK_COALESCING_WINDOW_MS",
+        default_value_t = 2_000,
+        requires = "slack_bridge",
+        help = "Coalescing window in milliseconds for batching same-user rapid inbound messages in one thread (0 disables coalescing)"
+    )]
+    pub slack_coalescing_window_ms: u64,
+
+    #[arg(
         long = "slack-reconnect-delay-ms",
         env = "TAU_SLACK_RECONNECT_DELAY_MS",
         default_value_t = 1_000,

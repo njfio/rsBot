@@ -161,6 +161,7 @@ impl TransportRuntimeExecutor for CodingAgentTransportRuntimeExecutor<'_> {
                     detail_thread_threshold_chars: config.detail_thread_threshold_chars,
                     processed_event_cap: config.processed_event_cap,
                     max_event_age_seconds: config.max_event_age_seconds,
+                    coalescing_window_ms: config.coalescing_window_ms,
                     reconnect_delay: Duration::from_millis(config.reconnect_delay_ms),
                     retry_max_attempts: config.retry_max_attempts,
                     retry_base_delay_ms: config.retry_base_delay_ms,

@@ -15,8 +15,8 @@ use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::{
-    event_is_stale, normalize_artifact_retention_days, normalize_socket_envelope,
-    parse_slack_command, parse_socket_envelope, render_event_prompt,
+    dequeue_coalesced_event_for_run, event_is_stale, normalize_artifact_retention_days,
+    normalize_socket_envelope, parse_slack_command, parse_socket_envelope, render_event_prompt,
     render_slack_artifact_markdown, render_slack_command_response, render_slack_response,
     run_prompt_for_event, DownloadedSlackFile, PollCycleReport, SlackApiClient, SlackBridgeEvent,
     SlackBridgeEventKind, SlackBridgeRuntime, SlackBridgeRuntimeConfig, SlackBridgeStateStore,
@@ -28,6 +28,7 @@ use crate::{
     tools::ToolPolicy,
     RenderOptions, TransportHealthSnapshot,
 };
+use std::collections::VecDeque;
 
 struct StaticReplyClient;
 
@@ -98,6 +99,7 @@ fn test_config_with_client(
         detail_thread_threshold_chars: 20,
         processed_event_cap: 32,
         max_event_age_seconds: 3_600,
+        coalescing_window_ms: 0,
         reconnect_delay: Duration::from_millis(10),
         retry_max_attempts: 3,
         retry_base_delay_ms: 5,
@@ -137,10 +139,136 @@ fn test_event() -> SlackBridgeEvent {
     }
 }
 
+fn queued_event(
+    key: &str,
+    user_id: &str,
+    text: &str,
+    occurred_unix_ms: u64,
+    thread_ts: Option<&str>,
+) -> SlackBridgeEvent {
+    SlackBridgeEvent {
+        key: key.to_string(),
+        kind: SlackBridgeEventKind::AppMention,
+        event_id: format!("Ev-{key}"),
+        occurred_unix_ms,
+        channel_id: "C1".to_string(),
+        user_id: user_id.to_string(),
+        text: text.to_string(),
+        ts: format!("{occurred_unix_ms}.1"),
+        thread_ts: thread_ts.map(ToOwned::to_owned),
+        files: Vec::new(),
+        raw_payload: json!({"event_id": key}),
+    }
+}
+
 #[test]
 fn unit_normalize_artifact_retention_days_maps_zero_to_none() {
     assert_eq!(normalize_artifact_retention_days(0), None);
     assert_eq!(normalize_artifact_retention_days(30), Some(30));
+}
+
+#[test]
+fn spec_c01_try_start_queued_runs_respects_coalescing_window_before_dispatch() {
+    let mut queue = VecDeque::new();
+    queue.push_back(queued_event("e1", "U1", "hello", 1_000, None));
+
+    let maybe_event = dequeue_coalesced_event_for_run(&mut queue, 2_500, 2_000);
+    assert!(maybe_event.is_none());
+    assert_eq!(queue.len(), 1);
+}
+
+#[test]
+fn spec_c02_dequeue_coalesced_run_batches_same_user_and_thread_messages() {
+    let mut queue = VecDeque::new();
+    queue.push_back(queued_event(
+        "e1",
+        "U1",
+        "line one",
+        1_000,
+        Some("thread-1"),
+    ));
+    queue.push_back(queued_event(
+        "e2",
+        "U1",
+        "line two",
+        1_500,
+        Some("thread-1"),
+    ));
+    queue.push_back(queued_event(
+        "e3",
+        "U1",
+        "line three",
+        2_000,
+        Some("thread-1"),
+    ));
+
+    let event = dequeue_coalesced_event_for_run(&mut queue, 10_000, 2_000)
+        .expect("expected coalesced event");
+    assert_eq!(event.text, "line one\nline two\nline three");
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn regression_spec_c03_dequeue_coalesced_run_preserves_non_coalescible_tail() {
+    let mut queue = VecDeque::new();
+    queue.push_back(queued_event("e1", "U1", "alpha", 1_000, None));
+    queue.push_back(queued_event("e2", "U2", "beta", 1_200, None));
+    queue.push_back(queued_event("e3", "U1", "gamma", 1_400, None));
+
+    let event =
+        dequeue_coalesced_event_for_run(&mut queue, 10_000, 2_000).expect("expected first event");
+    assert_eq!(event.text, "alpha");
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0].key, "e2");
+    assert_eq!(queue[1].key, "e3");
+}
+
+#[test]
+fn regression_dequeue_coalesced_run_allows_equal_timestamps() {
+    let mut queue = VecDeque::new();
+    queue.push_back(queued_event("e1", "U1", "alpha", 1_000, Some("thread-1")));
+    queue.push_back(queued_event("e2", "U1", "beta", 1_000, Some("thread-1")));
+
+    let event = dequeue_coalesced_event_for_run(&mut queue, 10_000, 2_000)
+        .expect("expected coalesced event");
+    assert_eq!(event.text, "alpha\nbeta");
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn regression_dequeue_coalesced_run_rejects_out_of_order_timestamps() {
+    let mut queue = VecDeque::new();
+    queue.push_back(queued_event("e1", "U1", "alpha", 2_000, Some("thread-1")));
+    queue.push_back(queued_event("e2", "U1", "beta", 1_900, Some("thread-1")));
+
+    let event =
+        dequeue_coalesced_event_for_run(&mut queue, 10_000, 2_000).expect("expected first event");
+    assert_eq!(event.text, "alpha");
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].key, "e2");
+}
+
+#[test]
+fn regression_dequeue_coalesced_run_skips_empty_text_fragments() {
+    let mut queue = VecDeque::new();
+    queue.push_back(queued_event("e1", "U1", "alpha", 1_000, Some("thread-1")));
+    queue.push_back(queued_event("e2", "U1", "", 1_200, Some("thread-1")));
+
+    let event =
+        dequeue_coalesced_event_for_run(&mut queue, 10_000, 2_000).expect("expected first event");
+    assert_eq!(event.text, "alpha");
+    assert!(queue.is_empty());
+}
+
+#[test]
+fn regression_dequeue_coalesced_run_dispatches_on_exact_window_boundary() {
+    let mut queue = VecDeque::new();
+    queue.push_back(queued_event("e1", "U1", "alpha", 8_000, Some("thread-1")));
+
+    let event = dequeue_coalesced_event_for_run(&mut queue, 10_000, 2_000)
+        .expect("expected boundary dequeue");
+    assert_eq!(event.key, "e1");
+    assert!(queue.is_empty());
 }
 
 #[tokio::test]

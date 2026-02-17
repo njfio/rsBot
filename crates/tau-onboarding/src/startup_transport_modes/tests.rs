@@ -1739,6 +1739,7 @@ fn integration_build_slack_bridge_cli_config_preserves_runtime_fields() {
     cli.slack_thread_detail_threshold_chars = 500;
     cli.slack_processed_event_cap = 250;
     cli.slack_max_event_age_seconds = 3_600;
+    cli.slack_coalescing_window_ms = 4_200;
     cli.slack_reconnect_delay_ms = 2_500;
     cli.slack_retry_max_attempts = 8;
     cli.slack_retry_base_delay_ms = 650;
@@ -1755,10 +1756,31 @@ fn integration_build_slack_bridge_cli_config_preserves_runtime_fields() {
     assert_eq!(config.detail_thread_threshold_chars, 500);
     assert_eq!(config.processed_event_cap, 250);
     assert_eq!(config.max_event_age_seconds, 3_600);
+    assert_eq!(config.coalescing_window_ms, 4_200);
     assert_eq!(config.reconnect_delay_ms, 2_500);
     assert_eq!(config.retry_max_attempts, 8);
     assert_eq!(config.retry_base_delay_ms, 650);
     assert_eq!(config.artifact_retention_days, 14);
+}
+
+#[test]
+fn spec_c04_build_slack_bridge_cli_config_wires_coalescing_window_defaults_and_overrides() {
+    let cli_default = parse_cli_with_stack();
+    let default_config = build_slack_bridge_cli_config(
+        &cli_default,
+        "app-token".to_string(),
+        "bot-token".to_string(),
+    );
+    assert_eq!(default_config.coalescing_window_ms, 2_000);
+
+    let mut cli_override = parse_cli_with_stack();
+    cli_override.slack_coalescing_window_ms = 3_333;
+    let override_config = build_slack_bridge_cli_config(
+        &cli_override,
+        "app-token".to_string(),
+        "bot-token".to_string(),
+    );
+    assert_eq!(override_config.coalescing_window_ms, 3_333);
 }
 
 #[test]
