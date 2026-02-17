@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "default_stage_timeout_ms": 240000,
+  "default_retry_failures": 0,
+  "max_output_bytes": 32000,
+  "changed_file_limit": 64,
+  "stages": [
+    {
+      "name": "prepare-diff",
+      "command": "git diff -- crates/tau-session/src/tests.rs crates/tau-coding-agent/src/tests/auth_provider/runtime_and_startup.rs crates/tau-coding-agent/src/tests/auth_provider/session_and_doctor.rs crates/tau-gateway/src/gateway_openresponses.rs crates/tau-gateway/src/gateway_openresponses/tests.rs crates/tau-onboarding/src/startup_transport_modes.rs crates/tau-onboarding/src/startup_transport_modes/tests.rs > ${SESSION_COST_DIFF_PATH:-/tmp/session-cost-mutation.diff}"
+    },
+    {
+      "name": "baseline-c01",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo test -p tau-session integration_spec_c01_session_usage_summary_persists_across_store_reload -- --nocapture"
+    },
+    {
+      "name": "baseline-c02",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo test -p tau-coding-agent integration_spec_c02_run_prompt_with_cancellation_accumulates_session_usage_and_cost -- --nocapture"
+    },
+    {
+      "name": "baseline-c03",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo test -p tau-gateway integration_spec_c03_openresponses_usage_summary_accumulates_across_requests -- --nocapture"
+    },
+    {
+      "name": "baseline-c04",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo test -p tau-coding-agent integration_spec_c04_execute_session_stats_command_includes_usage_totals -- --nocapture"
+    },
+    {
+      "name": "mutants-session",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo mutants -p tau-session -f crates/tau-session/src/tests.rs -D ${SESSION_COST_DIFF_PATH:-/tmp/session-cost-mutation.diff} --baseline skip -t 90 -- integration_spec_c01_session_usage_summary_persists_across_store_reload -- --nocapture"
+    },
+    {
+      "name": "mutants-coding-runtime",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo mutants -p tau-coding-agent -f crates/tau-coding-agent/src/tests/auth_provider/runtime_and_startup.rs -D ${SESSION_COST_DIFF_PATH:-/tmp/session-cost-mutation.diff} --baseline skip -t 90 -- integration_spec_c02_run_prompt_with_cancellation_accumulates_session_usage_and_cost -- --nocapture"
+    },
+    {
+      "name": "mutants-coding-stats",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo mutants -p tau-coding-agent -f crates/tau-coding-agent/src/tests/auth_provider/session_and_doctor.rs -D ${SESSION_COST_DIFF_PATH:-/tmp/session-cost-mutation.diff} --baseline skip -t 90 -- integration_spec_c04_execute_session_stats_command_includes_usage_totals -- --nocapture"
+    },
+    {
+      "name": "mutants-gateway",
+      "command": "CARGO_TARGET_DIR=target-fast-2379 cargo mutants -p tau-gateway -f crates/tau-gateway/src/gateway_openresponses.rs -D ${SESSION_COST_DIFF_PATH:-/tmp/session-cost-mutation.diff} --baseline skip -t 90 -- integration_spec_c03_openresponses_usage_summary_accumulates_across_requests -- --nocapture"
+    }
+  ]
+}
