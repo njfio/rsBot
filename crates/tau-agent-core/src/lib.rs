@@ -37,10 +37,10 @@ pub(crate) use runtime_tool_bridge::execute_tool_call_inner;
 pub(crate) use runtime_turn_loop::extract_json_payload;
 pub(crate) use runtime_turn_loop::{
     bounded_messages, build_structured_output_retry_prompt, collapse_whitespace,
-    estimate_chat_request_tokens, estimate_usage_cost_usd, is_retryable_ai_error,
-    normalize_cost_alert_thresholds, parse_structured_output, role_label,
+    compact_messages_for_token_pressure, estimate_chat_request_tokens, estimate_usage_cost_usd,
+    is_retryable_ai_error, normalize_cost_alert_thresholds, parse_structured_output, role_label,
     stream_retry_buffer_on_delta, timeout_duration_from_ms, truncate_chars,
-    StreamingRetryBufferState,
+    ContextCompactionConfig, StreamingRetryBufferState,
 };
 #[cfg(test)]
 pub(crate) use tau_memory::runtime::embed_text_vector;
@@ -78,6 +78,12 @@ pub struct AgentConfig {
     pub tool_timeout_ms: Option<u64>,
     pub max_estimated_input_tokens: Option<u32>,
     pub max_estimated_total_tokens: Option<u32>,
+    pub context_compaction_warn_threshold_percent: u8,
+    pub context_compaction_aggressive_threshold_percent: u8,
+    pub context_compaction_emergency_threshold_percent: u8,
+    pub context_compaction_warn_retain_percent: u8,
+    pub context_compaction_aggressive_retain_percent: u8,
+    pub context_compaction_emergency_retain_percent: u8,
     pub structured_output_max_retries: usize,
     pub react_max_replans_on_tool_failure: usize,
     pub memory_retrieval_limit: usize,
@@ -120,6 +126,12 @@ impl Default for AgentConfig {
             tool_timeout_ms: Some(120_000),
             max_estimated_input_tokens: Some(120_000),
             max_estimated_total_tokens: None,
+            context_compaction_warn_threshold_percent: 80,
+            context_compaction_aggressive_threshold_percent: 85,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
             structured_output_max_retries: 1,
             react_max_replans_on_tool_failure: 1,
             memory_retrieval_limit: 3,
@@ -1719,10 +1731,49 @@ impl Agent {
     }
 
     async fn request_messages(&self) -> Vec<Message> {
-        let Some(limit) = self.config.max_context_messages else {
-            return self.messages.clone();
+        let context_limit = self.config.max_context_messages;
+        let mut messages = if let Some(limit) = context_limit {
+            bounded_messages(&self.messages, limit)
+        } else {
+            self.messages.clone()
         };
-        let mut messages = bounded_messages(&self.messages, limit);
+        let pressure_estimate = estimate_chat_request_tokens(&ChatRequest {
+            model: self.config.model.clone(),
+            messages: messages.clone(),
+            tool_choice: None,
+            json_mode: false,
+            tools: Vec::new(),
+            max_tokens: self.config.max_tokens,
+            temperature: self.config.temperature,
+            prompt_cache: tau_ai::PromptCacheConfig {
+                enabled: true,
+                cache_key: Some(self.config.agent_id.clone()),
+                retention: None,
+                google_cached_content: None,
+            },
+        });
+        messages = compact_messages_for_token_pressure(
+            &messages,
+            pressure_estimate.input_tokens,
+            ContextCompactionConfig {
+                max_input_tokens: self.config.max_estimated_input_tokens,
+                warn_threshold_percent: self.config.context_compaction_warn_threshold_percent,
+                aggressive_threshold_percent: self
+                    .config
+                    .context_compaction_aggressive_threshold_percent,
+                emergency_threshold_percent: self
+                    .config
+                    .context_compaction_emergency_threshold_percent,
+                warn_retain_percent: self.config.context_compaction_warn_retain_percent,
+                aggressive_retain_percent: self.config.context_compaction_aggressive_retain_percent,
+                emergency_retain_percent: self.config.context_compaction_emergency_retain_percent,
+            },
+        );
+
+        let Some(limit) = context_limit else {
+            return messages;
+        };
+
         if self.config.memory_retrieval_limit == 0 || self.messages.len() <= limit {
             return messages;
         }
