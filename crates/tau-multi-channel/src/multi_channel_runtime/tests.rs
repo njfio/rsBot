@@ -964,6 +964,26 @@ fn unit_parse_multi_channel_tau_command_supports_initial_command_set() {
         super::render_multi_channel_tau_command_line(&react_command),
         "react 👍 123"
     );
+    let parsed_send_file = super::parse_multi_channel_tau_command(
+        "/tau send-file https://example.com/report.pdf Q1 report",
+    )
+    .expect("parse");
+    assert_eq!(
+        parsed_send_file,
+        Some(super::MultiChannelTauCommand::SendFile {
+            url: "https://example.com/report.pdf".to_string(),
+            caption: Some("Q1 report".to_string()),
+        })
+    );
+    let send_file_command = super::parse_multi_channel_tau_command(
+        "/tau send-file https://example.com/report.pdf Q1 report",
+    )
+    .expect("parse");
+    let send_file_command = send_file_command.expect("send-file command");
+    assert_eq!(
+        super::render_multi_channel_tau_command_line(&send_file_command),
+        "send-file https://example.com/report.pdf Q1 report"
+    );
     assert_eq!(
         super::parse_multi_channel_tau_command("plain text").expect("parse"),
         None
@@ -1008,6 +1028,16 @@ fn regression_parse_multi_channel_tau_command_rejects_invalid_forms() {
             .expect_err("missing emoji should fail"),
         "command_invalid_args"
     );
+    assert_eq!(
+        super::parse_multi_channel_tau_command("/tau send-file")
+            .expect_err("missing url should fail"),
+        "command_invalid_args"
+    );
+    assert_eq!(
+        super::parse_multi_channel_tau_command("/tau send-file http://example.com/report.pdf")
+            .expect_err("non-https url should fail"),
+        "command_invalid_args"
+    );
 }
 
 #[test]
@@ -1015,6 +1045,7 @@ fn spec_c04_render_multi_channel_tau_command_help_includes_skip_command() {
     let help = super::render_multi_channel_tau_command_help();
     assert!(help.contains("- /tau skip [reason]"));
     assert!(help.contains("- /tau react <emoji> [message_id]"));
+    assert!(help.contains("- /tau send-file <https-url> [caption]"));
 }
 
 #[tokio::test]
@@ -1252,6 +1283,127 @@ async fn functional_runner_tau_react_command_reports_unsupported_transport_witho
 }
 
 #[tokio::test]
+async fn functional_runner_executes_tau_send_file_command_and_records_delivery() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-command-send-file-1",
+        "telegram-command-room",
+        "telegram-user-1",
+        "/tau send-file https://example.com/report.pdf Q1 report",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "telegram",
+        "telegram-command-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let file_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("sent_file")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("send-file outbound log entry");
+    assert_eq!(
+        file_entry.payload["command"]["reason_code"].as_str(),
+        Some("command_send_file_dispatched")
+    );
+    assert_eq!(
+        file_entry.payload["command"]["send_file_url"].as_str(),
+        Some("https://example.com/report.pdf")
+    );
+    assert_eq!(
+        file_entry.payload["command"]["send_file_caption"].as_str(),
+        Some("Q1 report")
+    );
+    assert_eq!(
+        file_entry.payload["file_delivery"]["mode"].as_str(),
+        Some("dry_run")
+    );
+
+    let contexts = store.load_context_entries().expect("load context");
+    assert!(
+        contexts.iter().any(|entry| {
+            entry.role == "user"
+                && entry.text == "/tau send-file https://example.com/report.pdf Q1 report"
+        }),
+        "send-file command should preserve user context entry for auditability"
+    );
+    assert!(
+        !contexts.iter().any(|entry| entry.role == "assistant"),
+        "send-file command should not persist assistant response text"
+    );
+}
+
+#[tokio::test]
+async fn functional_runner_tau_send_file_reports_unsupported_transport_without_text_reply() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Whatsapp,
+        "wa-command-send-file-1",
+        "15551230000",
+        "15551235555",
+        "/tau send-file https://example.com/report.pdf",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "whatsapp",
+        "15551230000",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let failed_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("failed")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("failed send-file outbound log entry");
+    assert_eq!(
+        failed_entry.payload["reason_code"].as_str(),
+        Some("command_send_file_unsupported_transport")
+    );
+    assert_eq!(
+        failed_entry.payload["command"]["send_file_url"].as_str(),
+        Some("https://example.com/report.pdf")
+    );
+
+    let contexts = store.load_context_entries().expect("load context");
+    assert!(
+        !contexts.iter().any(|entry| entry.role == "assistant"),
+        "failed send-file command should not persist assistant response text"
+    );
+}
+
+#[tokio::test]
 async fn regression_runner_tau_react_command_maps_invalid_message_id_reason_code() {
     let temp = tempdir().expect("tempdir");
     let mut config = build_config(temp.path());
@@ -1299,6 +1451,22 @@ async fn regression_runner_tau_react_command_maps_invalid_message_id_reason_code
     assert_eq!(
         failed_entry.payload["reaction_delivery_error"]["reason_code"].as_str(),
         Some("reaction_invalid_message_id")
+    );
+}
+
+#[test]
+fn unit_command_reason_code_from_file_delivery_error_maps_known_reasons() {
+    assert_eq!(
+        super::command_reason_code_from_file_delivery_error("file_delivery_unsupported_transport"),
+        "command_send_file_unsupported_transport"
+    );
+    assert_eq!(
+        super::command_reason_code_from_file_delivery_error("file_delivery_invalid_url"),
+        "command_send_file_invalid_url"
+    );
+    assert_eq!(
+        super::command_reason_code_from_file_delivery_error("unknown_reason"),
+        "command_send_file_failed"
     );
 }
 

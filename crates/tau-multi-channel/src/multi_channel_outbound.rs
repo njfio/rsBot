@@ -20,6 +20,8 @@ const WHATSAPP_SAFE_MAX_CHARS: usize = 1024;
 const REACTION_REASON_UNSUPPORTED_TRANSPORT: &str = "reaction_unsupported_transport";
 const REACTION_REASON_INVALID_MESSAGE_ID: &str = "reaction_invalid_message_id";
 const REACTION_REASON_MISSING_EMOJI: &str = "reaction_missing_emoji";
+const FILE_REASON_UNSUPPORTED_TRANSPORT: &str = "file_delivery_unsupported_transport";
+const FILE_REASON_INVALID_URL: &str = "file_delivery_invalid_url";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Enumerates supported `MultiChannelOutboundMode` values.
@@ -314,6 +316,52 @@ impl MultiChannelOutboundDispatcher {
         })
     }
 
+    /// Public `fn` `deliver_file` in `tau-multi-channel`.
+    ///
+    /// This item is part of the Wave 2 API surface for M23 documentation uplift.
+    /// Callers rely on its contract and failure semantics remaining stable.
+    /// Update this comment if behavior or integration expectations change.
+    pub async fn deliver_file(
+        &self,
+        event: &MultiChannelInboundEvent,
+        file_url: &str,
+        caption: Option<&str>,
+    ) -> Result<MultiChannelOutboundDeliveryResult, MultiChannelOutboundDeliveryError> {
+        if self.config.mode == MultiChannelOutboundMode::ChannelStore {
+            return Ok(MultiChannelOutboundDeliveryResult {
+                mode: self.config.mode.as_str().to_string(),
+                chunk_count: 0,
+                receipts: Vec::new(),
+            });
+        }
+
+        let request = self.build_file_request(event, file_url, caption)?;
+        let receipt = match self.config.mode {
+            MultiChannelOutboundMode::DryRun => MultiChannelOutboundDeliveryReceipt {
+                transport: request.transport.as_str().to_string(),
+                mode: self.config.mode.as_str().to_string(),
+                status: "dry_run".to_string(),
+                chunk_index: request.chunk_index,
+                chunk_count: request.chunk_count,
+                endpoint: request.endpoint.clone(),
+                request_body: request.body.clone(),
+                reason_code: None,
+                detail: None,
+                retryable: false,
+                http_status: None,
+                provider_message_id: None,
+            },
+            MultiChannelOutboundMode::Provider => self.send_request(&request).await?,
+            MultiChannelOutboundMode::ChannelStore => unreachable!(),
+        };
+
+        Ok(MultiChannelOutboundDeliveryResult {
+            mode: self.config.mode.as_str().to_string(),
+            chunk_count: 1,
+            receipts: vec![receipt],
+        })
+    }
+
     fn build_requests(
         &self,
         event: &MultiChannelInboundEvent,
@@ -488,6 +536,122 @@ impl MultiChannelOutboundDispatcher {
                 request_body: None,
                 http_status: None,
             }),
+        }
+    }
+
+    fn build_file_request(
+        &self,
+        event: &MultiChannelInboundEvent,
+        file_url: &str,
+        caption: Option<&str>,
+    ) -> Result<MultiChannelOutboundRequest, MultiChannelOutboundDeliveryError> {
+        let normalized_file_url = file_url.trim();
+        if normalized_file_url.is_empty() {
+            return Err(MultiChannelOutboundDeliveryError {
+                reason_code: FILE_REASON_INVALID_URL.to_string(),
+                detail: "file url must not be empty".to_string(),
+                retryable: false,
+                chunk_index: 1,
+                chunk_count: 1,
+                endpoint: "".to_string(),
+                request_body: None,
+                http_status: None,
+            });
+        }
+
+        let parsed_file_url = reqwest::Url::parse(normalized_file_url).map_err(|error| {
+            MultiChannelOutboundDeliveryError {
+                reason_code: FILE_REASON_INVALID_URL.to_string(),
+                detail: format!("file url '{}' is invalid: {error}", normalized_file_url),
+                retryable: false,
+                chunk_index: 1,
+                chunk_count: 1,
+                endpoint: "".to_string(),
+                request_body: None,
+                http_status: None,
+            }
+        })?;
+        if parsed_file_url.scheme() != "https" {
+            return Err(MultiChannelOutboundDeliveryError {
+                reason_code: FILE_REASON_INVALID_URL.to_string(),
+                detail: format!(
+                    "file url '{}' must use the https scheme",
+                    normalized_file_url
+                ),
+                retryable: false,
+                chunk_index: 1,
+                chunk_count: 1,
+                endpoint: "".to_string(),
+                request_body: None,
+                http_status: None,
+            });
+        }
+
+        match event.transport {
+            MultiChannelTransport::Telegram => {
+                let token = self
+                    .config
+                    .telegram_bot_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        if self.config.mode == MultiChannelOutboundMode::DryRun {
+                            Some("dry-run-telegram-token".to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| MultiChannelOutboundDeliveryError {
+                        reason_code: "delivery_missing_telegram_bot_token".to_string(),
+                        detail: "Telegram outbound requires TAU_TELEGRAM_BOT_TOKEN or credential-store integration id telegram-bot-token".to_string(),
+                        retryable: false,
+                        chunk_index: 1,
+                        chunk_count: 1,
+                        endpoint: "".to_string(),
+                        request_body: None,
+                        http_status: None,
+                    })?;
+                let endpoint = format!(
+                    "{}/bot{}/sendDocument",
+                    self.config.telegram_api_base.trim_end_matches('/'),
+                    token
+                );
+                let mut body = json!({
+                    "chat_id": event.conversation_id.trim(),
+                    "document": parsed_file_url.as_str(),
+                });
+                if let Some(caption) = caption.map(str::trim).filter(|value| !value.is_empty()) {
+                    if let Value::Object(map) = &mut body {
+                        map.insert("caption".to_string(), Value::String(caption.to_string()));
+                    }
+                }
+                Ok(MultiChannelOutboundRequest {
+                    method: Method::POST,
+                    transport: event.transport,
+                    endpoint,
+                    headers: Vec::new(),
+                    body,
+                    chunk_index: 1,
+                    chunk_count: 1,
+                })
+            }
+            MultiChannelTransport::Discord | MultiChannelTransport::Whatsapp => {
+                Err(MultiChannelOutboundDeliveryError {
+                    reason_code: FILE_REASON_UNSUPPORTED_TRANSPORT.to_string(),
+                    detail: format!(
+                        "file delivery is not supported for {} transport",
+                        event.transport.as_str()
+                    ),
+                    retryable: false,
+                    chunk_index: 1,
+                    chunk_count: 1,
+                    endpoint: "".to_string(),
+                    request_body: None,
+                    http_status: None,
+                })
+            }
         }
     }
 
@@ -1072,6 +1236,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn functional_dry_run_shapes_telegram_send_file_payload() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::DryRun,
+            max_chars: 100,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let mut event = sample_event(MultiChannelTransport::Telegram);
+        event.conversation_id = "chat-42".to_string();
+        let result = dispatcher
+            .deliver_file(
+                &event,
+                "https://example.com/reports/q1.pdf",
+                Some("Quarterly report"),
+            )
+            .await
+            .expect("dry-run file delivery should succeed");
+        assert_eq!(result.mode, "dry_run");
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "dry_run");
+        assert!(result.receipts[0]
+            .endpoint
+            .ends_with("/botdry-run-telegram-token/sendDocument"));
+        assert_eq!(
+            result.receipts[0].request_body["document"],
+            "https://example.com/reports/q1.pdf"
+        );
+        assert_eq!(
+            result.receipts[0].request_body["caption"],
+            "Quarterly report"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_send_file_reports_unsupported_transport() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::DryRun,
+            max_chars: 100,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver_file(
+                &sample_event(MultiChannelTransport::Whatsapp),
+                "https://example.com/reports/q1.pdf",
+                None,
+            )
+            .await
+            .expect_err("whatsapp send-file should fail");
+        assert_eq!(error.reason_code, "file_delivery_unsupported_transport");
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
     async fn regression_reaction_delivery_reports_unsupported_transport() {
         let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
             mode: MultiChannelOutboundMode::DryRun,
@@ -1153,6 +1371,42 @@ mod tests {
         assert!(result.receipts[0]
             .endpoint
             .ends_with("/channels/room-88/messages/42/reactions/%F0%9F%91%8D/@me"));
+    }
+
+    #[tokio::test]
+    async fn integration_provider_mode_posts_telegram_send_file_request() {
+        let server = MockServer::start();
+        let file_send = server.mock(|when, then| {
+            when.method(POST).path("/bottest-token/sendDocument");
+            then.status(200)
+                .json_body(json!({"ok": true, "result": {"message_id": 88}}));
+        });
+
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            telegram_api_base: server.base_url(),
+            telegram_bot_token: Some("test-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let result = dispatcher
+            .deliver_file(
+                &sample_event(MultiChannelTransport::Telegram),
+                "https://example.com/reports/q1.pdf",
+                Some("Quarterly report"),
+            )
+            .await
+            .expect("provider file send should succeed");
+        file_send.assert_calls(1);
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "sent");
+        assert_eq!(
+            result.receipts[0].provider_message_id.as_deref(),
+            Some("88")
+        );
     }
 
     #[tokio::test]

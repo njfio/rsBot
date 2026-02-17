@@ -80,6 +80,7 @@ const COMMAND_STATUS_REPORTED: &str = "reported";
 const COMMAND_STATUS_FAILED: &str = "failed";
 const COMMAND_STATUS_SKIPPED: &str = "skipped";
 const COMMAND_STATUS_REACTED: &str = "reacted";
+const COMMAND_STATUS_SENT_FILE: &str = "sent_file";
 const COMMAND_REASON_UNKNOWN: &str = "command_unknown";
 const COMMAND_REASON_INVALID_ARGS: &str = "command_invalid_args";
 const COMMAND_REASON_RBAC_DENIED: &str = "command_rbac_denied";
@@ -102,6 +103,12 @@ const COMMAND_REASON_REACT_DISPATCHED: &str = "command_react_dispatched";
 const COMMAND_REASON_REACT_UNSUPPORTED_TRANSPORT: &str = "command_react_unsupported_transport";
 const COMMAND_REASON_REACT_INVALID_MESSAGE_ID: &str = "command_react_invalid_message_id";
 const COMMAND_REASON_REACT_FAILED: &str = "command_react_failed";
+const COMMAND_REASON_SEND_FILE_REQUESTED: &str = "command_send_file_requested";
+const COMMAND_REASON_SEND_FILE_DISPATCHED: &str = "command_send_file_dispatched";
+const COMMAND_REASON_SEND_FILE_UNSUPPORTED_TRANSPORT: &str =
+    "command_send_file_unsupported_transport";
+const COMMAND_REASON_SEND_FILE_INVALID_URL: &str = "command_send_file_invalid_url";
+const COMMAND_REASON_SEND_FILE_FAILED: &str = "command_send_file_failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Enumerates supported `MultiChannelPairingDecision` values.
@@ -414,6 +421,10 @@ enum MultiChannelTauCommand {
         emoji: String,
         message_id: Option<String>,
     },
+    SendFile {
+        url: String,
+        caption: Option<String>,
+    },
     AuthStatus {
         provider: Option<String>,
     },
@@ -443,6 +454,8 @@ struct MultiChannelCommandExecution {
     skip_reason: Option<String>,
     react_emoji: Option<String>,
     react_message_id: Option<String>,
+    send_file_url: Option<String>,
+    send_file_caption: Option<String>,
 }
 
 /// Public `fn` `run_multi_channel_contract_runner` in `tau-multi-channel`.
@@ -1114,6 +1127,9 @@ impl MultiChannelRuntime {
             MultiChannelTauCommand::React { emoji, message_id } => Some(
                 build_multi_channel_command_react_execution(emoji.as_str(), message_id.as_deref()),
             ),
+            MultiChannelTauCommand::SendFile { url, caption } => Some(
+                build_multi_channel_command_send_file_execution(url.as_str(), caption.as_deref()),
+            ),
             MultiChannelTauCommand::AuthStatus { provider } => {
                 let Some(auth_handler) = &self.config.command_handlers.auth else {
                     let response = "command unavailable: auth status handler is not configured.";
@@ -1379,10 +1395,42 @@ impl MultiChannelRuntime {
                 .as_ref()
                 .map(|execution| execution.reason_code.clone())
                 .unwrap_or_else(|| COMMAND_REASON_SKIP_SUPPRESSED.to_string());
+            let mut file_delivery_payload: Option<Value> = None;
+            let mut file_delivery_error_payload: Option<Value> = None;
             let mut reaction_delivery_payload: Option<Value> = None;
             let mut reaction_delivery_error_payload: Option<Value> = None;
             if let Some(execution) = command_execution.as_ref() {
-                if let Some(emoji) = execution.react_emoji.as_deref() {
+                if let Some(url) = execution.send_file_url.as_deref() {
+                    let caption = execution.send_file_caption.as_deref();
+                    match self
+                        .outbound_dispatcher
+                        .deliver_file(event, url, caption)
+                        .await
+                    {
+                        Ok(delivery) => {
+                            command_status = COMMAND_STATUS_SENT_FILE.to_string();
+                            command_reason_code = COMMAND_REASON_SEND_FILE_DISPATCHED.to_string();
+                            file_delivery_payload = Some(
+                                serde_json::to_value(&delivery)
+                                    .context("serialize file delivery payload")?,
+                            );
+                        }
+                        Err(error) => {
+                            command_status = COMMAND_STATUS_FAILED.to_string();
+                            command_reason_code = command_reason_code_from_file_delivery_error(
+                                error.reason_code.as_str(),
+                            )
+                            .to_string();
+                            file_delivery_error_payload = Some(json!({
+                                "reason_code": error.reason_code,
+                                "detail": error.detail,
+                                "retryable": error.retryable,
+                                "endpoint": error.endpoint,
+                                "http_status": error.http_status,
+                            }));
+                        }
+                    }
+                } else if let Some(emoji) = execution.react_emoji.as_deref() {
                     let target_message_id = execution
                         .react_message_id
                         .as_deref()
@@ -1451,6 +1499,19 @@ impl MultiChannelRuntime {
             if let Some(command_payload) = command_payload.as_ref() {
                 if let Value::Object(map) = &mut payload {
                     map.insert("command".to_string(), command_payload.clone());
+                }
+            }
+            if let Some(file_delivery_payload) = file_delivery_payload.as_ref() {
+                if let Value::Object(map) = &mut payload {
+                    map.insert("file_delivery".to_string(), file_delivery_payload.clone());
+                }
+            }
+            if let Some(file_delivery_error_payload) = file_delivery_error_payload.as_ref() {
+                if let Value::Object(map) = &mut payload {
+                    map.insert(
+                        "file_delivery_error".to_string(),
+                        file_delivery_error_payload.clone(),
+                    );
                 }
             }
             if let Some(reaction_delivery_payload) = reaction_delivery_payload.as_ref() {
@@ -2138,6 +2199,23 @@ fn parse_multi_channel_tau_command(
                 message_id: message_id.map(ToOwned::to_owned),
             }))
         }
+        "send-file" => {
+            let Some(raw_url) = tokens.next() else {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            };
+            let url = normalize_send_file_url(raw_url)
+                .ok_or_else(|| COMMAND_REASON_INVALID_ARGS.to_string())?;
+            let caption = tokens
+                .filter(|token| !token.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let caption = if caption.is_empty() {
+                None
+            } else {
+                Some(caption)
+            };
+            Ok(Some(MultiChannelTauCommand::SendFile { url, caption }))
+        }
         "auth" => {
             let Some(action) = tokens.next() else {
                 return Err(COMMAND_REASON_INVALID_ARGS.to_string());
@@ -2259,6 +2337,18 @@ fn parse_multi_channel_tau_approvals_command(
     }
 }
 
+fn normalize_send_file_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    if parsed.scheme() != "https" {
+        return None;
+    }
+    Some(parsed.as_str().to_string())
+}
+
 fn render_multi_channel_tau_command_line(command: &MultiChannelTauCommand) -> String {
     match command {
         MultiChannelTauCommand::Help => "help".to_string(),
@@ -2279,6 +2369,17 @@ fn render_multi_channel_tau_command_line(command: &MultiChannelTauCommand) -> St
                 format!("react {} {}", emoji.trim(), message_id.trim())
             } else {
                 format!("react {}", emoji.trim())
+            }
+        }
+        MultiChannelTauCommand::SendFile { url, caption } => {
+            if let Some(caption) = caption.as_deref() {
+                if caption.trim().is_empty() {
+                    format!("send-file {}", url.trim())
+                } else {
+                    format!("send-file {} {}", url.trim(), caption.trim())
+                }
+            } else {
+                format!("send-file {}", url.trim())
             }
         }
         MultiChannelTauCommand::AuthStatus { provider } => {
@@ -2306,6 +2407,7 @@ fn render_multi_channel_tau_command_help() -> String {
         "- /tau status",
         "- /tau skip [reason]",
         "- /tau react <emoji> [message_id]",
+        "- /tau send-file <https-url> [caption]",
         "- /tau auth status [openai|anthropic|google]",
         "- /tau doctor [--online]",
         "- /tau approvals list [--json] [--status pending|approved|rejected|expired|consumed]",
@@ -2351,6 +2453,8 @@ fn build_multi_channel_command_execution(
         skip_reason: None,
         react_emoji: None,
         react_message_id: None,
+        send_file_url: None,
+        send_file_caption: None,
     }
 }
 
@@ -2376,6 +2480,8 @@ fn build_multi_channel_command_skip_execution(
         skip_reason: normalized_reason.map(ToOwned::to_owned),
         react_emoji: None,
         react_message_id: None,
+        send_file_url: None,
+        send_file_caption: None,
     }
 }
 
@@ -2406,6 +2512,38 @@ fn build_multi_channel_command_react_execution(
         skip_reason: None,
         react_emoji: Some(normalized_emoji.to_string()),
         react_message_id: normalized_message_id.map(ToOwned::to_owned),
+        send_file_url: None,
+        send_file_caption: None,
+    }
+}
+
+fn build_multi_channel_command_send_file_execution(
+    url: &str,
+    caption: Option<&str>,
+) -> MultiChannelCommandExecution {
+    let normalized_url = url.trim();
+    let normalized_caption = caption.map(str::trim).filter(|value| !value.is_empty());
+    let command_line = if let Some(caption) = normalized_caption {
+        format!("send-file {normalized_url} {caption}")
+    } else {
+        format!("send-file {normalized_url}")
+    };
+    let summary = if let Some(caption) = normalized_caption {
+        format!("file command queued for dispatch: url={normalized_url} caption={caption}")
+    } else {
+        format!("file command queued for dispatch: url={normalized_url}")
+    };
+    MultiChannelCommandExecution {
+        command_line,
+        status: COMMAND_STATUS_REPORTED.to_string(),
+        reason_code: COMMAND_REASON_SEND_FILE_REQUESTED.to_string(),
+        response_text: summary,
+        suppress_outbound_delivery: true,
+        skip_reason: None,
+        react_emoji: None,
+        react_message_id: None,
+        send_file_url: Some(normalized_url.to_string()),
+        send_file_caption: normalized_caption.map(ToOwned::to_owned),
     }
 }
 
@@ -2428,6 +2566,14 @@ fn command_reason_code_from_reaction_delivery_error(reason_code: &str) -> &'stat
         "reaction_unsupported_transport" => COMMAND_REASON_REACT_UNSUPPORTED_TRANSPORT,
         "reaction_invalid_message_id" => COMMAND_REASON_REACT_INVALID_MESSAGE_ID,
         _ => COMMAND_REASON_REACT_FAILED,
+    }
+}
+
+fn command_reason_code_from_file_delivery_error(reason_code: &str) -> &'static str {
+    match reason_code {
+        "file_delivery_unsupported_transport" => COMMAND_REASON_SEND_FILE_UNSUPPORTED_TRANSPORT,
+        "file_delivery_invalid_url" => COMMAND_REASON_SEND_FILE_INVALID_URL,
+        _ => COMMAND_REASON_SEND_FILE_FAILED,
     }
 }
 
@@ -2454,6 +2600,19 @@ fn multi_channel_command_payload(execution: &MultiChannelCommandExecution) -> Va
             map.insert(
                 "react_message_id".to_string(),
                 Value::String(message_id.clone()),
+            );
+        }
+    }
+    if let Some(url) = execution.send_file_url.as_ref() {
+        if let Value::Object(map) = &mut payload {
+            map.insert("send_file_url".to_string(), Value::String(url.clone()));
+        }
+    }
+    if let Some(caption) = execution.send_file_caption.as_ref() {
+        if let Value::Object(map) = &mut payload {
+            map.insert(
+                "send_file_caption".to_string(),
+                Value::String(caption.clone()),
             );
         }
     }
