@@ -139,6 +139,108 @@ pub(crate) fn normalize_cost_alert_thresholds(thresholds: &[u8]) -> Vec<u8> {
     normalized
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextCompactionTier {
+    None,
+    Warn,
+    Aggressive,
+    Emergency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextCompactionConfig {
+    pub(crate) max_input_tokens: Option<u32>,
+    pub(crate) warn_threshold_percent: u8,
+    pub(crate) aggressive_threshold_percent: u8,
+    pub(crate) emergency_threshold_percent: u8,
+    pub(crate) warn_retain_percent: u8,
+    pub(crate) aggressive_retain_percent: u8,
+    pub(crate) emergency_retain_percent: u8,
+}
+
+pub(crate) fn compact_messages_for_token_pressure(
+    messages: &[Message],
+    estimated_input_tokens: u32,
+    config: ContextCompactionConfig,
+) -> Vec<Message> {
+    let thresholds = normalize_compaction_thresholds(
+        config.warn_threshold_percent,
+        config.aggressive_threshold_percent,
+        config.emergency_threshold_percent,
+    );
+    match select_context_compaction_tier(
+        estimated_input_tokens,
+        config.max_input_tokens,
+        thresholds,
+    ) {
+        ContextCompactionTier::None => messages.to_vec(),
+        ContextCompactionTier::Warn => {
+            let retain = normalize_retain_percent(config.warn_retain_percent);
+            let target = retained_message_count(messages.len(), retain);
+            bounded_messages(messages, target)
+        }
+        ContextCompactionTier::Aggressive => {
+            let retain = normalize_retain_percent(config.aggressive_retain_percent);
+            let target = retained_message_count(messages.len(), retain);
+            bounded_messages(messages, target)
+        }
+        ContextCompactionTier::Emergency => {
+            let retain = normalize_retain_percent(config.emergency_retain_percent);
+            let target = retained_message_count(messages.len(), retain);
+            bounded_messages_without_summary(messages, target)
+        }
+    }
+}
+
+fn normalize_compaction_thresholds(warn: u8, aggressive: u8, emergency: u8) -> [u8; 3] {
+    let mut thresholds = [
+        warn.clamp(1, 100),
+        aggressive.clamp(1, 100),
+        emergency.clamp(1, 100),
+    ];
+    thresholds.sort_unstable();
+    thresholds
+}
+
+fn select_context_compaction_tier(
+    estimated_input_tokens: u32,
+    max_input_tokens: Option<u32>,
+    thresholds: [u8; 3],
+) -> ContextCompactionTier {
+    let Some(max_input_tokens) = max_input_tokens.filter(|value| *value > 0) else {
+        return ContextCompactionTier::None;
+    };
+    let utilization_percent = estimated_input_tokens
+        .saturating_mul(100)
+        .saturating_div(max_input_tokens);
+    if utilization_percent >= u32::from(thresholds[2]) {
+        return ContextCompactionTier::Emergency;
+    }
+    if utilization_percent >= u32::from(thresholds[1]) {
+        return ContextCompactionTier::Aggressive;
+    }
+    if utilization_percent >= u32::from(thresholds[0]) {
+        return ContextCompactionTier::Warn;
+    }
+    ContextCompactionTier::None
+}
+
+fn retained_message_count(total_messages: usize, retain_percent: u8) -> usize {
+    if total_messages == 0 {
+        return 0;
+    }
+    let retain_percent = usize::from(retain_percent);
+    let retained = (total_messages
+        .saturating_mul(retain_percent)
+        .saturating_add(99))
+        / 100;
+    retained.clamp(1, total_messages)
+}
+
+fn normalize_retain_percent(retain_percent: u8) -> u8 {
+    retain_percent.clamp(1, 100)
+}
+
 pub(crate) fn bounded_messages(messages: &[Message], max_messages: usize) -> Vec<Message> {
     if max_messages == 0 || messages.len() <= max_messages {
         return messages.to_vec();
@@ -187,7 +289,10 @@ pub(crate) fn bounded_messages(messages: &[Message], max_messages: usize) -> Vec
     }
 }
 
-fn bounded_messages_without_summary(messages: &[Message], max_messages: usize) -> Vec<Message> {
+pub(crate) fn bounded_messages_without_summary(
+    messages: &[Message],
+    max_messages: usize,
+) -> Vec<Message> {
     if max_messages == 0 || messages.len() <= max_messages {
         return messages.to_vec();
     }

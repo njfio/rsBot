@@ -1174,6 +1174,267 @@ async fn functional_context_window_limits_request_messages_and_compacts_history(
     );
 }
 
+#[tokio::test]
+async fn spec_c01_warn_tier_compacts_to_warn_retention_with_summary() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("ok"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn-tier user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn-tier assistant message {index} with enough text to consume tokens"
+        )));
+    }
+    let pre_prompt_len = agent.messages().len();
+    let expected_len = ((pre_prompt_len.saturating_add(1) * 70).saturating_add(99)) / 100;
+
+    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+
+    let requests = client.requests.lock().await;
+    let first_request = requests.first().expect("request should be captured");
+    assert_eq!(first_request.messages.len(), expected_len);
+    assert!(
+        first_request
+            .messages
+            .iter()
+            .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
+        "warn tier should preserve summary compaction behavior"
+    );
+}
+
+#[tokio::test]
+async fn spec_c02_aggressive_tier_compacts_to_aggressive_retention() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("ok"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(220),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "aggressive-tier user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "aggressive-tier assistant message {index} with enough text to consume tokens"
+        )));
+    }
+    let pre_prompt_len = agent.messages().len();
+    let expected_len = ((pre_prompt_len.saturating_add(1) * 50).saturating_add(99)) / 100;
+
+    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+
+    let requests = client.requests.lock().await;
+    let first_request = requests.first().expect("request should be captured");
+    assert_eq!(first_request.messages.len(), expected_len);
+    assert!(
+        first_request
+            .messages
+            .iter()
+            .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
+        "aggressive tier should preserve summary compaction behavior"
+    );
+}
+
+#[tokio::test]
+async fn spec_c03_emergency_tier_hard_truncates_without_summary() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("ok"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(100),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 60,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "emergency-tier user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "emergency-tier assistant message {index} with enough text to consume tokens"
+        )));
+    }
+    let pre_prompt_len = agent.messages().len();
+    let expected_len = ((pre_prompt_len.saturating_add(1) * 50).saturating_add(99)) / 100;
+
+    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+
+    let requests = client.requests.lock().await;
+    let first_request = requests.first().expect("request should be captured");
+    assert_eq!(first_request.messages.len(), expected_len);
+    assert!(
+        first_request
+            .messages
+            .iter()
+            .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
+        "emergency tier should hard truncate without summary insertion"
+    );
+}
+
+#[tokio::test]
+async fn spec_c04_below_warn_threshold_skips_tiered_compaction() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("ok"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(2_000),
+            context_compaction_warn_threshold_percent: 80,
+            context_compaction_aggressive_threshold_percent: 85,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..3 {
+        agent.append_message(Message::user(format!("below-threshold user {index}")));
+        agent.append_message(Message::assistant_text(format!(
+            "below-threshold assistant {index}"
+        )));
+    }
+    let expected_len = agent.messages().len().saturating_add(1);
+
+    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+
+    let requests = client.requests.lock().await;
+    let first_request = requests.first().expect("request should be captured");
+    assert_eq!(first_request.messages.len(), expected_len);
+    assert!(first_request
+        .messages
+        .iter()
+        .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)));
+}
+
+#[tokio::test]
+async fn spec_c05_pressure_path_compacts_before_budget_check_and_avoids_budget_error() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("ok"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(100),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "pressure-path user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "pressure-path assistant message {index} with enough text to consume tokens"
+        )));
+    }
+
+    let mut unbounded_messages = agent.messages().to_vec();
+    unbounded_messages.push(Message::user("latest"));
+    let estimate_without_compaction = estimate_chat_request_tokens(&ChatRequest {
+        model: agent.config.model.clone(),
+        messages: unbounded_messages,
+        tool_choice: None,
+        json_mode: false,
+        tools: Vec::new(),
+        max_tokens: agent.config.max_tokens,
+        temperature: agent.config.temperature,
+        prompt_cache: tau_ai::PromptCacheConfig {
+            enabled: true,
+            cache_key: Some(agent.config.agent_id.clone()),
+            retention: None,
+            google_cached_content: None,
+        },
+    });
+    assert!(
+        estimate_without_compaction.input_tokens > 100,
+        "test setup requires pre-compaction prompt to exceed token budget"
+    );
+
+    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+
+    let requests = client.requests.lock().await;
+    let first_request = requests.first().expect("request should be captured");
+    let compacted_estimate = estimate_chat_request_tokens(first_request);
+    assert!(
+        compacted_estimate.input_tokens <= 100,
+        "compacted request should fit inside configured token budget"
+    );
+}
+
 #[test]
 fn unit_bounded_messages_inserts_summary_with_system_prompt() {
     let messages = vec![

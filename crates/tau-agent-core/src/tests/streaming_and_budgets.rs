@@ -754,6 +754,44 @@ async fn regression_token_budget_none_disables_estimation_gate() {
 }
 
 #[tokio::test]
+async fn regression_zero_input_token_budget_fails_closed_without_panicking() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("should-not-run"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            system_prompt: String::new(),
+            max_estimated_input_tokens: Some(0),
+            max_estimated_total_tokens: None,
+            ..AgentConfig::default()
+        },
+    );
+
+    let error = agent
+        .prompt("small prompt")
+        .await
+        .expect_err("zero token budget should fail closed");
+    match error {
+        AgentError::TokenBudgetExceeded {
+            max_input_tokens: 0,
+            ..
+        } => {}
+        other => panic!("expected input token budget failure for zero budget, got {other:?}"),
+    }
+    assert!(
+        client.requests.lock().await.is_empty(),
+        "request should not be dispatched when zero input budget fails"
+    );
+}
+
+#[tokio::test]
 async fn integration_tool_timeout_returns_error_tool_message_and_continues_turn() {
     let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
         id: "call_1".to_string(),
