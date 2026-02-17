@@ -44,6 +44,7 @@ tau-tools = { path = "../tau-tools" }
 tau-onboarding = { path = "../tau-onboarding" }
 tau-agent-core = { path = "../tau-agent-core" }
 tau-ai = { path = "../tau-ai" }
+tau-algorithm = { path = "../tau-algorithm" }
 tau-trainer = { path = "../tau-trainer" }
 tau-training-runner = { path = "../tau-training-runner" }
 tau-training-proxy = { path = "../tau-training-proxy" }

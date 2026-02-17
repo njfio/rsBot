@@ -14,6 +14,10 @@ use tau_access::{
 };
 use tau_agent_core::{AgentConfig, SafetyMode};
 use tau_ai::{LlmClient, ModelRef};
+use tau_algorithm::{
+    collect_trajectory_batch, compute_gae_batch_from_slices, compute_ppo_update, GaeConfig,
+    PpoConfig, PpoSample,
+};
 use tau_cli::{Cli, CliPromptSanitizerMode};
 use tau_onboarding::startup_local_runtime::{
     build_local_runtime_agent, derive_preflight_token_limits, LocalRuntimeAgentSettings,
@@ -23,7 +27,7 @@ use tau_trainer::checkpoint_store::{
 };
 use tau_trainer::{Trainer, TrainerConfig};
 use tau_training_runner::{SafetyRewardPolicy, TauAgentExecutor};
-use tau_training_store::{SqliteTrainingStore, TrainingStore};
+use tau_training_store::{RolloutQuery, RolloutStatus, SqliteTrainingStore, TrainingStore};
 
 use crate::model_catalog::ModelCatalog;
 use crate::tools::ToolPolicy;
@@ -99,6 +103,8 @@ struct TrainingConfigFile {
     completion_timeout_secs: Option<u64>,
     #[serde(default)]
     safety_reward: Option<SafetyRewardConfigFile>,
+    #[serde(default)]
+    rl_optimizer: Option<RlOptimizerConfigFile>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -127,6 +133,30 @@ struct SafetyRewardConfigFile {
     reject_rollout_on_hard_gate: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct RlOptimizerConfigFile {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    gae: Option<Value>,
+    #[serde(default)]
+    ppo: Option<Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct RlOptimizerStatusReport {
+    executed: bool,
+    trajectories: usize,
+    samples: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mean_total_loss: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    observed_approx_kl: Option<f64>,
+    early_stop_triggered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skipped_reason: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct TrainingRunReport {
     model_ref: String,
@@ -135,6 +165,8 @@ struct TrainingRunReport {
     succeeded: usize,
     failed: usize,
     cancelled: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rl_optimizer: Option<RlOptimizerStatusReport>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -148,6 +180,8 @@ struct TrainingStatusFile {
     succeeded: usize,
     failed: usize,
     cancelled: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rl_optimizer: Option<RlOptimizerStatusReport>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -251,7 +285,7 @@ pub(crate) async fn run_prompt_optimization_mode_if_requested(
     }
 
     let trainer_config = build_trainer_config(&config)?;
-    let trainer = Trainer::new(store, trainer_config);
+    let trainer = Trainer::new(store.clone(), trainer_config);
     let executor = build_executor(
         cli,
         client,
@@ -262,12 +296,15 @@ pub(crate) async fn run_prompt_optimization_mode_if_requested(
         &config,
     )?;
 
-    let train_dataset = (!config.optimize.is_empty()).then_some(config.optimize);
-    let val_dataset = (!config.validate.is_empty()).then_some(config.validate);
+    let train_dataset = (!config.optimize.is_empty()).then_some(config.optimize.clone());
+    let val_dataset = (!config.validate.is_empty()).then_some(config.validate.clone());
     let summary = trainer
         .fit(executor, train_dataset, val_dataset)
         .await
         .context("prompt-optimization run failed")?;
+    let rl_optimizer = run_rl_optimizer_if_configured(store.as_ref(), &config)
+        .await
+        .context("rl optimizer execution failed")?;
 
     let report = TrainingRunReport {
         model_ref: format!("{}/{}", model_ref.provider.as_str(), model_ref.model),
@@ -276,6 +313,7 @@ pub(crate) async fn run_prompt_optimization_mode_if_requested(
         succeeded: summary.succeeded,
         failed: summary.failed,
         cancelled: summary.cancelled,
+        rl_optimizer,
     };
     persist_training_status_report(&report, &store_path)?;
     print_training_report(&report, cli.prompt_optimization_json)?;
@@ -909,6 +947,7 @@ fn persist_training_status_report(report: &TrainingRunReport, store_path: &Path)
         succeeded: report.succeeded,
         failed: report.failed,
         cancelled: report.cancelled,
+        rl_optimizer: report.rl_optimizer.clone(),
     };
     let status_path = training_root.join(TRAINING_STATUS_FILE);
     let encoded = serde_json::to_string_pretty(&status_payload)
@@ -1039,8 +1078,255 @@ fn build_trainer_config(config: &TrainingConfigFile) -> Result<TrainerConfig> {
 
     // Fail closed on invalid safety reward policy values before runtime starts.
     let _ = resolve_safety_reward_policy(config.safety_reward.as_ref())?;
+    // Fail closed on invalid RL optimizer values before runtime starts.
+    let _ = resolve_rl_optimizer_settings(config.rl_optimizer.as_ref())?;
 
     Ok(trainer_config)
+}
+
+#[derive(Debug, Clone)]
+struct RlOptimizerSettings {
+    gae: GaeConfig,
+    ppo: PpoConfig,
+}
+
+fn resolve_rl_optimizer_settings(
+    config: Option<&RlOptimizerConfigFile>,
+) -> Result<Option<RlOptimizerSettings>> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    if config.enabled == Some(false) {
+        return Ok(None);
+    }
+
+    let gae = resolve_gae_config(config.gae.as_ref())?;
+    let ppo = resolve_ppo_config(config.ppo.as_ref())?;
+    validate_ppo_config(&ppo)?;
+
+    Ok(Some(RlOptimizerSettings { gae, ppo }))
+}
+
+fn resolve_gae_config(config: Option<&Value>) -> Result<GaeConfig> {
+    let Some(config) = config else {
+        return Ok(GaeConfig::default());
+    };
+    GaeConfig::from_json(config).context("invalid rl_optimizer.gae config")
+}
+
+fn resolve_ppo_config(config: Option<&Value>) -> Result<PpoConfig> {
+    let mut ppo = PpoConfig::default();
+    let Some(config) = config else {
+        return Ok(ppo);
+    };
+    let object = config
+        .as_object()
+        .context("rl_optimizer.ppo config must be a JSON object")?;
+
+    if let Some(value) = object.get("clip_epsilon") {
+        ppo.clip_epsilon = value
+            .as_f64()
+            .context("rl_optimizer.ppo.clip_epsilon must be numeric")?;
+    }
+    if let Some(value) = object.get("value_loss_coefficient") {
+        ppo.value_loss_coefficient = value
+            .as_f64()
+            .context("rl_optimizer.ppo.value_loss_coefficient must be numeric")?;
+    }
+    if let Some(value) = object.get("entropy_coefficient") {
+        ppo.entropy_coefficient = value
+            .as_f64()
+            .context("rl_optimizer.ppo.entropy_coefficient must be numeric")?;
+    }
+    if let Some(value) = object.get("mini_batch_size") {
+        ppo.mini_batch_size = value
+            .as_u64()
+            .context("rl_optimizer.ppo.mini_batch_size must be an integer")?
+            as usize;
+    }
+    if let Some(value) = object.get("gradient_accumulation_steps") {
+        ppo.gradient_accumulation_steps = value
+            .as_u64()
+            .context("rl_optimizer.ppo.gradient_accumulation_steps must be an integer")?
+            as usize;
+    }
+    if let Some(value) = object.get("epochs") {
+        ppo.epochs = value
+            .as_u64()
+            .context("rl_optimizer.ppo.epochs must be an integer")? as usize;
+    }
+    if let Some(value) = object.get("kl_penalty_coefficient") {
+        ppo.kl_penalty_coefficient = value
+            .as_f64()
+            .context("rl_optimizer.ppo.kl_penalty_coefficient must be numeric")?;
+    }
+    if let Some(value) = object.get("target_kl") {
+        ppo.target_kl = if value.is_null() {
+            None
+        } else {
+            Some(
+                value
+                    .as_f64()
+                    .context("rl_optimizer.ppo.target_kl must be numeric or null")?,
+            )
+        };
+    }
+    if let Some(value) = object.get("max_kl") {
+        ppo.max_kl = if value.is_null() {
+            None
+        } else {
+            Some(
+                value
+                    .as_f64()
+                    .context("rl_optimizer.ppo.max_kl must be numeric or null")?,
+            )
+        };
+    }
+
+    Ok(ppo)
+}
+
+fn validate_ppo_config(config: &PpoConfig) -> Result<()> {
+    let sample = PpoSample {
+        old_logprob: 0.0,
+        new_logprob: 0.0,
+        advantage: 1.0,
+        return_value: 1.0,
+        value_prediction: 0.0,
+        entropy: 0.0,
+    };
+    compute_ppo_update(config, &[sample])
+        .map(|_| ())
+        .context("invalid rl_optimizer.ppo config")
+}
+
+async fn run_rl_optimizer_if_configured(
+    store: &dyn TrainingStore,
+    config: &TrainingConfigFile,
+) -> Result<Option<RlOptimizerStatusReport>> {
+    let Some(settings) = resolve_rl_optimizer_settings(config.rl_optimizer.as_ref())? else {
+        return Ok(None);
+    };
+
+    let succeeded_rollouts = store
+        .query_rollouts(RolloutQuery {
+            statuses: Some(vec![RolloutStatus::Succeeded]),
+            ..RolloutQuery::default()
+        })
+        .await
+        .context("failed to query succeeded rollouts for rl optimizer")?;
+    if succeeded_rollouts.is_empty() {
+        return Ok(Some(RlOptimizerStatusReport {
+            executed: false,
+            trajectories: 0,
+            samples: 0,
+            mean_total_loss: None,
+            observed_approx_kl: None,
+            early_stop_triggered: false,
+            skipped_reason: Some("no_succeeded_train_rollouts".to_string()),
+        }));
+    }
+
+    let rollout_ids = succeeded_rollouts
+        .iter()
+        .map(|rollout| rollout.rollout_id.clone())
+        .collect::<Vec<_>>();
+    let trajectory_batch = collect_trajectory_batch(store, &rollout_ids, None)
+        .await
+        .context("failed to collect trajectories for rl optimizer")?;
+    if trajectory_batch.trajectories.is_empty() {
+        return Ok(Some(RlOptimizerStatusReport {
+            executed: false,
+            trajectories: 0,
+            samples: 0,
+            mean_total_loss: None,
+            observed_approx_kl: None,
+            early_stop_triggered: false,
+            skipped_reason: Some("no_trajectories_collected".to_string()),
+        }));
+    }
+
+    let mut samples = Vec::new();
+    for trajectory in &trajectory_batch.trajectories {
+        if trajectory.steps.is_empty() {
+            continue;
+        }
+        let rewards = trajectory
+            .steps
+            .iter()
+            .map(|step| step.reward)
+            .collect::<Vec<_>>();
+        let value_targets = trajectory
+            .steps
+            .iter()
+            .map(|step| step.value_estimate.unwrap_or(0.0))
+            .collect::<Vec<_>>();
+        let dones = trajectory
+            .steps
+            .iter()
+            .map(|step| step.done)
+            .collect::<Vec<_>>();
+        let gae_batch = compute_gae_batch_from_slices(
+            &settings.gae,
+            format!("gae-{}", trajectory.trajectory_id),
+            trajectory.trajectory_id.clone(),
+            &rewards,
+            &value_targets,
+            &dones,
+            0.0,
+        )
+        .with_context(|| {
+            format!(
+                "failed to compute GAE batch for trajectory '{}'",
+                trajectory.trajectory_id
+            )
+        })?;
+
+        for (index, step) in trajectory.steps.iter().enumerate() {
+            let old_logprob = step.logprob.unwrap_or(0.0);
+            let new_logprob = step
+                .metadata
+                .get("new_logprob")
+                .and_then(Value::as_f64)
+                .unwrap_or(old_logprob);
+            let entropy = step
+                .metadata
+                .get("entropy")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            samples.push(PpoSample {
+                old_logprob,
+                new_logprob,
+                advantage: gae_batch.advantages[index],
+                return_value: gae_batch.returns[index],
+                value_prediction: value_targets[index],
+                entropy,
+            });
+        }
+    }
+
+    if samples.is_empty() {
+        return Ok(Some(RlOptimizerStatusReport {
+            executed: false,
+            trajectories: trajectory_batch.trajectories.len(),
+            samples: 0,
+            mean_total_loss: None,
+            observed_approx_kl: None,
+            early_stop_triggered: false,
+            skipped_reason: Some("no_ppo_samples_constructed".to_string()),
+        }));
+    }
+
+    let update = compute_ppo_update(&settings.ppo, &samples).context("failed PPO update")?;
+    Ok(Some(RlOptimizerStatusReport {
+        executed: true,
+        trajectories: trajectory_batch.trajectories.len(),
+        samples: samples.len(),
+        mean_total_loss: Some(update.mean_loss.total_loss),
+        observed_approx_kl: Some(update.observed_approx_kl),
+        early_stop_triggered: update.early_stop_triggered,
+        skipped_reason: None,
+    }))
 }
 
 fn resolve_safety_reward_policy(
@@ -1209,6 +1495,27 @@ fn print_training_report(report: &TrainingRunReport, as_json: bool) -> Result<()
             report.failed,
             report.cancelled
         );
+        if let Some(optimizer) = report.rl_optimizer.as_ref() {
+            println!(
+                "prompt optimization rl optimizer: executed={} trajectories={} samples={} mean_total_loss={} observed_approx_kl={} early_stop_triggered={} skipped_reason={}",
+                optimizer.executed,
+                optimizer.trajectories,
+                optimizer.samples,
+                optimizer
+                    .mean_total_loss
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                optimizer
+                    .observed_approx_kl
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                optimizer.early_stop_triggered,
+                optimizer
+                    .skipped_reason
+                    .as_deref()
+                    .unwrap_or("none")
+            );
+        }
     }
     Ok(())
 }
@@ -1306,6 +1613,7 @@ mod tests {
             completion_poll_interval_ms: Some(45),
             completion_timeout_secs: Some(4),
             safety_reward: None,
+            rl_optimizer: None,
         };
 
         let trainer_config = build_trainer_config(&config).expect("build trainer config");
@@ -1381,8 +1689,57 @@ mod tests {
         assert!(error.to_string().contains("safety_reward.blocked_penalty"));
     }
 
+    #[test]
+    fn spec_c01_build_trainer_config_parses_rl_optimizer_settings() {
+        let config: TrainingConfigFile = serde_json::from_value(json!({
+            "optimize": [{ "prompt": "one", "expected": "mock-response" }],
+            "rl_optimizer": {
+                "enabled": true,
+                "gae": {
+                    "gamma": 0.97,
+                    "lambda": 0.91,
+                    "normalize_advantages": true
+                },
+                "ppo": {
+                    "clip_epsilon": 0.15,
+                    "mini_batch_size": 1,
+                    "epochs": 2
+                }
+            }
+        }))
+        .expect("parse training config");
+
+        let _trainer_config =
+            build_trainer_config(&config).expect("rl optimizer config should validate");
+        let settings = super::resolve_rl_optimizer_settings(config.rl_optimizer.as_ref())
+            .expect("resolve rl optimizer settings");
+        assert!(
+            settings.is_some(),
+            "rl optimizer settings should be present"
+        );
+    }
+
+    #[test]
+    fn spec_c04_build_trainer_config_rejects_invalid_rl_optimizer_ppo_config() {
+        let config: TrainingConfigFile = serde_json::from_value(json!({
+            "optimize": [{ "prompt": "one" }],
+            "rl_optimizer": {
+                "enabled": true,
+                "ppo": {
+                    "mini_batch_size": 0
+                }
+            }
+        }))
+        .expect("parse training config");
+
+        let error = build_trainer_config(&config)
+            .expect_err("invalid PPO config should fail closed during startup validation");
+        let message = format!("{error:#}");
+        assert!(message.contains("mini_batch_size"));
+    }
+
     #[tokio::test]
-    async fn integration_build_executor_enforces_model_derived_preflight_limits() {
+    async fn spec_c06_functional_rl_optimizer_reports_skip_when_no_succeeded_rollouts() {
         let temp = tempdir().expect("create tempdir");
         let config_path = temp.path().join("prompt-optimization-preflight.json");
         let store_path = temp.path().join("train-preflight.sqlite");
@@ -1391,7 +1748,10 @@ mod tests {
                 { "prompt": "this prompt should exceed tiny preflight limits" }
             ],
             "worker_count": 1,
-            "completion_timeout_secs": 5
+            "completion_timeout_secs": 5,
+            "rl_optimizer": {
+                "enabled": true
+            }
         });
         std::fs::write(
             &config_path,
@@ -1473,6 +1833,11 @@ mod tests {
             serde_json::Value::from(1_u64)
         );
         assert_eq!(status_json["failed"], serde_json::Value::from(1_u64));
+        assert_eq!(status_json["rl_optimizer"]["executed"], false);
+        assert_eq!(
+            status_json["rl_optimizer"]["skipped_reason"],
+            serde_json::Value::String("no_succeeded_train_rollouts".to_string())
+        );
     }
 
     #[tokio::test]
@@ -1540,6 +1905,182 @@ mod tests {
             serde_json::Value::from(1_u64)
         );
         assert_eq!(status_json["succeeded"], serde_json::Value::from(1_u64));
+    }
+
+    #[tokio::test]
+    async fn spec_c02_integration_prompt_optimization_mode_executes_rl_optimizer_when_enabled() {
+        let temp = tempdir().expect("create tempdir");
+        let config_path = temp.path().join("prompt-optimization-rl.json");
+        let store_path = temp.path().join("train-rl.sqlite");
+        let config_payload = json!({
+            "optimize": [
+                { "prompt": "hello", "expected": "mock-response" }
+            ],
+            "worker_count": 1,
+            "completion_timeout_secs": 5,
+            "rl_optimizer": {
+                "enabled": true,
+                "gae": {
+                    "gamma": 0.99,
+                    "lambda": 0.95
+                },
+                "ppo": {
+                    "mini_batch_size": 1,
+                    "epochs": 1
+                }
+            }
+        });
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config_payload).expect("encode config"),
+        )
+        .expect("write config");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_config = Some(config_path.clone());
+        cli.prompt_optimization_store_sqlite = store_path.clone();
+        cli.prompt_optimization_json = true;
+
+        let handled = run_prompt_optimization_mode_if_requested(
+            &cli,
+            Arc::new(MockClient),
+            &ModelRef::parse("openai/gpt-4o-mini").expect("parse model"),
+            &ModelCatalog::built_in(),
+            "You are helpful.",
+            &ToolPolicy::new(vec![temp.path().to_path_buf()]),
+        )
+        .await
+        .expect("run prompt optimization mode");
+        assert!(handled);
+
+        let status_path = store_path
+            .parent()
+            .expect("store path parent")
+            .join("status.json");
+        let status_raw = std::fs::read_to_string(&status_path).expect("read status file");
+        let status_json: serde_json::Value =
+            serde_json::from_str(&status_raw).expect("parse status payload");
+        assert_eq!(status_json["rl_optimizer"]["executed"], true);
+        assert_eq!(
+            status_json["rl_optimizer"]["trajectories"]
+                .as_u64()
+                .expect("trajectory count"),
+            1
+        );
+        assert!(
+            status_json["rl_optimizer"]["samples"]
+                .as_u64()
+                .expect("sample count")
+                > 0
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_c03_functional_status_artifact_persists_rl_optimizer_summary() {
+        let temp = tempdir().expect("create tempdir");
+        let config_path = temp.path().join("prompt-optimization-rl-summary.json");
+        let store_path = temp.path().join("train-rl-summary.sqlite");
+        let config_payload = json!({
+            "optimize": [
+                { "prompt": "hello", "expected": "mock-response" }
+            ],
+            "worker_count": 1,
+            "completion_timeout_secs": 5,
+            "rl_optimizer": {
+                "enabled": true,
+                "ppo": {
+                    "mini_batch_size": 1,
+                    "epochs": 1
+                }
+            }
+        });
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config_payload).expect("encode config"),
+        )
+        .expect("write config");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_config = Some(config_path.clone());
+        cli.prompt_optimization_store_sqlite = store_path.clone();
+        cli.prompt_optimization_json = true;
+
+        let handled = run_prompt_optimization_mode_if_requested(
+            &cli,
+            Arc::new(MockClient),
+            &ModelRef::parse("openai/gpt-4o-mini").expect("parse model"),
+            &ModelCatalog::built_in(),
+            "You are helpful.",
+            &ToolPolicy::new(vec![temp.path().to_path_buf()]),
+        )
+        .await
+        .expect("run prompt optimization mode");
+        assert!(handled);
+
+        let status_path = store_path
+            .parent()
+            .expect("store path parent")
+            .join("status.json");
+        let status_raw = std::fs::read_to_string(&status_path).expect("read status file");
+        let status_json: serde_json::Value =
+            serde_json::from_str(&status_raw).expect("parse status payload");
+        let optimizer = status_json
+            .get("rl_optimizer")
+            .expect("rl optimizer summary");
+        assert!(optimizer["mean_total_loss"].is_number());
+        assert!(optimizer["observed_approx_kl"].is_number());
+        assert!(optimizer["early_stop_triggered"].is_boolean());
+    }
+
+    #[tokio::test]
+    async fn spec_c05_regression_disabled_rl_optimizer_preserves_baseline_status_shape() {
+        let temp = tempdir().expect("create tempdir");
+        let config_path = temp.path().join("prompt-optimization-rl-disabled.json");
+        let store_path = temp.path().join("train-rl-disabled.sqlite");
+        let config_payload = json!({
+            "optimize": [
+                { "prompt": "hello", "expected": "mock-response" }
+            ],
+            "worker_count": 1,
+            "completion_timeout_secs": 5,
+            "rl_optimizer": {
+                "enabled": false
+            }
+        });
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config_payload).expect("encode config"),
+        )
+        .expect("write config");
+
+        let mut cli = parse_cli_with_stack(&["tau-rs"]);
+        cli.prompt_optimization_config = Some(config_path.clone());
+        cli.prompt_optimization_store_sqlite = store_path.clone();
+        cli.prompt_optimization_json = true;
+
+        let handled = run_prompt_optimization_mode_if_requested(
+            &cli,
+            Arc::new(MockClient),
+            &ModelRef::parse("openai/gpt-4o-mini").expect("parse model"),
+            &ModelCatalog::built_in(),
+            "You are helpful.",
+            &ToolPolicy::new(vec![temp.path().to_path_buf()]),
+        )
+        .await
+        .expect("run prompt optimization mode");
+        assert!(handled);
+
+        let status_path = store_path
+            .parent()
+            .expect("store path parent")
+            .join("status.json");
+        let status_raw = std::fs::read_to_string(&status_path).expect("read status file");
+        let status_json: serde_json::Value =
+            serde_json::from_str(&status_raw).expect("parse status payload");
+        assert!(status_json
+            .get("rl_optimizer")
+            .map(|item| item.is_null())
+            .unwrap_or(true));
     }
 
     #[test]
