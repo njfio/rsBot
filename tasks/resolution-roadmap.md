@@ -26,9 +26,21 @@ Implemented in M42.1.1a (`#2219`):
 
 Still pending in this roadmap:
 
-- [ ] First-class OpenRouter provider enum variant and dedicated client config.
+- [x] First-class OpenRouter provider enum variant and dedicated client config.
 - [ ] Dynamic catalog discovery and remote-source merge policy.
-- [ ] PPO runtime integration and non-provider roadmap sections.
+- [x] PPO runtime integration baseline call path.
+
+### Critical Gap Revalidation (2026-02-17)
+
+The following previously reported critical claims were revalidated against the
+current codebase with executable tests.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| No per-session cost tracking | Resolved | `cargo test -p tau-session integration_session_usage_summary_persists_across_store_reload -- --nocapture` |
+| No token pre-flight estimation | Resolved | `cargo test -p tau-gateway integration_spec_c01_openresponses_preflight_blocks_over_budget_request -- --nocapture` |
+| No prompt caching | Resolved | `cargo test -p tau-ai spec_c01_openai_serializes_prompt_cache_key_when_enabled -- --nocapture`; `cargo test -p tau-ai spec_c02_anthropic_serializes_system_cache_control_when_enabled -- --nocapture`; `cargo test -p tau-ai spec_c03_google_serializes_cached_content_reference_when_enabled -- --nocapture` |
+| PPO/GAE never called from training loop | Resolved | `cargo test -p tau-coding-agent spec_c02_integration_prompt_optimization_mode_executes_rl_optimizer_when_enabled -- --nocapture`; call site `crates/tau-coding-agent/src/training_runtime.rs` |
 
 ---
 
