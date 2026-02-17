@@ -11,24 +11,22 @@ use tau_cli::Cli;
 use tau_core::current_unix_timestamp_ms;
 
 use crate::onboarding_daemon::run_onboarding_daemon_bootstrap;
-use crate::onboarding_paths::{
-    collect_bootstrap_directories, parse_yes_no_response, resolve_tau_root,
-};
+use crate::onboarding_paths::{collect_bootstrap_directories, parse_yes_no_response};
 use crate::onboarding_profile_bootstrap::{
     ensure_directory, ensure_profile_store_entry, resolve_onboarding_profile_name,
 };
 use crate::onboarding_release_channel::ensure_onboarding_release_channel;
 use crate::onboarding_report::{
     build_onboarding_next_steps, collect_executable_checks, render_onboarding_summary,
-    resolve_onboarding_report_path, write_onboarding_report, OnboardingReport,
+    resolve_onboarding_report_path_for_tau_root, write_onboarding_report, OnboardingReport,
     OnboardingWizardReport,
 };
 use crate::onboarding_wizard::{
     apply_wizard_plan_to_profile_defaults, bootstrap_identity_files,
     detect_onboarding_first_run_state, persist_onboarding_baseline,
     resolve_interactive_wizard_plan, resolve_non_interactive_wizard_plan,
-    resolve_onboarding_entrypoint, OnboardingEntrypoint, OnboardingFirstRunState,
-    OnboardingWizardPlan,
+    resolve_onboarding_entrypoint, resolve_onboarding_workspace_tau_root, OnboardingEntrypoint,
+    OnboardingFirstRunState, OnboardingWizardPlan,
 };
 use crate::startup_config::build_profile_defaults;
 use crate::startup_prompt_composition::resolve_startup_identity_report;
@@ -43,6 +41,18 @@ enum OnboardingMode {
 
 /// Execute onboarding command and persist onboarding summary report.
 pub fn execute_onboarding_command(cli: &Cli) -> Result<()> {
+    execute_onboarding_command_with_io(cli, prompt_line, |line| println!("{line}"))
+}
+
+fn execute_onboarding_command_with_io<FPrompt, FEmit>(
+    cli: &Cli,
+    mut prompt_line_fn: FPrompt,
+    mut emit_line: FEmit,
+) -> Result<()>
+where
+    FPrompt: FnMut(&str) -> Result<String>,
+    FEmit: FnMut(&str),
+{
     let entrypoint = resolve_onboarding_entrypoint(cli);
     let first_run = detect_onboarding_first_run_state(cli);
     let mode = if cli.onboard_non_interactive {
@@ -56,16 +66,19 @@ pub fn execute_onboarding_command(cli: &Cli) -> Result<()> {
             "onboarding wizard: profile={} continue? [Y/n]: ",
             profile_name
         );
-        if !prompt_yes_no(&prompt, true)? {
-            println!("onboarding canceled: no changes applied");
+        if !prompt_yes_no_with(&prompt, true, &mut prompt_line_fn)? {
+            emit_line("onboarding canceled: no changes applied");
             return Ok(());
         }
     }
     let wizard_plan = if mode == OnboardingMode::Interactive {
-        resolve_interactive_wizard_plan(cli, entrypoint, &first_run, prompt_line)?
+        resolve_interactive_wizard_plan(cli, entrypoint, &first_run, |prompt| {
+            prompt_line_fn(prompt)
+        })?
     } else {
         resolve_non_interactive_wizard_plan(cli, entrypoint, &first_run)
     };
+    let selected_tau_root = resolve_onboarding_workspace_tau_root(&wizard_plan, cli);
 
     let report = build_onboarding_report(
         cli,
@@ -75,9 +88,12 @@ pub fn execute_onboarding_command(cli: &Cli) -> Result<()> {
         &first_run,
         &wizard_plan,
     )?;
-    let report_path = write_onboarding_report(&report, resolve_onboarding_report_path(cli)?)
-        .context("failed to persist onboarding report")?;
-    println!("{}", render_onboarding_summary(&report, &report_path));
+    let report_path = write_onboarding_report(
+        &report,
+        resolve_onboarding_report_path_for_tau_root(&selected_tau_root),
+    )
+    .context("failed to persist onboarding report")?;
+    emit_line(&render_onboarding_summary(&report, &report_path));
     Ok(())
 }
 
@@ -89,7 +105,7 @@ fn build_onboarding_report(
     first_run: &OnboardingFirstRunState,
     wizard_plan: &OnboardingWizardPlan,
 ) -> Result<OnboardingReport> {
-    let tau_root = resolve_tau_root(cli);
+    let tau_root = resolve_onboarding_workspace_tau_root(wizard_plan, cli);
     let directories = collect_bootstrap_directories(cli, &tau_root);
     let mut directories_created = Vec::new();
     let mut directories_existing = Vec::new();
@@ -198,8 +214,11 @@ fn onboarding_mode_label(mode: OnboardingMode) -> &'static str {
     }
 }
 
-fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
-    let buffer = prompt_line(prompt)?;
+fn prompt_yes_no_with<F>(prompt: &str, default_yes: bool, mut prompt_fn: F) -> Result<bool>
+where
+    F: FnMut(&str) -> Result<String>,
+{
+    let buffer = prompt_fn(prompt)?;
     Ok(parse_yes_no_response(&buffer, default_yes))
 }
 
@@ -230,23 +249,33 @@ mod tests {
         detect_onboarding_first_run_state, resolve_non_interactive_wizard_plan,
         resolve_onboarding_entrypoint,
     };
+    use anyhow::Result;
     use clap::Parser;
+    use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
     use tau_cli::Cli;
     use tempfile::tempdir;
 
-    fn parse_cli_with_stack() -> Cli {
+    fn parse_cli_with_stack(args: &[&str]) -> Cli {
+        let args = args
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
         std::thread::Builder::new()
             .name("tau-cli-parse".to_string())
             .stack_size(16 * 1024 * 1024)
-            .spawn(|| Cli::parse_from(["tau-rs", "--onboard", "--onboard-non-interactive"]))
+            .spawn(move || Cli::parse_from(args))
             .expect("spawn cli parse thread")
             .join()
             .expect("join cli parse thread")
     }
 
     fn test_cli() -> Cli {
-        parse_cli_with_stack()
+        parse_cli_with_stack(&["tau-rs", "--onboard", "--onboard-non-interactive"])
+    }
+
+    fn interactive_cli() -> Cli {
+        parse_cli_with_stack(&["tau-rs", "--onboard"])
     }
 
     fn apply_workspace_paths(cli: &mut Cli, workspace: &Path) {
@@ -536,5 +565,122 @@ mod tests {
         )
         .expect("build report");
         assert_eq!(report.wizard.entrypoint, "first_run_auto");
+    }
+
+    #[test]
+    fn functional_spec_c01_c02_execute_onboarding_command_guided_flow_is_deterministic_and_applies_selected_workspace(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let default_workspace = temp.path().join("default-workspace");
+        let selected_workspace = temp.path().join("selected-workspace");
+        let mut cli = interactive_cli();
+        apply_workspace_paths(&mut cli, &default_workspace);
+
+        let mut responses = VecDeque::from(vec![
+            "y".to_string(),
+            "2".to_string(),
+            "1".to_string(),
+            "claude-3-5-haiku-latest".to_string(),
+            selected_workspace.display().to_string(),
+            "y".to_string(),
+        ]);
+        let mut output_lines = Vec::new();
+        super::execute_onboarding_command_with_io(
+            &cli,
+            |prompt| {
+                let response = responses
+                    .pop_front()
+                    .unwrap_or_else(|| panic!("missing scripted response for prompt: {prompt}"));
+                Ok(response)
+            },
+            |line| output_lines.push(line.to_string()),
+        )
+        .expect("guided onboarding flow");
+
+        assert!(
+            responses.is_empty(),
+            "all scripted responses should be consumed"
+        );
+        assert!(
+            output_lines
+                .iter()
+                .any(|line| line.contains("onboarding complete: mode=interactive")),
+            "expected onboarding completion summary"
+        );
+
+        let selected_tau_root = selected_workspace.join(".tau");
+        assert!(selected_tau_root.join("profiles.json").exists());
+        assert!(selected_tau_root.join("release-channel.json").exists());
+        assert!(selected_tau_root.join("onboarding-baseline.json").exists());
+        assert!(
+            selected_tau_root.join("reports").is_dir(),
+            "selected workspace should contain onboarding reports dir"
+        );
+        let report_count = std::fs::read_dir(selected_tau_root.join("reports"))
+            .expect("read report directory")
+            .count();
+        assert_eq!(report_count, 1, "exactly one onboarding report expected");
+        assert!(
+            !default_workspace
+                .join(".tau")
+                .join("profiles.json")
+                .exists(),
+            "default workspace should not be mutated when guided workspace is selected"
+        );
+    }
+
+    #[test]
+    fn regression_spec_c03_execute_onboarding_command_cancel_skips_report_creation() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = interactive_cli();
+        apply_workspace_paths(&mut cli, temp.path());
+
+        let mut responses = VecDeque::from(vec!["n".to_string()]);
+        let mut output_lines = Vec::new();
+        super::execute_onboarding_command_with_io(
+            &cli,
+            |_prompt| Ok(responses.pop_front().expect("cancel response")),
+            |line| output_lines.push(line.to_string()),
+        )
+        .expect("cancel flow");
+
+        assert!(
+            output_lines
+                .iter()
+                .any(|line| line.contains("onboarding canceled: no changes applied")),
+            "expected cancellation message"
+        );
+        let tau_root = resolve_tau_root(&cli);
+        assert!(
+            !tau_root.join("reports").exists(),
+            "cancel flow should not create onboarding report"
+        );
+    }
+
+    #[test]
+    fn regression_spec_c04_non_interactive_report_path_remains_cli_tau_root() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = test_cli();
+        apply_workspace_paths(&mut cli, temp.path());
+        let expected_tau_root = resolve_tau_root(&cli);
+
+        let mut output_lines = Vec::new();
+        super::execute_onboarding_command_with_io(
+            &cli,
+            |_prompt| -> Result<String> { panic!("non-interactive flow should not prompt") },
+            |line| output_lines.push(line.to_string()),
+        )
+        .expect("non-interactive onboarding");
+
+        assert!(
+            expected_tau_root.join("reports").is_dir(),
+            "non-interactive reports should remain in CLI tau root"
+        );
+        assert!(
+            output_lines
+                .iter()
+                .any(|line| line.contains("onboarding complete: mode=non-interactive")),
+            "expected non-interactive completion summary"
+        );
     }
 }

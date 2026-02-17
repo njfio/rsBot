@@ -172,10 +172,15 @@ pub fn build_onboarding_next_steps(
 }
 
 pub fn resolve_onboarding_report_path(cli: &Cli) -> Result<PathBuf> {
-    let tau_root = resolve_tau_root(cli);
+    Ok(resolve_onboarding_report_path_for_tau_root(
+        &resolve_tau_root(cli),
+    ))
+}
+
+pub fn resolve_onboarding_report_path_for_tau_root(tau_root: &Path) -> PathBuf {
     let reports_dir = tau_root.join("reports");
     let report_name = format!("onboarding-{}.json", current_unix_timestamp_ms());
-    Ok(reports_dir.join(report_name))
+    reports_dir.join(report_name)
 }
 
 pub fn write_onboarding_report(report: &OnboardingReport, report_path: PathBuf) -> Result<PathBuf> {
