@@ -326,6 +326,7 @@ fn test_chat_request() -> ChatRequest {
 
 pub(crate) fn test_cli() -> Cli {
     Cli {
+        shell_completion: None,
         model: "openai/gpt-4o-mini".to_string(),
         fallback_model: vec![],
         api_base: "https://api.openai.com/v1".to_string(),

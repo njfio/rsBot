@@ -50,4 +50,11 @@ assert_contains_file "${RELEASE_WORKFLOW}" "Render Homebrew formula" "homebrew f
 assert_contains_file "${RELEASE_WORKFLOW}" "scripts/release/render-homebrew-formula.sh" "homebrew render script invocation"
 assert_contains_file "${RELEASE_WORKFLOW}" "dist/tau.rb" "homebrew formula release asset"
 
+# Conformance: release workflow must generate/publish shell completion assets.
+assert_contains_file "${RELEASE_WORKFLOW}" "Generate shell completions" "shell completion generation step"
+assert_contains_file "${RELEASE_WORKFLOW}" "scripts/release/generate-shell-completions.sh" "shell completion script invocation"
+assert_contains_file "${RELEASE_WORKFLOW}" "dist/completions/tau-coding-agent.bash" "bash completion asset"
+assert_contains_file "${RELEASE_WORKFLOW}" "dist/completions/tau-coding-agent.zsh" "zsh completion asset"
+assert_contains_file "${RELEASE_WORKFLOW}" "dist/completions/tau-coding-agent.fish" "fish completion asset"
+
 echo "release workflow contract tests passed"

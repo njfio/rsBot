@@ -150,6 +150,28 @@ brew upgrade tau
 brew uninstall tau
 ```
 
+## Shell Completions
+
+Each tagged release also publishes shell completion assets:
+
+- `tau-coding-agent.bash`
+- `tau-coding-agent.zsh`
+- `tau-coding-agent.fish`
+
+```bash
+# Bash
+curl -fsSL -o ~/.local/share/bash-completion/completions/tau-coding-agent \
+  https://github.com/<owner>/Tau/releases/download/<release-tag>/tau-coding-agent.bash
+
+# Zsh
+curl -fsSL -o ~/.zsh/completions/_tau-coding-agent \
+  https://github.com/<owner>/Tau/releases/download/<release-tag>/tau-coding-agent.zsh
+
+# Fish
+curl -fsSL -o ~/.config/fish/completions/tau-coding-agent.fish \
+  https://github.com/<owner>/Tau/releases/download/<release-tag>/tau-coding-agent.fish
+```
+
 ## Demo Commands
 
 Fresh-clone validation index:
@@ -241,6 +263,7 @@ Contributor references:
   - Linux/macOS/Windows artifacts (`amd64`, `arm64`)
   - GHCR Docker image publish (`ghcr.io/<owner>/tau-coding-agent:<release-tag>`, `latest`)
   - Homebrew formula asset publish (`tau.rb`) derived from `SHA256SUMS`
+  - shell completion assets (`tau-coding-agent.bash`, `.zsh`, `.fish`)
   - optional signing/notarization hooks (`scripts/release/hooks/*`)
   - installer/update scripts for Unix and PowerShell
 - Dependabot: [`.github/dependabot.yml`](.github/dependabot.yml)

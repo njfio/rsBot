@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use tau_ai::ModelRef;
+use tau_cli::render_shell_completion;
 use tau_cli::validation::validate_removed_contract_runner_flags_cli;
 use tau_cli::Cli;
 use tau_onboarding::startup_dispatch::{
@@ -24,6 +25,11 @@ use crate::training_proxy_runtime::run_prompt_optimization_proxy_mode_if_request
 use crate::training_runtime::run_prompt_optimization_mode_if_requested;
 
 pub(crate) async fn run_cli(cli: Cli) -> Result<()> {
+    if let Some(shell) = cli.shell_completion {
+        render_shell_completion(shell, std::io::stdout())?;
+        return Ok(());
+    }
+
     if execute_startup_preflight(&cli)? {
         return Ok(());
     }

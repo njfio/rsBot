@@ -191,6 +191,14 @@ pub enum CliOrchestratorMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Enumerates supported `CliShellCompletion` values.
+pub enum CliShellCompletion {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 /// Enumerates supported `CliMultiChannelTransport` values.
 pub enum CliMultiChannelTransport {
     Telegram,

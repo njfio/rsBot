@@ -266,6 +266,16 @@ jobs:
             dist/SHA256SUMS \
             "${GITHUB_REPOSITORY}" > dist/tau.rb
 
+      - name: Generate shell completions
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf "dist/${APP_NAME}-linux-amd64.tar.gz" -C dist
+          chmod +x "dist/${APP_NAME}-linux-amd64"
+          scripts/release/generate-shell-completions.sh \
+            "dist/${APP_NAME}-linux-amd64" \
+            dist/completions
+
       - name: Verify staged files
         shell: bash
         run: |
@@ -281,6 +291,9 @@ jobs:
             dist/*.sha256
             dist/SHA256SUMS
             dist/tau.rb
+            dist/completions/tau-coding-agent.bash
+            dist/completions/tau-coding-agent.zsh
+            dist/completions/tau-coding-agent.fish
 
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
@@ -293,6 +306,9 @@ jobs:
             dist/*.sha256
             dist/SHA256SUMS
             dist/tau.rb
+            dist/completions/tau-coding-agent.bash
+            dist/completions/tau-coding-agent.zsh
+            dist/completions/tau-coding-agent.fish
 
   publish-container:
     name: Publish container image

@@ -26,6 +26,10 @@ The workflow publishes release archives plus checksum manifests to GitHub Releas
 - `*.sha256`
 - `SHA256SUMS`
 - `tau.rb` (Homebrew formula rendered from `SHA256SUMS`)
+- shell completions:
+  - `tau-coding-agent.bash`
+  - `tau-coding-agent.zsh`
+  - `tau-coding-agent.fish`
 
 The workflow also publishes a GHCR container image:
 
@@ -52,6 +56,28 @@ brew install --formula https://github.com/<owner>/Tau/releases/download/<release
 # Upgrade/remove
 brew upgrade tau
 brew uninstall tau
+```
+
+### Shell completion publishing
+
+The publish job extracts the Linux amd64 release binary and runs
+[`scripts/release/generate-shell-completions.sh`](../../scripts/release/generate-shell-completions.sh)
+to generate completion files under `dist/completions/`.
+
+Operator usage:
+
+```bash
+# Bash
+curl -fsSL -o ~/.local/share/bash-completion/completions/tau-coding-agent \
+  https://github.com/<owner>/Tau/releases/download/<release-tag>/tau-coding-agent.bash
+
+# Zsh (rename to leading underscore for autoload)
+curl -fsSL -o ~/.zsh/completions/_tau-coding-agent \
+  https://github.com/<owner>/Tau/releases/download/<release-tag>/tau-coding-agent.zsh
+
+# Fish
+curl -fsSL -o ~/.config/fish/completions/tau-coding-agent.fish \
+  https://github.com/<owner>/Tau/releases/download/<release-tag>/tau-coding-agent.fish
 ```
 
 ### Cross-arch smoke policy
@@ -169,8 +195,10 @@ Run helper-script tests:
 
 ```bash
 ./scripts/release/test-install-helpers.sh
+./scripts/release/test-shell-completions.sh
 ./scripts/release/test-homebrew-formula.sh
 ./scripts/release/render-homebrew-formula.sh v0.1.0 dist/SHA256SUMS <owner>/Tau > dist/tau.rb
+./scripts/release/generate-shell-completions.sh ./target/release/tau-coding-agent dist/completions
 ```
 
 Run release workflow lint/validation via PR CI:

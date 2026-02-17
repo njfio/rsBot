@@ -6,7 +6,8 @@ use crate::{
     CliCommandFileErrorMode, CliCredentialStoreEncryptionMode, CliDeploymentWasmBrowserDidMethod,
     CliDeploymentWasmRuntimeProfile, CliGatewayOpenResponsesAuthMode, CliGatewayRemoteProfile,
     CliMultiChannelLiveConnectorMode, CliMultiChannelOutboundMode, CliMultiChannelTransport,
-    CliOrchestratorMode, CliPromptSanitizerMode, CliProviderAuthMode, CliWebhookSignatureAlgorithm,
+    CliOrchestratorMode, CliPromptSanitizerMode, CliProviderAuthMode, CliShellCompletion,
+    CliWebhookSignatureAlgorithm,
 };
 
 mod execution_domain_flags;
@@ -67,6 +68,13 @@ fn parse_threshold_percent(value: &str) -> Result<u8, String> {
 )]
 /// Public struct `Cli` used across Tau components.
 pub struct Cli {
+    #[arg(
+        long = "shell-completion",
+        value_enum,
+        help = "Print shell completion script to stdout and exit (supported: bash, zsh, fish)"
+    )]
+    pub shell_completion: Option<CliShellCompletion>,
+
     #[arg(
         long,
         env = "TAU_MODEL",
