@@ -215,6 +215,47 @@ async fn functional_with_scoped_tool_registers_within_scope_and_restores_after()
 }
 
 #[tokio::test]
+async fn spec_c05_swap_dispatch_model_overrides_dispatch_and_restores_baseline() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([
+            ChatResponse {
+                message: Message::assistant_text("inside"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: Message::assistant_text("outside"),
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        ])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            model: "openai/gpt-4.1-mini".to_string(),
+            ..AgentConfig::default()
+        },
+    );
+
+    let previous_model = agent.swap_dispatch_model("openai/gpt-5.2");
+    let _ = agent
+        .prompt("inside")
+        .await
+        .expect("inside prompt should succeed");
+    agent.restore_dispatch_model(previous_model);
+    let _ = agent
+        .prompt("outside")
+        .await
+        .expect("outside prompt should succeed");
+
+    let requests = client.requests.lock().await;
+    assert_eq!(requests[0].model, "openai/gpt-5.2");
+    assert_eq!(requests[1].model, "openai/gpt-4.1-mini");
+}
+
+#[tokio::test]
 async fn unit_cooperative_cancellation_token_signals_waiters() {
     let token = CooperativeCancellationToken::new();
     let waiter = token.clone();

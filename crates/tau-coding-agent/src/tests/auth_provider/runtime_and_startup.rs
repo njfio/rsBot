@@ -23,7 +23,7 @@ use super::super::{
     CommandAction, CommandExecutionContext, ContentBlock, Duration, HashMap, Instant, Message,
     MessageRole, ModelCatalog, MultiAgentRouteTable, NoopClient, OsSandboxMode, Path, PathBuf,
     PlanFirstPromptPolicyRequest, PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
-    PromptRunStatus, PromptTelemetryLogger, QueueClient, RenderOptions,
+    PromptRunStatus, PromptTelemetryLogger, QueueClient, RecordingSequenceClient, RenderOptions,
     RuntimeExtensionHooksConfig, SequenceClient, SessionImportMode, SessionRuntime, SessionStore,
     SlowClient, SuccessClient, TauAiError, ToolAuditLogger, ToolExecutionResult, ToolPolicyPreset,
     TrustedRootRecord, VecDeque, AUTH_ENV_TEST_LOCK,
@@ -1384,6 +1384,186 @@ async fn integration_run_plan_first_prompt_with_routing_uses_distinct_delegated_
             .expect("assistant response")
             .text_content(),
         "final delegated response"
+    );
+}
+
+#[tokio::test]
+async fn spec_c01_integration_routed_dispatch_applies_role_model_overrides_per_attempt() {
+    let temp = tempdir().expect("tempdir");
+    let route_table_path = temp.path().join("route-table.json");
+    write_route_table_fixture(
+        &route_table_path,
+        r#"{
+  "schema_version": 1,
+  "roles": {
+    "planner": { "model": "openai/gpt-5.2" },
+    "executor": { "model": "openrouter/deepseek/deepseek-chat" },
+    "reviewer": { "model": "anthropic/claude-opus-4-6" }
+  },
+  "planner": { "role": "planner" },
+  "delegated": { "role": "executor" },
+  "delegated_categories": {
+    "verify": { "role": "reviewer" }
+  },
+  "review": { "role": "reviewer" }
+}"#,
+    );
+    let route_table = load_multi_agent_route_table(&route_table_path).expect("load route table");
+    let observed_models = Arc::new(AsyncMutex::new(Vec::<String>::new()));
+
+    let mut agent = Agent::new(
+        Arc::new(RecordingSequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(ChatResponse {
+                    message: Message::assistant_text("1. Apply patch\n2. Verify behavior"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("patch applied"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("verification complete"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("final delegated response"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+            ])),
+            recorded_models: observed_models.clone(),
+        }),
+        AgentConfig {
+            model: "openai/gpt-4.1-mini".to_string(),
+            ..AgentConfig::default()
+        },
+    );
+    let mut runtime = None;
+
+    run_plan_first_prompt_with_policy_context_and_routing(
+        &mut agent,
+        &mut runtime,
+        PlanFirstPromptRoutingRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+            delegated_policy_context: Some("preset=balanced;max_command_length=4096"),
+            route_table: &route_table,
+            route_trace_log_path: None,
+        },
+    )
+    .await
+    .expect("delegated routed execution should succeed");
+
+    let models = observed_models.lock().await.clone();
+    assert_eq!(
+        models,
+        vec![
+            "openai/gpt-5.2".to_string(),
+            "openrouter/deepseek/deepseek-chat".to_string(),
+            "anthropic/claude-opus-4-6".to_string(),
+            "anthropic/claude-opus-4-6".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn spec_c02_functional_routed_dispatch_inherits_baseline_model_without_role_override() {
+    let temp = tempdir().expect("tempdir");
+    let route_table_path = temp.path().join("route-table.json");
+    write_route_table_fixture(
+        &route_table_path,
+        r#"{
+  "schema_version": 1,
+  "roles": {
+    "planner": { "model": "openai/gpt-5.2" },
+    "executor": {},
+    "reviewer": {}
+  },
+  "planner": { "role": "planner" },
+  "delegated": { "role": "executor" },
+  "delegated_categories": {
+    "verify": { "role": "reviewer" }
+  },
+  "review": { "role": "reviewer" }
+}"#,
+    );
+    let route_table = load_multi_agent_route_table(&route_table_path).expect("load route table");
+    let observed_models = Arc::new(AsyncMutex::new(Vec::<String>::new()));
+
+    let mut agent = Agent::new(
+        Arc::new(RecordingSequenceClient {
+            outcomes: AsyncMutex::new(VecDeque::from([
+                Ok(ChatResponse {
+                    message: Message::assistant_text("1. Apply patch\n2. Verify behavior"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("patch applied"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("verification complete"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+                Ok(ChatResponse {
+                    message: Message::assistant_text("final delegated response"),
+                    finish_reason: Some("stop".to_string()),
+                    usage: ChatUsage::default(),
+                }),
+            ])),
+            recorded_models: observed_models.clone(),
+        }),
+        AgentConfig {
+            model: "openai/gpt-4.1-mini".to_string(),
+            ..AgentConfig::default()
+        },
+    );
+    let mut runtime = None;
+
+    run_plan_first_prompt_with_policy_context_and_routing(
+        &mut agent,
+        &mut runtime,
+        PlanFirstPromptRoutingRequest {
+            user_prompt: "ship feature",
+            turn_timeout_ms: 0,
+            render_options: test_render_options(),
+            max_plan_steps: 4,
+            max_delegated_steps: 4,
+            max_executor_response_chars: 512,
+            max_delegated_step_response_chars: 512,
+            max_delegated_total_response_chars: 1_024,
+            delegate_steps: true,
+            delegated_policy_context: Some("preset=balanced;max_command_length=4096"),
+            route_table: &route_table,
+            route_trace_log_path: None,
+        },
+    )
+    .await
+    .expect("delegated routed execution should succeed");
+
+    let models = observed_models.lock().await.clone();
+    assert_eq!(
+        models,
+        vec![
+            "openai/gpt-5.2".to_string(),
+            "openai/gpt-4.1-mini".to_string(),
+            "openai/gpt-4.1-mini".to_string(),
+            "openai/gpt-4.1-mini".to_string(),
+        ]
     );
 }
 

@@ -283,6 +283,24 @@ impl LlmClient for SequenceClient {
     }
 }
 
+struct RecordingSequenceClient {
+    outcomes: AsyncMutex<VecDeque<Result<ChatResponse, TauAiError>>>,
+    recorded_models: Arc<AsyncMutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl LlmClient for RecordingSequenceClient {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+        self.recorded_models.lock().await.push(request.model);
+        let mut outcomes = self.outcomes.lock().await;
+        outcomes.pop_front().unwrap_or_else(|| {
+            Err(TauAiError::InvalidResponse(
+                "mock outcome queue is empty".to_string(),
+            ))
+        })
+    }
+}
+
 fn test_render_options() -> RenderOptions {
     RenderOptions {
         stream_output: false,
