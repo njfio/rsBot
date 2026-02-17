@@ -910,10 +910,26 @@ fn output_preview(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn write_qa_loop_config(path: &Path, value: &Value) {
         std::fs::write(path, format!("{value}\n")).expect("write qa-loop config");
+    }
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("canonical workspace root")
+    }
+
+    fn session_cost_mutation_config_path() -> PathBuf {
+        workspace_root().join("docs/qa/session-cost-mutation.qa-loop.json")
+    }
+
+    fn session_cost_mutation_docs_path() -> PathBuf {
+        workspace_root().join("docs/qa/session-cost-mutation-lane.md")
     }
 
     #[test]
@@ -1073,5 +1089,109 @@ mod tests {
     fn regression_execute_qa_loop_cli_command_returns_usage_for_invalid_arguments() {
         let output = execute_qa_loop_cli_command("--bad-flag");
         assert_eq!(output, QA_LOOP_USAGE);
+    }
+
+    #[test]
+    fn spec_c01_session_cost_mutation_config_is_valid_and_scoped() {
+        let config_path = session_cost_mutation_config_path();
+        let raw = std::fs::read_to_string(&config_path).expect("read session-cost mutation config");
+        let config: QaLoopConfigFile =
+            serde_json::from_str(&raw).expect("parse session-cost mutation config");
+        validate_qa_loop_config(&config).expect("config should validate");
+
+        let mutation_stages: Vec<&QaLoopStageConfig> = config
+            .stages
+            .iter()
+            .filter(|stage| stage.name.starts_with("mutants-"))
+            .collect();
+        assert!(
+            !mutation_stages.is_empty(),
+            "expected at least one mutation stage"
+        );
+        assert!(
+            mutation_stages
+                .iter()
+                .all(|stage| stage.command.contains("cargo mutants")),
+            "all mutation stages must invoke cargo mutants"
+        );
+        assert!(
+            mutation_stages
+                .iter()
+                .all(|stage| stage.command.contains("--baseline skip")),
+            "all mutation stages must skip broad baseline"
+        );
+        assert!(
+            mutation_stages
+                .iter()
+                .all(|stage| stage.command.contains("CARGO_TARGET_DIR=target-fast-2379")),
+            "all mutation stages must use isolated target dir"
+        );
+        assert!(
+            mutation_stages
+                .iter()
+                .all(|stage| stage.command.contains("${SESSION_COST_DIFF_PATH")),
+            "all mutation stages must use overridable deterministic diff path"
+        );
+        assert!(
+            mutation_stages
+                .iter()
+                .any(|stage| stage.command.contains("-p tau-session")),
+            "mutation stages must include tau-session scope"
+        );
+        assert!(
+            mutation_stages
+                .iter()
+                .any(|stage| stage.command.contains("-p tau-coding-agent")),
+            "mutation stages must include tau-coding-agent scope"
+        );
+        assert!(
+            mutation_stages
+                .iter()
+                .any(|stage| stage.command.contains("-p tau-gateway")),
+            "mutation stages must include tau-gateway scope"
+        );
+    }
+
+    #[test]
+    fn spec_c02_session_cost_mutation_lane_stops_after_first_failed_stage() {
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("qa-loop.json");
+        write_qa_loop_config(
+            &config_path,
+            &serde_json::json!({
+                "schema_version": 1,
+                "stages": [
+                    {
+                        "name": "first-fail",
+                        "command": "echo fail-now 1>&2; exit 1"
+                    },
+                    {
+                        "name": "second-should-not-run",
+                        "command": "touch second-stage-ran"
+                    }
+                ]
+            }),
+        );
+
+        let options = QaLoopCommandOptions {
+            config_path: Some(config_path),
+            retry_failures: Some(0),
+            ..QaLoopCommandOptions::default()
+        };
+        let report = run_qa_loop(temp.path(), &options).expect("run qa-loop");
+        assert_eq!(report.outcome, QaLoopOutcome::Fail);
+        assert_eq!(report.root_cause_stage.as_deref(), Some("first-fail"));
+        assert_eq!(report.stages.len(), 1);
+        assert_eq!(report.stages[0].name, "first-fail");
+        assert!(!temp.path().join("second-stage-ran").exists());
+    }
+
+    #[test]
+    fn spec_c03_session_cost_mutation_docs_include_canonical_invocation() {
+        let docs_path = session_cost_mutation_docs_path();
+        let docs = std::fs::read_to_string(&docs_path).expect("read session-cost mutation docs");
+        assert!(docs.contains("docs/qa/session-cost-mutation.qa-loop.json"));
+        assert!(docs.contains("SESSION_COST_DIFF_PATH"));
+        assert!(docs.contains("cargo run -p tau-coding-agent -- /qa-loop --config"));
     }
 }
