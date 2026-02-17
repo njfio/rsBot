@@ -49,9 +49,28 @@ impl LlmClient for MockGatewayLlmClient {
     }
 }
 
-fn test_state_with_auth(
+#[derive(Clone, Default)]
+struct PanicGatewayLlmClient;
+
+#[async_trait]
+impl LlmClient for PanicGatewayLlmClient {
+    async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+        panic!("provider should not be invoked when gateway preflight blocks request");
+    }
+
+    async fn complete_with_stream(
+        &self,
+        _request: ChatRequest,
+        _on_delta: Option<StreamDeltaHandler>,
+    ) -> Result<ChatResponse, TauAiError> {
+        panic!("provider should not be invoked when gateway preflight blocks request");
+    }
+}
+
+fn test_state_with_client_and_auth(
     root: &Path,
     max_input_chars: usize,
+    client: Arc<dyn LlmClient>,
     auth_mode: GatewayOpenResponsesAuthMode,
     token: Option<&str>,
     password: Option<&str>,
@@ -60,7 +79,7 @@ fn test_state_with_auth(
 ) -> Arc<GatewayOpenResponsesServerState> {
     Arc::new(GatewayOpenResponsesServerState::new(
         GatewayOpenResponsesServerConfig {
-            client: Arc::new(MockGatewayLlmClient::default()),
+            client,
             model: "openai/gpt-4o-mini".to_string(),
             system_prompt: "You are Tau.".to_string(),
             max_turns: 4,
@@ -85,6 +104,27 @@ fn test_state_with_auth(
             },
         },
     ))
+}
+
+fn test_state_with_auth(
+    root: &Path,
+    max_input_chars: usize,
+    auth_mode: GatewayOpenResponsesAuthMode,
+    token: Option<&str>,
+    password: Option<&str>,
+    rate_limit_window_seconds: u64,
+    rate_limit_max_requests: usize,
+) -> Arc<GatewayOpenResponsesServerState> {
+    test_state_with_client_and_auth(
+        root,
+        max_input_chars,
+        Arc::new(MockGatewayLlmClient::default()),
+        auth_mode,
+        token,
+        password,
+        rate_limit_window_seconds,
+        rate_limit_max_requests,
+    )
 }
 
 fn test_state(
@@ -1247,6 +1287,93 @@ async fn integration_openresponses_http_roundtrip_persists_session_state() {
     assert!(session_path.exists());
     let raw = std::fs::read_to_string(&session_path).expect("read session file");
     assert!(raw.lines().count() >= 4);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_c01_openresponses_preflight_blocks_over_budget_request() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 40, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}/v1/responses"))
+        .bearer_auth("secret")
+        .json(&json!({"input":"ok"}))
+        .send()
+        .await
+        .expect("send request");
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let payload = response.json::<Value>().await.expect("parse error payload");
+    assert_eq!(payload["error"]["code"], "gateway_runtime_error");
+    assert!(payload["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .contains("token budget exceeded"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_c02_openresponses_preflight_skips_provider_dispatch() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_client_and_auth(
+        temp.path(),
+        40,
+        Arc::new(PanicGatewayLlmClient),
+        GatewayOpenResponsesAuthMode::Token,
+        Some("secret"),
+        None,
+        60,
+        120,
+    );
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}/v1/responses"))
+        .bearer_auth("secret")
+        .json(&json!({"input":"ok"}))
+        .send()
+        .await
+        .expect("send request");
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let payload = response.json::<Value>().await.expect("parse error payload");
+    assert!(payload["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .contains("token budget exceeded"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_c03_openresponses_preflight_preserves_success_schema() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 64, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .post(format!("http://{addr}/v1/responses"))
+        .bearer_auth("secret")
+        .json(&json!({"input":"ok"}))
+        .send()
+        .await
+        .expect("send request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response
+        .json::<Value>()
+        .await
+        .expect("parse success payload");
+    assert_eq!(payload["object"], "response");
+    assert_eq!(payload["status"], "completed");
+    assert!(payload["output_text"].is_string());
+    assert!(payload["usage"].is_object());
 
     handle.abort();
 }
