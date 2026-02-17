@@ -1,7 +1,7 @@
 //! Skill loading, registry resolution, cache, and lockfile orchestration.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -16,9 +16,9 @@ use super::trust_policy::{
 };
 use super::{
     RemoteSkillSource, Skill, SkillInstallReport, SkillLockEntry, SkillLockHint, SkillLockSource,
-    SkillRegistryManifest, SkillsDownloadOptions, SkillsLockfile, SkillsSyncReport, TrustedKey,
-    SKILLS_CACHE_ARTIFACTS_DIR, SKILLS_CACHE_DIR_NAME, SKILLS_CACHE_MANIFESTS_DIR,
-    SKILLS_LOCK_FILE_NAME, SKILLS_LOCK_SCHEMA_VERSION,
+    SkillPromptMode, SkillRegistryManifest, SkillsDownloadOptions, SkillsLockfile,
+    SkillsSyncReport, TrustedKey, SKILLS_CACHE_ARTIFACTS_DIR, SKILLS_CACHE_DIR_NAME,
+    SKILLS_CACHE_MANIFESTS_DIR, SKILLS_LOCK_FILE_NAME, SKILLS_LOCK_SCHEMA_VERSION,
 };
 
 pub(super) fn load_catalog(dir: &Path) -> Result<Vec<Skill>> {
@@ -29,28 +29,156 @@ pub(super) fn load_catalog(dir: &Path) -> Result<Vec<Skill>> {
         bail!("skills path '{}' is not a directory", dir.display());
     }
 
-    let mut skills = Vec::new();
-    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let entry = entry.with_context(|| format!("failed to read entry in {}", dir.display()))?;
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .map(|entry| entry.with_context(|| format!("failed to read entry in {}", dir.display())))
+        .collect::<Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.path());
+
+    let mut skills_by_key: BTreeMap<String, Skill> = BTreeMap::new();
+
+    for entry in &entries {
         let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
         if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
             continue;
         }
-
-        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        if path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
             continue;
-        };
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read skill file {}", path.display()))?;
-        skills.push(Skill {
-            name: stem.to_string(),
-            content,
-            path,
-        });
+        }
+
+        let skill = load_skill_file(&path, false)
+            .with_context(|| format!("failed to load skill file {}", path.display()))?;
+        skills_by_key.insert(skill.name.to_ascii_lowercase(), skill);
     }
 
-    skills.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(skills)
+    for entry in &entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let skill_file = path.join("SKILL.md");
+        if !skill_file.is_file() {
+            continue;
+        }
+        let skill = load_skill_file(&skill_file, true)
+            .with_context(|| format!("failed to load skill file {}", skill_file.display()))?;
+        skills_by_key.insert(skill.name.to_ascii_lowercase(), skill);
+    }
+
+    Ok(skills_by_key.into_values().collect())
+}
+
+fn load_skill_file(path: &Path, prefer_directory_name: bool) -> Result<Skill> {
+    let raw_content = fs::read_to_string(path)
+        .with_context(|| format!("failed to read skill file {}", path.display()))?;
+    let base_dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("invalid skill path '{}'", path.display()))?
+        .to_path_buf();
+
+    let (frontmatter, content_body) = parse_frontmatter(&raw_content)?;
+    let name = frontmatter
+        .get("name")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            if prefer_directory_name {
+                base_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(ToOwned::to_owned)
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+        })
+        .ok_or_else(|| anyhow!("invalid skill file name '{}'", path.display()))?;
+    let description = frontmatter
+        .get("description")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+
+    Ok(Skill {
+        name,
+        description,
+        content: resolve_base_dir_placeholder(&content_body, &base_dir),
+        path: path.to_path_buf(),
+        base_dir,
+    })
+}
+
+fn parse_frontmatter(content: &str) -> Result<(HashMap<String, String>, String)> {
+    let trimmed = content.trim_start_matches('\u{feff}');
+    if !trimmed.starts_with("---") {
+        return Ok((HashMap::new(), content.to_string()));
+    }
+
+    let mut lines = trimmed.split_inclusive('\n');
+    let Some(first_line) = lines.next() else {
+        return Ok((HashMap::new(), content.to_string()));
+    };
+    if first_line.trim_end_matches(['\r', '\n']).trim() != "---" {
+        return Ok((HashMap::new(), content.to_string()));
+    }
+
+    let mut consumed = first_line.len();
+    let mut frontmatter_lines = Vec::new();
+    let mut found_closing = false;
+    for line in lines {
+        consumed += line.len();
+        if line.trim_end_matches(['\r', '\n']).trim() == "---" {
+            found_closing = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+
+    if !found_closing {
+        bail!("unclosed frontmatter: missing closing ---");
+    }
+
+    let mut parsed = HashMap::new();
+    for line in frontmatter_lines {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() || value.starts_with('{') || value.starts_with('[') {
+            continue;
+        }
+        let normalized = value
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_string();
+        if normalized.is_empty() {
+            continue;
+        }
+        parsed.insert(key.to_string(), normalized);
+    }
+
+    let body = trimmed[consumed..]
+        .trim_start_matches(['\r', '\n'])
+        .to_string();
+    Ok((parsed, body))
+}
+
+fn resolve_base_dir_placeholder(content: &str, base_dir: &Path) -> String {
+    let base_dir_text = base_dir.to_string_lossy();
+    content.replace("{baseDir}", &base_dir_text)
 }
 
 pub(super) fn install_skills(
@@ -647,6 +775,14 @@ pub(super) fn resolve_selected_skills(
 }
 
 pub(super) fn augment_system_prompt(base: &str, skills: &[Skill]) -> String {
+    augment_system_prompt_with_mode(base, skills, SkillPromptMode::Full)
+}
+
+pub(super) fn augment_system_prompt_with_mode(
+    base: &str,
+    skills: &[Skill],
+    mode: SkillPromptMode,
+) -> String {
     let mut prompt = base.trim_end().to_string();
     for skill in skills {
         if !prompt.is_empty() {
@@ -656,7 +792,22 @@ pub(super) fn augment_system_prompt(base: &str, skills: &[Skill]) -> String {
         prompt.push_str("# Skill: ");
         prompt.push_str(&skill.name);
         prompt.push('\n');
-        prompt.push_str(skill.content.trim());
+        match mode {
+            SkillPromptMode::Full => {
+                prompt.push_str(skill.content.trim());
+            }
+            SkillPromptMode::Summary => {
+                prompt.push_str("Description: ");
+                if skill.description.trim().is_empty() {
+                    prompt.push_str("(none)");
+                } else {
+                    prompt.push_str(skill.description.trim());
+                }
+                prompt.push('\n');
+                prompt.push_str("Path: ");
+                prompt.push_str(&skill.path.display().to_string());
+            }
+        }
     }
 
     prompt

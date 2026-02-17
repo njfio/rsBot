@@ -65,6 +65,10 @@ Resolution fan-in:
 2. Client: `build_client_with_fallbacks`
 3. Runtime context: `build_startup_runtime_dispatch_context` (skills dir/lock, system prompt, startup policy)
 
+Skills loaded during Stage 2 accept both legacy top-level `.md` files and
+directory-based `SKILL.md` files with lightweight frontmatter (`name`,
+`description`) and `{baseDir}` placeholder expansion.
+
 ```mermaid
 sequenceDiagram
     participant Entry as run_cli

@@ -22,8 +22,17 @@ pub use trust_roots::*;
 /// Public struct `Skill` used across Tau components.
 pub struct Skill {
     pub name: String,
+    pub description: String,
     pub content: String,
     pub path: PathBuf,
+    pub base_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Prompt rendering modes for skill augmentation.
+pub enum SkillPromptMode {
+    Summary,
+    Full,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -266,6 +275,14 @@ pub fn augment_system_prompt(base: &str, skills: &[Skill]) -> String {
     load_registry::augment_system_prompt(base, skills)
 }
 
+pub fn augment_system_prompt_with_mode(
+    base: &str,
+    skills: &[Skill],
+    mode: SkillPromptMode,
+) -> String {
+    load_registry::augment_system_prompt_with_mode(base, skills, mode)
+}
+
 #[cfg(test)]
 fn current_unix_timestamp() -> u64 {
     trust_policy::current_unix_timestamp()
@@ -292,14 +309,14 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        augment_system_prompt, build_local_skill_lock_hints, build_registry_skill_lock_hints,
-        build_remote_skill_lock_hints, default_skills_cache_dir, default_skills_lock_path,
-        fetch_registry_manifest_with_cache, install_remote_skills_with_cache, install_skills,
-        load_catalog, load_skills_lockfile, remote_skill_file_name_for_source,
-        resolve_registry_skill_sources, resolve_remote_skill_sources, resolve_selected_skills,
-        sync_skills_with_lockfile, write_skills_lockfile, RegistryKeyEntry, RemoteSkillSource,
-        Skill, SkillInstallReport, SkillLockSource, SkillRegistryManifest, SkillsDownloadOptions,
-        TrustedKey,
+        augment_system_prompt, augment_system_prompt_with_mode, build_local_skill_lock_hints,
+        build_registry_skill_lock_hints, build_remote_skill_lock_hints, default_skills_cache_dir,
+        default_skills_lock_path, fetch_registry_manifest_with_cache,
+        install_remote_skills_with_cache, install_skills, load_catalog, load_skills_lockfile,
+        remote_skill_file_name_for_source, resolve_registry_skill_sources,
+        resolve_remote_skill_sources, resolve_selected_skills, sync_skills_with_lockfile,
+        write_skills_lockfile, RegistryKeyEntry, RemoteSkillSource, Skill, SkillInstallReport,
+        SkillLockSource, SkillPromptMode, SkillRegistryManifest, SkillsDownloadOptions, TrustedKey,
     };
 
     async fn install_remote_skills(
@@ -327,32 +344,82 @@ mod tests {
     }
 
     #[test]
-    fn unit_load_catalog_reads_markdown_files_only() {
+    fn spec_c01_load_catalog_supports_legacy_markdown_and_skill_md_directories() {
         let temp = tempdir().expect("tempdir");
-        std::fs::write(temp.path().join("a.md"), "A").expect("write a");
-        std::fs::write(temp.path().join("b.txt"), "B").expect("write b");
-        std::fs::write(temp.path().join("c.md"), "C").expect("write c");
+        std::fs::write(temp.path().join("legacy.md"), "legacy skill").expect("write legacy");
+        std::fs::write(temp.path().join("ignore.txt"), "ignored").expect("write ignored");
+        let weather_dir = temp.path().join("weather");
+        std::fs::create_dir_all(&weather_dir).expect("create weather dir");
+        std::fs::write(
+            weather_dir.join("SKILL.md"),
+            "---\nname: weather\ndescription: Weather lookup\n---\n# Weather",
+        )
+        .expect("write skill");
 
         let catalog = load_catalog(temp.path()).expect("catalog");
         let names = catalog
             .iter()
             .map(|skill| skill.name.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(names, vec!["a", "c"]);
+        assert_eq!(names, vec!["legacy", "weather"]);
     }
 
     #[test]
-    fn functional_augment_system_prompt_preserves_selected_skill_order() {
+    fn spec_c02_load_catalog_parses_frontmatter_and_resolves_basedir_placeholder() {
+        let temp = tempdir().expect("tempdir");
+        let ops_dir = temp.path().join("ops");
+        std::fs::create_dir_all(&ops_dir).expect("create ops dir");
+        std::fs::write(
+            ops_dir.join("SKILL.md"),
+            "---\nname: ops-checks\ndescription: Run checks\n---\ncd {baseDir}\nrun-checks",
+        )
+        .expect("write skill");
+
+        let catalog = load_catalog(temp.path()).expect("catalog");
+        let skill = catalog
+            .iter()
+            .find(|skill| skill.name == "ops-checks")
+            .expect("find frontmatter skill");
+        assert_eq!(skill.description, "Run checks");
+        let base_dir_text = ops_dir.display().to_string();
+        assert!(skill.content.contains(&base_dir_text));
+        assert!(!skill.content.contains("{baseDir}"));
+        assert!(!skill.content.contains("---"));
+    }
+
+    #[test]
+    fn spec_c03_augment_system_prompt_summary_mode_injects_metadata_without_full_body() {
+        let skills = vec![Skill {
+            name: "checks".to_string(),
+            description: "Run verification checks".to_string(),
+            content: "run everything".to_string(),
+            path: PathBuf::from("checks/SKILL.md"),
+            base_dir: PathBuf::from("checks"),
+        }];
+
+        let summary = augment_system_prompt_with_mode("base", &skills, SkillPromptMode::Summary);
+        assert!(summary.contains("# Skill: checks"));
+        assert!(summary.contains("Description: Run verification checks"));
+        assert!(summary.contains("Path: checks/SKILL.md"));
+        assert!(!summary.contains("run everything"));
+    }
+
+    #[test]
+    fn regression_spec_c04_augment_system_prompt_defaults_to_full_mode() {
         let skills = vec![
             Skill {
                 name: "first".to_string(),
+                description: String::new(),
                 content: "one".to_string(),
                 path: "first.md".into(),
+                base_dir: ".".into(),
             },
             Skill {
                 name: "second".to_string(),
+                description: String::new(),
                 content: "two".to_string(),
                 path: "second.md".into(),
+                base_dir: ".".into(),
             },
         ];
 
@@ -366,8 +433,10 @@ mod tests {
     fn regression_resolve_selected_skills_errors_on_unknown_skill() {
         let catalog = vec![Skill {
             name: "known".to_string(),
+            description: String::new(),
             content: "x".to_string(),
             path: "known.md".into(),
+            base_dir: ".".into(),
         }];
 
         let error = resolve_selected_skills(&catalog, &["missing".to_string()])
