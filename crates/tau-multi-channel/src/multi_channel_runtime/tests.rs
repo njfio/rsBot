@@ -944,6 +944,12 @@ fn unit_parse_multi_channel_tau_command_supports_initial_command_set() {
             args: "reject req-8 blocked".to_string(),
         })
     );
+    let parsed_skip = super::parse_multi_channel_tau_command("/tau skip too noisy").expect("parse");
+    let skip_command = parsed_skip.expect("skip command");
+    assert_eq!(
+        super::render_multi_channel_tau_command_line(&skip_command),
+        "skip too noisy"
+    );
     assert_eq!(
         super::parse_multi_channel_tau_command("plain text").expect("parse"),
         None
@@ -983,6 +989,12 @@ fn regression_parse_multi_channel_tau_command_rejects_invalid_forms() {
             .expect_err("missing request id"),
         "command_invalid_args"
     );
+}
+
+#[test]
+fn spec_c04_render_multi_channel_tau_command_help_includes_skip_command() {
+    let help = super::render_multi_channel_tau_command_help();
+    assert!(help.contains("- /tau skip [reason]"));
 }
 
 #[tokio::test]
@@ -1036,6 +1048,53 @@ async fn functional_runner_executes_tau_status_command_and_persists_command_meta
         .expect("response string");
     assert!(response.contains("Tau command `/tau status`"));
     assert!(response.contains("reason_code `command_status_reported`"));
+}
+
+#[tokio::test]
+async fn functional_runner_executes_tau_skip_command_without_outbound_delivery() {
+    let temp = tempdir().expect("tempdir");
+    let mut runtime = MultiChannelRuntime::new(build_config(temp.path())).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-command-skip-1",
+        "telegram-command-room",
+        "telegram-user-1",
+        "/tau skip maintenance-window",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "telegram",
+        "telegram-command-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let skip_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("skipped")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("skip outbound log entry");
+    assert_eq!(
+        skip_entry.payload["command"]["reason_code"].as_str(),
+        Some("command_skip_suppressed")
+    );
+
+    let contexts = store.load_context_entries().expect("load context");
+    assert!(
+        !contexts.iter().any(|entry| entry.role == "assistant"),
+        "skip command should not persist assistant response text"
+    );
 }
 
 #[tokio::test]
