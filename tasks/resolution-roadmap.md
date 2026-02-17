@@ -27,7 +27,7 @@ Implemented in M42.1.1a (`#2219`):
 Still pending in this roadmap:
 
 - [x] First-class OpenRouter provider enum variant and dedicated client config.
-- [ ] Dynamic catalog discovery and remote-source merge policy.
+- [x] Dynamic catalog discovery and remote-source merge policy.
 - [x] PPO runtime integration baseline call path.
 
 ### Critical Gap Revalidation (2026-02-17)
