@@ -950,6 +950,20 @@ fn unit_parse_multi_channel_tau_command_supports_initial_command_set() {
         super::render_multi_channel_tau_command_line(&skip_command),
         "skip too noisy"
     );
+    let parsed_react = super::parse_multi_channel_tau_command("/tau react 👍 123").expect("parse");
+    assert_eq!(
+        parsed_react,
+        Some(super::MultiChannelTauCommand::React {
+            emoji: "👍".to_string(),
+            message_id: Some("123".to_string()),
+        })
+    );
+    let react_command = super::parse_multi_channel_tau_command("/tau react 👍 123").expect("parse");
+    let react_command = react_command.expect("react command");
+    assert_eq!(
+        super::render_multi_channel_tau_command_line(&react_command),
+        "react 👍 123"
+    );
     assert_eq!(
         super::parse_multi_channel_tau_command("plain text").expect("parse"),
         None
@@ -989,12 +1003,18 @@ fn regression_parse_multi_channel_tau_command_rejects_invalid_forms() {
             .expect_err("missing request id"),
         "command_invalid_args"
     );
+    assert_eq!(
+        super::parse_multi_channel_tau_command("/tau react")
+            .expect_err("missing emoji should fail"),
+        "command_invalid_args"
+    );
 }
 
 #[test]
 fn spec_c04_render_multi_channel_tau_command_help_includes_skip_command() {
     let help = super::render_multi_channel_tau_command_help();
     assert!(help.contains("- /tau skip [reason]"));
+    assert!(help.contains("- /tau react <emoji> [message_id]"));
 }
 
 #[tokio::test]
@@ -1108,6 +1128,177 @@ async fn functional_runner_executes_tau_skip_command_without_outbound_delivery()
     assert!(
         !contexts.iter().any(|entry| entry.role == "assistant"),
         "skip command should not persist assistant response text"
+    );
+}
+
+#[tokio::test]
+async fn functional_runner_executes_tau_react_command_and_records_reaction_delivery() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-command-react-1",
+        "telegram-command-room",
+        "telegram-user-1",
+        "/tau react 👍 42",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "telegram",
+        "telegram-command-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let reaction_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("reacted")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("reaction outbound log entry");
+    assert_eq!(
+        reaction_entry.payload["command"]["reason_code"].as_str(),
+        Some("command_react_dispatched")
+    );
+    assert_eq!(
+        reaction_entry.payload["command"]["react_emoji"].as_str(),
+        Some("👍")
+    );
+    assert_eq!(
+        reaction_entry.payload["command"]["react_message_id"].as_str(),
+        Some("42")
+    );
+    assert_eq!(
+        reaction_entry.payload["reaction_delivery"]["mode"].as_str(),
+        Some("dry_run")
+    );
+
+    let contexts = store.load_context_entries().expect("load context");
+    assert!(
+        contexts
+            .iter()
+            .any(|entry| entry.role == "user" && entry.text == "/tau react 👍 42"),
+        "react command should preserve user context entry for auditability"
+    );
+    assert!(
+        !contexts.iter().any(|entry| entry.role == "assistant"),
+        "react command should not persist assistant response text"
+    );
+}
+
+#[tokio::test]
+async fn functional_runner_tau_react_command_reports_unsupported_transport_without_text_reply() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Whatsapp,
+        "wa-command-react-1",
+        "15551230000",
+        "15551235555",
+        "/tau react 👍 42",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "whatsapp",
+        "15551230000",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let failed_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("failed")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("failed reaction outbound log entry");
+    assert_eq!(
+        failed_entry.payload["reason_code"].as_str(),
+        Some("command_react_unsupported_transport")
+    );
+    assert_eq!(
+        failed_entry.payload["command"]["react_emoji"].as_str(),
+        Some("👍")
+    );
+
+    let contexts = store.load_context_entries().expect("load context");
+    assert!(
+        !contexts.iter().any(|entry| entry.role == "assistant"),
+        "failed react command should not persist assistant response text"
+    );
+}
+
+#[tokio::test]
+async fn regression_runner_tau_react_command_maps_invalid_message_id_reason_code() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-command-react-invalid-id",
+        "telegram-command-room",
+        "telegram-user-1",
+        "/tau react 👍 invalid-message-id",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "telegram",
+        "telegram-command-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let failed_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("failed")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("failed reaction outbound log entry");
+    assert_eq!(
+        failed_entry.payload["reason_code"].as_str(),
+        Some("command_react_invalid_message_id")
+    );
+    assert_eq!(
+        failed_entry.payload["command"]["reason_code"].as_str(),
+        Some("command_react_invalid_message_id")
+    );
+    assert_eq!(
+        failed_entry.payload["reaction_delivery_error"]["reason_code"].as_str(),
+        Some("reaction_invalid_message_id")
     );
 }
 

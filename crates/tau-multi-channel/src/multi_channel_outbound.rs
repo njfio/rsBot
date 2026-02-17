@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use reqwest::{redirect::Policy, StatusCode};
+use reqwest::{redirect::Policy, Method, StatusCode};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tau_runtime::{SsrfGuard, SsrfProtectionConfig, SsrfViolation};
@@ -17,6 +17,9 @@ use crate::multi_channel_contract::{MultiChannelInboundEvent, MultiChannelTransp
 const TELEGRAM_SAFE_MAX_CHARS: usize = 4096;
 const DISCORD_SAFE_MAX_CHARS: usize = 2000;
 const WHATSAPP_SAFE_MAX_CHARS: usize = 1024;
+const REACTION_REASON_UNSUPPORTED_TRANSPORT: &str = "reaction_unsupported_transport";
+const REACTION_REASON_INVALID_MESSAGE_ID: &str = "reaction_invalid_message_id";
+const REACTION_REASON_MISSING_EMOJI: &str = "reaction_missing_emoji";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Enumerates supported `MultiChannelOutboundMode` values.
@@ -138,6 +141,7 @@ impl std::error::Error for MultiChannelOutboundDeliveryError {}
 
 #[derive(Debug, Clone)]
 struct MultiChannelOutboundRequest {
+    method: Method,
     transport: MultiChannelTransport,
     endpoint: String,
     headers: Vec<(String, String)>,
@@ -264,6 +268,52 @@ impl MultiChannelOutboundDispatcher {
         })
     }
 
+    /// Public `fn` `deliver_reaction` in `tau-multi-channel`.
+    ///
+    /// This item is part of the Wave 2 API surface for M23 documentation uplift.
+    /// Callers rely on its contract and failure semantics remaining stable.
+    /// Update this comment if behavior or integration expectations change.
+    pub async fn deliver_reaction(
+        &self,
+        event: &MultiChannelInboundEvent,
+        emoji: &str,
+        message_id: &str,
+    ) -> Result<MultiChannelOutboundDeliveryResult, MultiChannelOutboundDeliveryError> {
+        if self.config.mode == MultiChannelOutboundMode::ChannelStore {
+            return Ok(MultiChannelOutboundDeliveryResult {
+                mode: self.config.mode.as_str().to_string(),
+                chunk_count: 0,
+                receipts: Vec::new(),
+            });
+        }
+
+        let request = self.build_reaction_request(event, emoji, message_id)?;
+        let receipt = match self.config.mode {
+            MultiChannelOutboundMode::DryRun => MultiChannelOutboundDeliveryReceipt {
+                transport: request.transport.as_str().to_string(),
+                mode: self.config.mode.as_str().to_string(),
+                status: "dry_run".to_string(),
+                chunk_index: request.chunk_index,
+                chunk_count: request.chunk_count,
+                endpoint: request.endpoint.clone(),
+                request_body: request.body.clone(),
+                reason_code: None,
+                detail: None,
+                retryable: false,
+                http_status: None,
+                provider_message_id: None,
+            },
+            MultiChannelOutboundMode::Provider => self.send_request(&request).await?,
+            MultiChannelOutboundMode::ChannelStore => unreachable!(),
+        };
+
+        Ok(MultiChannelOutboundDeliveryResult {
+            mode: self.config.mode.as_str().to_string(),
+            chunk_count: 1,
+            receipts: vec![receipt],
+        })
+    }
+
     fn build_requests(
         &self,
         event: &MultiChannelInboundEvent,
@@ -290,6 +340,155 @@ impl MultiChannelOutboundDispatcher {
                 self.build_request_for_chunk(event, chunk, chunk_index, chunk_count)
             })
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    fn build_reaction_request(
+        &self,
+        event: &MultiChannelInboundEvent,
+        emoji: &str,
+        message_id: &str,
+    ) -> Result<MultiChannelOutboundRequest, MultiChannelOutboundDeliveryError> {
+        let normalized_emoji = emoji.trim();
+        if normalized_emoji.is_empty() {
+            return Err(MultiChannelOutboundDeliveryError {
+                reason_code: REACTION_REASON_MISSING_EMOJI.to_string(),
+                detail: "reaction emoji must not be empty".to_string(),
+                retryable: false,
+                chunk_index: 1,
+                chunk_count: 1,
+                endpoint: "".to_string(),
+                request_body: None,
+                http_status: None,
+            });
+        }
+        let normalized_message_id = message_id.trim();
+        if normalized_message_id.is_empty() {
+            return Err(MultiChannelOutboundDeliveryError {
+                reason_code: REACTION_REASON_INVALID_MESSAGE_ID.to_string(),
+                detail: "reaction target message id must not be empty".to_string(),
+                retryable: false,
+                chunk_index: 1,
+                chunk_count: 1,
+                endpoint: "".to_string(),
+                request_body: None,
+                http_status: None,
+            });
+        }
+
+        match event.transport {
+            MultiChannelTransport::Telegram => {
+                let token = self
+                    .config
+                    .telegram_bot_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        if self.config.mode == MultiChannelOutboundMode::DryRun {
+                            Some("dry-run-telegram-token".to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| MultiChannelOutboundDeliveryError {
+                        reason_code: "delivery_missing_telegram_bot_token".to_string(),
+                        detail: "Telegram outbound requires TAU_TELEGRAM_BOT_TOKEN or credential-store integration id telegram-bot-token".to_string(),
+                        retryable: false,
+                        chunk_index: 1,
+                        chunk_count: 1,
+                        endpoint: "".to_string(),
+                        request_body: None,
+                        http_status: None,
+                    })?;
+                let parsed_message_id = normalized_message_id.parse::<i64>().map_err(|_| {
+                    MultiChannelOutboundDeliveryError {
+                        reason_code: REACTION_REASON_INVALID_MESSAGE_ID.to_string(),
+                        detail: format!(
+                            "telegram reaction target '{}' must be a numeric message id",
+                            normalized_message_id
+                        ),
+                        retryable: false,
+                        chunk_index: 1,
+                        chunk_count: 1,
+                        endpoint: "".to_string(),
+                        request_body: None,
+                        http_status: None,
+                    }
+                })?;
+                let endpoint = format!(
+                    "{}/bot{}/setMessageReaction",
+                    self.config.telegram_api_base.trim_end_matches('/'),
+                    token
+                );
+                Ok(MultiChannelOutboundRequest {
+                    method: Method::POST,
+                    transport: event.transport,
+                    endpoint,
+                    headers: Vec::new(),
+                    body: json!({
+                        "chat_id": event.conversation_id.trim(),
+                        "message_id": parsed_message_id,
+                        "reaction": [{ "type": "emoji", "emoji": normalized_emoji }],
+                    }),
+                    chunk_index: 1,
+                    chunk_count: 1,
+                })
+            }
+            MultiChannelTransport::Discord => {
+                let token = self
+                    .config
+                    .discord_bot_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        if self.config.mode == MultiChannelOutboundMode::DryRun {
+                            Some("dry-run-discord-token".to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| MultiChannelOutboundDeliveryError {
+                        reason_code: "delivery_missing_discord_bot_token".to_string(),
+                        detail: "Discord outbound requires TAU_DISCORD_BOT_TOKEN or credential-store integration id discord-bot-token".to_string(),
+                        retryable: false,
+                        chunk_index: 1,
+                        chunk_count: 1,
+                        endpoint: "".to_string(),
+                        request_body: None,
+                        http_status: None,
+                    })?;
+                let encoded_emoji = percent_encode_path_segment(normalized_emoji);
+                let endpoint = format!(
+                    "{}/channels/{}/messages/{}/reactions/{}/@me",
+                    self.config.discord_api_base.trim_end_matches('/'),
+                    event.conversation_id.trim(),
+                    normalized_message_id,
+                    encoded_emoji
+                );
+                Ok(MultiChannelOutboundRequest {
+                    method: Method::PUT,
+                    transport: event.transport,
+                    endpoint,
+                    headers: vec![("Authorization".to_string(), format!("Bot {}", token))],
+                    body: json!({}),
+                    chunk_index: 1,
+                    chunk_count: 1,
+                })
+            }
+            MultiChannelTransport::Whatsapp => Err(MultiChannelOutboundDeliveryError {
+                reason_code: REACTION_REASON_UNSUPPORTED_TRANSPORT.to_string(),
+                detail: "reaction delivery is not supported for whatsapp transport".to_string(),
+                retryable: false,
+                chunk_index: 1,
+                chunk_count: 1,
+                endpoint: "".to_string(),
+                request_body: None,
+                http_status: None,
+            }),
+        }
     }
 
     fn safe_max_chars(&self, transport: MultiChannelTransport) -> usize {
@@ -339,6 +538,7 @@ impl MultiChannelOutboundDispatcher {
                     token
                 );
                 Ok(MultiChannelOutboundRequest {
+                    method: Method::POST,
                     transport: event.transport,
                     endpoint,
                     headers: Vec::new(),
@@ -382,6 +582,7 @@ impl MultiChannelOutboundDispatcher {
                     event.conversation_id.trim()
                 );
                 Ok(MultiChannelOutboundRequest {
+                    method: Method::POST,
                     transport: event.transport,
                     endpoint,
                     headers: vec![("Authorization".to_string(), format!("Bot {}", token))],
@@ -478,6 +679,7 @@ impl MultiChannelOutboundDispatcher {
                     phone_number_id
                 );
                 Ok(MultiChannelOutboundRequest {
+                    method: Method::POST,
                     transport: event.transport,
                     endpoint,
                     headers: vec![(
@@ -526,7 +728,7 @@ impl MultiChannelOutboundDispatcher {
         let mut redirect_count = 0usize;
 
         loop {
-            let mut http_request = client.post(endpoint.as_str());
+            let mut http_request = client.request(request.method.clone(), endpoint.as_str());
             for (header, value) in &request.headers {
                 http_request = http_request.header(header, value);
             }
@@ -706,6 +908,25 @@ fn extract_provider_message_id(
     }
 }
 
+fn percent_encode_path_segment(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        let is_unreserved = matches!(
+            byte,
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~'
+        );
+        if is_unreserved {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0F) as usize] as char);
+        }
+    }
+    encoded
+}
+
 fn truncate_detail(raw: &str) -> String {
     const LIMIT: usize = 512;
     let trimmed = raw.trim();
@@ -758,7 +979,7 @@ fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use httpmock::Method::POST;
+    use httpmock::Method::{POST, PUT};
     use httpmock::MockServer;
     use serde_json::json;
 
@@ -820,6 +1041,118 @@ mod tests {
         assert!(result.receipts[0]
             .endpoint
             .ends_with("/channels/room-88/messages"));
+    }
+
+    #[tokio::test]
+    async fn functional_dry_run_shapes_telegram_reaction_payload() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::DryRun,
+            max_chars: 100,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let mut event = sample_event(MultiChannelTransport::Telegram);
+        event.conversation_id = "chat-42".to_string();
+        let result = dispatcher
+            .deliver_reaction(&event, "👍", "77")
+            .await
+            .expect("dry-run reaction should succeed");
+        assert_eq!(result.mode, "dry_run");
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "dry_run");
+        assert!(result.receipts[0]
+            .endpoint
+            .ends_with("/botdry-run-telegram-token/setMessageReaction"));
+        assert_eq!(result.receipts[0].request_body["chat_id"], "chat-42");
+        assert_eq!(result.receipts[0].request_body["message_id"], 77);
+        assert_eq!(
+            result.receipts[0].request_body["reaction"][0]["emoji"],
+            "👍"
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_reaction_delivery_reports_unsupported_transport() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::DryRun,
+            max_chars: 100,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver_reaction(&sample_event(MultiChannelTransport::Whatsapp), "👍", "55")
+            .await
+            .expect_err("whatsapp reaction should fail");
+        assert_eq!(error.reason_code, "reaction_unsupported_transport");
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn regression_provider_reaction_rejects_blank_telegram_token() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            telegram_bot_token: Some("   ".to_string()),
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver_reaction(&sample_event(MultiChannelTransport::Telegram), "👍", "42")
+            .await
+            .expect_err("blank telegram token should fail closed");
+        assert_eq!(error.reason_code, "delivery_missing_telegram_bot_token");
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn regression_provider_reaction_requires_discord_token_outside_dry_run() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            discord_bot_token: None,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver_reaction(&sample_event(MultiChannelTransport::Discord), "👍", "42")
+            .await
+            .expect_err("missing discord token should fail closed");
+        assert_eq!(error.reason_code, "delivery_missing_discord_bot_token");
+        assert!(!error.retryable);
+    }
+
+    #[tokio::test]
+    async fn integration_provider_mode_dispatches_discord_reaction_with_put_request() {
+        let server = MockServer::start();
+        let reaction = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/channels/room-88/messages/42/reactions/%F0%9F%91%8D/@me")
+                .header("authorization", "Bot discord-token");
+            then.status(204);
+        });
+
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            discord_api_base: server.base_url(),
+            discord_bot_token: Some("discord-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let mut event = sample_event(MultiChannelTransport::Discord);
+        event.conversation_id = "room-88".to_string();
+        let result = dispatcher
+            .deliver_reaction(&event, "👍", "42")
+            .await
+            .expect("provider reaction send should succeed");
+        reaction.assert_calls(1);
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "sent");
+        assert!(result.receipts[0]
+            .endpoint
+            .ends_with("/channels/room-88/messages/42/reactions/%F0%9F%91%8D/@me"));
     }
 
     #[tokio::test]

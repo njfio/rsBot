@@ -79,6 +79,7 @@ const TELEMETRY_STATUS_PRESENCE_IDLE: &str = "presence_idle";
 const COMMAND_STATUS_REPORTED: &str = "reported";
 const COMMAND_STATUS_FAILED: &str = "failed";
 const COMMAND_STATUS_SKIPPED: &str = "skipped";
+const COMMAND_STATUS_REACTED: &str = "reacted";
 const COMMAND_REASON_UNKNOWN: &str = "command_unknown";
 const COMMAND_REASON_INVALID_ARGS: &str = "command_invalid_args";
 const COMMAND_REASON_RBAC_DENIED: &str = "command_rbac_denied";
@@ -96,6 +97,11 @@ const COMMAND_REASON_APPROVALS_STALE_REQUEST: &str = "command_approvals_stale_re
 const COMMAND_REASON_APPROVALS_ACTOR_MAPPING_FAILED: &str =
     "command_approvals_actor_mapping_failed";
 const COMMAND_REASON_SKIP_SUPPRESSED: &str = "command_skip_suppressed";
+const COMMAND_REASON_REACT_REQUESTED: &str = "command_react_requested";
+const COMMAND_REASON_REACT_DISPATCHED: &str = "command_react_dispatched";
+const COMMAND_REASON_REACT_UNSUPPORTED_TRANSPORT: &str = "command_react_unsupported_transport";
+const COMMAND_REASON_REACT_INVALID_MESSAGE_ID: &str = "command_react_invalid_message_id";
+const COMMAND_REASON_REACT_FAILED: &str = "command_react_failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Enumerates supported `MultiChannelPairingDecision` values.
@@ -404,6 +410,10 @@ enum MultiChannelTauCommand {
     Skip {
         reason: Option<String>,
     },
+    React {
+        emoji: String,
+        message_id: Option<String>,
+    },
     AuthStatus {
         provider: Option<String>,
     },
@@ -431,6 +441,8 @@ struct MultiChannelCommandExecution {
     response_text: String,
     suppress_outbound_delivery: bool,
     skip_reason: Option<String>,
+    react_emoji: Option<String>,
+    react_message_id: Option<String>,
 }
 
 /// Public `fn` `run_multi_channel_contract_runner` in `tau-multi-channel`.
@@ -1099,6 +1111,9 @@ impl MultiChannelRuntime {
             MultiChannelTauCommand::Skip { reason } => Some(
                 build_multi_channel_command_skip_execution(reason.as_deref()),
             ),
+            MultiChannelTauCommand::React { emoji, message_id } => Some(
+                build_multi_channel_command_react_execution(emoji.as_str(), message_id.as_deref()),
+            ),
             MultiChannelTauCommand::AuthStatus { provider } => {
                 let Some(auth_handler) = &self.config.command_handlers.auth else {
                     let response = "command unavailable: auth status handler is not configured.";
@@ -1345,7 +1360,7 @@ impl MultiChannelRuntime {
         }
 
         let command_execution = self.execute_tau_command_if_requested(event, access_decision);
-        let command_payload = command_execution
+        let mut command_payload = command_execution
             .as_ref()
             .map(multi_channel_command_payload);
         let suppress_outbound_delivery = command_execution
@@ -1356,6 +1371,60 @@ impl MultiChannelRuntime {
             .map(|execution| execution.response_text.clone())
             .unwrap_or_else(|| render_response(event));
         if suppress_outbound_delivery {
+            let mut command_status = command_execution
+                .as_ref()
+                .map(|execution| execution.status.clone())
+                .unwrap_or_else(|| COMMAND_STATUS_SKIPPED.to_string());
+            let mut command_reason_code = command_execution
+                .as_ref()
+                .map(|execution| execution.reason_code.clone())
+                .unwrap_or_else(|| COMMAND_REASON_SKIP_SUPPRESSED.to_string());
+            let mut reaction_delivery_payload: Option<Value> = None;
+            let mut reaction_delivery_error_payload: Option<Value> = None;
+            if let Some(execution) = command_execution.as_ref() {
+                if let Some(emoji) = execution.react_emoji.as_deref() {
+                    let target_message_id = execution
+                        .react_message_id
+                        .as_deref()
+                        .unwrap_or_else(|| event.event_id.trim());
+                    match self
+                        .outbound_dispatcher
+                        .deliver_reaction(event, emoji, target_message_id)
+                        .await
+                    {
+                        Ok(delivery) => {
+                            command_status = COMMAND_STATUS_REACTED.to_string();
+                            command_reason_code = COMMAND_REASON_REACT_DISPATCHED.to_string();
+                            reaction_delivery_payload = Some(
+                                serde_json::to_value(&delivery)
+                                    .context("serialize reaction delivery payload")?,
+                            );
+                        }
+                        Err(error) => {
+                            command_status = COMMAND_STATUS_FAILED.to_string();
+                            command_reason_code = command_reason_code_from_reaction_delivery_error(
+                                error.reason_code.as_str(),
+                            )
+                            .to_string();
+                            reaction_delivery_error_payload = Some(json!({
+                                "reason_code": error.reason_code,
+                                "detail": error.detail,
+                                "retryable": error.retryable,
+                                "endpoint": error.endpoint,
+                                "http_status": error.http_status,
+                            }));
+                        }
+                    }
+                }
+            }
+            if let Some(Value::Object(map)) = command_payload.as_mut() {
+                map.insert("status".to_string(), Value::String(command_status.clone()));
+                map.insert(
+                    "reason_code".to_string(),
+                    Value::String(command_reason_code.clone()),
+                );
+            }
+
             if let Some(user_context_text) = user_context_text.as_ref() {
                 if !context_contains_entry(&existing_context, "user", user_context_text) {
                     store.append_context_entry(&ChannelContextEntry {
@@ -1367,11 +1436,8 @@ impl MultiChannelRuntime {
             }
 
             let mut payload = json!({
-                "status": COMMAND_STATUS_SKIPPED,
-                "reason_code": command_execution
-                    .as_ref()
-                    .map(|execution| execution.reason_code.as_str())
-                    .unwrap_or(COMMAND_REASON_SKIP_SUPPRESSED),
+                "status": command_status.clone(),
+                "reason_code": command_reason_code.clone(),
                 "event_key": event_key,
                 "transport": event.transport.as_str(),
                 "conversation_id": event.conversation_id.trim(),
@@ -1387,6 +1453,23 @@ impl MultiChannelRuntime {
                     map.insert("command".to_string(), command_payload.clone());
                 }
             }
+            if let Some(reaction_delivery_payload) = reaction_delivery_payload.as_ref() {
+                if let Value::Object(map) = &mut payload {
+                    map.insert(
+                        "reaction_delivery".to_string(),
+                        reaction_delivery_payload.clone(),
+                    );
+                }
+            }
+            if let Some(reaction_delivery_error_payload) = reaction_delivery_error_payload.as_ref()
+            {
+                if let Value::Object(map) = &mut payload {
+                    map.insert(
+                        "reaction_delivery_error".to_string(),
+                        reaction_delivery_error_payload.clone(),
+                    );
+                }
+            }
             if let Some(skip_reason) = command_execution
                 .as_ref()
                 .and_then(|execution| execution.skip_reason.as_ref())
@@ -1398,7 +1481,7 @@ impl MultiChannelRuntime {
                     );
                 }
             }
-            if !log_contains_outbound_status(&existing_logs, event_key, COMMAND_STATUS_SKIPPED) {
+            if !log_contains_outbound_status(&existing_logs, event_key, command_status.as_str()) {
                 store.append_log_entry(&ChannelLogEntry {
                     timestamp_unix_ms: current_unix_timestamp_ms(),
                     direction: "outbound".to_string(),
@@ -2035,6 +2118,26 @@ fn parse_multi_channel_tau_command(
             };
             Ok(Some(MultiChannelTauCommand::Skip { reason }))
         }
+        "react" => {
+            let Some(raw_emoji) = tokens.next() else {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            };
+            let emoji = raw_emoji.trim();
+            if emoji.is_empty() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            let message_id = tokens
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if tokens.next().is_some() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            Ok(Some(MultiChannelTauCommand::React {
+                emoji: emoji.to_string(),
+                message_id: message_id.map(ToOwned::to_owned),
+            }))
+        }
         "auth" => {
             let Some(action) = tokens.next() else {
                 return Err(COMMAND_REASON_INVALID_ARGS.to_string());
@@ -2171,6 +2274,13 @@ fn render_multi_channel_tau_command_line(command: &MultiChannelTauCommand) -> St
                 "skip".to_string()
             }
         }
+        MultiChannelTauCommand::React { emoji, message_id } => {
+            if let Some(message_id) = message_id.as_deref() {
+                format!("react {} {}", emoji.trim(), message_id.trim())
+            } else {
+                format!("react {}", emoji.trim())
+            }
+        }
         MultiChannelTauCommand::AuthStatus { provider } => {
             if let Some(provider) = provider.as_deref() {
                 format!("auth status {provider}")
@@ -2195,6 +2305,7 @@ fn render_multi_channel_tau_command_help() -> String {
         "- /tau help",
         "- /tau status",
         "- /tau skip [reason]",
+        "- /tau react <emoji> [message_id]",
         "- /tau auth status [openai|anthropic|google]",
         "- /tau doctor [--online]",
         "- /tau approvals list [--json] [--status pending|approved|rejected|expired|consumed]",
@@ -2238,6 +2349,8 @@ fn build_multi_channel_command_execution(
         ),
         suppress_outbound_delivery: false,
         skip_reason: None,
+        react_emoji: None,
+        react_message_id: None,
     }
 }
 
@@ -2261,6 +2374,38 @@ fn build_multi_channel_command_skip_execution(
         response_text: summary,
         suppress_outbound_delivery: true,
         skip_reason: normalized_reason.map(ToOwned::to_owned),
+        react_emoji: None,
+        react_message_id: None,
+    }
+}
+
+fn build_multi_channel_command_react_execution(
+    emoji: &str,
+    message_id: Option<&str>,
+) -> MultiChannelCommandExecution {
+    let normalized_emoji = emoji.trim();
+    let normalized_message_id = message_id.map(str::trim).filter(|value| !value.is_empty());
+    let command_line = if let Some(message_id) = normalized_message_id {
+        format!("react {normalized_emoji} {message_id}")
+    } else {
+        format!("react {normalized_emoji}")
+    };
+    let summary = if let Some(message_id) = normalized_message_id {
+        format!(
+            "reaction command queued for dispatch: emoji={normalized_emoji} target_message_id={message_id}"
+        )
+    } else {
+        format!("reaction command queued for dispatch: emoji={normalized_emoji}")
+    };
+    MultiChannelCommandExecution {
+        command_line,
+        status: COMMAND_STATUS_REPORTED.to_string(),
+        reason_code: COMMAND_REASON_REACT_REQUESTED.to_string(),
+        response_text: summary,
+        suppress_outbound_delivery: true,
+        skip_reason: None,
+        react_emoji: Some(normalized_emoji.to_string()),
+        react_message_id: normalized_message_id.map(ToOwned::to_owned),
     }
 }
 
@@ -2278,6 +2423,14 @@ fn multi_channel_command_operator_allowed(access_decision: &MultiChannelAccessDe
     reason_code == "allow_allowlist" || reason_code == "allow_allowlist_and_pairing"
 }
 
+fn command_reason_code_from_reaction_delivery_error(reason_code: &str) -> &'static str {
+    match reason_code {
+        "reaction_unsupported_transport" => COMMAND_REASON_REACT_UNSUPPORTED_TRANSPORT,
+        "reaction_invalid_message_id" => COMMAND_REASON_REACT_INVALID_MESSAGE_ID,
+        _ => COMMAND_REASON_REACT_FAILED,
+    }
+}
+
 fn multi_channel_command_payload(execution: &MultiChannelCommandExecution) -> Value {
     let mut payload = json!({
         "schema": "multi_channel_tau_command_v1",
@@ -2289,6 +2442,19 @@ fn multi_channel_command_payload(execution: &MultiChannelCommandExecution) -> Va
     if let Some(reason) = execution.skip_reason.as_ref() {
         if let Value::Object(map) = &mut payload {
             map.insert("skip_reason".to_string(), Value::String(reason.clone()));
+        }
+    }
+    if let Some(emoji) = execution.react_emoji.as_ref() {
+        if let Value::Object(map) = &mut payload {
+            map.insert("react_emoji".to_string(), Value::String(emoji.clone()));
+        }
+    }
+    if let Some(message_id) = execution.react_message_id.as_ref() {
+        if let Value::Object(map) = &mut payload {
+            map.insert(
+                "react_message_id".to_string(),
+                Value::String(message_id.clone()),
+            );
         }
     }
     payload
