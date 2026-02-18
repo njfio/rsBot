@@ -1,6 +1,6 @@
 # Spec #2496 - worker-oriented ingestion orchestration + SHA-256 checkpoints
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `tau-memory` needs a worker-oriented ingestion flow that can be invoked deterministically while storing durable SHA-256 checkpoints for safe reruns after interruptions.
