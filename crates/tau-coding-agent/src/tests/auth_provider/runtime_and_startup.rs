@@ -1286,6 +1286,65 @@ fn unit_parse_numbered_plan_steps_accepts_deterministic_step_format() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn regression_spec_2542_c03_run_local_runtime_prompt_executes_model_call() {
+    // Regression: #2542
+    let temp = tempdir().expect("tempdir");
+    let original_cwd = std::env::current_dir().expect("resolve current dir");
+    std::env::set_current_dir(temp.path()).expect("set current dir");
+
+    let mut cli = test_cli();
+    set_workspace_tau_paths(&mut cli, temp.path());
+    cli.prompt = Some("mutation guard prompt".to_string());
+    cli.stream_output = false;
+    cli.runtime_heartbeat_enabled = false;
+    cli.runtime_self_repair_enabled = false;
+
+    std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+    let skills_lock_path = default_skills_lock_path(&cli.skills_dir);
+    if let Some(parent) = skills_lock_path.parent() {
+        std::fs::create_dir_all(parent).expect("create skills lock parent");
+    }
+    std::fs::write(&skills_lock_path, "{}\n").expect("write skills lock");
+
+    let recorded_models = Arc::new(AsyncMutex::new(Vec::new()));
+    let client: Arc<dyn tau_ai::LlmClient> = Arc::new(RecordingSequenceClient {
+        outcomes: AsyncMutex::new(VecDeque::from([Ok(ChatResponse {
+            message: Message::assistant_text("runtime-ok"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        })])),
+        recorded_models: Arc::clone(&recorded_models),
+    });
+    let model_ref = tau_ai::ModelRef::parse(&cli.model).expect("parse model ref");
+    let fallback_model_refs: Vec<tau_ai::ModelRef> = Vec::new();
+    let model_catalog = ModelCatalog::built_in();
+    let system_prompt = cli.system_prompt.clone();
+    let tool_policy = build_tool_policy(&cli).expect("build tool policy");
+    let tool_policy_json = tool_policy_to_json(&tool_policy);
+    let render_options = test_render_options();
+
+    let run_result = crate::run_local_runtime(crate::LocalRuntimeConfig {
+        cli: &cli,
+        client,
+        model_ref: &model_ref,
+        fallback_model_refs: &fallback_model_refs,
+        model_catalog: &model_catalog,
+        system_prompt: &system_prompt,
+        tool_policy,
+        tool_policy_json: &tool_policy_json,
+        render_options,
+        skills_dir: &cli.skills_dir,
+        skills_lock_path: &skills_lock_path,
+    })
+    .await;
+    std::env::set_current_dir(original_cwd).expect("restore current dir");
+    run_result.expect("run_local_runtime should execute prompt path");
+
+    let recorded_models = recorded_models.lock().await.clone();
+    assert_eq!(recorded_models.as_slice(), &[model_ref.model.clone()]);
+}
+
 #[tokio::test]
 async fn integration_run_plan_first_prompt_with_routing_uses_distinct_delegated_roles() {
     let temp = tempdir().expect("tempdir");
