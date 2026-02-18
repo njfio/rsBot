@@ -1,6 +1,6 @@
 # Spec #2536 - Task: add G15 profile routing schema + dispatch override policy
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 G15 checklist items for process model routing, task overrides, and complexity-based dispatch remain unimplemented outside the role-route-table path.

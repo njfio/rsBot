@@ -1,6 +1,6 @@
 # Spec #2537 - Subtask: RED/GREEN + validation evidence for G15 profile routing
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Task #2536 requires explicit RED/GREEN and full verification evidence to satisfy AGENTS merge gates.

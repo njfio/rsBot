@@ -392,10 +392,10 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Different LLM models for different process types. Cheap model for simple replies, expensive model for coding tasks.
 **Why it matters**: Cost optimization. A simple "hello" reply doesn't need Claude Opus 4.6.
 **Pathway**:
-- [ ] Add `routing` section to profile TOML: `channel_model`, `branch_model`, `worker_model`, `compactor_model`, `cortex_model`
-- [ ] Add `task_overrides` map: `coding → expensive_model`, `summarization → cheap_model`
-- [ ] Implement prompt complexity scoring (keyword-based, <1ms, no API calls): classify messages as light/standard/heavy
-- [ ] Apply overrides at LLM client dispatch time
+- [x] Add `routing` section to profile TOML: `channel_model`, `branch_model`, `worker_model`, `compactor_model`, `cortex_model`
+- [x] Add `task_overrides` map: `coding → expensive_model`, `summarization → cheap_model`
+- [x] Implement prompt complexity scoring (keyword-based, <1ms, no API calls): classify messages as light/standard/heavy
+- [x] Apply overrides at LLM client dispatch time
 - **Files**: `tau-provider/src/`, profile config, `tau-agent-core/src/`
 - **Effort**: Medium
 
