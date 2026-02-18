@@ -403,6 +403,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Config changes take effect without restart. Spacebot uses `arc-swap` + `notify` file watcher.
 **Why it matters**: In production, restarting drops all active sessions. Config changes should be seamless.
 **Pathway**:
+- [x] Phase 3 (`#2541`): bridge active profile store heartbeat interval updates into runtime heartbeat `.policy.toml` hot-reload payloads with deterministic `applied/no_change/invalid/missing_profile` diagnostics
 - [ ] Add `notify` as workspace dependency (file system watcher)
 - [ ] Wrap config in `ArcSwap<Config>` — atomic pointer swap, lock-free reads
 - [ ] Watch profile TOML for changes
