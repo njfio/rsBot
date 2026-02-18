@@ -1,6 +1,6 @@
 # Spec #2492 - implement G9 phase-1 chunked ingestion + resume checkpoints
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Bulk ingestion must process supported files safely and resumably. Today Tau has no ingestion worker path, so imports are manual and non-resilient.

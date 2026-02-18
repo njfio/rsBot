@@ -1,6 +1,6 @@
 # Spec #2490 - G9 memory ingestion phase-1 orchestration
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Tau lacks first-class bulk memory ingestion from workspace files. We need a bounded, testable phase-1 slice that introduces deterministic ingestion foundations without broad runtime architecture changes.

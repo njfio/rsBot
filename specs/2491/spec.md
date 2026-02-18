@@ -1,6 +1,6 @@
 # Spec #2491 - tau-memory ingestion worker foundation
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `tau-memory` currently has no reusable ingestion worker API for batch files, leaving G9 unimplemented.
