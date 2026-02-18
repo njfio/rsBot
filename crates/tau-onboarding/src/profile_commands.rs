@@ -591,6 +591,7 @@ mod tests {
                 context_providers: vec![],
             },
             auth: ProfileAuthDefaults::default(),
+            routing: Default::default(),
         }
     }
 

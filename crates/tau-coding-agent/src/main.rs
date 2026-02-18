@@ -193,7 +193,7 @@ pub(crate) use crate::rpc_protocol::{
 };
 #[cfg(test)]
 pub(crate) use crate::runtime_loop::{
-    resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
+    resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks,
     InteractiveRuntimeConfig, RuntimeExtensionHooksConfig,
 };
 #[cfg(test)]

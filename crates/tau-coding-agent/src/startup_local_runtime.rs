@@ -25,8 +25,9 @@ use crate::model_catalog::ModelCatalog;
 use crate::multi_agent_router::load_multi_agent_route_table;
 use crate::observability_loggers::{PromptTelemetryLogger, ToolAuditLogger};
 use crate::runtime_loop::{
-    resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks, run_prompt,
-    InteractiveRuntimeConfig, PlanFirstPromptRuntimeHooksConfig, RuntimeExtensionHooksConfig,
+    resolve_prompt_input, run_interactive, run_plan_first_prompt_with_runtime_hooks,
+    run_prompt_with_profile_routing, InteractiveRuntimeConfig, PlanFirstPromptRuntimeHooksConfig,
+    RuntimeExtensionHooksConfig,
 };
 use crate::runtime_output::event_to_json;
 use crate::runtime_types::{CommandExecutionContext, RenderOptions, SkillsSyncCommandConfig};
@@ -327,13 +328,14 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                         .await?;
                     }
                     LocalRuntimeEntryDispatch::Prompt(prompt) => {
-                        run_prompt(
+                        run_prompt_with_profile_routing(
                             &mut agent,
                             &mut session_runtime,
                             &prompt,
                             interactive_defaults.turn_timeout_ms,
                             render_options,
                             &extension_runtime_hooks,
+                            Some(&profile_defaults),
                         )
                         .await?;
                     }

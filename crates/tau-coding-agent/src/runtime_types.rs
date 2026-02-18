@@ -7,7 +7,8 @@ use crate::extension_manifest::ExtensionRegisteredCommand;
 pub(crate) use tau_onboarding::startup_config::ProfileDefaults;
 #[cfg(test)]
 pub(crate) use tau_onboarding::startup_config::{
-    ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileSessionDefaults,
+    ProfileAuthDefaults, ProfileMcpDefaults, ProfilePolicyDefaults, ProfileRoutingDefaults,
+    ProfileSessionDefaults,
 };
 use tau_provider::ModelCatalog;
 use tau_session::SessionImportMode;

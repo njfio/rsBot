@@ -178,6 +178,7 @@ pub(crate) fn handle_command(
         },
         mcp: ProfileMcpDefaults::default(),
         auth: ProfileAuthDefaults::default(),
+        routing: Default::default(),
     };
     let auth_command_config = AuthCommandConfig {
         credential_store: PathBuf::from(".tau/credentials.json"),

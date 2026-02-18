@@ -128,6 +128,7 @@ mod tests {
             },
             mcp: ProfileMcpDefaults::default(),
             auth: ProfileAuthDefaults::default(),
+            routing: Default::default(),
         }
     }
 

@@ -5,6 +5,7 @@
 //! dispatch phases.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use tau_cli::Cli;
 use tau_provider::{
     resolve_credential_store_encryption_mode, AuthCommandConfig, ProviderAuthMethod,
@@ -153,6 +154,27 @@ impl Default for ProfileAuthDefaults {
     }
 }
 
+fn default_profile_routing_task_overrides() -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Public struct `ProfileRoutingDefaults` used across Tau components.
+pub struct ProfileRoutingDefaults {
+    #[serde(default)]
+    pub channel_model: Option<String>,
+    #[serde(default)]
+    pub branch_model: Option<String>,
+    #[serde(default)]
+    pub worker_model: Option<String>,
+    #[serde(default)]
+    pub compactor_model: Option<String>,
+    #[serde(default)]
+    pub cortex_model: Option<String>,
+    #[serde(default = "default_profile_routing_task_overrides")]
+    pub task_overrides: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Public struct `ProfileDefaults` used across Tau components.
 pub struct ProfileDefaults {
@@ -164,6 +186,8 @@ pub struct ProfileDefaults {
     pub mcp: ProfileMcpDefaults,
     #[serde(default)]
     pub auth: ProfileAuthDefaults,
+    #[serde(default)]
+    pub routing: ProfileRoutingDefaults,
 }
 
 pub fn build_profile_defaults(cli: &Cli) -> ProfileDefaults {
@@ -220,12 +244,14 @@ pub fn build_profile_defaults(cli: &Cli) -> ProfileDefaults {
             anthropic: cli.anthropic_auth_mode.into(),
             google: cli.google_auth_mode.into(),
         },
+        routing: ProfileRoutingDefaults::default(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use serde_json::json;
     use std::path::PathBuf;
     use std::thread;
 
@@ -295,5 +321,155 @@ mod tests {
             defaults.policy.runtime_self_repair_orphan_max_age_seconds,
             120
         );
+    }
+
+    #[test]
+    fn spec_2536_c01_profile_defaults_parse_routing_fields() {
+        let parsed: super::ProfileDefaults = serde_json::from_value(json!({
+            "model": "openai/gpt-4o-mini",
+            "fallback_models": [],
+            "session": {
+                "enabled": true,
+                "path": ".tau/sessions/default.sqlite",
+                "import_mode": "merge"
+            },
+            "policy": {
+                "tool_policy_preset": "balanced",
+                "bash_profile": "balanced",
+                "bash_dry_run": false,
+                "os_sandbox_mode": "off",
+                "enforce_regular_files": true,
+                "bash_timeout_ms": 120000,
+                "max_command_length": 8192,
+                "max_tool_output_bytes": 262144,
+                "max_file_read_bytes": 262144,
+                "max_file_write_bytes": 262144,
+                "allow_command_newlines": true,
+                "runtime_heartbeat_enabled": true,
+                "runtime_heartbeat_interval_ms": 5000,
+                "runtime_heartbeat_state_path": ".tau/runtime-heartbeat/state.json",
+                "runtime_self_repair_enabled": true,
+                "runtime_self_repair_timeout_ms": 300000,
+                "runtime_self_repair_max_retries": 2,
+                "runtime_self_repair_tool_builds_dir": ".tau/tool-builds",
+                "runtime_self_repair_orphan_max_age_seconds": 3600
+            },
+            "routing": {
+                "channel_model": "openai/gpt-4.1-mini",
+                "branch_model": "openai/o3-mini",
+                "worker_model": "openai/o3-mini",
+                "compactor_model": "openai/gpt-4o-mini",
+                "cortex_model": "openai/gpt-4.1-mini",
+                "task_overrides": {
+                    "coding": "openai/o3-mini",
+                    "summarization": "openai/gpt-4o-mini"
+                }
+            }
+        }))
+        .expect("parse profile defaults");
+        assert_eq!(
+            parsed.routing.channel_model.as_deref(),
+            Some("openai/gpt-4.1-mini")
+        );
+        assert_eq!(
+            parsed
+                .routing
+                .task_overrides
+                .get("coding")
+                .map(String::as_str),
+            Some("openai/o3-mini")
+        );
+    }
+
+    #[test]
+    fn regression_2536_build_profile_defaults_initializes_empty_routing_task_overrides() {
+        let cli = parse_cli_with_stack();
+        let defaults = build_profile_defaults(&cli);
+        assert!(defaults.routing.task_overrides.is_empty());
+        assert_eq!(defaults.routing.task_overrides.len(), 0);
+    }
+
+    #[test]
+    fn regression_2536_profile_defaults_without_routing_defaults_to_empty_task_overrides() {
+        let parsed: super::ProfileDefaults = serde_json::from_value(json!({
+            "model": "openai/gpt-4o-mini",
+            "fallback_models": [],
+            "session": {
+                "enabled": true,
+                "path": ".tau/sessions/default.sqlite",
+                "import_mode": "merge"
+            },
+            "policy": {
+                "tool_policy_preset": "balanced",
+                "bash_profile": "balanced",
+                "bash_dry_run": false,
+                "os_sandbox_mode": "off",
+                "enforce_regular_files": true,
+                "bash_timeout_ms": 120000,
+                "max_command_length": 8192,
+                "max_tool_output_bytes": 262144,
+                "max_file_read_bytes": 262144,
+                "max_file_write_bytes": 262144,
+                "allow_command_newlines": true,
+                "runtime_heartbeat_enabled": true,
+                "runtime_heartbeat_interval_ms": 5000,
+                "runtime_heartbeat_state_path": ".tau/runtime-heartbeat/state.json",
+                "runtime_self_repair_enabled": true,
+                "runtime_self_repair_timeout_ms": 300000,
+                "runtime_self_repair_max_retries": 2,
+                "runtime_self_repair_tool_builds_dir": ".tau/tool-builds",
+                "runtime_self_repair_orphan_max_age_seconds": 3600
+            }
+        }))
+        .expect("parse profile defaults without routing");
+        assert!(parsed.routing.task_overrides.is_empty());
+        assert!(parsed.routing.channel_model.is_none());
+        assert!(parsed.routing.branch_model.is_none());
+        assert!(parsed.routing.worker_model.is_none());
+        assert!(parsed.routing.compactor_model.is_none());
+        assert!(parsed.routing.cortex_model.is_none());
+    }
+
+    #[test]
+    fn regression_2536_routing_without_task_overrides_defaults_to_empty_map() {
+        let parsed: super::ProfileDefaults = serde_json::from_value(json!({
+            "model": "openai/gpt-4o-mini",
+            "fallback_models": [],
+            "session": {
+                "enabled": true,
+                "path": ".tau/sessions/default.sqlite",
+                "import_mode": "merge"
+            },
+            "policy": {
+                "tool_policy_preset": "balanced",
+                "bash_profile": "balanced",
+                "bash_dry_run": false,
+                "os_sandbox_mode": "off",
+                "enforce_regular_files": true,
+                "bash_timeout_ms": 120000,
+                "max_command_length": 8192,
+                "max_tool_output_bytes": 262144,
+                "max_file_read_bytes": 262144,
+                "max_file_write_bytes": 262144,
+                "allow_command_newlines": true,
+                "runtime_heartbeat_enabled": true,
+                "runtime_heartbeat_interval_ms": 5000,
+                "runtime_heartbeat_state_path": ".tau/runtime-heartbeat/state.json",
+                "runtime_self_repair_enabled": true,
+                "runtime_self_repair_timeout_ms": 300000,
+                "runtime_self_repair_max_retries": 2,
+                "runtime_self_repair_tool_builds_dir": ".tau/tool-builds",
+                "runtime_self_repair_orphan_max_age_seconds": 3600
+            },
+            "routing": {
+                "channel_model": "openai/gpt-4.1-mini"
+            }
+        }))
+        .expect("parse profile defaults with partial routing");
+        assert_eq!(
+            parsed.routing.channel_model.as_deref(),
+            Some("openai/gpt-4.1-mini")
+        );
+        assert!(parsed.routing.task_overrides.is_empty());
     }
 }

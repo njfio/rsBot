@@ -43,7 +43,7 @@ use crate::orchestrator_bridge::{
     PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
 };
 use crate::runtime_output::{persist_messages, print_assistant_messages};
-use crate::runtime_types::{CommandExecutionContext, RenderOptions};
+use crate::runtime_types::{CommandExecutionContext, ProfileDefaults, RenderOptions};
 
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 const REPL_PROMPT: &str = "tau> ";
@@ -56,10 +56,33 @@ pub(crate) enum PromptRunStatus {
     TimedOut,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptProcessType {
+    Channel,
+    Branch,
+    Worker,
+    Compactor,
+    Cortex,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptComplexity {
+    Light,
+    Standard,
+    Heavy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeExtensionHooksConfig {
     pub(crate) enabled: bool,
     pub(crate) root: PathBuf,
+}
+
+#[derive(Clone, Copy)]
+struct PromptRoutingRuntimeConfig<'a> {
+    extension_runtime_hooks: &'a RuntimeExtensionHooksConfig,
+    profile_defaults: Option<&'a ProfileDefaults>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,13 +230,14 @@ impl Completer for ReplCommandCompleter {
     }
 }
 
-pub(crate) async fn run_prompt(
+pub(crate) async fn run_prompt_with_profile_routing(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
     prompt: &str,
     turn_timeout_ms: u64,
     render_options: RenderOptions,
     extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+    profile_defaults: Option<&ProfileDefaults>,
 ) -> Result<()> {
     let status = run_prompt_with_runtime_hooks(
         agent,
@@ -222,7 +246,10 @@ pub(crate) async fn run_prompt(
         turn_timeout_ms,
         tokio::signal::ctrl_c(),
         render_options,
-        extension_runtime_hooks,
+        PromptRoutingRuntimeConfig {
+            extension_runtime_hooks,
+            profile_defaults,
+        },
     )
     .await?;
     report_prompt_status(status);
@@ -379,7 +406,10 @@ async fn dispatch_interactive_turn(
         config.turn_timeout_ms,
         tokio::signal::ctrl_c(),
         config.render_options,
-        config.extension_runtime_hooks,
+        PromptRoutingRuntimeConfig {
+            extension_runtime_hooks: config.extension_runtime_hooks,
+            profile_defaults: Some(config.command_context.profile_defaults),
+        },
     )
     .await?;
     report_prompt_status(status);
@@ -444,6 +474,162 @@ fn report_interactive_turn_error(error: &anyhow::Error) {
     eprintln!("interactive turn failed: {error:#}");
 }
 
+const CODING_TASK_KEYWORDS: &[&str] = &[
+    "code",
+    "coding",
+    "implement",
+    "implementation",
+    "function",
+    "method",
+    "class",
+    "module",
+    "refactor",
+    "debug",
+    "fix",
+    "bug",
+    "test",
+    "tests",
+    "compile",
+    "build",
+    "rust",
+    "typescript",
+    "python",
+];
+
+const SUMMARIZATION_TASK_KEYWORDS: &[&str] = &[
+    "summarize",
+    "summary",
+    "tldr",
+    "recap",
+    "overview",
+    "condense",
+];
+
+const HEAVY_COMPLEXITY_KEYWORDS: &[&str] = &[
+    "implement",
+    "refactor",
+    "debug",
+    "fix",
+    "migrate",
+    "optimize",
+    "design",
+    "architecture",
+    "integration",
+    "benchmark",
+    "security",
+];
+
+const STANDARD_COMPLEXITY_KEYWORDS: &[&str] = &[
+    "explain",
+    "analyze",
+    "review",
+    "compare",
+    "plan",
+    "document",
+    "summarize",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptTaskType {
+    Coding,
+    Summarization,
+}
+
+fn contains_any_keyword(normalized_prompt: &str, keywords: &[&str]) -> bool {
+    keywords
+        .iter()
+        .any(|keyword| normalized_prompt.contains(keyword))
+}
+
+fn normalize_non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn infer_prompt_task_type(prompt: &str, complexity: PromptComplexity) -> Option<PromptTaskType> {
+    let normalized_prompt = prompt.to_lowercase();
+    let coding_match = contains_any_keyword(&normalized_prompt, CODING_TASK_KEYWORDS);
+    let summarization_match = contains_any_keyword(&normalized_prompt, SUMMARIZATION_TASK_KEYWORDS);
+    if coding_match {
+        return Some(PromptTaskType::Coding);
+    }
+    if summarization_match {
+        return Some(PromptTaskType::Summarization);
+    }
+    if complexity == PromptComplexity::Heavy {
+        return Some(PromptTaskType::Coding);
+    }
+    None
+}
+
+fn routing_task_override(profile: &ProfileDefaults, task_type: PromptTaskType) -> Option<String> {
+    let key = match task_type {
+        PromptTaskType::Coding => "coding",
+        PromptTaskType::Summarization => "summarization",
+    };
+    profile
+        .routing
+        .task_overrides
+        .iter()
+        .find_map(|(override_key, override_model)| {
+            if override_key.trim().eq_ignore_ascii_case(key) {
+                normalize_non_empty(override_model).map(ToOwned::to_owned)
+            } else {
+                None
+            }
+        })
+}
+
+fn process_type_routed_model(
+    profile: &ProfileDefaults,
+    process_type: PromptProcessType,
+) -> Option<String> {
+    let configured = match process_type {
+        PromptProcessType::Channel => profile.routing.channel_model.as_deref(),
+        PromptProcessType::Branch => profile.routing.branch_model.as_deref(),
+        PromptProcessType::Worker => profile.routing.worker_model.as_deref(),
+        PromptProcessType::Compactor => profile.routing.compactor_model.as_deref(),
+        PromptProcessType::Cortex => profile.routing.cortex_model.as_deref(),
+    };
+    configured
+        .and_then(normalize_non_empty)
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn classify_prompt_complexity(prompt: &str) -> PromptComplexity {
+    let normalized_prompt = prompt.trim().to_lowercase();
+    if normalized_prompt.is_empty() {
+        return PromptComplexity::Light;
+    }
+
+    let char_count = normalized_prompt.chars().count();
+    if contains_any_keyword(&normalized_prompt, HEAVY_COMPLEXITY_KEYWORDS) || char_count >= 320 {
+        return PromptComplexity::Heavy;
+    }
+    if contains_any_keyword(&normalized_prompt, STANDARD_COMPLEXITY_KEYWORDS) || char_count >= 140 {
+        return PromptComplexity::Standard;
+    }
+    PromptComplexity::Light
+}
+
+pub(crate) fn select_routed_dispatch_model(
+    profile: &ProfileDefaults,
+    process_type: PromptProcessType,
+    prompt: &str,
+) -> Option<String> {
+    let complexity = classify_prompt_complexity(prompt);
+    if let Some(task_type) = infer_prompt_task_type(prompt, complexity) {
+        if let Some(task_override) = routing_task_override(profile, task_type) {
+            return Some(task_override);
+        }
+    }
+    process_type_routed_model(profile, process_type)
+}
+
 async fn run_prompt_with_runtime_hooks<F>(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
@@ -451,17 +637,28 @@ async fn run_prompt_with_runtime_hooks<F>(
     turn_timeout_ms: u64,
     cancellation_signal: F,
     render_options: RenderOptions,
-    extension_runtime_hooks: &RuntimeExtensionHooksConfig,
+    routing_config: PromptRoutingRuntimeConfig<'_>,
 ) -> Result<PromptRunStatus>
 where
     F: Future,
 {
+    let PromptRoutingRuntimeConfig {
+        extension_runtime_hooks,
+        profile_defaults,
+    } = routing_config;
     let effective_prompt = apply_runtime_message_transform(extension_runtime_hooks, prompt);
     dispatch_runtime_hook(
         extension_runtime_hooks,
         "run-start",
         build_runtime_hook_payload("run-start", &effective_prompt, turn_timeout_ms, None, None),
     );
+
+    let model_override = profile_defaults.and_then(|profile| {
+        select_routed_dispatch_model(profile, PromptProcessType::Channel, &effective_prompt)
+    });
+    let previous_model = model_override
+        .as_ref()
+        .map(|selected_model| agent.swap_dispatch_model(selected_model.clone()));
 
     let result = run_prompt_with_cancellation(
         agent,
@@ -472,6 +669,9 @@ where
         render_options,
     )
     .await;
+    if let Some(previous_model) = previous_model {
+        agent.restore_dispatch_model(previous_model);
+    }
 
     match result {
         Ok(status) => {
@@ -1088,12 +1288,118 @@ fn report_prompt_status(status: PromptRunStatus) {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_runtime_message_transform, build_runtime_hook_payload,
+        apply_runtime_message_transform, build_runtime_hook_payload, classify_prompt_complexity,
         render_orchestrator_policy_inheritance_context, resolve_repl_history_path,
-        ReplCommandCompleter, ReplMultilineState, RuntimeExtensionHooksConfig,
+        run_prompt_with_profile_routing, select_routed_dispatch_model, PromptComplexity,
+        PromptProcessType, ReplCommandCompleter, ReplMultilineState, RuntimeExtensionHooksConfig,
         RuntimeHookRunStatus,
     };
+    use crate::runtime_types::{
+        ProfileAuthDefaults, ProfileDefaults, ProfileMcpDefaults, ProfilePolicyDefaults,
+        ProfileRoutingDefaults, ProfileSessionDefaults, RenderOptions,
+    };
+    use async_trait::async_trait;
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::Arc;
+    use tau_agent_core::{Agent, AgentConfig};
+    use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
     use tempfile::tempdir;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    struct RecordingSequenceClient {
+        outcomes: AsyncMutex<VecDeque<Result<ChatResponse, TauAiError>>>,
+        recorded_models: Arc<AsyncMutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for RecordingSequenceClient {
+        async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+            self.recorded_models.lock().await.push(request.model);
+            let mut outcomes = self.outcomes.lock().await;
+            outcomes.pop_front().unwrap_or_else(|| {
+                Err(TauAiError::InvalidResponse(
+                    "mock outcome queue is empty".to_string(),
+                ))
+            })
+        }
+    }
+
+    fn test_render_options() -> RenderOptions {
+        RenderOptions {
+            stream_output: false,
+            stream_delay_ms: 0,
+        }
+    }
+
+    fn disabled_runtime_hooks() -> RuntimeExtensionHooksConfig {
+        RuntimeExtensionHooksConfig {
+            enabled: false,
+            root: std::path::PathBuf::from(".tau/extensions"),
+        }
+    }
+
+    fn sample_chat_response(text: &str) -> ChatResponse {
+        ChatResponse {
+            message: Message::assistant_text(text),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }
+    }
+
+    fn sample_profile_defaults() -> ProfileDefaults {
+        ProfileDefaults {
+            model: "openai/gpt-4o-mini".to_string(),
+            fallback_models: Vec::new(),
+            session: ProfileSessionDefaults {
+                enabled: true,
+                path: Some(".tau/sessions/default.sqlite".to_string()),
+                import_mode: "merge".to_string(),
+            },
+            policy: ProfilePolicyDefaults {
+                tool_policy_preset: "balanced".to_string(),
+                bash_profile: "balanced".to_string(),
+                bash_dry_run: false,
+                os_sandbox_mode: "off".to_string(),
+                enforce_regular_files: true,
+                bash_timeout_ms: 120_000,
+                max_command_length: 8_192,
+                max_tool_output_bytes: 262_144,
+                max_file_read_bytes: 262_144,
+                max_file_write_bytes: 262_144,
+                allow_command_newlines: true,
+                runtime_heartbeat_enabled: true,
+                runtime_heartbeat_interval_ms: 5_000,
+                runtime_heartbeat_state_path: ".tau/runtime-heartbeat/state.json".to_string(),
+                runtime_self_repair_enabled: true,
+                runtime_self_repair_timeout_ms: 300_000,
+                runtime_self_repair_max_retries: 2,
+                runtime_self_repair_tool_builds_dir: ".tau/tool-builds".to_string(),
+                runtime_self_repair_orphan_max_age_seconds: 3_600,
+            },
+            mcp: ProfileMcpDefaults::default(),
+            auth: ProfileAuthDefaults::default(),
+            routing: ProfileRoutingDefaults::default(),
+        }
+    }
+
+    fn routed_profile_defaults() -> ProfileDefaults {
+        let mut profile = sample_profile_defaults();
+        profile.routing = ProfileRoutingDefaults {
+            channel_model: Some("openai/gpt-4.1-mini".to_string()),
+            branch_model: None,
+            worker_model: None,
+            compactor_model: None,
+            cortex_model: None,
+            task_overrides: BTreeMap::from([
+                ("coding".to_string(), "openai/o3-mini".to_string()),
+                (
+                    "summarization".to_string(),
+                    "openai/gpt-4o-mini".to_string(),
+                ),
+            ]),
+        };
+        profile
+    }
 
     #[test]
     fn unit_build_runtime_hook_payload_includes_status_and_error() {
@@ -1238,6 +1544,138 @@ mod tests {
         assert_eq!(
             history_path,
             std::path::Path::new("/tmp/tau/sessions/default.history")
+        );
+    }
+
+    #[test]
+    fn spec_2536_c02_prompt_complexity_and_task_override_select_model() {
+        let profile = routed_profile_defaults();
+
+        assert_eq!(
+            classify_prompt_complexity("write a Rust function and fix failing tests"),
+            PromptComplexity::Heavy
+        );
+        let selected = select_routed_dispatch_model(
+            &profile,
+            PromptProcessType::Channel,
+            "write a Rust function and fix failing tests",
+        );
+        assert_eq!(selected.as_deref(), Some("openai/o3-mini"));
+    }
+
+    #[test]
+    fn regression_2536_select_model_falls_back_to_process_route_without_task_override() {
+        let profile = routed_profile_defaults();
+        let selected = select_routed_dispatch_model(
+            &profile,
+            PromptProcessType::Channel,
+            "hello from channel",
+        );
+        assert_eq!(selected.as_deref(), Some("openai/gpt-4.1-mini"));
+    }
+
+    #[test]
+    fn regression_2536_classify_prompt_complexity_respects_keyword_and_length_boundaries() {
+        assert_eq!(classify_prompt_complexity("hello"), PromptComplexity::Light);
+        assert_eq!(
+            classify_prompt_complexity("explain this output"),
+            PromptComplexity::Standard
+        );
+        assert_eq!(
+            classify_prompt_complexity(&"a".repeat(140)),
+            PromptComplexity::Standard
+        );
+        assert_eq!(
+            classify_prompt_complexity(&"a".repeat(320)),
+            PromptComplexity::Heavy
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_2536_c03_dispatch_uses_scoped_model_override_and_restores_baseline() {
+        let recorded_models = Arc::new(AsyncMutex::new(Vec::<String>::new()));
+        let mut agent = Agent::new(
+            Arc::new(RecordingSequenceClient {
+                outcomes: AsyncMutex::new(VecDeque::from([
+                    Ok(sample_chat_response("routed")),
+                    Ok(sample_chat_response("baseline")),
+                ])),
+                recorded_models: recorded_models.clone(),
+            }),
+            AgentConfig {
+                model: "openai/gpt-4o-mini".to_string(),
+                ..AgentConfig::default()
+            },
+        );
+        let mut session_runtime = None;
+        let runtime_hooks = disabled_runtime_hooks();
+        let routed_profile = routed_profile_defaults();
+
+        run_prompt_with_profile_routing(
+            &mut agent,
+            &mut session_runtime,
+            "write a Rust function and fix failing tests",
+            0,
+            test_render_options(),
+            &runtime_hooks,
+            Some(&routed_profile),
+        )
+        .await
+        .expect("routed prompt dispatch should succeed");
+
+        run_prompt_with_profile_routing(
+            &mut agent,
+            &mut session_runtime,
+            "hello",
+            0,
+            test_render_options(),
+            &runtime_hooks,
+            None,
+        )
+        .await
+        .expect("baseline prompt dispatch should succeed");
+
+        assert_eq!(
+            recorded_models.lock().await.clone(),
+            vec![
+                "openai/o3-mini".to_string(),
+                "openai/gpt-4o-mini".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn regression_2536_default_profile_without_routing_keeps_baseline_model() {
+        let recorded_models = Arc::new(AsyncMutex::new(Vec::<String>::new()));
+        let mut agent = Agent::new(
+            Arc::new(RecordingSequenceClient {
+                outcomes: AsyncMutex::new(VecDeque::from([Ok(sample_chat_response("baseline"))])),
+                recorded_models: recorded_models.clone(),
+            }),
+            AgentConfig {
+                model: "openai/gpt-4o-mini".to_string(),
+                ..AgentConfig::default()
+            },
+        );
+        let mut session_runtime = None;
+        let runtime_hooks = disabled_runtime_hooks();
+        let default_profile = sample_profile_defaults();
+
+        run_prompt_with_profile_routing(
+            &mut agent,
+            &mut session_runtime,
+            "write a Rust function and fix failing tests",
+            0,
+            test_render_options(),
+            &runtime_hooks,
+            Some(&default_profile),
+        )
+        .await
+        .expect("default profile prompt dispatch should succeed");
+
+        assert_eq!(
+            recorded_models.lock().await.clone(),
+            vec!["openai/gpt-4o-mini".to_string()]
         );
     }
 }
