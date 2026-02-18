@@ -18,7 +18,7 @@ use reqwest::{
 use serde::Serialize;
 use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentTool, DefaultLeakDetector, LeakDetector, ToolExecutionResult};
-use tau_ai::ToolDefinition;
+use tau_ai::{Message, ToolDefinition};
 use tau_extensions::{execute_extension_registered_tool, ExtensionRegisteredTool};
 use tau_runtime::{
     build_generated_wasm_tool, BackgroundJobCreateRequest, BackgroundJobRuntime,
@@ -37,8 +37,8 @@ use tau_memory::runtime::{
     MemoryType,
 };
 use tau_session::{
-    redo_session_head, resolve_session_navigation_head, undo_session_head, SessionRuntime,
-    SessionStore,
+    redo_session_head, resolve_session_navigation_head, session_message_preview, undo_session_head,
+    SessionRuntime, SessionStore,
 };
 
 const BALANCED_COMMAND_ALLOWLIST: &[&str] = &[
@@ -72,6 +72,7 @@ const JOBS_DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const JOBS_MAX_TIMEOUT_MS: u64 = 900_000;
 const JOBS_OUTPUT_PREVIEW_DEFAULT_BYTES: usize = 2_000;
 const JOBS_OUTPUT_PREVIEW_MAX_BYTES: usize = 16_000;
+const BRANCH_TOOL_MAX_PROMPT_CHARS: usize = 4_000;
 const TOOL_RATE_LIMIT_WINDOW_MS_DEFAULT: u64 = 60_000;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_PERMISSIVE: u32 = 240;
 const TOOL_RATE_LIMIT_MAX_REQUESTS_BALANCED: u32 = 120;
@@ -134,6 +135,7 @@ const BUILTIN_AGENT_TOOL_NAMES: &[&str] = &[
     "jobs_list",
     "jobs_status",
     "jobs_cancel",
+    "branch",
     "undo",
     "redo",
     "skip",
@@ -845,6 +847,164 @@ impl AgentTool for EditTool {
         ToolExecutionResult::ok(json!({
             "path": resolved.display().to_string(),
             "replacements": replacements,
+        }))
+    }
+}
+
+/// Public struct `BranchTool` used across Tau components.
+pub struct BranchTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl BranchTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for BranchTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "branch".to_string(),
+            description: "Append a branch prompt to a session lineage with explicit parent control"
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to target session JSONL/SQLite file"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": format!(
+                            "Branch prompt text (max {} characters)",
+                            BRANCH_TOOL_MAX_PROMPT_CHARS
+                        )
+                    },
+                    "parent_id": {
+                        "type": "integer",
+                        "description": "Optional parent entry id. Defaults to session head."
+                    }
+                },
+                "required": ["path", "prompt"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let path = match required_string(&arguments, "path") {
+            Ok(path) => path,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        let prompt = match required_string(&arguments, "prompt") {
+            Ok(prompt) => prompt,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        let parent_id = match optional_u64(&arguments, "parent_id") {
+            Ok(parent_id) => parent_id,
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        if prompt.trim().is_empty() {
+            return ToolExecutionResult::error(json!({
+                "tool": "branch",
+                "path": path,
+                "reason_code": "branch_prompt_empty",
+                "error": "prompt must not be empty",
+            }));
+        }
+        if prompt.chars().count() > BRANCH_TOOL_MAX_PROMPT_CHARS {
+            return ToolExecutionResult::error(json!({
+                "tool": "branch",
+                "path": path,
+                "reason_code": "branch_prompt_too_large",
+                "error": format!(
+                    "prompt exceeds max length of {} characters",
+                    BRANCH_TOOL_MAX_PROMPT_CHARS
+                ),
+            }));
+        }
+
+        let resolved = match resolve_and_validate_path(&path, &self.policy, PathMode::Write) {
+            Ok(path) => path,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "path": path,
+                    "error": error,
+                }))
+            }
+        };
+        if let Err(error) = validate_file_target(
+            &resolved,
+            PathMode::Write,
+            self.policy.enforce_regular_files,
+        ) {
+            return ToolExecutionResult::error(json!({
+                "path": resolved.display().to_string(),
+                "error": error,
+            }));
+        }
+
+        let mut store = match SessionStore::load(&resolved) {
+            Ok(store) => store,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "branch",
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_branch_load_error",
+                    "error": format!("failed to load session: {error}"),
+                }))
+            }
+        };
+
+        let before_entries = store.entries().len();
+        let previous_head_id = store.head_id();
+        let selected_parent_id = parent_id.or(previous_head_id);
+        let branch_message = Message::user(prompt.clone());
+        let branch_head_id = match store.append_messages(selected_parent_id, &[branch_message]) {
+            Ok(Some(head)) => head,
+            Ok(None) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "branch",
+                    "path": resolved.display().to_string(),
+                    "reason_code": "session_branch_append_noop",
+                    "error": "branch append produced no new head",
+                }))
+            }
+            Err(error) => {
+                let error_string = error.to_string();
+                let reason_code = if error_string.contains("parent id")
+                    && error_string.contains("does not exist")
+                {
+                    "session_branch_parent_not_found"
+                } else {
+                    "session_branch_append_error"
+                };
+                return ToolExecutionResult::error(json!({
+                    "tool": "branch",
+                    "path": resolved.display().to_string(),
+                    "reason_code": reason_code,
+                    "parent_id": selected_parent_id,
+                    "error": error_string,
+                }));
+            }
+        };
+        let after_entries = store.entries().len();
+
+        ToolExecutionResult::ok(json!({
+            "tool": "branch",
+            "path": resolved.display().to_string(),
+            "reason_code": "session_branch_created",
+            "summary": "branch entry created",
+            "selected_parent_id": selected_parent_id,
+            "previous_head_id": previous_head_id,
+            "branch_head_id": branch_head_id,
+            "before_entries": before_entries,
+            "after_entries": after_entries,
+            "appended_entries": after_entries.saturating_sub(before_entries),
+            "prompt_preview": session_message_preview(&Message::user(prompt)),
         }))
     }
 }

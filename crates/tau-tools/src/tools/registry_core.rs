@@ -579,6 +579,7 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(SessionsSearchTool::new(policy.clone()));
     agent.register_tool(SessionsStatsTool::new(policy.clone()));
     agent.register_tool(SessionsSendTool::new(policy.clone()));
+    agent.register_tool(BranchTool::new(policy.clone()));
     agent.register_tool(JobsCreateTool::new(policy.clone()));
     agent.register_tool(JobsListTool::new(policy.clone()));
     agent.register_tool(JobsStatusTool::new(policy.clone()));
