@@ -46,6 +46,7 @@ const MEMORY_LIFECYCLE_DEFAULT_DECAY_RATE: f32 = 0.9;
 const MEMORY_LIFECYCLE_DEFAULT_PRUNE_IMPORTANCE_FLOOR: f32 = 0.1;
 const MEMORY_LIFECYCLE_DEFAULT_ORPHAN_IMPORTANCE_FLOOR: f32 = 0.2;
 const MEMORY_LIFECYCLE_DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD: f32 = 0.97;
+const MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT: usize = 200;
 const MEMORY_STORAGE_REASON_PATH_JSONL: &str = "memory_storage_backend_path_jsonl";
 const MEMORY_STORAGE_REASON_PATH_SQLITE: &str = "memory_storage_backend_path_sqlite";
 const MEMORY_STORAGE_REASON_EXISTING_JSONL: &str = "memory_storage_backend_existing_jsonl";
@@ -133,6 +134,22 @@ fn default_lifecycle_duplicate_cleanup_enabled() -> bool {
 
 fn default_lifecycle_duplicate_similarity_threshold() -> f32 {
     MEMORY_LIFECYCLE_DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD
+}
+
+fn default_ingestion_scope() -> MemoryScope {
+    MemoryScope {
+        workspace_id: MEMORY_SCOPE_DEFAULT_WORKSPACE.to_string(),
+        channel_id: MEMORY_SCOPE_DEFAULT_CHANNEL.to_string(),
+        actor_id: MEMORY_SCOPE_DEFAULT_ACTOR.to_string(),
+    }
+}
+
+fn default_ingestion_chunk_line_count() -> usize {
+    MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT
+}
+
+fn default_ingestion_delete_source_on_success() -> bool {
+    true
 }
 
 /// Public struct `MemoryRelation` used across Tau components.
@@ -404,6 +421,42 @@ pub struct MemoryLifecycleMaintenanceResult {
     pub identity_exempt_records: usize,
     pub updated_records: usize,
     pub unchanged_records: usize,
+}
+
+/// Public struct `MemoryIngestionOptions` used across Tau components.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryIngestionOptions {
+    #[serde(default = "default_ingestion_scope")]
+    pub scope: MemoryScope,
+    #[serde(default = "default_ingestion_chunk_line_count")]
+    pub chunk_line_count: usize,
+    #[serde(default = "default_ingestion_delete_source_on_success")]
+    pub delete_source_on_success: bool,
+}
+
+impl Default for MemoryIngestionOptions {
+    fn default() -> Self {
+        Self {
+            scope: default_ingestion_scope(),
+            chunk_line_count: default_ingestion_chunk_line_count(),
+            delete_source_on_success: default_ingestion_delete_source_on_success(),
+        }
+    }
+}
+
+/// Public struct `MemoryIngestionResult` used across Tau components.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryIngestionResult {
+    pub discovered_files: usize,
+    pub supported_files: usize,
+    pub skipped_unsupported_files: usize,
+    pub processed_files: usize,
+    pub deleted_files: usize,
+    pub chunks_discovered: usize,
+    pub chunks_ingested: usize,
+    pub chunks_skipped_existing: usize,
+    pub failed_files: usize,
+    pub diagnostics: Vec<String>,
 }
 
 /// Public struct `MemorySearchMatch` used across Tau components.
@@ -957,10 +1010,10 @@ mod tests {
     use super::{
         embed_text_vector, importance_rank_multiplier, rank_text_candidates,
         rank_text_candidates_bm25, FileMemoryStore, MemoryEmbeddingProviderConfig,
-        MemoryLifecycleMaintenancePolicy, MemoryLifecycleMaintenanceResult, MemoryRelationInput,
-        MemoryScopeFilter, MemorySearchOptions, MemoryStorageBackend, MemoryType,
-        RankedTextCandidate, RuntimeMemoryRecord, MEMORY_BACKEND_ENV,
-        MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
+        MemoryIngestionOptions, MemoryLifecycleMaintenancePolicy, MemoryLifecycleMaintenanceResult,
+        MemoryRelationInput, MemoryScopeFilter, MemorySearchOptions, MemoryStorageBackend,
+        MemoryType, RankedTextCandidate, RuntimeMemoryRecord, MEMORY_BACKEND_ENV,
+        MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT, MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
     };
     use crate::memory_contract::{MemoryEntry, MemoryScope};
     use httpmock::{Method::POST, MockServer};
@@ -1708,6 +1761,20 @@ mod tests {
         }))
         .expect("deserialize search options with graph default");
         assert!((decoded.graph_signal_weight - 0.25).abs() <= 0.000_001);
+    }
+
+    #[test]
+    fn regression_spec_2492_c05_ingestion_options_serde_defaults_are_contract_stable() {
+        let decoded: MemoryIngestionOptions =
+            serde_json::from_value(json!({})).expect("deserialize ingestion defaults");
+        assert_eq!(
+            decoded.chunk_line_count,
+            MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT
+        );
+        assert!(decoded.delete_source_on_success);
+        assert_eq!(decoded.scope.workspace_id, "default-workspace");
+        assert_eq!(decoded.scope.channel_id, "default-channel");
+        assert_eq!(decoded.scope.actor_id, "default-actor");
     }
 
     #[test]

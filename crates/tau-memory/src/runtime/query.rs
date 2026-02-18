@@ -1,18 +1,30 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{bail, Result};
 
+use crate::memory_contract::MemoryEntry;
+
 use super::{
     importance_rank_multiplier, rank_text_candidates, rank_text_candidates_bm25,
     reciprocal_rank_fuse, record_search_text, resize_and_normalize_embedding, FileMemoryStore,
-    MemoryLifecycleMaintenancePolicy, MemoryLifecycleMaintenanceResult, MemoryScopeFilter,
-    MemorySearchMatch, MemorySearchOptions, MemorySearchResult, MemoryTree, MemoryTreeNode,
-    MemoryType, RankedTextCandidate, RankedTextMatch, RuntimeMemoryRecord,
-    MEMORY_EMBEDDING_REASON_HASH_ONLY, MEMORY_EMBEDDING_REASON_PROVIDER_FAILED,
-    MEMORY_RETRIEVAL_BACKEND_HYBRID_BM25_RRF, MEMORY_RETRIEVAL_BACKEND_VECTOR_ONLY,
-    MEMORY_RETRIEVAL_REASON_HYBRID_ENABLED, MEMORY_RETRIEVAL_REASON_VECTOR_ONLY,
+    MemoryIngestionOptions, MemoryIngestionResult, MemoryLifecycleMaintenancePolicy,
+    MemoryLifecycleMaintenanceResult, MemoryScopeFilter, MemorySearchMatch, MemorySearchOptions,
+    MemorySearchResult, MemoryTree, MemoryTreeNode, MemoryType, RankedTextCandidate,
+    RankedTextMatch, RuntimeMemoryRecord, MEMORY_EMBEDDING_REASON_HASH_ONLY,
+    MEMORY_EMBEDDING_REASON_PROVIDER_FAILED, MEMORY_RETRIEVAL_BACKEND_HYBRID_BM25_RRF,
+    MEMORY_RETRIEVAL_BACKEND_VECTOR_ONLY, MEMORY_RETRIEVAL_REASON_HYBRID_ENABLED,
+    MEMORY_RETRIEVAL_REASON_VECTOR_ONLY,
 };
+
+const MEMORY_INGESTION_SOURCE_EVENT_KEY_PREFIX: &str = "ingestion:chunk:";
+const MEMORY_INGESTION_DEFAULT_RECENCY_WEIGHT_BPS: u16 = 0;
+const MEMORY_INGESTION_DEFAULT_CONFIDENCE_BPS: u16 = 1_000;
+const MEMORY_INGESTION_SUPPORTED_EXTENSIONS: &[&str] = &[
+    "txt", "md", "json", "jsonl", "csv", "tsv", "log", "xml", "yaml", "yml", "toml",
+];
 
 impl FileMemoryStore {
     /// Reads the latest record for `memory_id`, optionally constrained by `scope_filter`.
@@ -53,6 +65,152 @@ impl FileMemoryStore {
         }
         records.truncate(limit);
         Ok(records)
+    }
+
+    /// Ingests supported files from `ingest_dir` once using deterministic chunk checkpoints.
+    pub fn ingest_directory_once(
+        &self,
+        ingest_dir: &Path,
+        options: &MemoryIngestionOptions,
+    ) -> Result<MemoryIngestionResult> {
+        if options.chunk_line_count == 0 {
+            bail!("ingestion chunk_line_count must be greater than zero");
+        }
+        if !ingest_dir.exists() {
+            return Ok(MemoryIngestionResult {
+                diagnostics: vec![format!(
+                    "ingestion_directory_missing: path={}",
+                    ingest_dir.display()
+                )],
+                ..MemoryIngestionResult::default()
+            });
+        }
+        if !ingest_dir.is_dir() {
+            bail!(
+                "ingestion path must be a directory (received {})",
+                ingest_dir.display()
+            );
+        }
+
+        let mut result = MemoryIngestionResult::default();
+        let mut known_checkpoint_keys = self
+            .list_latest_records(None, usize::MAX)?
+            .into_iter()
+            .map(|record| record.entry.source_event_key)
+            .collect::<BTreeSet<_>>();
+
+        let mut source_paths = Vec::new();
+        for entry in fs::read_dir(ingest_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                source_paths.push(path);
+            }
+        }
+        source_paths.sort();
+
+        for source_path in source_paths {
+            result.discovered_files = result.discovered_files.saturating_add(1);
+
+            let Some(extension) = supported_ingest_extension(source_path.as_path()) else {
+                result.skipped_unsupported_files =
+                    result.skipped_unsupported_files.saturating_add(1);
+                result.diagnostics.push(format!(
+                    "ingestion_file_unsupported_extension: path={}",
+                    source_path.display()
+                ));
+                continue;
+            };
+            result.supported_files = result.supported_files.saturating_add(1);
+
+            let raw = match fs::read_to_string(&source_path) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    result.failed_files = result.failed_files.saturating_add(1);
+                    result.diagnostics.push(format!(
+                        "ingestion_file_read_failed: path={} error={error}",
+                        source_path.display()
+                    ));
+                    continue;
+                }
+            };
+
+            let chunks = chunk_text_by_lines(raw.as_str(), options.chunk_line_count);
+            result.chunks_discovered = result.chunks_discovered.saturating_add(chunks.len());
+
+            let mut file_failed = false;
+            for (chunk_index, chunk_text) in chunks.iter().enumerate() {
+                let checkpoint_key =
+                    ingestion_chunk_checkpoint_key(source_path.as_path(), chunk_index, chunk_text);
+                if known_checkpoint_keys.contains(checkpoint_key.as_str()) {
+                    result.chunks_skipped_existing =
+                        result.chunks_skipped_existing.saturating_add(1);
+                    continue;
+                }
+
+                let entry = MemoryEntry {
+                    memory_id: ingestion_chunk_memory_id(
+                        source_path.as_path(),
+                        chunk_index,
+                        checkpoint_key.as_str(),
+                    ),
+                    summary: ingestion_chunk_summary(
+                        source_path.as_path(),
+                        chunk_index,
+                        chunk_text,
+                    ),
+                    tags: vec![
+                        "ingestion".to_string(),
+                        format!("ingestion_extension:{extension}"),
+                    ],
+                    facts: vec![chunk_text.clone()],
+                    source_event_key: checkpoint_key.clone(),
+                    recency_weight_bps: MEMORY_INGESTION_DEFAULT_RECENCY_WEIGHT_BPS,
+                    confidence_bps: MEMORY_INGESTION_DEFAULT_CONFIDENCE_BPS,
+                };
+
+                if let Err(error) = self.write_entry_with_metadata(
+                    &options.scope,
+                    entry,
+                    Some(MemoryType::Fact),
+                    None,
+                ) {
+                    result.failed_files = result.failed_files.saturating_add(1);
+                    result.diagnostics.push(format!(
+                        "ingestion_chunk_write_failed: path={} chunk_index={} error={error}",
+                        source_path.display(),
+                        chunk_index
+                    ));
+                    file_failed = true;
+                    break;
+                }
+
+                known_checkpoint_keys.insert(checkpoint_key);
+                result.chunks_ingested = result.chunks_ingested.saturating_add(1);
+            }
+
+            if file_failed {
+                continue;
+            }
+
+            result.processed_files = result.processed_files.saturating_add(1);
+            if options.delete_source_on_success {
+                match fs::remove_file(&source_path) {
+                    Ok(_) => {
+                        result.deleted_files = result.deleted_files.saturating_add(1);
+                    }
+                    Err(error) => {
+                        result.failed_files = result.failed_files.saturating_add(1);
+                        result.diagnostics.push(format!(
+                            "ingestion_file_delete_failed: path={} error={error}",
+                            source_path.display()
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// Performs deterministic semantic search over latest records.
@@ -557,6 +715,117 @@ fn validate_lifecycle_maintenance_policy(policy: &MemoryLifecycleMaintenancePoli
     Ok(())
 }
 
+fn supported_ingest_extension(path: &Path) -> Option<String> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.trim().to_ascii_lowercase())?;
+    MEMORY_INGESTION_SUPPORTED_EXTENSIONS
+        .contains(&extension.as_str())
+        .then_some(extension)
+}
+
+fn chunk_text_by_lines(raw: &str, chunk_line_count: usize) -> Vec<String> {
+    if chunk_line_count == 0 {
+        return Vec::new();
+    }
+    let mut chunks = Vec::new();
+    let mut current_lines = Vec::with_capacity(chunk_line_count);
+    for line in raw.lines() {
+        current_lines.push(line.to_string());
+        if current_lines.len() == chunk_line_count {
+            chunks.push(current_lines.join("\n"));
+            current_lines.clear();
+        }
+    }
+    if !current_lines.is_empty() {
+        chunks.push(current_lines.join("\n"));
+    }
+    if chunks.is_empty() && !raw.trim().is_empty() {
+        chunks.push(raw.trim().to_string());
+    }
+    chunks
+}
+
+fn ingestion_chunk_checkpoint_key(path: &Path, chunk_index: usize, chunk_text: &str) -> String {
+    let material = format!("{}|{}|{}", path.display(), chunk_index, chunk_text);
+    let digest = fnv1a64_hex(material.as_bytes());
+    format!("{MEMORY_INGESTION_SOURCE_EVENT_KEY_PREFIX}{digest}")
+}
+
+fn ingestion_chunk_memory_id(path: &Path, chunk_index: usize, checkpoint_key: &str) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("chunk");
+    let sanitized = sanitize_memory_id_component(stem);
+    let digest = checkpoint_key.rsplit(':').next().unwrap_or("checkpoint");
+    let digest_prefix = digest.chars().take(12).collect::<String>();
+    format!(
+        "ingest-{}-{:04}-{}",
+        if sanitized.is_empty() {
+            "chunk"
+        } else {
+            sanitized.as_str()
+        },
+        chunk_index.saturating_add(1),
+        digest_prefix
+    )
+}
+
+fn ingestion_chunk_summary(path: &Path, chunk_index: usize, chunk_text: &str) -> String {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("unknown-file");
+    let preview = chunk_text.lines().next().unwrap_or("").trim();
+    let preview = truncate_chars(preview, 80);
+    if preview.is_empty() {
+        format!(
+            "Ingested chunk {} from {}",
+            chunk_index.saturating_add(1),
+            file_name
+        )
+    } else {
+        format!(
+            "Ingested chunk {} from {}: {}",
+            chunk_index.saturating_add(1),
+            file_name,
+            preview
+        )
+    }
+}
+
+fn sanitize_memory_id_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+fn fnv1a64_hex(bytes: &[u8]) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 fn collect_duplicate_memory_ids(
     records: &[RuntimeMemoryRecord],
     similarity_threshold: f32,
@@ -952,5 +1221,241 @@ mod tests {
             "search touch should increment access count"
         );
         assert!(after_search_record.last_accessed_at_unix_ms > 0);
+    }
+
+    fn ingestion_scope() -> MemoryScope {
+        MemoryScope {
+            workspace_id: "workspace-ingestion".to_string(),
+            channel_id: "channel-ingestion".to_string(),
+            actor_id: "assistant".to_string(),
+        }
+    }
+
+    #[test]
+    fn spec_2492_c01_ingestion_writes_deterministic_chunk_memories_for_supported_files() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(
+            ingest_dir.join("alpha.txt"),
+            "line-1\nline-2\nline-3\nline-4\nline-5\n",
+        )
+        .expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: true,
+        };
+        let result = store
+            .ingest_directory_once(&ingest_dir, &options)
+            .expect("ingestion should succeed");
+
+        assert_eq!(result.discovered_files, 1);
+        assert_eq!(result.supported_files, 1);
+        assert_eq!(result.processed_files, 1);
+        assert_eq!(result.deleted_files, 1);
+        assert_eq!(result.chunks_discovered, 3);
+        assert_eq!(result.chunks_ingested, 3);
+        assert_eq!(result.chunks_skipped_existing, 0);
+        assert!(
+            !ingest_dir.join("alpha.txt").exists(),
+            "source file should be deleted after full success"
+        );
+
+        let records = store
+            .list_latest_records(
+                Some(&MemoryScopeFilter {
+                    workspace_id: Some("workspace-ingestion".to_string()),
+                    channel_id: Some("channel-ingestion".to_string()),
+                    actor_id: Some("assistant".to_string()),
+                }),
+                usize::MAX,
+            )
+            .expect("list ingested records");
+        assert_eq!(records.len(), 3);
+        for record in records {
+            assert!(
+                record
+                    .entry
+                    .source_event_key
+                    .starts_with("ingestion:chunk:"),
+                "source_event_key should include ingestion checkpoint prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn integration_spec_2492_c02_ingestion_rerun_skips_existing_chunk_checkpoints() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("rerun.md"), "a\nb\nc\nd\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: false,
+        };
+        let first = store
+            .ingest_directory_once(&ingest_dir, &options)
+            .expect("first ingestion should succeed");
+        assert_eq!(first.chunks_ingested, 2);
+        assert_eq!(first.chunks_skipped_existing, 0);
+        assert!(ingest_dir.join("rerun.md").exists());
+
+        let second = store
+            .ingest_directory_once(&ingest_dir, &options)
+            .expect("second ingestion should succeed");
+        assert_eq!(second.chunks_ingested, 0);
+        assert_eq!(second.chunks_skipped_existing, 2);
+
+        let records = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list records after rerun");
+        assert_eq!(
+            records.len(),
+            2,
+            "rerun should not create duplicate chunk records"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2492_c03_ingestion_deletes_only_after_full_file_success() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("good.log"), "ok-1\nok-2\n").expect("write good file");
+        std::fs::write(ingest_dir.join("bad.txt"), [0xFF_u8, 0xFE_u8, 0xFD_u8])
+            .expect("write invalid utf8 file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: true,
+        };
+        let result = store
+            .ingest_directory_once(&ingest_dir, &options)
+            .expect("ingestion run should complete with per-file diagnostics");
+
+        assert!(
+            !ingest_dir.join("good.log").exists(),
+            "fully ingested file should be deleted"
+        );
+        assert!(
+            ingest_dir.join("bad.txt").exists(),
+            "failed file should remain for retry"
+        );
+        assert!(
+            result.failed_files >= 1,
+            "invalid UTF-8 source should be counted as failed file"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2492_c04_ingestion_skips_unsupported_extensions_with_counters() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("supported.toml"), "k = \"v\"\n").expect("write toml");
+        std::fs::write(ingest_dir.join("skip.bin"), "noop").expect("write unsupported file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 8,
+            delete_source_on_success: false,
+        };
+        let result = store
+            .ingest_directory_once(&ingest_dir, &options)
+            .expect("ingestion should succeed");
+
+        assert_eq!(result.discovered_files, 2);
+        assert_eq!(result.supported_files, 1);
+        assert_eq!(result.skipped_unsupported_files, 1);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("ingestion_file_unsupported_extension")),
+            "diagnostics should include unsupported extension reason"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2492_c06_missing_ingest_directory_reports_diagnostic() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("missing-ingest");
+        let memory_root = temp.path().join("memory");
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 8,
+            delete_source_on_success: true,
+        };
+
+        let result = store
+            .ingest_directory_once(&ingest_dir, &options)
+            .expect("missing ingestion directory should return diagnostics");
+        assert_eq!(result.discovered_files, 0);
+        assert_eq!(result.chunks_discovered, 0);
+        assert_eq!(result.chunks_ingested, 0);
+        assert_eq!(result.diagnostics.len(), 1);
+        assert!(
+            result.diagnostics[0].contains("ingestion_directory_missing"),
+            "missing directory should include explicit diagnostic"
+        );
+    }
+
+    #[test]
+    fn unit_chunk_text_by_lines_returns_empty_for_whitespace_only_input() {
+        let chunks = chunk_text_by_lines("", 3);
+        assert!(
+            chunks.is_empty(),
+            "empty content should not emit synthetic chunks"
+        );
+    }
+
+    #[test]
+    fn unit_ingestion_helpers_produce_stable_summary_ids_truncation_and_hash() {
+        assert_eq!(
+            sanitize_memory_id_component("Alpha beta_123!!"),
+            "alpha-beta-123"
+        );
+        assert_eq!(truncate_chars("abcdef", 3), "abc");
+        assert_eq!(truncate_chars("abcdef", 0), "");
+        assert_eq!(fnv1a64_hex(b"abc"), "e71fa2190541574b");
+
+        let summary = ingestion_chunk_summary(
+            std::path::Path::new("/tmp/Alpha Note.md"),
+            1,
+            "Preview line\nsecond line",
+        );
+        assert_eq!(summary, "Ingested chunk 2 from Alpha Note.md: Preview line");
+
+        let long_preview = "x".repeat(120);
+        let truncated_summary =
+            ingestion_chunk_summary(std::path::Path::new("long.txt"), 0, long_preview.as_str());
+        assert!(
+            truncated_summary.ends_with(&format!(": {}", "x".repeat(80))),
+            "summary preview should be truncated to eighty characters"
+        );
+
+        let memory_id = ingestion_chunk_memory_id(
+            std::path::Path::new("Alpha beta_123!!.md"),
+            0,
+            "ingestion:chunk:e71fa2190541574b",
+        );
+        assert!(
+            memory_id.starts_with("ingest-alpha-beta-123-0001-e71fa2190541"),
+            "memory id should include sanitized stem, 1-indexed chunk, and digest prefix"
+        );
     }
 }
