@@ -6,10 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tau_cli::Cli;
-use tau_skills::{augment_system_prompt, load_catalog, resolve_selected_skills};
+use tau_skills::{augment_system_prompt, load_catalog, resolve_selected_skills, Skill};
 
 use crate::onboarding_paths::resolve_tau_root;
 use crate::startup_resolution::resolve_system_prompt;
@@ -18,6 +18,7 @@ const STARTUP_IDENTITY_SCHEMA_VERSION: u32 = 1;
 const STARTUP_IDENTITY_PROMPT_HEADER: &str = "## Tau Startup Identity Files";
 const STARTUP_IDENTITY_PROMPT_PREAMBLE: &str =
     "Resolved from `.tau` during startup and composed deterministically.";
+const STARTUP_SYSTEM_PROMPT_TEMPLATE_PATH: &str = "prompts/system.md.j2";
 const STARTUP_IDENTITY_SPECS: &[(&str, &str)] = &[
     ("soul", "SOUL.md"),
     ("agents", "AGENTS.md"),
@@ -95,10 +96,16 @@ pub fn compose_startup_system_prompt_with_report(
     let catalog = load_catalog(skills_dir)
         .with_context(|| format!("failed to load skills from {}", skills_dir.display()))?;
     let selected_skills = resolve_selected_skills(&catalog, &cli.skills)?;
-    let mut system_prompt = augment_system_prompt(&base_system_prompt, &selected_skills);
-
     let (identity_report, sections) = resolve_startup_identity_report_with_sections(cli);
-    append_identity_sections(&mut system_prompt, &sections);
+    let default_system_prompt =
+        compose_default_system_prompt(&base_system_prompt, &selected_skills, &sections);
+    let system_prompt = render_template_or_default(
+        cli,
+        &base_system_prompt,
+        &selected_skills,
+        &sections,
+        &default_system_prompt,
+    );
 
     Ok(StartupPromptComposition {
         system_prompt,
@@ -221,31 +228,160 @@ fn read_identity_file_entry(
     }
 }
 
-fn append_identity_sections(system_prompt: &mut String, loaded_sections: &[LoadedIdentitySection]) {
+fn compose_default_system_prompt(
+    base_system_prompt: &str,
+    selected_skills: &[Skill],
+    loaded_sections: &[LoadedIdentitySection],
+) -> String {
+    let mut system_prompt = augment_system_prompt(base_system_prompt, selected_skills);
+    append_identity_sections(&mut system_prompt, loaded_sections);
+    system_prompt
+}
+
+fn render_template_or_default(
+    cli: &Cli,
+    base_system_prompt: &str,
+    selected_skills: &[Skill],
+    loaded_sections: &[LoadedIdentitySection],
+    default_system_prompt: &str,
+) -> String {
+    match render_startup_system_prompt_template(
+        cli,
+        base_system_prompt,
+        selected_skills,
+        loaded_sections,
+        default_system_prompt,
+    ) {
+        Ok(rendered) => rendered,
+        Err(_) => default_system_prompt.to_string(),
+    }
+}
+
+fn render_startup_system_prompt_template(
+    cli: &Cli,
+    base_system_prompt: &str,
+    selected_skills: &[Skill],
+    loaded_sections: &[LoadedIdentitySection],
+    default_system_prompt: &str,
+) -> Result<String> {
+    let template_path = resolve_tau_root(cli).join(STARTUP_SYSTEM_PROMPT_TEMPLATE_PATH);
+    let template = match std::fs::read_to_string(&template_path) {
+        Ok(content) => content,
+        Err(_) => return Ok(default_system_prompt.to_string()),
+    };
+
+    if template.trim().is_empty() {
+        return Ok(default_system_prompt.to_string());
+    }
+
+    let template_metadata = std::fs::metadata(&template_path).with_context(|| {
+        format!(
+            "failed to read metadata for startup template {}",
+            template_path.display()
+        )
+    })?;
+    if !template_metadata.is_file() {
+        return Ok(default_system_prompt.to_string());
+    }
+
+    let skills_section = render_skills_section(selected_skills);
+    let identity_sections = build_identity_sections_text(loaded_sections);
+    let rendered = render_prompt_template(
+        &template,
+        base_system_prompt,
+        &skills_section,
+        &identity_sections,
+        default_system_prompt,
+    )?;
+    if rendered.trim().is_empty() {
+        return Ok(default_system_prompt.to_string());
+    }
+    Ok(rendered)
+}
+
+fn render_skills_section(selected_skills: &[Skill]) -> String {
+    augment_system_prompt("", selected_skills)
+        .trim()
+        .to_string()
+}
+
+fn build_identity_sections_text(loaded_sections: &[LoadedIdentitySection]) -> String {
     if loaded_sections.is_empty() {
+        return String::new();
+    }
+
+    let mut identity_sections = String::new();
+    identity_sections.push_str(STARTUP_IDENTITY_PROMPT_HEADER);
+    identity_sections.push('\n');
+    identity_sections.push_str(STARTUP_IDENTITY_PROMPT_PREAMBLE);
+
+    for section in loaded_sections {
+        identity_sections.push_str("\n\n### ");
+        identity_sections.push_str(&section.file_name);
+        identity_sections.push_str(" (");
+        identity_sections.push_str(&section.path);
+        identity_sections.push_str(")\n");
+        identity_sections.push_str(&section.content);
+    }
+
+    identity_sections
+}
+
+fn render_prompt_template(
+    template: &str,
+    base_system_prompt: &str,
+    skills_section: &str,
+    identity_sections: &str,
+    default_system_prompt: &str,
+) -> Result<String> {
+    let mut rendered = String::with_capacity(template.len());
+    let mut cursor = 0usize;
+
+    while let Some(open_offset) = template[cursor..].find("{{") {
+        let open_index = cursor + open_offset;
+        rendered.push_str(&template[cursor..open_index]);
+        let close_offset = template[open_index + 2..]
+            .find("}}")
+            .ok_or_else(|| anyhow!("startup prompt template contains unterminated placeholder"))?;
+        let close_index = open_index + 2 + close_offset;
+        let placeholder = template[open_index + 2..close_index].trim();
+        if placeholder.is_empty() {
+            bail!("startup prompt template contains empty placeholder");
+        }
+
+        let value = match placeholder {
+            "base_system_prompt" => base_system_prompt,
+            "skills_section" => skills_section,
+            "identity_sections" => identity_sections,
+            "default_system_prompt" => default_system_prompt,
+            _ => bail!(
+                "startup prompt template placeholder '{}' is not supported",
+                placeholder
+            ),
+        };
+        rendered.push_str(value);
+        cursor = close_index + 2;
+    }
+
+    rendered.push_str(&template[cursor..]);
+    Ok(rendered)
+}
+
+fn append_identity_sections(system_prompt: &mut String, loaded_sections: &[LoadedIdentitySection]) {
+    let identity_sections = build_identity_sections_text(loaded_sections);
+    if identity_sections.is_empty() {
         return;
     }
 
     system_prompt.push_str("\n\n");
-    system_prompt.push_str(STARTUP_IDENTITY_PROMPT_HEADER);
-    system_prompt.push('\n');
-    system_prompt.push_str(STARTUP_IDENTITY_PROMPT_PREAMBLE);
-
-    for section in loaded_sections {
-        system_prompt.push_str("\n\n### ");
-        system_prompt.push_str(&section.file_name);
-        system_prompt.push_str(" (");
-        system_prompt.push_str(&section.path);
-        system_prompt.push_str(")\n");
-        system_prompt.push_str(&section.content);
-    }
+    system_prompt.push_str(&identity_sections);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        compose_startup_system_prompt_with_report, resolve_startup_identity_report,
-        StartupIdentityFileStatus,
+        compose_startup_system_prompt_with_report, render_prompt_template,
+        resolve_startup_identity_report, StartupIdentityFileStatus,
     };
     use clap::Parser;
     use std::path::Path;
@@ -356,6 +492,114 @@ mod tests {
             .contains("Preserve deterministic behavior for startup composition."));
         assert_eq!(composition.identity_report.loaded_count, 1);
         assert_eq!(composition.identity_report.missing_count, 2);
+    }
+
+    #[test]
+    fn integration_spec_2471_c01_compose_startup_system_prompt_renders_workspace_template_placeholders(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+        cli.skills = vec!["checks".to_string()];
+
+        std::fs::write(
+            cli.skills_dir.join("checks.md"),
+            "Always run tests before reporting completion.",
+        )
+        .expect("write skill");
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("prompts")).expect("create prompts dir");
+        std::fs::write(tau_root.join("SOUL.md"), "Soul section").expect("write SOUL");
+        std::fs::write(
+            tau_root.join("prompts/system.md.j2"),
+            "TEMPLATE\nbase={{base_system_prompt}}\nskills={{skills_section}}\nidentity={{identity_sections}}\ndefault={{default_system_prompt}}\n",
+        )
+        .expect("write template");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert!(
+            composition
+                .system_prompt
+                .starts_with("TEMPLATE\nbase=base prompt"),
+            "template output should drive composition"
+        );
+        assert!(composition.system_prompt.contains("skills=# Skill: checks"));
+        assert!(composition
+            .system_prompt
+            .contains("identity=## Tau Startup Identity Files"));
+        assert!(composition.system_prompt.contains("default=base prompt"));
+        assert!(!composition.system_prompt.contains("}}"));
+    }
+
+    #[test]
+    fn regression_spec_2471_c02_compose_startup_system_prompt_without_template_preserves_legacy_composition(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+        cli.skills = vec!["checks".to_string()];
+
+        std::fs::write(
+            cli.skills_dir.join("checks.md"),
+            "Always run tests before reporting completion.",
+        )
+        .expect("write skill");
+        let tau_root = temp.path().join(".tau");
+        std::fs::write(tau_root.join("SOUL.md"), "Soul section").expect("write SOUL");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert!(composition.system_prompt.contains("base prompt"));
+        assert!(composition.system_prompt.contains("# Skill: checks"));
+        assert!(composition
+            .system_prompt
+            .contains("## Tau Startup Identity Files"));
+        assert!(composition.system_prompt.contains("Soul section"));
+    }
+
+    #[test]
+    fn unit_spec_2471_render_prompt_template_replaces_all_placeholders_without_residue() {
+        let rendered = render_prompt_template(
+            "A={{base_system_prompt}};B={{skills_section}};C={{identity_sections}};D={{default_system_prompt}}",
+            "base",
+            "skills",
+            "identity",
+            "default",
+        )
+        .expect("render");
+
+        assert_eq!(rendered, "A=base;B=skills;C=identity;D=default");
+    }
+
+    #[test]
+    fn regression_spec_2471_c03_compose_startup_system_prompt_invalid_template_placeholder_falls_back_to_default(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("prompts")).expect("create prompts dir");
+        std::fs::write(tau_root.join("SOUL.md"), "Soul section").expect("write SOUL");
+        std::fs::write(
+            tau_root.join("prompts/system.md.j2"),
+            "BROKEN TEMPLATE {{unknown_placeholder}}",
+        )
+        .expect("write template");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert!(!composition.system_prompt.contains("BROKEN TEMPLATE"));
+        assert!(composition.system_prompt.contains("base prompt"));
+        assert!(composition
+            .system_prompt
+            .contains("## Tau Startup Identity Files"));
+        assert!(composition.system_prompt.contains("Soul section"));
     }
 
     #[test]
