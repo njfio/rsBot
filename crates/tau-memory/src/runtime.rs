@@ -41,6 +41,10 @@ const MEMORY_RETRIEVAL_BACKEND_VECTOR_ONLY: &str = "vector-only";
 const MEMORY_RETRIEVAL_BACKEND_HYBRID_BM25_RRF: &str = "hybrid-bm25-rrf";
 const MEMORY_RETRIEVAL_REASON_VECTOR_ONLY: &str = "memory_retrieval_vector_only";
 const MEMORY_RETRIEVAL_REASON_HYBRID_ENABLED: &str = "memory_retrieval_hybrid_enabled";
+const MEMORY_LIFECYCLE_DEFAULT_STALE_AFTER_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+const MEMORY_LIFECYCLE_DEFAULT_DECAY_RATE: f32 = 0.9;
+const MEMORY_LIFECYCLE_DEFAULT_PRUNE_IMPORTANCE_FLOOR: f32 = 0.1;
+const MEMORY_LIFECYCLE_DEFAULT_ORPHAN_IMPORTANCE_FLOOR: f32 = 0.2;
 const MEMORY_STORAGE_REASON_PATH_JSONL: &str = "memory_storage_backend_path_jsonl";
 const MEMORY_STORAGE_REASON_PATH_SQLITE: &str = "memory_storage_backend_path_sqlite";
 const MEMORY_STORAGE_REASON_EXISTING_JSONL: &str = "memory_storage_backend_existing_jsonl";
@@ -100,6 +104,26 @@ fn default_memory_importance() -> f32 {
 
 fn default_graph_signal_weight() -> f32 {
     MEMORY_GRAPH_SIGNAL_WEIGHT_DEFAULT
+}
+
+fn default_lifecycle_stale_after_unix_ms() -> u64 {
+    MEMORY_LIFECYCLE_DEFAULT_STALE_AFTER_MS
+}
+
+fn default_lifecycle_decay_rate() -> f32 {
+    MEMORY_LIFECYCLE_DEFAULT_DECAY_RATE
+}
+
+fn default_lifecycle_prune_importance_floor() -> f32 {
+    MEMORY_LIFECYCLE_DEFAULT_PRUNE_IMPORTANCE_FLOOR
+}
+
+fn default_lifecycle_orphan_importance_floor() -> f32 {
+    MEMORY_LIFECYCLE_DEFAULT_ORPHAN_IMPORTANCE_FLOOR
+}
+
+fn default_lifecycle_orphan_cleanup_enabled() -> bool {
+    true
 }
 
 /// Public struct `MemoryRelation` used across Tau components.
@@ -325,6 +349,45 @@ impl Default for MemorySearchOptions {
             benchmark_against_vector_only: false,
         }
     }
+}
+
+/// Public struct `MemoryLifecycleMaintenancePolicy` used across Tau components.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryLifecycleMaintenancePolicy {
+    #[serde(default = "default_lifecycle_stale_after_unix_ms")]
+    pub stale_after_unix_ms: u64,
+    #[serde(default = "default_lifecycle_decay_rate")]
+    pub decay_rate: f32,
+    #[serde(default = "default_lifecycle_prune_importance_floor")]
+    pub prune_importance_floor: f32,
+    #[serde(default = "default_lifecycle_orphan_cleanup_enabled")]
+    pub orphan_cleanup_enabled: bool,
+    #[serde(default = "default_lifecycle_orphan_importance_floor")]
+    pub orphan_importance_floor: f32,
+}
+
+impl Default for MemoryLifecycleMaintenancePolicy {
+    fn default() -> Self {
+        Self {
+            stale_after_unix_ms: default_lifecycle_stale_after_unix_ms(),
+            decay_rate: default_lifecycle_decay_rate(),
+            prune_importance_floor: default_lifecycle_prune_importance_floor(),
+            orphan_cleanup_enabled: default_lifecycle_orphan_cleanup_enabled(),
+            orphan_importance_floor: default_lifecycle_orphan_importance_floor(),
+        }
+    }
+}
+
+/// Public struct `MemoryLifecycleMaintenanceResult` used across Tau components.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryLifecycleMaintenanceResult {
+    pub scanned_records: usize,
+    pub decayed_records: usize,
+    pub pruned_records: usize,
+    pub orphan_forgotten_records: usize,
+    pub identity_exempt_records: usize,
+    pub updated_records: usize,
+    pub unchanged_records: usize,
 }
 
 /// Public struct `MemorySearchMatch` used across Tau components.
@@ -878,6 +941,7 @@ mod tests {
     use super::{
         embed_text_vector, importance_rank_multiplier, rank_text_candidates,
         rank_text_candidates_bm25, FileMemoryStore, MemoryEmbeddingProviderConfig,
+        MemoryLifecycleMaintenancePolicy, MemoryLifecycleMaintenanceResult, MemoryRelationInput,
         MemoryScopeFilter, MemorySearchOptions, MemoryStorageBackend, MemoryType,
         RankedTextCandidate, RuntimeMemoryRecord, MEMORY_BACKEND_ENV,
         MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
@@ -913,6 +977,392 @@ mod tests {
     fn memory_backend_env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn lifecycle_scope() -> MemoryScope {
+        MemoryScope {
+            workspace_id: "workspace-lifecycle".to_string(),
+            channel_id: "channel-lifecycle".to_string(),
+            actor_id: "assistant".to_string(),
+        }
+    }
+
+    fn lifecycle_entry(memory_id: &str, summary: &str) -> MemoryEntry {
+        MemoryEntry {
+            memory_id: memory_id.to_string(),
+            summary: summary.to_string(),
+            tags: vec!["lifecycle".to_string()],
+            facts: vec!["phase=2".to_string()],
+            source_event_key: format!("evt-{memory_id}"),
+            recency_weight_bps: 0,
+            confidence_bps: 1_000,
+        }
+    }
+
+    fn append_lifecycle_snapshot(
+        store: &FileMemoryStore,
+        memory_id: &str,
+        updated_unix_ms: u64,
+        last_accessed_at_unix_ms: u64,
+        importance: f32,
+    ) {
+        let mut record = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list latest lifecycle records")
+            .into_iter()
+            .find(|candidate| candidate.entry.memory_id == memory_id)
+            .expect("record exists for lifecycle snapshot");
+        record.updated_unix_ms = updated_unix_ms;
+        record.last_accessed_at_unix_ms = last_accessed_at_unix_ms;
+        record.importance = importance;
+        store
+            .append_record_backend(&record)
+            .expect("append lifecycle snapshot");
+    }
+
+    #[test]
+    fn spec_2455_c01_lifecycle_maintenance_policy_defaults_and_empty_result_are_deterministic() {
+        let policy = MemoryLifecycleMaintenancePolicy::default();
+        assert_eq!(
+            policy.stale_after_unix_ms,
+            7_u64 * 24 * 60 * 60 * 1_000,
+            "default stale threshold should be seven days"
+        );
+        assert!((policy.decay_rate - 0.9).abs() <= 0.000_001);
+        assert!((policy.prune_importance_floor - 0.1).abs() <= 0.000_001);
+        assert!(policy.orphan_cleanup_enabled);
+        assert!((policy.orphan_importance_floor - 0.2).abs() <= 0.000_001);
+
+        let zero = MemoryLifecycleMaintenanceResult::default();
+        assert_eq!(zero.scanned_records, 0);
+        assert_eq!(zero.decayed_records, 0);
+        assert_eq!(zero.pruned_records, 0);
+        assert_eq!(zero.orphan_forgotten_records, 0);
+        assert_eq!(zero.identity_exempt_records, 0);
+        assert_eq!(zero.updated_records, 0);
+        assert_eq!(zero.unchanged_records, 0);
+
+        let store = FileMemoryStore::new(tempdir().expect("tempdir").path());
+        let run = store
+            .run_lifecycle_maintenance(&policy, 10_000)
+            .expect("run lifecycle maintenance");
+        assert_eq!(run.scanned_records, 0);
+        assert_eq!(run.updated_records, 0);
+    }
+
+    #[test]
+    fn spec_2455_c02_stale_non_identity_records_decay_while_identity_is_exempt() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-stale-observation", "stale observation"),
+                Some(MemoryType::Observation),
+                Some(0.6),
+            )
+            .expect("write stale observation");
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-stale-identity", "stale identity"),
+                Some(MemoryType::Identity),
+                Some(0.2),
+            )
+            .expect("write stale identity");
+
+        append_lifecycle_snapshot(&store, "memory-stale-observation", 1_000, 1_000, 0.6);
+        append_lifecycle_snapshot(&store, "memory-stale-identity", 1_000, 1_000, 0.2);
+
+        let run = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: 1_000,
+                    decay_rate: 0.5,
+                    prune_importance_floor: 0.05,
+                    orphan_cleanup_enabled: false,
+                    orphan_importance_floor: 0.0,
+                },
+                10_000,
+            )
+            .expect("run lifecycle maintenance");
+        assert_eq!(run.scanned_records, 2);
+        assert_eq!(run.decayed_records, 1);
+        assert_eq!(run.identity_exempt_records, 1);
+        assert_eq!(run.pruned_records, 0);
+
+        let latest = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list post-maintenance");
+        let observation = latest
+            .iter()
+            .find(|record| record.entry.memory_id == "memory-stale-observation")
+            .expect("observation record present");
+        assert!((observation.importance - 0.3).abs() <= 0.000_001);
+        let identity = latest
+            .iter()
+            .find(|record| record.entry.memory_id == "memory-stale-identity")
+            .expect("identity record present");
+        assert!((identity.importance - 0.2).abs() <= 0.000_001);
+        assert!(!identity.forgotten);
+    }
+
+    #[test]
+    fn spec_2455_c03_prune_floor_marks_low_importance_records_as_forgotten() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-prune-low", "low importance"),
+                Some(MemoryType::Observation),
+                Some(0.05),
+            )
+            .expect("write low importance memory");
+        append_lifecycle_snapshot(&store, "memory-prune-low", 9_500, 9_500, 0.05);
+
+        let run = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: 60_000,
+                    decay_rate: 1.0,
+                    prune_importance_floor: 0.1,
+                    orphan_cleanup_enabled: false,
+                    orphan_importance_floor: 0.0,
+                },
+                10_000,
+            )
+            .expect("run lifecycle maintenance");
+        assert_eq!(run.pruned_records, 1);
+
+        let listed = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list latest records after prune");
+        assert!(
+            listed
+                .iter()
+                .all(|record| record.entry.memory_id != "memory-prune-low"),
+            "forgotten memory must be excluded from default list"
+        );
+        let read = store
+            .read_entry("memory-prune-low", None)
+            .expect("read after prune");
+        assert!(
+            read.is_none(),
+            "forgotten memory must be excluded from default read"
+        );
+        let search = store
+            .search("low importance", &MemorySearchOptions::default())
+            .expect("search after prune");
+        assert!(
+            search
+                .matches
+                .iter()
+                .all(|record| record.memory_id != "memory-prune-low"),
+            "forgotten memory must be excluded from default search"
+        );
+    }
+
+    #[test]
+    fn regression_2455_prune_floor_boundary_keeps_equal_importance_active() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-prune-boundary", "boundary importance"),
+                Some(MemoryType::Observation),
+                Some(0.1),
+            )
+            .expect("write boundary importance memory");
+
+        let run = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: u64::MAX,
+                    decay_rate: 1.0,
+                    prune_importance_floor: 0.1,
+                    orphan_cleanup_enabled: false,
+                    orphan_importance_floor: 0.0,
+                },
+                10_000,
+            )
+            .expect("run lifecycle maintenance");
+        assert_eq!(run.pruned_records, 0);
+        assert_eq!(run.updated_records, 0);
+        assert_eq!(run.unchanged_records, 1);
+
+        let listed = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list latest records after boundary prune");
+        assert!(
+            listed
+                .iter()
+                .any(|record| record.entry.memory_id == "memory-prune-boundary"),
+            "importance equal to prune floor must remain active"
+        );
+    }
+
+    #[test]
+    fn spec_2455_c04_orphan_cleanup_forgets_low_importance_orphans_only() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-linked-target", "linked target"),
+                Some(MemoryType::Goal),
+                Some(0.9),
+            )
+            .expect("write linked target");
+        store
+            .write_entry_with_metadata_and_relations(
+                &scope,
+                lifecycle_entry("memory-linked-low", "linked low importance"),
+                Some(MemoryType::Observation),
+                Some(0.15),
+                &[MemoryRelationInput {
+                    target_id: "memory-linked-target".to_string(),
+                    relation_type: Some("depends_on".to_string()),
+                    weight: Some(1.0),
+                }],
+            )
+            .expect("write linked low-importance record");
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-orphan-low", "orphan low importance"),
+                Some(MemoryType::Observation),
+                Some(0.15),
+            )
+            .expect("write orphan low-importance record");
+
+        let run = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: u64::MAX,
+                    decay_rate: 1.0,
+                    prune_importance_floor: 0.1,
+                    orphan_cleanup_enabled: true,
+                    orphan_importance_floor: 0.2,
+                },
+                10_000,
+            )
+            .expect("run lifecycle maintenance");
+        assert_eq!(run.orphan_forgotten_records, 1);
+        assert_eq!(run.pruned_records, 0);
+
+        let listed = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list post orphan cleanup");
+        assert!(
+            listed
+                .iter()
+                .any(|record| record.entry.memory_id == "memory-linked-low"),
+            "edge-connected low-importance memory should remain active"
+        );
+        assert!(
+            listed
+                .iter()
+                .all(|record| record.entry.memory_id != "memory-orphan-low"),
+            "orphan low-importance memory should be forgotten"
+        );
+    }
+
+    #[test]
+    fn spec_2455_c05_identity_records_are_exempt_from_decay_prune_and_orphan_cleanup() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-identity-critical", "identity memory"),
+                Some(MemoryType::Identity),
+                Some(0.01),
+            )
+            .expect("write identity memory");
+        append_lifecycle_snapshot(&store, "memory-identity-critical", 1_000, 1_000, 0.01);
+
+        let run = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: 1_000,
+                    decay_rate: 0.5,
+                    prune_importance_floor: 0.1,
+                    orphan_cleanup_enabled: true,
+                    orphan_importance_floor: 0.2,
+                },
+                10_000,
+            )
+            .expect("run lifecycle maintenance");
+        assert_eq!(run.identity_exempt_records, 1);
+        assert_eq!(run.decayed_records, 0);
+        assert_eq!(run.pruned_records, 0);
+        assert_eq!(run.orphan_forgotten_records, 0);
+
+        let listed = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list post maintenance");
+        let identity = listed
+            .iter()
+            .find(|record| record.entry.memory_id == "memory-identity-critical")
+            .expect("identity record remains");
+        assert!((identity.importance - 0.01).abs() <= 0.000_001);
+        assert!(!identity.forgotten);
+    }
+
+    #[test]
+    fn unit_lifecycle_maintenance_rejects_invalid_policy_values() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+
+        let invalid_decay = store.run_lifecycle_maintenance(
+            &MemoryLifecycleMaintenancePolicy {
+                stale_after_unix_ms: 1_000,
+                decay_rate: 1.5,
+                prune_importance_floor: 0.1,
+                orphan_cleanup_enabled: true,
+                orphan_importance_floor: 0.2,
+            },
+            10_000,
+        );
+        assert!(invalid_decay.is_err(), "out-of-range decay_rate must fail");
+
+        let invalid_prune_floor = store.run_lifecycle_maintenance(
+            &MemoryLifecycleMaintenancePolicy {
+                stale_after_unix_ms: 1_000,
+                decay_rate: 0.9,
+                prune_importance_floor: -0.1,
+                orphan_cleanup_enabled: true,
+                orphan_importance_floor: 0.2,
+            },
+            10_000,
+        );
+        assert!(
+            invalid_prune_floor.is_err(),
+            "negative prune_importance_floor must fail"
+        );
+
+        let invalid_orphan_floor = store.run_lifecycle_maintenance(
+            &MemoryLifecycleMaintenancePolicy {
+                stale_after_unix_ms: 1_000,
+                decay_rate: 0.9,
+                prune_importance_floor: 0.1,
+                orphan_cleanup_enabled: true,
+                orphan_importance_floor: 1.1,
+            },
+            10_000,
+        );
+        assert!(
+            invalid_orphan_floor.is_err(),
+            "out-of-range orphan_importance_floor must fail"
+        );
     }
 
     #[test]
