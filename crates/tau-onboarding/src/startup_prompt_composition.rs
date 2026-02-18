@@ -19,6 +19,8 @@ const STARTUP_IDENTITY_PROMPT_HEADER: &str = "## Tau Startup Identity Files";
 const STARTUP_IDENTITY_PROMPT_PREAMBLE: &str =
     "Resolved from `.tau` during startup and composed deterministically.";
 const STARTUP_SYSTEM_PROMPT_TEMPLATE_PATH: &str = "prompts/system.md.j2";
+const STARTUP_BUILTIN_SYSTEM_PROMPT_TEMPLATE: &str =
+    include_str!("../templates/startup-system.md.j2");
 const STARTUP_IDENTITY_SPECS: &[(&str, &str)] = &[
     ("soul", "SOUL.md"),
     ("agents", "AGENTS.md"),
@@ -75,6 +77,24 @@ pub struct StartupIdentityCompositionReport {
 pub struct StartupPromptComposition {
     pub system_prompt: String,
     pub identity_report: StartupIdentityCompositionReport,
+    pub template_report: StartupPromptTemplateReport,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// Enumerates supported `StartupPromptTemplateSource` values.
+pub enum StartupPromptTemplateSource {
+    Workspace,
+    BuiltIn,
+    DefaultFallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Public struct `StartupPromptTemplateReport` used across Tau components.
+pub struct StartupPromptTemplateReport {
+    pub source: StartupPromptTemplateSource,
+    pub template_path: Option<String>,
+    pub reason_code: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,7 +119,7 @@ pub fn compose_startup_system_prompt_with_report(
     let (identity_report, sections) = resolve_startup_identity_report_with_sections(cli);
     let default_system_prompt =
         compose_default_system_prompt(&base_system_prompt, &selected_skills, &sections);
-    let system_prompt = render_template_or_default(
+    let (system_prompt, template_report) = render_template_with_report(
         cli,
         &base_system_prompt,
         &selected_skills,
@@ -110,6 +130,7 @@ pub fn compose_startup_system_prompt_with_report(
     Ok(StartupPromptComposition {
         system_prompt,
         identity_report,
+        template_report,
     })
 }
 
@@ -238,65 +259,138 @@ fn compose_default_system_prompt(
     system_prompt
 }
 
-fn render_template_or_default(
+fn render_template_with_report(
     cli: &Cli,
     base_system_prompt: &str,
     selected_skills: &[Skill],
     loaded_sections: &[LoadedIdentitySection],
     default_system_prompt: &str,
-) -> String {
-    match render_startup_system_prompt_template(
-        cli,
-        base_system_prompt,
-        selected_skills,
-        loaded_sections,
-        default_system_prompt,
-    ) {
-        Ok(rendered) => rendered,
-        Err(_) => default_system_prompt.to_string(),
+) -> (String, StartupPromptTemplateReport) {
+    let template_path = resolve_tau_root(cli).join(STARTUP_SYSTEM_PROMPT_TEMPLATE_PATH);
+    let skills_section = render_skills_section(selected_skills);
+    let identity_sections = build_identity_sections_text(loaded_sections);
+
+    match load_workspace_template(&template_path) {
+        WorkspaceTemplateLoad::Loaded(template) => match render_prompt_template(
+            &template,
+            base_system_prompt,
+            &skills_section,
+            &identity_sections,
+            default_system_prompt,
+        ) {
+            Ok(rendered) if !rendered.trim().is_empty() => (
+                rendered,
+                StartupPromptTemplateReport {
+                    source: StartupPromptTemplateSource::Workspace,
+                    template_path: Some(template_path.display().to_string()),
+                    reason_code: "workspace_template_rendered".to_string(),
+                },
+            ),
+            Ok(_) | Err(_) => render_builtin_or_default(
+                base_system_prompt,
+                &skills_section,
+                &identity_sections,
+                default_system_prompt,
+                "workspace_template_render_failed_fallback_builtin",
+            ),
+        },
+        WorkspaceTemplateLoad::Missing => render_builtin_or_default(
+            base_system_prompt,
+            &skills_section,
+            &identity_sections,
+            default_system_prompt,
+            "workspace_template_missing_fallback_builtin",
+        ),
+        WorkspaceTemplateLoad::Empty => render_builtin_or_default(
+            base_system_prompt,
+            &skills_section,
+            &identity_sections,
+            default_system_prompt,
+            "workspace_template_empty_fallback_builtin",
+        ),
+        WorkspaceTemplateLoad::InvalidType => render_builtin_or_default(
+            base_system_prompt,
+            &skills_section,
+            &identity_sections,
+            default_system_prompt,
+            "workspace_template_not_regular_fallback_builtin",
+        ),
+        WorkspaceTemplateLoad::ReadError => render_builtin_or_default(
+            base_system_prompt,
+            &skills_section,
+            &identity_sections,
+            default_system_prompt,
+            "workspace_template_read_failed_fallback_builtin",
+        ),
     }
 }
 
-fn render_startup_system_prompt_template(
-    cli: &Cli,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkspaceTemplateLoad {
+    Loaded(String),
+    Missing,
+    Empty,
+    InvalidType,
+    ReadError,
+}
+
+fn load_workspace_template(template_path: &Path) -> WorkspaceTemplateLoad {
+    match std::fs::metadata(template_path) {
+        Ok(metadata) if !metadata.is_file() => WorkspaceTemplateLoad::InvalidType,
+        Ok(_) => match std::fs::read_to_string(template_path) {
+            Ok(content) if content.trim().is_empty() => WorkspaceTemplateLoad::Empty,
+            Ok(content) => WorkspaceTemplateLoad::Loaded(content),
+            Err(_) => WorkspaceTemplateLoad::ReadError,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            WorkspaceTemplateLoad::Missing
+        }
+        Err(_) => WorkspaceTemplateLoad::ReadError,
+    }
+}
+
+fn render_builtin_or_default(
     base_system_prompt: &str,
-    selected_skills: &[Skill],
-    loaded_sections: &[LoadedIdentitySection],
+    skills_section: &str,
+    identity_sections: &str,
     default_system_prompt: &str,
-) -> Result<String> {
-    let template_path = resolve_tau_root(cli).join(STARTUP_SYSTEM_PROMPT_TEMPLATE_PATH);
-    let template = match std::fs::read_to_string(&template_path) {
-        Ok(content) => content,
-        Err(_) => return Ok(default_system_prompt.to_string()),
-    };
-
-    if template.trim().is_empty() {
-        return Ok(default_system_prompt.to_string());
+    fallback_reason_code: &str,
+) -> (String, StartupPromptTemplateReport) {
+    if STARTUP_BUILTIN_SYSTEM_PROMPT_TEMPLATE.trim().is_empty() {
+        return (
+            default_system_prompt.to_string(),
+            StartupPromptTemplateReport {
+                source: StartupPromptTemplateSource::DefaultFallback,
+                template_path: None,
+                reason_code: "builtin_template_empty_fallback_default".to_string(),
+            },
+        );
     }
 
-    let template_metadata = std::fs::metadata(&template_path).with_context(|| {
-        format!(
-            "failed to read metadata for startup template {}",
-            template_path.display()
-        )
-    })?;
-    if !template_metadata.is_file() {
-        return Ok(default_system_prompt.to_string());
-    }
-
-    let skills_section = render_skills_section(selected_skills);
-    let identity_sections = build_identity_sections_text(loaded_sections);
-    let rendered = render_prompt_template(
-        &template,
+    match render_prompt_template(
+        STARTUP_BUILTIN_SYSTEM_PROMPT_TEMPLATE,
         base_system_prompt,
-        &skills_section,
-        &identity_sections,
+        skills_section,
+        identity_sections,
         default_system_prompt,
-    )?;
-    if rendered.trim().is_empty() {
-        return Ok(default_system_prompt.to_string());
+    ) {
+        Ok(rendered) if !rendered.trim().is_empty() => (
+            rendered,
+            StartupPromptTemplateReport {
+                source: StartupPromptTemplateSource::BuiltIn,
+                template_path: None,
+                reason_code: fallback_reason_code.to_string(),
+            },
+        ),
+        Ok(_) | Err(_) => (
+            default_system_prompt.to_string(),
+            StartupPromptTemplateReport {
+                source: StartupPromptTemplateSource::DefaultFallback,
+                template_path: None,
+                reason_code: "builtin_template_render_failed_fallback_default".to_string(),
+            },
+        ),
     }
-    Ok(rendered)
 }
 
 fn render_skills_section(selected_skills: &[Skill]) -> String {
@@ -381,7 +475,7 @@ fn append_identity_sections(system_prompt: &mut String, loaded_sections: &[Loade
 mod tests {
     use super::{
         compose_startup_system_prompt_with_report, render_prompt_template,
-        resolve_startup_identity_report, StartupIdentityFileStatus,
+        resolve_startup_identity_report, StartupIdentityFileStatus, StartupPromptTemplateSource,
     };
     use clap::Parser;
     use std::path::Path;
@@ -600,6 +694,211 @@ mod tests {
             .system_prompt
             .contains("## Tau Startup Identity Files"));
         assert!(composition.system_prompt.contains("Soul section"));
+    }
+
+    #[test]
+    fn integration_spec_2476_c01_compose_startup_system_prompt_reports_workspace_template_source() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("prompts")).expect("create prompts dir");
+        std::fs::write(tau_root.join("SOUL.md"), "Soul section").expect("write SOUL");
+        std::fs::write(
+            tau_root.join("prompts/system.md.j2"),
+            "W={{base_system_prompt}}|{{identity_sections}}",
+        )
+        .expect("write template");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::Workspace
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "workspace_template_rendered"
+        );
+        assert_eq!(
+            composition.template_report.template_path.as_deref(),
+            Some(
+                tau_root
+                    .join("prompts/system.md.j2")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[test]
+    fn integration_spec_2476_c02_compose_startup_system_prompt_without_workspace_template_uses_builtin_source(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+        std::fs::write(temp.path().join(".tau/SOUL.md"), "Soul section").expect("write SOUL");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::BuiltIn
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "workspace_template_missing_fallback_builtin"
+        );
+        assert_eq!(composition.template_report.template_path, None);
+        assert!(composition.system_prompt.contains("base prompt"));
+        assert!(composition.system_prompt.contains("Soul section"));
+    }
+
+    #[test]
+    fn regression_spec_2476_c03_invalid_workspace_template_falls_back_to_builtin_source() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("prompts")).expect("create prompts dir");
+        std::fs::write(tau_root.join("SOUL.md"), "Soul section").expect("write SOUL");
+        std::fs::write(
+            tau_root.join("prompts/system.md.j2"),
+            "BROKEN TEMPLATE {{unknown_placeholder}}",
+        )
+        .expect("write template");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::BuiltIn
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "workspace_template_render_failed_fallback_builtin"
+        );
+        assert!(!composition.system_prompt.contains("BROKEN TEMPLATE"));
+        assert!(composition.system_prompt.contains("base prompt"));
+        assert!(composition.system_prompt.contains("Soul section"));
+    }
+
+    #[test]
+    fn regression_template_source_workspace_rendered_empty_falls_back_to_builtin() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("prompts")).expect("create prompts dir");
+        std::fs::write(tau_root.join("prompts/system.md.j2"), "{{skills_section}}")
+            .expect("write template");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::BuiltIn
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "workspace_template_render_failed_fallback_builtin"
+        );
+        assert_eq!(composition.system_prompt, "base prompt\n");
+    }
+
+    #[test]
+    fn regression_template_source_workspace_empty_file_uses_empty_reason_code() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("prompts")).expect("create prompts dir");
+        std::fs::write(tau_root.join("prompts/system.md.j2"), " \n\t").expect("write template");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::BuiltIn
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "workspace_template_empty_fallback_builtin"
+        );
+    }
+
+    #[test]
+    fn regression_template_source_workspace_not_regular_uses_invalid_type_reason_code() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::create_dir_all(tau_root.join("prompts/system.md.j2"))
+            .expect("create invalid template path as directory");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::BuiltIn
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "workspace_template_not_regular_fallback_builtin"
+        );
+    }
+
+    #[test]
+    fn regression_template_source_workspace_metadata_read_error_is_not_missing() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+
+        let tau_root = temp.path().join(".tau");
+        std::fs::write(tau_root.join("prompts"), "not a directory").expect("write prompts file");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::BuiltIn
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "workspace_template_read_failed_fallback_builtin"
+        );
+    }
+
+    #[test]
+    fn regression_template_source_builtin_empty_render_falls_back_to_default() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "".to_string();
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert_eq!(
+            composition.template_report.source,
+            StartupPromptTemplateSource::DefaultFallback
+        );
+        assert_eq!(
+            composition.template_report.reason_code,
+            "builtin_template_render_failed_fallback_default"
+        );
+        assert_eq!(composition.system_prompt, "");
     }
 
     #[test]
