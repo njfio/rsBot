@@ -1,6 +1,6 @@
 # Spec #2497 - Implement G9 phase-2 ingestion worker and SHA-256 checkpoint tracking
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `tau-memory` phase-1 ingestion currently uses non-SHA checkpoint material and a single entrypoint. We need a phase-2 implementation that introduces a worker-oriented API and durable SHA-256 checkpoint progress while preserving deterministic behavior.

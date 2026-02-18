@@ -1,6 +1,6 @@
 # Spec #2498 - RED/GREEN validation for G9 phase-2 ingestion worker slice
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Task #2497 requires explicit RED/GREEN proof that phase-2 conformance tests fail before implementation and pass after implementation.

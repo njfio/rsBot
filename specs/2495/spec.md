@@ -1,6 +1,6 @@
 # Spec #2495 - G9 phase-2 ingestion worker and SHA-256 checkpoints
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Phase-1 ingestion (`#2492`) established deterministic one-shot chunk ingestion, but it does not provide a worker-oriented execution surface or SHA-256 checkpoint durability aligned with the remaining G9 gap.

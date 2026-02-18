@@ -317,9 +317,9 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **Why it matters**: Users can dump knowledge bases, docs, or exported data and the agent absorbs it.
 **Pathway**:
 - [x] Add `IngestionWorker` to `tau-memory` or new module
-- [ ] Watch `{workspace}/ingest/` directory via `notify` crate or heartbeat polling
+- [x] Watch `{workspace}/ingest/` directory via `notify` crate or heartbeat polling
 - [x] Chunk files at line boundaries (configurable chunk size)
-- [ ] Process each chunk through LLM with memory_save tool
+- [x] Process each chunk through LLM with memory_save tool
 - [x] Track progress per-chunk in SQLite (SHA-256 content hash) for crash resilience
 - [x] Delete files after successful ingestion
 - [x] Support: txt, md, json, jsonl, csv, tsv, log, xml, yaml, toml

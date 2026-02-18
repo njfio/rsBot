@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use sha2::{Digest, Sha256};
 
 use crate::memory_contract::MemoryEntry;
@@ -12,7 +12,8 @@ use crate::memory_contract::MemoryEntry;
 use super::{
     importance_rank_multiplier, rank_text_candidates, rank_text_candidates_bm25,
     reciprocal_rank_fuse, record_search_text, resize_and_normalize_embedding, FileMemoryStore,
-    MemoryIngestionOptions, MemoryIngestionResult, MemoryLifecycleMaintenancePolicy,
+    MemoryIngestionLlmOptions, MemoryIngestionOptions, MemoryIngestionResult,
+    MemoryIngestionWatchPollingState, MemoryLifecycleMaintenancePolicy,
     MemoryLifecycleMaintenanceResult, MemoryScopeFilter, MemorySearchMatch, MemorySearchOptions,
     MemorySearchResult, MemoryStorageBackend, MemoryTree, MemoryTreeNode, MemoryType,
     RankedTextCandidate, RankedTextMatch, RuntimeMemoryRecord, MEMORY_EMBEDDING_REASON_HASH_ONLY,
@@ -24,9 +25,23 @@ use super::{
 const MEMORY_INGESTION_SOURCE_EVENT_KEY_PREFIX: &str = "ingestion:chunk:";
 const MEMORY_INGESTION_DEFAULT_RECENCY_WEIGHT_BPS: u16 = 0;
 const MEMORY_INGESTION_DEFAULT_CONFIDENCE_BPS: u16 = 1_000;
+const MEMORY_INGESTION_WATCH_NO_CHANGE_REASON: &str = "ingestion_watch_poll_no_changes";
+const MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON: &str = "ingestion_chunk_llm_parse_failed";
+const MEMORY_INGESTION_LLM_REQUEST_FAILURE_REASON: &str = "ingestion_chunk_llm_request_failed";
+const MEMORY_INGESTION_LLM_EMPTY_TOOL_CALLS_REASON: &str = "ingestion_chunk_llm_no_tool_calls";
 const MEMORY_INGESTION_SUPPORTED_EXTENSIONS: &[&str] = &[
     "txt", "md", "json", "jsonl", "csv", "tsv", "log", "xml", "yaml", "yml", "toml",
 ];
+
+#[derive(Debug, Clone)]
+struct IngestionChunkWritePlan {
+    memory_id: String,
+    summary: String,
+    tags: Vec<String>,
+    facts: Vec<String>,
+    memory_type: Option<MemoryType>,
+    importance: Option<f32>,
+}
 
 impl FileMemoryStore {
     /// Reads the latest record for `memory_id`, optionally constrained by `scope_filter`.
@@ -84,7 +99,7 @@ impl FileMemoryStore {
         ingest_dir: &Path,
         options: &MemoryIngestionOptions,
     ) -> Result<MemoryIngestionResult> {
-        let result = self.ingest_directory_once(ingest_dir, options)?;
+        let result = self.ingest_directory_once_with_processor(ingest_dir, options, None)?;
         tracing::debug!(
             discovered_files = result.discovered_files,
             supported_files = result.supported_files,
@@ -98,11 +113,128 @@ impl FileMemoryStore {
         Ok(result)
     }
 
+    /// Runs one deterministic ingestion pass where each chunk is extracted via LLM `memory_write` tool calls.
+    #[tracing::instrument(
+        name = "tau_memory.ingestion.worker_once_llm_memory_save",
+        skip(self, options, llm_options),
+        fields(
+            ingest_dir = %ingest_dir.display(),
+            chunk_line_count = options.chunk_line_count,
+            delete_source_on_success = options.delete_source_on_success,
+            provider = %llm_options.provider,
+            model = %llm_options.model
+        )
+    )]
+    pub fn ingest_directory_worker_once_with_llm_memory_save(
+        &self,
+        ingest_dir: &Path,
+        options: &MemoryIngestionOptions,
+        llm_options: &MemoryIngestionLlmOptions,
+    ) -> Result<MemoryIngestionResult> {
+        let result =
+            self.ingest_directory_once_with_processor(ingest_dir, options, Some(llm_options))?;
+        tracing::debug!(
+            discovered_files = result.discovered_files,
+            supported_files = result.supported_files,
+            processed_files = result.processed_files,
+            failed_files = result.failed_files,
+            chunks_discovered = result.chunks_discovered,
+            chunks_ingested = result.chunks_ingested,
+            chunks_skipped_existing = result.chunks_skipped_existing,
+            "completed ingestion worker run with llm memory_save extraction"
+        );
+        Ok(result)
+    }
+
+    /// Executes one heartbeat-style watch poll cycle and ingests only when directory fingerprints change.
+    #[tracing::instrument(
+        name = "tau_memory.ingestion.watch_poll_once",
+        skip(self, options, polling_state),
+        fields(
+            ingest_dir = %ingest_dir.display(),
+            chunk_line_count = options.chunk_line_count,
+            delete_source_on_success = options.delete_source_on_success
+        )
+    )]
+    pub fn ingest_directory_watch_poll_once(
+        &self,
+        ingest_dir: &Path,
+        options: &MemoryIngestionOptions,
+        polling_state: &mut MemoryIngestionWatchPollingState,
+    ) -> Result<MemoryIngestionResult> {
+        if !ingest_dir.exists() {
+            polling_state.file_fingerprints.clear();
+            return self.ingest_directory_worker_once(ingest_dir, options);
+        }
+        let fingerprints = collect_ingest_directory_fingerprints(ingest_dir)?;
+        if fingerprints == polling_state.file_fingerprints {
+            return Ok(MemoryIngestionResult {
+                diagnostics: vec![format!(
+                    "{MEMORY_INGESTION_WATCH_NO_CHANGE_REASON}: path={}",
+                    ingest_dir.display()
+                )],
+                ..MemoryIngestionResult::default()
+            });
+        }
+        polling_state.file_fingerprints = fingerprints;
+        self.ingest_directory_worker_once(ingest_dir, options)
+    }
+
+    /// Executes one watch poll cycle with LLM-based chunk extraction via `memory_write` tool calls.
+    #[tracing::instrument(
+        name = "tau_memory.ingestion.watch_poll_once_llm_memory_save",
+        skip(self, options, polling_state, llm_options),
+        fields(
+            ingest_dir = %ingest_dir.display(),
+            chunk_line_count = options.chunk_line_count,
+            delete_source_on_success = options.delete_source_on_success,
+            provider = %llm_options.provider,
+            model = %llm_options.model
+        )
+    )]
+    pub fn ingest_directory_watch_poll_once_with_llm_memory_save(
+        &self,
+        ingest_dir: &Path,
+        options: &MemoryIngestionOptions,
+        polling_state: &mut MemoryIngestionWatchPollingState,
+        llm_options: &MemoryIngestionLlmOptions,
+    ) -> Result<MemoryIngestionResult> {
+        if !ingest_dir.exists() {
+            polling_state.file_fingerprints.clear();
+            return self.ingest_directory_worker_once_with_llm_memory_save(
+                ingest_dir,
+                options,
+                llm_options,
+            );
+        }
+        let fingerprints = collect_ingest_directory_fingerprints(ingest_dir)?;
+        if fingerprints == polling_state.file_fingerprints {
+            return Ok(MemoryIngestionResult {
+                diagnostics: vec![format!(
+                    "{MEMORY_INGESTION_WATCH_NO_CHANGE_REASON}: path={}",
+                    ingest_dir.display()
+                )],
+                ..MemoryIngestionResult::default()
+            });
+        }
+        polling_state.file_fingerprints = fingerprints;
+        self.ingest_directory_worker_once_with_llm_memory_save(ingest_dir, options, llm_options)
+    }
+
     /// Ingests supported files from `ingest_dir` once using deterministic chunk checkpoints.
     pub fn ingest_directory_once(
         &self,
         ingest_dir: &Path,
         options: &MemoryIngestionOptions,
+    ) -> Result<MemoryIngestionResult> {
+        self.ingest_directory_once_with_processor(ingest_dir, options, None)
+    }
+
+    fn ingest_directory_once_with_processor(
+        &self,
+        ingest_dir: &Path,
+        options: &MemoryIngestionOptions,
+        llm_options: Option<&MemoryIngestionLlmOptions>,
     ) -> Result<MemoryIngestionResult> {
         if options.chunk_line_count == 0 {
             bail!("ingestion chunk_line_count must be greater than zero");
@@ -175,39 +307,66 @@ impl FileMemoryStore {
                     continue;
                 }
 
-                let entry = MemoryEntry {
-                    memory_id: ingestion_chunk_memory_id(
-                        source_path.as_path(),
-                        chunk_index,
-                        checkpoint_key.as_str(),
-                    ),
-                    summary: ingestion_chunk_summary(
+                let write_plans = if let Some(llm_options) = llm_options {
+                    match llm_memory_write_plans_for_chunk(
                         source_path.as_path(),
                         chunk_index,
                         chunk_text,
-                    ),
-                    tags: vec![
-                        "ingestion".to_string(),
-                        format!("ingestion_extension:{extension}"),
-                    ],
-                    facts: vec![chunk_text.clone()],
-                    source_event_key: checkpoint_key.clone(),
-                    recency_weight_bps: MEMORY_INGESTION_DEFAULT_RECENCY_WEIGHT_BPS,
-                    confidence_bps: MEMORY_INGESTION_DEFAULT_CONFIDENCE_BPS,
+                        extension.as_str(),
+                        checkpoint_key.as_str(),
+                        llm_options,
+                    ) {
+                        Ok(plans) => plans,
+                        Err(error) => {
+                            result.failed_files = result.failed_files.saturating_add(1);
+                            result.diagnostics.push(format!(
+                                "ingestion_chunk_llm_processing_failed: path={} chunk_index={} error={error}",
+                                source_path.display(),
+                                chunk_index
+                            ));
+                            file_failed = true;
+                            break;
+                        }
+                    }
+                } else {
+                    vec![default_ingestion_chunk_write_plan(
+                        source_path.as_path(),
+                        chunk_index,
+                        chunk_text,
+                        extension.as_str(),
+                        checkpoint_key.as_str(),
+                    )]
                 };
 
-                if let Err(error) = self.write_entry_with_metadata(
-                    &options.scope,
-                    entry,
-                    Some(MemoryType::Fact),
-                    None,
-                ) {
-                    result.failed_files = result.failed_files.saturating_add(1);
-                    result.diagnostics.push(format!(
-                        "ingestion_chunk_write_failed: path={} chunk_index={} error={error}",
-                        source_path.display(),
-                        chunk_index
-                    ));
+                let mut chunk_write_failed = false;
+                for write_plan in write_plans {
+                    let entry = MemoryEntry {
+                        memory_id: write_plan.memory_id,
+                        summary: write_plan.summary,
+                        tags: write_plan.tags,
+                        facts: write_plan.facts,
+                        source_event_key: checkpoint_key.clone(),
+                        recency_weight_bps: MEMORY_INGESTION_DEFAULT_RECENCY_WEIGHT_BPS,
+                        confidence_bps: MEMORY_INGESTION_DEFAULT_CONFIDENCE_BPS,
+                    };
+
+                    if let Err(error) = self.write_entry_with_metadata(
+                        &options.scope,
+                        entry,
+                        write_plan.memory_type,
+                        write_plan.importance,
+                    ) {
+                        result.failed_files = result.failed_files.saturating_add(1);
+                        result.diagnostics.push(format!(
+                            "ingestion_chunk_write_failed: path={} chunk_index={} error={error}",
+                            source_path.display(),
+                            chunk_index
+                        ));
+                        chunk_write_failed = true;
+                        break;
+                    }
+                }
+                if chunk_write_failed {
                     file_failed = true;
                     break;
                 }
@@ -794,6 +953,321 @@ fn validate_lifecycle_maintenance_policy(policy: &MemoryLifecycleMaintenancePoli
     Ok(())
 }
 
+fn collect_ingest_directory_fingerprints(ingest_dir: &Path) -> Result<BTreeMap<String, String>> {
+    if !ingest_dir.exists() {
+        return Ok(BTreeMap::new());
+    }
+    if !ingest_dir.is_dir() {
+        bail!(
+            "ingestion path must be a directory (received {})",
+            ingest_dir.display()
+        );
+    }
+
+    let mut fingerprints = BTreeMap::new();
+    for entry in fs::read_dir(ingest_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        let modified_unix_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let signature = format!("{}:{modified_unix_ms}", metadata.len());
+        fingerprints.insert(path.display().to_string(), signature);
+    }
+    Ok(fingerprints)
+}
+
+fn default_ingestion_chunk_write_plan(
+    source_path: &Path,
+    chunk_index: usize,
+    chunk_text: &str,
+    extension: &str,
+    checkpoint_key: &str,
+) -> IngestionChunkWritePlan {
+    IngestionChunkWritePlan {
+        memory_id: ingestion_chunk_memory_id(source_path, chunk_index, checkpoint_key),
+        summary: ingestion_chunk_summary(source_path, chunk_index, chunk_text),
+        tags: vec![
+            "ingestion".to_string(),
+            format!("ingestion_extension:{extension}"),
+        ],
+        facts: vec![chunk_text.to_string()],
+        memory_type: Some(MemoryType::Fact),
+        importance: None,
+    }
+}
+
+fn llm_memory_write_plans_for_chunk(
+    source_path: &Path,
+    chunk_index: usize,
+    chunk_text: &str,
+    extension: &str,
+    checkpoint_key: &str,
+    llm_options: &MemoryIngestionLlmOptions,
+) -> Result<Vec<IngestionChunkWritePlan>> {
+    let provider = llm_options.provider.trim().to_ascii_lowercase();
+    if provider != "openai" && provider != "openai-compatible" {
+        return Err(anyhow!(
+            "{MEMORY_INGESTION_LLM_REQUEST_FAILURE_REASON}: unsupported provider '{}'",
+            llm_options.provider
+        ));
+    }
+
+    let api_base = llm_options.api_base.trim_end_matches('/');
+    if api_base.is_empty() {
+        return Err(anyhow!(
+            "{MEMORY_INGESTION_LLM_REQUEST_FAILURE_REASON}: api_base must not be empty"
+        ));
+    }
+    if llm_options.model.trim().is_empty() {
+        return Err(anyhow!(
+            "{MEMORY_INGESTION_LLM_REQUEST_FAILURE_REASON}: model must not be empty"
+        ));
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(
+            llm_options.timeout_ms.max(1),
+        ))
+        .build()
+        .map_err(|error| {
+            anyhow!(
+                "{MEMORY_INGESTION_LLM_REQUEST_FAILURE_REASON}: failed to build llm client: {error}"
+            )
+        })?;
+
+    let response = client
+        .post(format!("{api_base}/chat/completions"))
+        .bearer_auth(llm_options.api_key.as_str())
+        .json(&serde_json::json!({
+            "model": llm_options.model,
+            "temperature": 0,
+            "tool_choice": "required",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Extract durable semantic memories from each chunk and emit only memory_write tool calls."
+                },
+                {
+                    "role": "user",
+                    "content": format!(
+                        "source_path={}\nchunk_index={}\nchunk_text:\n{}",
+                        source_path.display(),
+                        chunk_index,
+                        chunk_text
+                    )
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "memory_write",
+                        "description": "Persist memory records extracted from an ingestion chunk.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "memory_id": { "type": "string" },
+                                "summary": { "type": "string" },
+                                "tags": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "facts": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "memory_type": { "type": "string" },
+                                "importance": { "type": "number" }
+                            },
+                            "required": ["summary"],
+                            "additionalProperties": false
+                        }
+                    }
+                }
+            ]
+        }))
+        .send()
+        .map_err(|error| {
+            anyhow!("{MEMORY_INGESTION_LLM_REQUEST_FAILURE_REASON}: request failed: {error}")
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow!(
+            "{MEMORY_INGESTION_LLM_REQUEST_FAILURE_REASON}: status={} body={}",
+            status.as_u16(),
+            body.chars().take(240).collect::<String>()
+        ));
+    }
+
+    let payload = response.json::<serde_json::Value>().map_err(|error| {
+        anyhow!("{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: invalid json payload: {error}")
+    })?;
+    let tool_calls = payload
+        .get("choices")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("tool_calls"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            anyhow!("{MEMORY_INGESTION_LLM_EMPTY_TOOL_CALLS_REASON}: response missing tool_calls")
+        })?;
+
+    let mut plans = Vec::new();
+    for tool_call in tool_calls {
+        let function = tool_call
+            .get("function")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                anyhow!("{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: tool call missing function")
+            })?;
+        let name = function
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if name != "memory_write" {
+            continue;
+        }
+        let arguments = function
+            .get("arguments")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                anyhow!(
+                    "{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: memory_write missing arguments string"
+                )
+            })?;
+        let parsed_arguments = serde_json::from_str::<serde_json::Value>(arguments).map_err(|error| {
+            anyhow!(
+                "{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: invalid memory_write arguments json: {error}"
+            )
+        })?;
+
+        let summary = parsed_arguments
+            .get("summary")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: memory_write summary must be non-empty"
+                )
+            })?
+            .to_string();
+
+        let memory_id = parsed_arguments
+            .get("memory_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                ingestion_chunk_memory_id_with_variant(
+                    source_path,
+                    chunk_index,
+                    checkpoint_key,
+                    plans.len(),
+                )
+            });
+
+        let mut tags = parsed_arguments
+            .get("tags")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|value| {
+                        value.as_str().map(str::trim).filter(|item| !item.is_empty()).map(str::to_string).ok_or_else(|| {
+                            anyhow!(
+                                "{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: tag values must be non-empty strings"
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        tags.push("ingestion".to_string());
+        tags.push(format!("ingestion_extension:{extension}"));
+        tags.push("ingestion_llm".to_string());
+        tags.sort();
+        tags.dedup();
+
+        let facts = parsed_arguments
+            .get("facts")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|value| {
+                        value.as_str().map(str::trim).filter(|item| !item.is_empty()).map(str::to_string).ok_or_else(|| {
+                            anyhow!(
+                                "{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: fact values must be non-empty strings"
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let facts = if facts.is_empty() {
+            vec![chunk_text.to_string()]
+        } else {
+            facts
+        };
+
+        let memory_type = match parsed_arguments
+            .get("memory_type")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(raw) => Some(MemoryType::parse(raw).ok_or_else(|| {
+                anyhow!(
+                    "{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: unsupported memory_type '{raw}'"
+                )
+            })?),
+            None => Some(MemoryType::Fact),
+        };
+
+        let importance = match parsed_arguments.get("importance").and_then(serde_json::Value::as_f64)
+        {
+            Some(value) if value.is_finite() && (0.0..=1.0).contains(&value) => {
+                Some(value as f32)
+            }
+            Some(value) => {
+                return Err(anyhow!(
+                    "{MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON}: importance must be within 0.0..=1.0 (received {value})"
+                ))
+            }
+            None => None,
+        };
+
+        plans.push(IngestionChunkWritePlan {
+            memory_id,
+            summary,
+            tags,
+            facts,
+            memory_type,
+            importance,
+        });
+    }
+
+    if plans.is_empty() {
+        return Err(anyhow!(
+            "{MEMORY_INGESTION_LLM_EMPTY_TOOL_CALLS_REASON}: no memory_write tool calls were produced"
+        ));
+    }
+    Ok(plans)
+}
+
 fn supported_ingest_extension(path: &Path) -> Option<String> {
     let extension = path
         .extension()
@@ -850,6 +1324,20 @@ fn ingestion_chunk_memory_id(path: &Path, chunk_index: usize, checkpoint_key: &s
         chunk_index.saturating_add(1),
         digest_prefix
     )
+}
+
+fn ingestion_chunk_memory_id_with_variant(
+    path: &Path,
+    chunk_index: usize,
+    checkpoint_key: &str,
+    variant_index: usize,
+) -> String {
+    let base = ingestion_chunk_memory_id(path, chunk_index, checkpoint_key);
+    if variant_index == 0 {
+        base
+    } else {
+        format!("{base}-{:02}", variant_index.saturating_add(1))
+    }
 }
 
 fn ingestion_chunk_summary(path: &Path, chunk_index: usize, chunk_text: &str) -> String {
@@ -1004,7 +1492,12 @@ fn compute_graph_scores(records: &HashMap<String, RuntimeMemoryRecord>) -> HashM
 mod tests {
     use super::*;
     use crate::memory_contract::{MemoryEntry, MemoryScope};
-    use crate::runtime::{FileMemoryStore, MemoryRelation, MemorySearchOptions, MemoryType};
+    use crate::runtime::{
+        FileMemoryStore, MemoryIngestionLlmOptions, MemoryIngestionWatchPollingState,
+        MemoryRelation, MemorySearchOptions, MemoryType,
+    };
+    use httpmock::{Method::POST, MockServer};
+    use serde_json::json;
     use tempfile::tempdir;
 
     fn build_record(
@@ -1335,6 +1828,510 @@ mod tests {
         statement
             .query_row([], |row| row.get::<_, usize>(0))
             .expect("query checkpoint row count")
+    }
+
+    fn llm_ingestion_options(server: &MockServer) -> MemoryIngestionLlmOptions {
+        MemoryIngestionLlmOptions {
+            provider: "openai-compatible".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            api_base: server.url(""),
+            api_key: "test-key".to_string(),
+            timeout_ms: 5_000,
+        }
+    }
+
+    #[test]
+    fn spec_2503_c01_watch_poll_skips_when_directory_unchanged() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("poll.txt"), "a\nb\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: false,
+        };
+        let mut polling_state = MemoryIngestionWatchPollingState::default();
+
+        let first = store
+            .ingest_directory_watch_poll_once(&ingest_dir, &options, &mut polling_state)
+            .expect("first poll should process changed directory");
+        assert_eq!(first.chunks_ingested, 1);
+        assert_eq!(first.processed_files, 1);
+
+        let second = store
+            .ingest_directory_watch_poll_once(&ingest_dir, &options, &mut polling_state)
+            .expect("second poll should skip unchanged directory");
+        assert_eq!(second.chunks_ingested, 0);
+        assert_eq!(second.processed_files, 0);
+        assert!(
+            second
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("ingestion_watch_poll_no_changes")),
+            "watch poll should emit explicit no-change diagnostic"
+        );
+    }
+
+    #[test]
+    fn spec_2503_c02_watch_poll_processes_on_directory_change() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("first.txt"), "a\nb\n").expect("write first ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: false,
+        };
+        let mut polling_state = MemoryIngestionWatchPollingState::default();
+
+        let first = store
+            .ingest_directory_watch_poll_once(&ingest_dir, &options, &mut polling_state)
+            .expect("first poll should process initial file");
+        assert_eq!(first.chunks_ingested, 1);
+
+        let second = store
+            .ingest_directory_watch_poll_once(&ingest_dir, &options, &mut polling_state)
+            .expect("second poll should skip unchanged directory");
+        assert_eq!(second.chunks_ingested, 0);
+
+        std::fs::write(ingest_dir.join("second.txt"), "c\nd\n").expect("write changed file");
+        let third = store
+            .ingest_directory_watch_poll_once(&ingest_dir, &options, &mut polling_state)
+            .expect("third poll should process changed directory");
+        assert!(
+            third.chunks_ingested > 0,
+            "changed directory should trigger ingestion"
+        );
+    }
+
+    #[test]
+    fn integration_spec_2503_c03_llm_chunk_processing_uses_memory_write_tool_calls() {
+        let server = MockServer::start();
+        let llm = server.mock(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(200).json_body_obj(&json!({
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_write",
+                                        "arguments": "{\"summary\":\"LLM extracted summary\",\"facts\":[\"fact-a\",\"fact-b\"],\"tags\":[\"llm-tag\"],\"memory_type\":\"fact\",\"importance\":0.8}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(
+            ingest_dir.join("llm.txt"),
+            "chunk line one\nchunk line two\n",
+        )
+        .expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 4,
+            delete_source_on_success: false,
+        };
+        let result = store
+            .ingest_directory_worker_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &llm_ingestion_options(&server),
+            )
+            .expect("llm ingestion should succeed");
+
+        llm.assert();
+        assert_eq!(result.chunks_ingested, 1);
+
+        let records = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list ingested llm records");
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.entry.summary, "LLM extracted summary");
+        assert_eq!(
+            record.entry.facts,
+            vec!["fact-a".to_string(), "fact-b".to_string()]
+        );
+        assert!(record.entry.tags.iter().any(|tag| tag == "llm-tag"));
+    }
+
+    #[test]
+    fn integration_spec_2503_c04_llm_rerun_skips_durable_chunk_checkpoints() {
+        let server = MockServer::start();
+        let _llm = server.mock(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(200).json_body_obj(&json!({
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_write",
+                                        "arguments": "{\"summary\":\"checkpointed chunk\",\"facts\":[\"fact-1\"]}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("rerun.txt"), "a\nb\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: false,
+        };
+
+        let first = store
+            .ingest_directory_worker_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &llm_ingestion_options(&server),
+            )
+            .expect("first llm worker run should succeed");
+        assert_eq!(first.chunks_ingested, 1);
+
+        let second = store
+            .ingest_directory_worker_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &llm_ingestion_options(&server),
+            )
+            .expect("second llm worker run should succeed");
+        assert_eq!(second.chunks_ingested, 0);
+        assert_eq!(second.chunks_skipped_existing, 1);
+        assert_eq!(
+            ingestion_checkpoint_row_count(&memory_root),
+            1,
+            "durable checkpoint should prevent duplicate writes across reruns"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2503_c05_llm_parse_failure_keeps_source_file_for_retry() {
+        let server = MockServer::start();
+        let llm = server.mock(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(200).json_body_obj(&json!({
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_write",
+                                        "arguments": "{not-json"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("bad-llm.txt"), "a\nb\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: true,
+        };
+        let result = store
+            .ingest_directory_worker_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &llm_ingestion_options(&server),
+            )
+            .expect("llm run should return diagnostics on parse failure");
+
+        llm.assert();
+        assert!(
+            ingest_dir.join("bad-llm.txt").exists(),
+            "llm parse failure should keep source file for retry"
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("ingestion_chunk_llm_parse_failed")),
+            "diagnostics should include parse failure reason"
+        );
+        assert_eq!(result.chunks_ingested, 0);
+    }
+
+    #[test]
+    fn integration_spec_2503_c06_llm_watch_poll_emits_no_change_diagnostic() {
+        let server = MockServer::start();
+        let llm = server.mock(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(200).json_body_obj(&json!({
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_write",
+                                        "arguments": "{\"summary\":\"watch llm summary\",\"facts\":[\"fact\"]}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("watch.txt"), "a\nb\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: false,
+        };
+        let mut polling_state = MemoryIngestionWatchPollingState::default();
+
+        let first = store
+            .ingest_directory_watch_poll_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &mut polling_state,
+                &llm_ingestion_options(&server),
+            )
+            .expect("first llm watch poll should process file");
+        assert_eq!(first.chunks_ingested, 1);
+        llm.assert();
+
+        let second = store
+            .ingest_directory_watch_poll_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &mut polling_state,
+                &llm_ingestion_options(&server),
+            )
+            .expect("second llm watch poll should short-circuit");
+        assert_eq!(second.chunks_ingested, 0);
+        assert!(
+            second
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("ingestion_watch_poll_no_changes")),
+            "llm watch poll should emit no-change diagnostic"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2503_c07_llm_rejects_unsupported_provider() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("unsupported.txt"), "a\nb\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: true,
+        };
+        let llm_options = MemoryIngestionLlmOptions {
+            provider: "local".to_string(),
+            model: "local-model".to_string(),
+            api_base: "http://127.0.0.1:9".to_string(),
+            api_key: "unused".to_string(),
+            timeout_ms: 1_000,
+        };
+
+        let result = store
+            .ingest_directory_worker_once_with_llm_memory_save(&ingest_dir, &options, &llm_options)
+            .expect("unsupported provider should return diagnostics");
+        assert_eq!(result.chunks_ingested, 0);
+        assert!(result.failed_files >= 1);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("unsupported provider")),
+            "diagnostics should mention unsupported llm provider"
+        );
+        assert!(
+            ingest_dir.join("unsupported.txt").exists(),
+            "failed llm extraction should keep source file for retry"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2503_c08_llm_blank_memory_id_falls_back_to_deterministic_id() {
+        let server = MockServer::start();
+        let llm = server.mock(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(200).json_body_obj(&json!({
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_write",
+                                        "arguments": "{\"memory_id\":\"   \",\"summary\":\"fallback memory id\",\"facts\":[\"fact\"]}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("blank-id.txt"), "line\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 4,
+            delete_source_on_success: false,
+        };
+        let result = store
+            .ingest_directory_worker_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &llm_ingestion_options(&server),
+            )
+            .expect("llm ingestion should succeed with fallback memory id");
+
+        llm.assert();
+        assert_eq!(result.chunks_ingested, 1);
+        let records = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list fallback-id records");
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0].entry.memory_id.starts_with("ingest-"),
+            "blank memory_id should fall back to deterministic ingestion id"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2503_c09_llm_invalid_importance_keeps_source_file_for_retry() {
+        let server = MockServer::start();
+        let llm = server.mock(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(200).json_body_obj(&json!({
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory_write",
+                                        "arguments": "{\"summary\":\"bad importance\",\"facts\":[\"fact\"],\"importance\":2.0}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("bad-importance.txt"), "x\ny\n").expect("write ingest");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: true,
+        };
+        let result = store
+            .ingest_directory_worker_once_with_llm_memory_save(
+                &ingest_dir,
+                &options,
+                &llm_ingestion_options(&server),
+            )
+            .expect("llm run should return diagnostics for invalid importance");
+
+        llm.assert();
+        assert_eq!(result.chunks_ingested, 0);
+        assert!(result.failed_files >= 1);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("ingestion_chunk_llm_processing_failed")),
+            "out-of-range importance should fail during llm parse, not downstream write"
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|line| line.contains(MEMORY_INGESTION_LLM_PARSE_FAILURE_REASON)),
+            "diagnostics should preserve llm parse failure reason"
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("importance must be within 0.0..=1.0")),
+            "diagnostics should include invalid importance validation"
+        );
+        assert!(
+            ingest_dir.join("bad-importance.txt").exists(),
+            "invalid llm payload should keep source file for retry"
+        );
     }
 
     #[test]
@@ -1691,5 +2688,21 @@ mod tests {
             memory_id.starts_with("ingest-alpha-beta-123-0001-e71fa2190541"),
             "memory id should include sanitized stem, 1-indexed chunk, and digest prefix"
         );
+
+        let variant0 = ingestion_chunk_memory_id_with_variant(
+            std::path::Path::new("Alpha beta_123!!.md"),
+            0,
+            "ingestion:chunk:e71fa2190541574b",
+            0,
+        );
+        assert_eq!(variant0, memory_id);
+        let variant1 = ingestion_chunk_memory_id_with_variant(
+            std::path::Path::new("Alpha beta_123!!.md"),
+            0,
+            "ingestion:chunk:e71fa2190541574b",
+            1,
+        );
+        assert!(variant1.ends_with("-02"));
+        assert_ne!(variant1, memory_id);
     }
 }

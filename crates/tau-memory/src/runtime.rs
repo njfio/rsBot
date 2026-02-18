@@ -47,6 +47,7 @@ const MEMORY_LIFECYCLE_DEFAULT_PRUNE_IMPORTANCE_FLOOR: f32 = 0.1;
 const MEMORY_LIFECYCLE_DEFAULT_ORPHAN_IMPORTANCE_FLOOR: f32 = 0.2;
 const MEMORY_LIFECYCLE_DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD: f32 = 0.97;
 const MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT: usize = 200;
+const MEMORY_INGESTION_LLM_DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const MEMORY_STORAGE_REASON_PATH_JSONL: &str = "memory_storage_backend_path_jsonl";
 const MEMORY_STORAGE_REASON_PATH_SQLITE: &str = "memory_storage_backend_path_sqlite";
 const MEMORY_STORAGE_REASON_EXISTING_JSONL: &str = "memory_storage_backend_existing_jsonl";
@@ -150,6 +151,10 @@ fn default_ingestion_chunk_line_count() -> usize {
 
 fn default_ingestion_delete_source_on_success() -> bool {
     true
+}
+
+fn default_ingestion_llm_timeout_ms() -> u64 {
+    MEMORY_INGESTION_LLM_DEFAULT_TIMEOUT_MS
 }
 
 /// Public struct `MemoryRelation` used across Tau components.
@@ -442,6 +447,24 @@ impl Default for MemoryIngestionOptions {
             delete_source_on_success: default_ingestion_delete_source_on_success(),
         }
     }
+}
+
+/// Public struct `MemoryIngestionLlmOptions` used across Tau components.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryIngestionLlmOptions {
+    pub provider: String,
+    pub model: String,
+    pub api_base: String,
+    pub api_key: String,
+    #[serde(default = "default_ingestion_llm_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+/// Public struct `MemoryIngestionWatchPollingState` used across Tau components.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryIngestionWatchPollingState {
+    #[serde(default)]
+    pub file_fingerprints: BTreeMap<String, String>,
 }
 
 /// Public struct `MemoryIngestionResult` used across Tau components.
@@ -1010,10 +1033,11 @@ mod tests {
     use super::{
         embed_text_vector, importance_rank_multiplier, rank_text_candidates,
         rank_text_candidates_bm25, FileMemoryStore, MemoryEmbeddingProviderConfig,
-        MemoryIngestionOptions, MemoryLifecycleMaintenancePolicy, MemoryLifecycleMaintenanceResult,
-        MemoryRelationInput, MemoryScopeFilter, MemorySearchOptions, MemoryStorageBackend,
-        MemoryType, RankedTextCandidate, RuntimeMemoryRecord, MEMORY_BACKEND_ENV,
-        MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT, MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
+        MemoryIngestionLlmOptions, MemoryIngestionOptions, MemoryLifecycleMaintenancePolicy,
+        MemoryLifecycleMaintenanceResult, MemoryRelationInput, MemoryScopeFilter,
+        MemorySearchOptions, MemoryStorageBackend, MemoryType, RankedTextCandidate,
+        RuntimeMemoryRecord, MEMORY_BACKEND_ENV, MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT,
+        MEMORY_INGESTION_LLM_DEFAULT_TIMEOUT_MS, MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
     };
     use crate::memory_contract::{MemoryEntry, MemoryScope};
     use httpmock::{Method::POST, MockServer};
@@ -1775,6 +1799,21 @@ mod tests {
         assert_eq!(decoded.scope.workspace_id, "default-workspace");
         assert_eq!(decoded.scope.channel_id, "default-channel");
         assert_eq!(decoded.scope.actor_id, "default-actor");
+    }
+
+    #[test]
+    fn regression_spec_2503_c10_llm_options_default_timeout_is_contract_stable() {
+        let decoded: MemoryIngestionLlmOptions = serde_json::from_value(json!({
+            "provider": "openai-compatible",
+            "model": "gpt-4o-mini",
+            "api_base": "https://example.invalid",
+            "api_key": "test"
+        }))
+        .expect("deserialize llm ingestion options");
+        assert_eq!(
+            decoded.timeout_ms, MEMORY_INGESTION_LLM_DEFAULT_TIMEOUT_MS,
+            "llm options timeout default drifted"
+        );
     }
 
     #[test]
