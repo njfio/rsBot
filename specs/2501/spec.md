@@ -1,6 +1,6 @@
 # Spec #2501 - phase-3 watcher polling and LLM chunk memory_save orchestration
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `tau-memory` ingestion has deterministic one-shot execution, but it cannot watch an ingest directory over polling cycles or route chunk ingestion through an LLM tool-call extraction flow.

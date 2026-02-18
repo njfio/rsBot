@@ -1,6 +1,6 @@
 # Spec #2500 - G9 phase-3 watcher polling + LLM chunk memory extraction
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 G9 still lacks two required capabilities: continuous ingest directory watching and chunk processing through an LLM memory-save tool pathway.

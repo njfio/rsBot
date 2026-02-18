@@ -1,6 +1,6 @@
 # Spec #2502 - RED/GREEN validation for G9 phase-3 watcher + LLM ingestion slice
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Task #2503 requires explicit RED/GREEN proof that phase-3 conformance tests fail before implementation and pass after implementation.

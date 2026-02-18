@@ -1,6 +1,6 @@
 # Spec #2503 - Implement G9 phase-3 watch polling and LLM chunk memory_save ingestion
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 The final unchecked G9 items require `tau-memory` to (1) watch the ingest directory via polling and (2) process each chunk through an LLM memory-save tool-call path.
