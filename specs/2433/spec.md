@@ -1,6 +1,6 @@
 # Spec #2433
 
-Status: Accepted
+Status: Implemented
 Milestone: specs/milestones/m73/index.md
 Issue: https://github.com/njfio/Tau/issues/2433
 
