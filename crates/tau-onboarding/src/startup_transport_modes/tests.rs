@@ -985,6 +985,14 @@ fn unit_build_runtime_heartbeat_scheduler_config_uses_expected_defaults() {
         config.self_repair_orphan_artifact_max_age,
         std::time::Duration::from_secs(3_600)
     );
+    assert_eq!(
+        config.lifecycle_memory_store_roots,
+        vec![PathBuf::from(".tau/memory")]
+    );
+    assert!(
+        config.lifecycle_policy.is_some(),
+        "lifecycle policy should be configured by default"
+    );
 }
 
 #[test]
@@ -1000,6 +1008,7 @@ fn functional_build_runtime_heartbeat_scheduler_config_accepts_overrides() {
     cli.runtime_self_repair_max_retries = 3;
     cli.runtime_self_repair_tool_builds_dir = PathBuf::from(".tau/tool-builds-alt");
     cli.runtime_self_repair_orphan_max_age_seconds = 180;
+    cli.memory_state_dir = PathBuf::from(".tau/memory-alt");
 
     let config = build_runtime_heartbeat_scheduler_config(&cli);
     assert!(!config.enabled);
@@ -1026,6 +1035,14 @@ fn functional_build_runtime_heartbeat_scheduler_config_accepts_overrides() {
     assert_eq!(
         config.self_repair_orphan_artifact_max_age,
         std::time::Duration::from_secs(180)
+    );
+    assert_eq!(
+        config.lifecycle_memory_store_roots,
+        vec![PathBuf::from(".tau/memory-alt")]
+    );
+    assert!(
+        config.lifecycle_policy.is_some(),
+        "lifecycle policy should remain configured when overrides are applied"
     );
 }
 

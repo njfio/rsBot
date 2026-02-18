@@ -10,6 +10,9 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tau_agent_core::{
+    FileMemoryStore, MemoryLifecycleMaintenancePolicy, MemoryLifecycleMaintenanceResult,
+};
 use tau_core::{
     append_line_with_rotation, current_unix_timestamp_ms, write_text_atomic, LogRotationPolicy,
 };
@@ -28,6 +31,7 @@ const RUNTIME_HEARTBEAT_REASON_SELF_REPAIR: &str = "heartbeat_self_repair_applie
 const RUNTIME_HEARTBEAT_REASON_STOPPED: &str = "heartbeat_stopped";
 const RUNTIME_HEARTBEAT_REASON_DISABLED: &str = "heartbeat_disabled";
 const RUNTIME_HEARTBEAT_REASON_STATE_MISSING: &str = "heartbeat_state_missing";
+const RUNTIME_HEARTBEAT_REASON_MEMORY_LIFECYCLE_FAILED: &str = "heartbeat_memory_lifecycle_failed";
 const DEFAULT_MAINTENANCE_TEMP_MAX_AGE_SECONDS: u64 = 3_600;
 const DEFAULT_SELF_REPAIR_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_SELF_REPAIR_MAX_RETRIES: usize = 2;
@@ -58,7 +62,7 @@ fn runtime_repair_work_item_schema_version() -> u32 {
     1
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 /// Public struct `RuntimeHeartbeatSchedulerConfig` used across Tau components.
 pub struct RuntimeHeartbeatSchedulerConfig {
     pub enabled: bool,
@@ -74,6 +78,8 @@ pub struct RuntimeHeartbeatSchedulerConfig {
     pub self_repair_orphan_artifact_max_age: Duration,
     pub maintenance_temp_dirs: Vec<PathBuf>,
     pub maintenance_temp_max_age: Duration,
+    pub lifecycle_memory_store_roots: Vec<PathBuf>,
+    pub lifecycle_policy: Option<MemoryLifecycleMaintenancePolicy>,
 }
 
 impl RuntimeHeartbeatSchedulerConfig {
@@ -104,6 +110,8 @@ impl Default for RuntimeHeartbeatSchedulerConfig {
             ),
             maintenance_temp_dirs: Vec::new(),
             maintenance_temp_max_age: Duration::from_secs(DEFAULT_MAINTENANCE_TEMP_MAX_AGE_SECONDS),
+            lifecycle_memory_store_roots: Vec::new(),
+            lifecycle_policy: None,
         }
     }
 }
@@ -148,6 +156,18 @@ pub struct RuntimeHeartbeatSnapshot {
     #[serde(default)]
     pub orphan_artifacts_cleaned: usize,
     #[serde(default)]
+    pub lifecycle_runs: usize,
+    #[serde(default)]
+    pub lifecycle_failures: usize,
+    #[serde(default)]
+    pub lifecycle_scanned_records: usize,
+    #[serde(default)]
+    pub lifecycle_updated_records: usize,
+    #[serde(default)]
+    pub lifecycle_pruned_records: usize,
+    #[serde(default)]
+    pub lifecycle_duplicate_forgotten_records: usize,
+    #[serde(default)]
     pub reason_codes: Vec<String>,
     #[serde(default)]
     pub diagnostics: Vec<String>,
@@ -176,6 +196,12 @@ impl Default for RuntimeHeartbeatSnapshot {
             retries_queued: 0,
             retries_exhausted: 0,
             orphan_artifacts_cleaned: 0,
+            lifecycle_runs: 0,
+            lifecycle_failures: 0,
+            lifecycle_scanned_records: 0,
+            lifecycle_updated_records: 0,
+            lifecycle_pruned_records: 0,
+            lifecycle_duplicate_forgotten_records: 0,
             reason_codes: Vec::new(),
             diagnostics: Vec::new(),
             state_path: String::new(),
@@ -199,6 +225,12 @@ struct RuntimeHeartbeatCycleReport {
     retries_queued: usize,
     retries_exhausted: usize,
     orphan_artifacts_cleaned: usize,
+    lifecycle_runs: usize,
+    lifecycle_failures: usize,
+    lifecycle_scanned_records: usize,
+    lifecycle_updated_records: usize,
+    lifecycle_pruned_records: usize,
+    lifecycle_duplicate_forgotten_records: usize,
     diagnostics: Vec<String>,
 }
 
@@ -210,6 +242,16 @@ struct RuntimeSelfRepairSummary {
     retries_queued: usize,
     retries_exhausted: usize,
     orphan_artifacts_cleaned: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeLifecycleMaintenanceSummary {
+    runs: usize,
+    failures: usize,
+    scanned_records: usize,
+    updated_records: usize,
+    pruned_records: usize,
+    duplicate_forgotten_records: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,6 +369,12 @@ pub fn start_runtime_heartbeat_scheduler(
             retries_queued: 0,
             retries_exhausted: 0,
             orphan_artifacts_cleaned: 0,
+            lifecycle_runs: 0,
+            lifecycle_failures: 0,
+            lifecycle_scanned_records: 0,
+            lifecycle_updated_records: 0,
+            lifecycle_pruned_records: 0,
+            lifecycle_duplicate_forgotten_records: 0,
             reason_codes: vec![RUNTIME_HEARTBEAT_REASON_DISABLED.to_string()],
             diagnostics: Vec::new(),
             state_path: config.state_path.display().to_string(),
@@ -361,6 +409,12 @@ pub fn start_runtime_heartbeat_scheduler(
         retries_queued: 0,
         retries_exhausted: 0,
         orphan_artifacts_cleaned: 0,
+        lifecycle_runs: 0,
+        lifecycle_failures: 0,
+        lifecycle_scanned_records: 0,
+        lifecycle_updated_records: 0,
+        lifecycle_pruned_records: 0,
+        lifecycle_duplicate_forgotten_records: 0,
         reason_codes: vec!["heartbeat_started".to_string()],
         diagnostics: vec![format!(
             "heartbeat_started: interval_ms={} state_path={}",
@@ -473,6 +527,12 @@ async fn run_runtime_heartbeat_loop(
                     retries_queued: 0,
                     retries_exhausted: 0,
                     orphan_artifacts_cleaned: 0,
+                    lifecycle_runs: 0,
+                    lifecycle_failures: 0,
+                    lifecycle_scanned_records: 0,
+                    lifecycle_updated_records: 0,
+                    lifecycle_pruned_records: 0,
+                    lifecycle_duplicate_forgotten_records: 0,
                     reason_codes: vec![RUNTIME_HEARTBEAT_REASON_STOPPED.to_string()],
                     diagnostics: vec![format!(
                         "heartbeat_stopped: state_path={} ticks={tick_count}",
@@ -537,6 +597,12 @@ fn execute_runtime_heartbeat_cycle(
     }
 
     let self_repair = execute_runtime_self_repair(config, now, &mut diagnostics, &mut reason_codes);
+    let lifecycle = execute_runtime_memory_lifecycle_maintenance(
+        config,
+        now,
+        &mut diagnostics,
+        &mut reason_codes,
+    );
 
     if reason_codes.is_empty() {
         reason_codes.push("heartbeat_cycle_clean".to_string());
@@ -544,6 +610,8 @@ fn execute_runtime_heartbeat_cycle(
 
     let reason_code = if self_repair.repair_actions > 0 {
         RUNTIME_HEARTBEAT_REASON_SELF_REPAIR.to_string()
+    } else if lifecycle.failures > 0 {
+        RUNTIME_HEARTBEAT_REASON_MEMORY_LIFECYCLE_FAILED.to_string()
     } else if queue_depth > 0 || pending_events > 0 || pending_jobs > 0 {
         RUNTIME_HEARTBEAT_REASON_BACKLOG.to_string()
     } else {
@@ -569,6 +637,12 @@ fn execute_runtime_heartbeat_cycle(
         retries_queued: self_repair.retries_queued,
         retries_exhausted: self_repair.retries_exhausted,
         orphan_artifacts_cleaned: self_repair.orphan_artifacts_cleaned,
+        lifecycle_runs: lifecycle.runs,
+        lifecycle_failures: lifecycle.failures,
+        lifecycle_scanned_records: lifecycle.scanned_records,
+        lifecycle_updated_records: lifecycle.updated_records,
+        lifecycle_pruned_records: lifecycle.pruned_records,
+        lifecycle_duplicate_forgotten_records: lifecycle.duplicate_forgotten_records,
         reason_codes: reason_codes.clone(),
         diagnostics: diagnostics.clone(),
         state_path: config.state_path.display().to_string(),
@@ -588,6 +662,12 @@ fn execute_runtime_heartbeat_cycle(
         retries_queued: self_repair.retries_queued,
         retries_exhausted: self_repair.retries_exhausted,
         orphan_artifacts_cleaned: self_repair.orphan_artifacts_cleaned,
+        lifecycle_runs: lifecycle.runs,
+        lifecycle_failures: lifecycle.failures,
+        lifecycle_scanned_records: lifecycle.scanned_records,
+        lifecycle_updated_records: lifecycle.updated_records,
+        lifecycle_pruned_records: lifecycle.pruned_records,
+        lifecycle_duplicate_forgotten_records: lifecycle.duplicate_forgotten_records,
         diagnostics,
     };
     RuntimeHeartbeatCycleResult { snapshot, report }
@@ -631,6 +711,65 @@ fn execute_runtime_self_repair(
     );
 
     summary
+}
+
+fn execute_runtime_memory_lifecycle_maintenance(
+    config: &RuntimeHeartbeatSchedulerConfig,
+    now_unix_ms: u64,
+    diagnostics: &mut Vec<String>,
+    reason_codes: &mut Vec<String>,
+) -> RuntimeLifecycleMaintenanceSummary {
+    if config.lifecycle_memory_store_roots.is_empty() {
+        diagnostics.push("memory_lifecycle_not_configured".to_string());
+        return RuntimeLifecycleMaintenanceSummary::default();
+    }
+
+    let policy = config.lifecycle_policy.clone().unwrap_or_default();
+    let mut summary = RuntimeLifecycleMaintenanceSummary::default();
+    for root in &config.lifecycle_memory_store_roots {
+        summary.runs = summary.runs.saturating_add(1);
+        let store = FileMemoryStore::new(root.clone());
+        match store.run_lifecycle_maintenance(&policy, now_unix_ms) {
+            Ok(result) => {
+                accumulate_lifecycle_result(&mut summary, &result);
+                push_unique_reason_code(reason_codes, "memory_lifecycle_maintenance_executed");
+                diagnostics.push(format!(
+                    "memory_lifecycle_maintenance_ok: root={} scanned={} updated={} pruned={} duplicate_forgotten={}",
+                    root.display(),
+                    result.scanned_records,
+                    result.updated_records,
+                    result.pruned_records,
+                    result.duplicate_forgotten_records
+                ));
+            }
+            Err(error) => {
+                summary.failures = summary.failures.saturating_add(1);
+                push_unique_reason_code(reason_codes, "memory_lifecycle_maintenance_failed");
+                diagnostics.push(format!(
+                    "memory_lifecycle_maintenance_failed: root={} error={error}",
+                    root.display()
+                ));
+            }
+        }
+    }
+
+    summary
+}
+
+fn accumulate_lifecycle_result(
+    summary: &mut RuntimeLifecycleMaintenanceSummary,
+    result: &MemoryLifecycleMaintenanceResult,
+) {
+    summary.scanned_records = summary
+        .scanned_records
+        .saturating_add(result.scanned_records);
+    summary.updated_records = summary
+        .updated_records
+        .saturating_add(result.updated_records);
+    summary.pruned_records = summary.pruned_records.saturating_add(result.pruned_records);
+    summary.duplicate_forgotten_records = summary
+        .duplicate_forgotten_records
+        .saturating_add(result.duplicate_forgotten_records);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1271,9 +1410,10 @@ mod tests {
         start_runtime_heartbeat_scheduler, RuntimeHeartbeatCycleReport,
         RuntimeHeartbeatSchedulerConfig,
     };
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
+    use tau_agent_core::{FileMemoryStore, MemoryLifecycleMaintenancePolicy};
     use tempfile::tempdir;
 
     fn scheduler_config(root: &Path, enabled: bool) -> RuntimeHeartbeatSchedulerConfig {
@@ -1291,6 +1431,8 @@ mod tests {
             self_repair_orphan_artifact_max_age: Duration::from_secs(3_600),
             maintenance_temp_dirs: vec![root.join("tmp")],
             maintenance_temp_max_age: Duration::from_secs(60),
+            lifecycle_memory_store_roots: Vec::new(),
+            lifecycle_policy: None,
         }
     }
 
@@ -1345,6 +1487,12 @@ mod tests {
                 retries_queued: 0,
                 retries_exhausted: 0,
                 orphan_artifacts_cleaned: 0,
+                lifecycle_runs: 0,
+                lifecycle_failures: 0,
+                lifecycle_scanned_records: 0,
+                lifecycle_updated_records: 0,
+                lifecycle_pruned_records: 0,
+                lifecycle_duplicate_forgotten_records: 0,
                 diagnostics: vec![],
             },
         )
@@ -1366,6 +1514,12 @@ mod tests {
                 retries_queued: 0,
                 retries_exhausted: 0,
                 orphan_artifacts_cleaned: 0,
+                lifecycle_runs: 0,
+                lifecycle_failures: 0,
+                lifecycle_scanned_records: 0,
+                lifecycle_updated_records: 0,
+                lifecycle_pruned_records: 0,
+                lifecycle_duplicate_forgotten_records: 0,
                 diagnostics: vec![],
             },
         )
@@ -1582,6 +1736,103 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "self_repair_retry_exhausted"));
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn integration_spec_2460_c03_runtime_heartbeat_executes_memory_lifecycle_maintenance() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("queue")).expect("create queue dir");
+        std::fs::write(temp.path().join("queue/state.json"), "{}").expect("write queue state");
+
+        let memory_root = temp.path().join("memory");
+        let memory_store = FileMemoryStore::new(memory_root.clone());
+        let scope = serde_json::from_value(json!({
+            "workspace_id": "workspace-lifecycle",
+            "channel_id": "channel-lifecycle",
+            "actor_id": "assistant",
+        }))
+        .expect("build lifecycle scope");
+        let entry = serde_json::from_value(json!({
+            "memory_id": "memory-seed",
+            "summary": "runtime heartbeat lifecycle seed",
+            "tags": ["lifecycle"],
+            "facts": ["phase=3"],
+            "source_event_key": "evt-memory-seed",
+            "recency_weight_bps": 0,
+            "confidence_bps": 1000,
+        }))
+        .expect("build lifecycle entry");
+        memory_store
+            .write_entry(&scope, entry)
+            .expect("write lifecycle seed memory");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.lifecycle_memory_store_roots = vec![memory_root];
+        config.lifecycle_policy = Some(MemoryLifecycleMaintenancePolicy {
+            stale_after_unix_ms: u64::MAX,
+            decay_rate: 1.0,
+            prune_importance_floor: 0.0,
+            orphan_cleanup_enabled: false,
+            orphan_importance_floor: 0.0,
+            duplicate_cleanup_enabled: true,
+            duplicate_similarity_threshold: 0.95,
+        });
+
+        let mut handle =
+            start_runtime_heartbeat_scheduler(config).expect("start runtime heartbeat");
+        wait_for_tick(handle.state_path(), Duration::from_secs(2)).await;
+
+        let snapshot = inspect_runtime_heartbeat(handle.state_path());
+        assert!(snapshot.lifecycle_runs >= 1);
+        assert_eq!(snapshot.lifecycle_failures, 0);
+        assert!(
+            snapshot.lifecycle_scanned_records >= 1,
+            "heartbeat lifecycle aggregation should reflect scanned records"
+        );
+        assert_eq!(
+            snapshot.reason_code, "heartbeat_cycle_ok",
+            "successful lifecycle execution should keep the healthy cycle reason"
+        );
+        assert!(snapshot
+            .reason_codes
+            .iter()
+            .any(|code| code == "memory_lifecycle_maintenance_executed"));
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn regression_spec_2460_c04_runtime_heartbeat_records_memory_lifecycle_failure_without_crash(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("queue")).expect("create queue dir");
+        std::fs::write(temp.path().join("queue/state.json"), "{}").expect("write queue state");
+
+        let invalid_root = temp.path().join("broken-memory.jsonl");
+        std::fs::write(&invalid_root, "{not-valid-jsonl").expect("write malformed memory jsonl");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.lifecycle_memory_store_roots = vec![invalid_root];
+        config.lifecycle_policy = Some(MemoryLifecycleMaintenancePolicy::default());
+
+        let mut handle =
+            start_runtime_heartbeat_scheduler(config).expect("start runtime heartbeat");
+        wait_for_tick(handle.state_path(), Duration::from_secs(2)).await;
+
+        let snapshot = inspect_runtime_heartbeat(handle.state_path());
+        assert!(snapshot.lifecycle_runs >= 1);
+        assert!(snapshot.lifecycle_failures >= 1);
+        assert_eq!(snapshot.run_state, "running");
+        assert_eq!(
+            snapshot.reason_code, "heartbeat_memory_lifecycle_failed",
+            "lifecycle failure should be reflected in cycle reason code"
+        );
+        assert!(snapshot
+            .reason_codes
+            .iter()
+            .any(|code| code == "memory_lifecycle_maintenance_failed"));
 
         handle.shutdown().await;
     }

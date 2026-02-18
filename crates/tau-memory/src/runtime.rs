@@ -45,6 +45,7 @@ const MEMORY_LIFECYCLE_DEFAULT_STALE_AFTER_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const MEMORY_LIFECYCLE_DEFAULT_DECAY_RATE: f32 = 0.9;
 const MEMORY_LIFECYCLE_DEFAULT_PRUNE_IMPORTANCE_FLOOR: f32 = 0.1;
 const MEMORY_LIFECYCLE_DEFAULT_ORPHAN_IMPORTANCE_FLOOR: f32 = 0.2;
+const MEMORY_LIFECYCLE_DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD: f32 = 0.97;
 const MEMORY_STORAGE_REASON_PATH_JSONL: &str = "memory_storage_backend_path_jsonl";
 const MEMORY_STORAGE_REASON_PATH_SQLITE: &str = "memory_storage_backend_path_sqlite";
 const MEMORY_STORAGE_REASON_EXISTING_JSONL: &str = "memory_storage_backend_existing_jsonl";
@@ -124,6 +125,14 @@ fn default_lifecycle_orphan_importance_floor() -> f32 {
 
 fn default_lifecycle_orphan_cleanup_enabled() -> bool {
     true
+}
+
+fn default_lifecycle_duplicate_cleanup_enabled() -> bool {
+    false
+}
+
+fn default_lifecycle_duplicate_similarity_threshold() -> f32 {
+    MEMORY_LIFECYCLE_DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD
 }
 
 /// Public struct `MemoryRelation` used across Tau components.
@@ -364,6 +373,10 @@ pub struct MemoryLifecycleMaintenancePolicy {
     pub orphan_cleanup_enabled: bool,
     #[serde(default = "default_lifecycle_orphan_importance_floor")]
     pub orphan_importance_floor: f32,
+    #[serde(default = "default_lifecycle_duplicate_cleanup_enabled")]
+    pub duplicate_cleanup_enabled: bool,
+    #[serde(default = "default_lifecycle_duplicate_similarity_threshold")]
+    pub duplicate_similarity_threshold: f32,
 }
 
 impl Default for MemoryLifecycleMaintenancePolicy {
@@ -374,6 +387,8 @@ impl Default for MemoryLifecycleMaintenancePolicy {
             prune_importance_floor: default_lifecycle_prune_importance_floor(),
             orphan_cleanup_enabled: default_lifecycle_orphan_cleanup_enabled(),
             orphan_importance_floor: default_lifecycle_orphan_importance_floor(),
+            duplicate_cleanup_enabled: default_lifecycle_duplicate_cleanup_enabled(),
+            duplicate_similarity_threshold: default_lifecycle_duplicate_similarity_threshold(),
         }
     }
 }
@@ -385,6 +400,7 @@ pub struct MemoryLifecycleMaintenanceResult {
     pub decayed_records: usize,
     pub pruned_records: usize,
     pub orphan_forgotten_records: usize,
+    pub duplicate_forgotten_records: usize,
     pub identity_exempt_records: usize,
     pub updated_records: usize,
     pub unchanged_records: usize,
@@ -1032,12 +1048,15 @@ mod tests {
         assert!((policy.prune_importance_floor - 0.1).abs() <= 0.000_001);
         assert!(policy.orphan_cleanup_enabled);
         assert!((policy.orphan_importance_floor - 0.2).abs() <= 0.000_001);
+        assert!(!policy.duplicate_cleanup_enabled);
+        assert!((policy.duplicate_similarity_threshold - 0.97).abs() <= 0.000_001);
 
         let zero = MemoryLifecycleMaintenanceResult::default();
         assert_eq!(zero.scanned_records, 0);
         assert_eq!(zero.decayed_records, 0);
         assert_eq!(zero.pruned_records, 0);
         assert_eq!(zero.orphan_forgotten_records, 0);
+        assert_eq!(zero.duplicate_forgotten_records, 0);
         assert_eq!(zero.identity_exempt_records, 0);
         assert_eq!(zero.updated_records, 0);
         assert_eq!(zero.unchanged_records, 0);
@@ -1083,6 +1102,8 @@ mod tests {
                     prune_importance_floor: 0.05,
                     orphan_cleanup_enabled: false,
                     orphan_importance_floor: 0.0,
+                    duplicate_cleanup_enabled: false,
+                    duplicate_similarity_threshold: 0.97,
                 },
                 10_000,
             )
@@ -1131,6 +1152,8 @@ mod tests {
                     prune_importance_floor: 0.1,
                     orphan_cleanup_enabled: false,
                     orphan_importance_floor: 0.0,
+                    duplicate_cleanup_enabled: false,
+                    duplicate_similarity_threshold: 0.97,
                 },
                 10_000,
             )
@@ -1187,6 +1210,8 @@ mod tests {
                     prune_importance_floor: 0.1,
                     orphan_cleanup_enabled: false,
                     orphan_importance_floor: 0.0,
+                    duplicate_cleanup_enabled: false,
+                    duplicate_similarity_threshold: 0.97,
                 },
                 10_000,
             )
@@ -1250,6 +1275,8 @@ mod tests {
                     prune_importance_floor: 0.1,
                     orphan_cleanup_enabled: true,
                     orphan_importance_floor: 0.2,
+                    duplicate_cleanup_enabled: false,
+                    duplicate_similarity_threshold: 0.97,
                 },
                 10_000,
             )
@@ -1297,6 +1324,8 @@ mod tests {
                     prune_importance_floor: 0.1,
                     orphan_cleanup_enabled: true,
                     orphan_importance_floor: 0.2,
+                    duplicate_cleanup_enabled: false,
+                    duplicate_similarity_threshold: 0.97,
                 },
                 10_000,
             )
@@ -1329,6 +1358,8 @@ mod tests {
                 prune_importance_floor: 0.1,
                 orphan_cleanup_enabled: true,
                 orphan_importance_floor: 0.2,
+                duplicate_cleanup_enabled: true,
+                duplicate_similarity_threshold: 0.95,
             },
             10_000,
         );
@@ -1341,6 +1372,8 @@ mod tests {
                 prune_importance_floor: -0.1,
                 orphan_cleanup_enabled: true,
                 orphan_importance_floor: 0.2,
+                duplicate_cleanup_enabled: true,
+                duplicate_similarity_threshold: 0.95,
             },
             10_000,
         );
@@ -1356,12 +1389,215 @@ mod tests {
                 prune_importance_floor: 0.1,
                 orphan_cleanup_enabled: true,
                 orphan_importance_floor: 1.1,
+                duplicate_cleanup_enabled: true,
+                duplicate_similarity_threshold: 0.95,
             },
             10_000,
         );
         assert!(
             invalid_orphan_floor.is_err(),
             "out-of-range orphan_importance_floor must fail"
+        );
+
+        let invalid_duplicate_threshold = store.run_lifecycle_maintenance(
+            &MemoryLifecycleMaintenancePolicy {
+                stale_after_unix_ms: 1_000,
+                decay_rate: 0.9,
+                prune_importance_floor: 0.1,
+                orphan_cleanup_enabled: true,
+                orphan_importance_floor: 0.2,
+                duplicate_cleanup_enabled: true,
+                duplicate_similarity_threshold: 1.1,
+            },
+            10_000,
+        );
+        assert!(
+            invalid_duplicate_threshold.is_err(),
+            "duplicate_similarity_threshold above 1.0 must fail"
+        );
+    }
+
+    #[test]
+    fn spec_2460_c01_lifecycle_maintenance_forgets_noncanonical_near_duplicate_records() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-canonical", "duplicate lifecycle summary"),
+                Some(MemoryType::Fact),
+                Some(0.9),
+            )
+            .expect("write canonical memory");
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-duplicate", "duplicate lifecycle summary"),
+                Some(MemoryType::Fact),
+                Some(0.2),
+            )
+            .expect("write duplicate memory");
+
+        let run = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: u64::MAX,
+                    decay_rate: 1.0,
+                    prune_importance_floor: 0.0,
+                    orphan_cleanup_enabled: false,
+                    orphan_importance_floor: 0.0,
+                    duplicate_cleanup_enabled: true,
+                    duplicate_similarity_threshold: 0.95,
+                },
+                20_000,
+            )
+            .expect("run lifecycle maintenance");
+        assert_eq!(run.duplicate_forgotten_records, 1);
+
+        let listed = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list latest post dedup");
+        assert!(
+            listed
+                .iter()
+                .any(|record| record.entry.memory_id == "memory-canonical"),
+            "canonical record should remain active"
+        );
+        assert!(
+            listed
+                .iter()
+                .all(|record| record.entry.memory_id != "memory-duplicate"),
+            "duplicate record should be forgotten"
+        );
+    }
+
+    #[test]
+    fn regression_2460_c02_lifecycle_duplicate_canonical_selection_is_deterministic() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-alpha", "stable canonical summary"),
+                Some(MemoryType::Observation),
+                Some(0.4),
+            )
+            .expect("write memory alpha");
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-beta", "stable canonical summary"),
+                Some(MemoryType::Observation),
+                Some(0.4),
+            )
+            .expect("write memory beta");
+
+        let first = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: u64::MAX,
+                    decay_rate: 1.0,
+                    prune_importance_floor: 0.0,
+                    orphan_cleanup_enabled: false,
+                    orphan_importance_floor: 0.0,
+                    duplicate_cleanup_enabled: true,
+                    duplicate_similarity_threshold: 0.95,
+                },
+                25_000,
+            )
+            .expect("first lifecycle maintenance run");
+        assert_eq!(first.duplicate_forgotten_records, 1);
+
+        let second = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: u64::MAX,
+                    decay_rate: 1.0,
+                    prune_importance_floor: 0.0,
+                    orphan_cleanup_enabled: false,
+                    orphan_importance_floor: 0.0,
+                    duplicate_cleanup_enabled: true,
+                    duplicate_similarity_threshold: 0.95,
+                },
+                30_000,
+            )
+            .expect("second lifecycle maintenance run");
+        assert_eq!(second.duplicate_forgotten_records, 0);
+
+        let listed = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list latest post repeated dedup");
+        assert_eq!(
+            listed.len(),
+            1,
+            "only canonical active memory should remain"
+        );
+        assert_eq!(
+            listed[0].entry.memory_id, "memory-alpha",
+            "canonical selection should remain deterministic across runs"
+        );
+    }
+
+    #[test]
+    fn regression_2460_c03_lifecycle_duplicate_cleanup_skips_identity_records() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = lifecycle_scope();
+
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-identity", "stable profile summary"),
+                Some(MemoryType::Identity),
+                Some(0.9),
+            )
+            .expect("write identity memory");
+        store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry("memory-fact", "stable profile summary"),
+                Some(MemoryType::Fact),
+                Some(0.8),
+            )
+            .expect("write fact memory");
+
+        let run = store
+            .run_lifecycle_maintenance(
+                &MemoryLifecycleMaintenancePolicy {
+                    stale_after_unix_ms: u64::MAX,
+                    decay_rate: 1.0,
+                    prune_importance_floor: 0.0,
+                    orphan_cleanup_enabled: false,
+                    orphan_importance_floor: 0.0,
+                    duplicate_cleanup_enabled: true,
+                    duplicate_similarity_threshold: 0.95,
+                },
+                40_000,
+            )
+            .expect("run lifecycle maintenance");
+        assert_eq!(
+            run.duplicate_forgotten_records, 0,
+            "identity memories must remain exempt from duplicate cleanup"
+        );
+
+        let listed = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list latest post identity dedup regression");
+        assert!(
+            listed
+                .iter()
+                .any(|record| record.entry.memory_id == "memory-identity"),
+            "identity memory should remain active"
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|record| record.entry.memory_id == "memory-fact"),
+            "non-identity memory should remain when only duplicate peer is identity"
         );
     }
 

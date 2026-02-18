@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tau_agent_core::MemoryLifecycleMaintenancePolicy;
 use tau_ai::{LlmClient, ModelRef};
 use tau_browser_automation::browser_automation_contract::load_browser_automation_contract_fixture;
 use tau_browser_automation::browser_automation_live::{
@@ -280,6 +281,8 @@ pub fn build_runtime_heartbeat_scheduler_config(cli: &Cli) -> RuntimeHeartbeatSc
             cli.voice_state_dir.join("tmp"),
         ],
         maintenance_temp_max_age: Duration::from_secs(3_600),
+        lifecycle_memory_store_roots: vec![cli.memory_state_dir.clone()],
+        lifecycle_policy: Some(MemoryLifecycleMaintenancePolicy::default()),
     }
 }
 

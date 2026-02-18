@@ -16,6 +16,9 @@ use tau_ai::{
     ChatRequest, ChatUsage, LlmClient, Message, MessageRole, StreamDeltaHandler, TauAiError,
     ToolCall, ToolChoice, ToolDefinition,
 };
+pub use tau_memory::runtime::{
+    FileMemoryStore, MemoryLifecycleMaintenancePolicy, MemoryLifecycleMaintenanceResult,
+};
 pub use tau_safety::{
     DefaultLeakDetector, DefaultSanitizer, LeakDetector, SafetyMode, SafetyPolicy, SafetyStage,
     Sanitizer,
