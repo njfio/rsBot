@@ -139,6 +139,7 @@ const BUILTIN_AGENT_TOOL_NAMES: &[&str] = &[
     "branch",
     "undo",
     "redo",
+    "react",
     "skip",
     "http",
     "tool_builder",
@@ -1295,6 +1296,68 @@ impl AgentTool for SkipTool {
             "skip_response": true,
             "reason": reason,
             "reason_code": "skip_suppressed",
+        }))
+    }
+}
+
+/// Public struct `ReactTool` used across Tau components.
+pub struct ReactTool {
+    _policy: Arc<ToolPolicy>,
+}
+
+impl ReactTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { _policy: policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for ReactTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "react".to_string(),
+            description: "Request emoji reaction delivery and suppress textual reply".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "emoji": {
+                        "type": "string",
+                        "description": "Emoji to dispatch to the target message"
+                    },
+                    "message_id": {
+                        "type": "string",
+                        "description": "Optional target message id; defaults to current event id in channel runtimes"
+                    }
+                },
+                "required": ["emoji"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let emoji = match required_string(&arguments, "emoji") {
+            Ok(value) => value.trim().to_string(),
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        if emoji.is_empty() {
+            return ToolExecutionResult::error(json!({
+                "error": "field 'emoji' must not be empty",
+                "reason_code": "react_invalid_emoji",
+            }));
+        }
+        let message_id = match optional_string(&arguments, "message_id") {
+            Ok(value) => value
+                .map(|raw| raw.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            Err(error) => return ToolExecutionResult::error(json!({ "error": error })),
+        };
+        ToolExecutionResult::ok(json!({
+            "react_response": true,
+            "emoji": emoji,
+            "message_id": message_id,
+            "reason_code": "react_requested",
+            "suppress_response": true,
         }))
     }
 }

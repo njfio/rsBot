@@ -587,6 +587,7 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(JobsCancelTool::new(policy.clone()));
     agent.register_tool(UndoTool::new(policy.clone()));
     agent.register_tool(RedoTool::new(policy.clone()));
+    agent.register_tool(ReactTool::new(policy.clone()));
     agent.register_tool(SkipTool::new(policy.clone()));
     agent.register_tool(HttpTool::new(policy.clone()));
     if policy.tool_builder_enabled {

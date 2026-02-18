@@ -547,6 +547,253 @@ fn spec_c04_extract_skip_response_reason_detects_valid_skip_tool_payload() {
 }
 
 #[tokio::test]
+async fn integration_spec_2520_c03_prompt_react_tool_call_terminates_run_without_follow_up_model_turn(
+) {
+    struct ReactDirectiveTool;
+
+    #[async_trait]
+    impl AgentTool for ReactDirectiveTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "react".to_string(),
+                description: "Dispatch a reaction without sending a textual reply".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "emoji": { "type": "string" },
+                        "message_id": { "type": "string" }
+                    },
+                    "required": ["emoji"],
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(&self, arguments: serde_json::Value) -> ToolExecutionResult {
+            let emoji = arguments
+                .get("emoji")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let message_id = arguments
+                .get("message_id")
+                .and_then(serde_json::Value::as_str);
+            ToolExecutionResult::ok(serde_json::json!({
+                "react_response": true,
+                "emoji": emoji,
+                "message_id": message_id,
+                "reason_code": "react_requested",
+                "suppress_response": true
+            }))
+        }
+    }
+
+    let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+        id: "call_react_1".to_string(),
+        name: "react".to_string(),
+        arguments: serde_json::json!({
+            "emoji": "👍",
+            "message_id": "42"
+        }),
+    }]);
+
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: first_assistant,
+            finish_reason: Some("tool_calls".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+    });
+
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.register_tool(ReactDirectiveTool);
+
+    let new_messages = agent
+        .prompt("ack with reaction only")
+        .await
+        .expect("react directive should terminate turn without second model call");
+
+    assert_eq!(new_messages.len(), 3);
+    assert_eq!(new_messages[0].role, MessageRole::User);
+    assert_eq!(new_messages[1].role, MessageRole::Assistant);
+    assert_eq!(new_messages[2].role, MessageRole::Tool);
+    assert_eq!(new_messages[2].tool_name.as_deref(), Some("react"));
+}
+
+#[test]
+fn spec_2520_c04_extract_reaction_request_detects_valid_react_tool_payload() {
+    let messages = vec![Message::tool_result(
+        "call_react_1",
+        "react",
+        r#"{"react_response":true,"emoji":"👍","message_id":"42","reason_code":"react_requested","suppress_response":true}"#,
+        false,
+    )];
+    let directive = crate::extract_react_response_directive(&messages)
+        .expect("expected valid reaction directive");
+    assert_eq!(directive.emoji, "👍");
+    assert_eq!(directive.message_id.as_deref(), Some("42"));
+}
+
+#[test]
+fn spec_2520_c04_extract_reaction_request_accepts_action_only_payload() {
+    let messages = vec![Message::tool_result(
+        "call_react_2",
+        "react",
+        r#"{"action":"react_response","emoji":"✅","suppress_response":true}"#,
+        false,
+    )];
+    let directive = crate::extract_react_response_directive(&messages)
+        .expect("expected action-based reaction directive");
+    assert_eq!(directive.emoji, "✅");
+    assert_eq!(directive.message_id, None);
+    assert_eq!(directive.reason_code, "react_requested");
+}
+
+#[test]
+fn regression_2520_extract_reaction_request_ignores_error_tool_messages() {
+    let messages = vec![Message::tool_result(
+        "call_react_3",
+        "react",
+        r#"{"react_response":true,"emoji":"👍","message_id":"42","suppress_response":true}"#,
+        true,
+    )];
+    let directive = crate::extract_react_response_directive(&messages);
+    assert!(directive.is_none());
+}
+
+#[test]
+fn regression_2520_extract_reaction_request_defaults_empty_reason_code() {
+    let messages = vec![Message::tool_result(
+        "call_react_4",
+        "react",
+        r#"{"react_response":true,"emoji":"👍","reason_code":"","suppress_response":true}"#,
+        false,
+    )];
+    let directive = crate::extract_react_response_directive(&messages)
+        .expect("expected valid reaction directive");
+    assert_eq!(directive.reason_code, "react_requested");
+}
+
+#[tokio::test]
+async fn regression_2520_prompt_react_tool_error_does_not_suppress_follow_up_model_turn() {
+    struct ReactErrorTool;
+
+    #[async_trait]
+    impl AgentTool for ReactErrorTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "react".to_string(),
+                description: "returns error for regression coverage".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "emoji": { "type": "string" }
+                    },
+                    "required": ["emoji"],
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(&self, _arguments: serde_json::Value) -> ToolExecutionResult {
+            ToolExecutionResult::error(serde_json::json!({
+                "error": "reaction rejected",
+                "reason_code": "react_rejected"
+            }))
+        }
+    }
+
+    let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+        id: "call_react_err_1".to_string(),
+        name: "react".to_string(),
+        arguments: serde_json::json!({ "emoji": "👍" }),
+    }]);
+    let second_assistant = Message::assistant_text("fallback response");
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([
+            ChatResponse {
+                message: first_assistant,
+                finish_reason: Some("tool_calls".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: second_assistant,
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        ])),
+    });
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.register_tool(ReactErrorTool);
+
+    let new_messages = agent
+        .prompt("react if possible")
+        .await
+        .expect("react error should not suppress fallback model turn");
+    assert_eq!(new_messages.len(), 4);
+    assert_eq!(new_messages[3].text_content(), "fallback response");
+}
+
+#[tokio::test]
+async fn regression_2520_prompt_react_tool_without_directive_payload_does_not_suppress_follow_up_model_turn(
+) {
+    struct ReactMalformedTool;
+
+    #[async_trait]
+    impl AgentTool for ReactMalformedTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "react".to_string(),
+                description: "returns malformed payload for regression coverage".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "emoji": { "type": "string" }
+                    },
+                    "required": ["emoji"],
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(&self, _arguments: serde_json::Value) -> ToolExecutionResult {
+            ToolExecutionResult::ok(serde_json::json!({
+                "status": "queued_without_directive_marker"
+            }))
+        }
+    }
+
+    let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+        id: "call_react_bad_1".to_string(),
+        name: "react".to_string(),
+        arguments: serde_json::json!({ "emoji": "👍" }),
+    }]);
+    let second_assistant = Message::assistant_text("fallback response");
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([
+            ChatResponse {
+                message: first_assistant,
+                finish_reason: Some("tool_calls".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: second_assistant,
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        ])),
+    });
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.register_tool(ReactMalformedTool);
+
+    let new_messages = agent
+        .prompt("react if possible")
+        .await
+        .expect("malformed react payload should not suppress fallback model turn");
+    assert_eq!(new_messages.len(), 4);
+    assert_eq!(new_messages[3].text_content(), "fallback response");
+}
+
+#[tokio::test]
 async fn integration_scoped_tool_lifecycle_supports_prompt_execution() {
     let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
         id: "call_1".to_string(),

@@ -338,6 +338,78 @@ fn parse_skip_response_reason_payload(payload: &Value) -> Option<String> {
     Some(reason)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReactResponseDirective {
+    pub(crate) emoji: String,
+    pub(crate) message_id: Option<String>,
+    pub(crate) reason_code: String,
+}
+
+pub(crate) fn extract_react_response_directive(
+    messages: &[Message],
+) -> Option<ReactResponseDirective> {
+    messages.iter().rev().find_map(|message| {
+        if message.role != MessageRole::Tool || message.is_error {
+            return None;
+        }
+        if message.tool_name.as_deref() != Some("react") {
+            return None;
+        }
+        let text = message.text_content();
+        if text.trim().is_empty() {
+            return None;
+        }
+        let parsed = serde_json::from_str::<Value>(text.trim()).ok()?;
+        parse_react_response_directive_payload(&parsed)
+    })
+}
+
+fn parse_react_response_directive_payload(payload: &Value) -> Option<ReactResponseDirective> {
+    let object = payload.as_object()?;
+    let react_response = object
+        .get("react_response")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let action_react = object
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.trim() == "react_response");
+    if !react_response && !action_react {
+        return None;
+    }
+    let suppress_response = object
+        .get("suppress_response")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if !suppress_response {
+        return None;
+    }
+    let emoji = object
+        .get("emoji")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let message_id = object
+        .get("message_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let reason_code = object
+        .get("reason_code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("react_requested")
+        .to_string();
+    Some(ReactResponseDirective {
+        emoji,
+        message_id,
+        reason_code,
+    })
+}
+
 /// Trait contract for `AgentTool` behavior.
 ///
 /// # Examples
@@ -2180,6 +2252,11 @@ impl Agent {
         if tool_name == "skip" && !result.is_error {
             self.skip_response_reason =
                 extract_skip_response_reason(std::slice::from_ref(&tool_message));
+        } else if tool_name == "react"
+            && !result.is_error
+            && extract_react_response_directive(std::slice::from_ref(&tool_message)).is_some()
+        {
+            self.skip_response_reason = Some("react_requested".to_string());
         }
         result.is_error
     }

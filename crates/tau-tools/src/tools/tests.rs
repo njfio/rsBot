@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use proptest::prelude::*;
 use tempfile::tempdir;
 
@@ -19,15 +20,16 @@ use super::{
     evaluate_tool_approval_gate, evaluate_tool_rate_limit_gate, evaluate_tool_rbac_gate,
     is_command_allowed, is_session_candidate_path, leading_executable,
     os_sandbox_docker_network_name, os_sandbox_mode_name, os_sandbox_policy_mode_name,
-    redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool,
-    BranchTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool,
-    MemoryDeleteTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
-    OsSandboxDockerNetwork, OsSandboxMode, OsSandboxPolicyMode, RedoTool, SessionsHistoryTool,
-    SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool, SkipTool,
-    ToolBuilderTool, ToolExecutionResult, ToolPolicy, ToolPolicyPreset,
-    ToolRateLimitExceededBehavior, UndoTool, WriteTool,
+    redact_secrets, register_builtin_tools, resolve_sandbox_spec, truncate_bytes, AgentTool,
+    BashCommandProfile, BashTool, BranchTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool,
+    JobsListTool, JobsStatusTool, MemoryDeleteTool, MemoryReadTool, MemorySearchTool,
+    MemoryTreeTool, MemoryWriteTool, OsSandboxDockerNetwork, OsSandboxMode, OsSandboxPolicyMode,
+    ReactTool, RedoTool, SessionsHistoryTool, SessionsListTool, SessionsSearchTool,
+    SessionsSendTool, SessionsStatsTool, SkipTool, ToolBuilderTool, ToolExecutionResult,
+    ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool, WriteTool,
 };
 use tau_access::ApprovalAction;
+use tau_agent_core::{Agent, AgentConfig};
 use tau_ai::Message;
 use tau_extensions::{discover_extension_runtime_registrations, execute_extension_registered_tool};
 use tau_session::{
@@ -257,6 +259,34 @@ fn spec_c01_builtin_agent_tool_name_registry_includes_skip_tool() {
     assert!(names.contains(&"skip"));
 }
 
+#[test]
+fn spec_2520_c01_builtin_agent_tool_name_registry_includes_react_tool() {
+    let names = builtin_agent_tool_names();
+    assert!(names.contains(&"react"));
+}
+
+#[test]
+fn spec_2520_c01_register_builtin_tools_registers_react_tool() {
+    struct NoopClient;
+
+    #[async_trait]
+    impl tau_ai::LlmClient for NoopClient {
+        async fn complete(
+            &self,
+            _request: tau_ai::ChatRequest,
+        ) -> Result<tau_ai::ChatResponse, tau_ai::TauAiError> {
+            Err(tau_ai::TauAiError::InvalidResponse(
+                "noop client should not be invoked in registry test".to_string(),
+            ))
+        }
+    }
+
+    let temp = tempdir().expect("tempdir");
+    let mut agent = Agent::new(Arc::new(NoopClient), AgentConfig::default());
+    register_builtin_tools(&mut agent, ToolPolicy::new(vec![temp.path().to_path_buf()]));
+    assert!(agent.has_tool("react"));
+}
+
 #[tokio::test]
 async fn spec_c02_skip_tool_returns_structured_suppression_payload() {
     let temp = tempdir().expect("tempdir");
@@ -270,6 +300,23 @@ async fn spec_c02_skip_tool_returns_structured_suppression_payload() {
     assert_eq!(result.content["skip_response"], true);
     assert_eq!(result.content["reason"], "duplicate response");
     assert_eq!(result.content["reason_code"], "skip_suppressed");
+}
+
+#[tokio::test]
+async fn spec_2520_c02_react_tool_returns_structured_reaction_payload() {
+    let temp = tempdir().expect("tempdir");
+    let tool = ReactTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "emoji": "👍",
+            "message_id": "42"
+        }))
+        .await;
+    assert!(!result.is_error);
+    assert_eq!(result.content["react_response"], true);
+    assert_eq!(result.content["emoji"], "👍");
+    assert_eq!(result.content["message_id"], "42");
+    assert_eq!(result.content["reason_code"], "react_requested");
 }
 
 #[test]

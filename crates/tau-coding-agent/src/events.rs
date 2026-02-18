@@ -25,6 +25,7 @@ use crate::runtime_types::RenderOptions;
 use crate::tools::ToolPolicy;
 
 const SKIP_REASON_CODE: &str = "skip_suppressed";
+const REACT_REASON_CODE: &str = "react_requested";
 
 pub(crate) use tau_events::{
     execute_events_dry_run_command, execute_events_inspect_command,
@@ -167,6 +168,11 @@ impl EventRunner for TauEventRunner {
         } else {
             None
         };
+        let react_directive = if status == PromptRunStatus::Completed {
+            extract_react_response_directive(&agent.messages()[start_index..])
+        } else {
+            None
+        };
 
         let (input_tokens, output_tokens, total_tokens) = usage
             .lock()
@@ -176,10 +182,13 @@ impl EventRunner for TauEventRunner {
             &event.id,
             status,
             assistant_reply,
-            input_tokens,
-            output_tokens,
-            total_tokens,
+            EventTokenUsage {
+                input: input_tokens,
+                output: output_tokens,
+                total: total_tokens,
+            },
             skip_reason.as_deref(),
+            react_directive.as_ref(),
         );
 
         channel_store.sync_context_from_messages(agent.messages())?;
@@ -199,19 +208,18 @@ fn build_outbound_event_payload(
     event_id: &str,
     status: PromptRunStatus,
     assistant_reply: String,
-    input_tokens: u64,
-    output_tokens: u64,
-    total_tokens: u64,
+    token_usage: EventTokenUsage,
     skip_reason: Option<&str>,
+    react_directive: Option<&EventReactDirective>,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "event_id": event_id,
         "status": format!("{:?}", status).to_lowercase(),
         "assistant_reply": assistant_reply,
         "tokens": {
-            "input": input_tokens,
-            "output": output_tokens,
-            "total": total_tokens,
+            "input": token_usage.input,
+            "output": token_usage.output,
+            "total": token_usage.total,
         }
     });
     if let Some(reason) = skip_reason
@@ -226,6 +234,20 @@ fn build_outbound_event_payload(
             map.insert(
                 "reason_code".to_string(),
                 serde_json::Value::String(SKIP_REASON_CODE.to_string()),
+            );
+        }
+    } else if let Some(react_directive) = react_directive {
+        if let Some(map) = payload.as_object_mut() {
+            map.insert(
+                "reason_code".to_string(),
+                serde_json::Value::String(react_directive.reason_code.clone()),
+            );
+            map.insert(
+                "reaction".to_string(),
+                serde_json::json!({
+                    "emoji": react_directive.emoji,
+                    "message_id": react_directive.message_id,
+                }),
             );
         }
     }
@@ -256,7 +278,9 @@ fn initialize_channel_session_runtime(
 }
 
 fn collect_assistant_reply(messages: &[Message]) -> String {
-    if extract_skip_response_reason(messages).is_some() {
+    if extract_skip_response_reason(messages).is_some()
+        || extract_react_response_directive(messages).is_some()
+    {
         return String::new();
     }
     let content = messages
@@ -271,6 +295,85 @@ fn collect_assistant_reply(messages: &[Message]) -> String {
     } else {
         content
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EventReactDirective {
+    emoji: String,
+    message_id: Option<String>,
+    reason_code: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EventTokenUsage {
+    input: u64,
+    output: u64,
+    total: u64,
+}
+
+fn extract_react_response_directive(messages: &[Message]) -> Option<EventReactDirective> {
+    messages.iter().rev().find_map(|message| {
+        if message.role != MessageRole::Tool || message.is_error {
+            return None;
+        }
+        if message.tool_name.as_deref() != Some("react") {
+            return None;
+        }
+        let text = message.text_content();
+        if text.trim().is_empty() {
+            return None;
+        }
+        let parsed = serde_json::from_str::<serde_json::Value>(text.trim()).ok()?;
+        parse_react_response_directive_payload(&parsed)
+    })
+}
+
+fn parse_react_response_directive_payload(
+    payload: &serde_json::Value,
+) -> Option<EventReactDirective> {
+    let object = payload.as_object()?;
+    let react_response = object
+        .get("react_response")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let action_react = object
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value.trim() == "react_response");
+    if !react_response && !action_react {
+        return None;
+    }
+    let suppress_response = object
+        .get("suppress_response")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    if !suppress_response {
+        return None;
+    }
+    let emoji = object
+        .get("emoji")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let message_id = object
+        .get("message_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let reason_code = object
+        .get("reason_code")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(REACT_REASON_CODE)
+        .to_string();
+    Some(EventReactDirective {
+        emoji,
+        message_id,
+        reason_code,
+    })
 }
 
 #[cfg(test)]
@@ -315,10 +418,13 @@ mod tests {
             "event-1",
             PromptRunStatus::Completed,
             assistant_reply,
-            1,
-            2,
-            3,
+            EventTokenUsage {
+                input: 1,
+                output: 2,
+                total: 3,
+            },
             skip_reason.as_deref(),
+            None,
         );
         assert_eq!(payload["skip_reason"].as_str(), Some("maintenance-window"));
         assert_eq!(payload["reason_code"].as_str(), Some("skip_suppressed"));
@@ -330,13 +436,77 @@ mod tests {
             "event-1",
             PromptRunStatus::Completed,
             "normal response".to_string(),
-            1,
-            2,
-            3,
+            EventTokenUsage {
+                input: 1,
+                output: 2,
+                total: 3,
+            },
+            None,
             None,
         );
         assert!(payload.get("skip_reason").is_none());
         assert!(payload.get("reason_code").is_none());
+    }
+
+    #[test]
+    fn regression_2520_collect_assistant_reply_keeps_non_suppressed_assistant_text() {
+        let messages = vec![Message::assistant_text("normal response")];
+        assert_eq!(collect_assistant_reply(&messages), "normal response");
+    }
+
+    #[test]
+    fn regression_2520_collect_assistant_reply_ignores_error_react_tool_results() {
+        let messages = vec![
+            Message::tool_result(
+                "call_react_err_1",
+                "react",
+                r#"{"react_response":true,"emoji":"👍","message_id":"42","suppress_response":true}"#,
+                true,
+            ),
+            Message::assistant_text("normal response"),
+        ];
+        assert_eq!(collect_assistant_reply(&messages), "normal response");
+    }
+
+    #[test]
+    fn spec_2520_collect_assistant_reply_suppresses_action_only_react_payload() {
+        let messages = vec![
+            Message::tool_result(
+                "call_react_action_1",
+                "react",
+                r#"{"action":"react_response","emoji":"👍","suppress_response":true}"#,
+                false,
+            ),
+            Message::assistant_text("normal response"),
+        ];
+        assert_eq!(collect_assistant_reply(&messages), "");
+    }
+
+    #[test]
+    fn regression_2520_collect_assistant_reply_rejects_invalid_react_action_marker() {
+        let messages = vec![
+            Message::tool_result(
+                "call_react_invalid_action_1",
+                "react",
+                r#"{"action":"not_react","emoji":"👍","suppress_response":true}"#,
+                false,
+            ),
+            Message::assistant_text("normal response"),
+        ];
+        assert_eq!(collect_assistant_reply(&messages), "normal response");
+    }
+
+    #[test]
+    fn regression_2520_parse_react_payload_defaults_empty_reason_code() {
+        let payload = serde_json::json!({
+            "react_response": true,
+            "emoji": "👍",
+            "suppress_response": true,
+            "reason_code": "   ",
+        });
+
+        let directive = parse_react_response_directive_payload(&payload).expect("react directive");
+        assert_eq!(directive.reason_code, REACT_REASON_CODE);
     }
 
     #[tokio::test]
@@ -400,6 +570,76 @@ mod tests {
         assert_eq!(
             outbound.payload["reason_code"].as_str(),
             Some("skip_suppressed")
+        );
+        assert_eq!(outbound.payload["assistant_reply"].as_str(), Some(""));
+    }
+
+    #[tokio::test]
+    async fn integration_spec_2520_c05_runner_persists_reaction_payload_and_suppresses_text_reply()
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let channel_store =
+            ChannelStore::open(temp.path(), "events", "react-channel").expect("channel store");
+        let event = EventDefinition {
+            id: "evt-react-1".to_string(),
+            channel: "events/react-channel".to_string(),
+            prompt: "Run react flow".to_string(),
+            schedule: EventSchedule::Immediate,
+            enabled: true,
+            created_unix_ms: Some(1),
+        };
+
+        let first_response = ChatResponse {
+            message: Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                id: "call_react_1".to_string(),
+                name: "react".to_string(),
+                arguments: serde_json::json!({
+                    "emoji": "👍",
+                    "message_id": "42"
+                }),
+            }]),
+            finish_reason: Some("tool_calls".to_string()),
+            usage: ChatUsage::default(),
+        };
+        let client = Arc::new(QueueClient {
+            responses: Arc::new(Mutex::new(VecDeque::from([first_response]))),
+        });
+
+        let runner = TauEventRunner {
+            client,
+            model: "openai/gpt-4o-mini".to_string(),
+            system_prompt: "base".to_string(),
+            max_turns: 4,
+            tool_policy: ToolPolicy::new(vec![temp.path().to_path_buf()]),
+            turn_timeout_ms: 10_000,
+            render_options: RenderOptions {
+                stream_output: false,
+                stream_delay_ms: 0,
+            },
+            session_lock_wait_ms: 1,
+            session_lock_stale_ms: 1,
+        };
+
+        runner
+            .run_event(&event, 123, &channel_store)
+            .await
+            .expect("run event");
+
+        let logs = channel_store.load_log_entries().expect("load logs");
+        let outbound = logs
+            .iter()
+            .find(|entry| {
+                entry.source == "events" && entry.event_key.as_deref() == Some("evt-react-1")
+            })
+            .expect("events outbound entry");
+        assert_eq!(
+            outbound.payload["reason_code"].as_str(),
+            Some("react_requested")
+        );
+        assert_eq!(outbound.payload["reaction"]["emoji"].as_str(), Some("👍"));
+        assert_eq!(
+            outbound.payload["reaction"]["message_id"].as_str(),
+            Some("42")
         );
         assert_eq!(outbound.payload["assistant_reply"].as_str(), Some(""));
     }

@@ -370,9 +370,9 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: The agent can add emoji reactions to messages instead of replying.
 **Why it matters**: Lightweight acknowledgment without cluttering the conversation. "Got it" as a thumbs-up.
 **Pathway**:
-- [ ] Add `ReactTool` to `tau-tools` — takes `message_id` and `emoji` parameters
-- [ ] Wire to platform adapters (Slack, Discord, Telegram all support reactions)
-- [ ] Channel adapter translates emoji to platform-specific format
+- [x] Add `ReactTool` to `tau-tools` — takes `message_id` and `emoji` parameters
+- [x] Wire to platform adapters (Slack, Discord, Telegram all support reactions)
+- [x] Channel adapter translates emoji to platform-specific format
 - **Files**: `tau-tools/src/tools/`, messaging runtime modules
 - **Effort**: Small
 
