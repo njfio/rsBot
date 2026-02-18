@@ -1,6 +1,6 @@
 # Spec #2493 - RED/GREEN conformance evidence for G9 phase-1 ingestion
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Task #2492 requires explicit RED/GREEN proof that conformance tests fail before implementation and pass after implementation.
