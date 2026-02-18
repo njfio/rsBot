@@ -1,6 +1,6 @@
 # Spec #2482 - migrate startup template rendering to minijinja with alias context
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `render_prompt_template` currently parses `{{...}}` manually, limiting template semantics and requiring non-Spacebot variable names.

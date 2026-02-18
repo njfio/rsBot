@@ -1,6 +1,6 @@
 # Spec #2481 - startup template minijinja migration with alias compatibility
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Operators editing `.tau/prompts/system.md.j2` expect Jinja semantics and Spacebot-style variable names, but startup rendering currently depends on a custom placeholder parser.

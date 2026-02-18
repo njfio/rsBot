@@ -1,6 +1,6 @@
 # Spec #2483 - RED/GREEN conformance evidence for minijinja startup rendering
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Task #2482 requires explicit proof that tests fail before implementation and pass after implementation for new minijinja + alias behavior.

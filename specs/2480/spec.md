@@ -1,6 +1,6 @@
 # Spec #2480 - G17 phase-3 orchestration for minijinja startup templates
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Phase-2 startup template behavior is in place, but rendering still uses a custom placeholder parser and does not expose Spacebot-style alias names expected by operators.
