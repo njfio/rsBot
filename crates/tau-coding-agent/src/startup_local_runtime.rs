@@ -29,6 +29,7 @@ use crate::runtime_loop::{
     InteractiveRuntimeConfig, PlanFirstPromptRuntimeHooksConfig, RuntimeExtensionHooksConfig,
 };
 use crate::runtime_output::event_to_json;
+use crate::runtime_profile_policy_bridge::start_runtime_heartbeat_profile_policy_bridge;
 use crate::runtime_types::{CommandExecutionContext, RenderOptions, SkillsSyncCommandConfig};
 use crate::tools::{self, ToolPolicy};
 use tau_onboarding::startup_local_runtime::{
@@ -291,6 +292,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     let mut runtime_heartbeat_handle = start_runtime_heartbeat_scheduler(
         build_onboarding_runtime_heartbeat_scheduler_config(cli),
     )?;
+    let mut runtime_profile_policy_bridge_handle =
+        start_runtime_heartbeat_profile_policy_bridge(cli)?;
     let run_result = async {
         if execute_onboarding_local_runtime_entry_mode_with_dispatch(
             &entry_mode,
@@ -358,6 +361,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         run_interactive(agent, session_runtime, interactive_config).await
     }
     .await;
+    runtime_profile_policy_bridge_handle.shutdown().await;
     runtime_heartbeat_handle.shutdown().await;
     run_result
 }

@@ -30,6 +30,7 @@ mod rpc_capabilities;
 mod rpc_protocol;
 mod runtime_loop;
 mod runtime_output;
+mod runtime_profile_policy_bridge;
 mod runtime_types;
 mod startup_dispatch;
 mod startup_local_runtime;
