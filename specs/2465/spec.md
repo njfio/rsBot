@@ -1,6 +1,6 @@
 # Spec #2465 - add heartbeat scheduler policy reload path + conformance tests
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `G16` phase-1 requires runtime hot-reload behavior for heartbeat scheduler policy so operators can tune cadence without process restart.
