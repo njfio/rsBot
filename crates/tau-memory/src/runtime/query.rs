@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{bail, Result};
+use sha2::{Digest, Sha256};
 
 use crate::memory_contract::MemoryEntry;
 
@@ -12,8 +14,8 @@ use super::{
     reciprocal_rank_fuse, record_search_text, resize_and_normalize_embedding, FileMemoryStore,
     MemoryIngestionOptions, MemoryIngestionResult, MemoryLifecycleMaintenancePolicy,
     MemoryLifecycleMaintenanceResult, MemoryScopeFilter, MemorySearchMatch, MemorySearchOptions,
-    MemorySearchResult, MemoryTree, MemoryTreeNode, MemoryType, RankedTextCandidate,
-    RankedTextMatch, RuntimeMemoryRecord, MEMORY_EMBEDDING_REASON_HASH_ONLY,
+    MemorySearchResult, MemoryStorageBackend, MemoryTree, MemoryTreeNode, MemoryType,
+    RankedTextCandidate, RankedTextMatch, RuntimeMemoryRecord, MEMORY_EMBEDDING_REASON_HASH_ONLY,
     MEMORY_EMBEDDING_REASON_PROVIDER_FAILED, MEMORY_RETRIEVAL_BACKEND_HYBRID_BM25_RRF,
     MEMORY_RETRIEVAL_BACKEND_VECTOR_ONLY, MEMORY_RETRIEVAL_REASON_HYBRID_ENABLED,
     MEMORY_RETRIEVAL_REASON_VECTOR_ONLY,
@@ -67,6 +69,35 @@ impl FileMemoryStore {
         Ok(records)
     }
 
+    /// Runs one deterministic ingestion pass through a worker-oriented entrypoint.
+    #[tracing::instrument(
+        name = "tau_memory.ingestion.worker_once",
+        skip(self, options),
+        fields(
+            ingest_dir = %ingest_dir.display(),
+            chunk_line_count = options.chunk_line_count,
+            delete_source_on_success = options.delete_source_on_success
+        )
+    )]
+    pub fn ingest_directory_worker_once(
+        &self,
+        ingest_dir: &Path,
+        options: &MemoryIngestionOptions,
+    ) -> Result<MemoryIngestionResult> {
+        let result = self.ingest_directory_once(ingest_dir, options)?;
+        tracing::debug!(
+            discovered_files = result.discovered_files,
+            supported_files = result.supported_files,
+            processed_files = result.processed_files,
+            failed_files = result.failed_files,
+            chunks_discovered = result.chunks_discovered,
+            chunks_ingested = result.chunks_ingested,
+            chunks_skipped_existing = result.chunks_skipped_existing,
+            "completed ingestion worker run"
+        );
+        Ok(result)
+    }
+
     /// Ingests supported files from `ingest_dir` once using deterministic chunk checkpoints.
     pub fn ingest_directory_once(
         &self,
@@ -93,11 +124,7 @@ impl FileMemoryStore {
         }
 
         let mut result = MemoryIngestionResult::default();
-        let mut known_checkpoint_keys = self
-            .list_latest_records(None, usize::MAX)?
-            .into_iter()
-            .map(|record| record.entry.source_event_key)
-            .collect::<BTreeSet<_>>();
+        let mut known_checkpoint_keys = self.load_ingestion_checkpoint_keys()?;
 
         let mut source_paths = Vec::new();
         for entry in fs::read_dir(ingest_dir)? {
@@ -185,6 +212,21 @@ impl FileMemoryStore {
                     break;
                 }
 
+                if let Err(error) = self.persist_ingestion_checkpoint(
+                    checkpoint_key.as_str(),
+                    source_path.as_path(),
+                    chunk_index,
+                ) {
+                    result.failed_files = result.failed_files.saturating_add(1);
+                    result.diagnostics.push(format!(
+                        "ingestion_checkpoint_write_failed: path={} chunk_index={} error={error}",
+                        source_path.display(),
+                        chunk_index
+                    ));
+                    file_failed = true;
+                    break;
+                }
+
                 known_checkpoint_keys.insert(checkpoint_key);
                 result.chunks_ingested = result.chunks_ingested.saturating_add(1);
             }
@@ -211,6 +253,43 @@ impl FileMemoryStore {
         }
 
         Ok(result)
+    }
+
+    fn load_ingestion_checkpoint_keys(&self) -> Result<BTreeSet<String>> {
+        let mut known_checkpoint_keys = self
+            .list_latest_records(None, usize::MAX)?
+            .into_iter()
+            .map(|record| record.entry.source_event_key)
+            .collect::<BTreeSet<_>>();
+        if self.storage_backend == MemoryStorageBackend::Sqlite {
+            let sqlite_keys = super::backend::load_ingestion_checkpoint_keys_sqlite(
+                self.storage_path_required()?,
+            )?;
+            known_checkpoint_keys.extend(sqlite_keys);
+        }
+        Ok(known_checkpoint_keys)
+    }
+
+    fn persist_ingestion_checkpoint(
+        &self,
+        checkpoint_key: &str,
+        source_path: &Path,
+        chunk_index: usize,
+    ) -> Result<()> {
+        if self.storage_backend != MemoryStorageBackend::Sqlite {
+            return Ok(());
+        }
+        let digest = checkpoint_key
+            .strip_prefix(MEMORY_INGESTION_SOURCE_EVENT_KEY_PREFIX)
+            .unwrap_or(checkpoint_key);
+        super::backend::upsert_ingestion_checkpoint_sqlite(
+            self.storage_path_required()?,
+            checkpoint_key,
+            digest,
+            source_path,
+            chunk_index,
+            super::current_unix_timestamp_ms(),
+        )
     }
 
     /// Performs deterministic semantic search over latest records.
@@ -749,7 +828,7 @@ fn chunk_text_by_lines(raw: &str, chunk_line_count: usize) -> Vec<String> {
 
 fn ingestion_chunk_checkpoint_key(path: &Path, chunk_index: usize, chunk_text: &str) -> String {
     let material = format!("{}|{}|{}", path.display(), chunk_index, chunk_text);
-    let digest = fnv1a64_hex(material.as_bytes());
+    let digest = sha256_hex(material.as_bytes());
     format!("{MEMORY_INGESTION_SOURCE_EVENT_KEY_PREFIX}{digest}")
 }
 
@@ -815,6 +894,7 @@ fn truncate_chars(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
+#[cfg(test)]
 fn fnv1a64_hex(bytes: &[u8]) -> String {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
@@ -824,6 +904,17 @@ fn fnv1a64_hex(bytes: &[u8]) -> String {
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     format!("{hash:016x}")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
 }
 
 fn collect_duplicate_memory_ids(
@@ -1229,6 +1320,149 @@ mod tests {
             channel_id: "channel-ingestion".to_string(),
             actor_id: "assistant".to_string(),
         }
+    }
+
+    fn ingestion_checkpoint_row_count(memory_root: &std::path::Path) -> usize {
+        let sqlite_path = memory_root.join("entries.sqlite");
+        if !sqlite_path.exists() {
+            return 0;
+        }
+        let connection = rusqlite::Connection::open(&sqlite_path)
+            .expect("open sqlite memory store for checkpoint assertions");
+        let mut statement = connection
+            .prepare("SELECT COUNT(*) FROM memory_ingestion_checkpoints")
+            .expect("prepare checkpoint count statement");
+        statement
+            .query_row([], |row| row.get::<_, usize>(0))
+            .expect("query checkpoint row count")
+    }
+
+    #[test]
+    fn spec_2497_c01_worker_entrypoint_executes_ingestion_and_returns_counters() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("worker.txt"), "a\nb\nc\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: false,
+        };
+        let result = store
+            .ingest_directory_worker_once(&ingest_dir, &options)
+            .expect("worker ingestion should succeed");
+
+        assert_eq!(result.discovered_files, 1);
+        assert_eq!(result.supported_files, 1);
+        assert_eq!(result.processed_files, 1);
+        assert_eq!(result.chunks_discovered, 2);
+        assert_eq!(result.chunks_ingested, 2);
+        assert_eq!(result.chunks_skipped_existing, 0);
+    }
+
+    #[test]
+    fn spec_2497_c02_checkpoint_key_uses_sha256_hex_digest() {
+        let checkpoint =
+            ingestion_chunk_checkpoint_key(std::path::Path::new("demo.md"), 1, "hello\nworld");
+        let digest = checkpoint
+            .strip_prefix("ingestion:chunk:")
+            .expect("checkpoint prefix should be present");
+        assert_eq!(
+            digest,
+            "4ef378c52f8551b93b0da4321267eff2c401e6108020f14050009795cb22c73a"
+        );
+        assert_eq!(digest.len(), 64, "digest should be full SHA-256 length");
+        assert!(
+            digest
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+            "digest should be lowercase hex"
+        );
+    }
+
+    #[test]
+    fn integration_spec_2497_c03_rerun_skips_chunks_from_durable_checkpoints() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("rerun.txt"), "1\n2\n3\n4\n").expect("write ingest file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: false,
+        };
+
+        let first = store
+            .ingest_directory_worker_once(&ingest_dir, &options)
+            .expect("first worker run should succeed");
+        assert_eq!(first.chunks_ingested, 2);
+        assert_eq!(first.chunks_skipped_existing, 0);
+        assert_eq!(ingestion_checkpoint_row_count(&memory_root), 2);
+
+        let sqlite_path = memory_root.join("entries.sqlite");
+        let connection =
+            rusqlite::Connection::open(&sqlite_path).expect("open sqlite memory store for setup");
+        connection
+            .execute("DELETE FROM memory_records", [])
+            .expect("clear memory records to force checkpoint-backed dedupe");
+        assert!(
+            store
+                .list_latest_records(None, usize::MAX)
+                .expect("list latest records after cleanup")
+                .is_empty(),
+            "test setup expects memory records to be absent before rerun"
+        );
+
+        let second = store
+            .ingest_directory_worker_once(&ingest_dir, &options)
+            .expect("second worker run should succeed");
+        assert_eq!(second.chunks_ingested, 0);
+        assert_eq!(second.chunks_skipped_existing, 2);
+        assert_eq!(
+            ingestion_checkpoint_row_count(&memory_root),
+            2,
+            "rerun should not duplicate durable checkpoint rows"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2497_c04_chunk_write_failure_keeps_source_file_for_retry() {
+        let temp = tempdir().expect("tempdir");
+        let ingest_dir = temp.path().join("ingest");
+        let memory_root = temp.path().join("memory");
+        std::fs::create_dir_all(&ingest_dir).expect("create ingest dir");
+        std::fs::write(ingest_dir.join("bad.txt"), [0xFF_u8, 0xFE_u8, 0xFD_u8])
+            .expect("write invalid utf8 file");
+
+        let store = FileMemoryStore::new(&memory_root);
+        let options = crate::runtime::MemoryIngestionOptions {
+            scope: ingestion_scope(),
+            chunk_line_count: 2,
+            delete_source_on_success: true,
+        };
+
+        let result = store
+            .ingest_directory_worker_once(&ingest_dir, &options)
+            .expect("worker ingestion should return diagnostics for failures");
+        assert!(
+            ingest_dir.join("bad.txt").exists(),
+            "failed file should remain for retry"
+        );
+        assert!(
+            result.failed_files >= 1,
+            "failed file should be counted in diagnostics"
+        );
+        assert_eq!(
+            ingestion_checkpoint_row_count(&memory_root),
+            0,
+            "failed file should not create durable chunk checkpoints"
+        );
     }
 
     #[test]

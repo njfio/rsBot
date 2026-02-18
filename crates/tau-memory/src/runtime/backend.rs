@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -318,6 +318,64 @@ pub(super) fn load_relation_map_sqlite(
     Ok(relation_map)
 }
 
+pub(super) fn load_ingestion_checkpoint_keys_sqlite(path: &Path) -> Result<BTreeSet<String>> {
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let connection = open_memory_sqlite_connection(path)?;
+    initialize_memory_sqlite_schema(&connection)?;
+    let mut statement = connection.prepare(
+        r#"
+        SELECT checkpoint_key
+        FROM memory_ingestion_checkpoints
+        "#,
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut keys = BTreeSet::new();
+    for row in rows {
+        keys.insert(row?);
+    }
+    Ok(keys)
+}
+
+pub(super) fn upsert_ingestion_checkpoint_sqlite(
+    path: &Path,
+    checkpoint_key: &str,
+    checkpoint_sha256: &str,
+    source_path: &Path,
+    chunk_index: usize,
+    updated_unix_ms: u64,
+) -> Result<()> {
+    let connection = open_memory_sqlite_connection(path)?;
+    initialize_memory_sqlite_schema(&connection)?;
+    connection.execute(
+        r#"
+        INSERT INTO memory_ingestion_checkpoints (
+            checkpoint_key,
+            checkpoint_sha256,
+            source_path,
+            chunk_index,
+            updated_unix_ms
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        ON CONFLICT(checkpoint_key)
+        DO UPDATE SET
+            checkpoint_sha256 = excluded.checkpoint_sha256,
+            source_path = excluded.source_path,
+            chunk_index = excluded.chunk_index,
+            updated_unix_ms = excluded.updated_unix_ms
+        "#,
+        params![
+            checkpoint_key,
+            checkpoint_sha256,
+            source_path.display().to_string(),
+            chunk_index as i64,
+            updated_unix_ms as i64,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Open SQLite memory store connection with WAL pragmas and busy timeout.
 pub(super) fn open_memory_sqlite_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -362,7 +420,66 @@ pub(super) fn initialize_memory_sqlite_schema(connection: &Connection) -> Result
             ON memory_relations(source_memory_id, updated_unix_ms);
         CREATE INDEX IF NOT EXISTS idx_memory_relations_target
             ON memory_relations(target_memory_id, updated_unix_ms);
+        CREATE TABLE IF NOT EXISTS memory_ingestion_checkpoints (
+            checkpoint_key TEXT PRIMARY KEY,
+            checkpoint_sha256 TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            updated_unix_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_ingestion_checkpoints_source_chunk
+            ON memory_ingestion_checkpoints(source_path, chunk_index);
         "#,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn regression_spec_2497_checkpoint_load_returns_empty_for_missing_sqlite_path() {
+        let temp = tempdir().expect("tempdir");
+        let missing_path = temp.path().join("missing.sqlite");
+        let keys = load_ingestion_checkpoint_keys_sqlite(&missing_path)
+            .expect("missing sqlite path should return empty checkpoint keys");
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn regression_spec_2497_checkpoint_load_returns_exact_persisted_checkpoint_keys() {
+        let temp = tempdir().expect("tempdir");
+        let sqlite_path = temp.path().join("entries.sqlite");
+
+        upsert_ingestion_checkpoint_sqlite(
+            &sqlite_path,
+            "ingestion:chunk:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Path::new("a.txt"),
+            0,
+            1,
+        )
+        .expect("persist first checkpoint");
+        upsert_ingestion_checkpoint_sqlite(
+            &sqlite_path,
+            "ingestion:chunk:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            Path::new("b.txt"),
+            1,
+            2,
+        )
+        .expect("persist second checkpoint");
+
+        let keys = load_ingestion_checkpoint_keys_sqlite(&sqlite_path)
+            .expect("load checkpoint keys from sqlite");
+        let expected = BTreeSet::from([
+            "ingestion:chunk:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            "ingestion:chunk:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_string(),
+        ]);
+        assert_eq!(keys, expected);
+    }
 }
