@@ -1887,6 +1887,287 @@ async fn spec_c05_default_paths_remain_backward_compatible() {
 }
 
 #[tokio::test]
+async fn spec_2444_c01_memory_write_persists_relates_to_edges() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let write_tool = MemoryWriteTool::new(policy.clone());
+
+    let target = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "target-memory",
+            "summary": "release owner is ops",
+            "workspace_id": "workspace-a",
+            "channel_id": "planning",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!target.is_error, "{}", target.content);
+
+    let write = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "source-memory",
+            "summary": "release plan references owner",
+            "workspace_id": "workspace-a",
+            "channel_id": "planning",
+            "actor_id": "assistant",
+            "relates_to": [
+                {
+                    "target_id": "target-memory",
+                    "relation_type": "relates_to",
+                    "weight": 0.9
+                }
+            ]
+        }))
+        .await;
+    assert!(!write.is_error, "{}", write.content);
+    assert!(write.content["relations"].is_array());
+    assert_eq!(write.content["relations"][0]["target_id"], "target-memory");
+    assert_eq!(write.content["relations"][0]["relation_type"], "relates_to");
+    assert_json_number_close(&write.content["relations"][0]["effective_weight"], 0.9);
+
+    let read_tool = MemoryReadTool::new(policy);
+    let read = read_tool
+        .execute(serde_json::json!({
+            "memory_id": "source-memory",
+            "workspace_id": "workspace-a",
+            "channel_id": "planning",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!read.is_error, "{}", read.content);
+    assert_eq!(read.content["found"], true);
+    assert_eq!(read.content["relations"][0]["target_id"], "target-memory");
+    assert_eq!(read.content["relations"][0]["relation_type"], "relates_to");
+    assert_json_number_close(&read.content["relations"][0]["effective_weight"], 0.9);
+}
+
+#[tokio::test]
+async fn spec_2444_c02_memory_search_includes_relation_metadata() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let write_tool = MemoryWriteTool::new(policy.clone());
+
+    let target = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "target-queryable",
+            "summary": "primary deployment runbook",
+            "workspace_id": "workspace-a",
+            "channel_id": "deploy",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!target.is_error, "{}", target.content);
+
+    let source = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "source-queryable",
+            "summary": "deploy checklist references primary runbook",
+            "workspace_id": "workspace-a",
+            "channel_id": "deploy",
+            "actor_id": "assistant",
+            "relates_to": [
+                {
+                    "target_id": "target-queryable",
+                    "relation_type": "depends_on",
+                    "weight": 0.8
+                }
+            ]
+        }))
+        .await;
+    assert!(!source.is_error, "{}", source.content);
+
+    let search_tool = MemorySearchTool::new(policy);
+    let search = search_tool
+        .execute(serde_json::json!({
+            "query": "references primary runbook",
+            "workspace_id": "workspace-a",
+            "channel_id": "deploy",
+            "limit": 5
+        }))
+        .await;
+    assert!(!search.is_error, "{}", search.content);
+    assert!(search.content["returned"].as_u64().expect("returned count") >= 1);
+    let matches = search.content["matches"].as_array().expect("matches array");
+    let source_match = matches
+        .iter()
+        .find(|item| item["memory_id"] == "source-queryable")
+        .expect("source memory should be present in search matches");
+    assert_eq!(
+        source_match["relations"][0]["target_id"],
+        "target-queryable"
+    );
+    assert_eq!(source_match["relations"][0]["relation_type"], "depends_on");
+    assert_json_number_close(&source_match["relations"][0]["effective_weight"], 0.8);
+}
+
+#[tokio::test]
+async fn spec_2444_c03_graph_signal_boosts_connected_candidate_ranking() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let write_tool = MemoryWriteTool::new(policy.clone());
+
+    let hub = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "hub-high-importance",
+            "summary": "strategic roadmap alignment",
+            "memory_type": "identity",
+            "importance": 1.0,
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!hub.is_error, "{}", hub.content);
+
+    let unconnected = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "a-unconnected",
+            "summary": "incident playbook standard response",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!unconnected.is_error, "{}", unconnected.content);
+
+    let connected = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "z-connected",
+            "summary": "incident playbook standard response",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant",
+            "relates_to": [
+                {
+                    "target_id": "hub-high-importance",
+                    "relation_type": "supports",
+                    "weight": 1.0
+                }
+            ]
+        }))
+        .await;
+    assert!(!connected.is_error, "{}", connected.content);
+
+    let search_tool = MemorySearchTool::new(policy);
+    let search = search_tool
+        .execute(serde_json::json!({
+            "query": "incident playbook standard response",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "limit": 5
+        }))
+        .await;
+    assert!(!search.is_error, "{}", search.content);
+    assert_eq!(search.content["returned"], 2);
+    assert_eq!(search.content["matches"][0]["memory_id"], "z-connected");
+}
+
+#[tokio::test]
+async fn spec_2444_c04_invalid_relation_payload_is_rejected_without_write() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let write_tool = MemoryWriteTool::new(policy.clone());
+
+    let target = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "valid-target",
+            "summary": "known target exists",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!target.is_error, "{}", target.content);
+
+    let invalid = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "invalid-relation-memory",
+            "summary": "this write should fail",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant",
+            "relates_to": [
+                {
+                    "target_id": "valid-target",
+                    "relation_type": "unknown_relation_type",
+                    "weight": 0.5
+                }
+            ]
+        }))
+        .await;
+    assert!(invalid.is_error);
+    assert_eq!(invalid.content["reason_code"], "memory_invalid_relation");
+
+    let read_tool = MemoryReadTool::new(policy);
+    let read = read_tool
+        .execute(serde_json::json!({
+            "memory_id": "invalid-relation-memory",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!read.is_error, "{}", read.content);
+    assert_eq!(read.content["found"], false);
+}
+
+#[tokio::test]
+async fn spec_2444_c05_legacy_records_without_relations_return_stable_defaults() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let write_tool = MemoryWriteTool::new(policy.clone());
+    let write = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "legacy-shape",
+            "summary": "legacy relation-less payload",
+            "workspace_id": "workspace-a",
+            "channel_id": "compat",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!write.is_error, "{}", write.content);
+
+    let read_tool = MemoryReadTool::new(policy.clone());
+    let read = read_tool
+        .execute(serde_json::json!({
+            "memory_id": "legacy-shape",
+            "workspace_id": "workspace-a",
+            "channel_id": "compat",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!read.is_error, "{}", read.content);
+    assert!(read.content["relations"].is_array());
+    assert_eq!(
+        read.content["relations"]
+            .as_array()
+            .expect("relations array")
+            .len(),
+        0
+    );
+
+    let search_tool = MemorySearchTool::new(policy);
+    let search = search_tool
+        .execute(serde_json::json!({
+            "query": "legacy relation-less payload",
+            "workspace_id": "workspace-a",
+            "channel_id": "compat",
+            "limit": 5
+        }))
+        .await;
+    assert!(!search.is_error, "{}", search.content);
+    assert_eq!(search.content["returned"], 1);
+    assert!(search.content["matches"][0]["relations"].is_array());
+    assert_eq!(
+        search.content["matches"][0]["relations"]
+            .as_array()
+            .expect("relations array")
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn functional_memory_write_and_read_tools_round_trip_record() {
     let temp = tempdir().expect("tempdir");
     let policy = test_policy_with_memory(temp.path());

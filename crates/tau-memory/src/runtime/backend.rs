@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -6,8 +7,8 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
 use super::{
-    MemoryStorageBackend, ResolvedMemoryBackend, RuntimeMemoryRecord, MEMORY_BACKEND_ENV,
-    MEMORY_RUNTIME_ENTRIES_FILE_NAME, MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME,
+    MemoryRelation, MemoryStorageBackend, ResolvedMemoryBackend, RuntimeMemoryRecord,
+    MEMORY_BACKEND_ENV, MEMORY_RUNTIME_ENTRIES_FILE_NAME, MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME,
     MEMORY_STORAGE_REASON_DEFAULT_SQLITE, MEMORY_STORAGE_REASON_ENV_AUTO,
     MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK, MEMORY_STORAGE_REASON_ENV_JSONL,
     MEMORY_STORAGE_REASON_ENV_SQLITE, MEMORY_STORAGE_REASON_EXISTING_JSONL,
@@ -205,16 +206,53 @@ pub(super) fn load_records_jsonl(path: &Path) -> Result<Vec<RuntimeMemoryRecord>
 }
 
 pub(super) fn append_record_sqlite(path: &Path, record: &RuntimeMemoryRecord) -> Result<()> {
-    let connection = open_memory_sqlite_connection(path)?;
+    let mut connection = open_memory_sqlite_connection(path)?;
     initialize_memory_sqlite_schema(&connection)?;
+    let transaction = connection.transaction()?;
     let encoded = serde_json::to_string(record).context("failed to encode memory record")?;
-    connection.execute(
+    transaction.execute(
         r#"
         INSERT INTO memory_records (memory_id, updated_unix_ms, record_json)
         VALUES (?1, ?2, ?3)
         "#,
         params![record.entry.memory_id, record.updated_unix_ms, encoded],
     )?;
+    transaction.execute(
+        r#"
+        DELETE FROM memory_relations
+        WHERE source_memory_id = ?1
+        "#,
+        params![record.entry.memory_id],
+    )?;
+    for relation in &record.relations {
+        transaction.execute(
+            r#"
+            INSERT INTO memory_relations (
+                source_memory_id,
+                target_memory_id,
+                relation_type,
+                weight,
+                effective_weight,
+                updated_unix_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(source_memory_id, target_memory_id, relation_type)
+            DO UPDATE SET
+                weight = excluded.weight,
+                effective_weight = excluded.effective_weight,
+                updated_unix_ms = excluded.updated_unix_ms
+            "#,
+            params![
+                record.entry.memory_id,
+                relation.target_id,
+                relation.relation_type,
+                relation.weight,
+                relation.effective_weight,
+                record.updated_unix_ms
+            ],
+        )?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -240,6 +278,44 @@ pub(super) fn load_records_sqlite(path: &Path) -> Result<Vec<RuntimeMemoryRecord
         records.push(record);
     }
     Ok(records)
+}
+
+pub(super) fn load_relation_map_sqlite(
+    path: &Path,
+) -> Result<HashMap<String, Vec<MemoryRelation>>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let connection = open_memory_sqlite_connection(path)?;
+    initialize_memory_sqlite_schema(&connection)?;
+    let mut statement = connection.prepare(
+        r#"
+        SELECT
+            source_memory_id,
+            target_memory_id,
+            relation_type,
+            weight,
+            effective_weight
+        FROM memory_relations
+        ORDER BY source_memory_id ASC, target_memory_id ASC, relation_type ASC
+        "#,
+    )?;
+    let mut rows = statement.query([])?;
+    let mut relation_map = HashMap::<String, Vec<MemoryRelation>>::new();
+    while let Some(row) = rows.next()? {
+        let source_memory_id: String = row.get(0)?;
+        let relation = MemoryRelation {
+            target_id: row.get(1)?,
+            relation_type: row.get(2)?,
+            weight: row.get(3)?,
+            effective_weight: row.get(4)?,
+        };
+        relation_map
+            .entry(source_memory_id)
+            .or_default()
+            .push(relation);
+    }
+    Ok(relation_map)
 }
 
 /// Open SQLite memory store connection with WAL pragmas and busy timeout.
@@ -272,6 +348,20 @@ pub(super) fn initialize_memory_sqlite_schema(connection: &Connection) -> Result
         );
         CREATE INDEX IF NOT EXISTS idx_memory_records_memory_id_updated
             ON memory_records(memory_id, updated_unix_ms);
+        CREATE TABLE IF NOT EXISTS memory_relations (
+            row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_memory_id TEXT NOT NULL,
+            target_memory_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            weight REAL NOT NULL,
+            effective_weight REAL NOT NULL,
+            updated_unix_ms INTEGER NOT NULL,
+            UNIQUE(source_memory_id, target_memory_id, relation_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_relations_source
+            ON memory_relations(source_memory_id, updated_unix_ms);
+        CREATE INDEX IF NOT EXISTS idx_memory_relations_target
+            ON memory_relations(target_memory_id, updated_unix_ms);
         "#,
     )?;
     Ok(())

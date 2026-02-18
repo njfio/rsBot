@@ -12,6 +12,14 @@ const MEMORY_TYPE_ENUM_VALUES: &[&str] = &[
     "event",
     "observation",
 ];
+const MEMORY_RELATION_TYPE_ENUM_VALUES: &[&str] = &[
+    "relates_to",
+    "depends_on",
+    "supports",
+    "blocks",
+    "references",
+];
+const MEMORY_GRAPH_SIGNAL_WEIGHT: f32 = 0.25;
 
 fn optional_memory_type(arguments: &Value) -> Result<Option<MemoryType>, String> {
     let Some(value) = optional_string(arguments, "memory_type")? else {
@@ -23,6 +31,57 @@ fn optional_memory_type(arguments: &Value) -> Result<Option<MemoryType>, String>
             MEMORY_TYPE_ENUM_VALUES.join(", ")
         )
     })
+}
+
+fn optional_memory_relations(arguments: &Value) -> Result<Vec<MemoryRelationInput>, String> {
+    let Some(raw_relations) = arguments.get("relates_to") else {
+        return Ok(Vec::new());
+    };
+    let Some(relations) = raw_relations.as_array() else {
+        return Err("'relates_to' must be an array of relation objects".to_string());
+    };
+    let mut parsed = Vec::with_capacity(relations.len());
+    for (index, relation) in relations.iter().enumerate() {
+        let Some(relation_object) = relation.as_object() else {
+            return Err(format!("'relates_to[{index}]' must be an object"));
+        };
+        let Some(target_id) = relation_object
+            .get("target_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Err(format!(
+                "'relates_to[{index}].target_id' must be a non-empty string"
+            ));
+        };
+        let relation_type = relation_object
+            .get("relation_type")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .ok_or_else(|| format!("'relates_to[{index}].relation_type' must be a string"))
+                    .map(|value| value.to_string())
+            })
+            .transpose()?
+            .filter(|value| !value.is_empty());
+        let weight = relation_object
+            .get("weight")
+            .map(|value| {
+                value
+                    .as_f64()
+                    .ok_or_else(|| format!("'relates_to[{index}].weight' must be a number"))
+                    .map(|value| value as f32)
+            })
+            .transpose()?;
+        parsed.push(MemoryRelationInput {
+            target_id: target_id.to_string(),
+            relation_type,
+            weight,
+        });
+    }
+    Ok(parsed)
 }
 
 /// Public struct `MemoryWriteTool` used across Tau components.
@@ -96,6 +155,27 @@ impl AgentTool for MemoryWriteTool {
                     "importance": {
                         "type": "number",
                         "description": "Optional importance override in range 0.0..=1.0"
+                    },
+                    "relates_to": {
+                        "type": "array",
+                        "description": "Optional outbound relation edges from this memory",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "target_id": { "type": "string", "description": "Existing memory id this entry points to" },
+                                "relation_type": {
+                                    "type": "string",
+                                    "enum": MEMORY_RELATION_TYPE_ENUM_VALUES,
+                                    "description": "Optional relation type (defaults to relates_to)"
+                                },
+                                "weight": {
+                                    "type": "number",
+                                    "description": "Optional relation weight in range 0.0..=1.0 (defaults to 1.0)"
+                                }
+                            },
+                            "required": ["target_id"],
+                            "additionalProperties": false
+                        }
                     }
                 },
                 "required": ["summary"],
@@ -212,6 +292,16 @@ impl AgentTool for MemoryWriteTool {
                 }))
             }
         };
+        let relations = match optional_memory_relations(&arguments) {
+            Ok(relations) => relations,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "memory_write",
+                    "reason_code": "memory_invalid_relation",
+                    "error": error,
+                }))
+            }
+        };
 
         let scope = MemoryScope {
             workspace_id: arguments
@@ -269,6 +359,14 @@ impl AgentTool for MemoryWriteTool {
                 "facts": entry.facts.clone(),
                 "memory_type": memory_type.map(MemoryType::as_str),
                 "importance": importance,
+                "relates_to": relations
+                    .iter()
+                    .map(|relation| json!({
+                        "target_id": relation.target_id,
+                        "relation_type": relation.relation_type,
+                        "weight": relation.weight,
+                    }))
+                    .collect::<Vec<_>>(),
             }),
         ) {
             return rbac_result;
@@ -291,6 +389,7 @@ impl AgentTool for MemoryWriteTool {
                     "actor_id": scope.actor_id.clone(),
                 },
                 "summary_chars": summary.chars().count(),
+                "relation_edges": relations.len(),
                 "store_root": store.root_dir().display().to_string(),
                 "storage_backend": store.storage_backend_label(),
             }),
@@ -298,7 +397,13 @@ impl AgentTool for MemoryWriteTool {
             return rate_limit_result;
         }
 
-        match store.write_entry_with_metadata(&scope, entry, memory_type, importance) {
+        match store.write_entry_with_metadata_and_relations(
+            &scope,
+            entry,
+            memory_type,
+            importance,
+            &relations,
+        ) {
             Ok(result) => ToolExecutionResult::ok(json!({
                 "tool": "memory_write",
                 "created": result.created,
@@ -316,6 +421,7 @@ impl AgentTool for MemoryWriteTool {
                 "embedding_source": result.record.embedding_source,
                 "embedding_model": result.record.embedding_model,
                 "embedding_reason_code": result.record.embedding_reason_code,
+                "relations": result.record.relations,
                 "store_root": store.root_dir().display().to_string(),
                 "storage_backend": store.storage_backend_label(),
                 "backend_reason_code": store.storage_backend_reason_code(),
@@ -323,17 +429,25 @@ impl AgentTool for MemoryWriteTool {
                     .storage_path()
                     .map(|path| path.display().to_string()),
             })),
-            Err(error) => ToolExecutionResult::error(json!({
-                "tool": "memory_write",
-                "reason_code": "memory_backend_error",
-                "store_root": store.root_dir().display().to_string(),
-                "storage_backend": store.storage_backend_label(),
-                "backend_reason_code": store.storage_backend_reason_code(),
-                "storage_path": store
-                    .storage_path()
-                    .map(|path| path.display().to_string()),
-                "error": error.to_string(),
-            })),
+            Err(error) => {
+                let error_message = error.to_string();
+                let reason_code = if error_message.starts_with("memory_invalid_relation:") {
+                    "memory_invalid_relation"
+                } else {
+                    "memory_backend_error"
+                };
+                ToolExecutionResult::error(json!({
+                    "tool": "memory_write",
+                    "reason_code": reason_code,
+                    "store_root": store.root_dir().display().to_string(),
+                    "storage_backend": store.storage_backend_label(),
+                    "backend_reason_code": store.storage_backend_reason_code(),
+                    "storage_path": store
+                        .storage_path()
+                        .map(|path| path.display().to_string()),
+                    "error": error_message,
+                }))
+            }
         }
     }
 }
@@ -429,6 +543,7 @@ impl AgentTool for MemoryReadTool {
                 "embedding_source": record.embedding_source,
                 "embedding_model": record.embedding_model,
                 "embedding_reason_code": record.embedding_reason_code,
+                "relations": record.relations,
                 "store_root": store.root_dir().display().to_string(),
                 "storage_backend": store.storage_backend_label(),
                 "backend_reason_code": store.storage_backend_reason_code(),
@@ -586,6 +701,7 @@ impl AgentTool for MemorySearchTool {
                 rrf_k: self.policy.memory_rrf_k,
                 rrf_vector_weight: self.policy.memory_rrf_vector_weight,
                 rrf_lexical_weight: self.policy.memory_rrf_lexical_weight,
+                graph_signal_weight: MEMORY_GRAPH_SIGNAL_WEIGHT,
                 enable_embedding_migration: self.policy.memory_enable_embedding_migration,
                 benchmark_against_hash: self.policy.memory_benchmark_against_hash,
                 benchmark_against_vector_only: self.policy.memory_benchmark_against_vector_only,

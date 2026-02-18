@@ -181,9 +181,14 @@ impl FileMemoryStore {
         } else {
             vector_ranked.clone()
         };
+        let graph_scores = compute_graph_scores(&by_memory_id);
+        let safe_graph_weight = options.graph_signal_weight.max(0.0);
         for item in &mut ranked {
             if let Some(record) = by_memory_id.get(item.key.as_str()) {
                 item.score *= importance_rank_multiplier(record.importance);
+            }
+            if let Some(graph_score) = graph_scores.get(item.key.as_str()) {
+                item.score += safe_graph_weight * graph_score;
             }
         }
         ranked.sort_by(|left, right| {
@@ -210,6 +215,7 @@ impl FileMemoryStore {
                     .enable_hybrid_retrieval
                     .then(|| fused_scores.get(item.key.as_str()).copied())
                     .flatten(),
+                graph_score: graph_scores.get(item.key.as_str()).copied(),
                 scope: record.scope.clone(),
                 summary: record.entry.summary.clone(),
                 memory_type: record.memory_type,
@@ -219,6 +225,7 @@ impl FileMemoryStore {
                 source_event_key: record.entry.source_event_key.clone(),
                 embedding_source: record.embedding_source.clone(),
                 embedding_model: record.embedding_model.clone(),
+                relations: record.relations.clone(),
             });
         }
         let selected = matches
@@ -352,11 +359,19 @@ impl FileMemoryStore {
 
     pub(super) fn load_latest_records(&self) -> Result<Vec<RuntimeMemoryRecord>> {
         let records = self.load_records_backend()?;
+        let relation_map = self.load_relation_map_backend()?;
         let mut seen = BTreeSet::new();
         let mut latest = Vec::new();
         for record in records.into_iter().rev() {
             if seen.insert(record.entry.memory_id.clone()) {
                 latest.push(record);
+            }
+        }
+        if !relation_map.is_empty() {
+            for record in &mut latest {
+                if let Some(relations) = relation_map.get(record.entry.memory_id.as_str()) {
+                    record.relations = relations.clone();
+                }
             }
         }
         latest.sort_by(|left, right| {
@@ -366,5 +381,248 @@ impl FileMemoryStore {
                 .then_with(|| left.entry.memory_id.cmp(&right.entry.memory_id))
         });
         Ok(latest)
+    }
+}
+
+fn compute_graph_scores(records: &HashMap<String, RuntimeMemoryRecord>) -> HashMap<String, f32> {
+    let mut scores = HashMap::<String, f32>::new();
+    for source_record in records.values() {
+        for relation in &source_record.relations {
+            let Some(target_record) = records.get(relation.target_id.as_str()) else {
+                continue;
+            };
+            let relation_weight = relation.effective_weight.clamp(0.0, 1.0);
+            if relation_weight <= 0.0 {
+                continue;
+            }
+            let source_importance = source_record.importance.clamp(0.0, 1.0);
+            if source_importance > 0.0 {
+                *scores.entry(relation.target_id.clone()).or_default() +=
+                    source_importance * relation_weight;
+            }
+            let target_importance = target_record.importance.clamp(0.0, 1.0);
+            if target_importance > 0.0 {
+                *scores
+                    .entry(source_record.entry.memory_id.clone())
+                    .or_default() += target_importance * relation_weight;
+            }
+        }
+    }
+    for score in scores.values_mut() {
+        *score = score.clamp(0.0, 1.0);
+    }
+    scores
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory_contract::{MemoryEntry, MemoryScope};
+    use crate::runtime::{FileMemoryStore, MemoryRelation, MemorySearchOptions, MemoryType};
+    use tempfile::tempdir;
+
+    fn build_record(
+        memory_id: &str,
+        importance: f32,
+        relations: Vec<MemoryRelation>,
+    ) -> RuntimeMemoryRecord {
+        RuntimeMemoryRecord {
+            schema_version: 1,
+            updated_unix_ms: 1,
+            scope: MemoryScope {
+                workspace_id: "workspace-a".to_string(),
+                channel_id: "ops".to_string(),
+                actor_id: "assistant".to_string(),
+            },
+            entry: MemoryEntry {
+                memory_id: memory_id.to_string(),
+                summary: format!("summary-{memory_id}"),
+                tags: Vec::new(),
+                facts: Vec::new(),
+                source_event_key: format!("evt-{memory_id}"),
+                recency_weight_bps: 0,
+                confidence_bps: 1_000,
+            },
+            memory_type: MemoryType::Observation,
+            importance,
+            embedding_source: "hash-fnv1a".to_string(),
+            embedding_model: None,
+            embedding_vector: vec![1.0, 0.0],
+            embedding_reason_code: "memory_embedding_hash_only".to_string(),
+            relations,
+        }
+    }
+
+    #[test]
+    fn unit_compute_graph_scores_accumulates_bidirectional_weighted_importance() {
+        let source_id = "source-memory".to_string();
+        let target_id = "target-memory".to_string();
+        let records = HashMap::from([
+            (
+                source_id.clone(),
+                build_record(
+                    source_id.as_str(),
+                    0.8,
+                    vec![MemoryRelation {
+                        target_id: target_id.clone(),
+                        relation_type: "depends_on".to_string(),
+                        weight: 0.5,
+                        effective_weight: 0.5,
+                    }],
+                ),
+            ),
+            (
+                target_id.clone(),
+                build_record(target_id.as_str(), 0.6, Vec::new()),
+            ),
+        ]);
+
+        let scores = compute_graph_scores(&records);
+        assert_eq!(
+            scores.len(),
+            2,
+            "expected exactly source + target graph scores"
+        );
+        assert!(
+            (scores.get(target_id.as_str()).copied().unwrap_or_default() - 0.4).abs() <= 0.000_001
+        );
+        assert!(
+            (scores.get(source_id.as_str()).copied().unwrap_or_default() - 0.3).abs() <= 0.000_001
+        );
+    }
+
+    #[test]
+    fn unit_compute_graph_scores_ignores_zero_importance_zero_weight_and_missing_targets() {
+        let zero_source_id = "zero-source".to_string();
+        let zero_target_id = "zero-target".to_string();
+        let missing_target_id = "missing-target".to_string();
+        let zero_weight_source_id = "zero-weight-source".to_string();
+        let records = HashMap::from([
+            (
+                zero_source_id.clone(),
+                build_record(
+                    zero_source_id.as_str(),
+                    0.0,
+                    vec![MemoryRelation {
+                        target_id: zero_target_id.clone(),
+                        relation_type: "depends_on".to_string(),
+                        weight: 0.7,
+                        effective_weight: 0.7,
+                    }],
+                ),
+            ),
+            (
+                zero_target_id.clone(),
+                build_record(zero_target_id.as_str(), 0.0, Vec::new()),
+            ),
+            (
+                "missing-target-source".to_string(),
+                build_record(
+                    "missing-target-source",
+                    0.9,
+                    vec![MemoryRelation {
+                        target_id: missing_target_id,
+                        relation_type: "depends_on".to_string(),
+                        weight: 0.9,
+                        effective_weight: 0.9,
+                    }],
+                ),
+            ),
+            (
+                zero_weight_source_id.clone(),
+                build_record(
+                    zero_weight_source_id.as_str(),
+                    0.9,
+                    vec![MemoryRelation {
+                        target_id: zero_target_id,
+                        relation_type: "depends_on".to_string(),
+                        weight: 0.0,
+                        effective_weight: 0.0,
+                    }],
+                ),
+            ),
+        ]);
+
+        let scores = compute_graph_scores(&records);
+        assert!(
+            scores.is_empty(),
+            "invalid/zero-weight/zero-importance edges should not produce graph scores"
+        );
+    }
+
+    #[test]
+    fn integration_search_score_uses_vector_importance_and_graph_signal_additively() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "ops".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        store
+            .write_entry_with_metadata_and_relations(
+                &scope,
+                MemoryEntry {
+                    memory_id: "target-memory".to_string(),
+                    summary: "target anchor memory".to_string(),
+                    tags: Vec::new(),
+                    facts: Vec::new(),
+                    source_event_key: "evt-target".to_string(),
+                    recency_weight_bps: 0,
+                    confidence_bps: 1_000,
+                },
+                Some(MemoryType::Goal),
+                Some(0.8),
+                &[],
+            )
+            .expect("write target memory");
+        store
+            .write_entry_with_metadata_and_relations(
+                &scope,
+                MemoryEntry {
+                    memory_id: "source-memory".to_string(),
+                    summary: "alpha graph source memory".to_string(),
+                    tags: Vec::new(),
+                    facts: Vec::new(),
+                    source_event_key: "evt-source".to_string(),
+                    recency_weight_bps: 0,
+                    confidence_bps: 1_000,
+                },
+                Some(MemoryType::Goal),
+                Some(1.0),
+                &[crate::runtime::MemoryRelationInput {
+                    target_id: "target-memory".to_string(),
+                    relation_type: Some("depends_on".to_string()),
+                    weight: Some(0.5),
+                }],
+            )
+            .expect("write source memory with relation");
+
+        let options = MemorySearchOptions {
+            graph_signal_weight: 0.5,
+            min_similarity: -1.0,
+            enable_hybrid_retrieval: false,
+            enable_embedding_migration: false,
+            ..MemorySearchOptions::default()
+        };
+        let result = store
+            .search("alpha graph source memory", &options)
+            .expect("search succeeds");
+        let source_match = result
+            .matches
+            .iter()
+            .find(|item| item.memory_id == "source-memory")
+            .expect("source memory match");
+        let vector_score = source_match
+            .vector_score
+            .expect("vector score should be present for vector retrieval");
+        let graph_score = source_match
+            .graph_score
+            .expect("graph score should be present for related memory");
+        assert!(graph_score > 0.0);
+
+        let expected = vector_score * importance_rank_multiplier(source_match.importance)
+            + options.graph_signal_weight * graph_score;
+        assert!((source_match.score - expected).abs() <= 0.000_001);
     }
 }

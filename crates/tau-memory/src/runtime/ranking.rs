@@ -452,6 +452,7 @@ impl FileMemoryStore {
                 embedding_model: Some(config.model.clone()),
                 embedding_vector: vector,
                 embedding_reason_code: MEMORY_EMBEDDING_REASON_PROVIDER_SUCCESS.to_string(),
+                relations: record.relations,
             };
             self.append_record_backend(&migrated_record)?;
             migrated = migrated.saturating_add(1);

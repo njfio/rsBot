@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,7 +14,8 @@ mod ranking;
 
 use backend::{
     append_record_jsonl, append_record_sqlite, initialize_memory_sqlite_schema, load_records_jsonl,
-    load_records_sqlite, open_memory_sqlite_connection, resolve_memory_backend,
+    load_records_sqlite, load_relation_map_sqlite, open_memory_sqlite_connection,
+    resolve_memory_backend,
 };
 pub use ranking::{
     cosine_similarity, embed_text_vector, rank_text_candidates, rank_text_candidates_bm25,
@@ -50,6 +52,16 @@ const MEMORY_STORAGE_REASON_ENV_AUTO: &str = "memory_storage_backend_env_auto";
 const MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK: &str =
     "memory_storage_backend_env_invalid_fallback";
 const MEMORY_STORAGE_REASON_INIT_IMPORT_FAILED: &str = "memory_storage_backend_import_failed";
+const MEMORY_RELATION_TYPE_DEFAULT: &str = "relates_to";
+const MEMORY_RELATION_TYPE_VALUES: &[&str] = &[
+    "relates_to",
+    "depends_on",
+    "supports",
+    "blocks",
+    "references",
+];
+const MEMORY_GRAPH_SIGNAL_WEIGHT_DEFAULT: f32 = 0.25;
+pub const MEMORY_INVALID_RELATION_REASON_CODE: &str = "memory_invalid_relation";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 /// Enumerates supported `MemoryStorageBackend` values.
@@ -84,6 +96,29 @@ fn default_embedding_reason_code() -> String {
 
 fn default_memory_importance() -> f32 {
     MemoryType::default().default_importance()
+}
+
+fn default_graph_signal_weight() -> f32 {
+    MEMORY_GRAPH_SIGNAL_WEIGHT_DEFAULT
+}
+
+/// Public struct `MemoryRelation` used across Tau components.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryRelation {
+    pub target_id: String,
+    pub relation_type: String,
+    pub weight: f32,
+    pub effective_weight: f32,
+}
+
+/// Public struct `MemoryRelationInput` used across Tau components.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryRelationInput {
+    pub target_id: String,
+    #[serde(default)]
+    pub relation_type: Option<String>,
+    #[serde(default)]
+    pub weight: Option<f32>,
 }
 
 /// Enumerates supported `MemoryType` values.
@@ -190,6 +225,8 @@ pub struct RuntimeMemoryRecord {
     pub embedding_vector: Vec<f32>,
     #[serde(default = "default_embedding_reason_code")]
     pub embedding_reason_code: String,
+    #[serde(default)]
+    pub relations: Vec<MemoryRelation>,
 }
 
 /// Public struct `MemoryScopeFilter` used across Tau components.
@@ -255,6 +292,8 @@ pub struct MemorySearchOptions {
     pub rrf_k: usize,
     pub rrf_vector_weight: f32,
     pub rrf_lexical_weight: f32,
+    #[serde(default = "default_graph_signal_weight")]
+    pub graph_signal_weight: f32,
     pub enable_embedding_migration: bool,
     pub benchmark_against_hash: bool,
     pub benchmark_against_vector_only: bool,
@@ -274,6 +313,7 @@ impl Default for MemorySearchOptions {
             rrf_k: 60,
             rrf_vector_weight: 1.0,
             rrf_lexical_weight: 1.0,
+            graph_signal_weight: MEMORY_GRAPH_SIGNAL_WEIGHT_DEFAULT,
             enable_embedding_migration: true,
             benchmark_against_hash: false,
             benchmark_against_vector_only: false,
@@ -289,6 +329,7 @@ pub struct MemorySearchMatch {
     pub vector_score: Option<f32>,
     pub lexical_score: Option<f32>,
     pub fused_score: Option<f32>,
+    pub graph_score: Option<f32>,
     pub scope: MemoryScope,
     pub summary: String,
     pub memory_type: MemoryType,
@@ -298,6 +339,7 @@ pub struct MemorySearchMatch {
     pub source_event_key: String,
     pub embedding_source: String,
     pub embedding_model: Option<String>,
+    pub relations: Vec<MemoryRelation>,
 }
 
 /// Public struct `MemorySearchResult` used across Tau components.
@@ -472,6 +514,18 @@ impl FileMemoryStore {
         memory_type: Option<MemoryType>,
         importance: Option<f32>,
     ) -> Result<MemoryWriteResult> {
+        self.write_entry_with_metadata_and_relations(scope, entry, memory_type, importance, &[])
+    }
+
+    /// Writes or updates a memory entry with metadata and explicit relations.
+    pub fn write_entry_with_metadata_and_relations(
+        &self,
+        scope: &MemoryScope,
+        entry: MemoryEntry,
+        memory_type: Option<MemoryType>,
+        importance: Option<f32>,
+        relations: &[MemoryRelationInput],
+    ) -> Result<MemoryWriteResult> {
         let normalized_scope = normalize_scope(scope);
         let normalized_entry = normalize_entry(entry)?;
         let resolved_memory_type = memory_type.unwrap_or_default();
@@ -482,17 +536,20 @@ impl FileMemoryStore {
             }
             None => resolved_memory_type.default_importance(),
         };
+        let existing_records = self.load_latest_records()?;
+        let known_memory_ids = existing_records
+            .iter()
+            .map(|record| record.entry.memory_id.clone())
+            .collect::<BTreeSet<_>>();
+        let normalized_relations = normalize_relations(
+            normalized_entry.memory_id.as_str(),
+            relations,
+            &known_memory_ids,
+        )?;
 
-        let created = self
-            .read_entry(
-                normalized_entry.memory_id.as_str(),
-                Some(&MemoryScopeFilter {
-                    workspace_id: Some(normalized_scope.workspace_id.clone()),
-                    channel_id: Some(normalized_scope.channel_id.clone()),
-                    actor_id: Some(normalized_scope.actor_id.clone()),
-                }),
-            )?
-            .is_none();
+        let created = existing_records.iter().all(|record| {
+            record.entry.memory_id != normalized_entry.memory_id || record.scope != normalized_scope
+        });
 
         let embedding_text = record_search_text_for_entry(&normalized_entry);
         let embedding_dimensions = self
@@ -513,6 +570,7 @@ impl FileMemoryStore {
             embedding_model: computed_embedding.model,
             embedding_vector: computed_embedding.vector,
             embedding_reason_code: computed_embedding.reason_code,
+            relations: normalized_relations,
         };
         self.append_record_backend(&record)?;
         Ok(MemoryWriteResult { record, created })
@@ -555,6 +613,14 @@ impl FileMemoryStore {
         match self.storage_backend {
             MemoryStorageBackend::Jsonl => load_records_jsonl(self.storage_path_required()?),
             MemoryStorageBackend::Sqlite => load_records_sqlite(self.storage_path_required()?),
+        }
+    }
+
+    fn load_relation_map_backend(&self) -> Result<HashMap<String, Vec<MemoryRelation>>> {
+        self.ensure_backend_ready()?;
+        match self.storage_backend {
+            MemoryStorageBackend::Jsonl => Ok(HashMap::new()),
+            MemoryStorageBackend::Sqlite => load_relation_map_sqlite(self.storage_path_required()?),
         }
     }
 
@@ -680,6 +746,74 @@ fn normalize_entry(entry: MemoryEntry) -> Result<MemoryEntry> {
         recency_weight_bps: entry.recency_weight_bps,
         confidence_bps: entry.confidence_bps,
     })
+}
+
+fn normalize_relations(
+    source_memory_id: &str,
+    relations: &[MemoryRelationInput],
+    known_memory_ids: &BTreeSet<String>,
+) -> Result<Vec<MemoryRelation>> {
+    if relations.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut deduped = BTreeMap::<(String, String), MemoryRelation>::new();
+    for relation in relations {
+        let target_id = relation.target_id.trim();
+        if target_id.is_empty() {
+            bail!("{MEMORY_INVALID_RELATION_REASON_CODE}: relation target_id must not be empty");
+        }
+        if target_id == source_memory_id {
+            bail!("{MEMORY_INVALID_RELATION_REASON_CODE}: source_id and target_id must differ");
+        }
+        if !known_memory_ids.contains(target_id) {
+            bail!(
+                "{MEMORY_INVALID_RELATION_REASON_CODE}: unknown target_id '{}'",
+                target_id
+            );
+        }
+
+        let relation_type = normalize_relation_type(relation.relation_type.as_deref())?;
+        let raw_weight = relation.weight.unwrap_or(1.0);
+        if !raw_weight.is_finite() {
+            bail!("{MEMORY_INVALID_RELATION_REASON_CODE}: relation weight must be finite");
+        }
+        if !(0.0..=1.0).contains(&raw_weight) {
+            bail!(
+                "{MEMORY_INVALID_RELATION_REASON_CODE}: relation weight must be in range 0.0..=1.0"
+            );
+        }
+        let effective_weight = raw_weight.clamp(0.0, 1.0);
+        deduped.insert(
+            (target_id.to_string(), relation_type.clone()),
+            MemoryRelation {
+                target_id: target_id.to_string(),
+                relation_type,
+                weight: raw_weight,
+                effective_weight,
+            },
+        );
+    }
+
+    Ok(deduped.into_values().collect())
+}
+
+fn normalize_relation_type(value: Option<&str>) -> Result<String> {
+    let normalized = value
+        .unwrap_or(MEMORY_RELATION_TYPE_DEFAULT)
+        .trim()
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        bail!("{MEMORY_INVALID_RELATION_REASON_CODE}: relation_type must not be empty");
+    }
+    if MEMORY_RELATION_TYPE_VALUES.contains(&normalized.as_str()) {
+        Ok(normalized)
+    } else {
+        bail!(
+            "{MEMORY_INVALID_RELATION_REASON_CODE}: unsupported relation_type '{}'",
+            normalized
+        );
+    }
 }
 
 fn current_unix_timestamp_ms() -> u64 {
@@ -808,6 +942,291 @@ mod tests {
         .expect("deserialize runtime record with defaults");
         assert_eq!(decoded.memory_type, MemoryType::Observation);
         assert!((decoded.importance - 0.3).abs() <= 0.000_001);
+        assert!(decoded.relations.is_empty());
+    }
+
+    #[test]
+    fn unit_memory_search_options_serde_default_sets_graph_signal_weight() {
+        let decoded: MemorySearchOptions = serde_json::from_value(json!({
+            "scope": {
+                "workspace_id": null,
+                "channel_id": null,
+                "actor_id": null
+            },
+            "limit": 5,
+            "embedding_dimensions": 128,
+            "min_similarity": 0.55,
+            "enable_hybrid_retrieval": false,
+            "bm25_k1": 1.2,
+            "bm25_b": 0.75,
+            "bm25_min_score": 0.0,
+            "rrf_k": 60,
+            "rrf_vector_weight": 1.0,
+            "rrf_lexical_weight": 1.0,
+            "enable_embedding_migration": true,
+            "benchmark_against_hash": false,
+            "benchmark_against_vector_only": false
+        }))
+        .expect("deserialize search options with graph default");
+        assert!((decoded.graph_signal_weight - 0.25).abs() <= 0.000_001);
+    }
+
+    #[test]
+    fn unit_normalize_relations_validates_target_type_and_weight() {
+        let known_memory_ids = std::collections::BTreeSet::from([String::from("target-memory")]);
+        let valid = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "target-memory".to_string(),
+                relation_type: Some("depends_on".to_string()),
+                weight: Some(0.75),
+            }],
+            &known_memory_ids,
+        )
+        .expect("valid relation normalization");
+        assert_eq!(valid.len(), 1);
+        assert_eq!(valid[0].target_id, "target-memory");
+        assert_eq!(valid[0].relation_type, "depends_on");
+        assert!((valid[0].weight - 0.75).abs() <= 0.000_001);
+        assert!((valid[0].effective_weight - 0.75).abs() <= 0.000_001);
+
+        let default_type = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "target-memory".to_string(),
+                relation_type: None,
+                weight: None,
+            }],
+            &known_memory_ids,
+        )
+        .expect("default relation type and weight");
+        assert_eq!(default_type[0].relation_type, "relates_to");
+        assert!((default_type[0].weight - 1.0).abs() <= 0.000_001);
+        assert!((default_type[0].effective_weight - 1.0).abs() <= 0.000_001);
+
+        let unknown_target = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "missing-target".to_string(),
+                relation_type: Some("depends_on".to_string()),
+                weight: Some(0.5),
+            }],
+            &known_memory_ids,
+        )
+        .expect_err("unknown target must fail");
+        assert!(unknown_target
+            .to_string()
+            .contains("memory_invalid_relation"));
+
+        let self_target_known = std::collections::BTreeSet::from([String::from("source-memory")]);
+        let self_target = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "source-memory".to_string(),
+                relation_type: Some("depends_on".to_string()),
+                weight: Some(0.5),
+            }],
+            &self_target_known,
+        )
+        .expect_err("self target must fail");
+        assert!(self_target.to_string().contains("must differ"));
+
+        let invalid_type = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "target-memory".to_string(),
+                relation_type: Some("unknown".to_string()),
+                weight: Some(0.5),
+            }],
+            &known_memory_ids,
+        )
+        .expect_err("invalid type must fail");
+        assert!(invalid_type
+            .to_string()
+            .contains("unsupported relation_type"));
+
+        let invalid_weight = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "target-memory".to_string(),
+                relation_type: Some("depends_on".to_string()),
+                weight: Some(1.5),
+            }],
+            &known_memory_ids,
+        )
+        .expect_err("invalid weight must fail");
+        assert!(invalid_weight.to_string().contains("0.0..=1.0"));
+    }
+
+    #[test]
+    fn regression_write_entry_with_relations_created_flag_tracks_scope_membership() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope_a = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "ops".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        let scope_b = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "ops-secondary".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        let entry = MemoryEntry {
+            memory_id: "shared-memory".to_string(),
+            summary: "shared summary".to_string(),
+            tags: Vec::new(),
+            facts: Vec::new(),
+            source_event_key: "evt-shared".to_string(),
+            recency_weight_bps: 0,
+            confidence_bps: 1_000,
+        };
+
+        let first = store
+            .write_entry_with_metadata_and_relations(
+                &scope_a,
+                entry.clone(),
+                Some(MemoryType::Fact),
+                Some(0.65),
+                &[],
+            )
+            .expect("first write");
+        assert!(first.created);
+
+        let second_same_scope = store
+            .write_entry_with_metadata_and_relations(
+                &scope_a,
+                entry.clone(),
+                Some(MemoryType::Fact),
+                Some(0.65),
+                &[],
+            )
+            .expect("second write same scope");
+        assert!(!second_same_scope.created);
+
+        let third_other_scope = store
+            .write_entry_with_metadata_and_relations(
+                &scope_b,
+                entry,
+                Some(MemoryType::Fact),
+                Some(0.65),
+                &[],
+            )
+            .expect("third write other scope");
+        assert!(third_other_scope.created);
+    }
+
+    #[test]
+    fn integration_read_entry_hydrates_relations_from_sqlite_relation_table() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let sqlite_path = store.storage_path().expect("sqlite path").to_path_buf();
+        let connection =
+            super::open_memory_sqlite_connection(&sqlite_path).expect("open sqlite memory store");
+        super::initialize_memory_sqlite_schema(&connection).expect("initialize schema");
+
+        let source_json = json!({
+            "schema_version": 1,
+            "updated_unix_ms": 100,
+            "scope": {
+                "workspace_id": "workspace-a",
+                "channel_id": "ops",
+                "actor_id": "assistant"
+            },
+            "entry": {
+                "memory_id": "source-legacy",
+                "summary": "legacy source entry",
+                "tags": [],
+                "facts": [],
+                "source_event_key": "evt-source",
+                "recency_weight_bps": 0,
+                "confidence_bps": 1000
+            },
+            "memory_type": "observation",
+            "importance": 0.3,
+            "embedding_source": "hash-fnv1a",
+            "embedding_model": null,
+            "embedding_vector": [0.1, 0.2],
+            "embedding_reason_code": "memory_embedding_hash_only"
+        })
+        .to_string();
+        connection
+            .execute(
+                r#"
+                INSERT INTO memory_records (memory_id, updated_unix_ms, record_json)
+                VALUES (?1, ?2, ?3)
+                "#,
+                rusqlite::params!["source-legacy", 100_u64, source_json],
+            )
+            .expect("insert source legacy record");
+
+        let target_json = json!({
+            "schema_version": 1,
+            "updated_unix_ms": 90,
+            "scope": {
+                "workspace_id": "workspace-a",
+                "channel_id": "ops",
+                "actor_id": "assistant"
+            },
+            "entry": {
+                "memory_id": "target-legacy",
+                "summary": "legacy target entry",
+                "tags": [],
+                "facts": [],
+                "source_event_key": "evt-target",
+                "recency_weight_bps": 0,
+                "confidence_bps": 1000
+            },
+            "memory_type": "goal",
+            "importance": 1.0,
+            "embedding_source": "hash-fnv1a",
+            "embedding_model": null,
+            "embedding_vector": [0.1, 0.2],
+            "embedding_reason_code": "memory_embedding_hash_only"
+        })
+        .to_string();
+        connection
+            .execute(
+                r#"
+                INSERT INTO memory_records (memory_id, updated_unix_ms, record_json)
+                VALUES (?1, ?2, ?3)
+                "#,
+                rusqlite::params!["target-legacy", 90_u64, target_json],
+            )
+            .expect("insert target legacy record");
+
+        connection
+            .execute(
+                r#"
+                INSERT INTO memory_relations (
+                    source_memory_id,
+                    target_memory_id,
+                    relation_type,
+                    weight,
+                    effective_weight,
+                    updated_unix_ms
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "#,
+                rusqlite::params![
+                    "source-legacy",
+                    "target-legacy",
+                    "depends_on",
+                    0.7_f32,
+                    0.7_f32,
+                    100_u64
+                ],
+            )
+            .expect("insert relation edge");
+
+        let read = store
+            .read_entry("source-legacy", None)
+            .expect("read source")
+            .expect("source exists");
+        assert_eq!(read.relations.len(), 1);
+        assert_eq!(read.relations[0].target_id, "target-legacy");
+        assert_eq!(read.relations[0].relation_type, "depends_on");
+        assert!((read.relations[0].effective_weight - 0.7).abs() <= 0.000_001);
     }
 
     #[test]
@@ -939,6 +1358,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: false,
                     benchmark_against_hash: false,
                     benchmark_against_vector_only: false,
@@ -1374,6 +1794,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: true,
                     benchmark_against_hash: false,
                     benchmark_against_vector_only: false,
@@ -1476,6 +1897,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: true,
                     benchmark_against_hash: false,
                     benchmark_against_vector_only: false,
@@ -1540,6 +1962,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: false,
                     benchmark_against_hash: true,
                     benchmark_against_vector_only: false,
@@ -1561,6 +1984,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: false,
                     benchmark_against_hash: false,
                     benchmark_against_vector_only: false,
@@ -1625,6 +2049,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: false,
                     benchmark_against_hash: false,
                     benchmark_against_vector_only: false,
@@ -1646,6 +2071,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: false,
                     benchmark_against_hash: false,
                     benchmark_against_vector_only: true,
@@ -1722,6 +2148,7 @@ mod tests {
                     rrf_k: 60,
                     rrf_vector_weight: 1.0,
                     rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
                     enable_embedding_migration: false,
                     benchmark_against_hash: false,
                     benchmark_against_vector_only: false,
