@@ -34,10 +34,29 @@ struct SlackChatMessageResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct SlackGetUploadUrlExternalResponse {
+    ok: bool,
+    upload_url: Option<String>,
+    file_id: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SlackCompleteUploadExternalResponse {
+    ok: bool,
+    error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct SlackPostedMessage {
     pub(super) channel: String,
     pub(super) ts: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct SlackUploadedFile {
+    pub(super) file_id: String,
 }
 
 #[derive(Clone)]
@@ -223,9 +242,119 @@ impl SlackApiClient {
         })
     }
 
+    pub(super) async fn upload_file_v2(
+        &self,
+        channel: &str,
+        thread_ts: Option<&str>,
+        filename: &str,
+        bytes: &[u8],
+        initial_comment: Option<&str>,
+    ) -> Result<SlackUploadedFile> {
+        if filename.trim().is_empty() {
+            bail!("slack files upload requires non-empty filename");
+        }
+        let file_size = bytes.len();
+        if file_size == 0 {
+            bail!("slack files upload requires non-empty payload");
+        }
+
+        let get_upload: SlackGetUploadUrlExternalResponse = self
+            .request_json(
+                "files.getUploadURLExternal",
+                || {
+                    self.http
+                        .post(format!("{}/files.getUploadURLExternal", self.api_base))
+                        .bearer_auth(&self.bot_token)
+                        .json(&json!({
+                            "filename": filename,
+                            "length": file_size,
+                        }))
+                },
+                true,
+            )
+            .await?;
+        if !get_upload.ok {
+            bail!(
+                "slack files.getUploadURLExternal failed: {}",
+                get_upload
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string())
+            );
+        }
+        let upload_url = get_upload
+            .upload_url
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("slack files.getUploadURLExternal missing upload_url"))?;
+        let file_id = get_upload
+            .file_id
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow!("slack files.getUploadURLExternal missing file_id"))?;
+
+        let upload_response = self
+            .http
+            .post(upload_url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes.to_vec())
+            .send()
+            .await
+            .context("failed to upload file payload to slack external upload URL")?;
+        if !upload_response.status().is_success() {
+            let status = upload_response.status();
+            let body = upload_response.text().await.unwrap_or_default();
+            bail!(
+                "slack external upload failed: status={} body={}",
+                status,
+                truncate_for_error(&body, 320)
+            );
+        }
+
+        let mut complete_payload = json!({
+            "files": [{ "id": file_id.clone(), "title": filename }],
+            "channel_id": channel,
+        });
+        if let Some(thread_ts) = thread_ts.map(str::trim).filter(|value| !value.is_empty()) {
+            complete_payload["thread_ts"] = Value::String(thread_ts.to_string());
+        }
+        if let Some(initial_comment) = initial_comment
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            complete_payload["initial_comment"] = Value::String(initial_comment.to_string());
+        }
+
+        let complete: SlackCompleteUploadExternalResponse = self
+            .request_json(
+                "files.completeUploadExternal",
+                || {
+                    self.http
+                        .post(format!("{}/files.completeUploadExternal", self.api_base))
+                        .bearer_auth(&self.bot_token)
+                        .json(&complete_payload)
+                },
+                true,
+            )
+            .await?;
+        if !complete.ok {
+            bail!(
+                "slack files.completeUploadExternal failed: {}",
+                complete
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string())
+            );
+        }
+
+        Ok(SlackUploadedFile { file_id })
+    }
+
     pub(super) async fn download_file(&self, url: &str) -> Result<Vec<u8>> {
         let request = || self.http.get(url).bearer_auth(&self.bot_token);
         self.request_bytes("file download", request, false).await
+    }
+
+    pub(super) async fn download_public_file(&self, url: &str) -> Result<Vec<u8>> {
+        let request = || self.http.get(url);
+        self.request_bytes("public file download", request, false)
+            .await
     }
 
     async fn request_json<T, F>(

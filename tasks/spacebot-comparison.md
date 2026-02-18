@@ -380,9 +380,8 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Agent can send file attachments to users.
 **Why it matters**: Code generation, reports, images — the agent needs to deliver artifacts, not just text.
 **Pathway**:
-- [ ] Add `SendFileTool` to `tau-tools` — takes `file_path` and optional `message` parameters
 - [x] Add `SendFileTool` to `tau-tools` — takes `file_path` and optional `message` parameters
-- [ ] Wire to platform adapters (Discord file upload, Slack v2 upload, Telegram sendDocument)
+- [x] Wire to platform adapters (Discord file upload, Slack v2 upload, Telegram sendDocument)
 - [x] Gateway: return file as attachment in response
 - **Files**: `tau-tools/src/tools/`, messaging runtime modules
 - **Effort**: Small

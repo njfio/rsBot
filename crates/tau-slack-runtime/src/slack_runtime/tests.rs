@@ -8,19 +8,22 @@ use std::{
 
 use async_trait::async_trait;
 use httpmock::prelude::*;
+use reqwest::Url;
 use serde_json::json;
-use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
+use tau_ai::{ChatRequest, ChatResponse, ChatUsage, ContentBlock, LlmClient, Message, TauAiError};
 use tempfile::tempdir;
 use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::{
-    dequeue_coalesced_event_for_run, event_is_stale, normalize_artifact_retention_days,
-    normalize_socket_envelope, parse_slack_command, parse_socket_envelope, render_event_prompt,
-    render_slack_artifact_markdown, render_slack_command_response, render_slack_response,
-    run_prompt_for_event, DownloadedSlackFile, PollCycleReport, SlackApiClient, SlackBridgeEvent,
-    SlackBridgeEventKind, SlackBridgeRuntime, SlackBridgeRuntimeConfig, SlackBridgeStateStore,
-    SlackCommand, SlackSocketEnvelope,
+    dequeue_coalesced_event_for_run, dispatch_send_file_directive, event_is_stale,
+    extract_send_file_response_directive, normalize_artifact_retention_days,
+    normalize_socket_envelope, parse_send_file_response_directive_payload, parse_slack_command,
+    parse_socket_envelope, render_event_prompt, render_slack_artifact_markdown,
+    render_slack_command_response, render_slack_response, run_prompt_for_event,
+    send_file_source_filename_from_url, DownloadedSlackFile, PollCycleReport, SlackApiClient,
+    SlackBridgeEvent, SlackBridgeEventKind, SlackBridgeRuntime, SlackBridgeRuntimeConfig,
+    SlackBridgeStateStore, SlackCommand, SlackSendFileDirective, SlackSocketEnvelope,
 };
 use crate::{
     channel_store::{ChannelArtifactRecord, ChannelStore},
@@ -61,6 +64,34 @@ impl LlmClient for SlowReplyClient {
                 input_tokens: 5,
                 output_tokens: 3,
                 total_tokens: 8,
+                cached_input_tokens: 0,
+            },
+        })
+    }
+}
+
+struct SendFileDirectiveClient {
+    file_path: String,
+    message: Option<String>,
+}
+
+#[async_trait]
+impl LlmClient for SendFileDirectiveClient {
+    async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+        Ok(ChatResponse {
+            message: Message::assistant_blocks(vec![ContentBlock::ToolCall {
+                id: "call_send_file_1".to_string(),
+                name: "send_file".to_string(),
+                arguments: json!({
+                    "file_path": self.file_path,
+                    "message": self.message,
+                }),
+            }]),
+            finish_reason: Some("tool_calls".to_string()),
+            usage: ChatUsage {
+                input_tokens: 7,
+                output_tokens: 4,
+                total_tokens: 11,
                 cached_input_tokens: 0,
             },
         })
@@ -337,6 +368,272 @@ async fn regression_run_prompt_for_event_zero_retention_disables_expiry() {
         .list_active_artifacts(current_unix_timestamp_ms())
         .expect("active artifacts");
     assert_eq!(active.len(), 1);
+}
+
+#[tokio::test]
+async fn spec_2530_c04_slack_send_file_directive_dispatches_file_upload() {
+    let server = MockServer::start();
+    let upload_url = format!("{}/upload/F123", server.base_url());
+    let get_upload = server.mock(|when, then| {
+        when.method(POST)
+            .path("/files.getUploadURLExternal")
+            .body_includes("\"filename\":\"q1-report.txt\"")
+            .body_includes("\"length\":");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "upload_url": upload_url,
+            "file_id": "F123"
+        }));
+    });
+    let upload_payload = server.mock(|when, then| {
+        when.method(POST).path("/upload/F123");
+        then.status(200).body("ok");
+    });
+    let complete_upload = server.mock(|when, then| {
+        when.method(POST)
+            .path("/files.completeUploadExternal")
+            .body_includes("\"channel_id\":\"C1\"")
+            .body_includes("\"id\":\"F123\"")
+            .body_includes("\"thread_ts\":\"10.0\"")
+            .body_includes("\"initial_comment\":\"Quarterly report\"");
+        then.status(200).json_body(json!({
+            "ok": true
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let file_path = temp.path().join("q1-report.txt");
+    std::fs::write(&file_path, b"Quarterly report bytes").expect("write report");
+    let config = test_config_with_client(
+        &server.base_url(),
+        temp.path(),
+        Arc::new(SendFileDirectiveClient {
+            file_path: file_path.to_string_lossy().to_string(),
+            message: Some("Quarterly report".to_string()),
+        }),
+    );
+    let event = test_event();
+    let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let slack_client = SlackApiClient::new(
+        config.api_base.clone(),
+        config.app_token.clone(),
+        config.bot_token.clone(),
+        config.request_timeout_ms,
+        config.retry_max_attempts,
+        config.retry_base_delay_ms,
+    )
+    .expect("slack client");
+
+    let report = run_prompt_for_event(
+        &config,
+        temp.path(),
+        &event,
+        "run-send-file",
+        cancel_rx,
+        &slack_client,
+        "UBOT",
+    )
+    .await
+    .expect("run prompt");
+
+    assert!(matches!(report.status, crate::PromptRunStatus::Completed));
+    assert_eq!(
+        report.assistant_reply,
+        "Sent file to Slack: Quarterly report"
+    );
+    get_upload.assert_calls(1);
+    upload_payload.assert_calls(1);
+    complete_upload.assert_calls(1);
+}
+
+#[tokio::test]
+async fn spec_2530_c05_slack_send_file_whitespace_message_falls_back_to_file_path() {
+    let server = MockServer::start();
+    let upload_url = format!("{}/upload/F200", server.base_url());
+    let get_upload = server.mock(|when, then| {
+        when.method(POST)
+            .path("/files.getUploadURLExternal")
+            .body_includes("\"filename\":\"summary.txt\"");
+        then.status(200).json_body(json!({
+            "ok": true,
+            "upload_url": upload_url,
+            "file_id": "F200"
+        }));
+    });
+    let upload_payload = server.mock(|when, then| {
+        when.method(POST).path("/upload/F200");
+        then.status(200).body("ok");
+    });
+    let complete_upload = server.mock(|when, then| {
+        when.method(POST)
+            .path("/files.completeUploadExternal")
+            .body_includes("\"id\":\"F200\"");
+        then.status(200).json_body(json!({
+            "ok": true
+        }));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let file_path = temp.path().join("summary.txt");
+    std::fs::write(&file_path, b"Summary bytes").expect("write summary");
+    let config = test_config_with_client(
+        &server.base_url(),
+        temp.path(),
+        Arc::new(SendFileDirectiveClient {
+            file_path: file_path.to_string_lossy().to_string(),
+            message: Some("   ".to_string()),
+        }),
+    );
+    let event = test_event();
+    let (_cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let slack_client = SlackApiClient::new(
+        config.api_base.clone(),
+        config.app_token.clone(),
+        config.bot_token.clone(),
+        config.request_timeout_ms,
+        config.retry_max_attempts,
+        config.retry_base_delay_ms,
+    )
+    .expect("slack client");
+
+    let report = run_prompt_for_event(
+        &config,
+        temp.path(),
+        &event,
+        "run-send-file-whitespace-message",
+        cancel_rx,
+        &slack_client,
+        "UBOT",
+    )
+    .await
+    .expect("run prompt");
+
+    assert!(matches!(report.status, crate::PromptRunStatus::Completed));
+    assert_eq!(
+        report.assistant_reply,
+        format!("Sent file to Slack: {}", file_path.to_string_lossy())
+    );
+    get_upload.assert_calls(1);
+    upload_payload.assert_calls(1);
+    complete_upload.assert_calls(1);
+}
+
+#[tokio::test]
+async fn regression_2530_dispatch_send_file_directive_applies_url_guardrail() {
+    let event = test_event();
+    let slack_client = SlackApiClient::new(
+        "http://unused.local/api".to_string(),
+        "xapp-test".to_string(),
+        "xoxb-test".to_string(),
+        3_000,
+        3,
+        5,
+    )
+    .expect("slack client");
+    let directive = SlackSendFileDirective {
+        file_path: "https://127.0.0.1/report.bin".to_string(),
+        message: Some("report upload".to_string()),
+        reason_code: "send_file_requested".to_string(),
+    };
+
+    let error = dispatch_send_file_directive(&slack_client, &event, &directive)
+        .await
+        .expect_err("url guardrail should reject private-network source");
+    assert!(error.to_string().contains("invalid send_file url:"));
+}
+
+#[test]
+fn spec_2530_c06_send_file_source_filename_uses_last_non_empty_url_segment() {
+    let standard = Url::parse("https://example.com/reports/q1-summary.txt").expect("url");
+    assert_eq!(
+        send_file_source_filename_from_url(&standard),
+        "q1-summary.txt"
+    );
+
+    let trailing_slash = Url::parse("https://example.com/reports/").expect("url");
+    assert_eq!(
+        send_file_source_filename_from_url(&trailing_slash),
+        "reports"
+    );
+
+    let root = Url::parse("https://example.com/").expect("url");
+    assert_eq!(send_file_source_filename_from_url(&root), "attachment.bin");
+}
+
+#[tokio::test]
+async fn spec_2530_c08_download_public_file_returns_response_bytes() {
+    let server = MockServer::start();
+    let expected = "download-body-2530";
+    let download = server.mock(|when, then| {
+        when.method(GET).path("/public/report.txt");
+        then.status(200).body(expected);
+    });
+    let slack_client = SlackApiClient::new(
+        server.base_url(),
+        "xapp-test".to_string(),
+        "xoxb-test".to_string(),
+        3_000,
+        3,
+        5,
+    )
+    .expect("slack client");
+
+    let bytes = slack_client
+        .download_public_file(&format!("{}/public/report.txt", server.base_url()))
+        .await
+        .expect("download public file");
+    assert_eq!(bytes, expected.as_bytes());
+    download.assert_calls(1);
+}
+
+#[test]
+fn regression_2530_extract_send_file_response_directive_ignores_error_tool_messages() {
+    let valid_payload = json!({
+        "send_file_response": true,
+        "file_path": "/tmp/valid.txt",
+        "message": "valid",
+    })
+    .to_string();
+    let error_payload = json!({
+        "send_file_response": true,
+        "file_path": "/tmp/error.txt",
+        "message": "error",
+    })
+    .to_string();
+    let messages = vec![
+        Message::tool_result("call-ok", "send_file", valid_payload, false),
+        Message::tool_result("call-error", "send_file", error_payload, true),
+    ];
+
+    let directive = extract_send_file_response_directive(&messages).expect("directive");
+    assert_eq!(directive.file_path, "/tmp/valid.txt");
+}
+
+#[test]
+fn spec_2530_c07_parse_send_file_response_directive_payload_handles_flags_and_defaults() {
+    let from_action = parse_send_file_response_directive_payload(&json!({
+        "action": "send_file_response",
+        "file_path": " /tmp/report.txt ",
+        "message": "   ",
+        "reason_code": "   ",
+    }))
+    .expect("directive from action");
+    assert_eq!(from_action.file_path, "/tmp/report.txt");
+    assert_eq!(from_action.message, None);
+    assert_eq!(from_action.reason_code, "send_file_requested");
+
+    let from_boolean = parse_send_file_response_directive_payload(&json!({
+        "send_file_response": true,
+        "file_path": "/tmp/boolean.txt",
+    }))
+    .expect("directive from boolean");
+    assert_eq!(from_boolean.file_path, "/tmp/boolean.txt");
+    assert_eq!(from_boolean.reason_code, "send_file_requested");
+
+    assert!(parse_send_file_response_directive_payload(&json!({
+        "file_path": "/tmp/missing-flags.txt",
+    }))
+    .is_none());
 }
 
 #[test]

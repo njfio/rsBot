@@ -12,7 +12,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentConfig, AgentEvent};
-use tau_ai::LlmClient;
+use tau_ai::{LlmClient, Message};
+use tau_runtime::{SsrfGuard, SsrfProtectionConfig};
 use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
@@ -70,7 +71,7 @@ mod slack_command_helpers;
 mod slack_render_helpers;
 mod slack_state_store;
 
-use slack_api_client::{SlackApiClient, SlackPostedMessage};
+use slack_api_client::{SlackApiClient, SlackPostedMessage, SlackUploadedFile};
 use slack_command_helpers::{
     parse_slack_command, rbac_action_for_slack_command, render_slack_command_response,
     slack_command_usage,
@@ -170,6 +171,21 @@ struct PromptRunReport {
     usage: PromptUsageSummary,
     downloaded_files: Vec<DownloadedSlackFile>,
     artifact: ChannelArtifactRecord,
+}
+
+#[derive(Debug, Clone)]
+struct SlackSendFileDirective {
+    file_path: String,
+    message: Option<String>,
+    reason_code: String,
+}
+
+#[derive(Debug, Clone)]
+struct SlackSendFileDelivery {
+    file_path: String,
+    message: Option<String>,
+    reason_code: String,
+    file_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1374,13 +1390,49 @@ async fn run_prompt_for_event(
         config.render_options,
     )
     .await?;
-
-    let assistant_reply = if status == PromptRunStatus::Cancelled {
-        "Run cancelled before completion.".to_string()
-    } else if status == PromptRunStatus::TimedOut {
-        "Run timed out before completion.".to_string()
+    let send_file_directive = if status == PromptRunStatus::Completed {
+        extract_send_file_response_directive(&agent.messages()[start_index..])
     } else {
-        collect_assistant_reply(&agent.messages()[start_index..])
+        None
+    };
+    let (assistant_reply, send_file_delivery) = if status == PromptRunStatus::Cancelled {
+        ("Run cancelled before completion.".to_string(), None)
+    } else if status == PromptRunStatus::TimedOut {
+        ("Run timed out before completion.".to_string(), None)
+    } else if let Some(send_file_directive) = send_file_directive {
+        match dispatch_send_file_directive(slack_client, event, &send_file_directive).await {
+            Ok(uploaded) => {
+                let reply = send_file_directive
+                    .message
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|message| format!("Sent file to Slack: {message}"))
+                    .unwrap_or_else(|| {
+                        format!("Sent file to Slack: {}", send_file_directive.file_path)
+                    });
+                (
+                    reply,
+                    Some(SlackSendFileDelivery {
+                        file_path: send_file_directive.file_path,
+                        message: send_file_directive.message,
+                        reason_code: send_file_directive.reason_code,
+                        file_id: uploaded.file_id,
+                    }),
+                )
+            }
+            Err(error) => (
+                format!(
+                    "Failed to send file to Slack: {}",
+                    truncate_for_error(&error.to_string(), 320)
+                ),
+                None,
+            ),
+        }
+    } else {
+        (
+            collect_assistant_reply(&agent.messages()[start_index..]),
+            None,
+        )
     };
 
     let usage = usage
@@ -1396,28 +1448,42 @@ async fn run_prompt_for_event(
         &render_slack_artifact_markdown(event, run_id, status, &assistant_reply, &downloaded_files),
     )?;
     channel_store.sync_context_from_messages(agent.messages())?;
+    let mut outbound_payload = json!({
+        "run_id": run_id,
+        "status": prompt_status_label(status),
+        "assistant_reply": assistant_reply.clone(),
+        "tokens": {
+            "input": usage.input_tokens,
+            "output": usage.output_tokens,
+            "total": usage.total_tokens,
+        },
+        "artifact": {
+            "id": artifact.id,
+            "path": artifact.relative_path,
+            "checksum_sha256": artifact.checksum_sha256,
+            "bytes": artifact.bytes,
+            "expires_unix_ms": artifact.expires_unix_ms,
+        },
+    });
+    if let Some(send_file_delivery) = send_file_delivery.as_ref() {
+        if let Value::Object(map) = &mut outbound_payload {
+            map.insert(
+                "send_file_delivery".to_string(),
+                json!({
+                    "reason_code": send_file_delivery.reason_code,
+                    "file_path": send_file_delivery.file_path,
+                    "message": send_file_delivery.message,
+                    "file_id": send_file_delivery.file_id,
+                }),
+            );
+        }
+    }
     channel_store.append_log_entry(&ChannelLogEntry {
         timestamp_unix_ms: current_unix_timestamp_ms(),
         direction: "outbound".to_string(),
         event_key: Some(event.key.clone()),
         source: "slack".to_string(),
-        payload: json!({
-            "run_id": run_id,
-            "status": prompt_status_label(status),
-            "assistant_reply": assistant_reply.clone(),
-            "tokens": {
-                "input": usage.input_tokens,
-                "output": usage.output_tokens,
-                "total": usage.total_tokens,
-            },
-            "artifact": {
-                "id": artifact.id,
-                "path": artifact.relative_path,
-                "checksum_sha256": artifact.checksum_sha256,
-                "bytes": artifact.bytes,
-                "expires_unix_ms": artifact.expires_unix_ms,
-            },
-        }),
+        payload: outbound_payload,
     })?;
 
     Ok(PromptRunReport {
@@ -1428,6 +1494,129 @@ async fn run_prompt_for_event(
         usage,
         downloaded_files,
         artifact,
+    })
+}
+
+async fn dispatch_send_file_directive(
+    slack_client: &SlackApiClient,
+    event: &SlackBridgeEvent,
+    directive: &SlackSendFileDirective,
+) -> Result<SlackUploadedFile> {
+    let source = directive.file_path.trim();
+    if source.is_empty() {
+        return Err(anyhow!("send_file file_path must not be empty"));
+    }
+
+    let (filename, bytes) = if source.starts_with("https://") || source.starts_with("http://") {
+        let guard = SsrfGuard::new(SsrfProtectionConfig {
+            enabled: true,
+            allow_http: false,
+            allow_private_network: false,
+        });
+        let source_url = guard
+            .parse_and_validate_url(source)
+            .await
+            .map_err(|violation| anyhow!("invalid send_file url: {}", violation.detail))?;
+        let filename = send_file_source_filename_from_url(&source_url);
+        let bytes = slack_client
+            .download_public_file(source_url.as_str())
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to download send_file source URL '{}'",
+                    source_url.as_str()
+                )
+            })?;
+        (filename, bytes)
+    } else {
+        let path = PathBuf::from(source);
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("attachment.bin")
+            .to_string();
+        let bytes = std::fs::read(&path)
+            .with_context(|| format!("failed to read send_file path '{}'", path.display()))?;
+        (filename, bytes)
+    };
+    if bytes.is_empty() {
+        return Err(anyhow!("send_file source '{}' is empty", source));
+    }
+
+    slack_client
+        .upload_file_v2(
+            event.channel_id.as_str(),
+            event.reply_thread_ts(),
+            filename.as_str(),
+            &bytes,
+            directive.message.as_deref(),
+        )
+        .await
+}
+
+fn send_file_source_filename_from_url(source_url: &reqwest::Url) -> String {
+    source_url
+        .path_segments()
+        .and_then(|segments| {
+            segments
+                .filter(|segment| !segment.trim().is_empty())
+                .next_back()
+        })
+        .unwrap_or("attachment.bin")
+        .to_string()
+}
+
+fn extract_send_file_response_directive(messages: &[Message]) -> Option<SlackSendFileDirective> {
+    messages.iter().rev().find_map(|message| {
+        if message.role != tau_ai::MessageRole::Tool {
+            return None;
+        }
+        if message.tool_name.as_deref() != Some("send_file") || message.is_error {
+            return None;
+        }
+        let parsed = serde_json::from_str::<Value>(&message.text_content()).ok()?;
+        parse_send_file_response_directive_payload(&parsed)
+    })
+}
+
+fn parse_send_file_response_directive_payload(payload: &Value) -> Option<SlackSendFileDirective> {
+    let object = payload.as_object()?;
+    let send_file_response = object
+        .get("send_file_response")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let action_send_file = object
+        .get("action")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.trim() == "send_file_response");
+    if !send_file_response && !action_send_file {
+        return None;
+    }
+    let file_path = object
+        .get("file_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let message = object
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let reason_code = object
+        .get("reason_code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("send_file_requested")
+        .to_string();
+    Some(SlackSendFileDirective {
+        file_path,
+        message,
+        reason_code,
     })
 }
 
