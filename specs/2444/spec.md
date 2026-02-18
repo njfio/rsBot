@@ -1,6 +1,6 @@
 # Spec #2444 - G6 memory graph relations (phase 1)
 
-Status: Accepted
+Status: Implemented
 Milestone: specs/milestones/m75/index.md
 Issue: https://github.com/njfio/Tau/issues/2444
 
