@@ -1,6 +1,6 @@
 # Spec #2477 - RED/GREEN conformance evidence for G17 phase-2 template source fallback
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Phase-2 delivery requires explicit RED/GREEN evidence proving template-source fallback and diagnostics behavior.

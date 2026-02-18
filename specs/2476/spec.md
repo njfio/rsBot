@@ -1,6 +1,6 @@
 # Spec #2476 - implement startup template builtin fallback and source diagnostics
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Startup prompt composition currently reports no template source metadata and only supports workspace template selection with silent default fallback.

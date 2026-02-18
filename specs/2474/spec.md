@@ -1,6 +1,6 @@
 # Spec #2474 - G17 prompt templates phase-2 orchestration
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 G17 phase 1 delivered workspace template rendering, but Tau still lacks explicit built-in template defaults and traceable template-source diagnostics.

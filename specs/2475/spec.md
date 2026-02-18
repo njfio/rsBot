@@ -1,6 +1,6 @@
 # Spec #2475 - startup prompt template source fallback and diagnostics
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Operators need deterministic startup prompt template behavior even when workspace template files are absent or invalid, and startup needs diagnostics that indicate which template source was used.
