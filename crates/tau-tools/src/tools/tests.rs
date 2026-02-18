@@ -20,7 +20,7 @@ use super::{
     is_command_allowed, is_session_candidate_path, leading_executable,
     os_sandbox_docker_network_name, os_sandbox_mode_name, os_sandbox_policy_mode_name,
     redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool,
-    EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool,
+    BranchTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool,
     MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool, OsSandboxDockerNetwork,
     OsSandboxMode, OsSandboxPolicyMode, RedoTool, SessionsHistoryTool, SessionsListTool,
     SessionsSearchTool, SessionsSendTool, SessionsStatsTool, ToolBuilderTool, ToolExecutionResult,
@@ -247,6 +247,146 @@ fn unit_builtin_agent_tool_name_registry_includes_session_tools() {
     assert!(names.contains(&"http"));
     assert!(names.contains(&"tool_builder"));
     assert!(names.contains(&"bash"));
+}
+
+#[test]
+fn spec_c01_builtin_agent_tool_name_registry_includes_branch_tool() {
+    let names = builtin_agent_tool_names();
+    assert!(names.contains(&"branch"));
+}
+
+#[tokio::test]
+async fn spec_c02_branch_tool_appends_prompt_and_returns_branch_metadata() {
+    let temp = tempdir().expect("tempdir");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
+    let mut store = SessionStore::load(&session_path).expect("load session");
+    let root = store
+        .append_messages(None, &[Message::user("seed".to_string())])
+        .expect("append seed")
+        .expect("seed head");
+    drop(store);
+
+    let tool = BranchTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": session_path,
+            "prompt": "Investigate branch hypothesis"
+        }))
+        .await;
+
+    assert!(!result.is_error, "branch tool error: {}", result.content);
+    assert_eq!(result.content["tool"], "branch");
+    assert_eq!(result.content["reason_code"], "session_branch_created");
+    assert_eq!(result.content["selected_parent_id"].as_u64(), Some(root));
+    let branch_head_id = result.content["branch_head_id"]
+        .as_u64()
+        .expect("branch head id");
+
+    let persisted = SessionStore::load(&session_path).expect("reload session");
+    let entry = persisted
+        .entries()
+        .iter()
+        .find(|entry| entry.id == branch_head_id)
+        .expect("branch entry");
+    assert_eq!(entry.parent_id, Some(root));
+    assert_eq!(session_message_role(&entry.message), "user");
+    assert!(session_message_preview(&entry.message).contains("Investigate branch hypothesis"));
+}
+
+#[tokio::test]
+async fn integration_spec_c03_branch_tool_accepts_explicit_parent_id() {
+    let temp = tempdir().expect("tempdir");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
+    let mut store = SessionStore::load(&session_path).expect("load session");
+    let root = store
+        .append_messages(None, &[Message::user("root".to_string())])
+        .expect("append root")
+        .expect("root head");
+    let head = store
+        .append_messages(Some(root), &[Message::assistant_text("head".to_string())])
+        .expect("append head")
+        .expect("head id");
+    assert_eq!(store.head_id(), Some(head));
+    drop(store);
+
+    let tool = BranchTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": session_path,
+            "prompt": "Work from root branch",
+            "parent_id": root
+        }))
+        .await;
+    assert!(!result.is_error, "branch tool error: {}", result.content);
+    assert_eq!(result.content["selected_parent_id"].as_u64(), Some(root));
+    let branch_head_id = result.content["branch_head_id"]
+        .as_u64()
+        .expect("branch head id");
+
+    let persisted = SessionStore::load(&session_path).expect("reload session");
+    let entry = persisted
+        .entries()
+        .iter()
+        .find(|entry| entry.id == branch_head_id)
+        .expect("branch entry");
+    assert_eq!(entry.parent_id, Some(root));
+}
+
+#[tokio::test]
+async fn regression_spec_c04_branch_tool_rejects_unknown_parent_id() {
+    let temp = tempdir().expect("tempdir");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
+    let mut store = SessionStore::load(&session_path).expect("load session");
+    store
+        .append_messages(None, &[Message::user("seed".to_string())])
+        .expect("append seed");
+    let before_entries = store.entries().len();
+    drop(store);
+
+    let tool = BranchTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": session_path,
+            "prompt": "Invalid parent test",
+            "parent_id": 9_999_999u64
+        }))
+        .await;
+    assert!(result.is_error);
+    assert_eq!(
+        result.content["reason_code"].as_str(),
+        Some("session_branch_parent_not_found")
+    );
+
+    let persisted = SessionStore::load(&session_path).expect("reload session");
+    assert_eq!(persisted.entries().len(), before_entries);
+}
+
+#[tokio::test]
+async fn regression_spec_c05_branch_tool_rejects_empty_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let session_path = temp.path().join(".tau/sessions/default.sqlite");
+    let mut store = SessionStore::load(&session_path).expect("load session");
+    store
+        .append_messages(None, &[Message::user("seed".to_string())])
+        .expect("append seed");
+    let before_entries = store.entries().len();
+    drop(store);
+
+    let tool = BranchTool::new(test_policy(temp.path()));
+    let result = tool
+        .execute(serde_json::json!({
+            "path": session_path,
+            "prompt": "   "
+        }))
+        .await;
+    assert!(result.is_error);
+    assert_eq!(
+        result.content["reason_code"].as_str(),
+        Some("branch_prompt_empty")
+    );
+
+    let persisted = SessionStore::load(&session_path).expect("reload session");
+    assert_eq!(persisted.entries().len(), before_entries);
 }
 
 #[tokio::test]
