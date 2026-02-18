@@ -19,8 +19,10 @@ use tokio::{process::Command, time::timeout};
 
 use super::{
     bash_profile_name, is_command_allowed, leading_executable, os_sandbox_mode_name,
-    redact_secrets, required_string, resolve_and_validate_path, resolve_sandbox_spec,
-    truncate_bytes, validate_directory_target, PathMode, ToolPolicy, ToolRateLimitExceededBehavior,
+    os_sandbox_policy_mode_name, redact_secrets, required_string, resolve_and_validate_path,
+    resolve_sandbox_spec, truncate_bytes, validate_directory_target, PathMode, ToolPolicy,
+    ToolRateLimitExceededBehavior, SANDBOX_DOCKER_UNAVAILABLE_ERROR,
+    SANDBOX_FORCE_UNAVAILABLE_ERROR, SANDBOX_REQUIRED_UNAVAILABLE_ERROR,
 };
 
 const SAFE_BASH_ENV_VARS: &[&str] = &[
@@ -118,6 +120,15 @@ fn resolve_rate_limit_principal(policy: &ToolPolicy) -> String {
         .unwrap_or_else(resolve_local_principal)
 }
 
+fn sandbox_reason_code(error: &str) -> &'static str {
+    match error {
+        SANDBOX_REQUIRED_UNAVAILABLE_ERROR => "sandbox_policy_required",
+        SANDBOX_FORCE_UNAVAILABLE_ERROR => "sandbox_force_unavailable",
+        SANDBOX_DOCKER_UNAVAILABLE_ERROR => "sandbox_docker_unavailable",
+        _ => "sandbox_unavailable",
+    }
+}
+
 pub(super) fn evaluate_tool_rate_limit_gate(
     policy: &ToolPolicy,
     tool_name: &str,
@@ -147,6 +158,7 @@ pub(super) fn evaluate_tool_rate_limit_gate(
 
     Some(ToolExecutionResult::error(json!({
         "policy_rule": "rate_limit",
+        "policy_decision": "deny",
         "decision": decision_label,
         "reason_code": reason_code,
         "principal": principal,
@@ -486,6 +498,47 @@ impl AgentTool for BashTool {
             return approval_result;
         }
 
+        if let Some(mut rate_limit_result) = evaluate_tool_rate_limit_gate(
+            &self.policy,
+            "bash",
+            json!({
+                "command": command.clone(),
+                "cwd": cwd.as_ref().map(|value| value.display().to_string()),
+            }),
+        ) {
+            let principal = rate_limit_result
+                .content
+                .get("principal")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let retry_after_ms = rate_limit_result
+                .content
+                .get("retry_after_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            push_policy_trace(
+                &mut trace,
+                trace_enabled,
+                "rate_limit",
+                "deny",
+                format!(
+                    "principal '{}' exceeded rate limit; retry_after_ms={}",
+                    principal, retry_after_ms
+                ),
+            );
+            if let Some(payload) = rate_limit_result.content.as_object_mut() {
+                attach_policy_trace(payload, trace_enabled, &trace, "deny");
+            }
+            return rate_limit_result;
+        }
+        push_policy_trace(
+            &mut trace,
+            trace_enabled,
+            "rate_limit",
+            "allow",
+            "request is within rate-limit budget",
+        );
+
         let override_payload = serde_json::json!({
             "tool": "bash",
             "command": command.clone(),
@@ -588,15 +641,35 @@ impl AgentTool for BashTool {
                     "deny",
                     error.clone(),
                 );
-                return bash_policy_error(
-                    Some(command),
-                    cwd.as_ref().map(|value| value.display().to_string()),
-                    "os_sandbox_mode",
-                    error,
-                    None,
-                    trace_enabled,
-                    &trace,
+                let mut payload = serde_json::Map::new();
+                payload.insert("command".to_string(), json!(command));
+                payload.insert(
+                    "cwd".to_string(),
+                    json!(cwd.as_ref().map(|value| value.display().to_string())),
                 );
+                payload.insert("policy_rule".to_string(), json!("os_sandbox_mode"));
+                payload.insert(
+                    "reason_code".to_string(),
+                    json!(sandbox_reason_code(error.as_str())),
+                );
+                payload.insert(
+                    "sandbox_mode".to_string(),
+                    json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
+                );
+                payload.insert(
+                    "sandbox_policy_mode".to_string(),
+                    json!(os_sandbox_policy_mode_name(
+                        self.policy.os_sandbox_policy_mode
+                    )),
+                );
+                payload.insert("policy_mode".to_string(), json!("sandbox"));
+                payload.insert(
+                    "policy_reason_code".to_string(),
+                    json!(sandbox_reason_code(error.as_str())),
+                );
+                payload.insert("error".to_string(), json!(error));
+                attach_policy_trace(&mut payload, trace_enabled, &trace, "deny");
+                return ToolExecutionResult::error(Value::Object(payload));
             }
         };
 
@@ -619,6 +692,18 @@ impl AgentTool for BashTool {
                 "sandbox_mode".to_string(),
                 json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
             );
+            payload.insert(
+                "sandbox_backend".to_string(),
+                json!(sandbox_spec.backend.clone()),
+            );
+            payload.insert(
+                "sandbox_policy_mode".to_string(),
+                json!(os_sandbox_policy_mode_name(
+                    self.policy.os_sandbox_policy_mode
+                )),
+            );
+            payload.insert("policy_mode".to_string(), json!("none"));
+            payload.insert("policy_reason_code".to_string(), json!("none"));
             payload.insert("dry_run".to_string(), json!(true));
             payload.insert("would_execute".to_string(), json!(true));
             payload.insert("status".to_string(), Value::Null);
@@ -702,6 +787,15 @@ impl AgentTool for BashTool {
             "sandbox_mode".to_string(),
             json!(os_sandbox_mode_name(self.policy.os_sandbox_mode)),
         );
+        payload.insert("sandbox_backend".to_string(), json!(sandbox_spec.backend));
+        payload.insert(
+            "sandbox_policy_mode".to_string(),
+            json!(os_sandbox_policy_mode_name(
+                self.policy.os_sandbox_policy_mode
+            )),
+        );
+        payload.insert("policy_mode".to_string(), json!("none"));
+        payload.insert("policy_reason_code".to_string(), json!("none"));
         payload.insert("dry_run".to_string(), json!(false));
         payload.insert("status".to_string(), json!(output.status.code()));
         payload.insert("success".to_string(), json!(output.status.success()));
