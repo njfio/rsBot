@@ -1,6 +1,6 @@
 # Spec #2513 - Story: validate skip response behavior in channel/runtime flows
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Skip behavior spans tool contract, agent turn lifecycle, and channel runtime logging. The story must prove those behaviors together.

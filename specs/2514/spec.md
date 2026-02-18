@@ -1,6 +1,6 @@
 # Spec #2514 - Task: implement/validate G12 skip-tool conformance
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 G12 requires explicit proof that skip behavior suppresses user-facing replies, records skip reasons, and is available in multi-user tool sets.

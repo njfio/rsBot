@@ -1,6 +1,6 @@
 # Spec #2515 - Subtask: RED/GREEN + live validation evidence for G12
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 G12 closure requires explicit RED/GREEN and validation artifacts attached to the issue/PR chain.

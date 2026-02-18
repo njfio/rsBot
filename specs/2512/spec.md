@@ -1,6 +1,6 @@
 # Spec #2512 - Epic: G12 skip-tool closure + validation
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 G12 is still marked incomplete in `tasks/spacebot-comparison.md` even though skip behavior exists across multiple crates. We need formal closure with spec-driven evidence.
