@@ -1,6 +1,6 @@
 # Spec #2528 - Epic: G14 adapter file delivery closure
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 G14 remains partially open because `send_file` contract support was added, but adapter-level delivery behavior is incomplete across channel transports.
@@ -22,7 +22,7 @@ Out of scope:
 ## Conformance Cases
 - C-01 (AC-1): `spec_2530_c01_functional_dry_run_shapes_discord_send_file_payload`
 - C-02 (AC-1): `spec_2530_c02_integration_provider_mode_posts_discord_send_file_request`
-- C-03 (AC-1): `spec_2530_c03_slack_send_file_directive_dispatches_file_upload`
+- C-03 (AC-1): `spec_2530_c04_slack_send_file_directive_dispatches_file_upload`
 - C-04 (AC-2): PR tier matrix + RED/GREEN + live validation package complete
 
 ## Success Metrics
