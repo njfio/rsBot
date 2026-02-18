@@ -418,6 +418,9 @@ impl AgentTool for MemoryWriteTool {
                 "recency_weight_bps": result.record.entry.recency_weight_bps,
                 "confidence_bps": result.record.entry.confidence_bps,
                 "updated_unix_ms": result.record.updated_unix_ms,
+                "last_accessed_at_unix_ms": result.record.last_accessed_at_unix_ms,
+                "access_count": result.record.access_count,
+                "forgotten": result.record.forgotten,
                 "embedding_source": result.record.embedding_source,
                 "embedding_model": result.record.embedding_model,
                 "embedding_reason_code": result.record.embedding_reason_code,
@@ -540,6 +543,9 @@ impl AgentTool for MemoryReadTool {
                 "recency_weight_bps": record.entry.recency_weight_bps,
                 "confidence_bps": record.entry.confidence_bps,
                 "updated_unix_ms": record.updated_unix_ms,
+                "last_accessed_at_unix_ms": record.last_accessed_at_unix_ms,
+                "access_count": record.access_count,
+                "forgotten": record.forgotten,
                 "embedding_source": record.embedding_source,
                 "embedding_model": record.embedding_model,
                 "embedding_reason_code": record.embedding_reason_code,
@@ -565,6 +571,124 @@ impl AgentTool for MemoryReadTool {
             })),
             Err(error) => ToolExecutionResult::error(json!({
                 "tool": "memory_read",
+                "reason_code": "memory_backend_error",
+                "memory_id": memory_id,
+                "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
+                "error": error.to_string(),
+            })),
+        }
+    }
+}
+
+/// Public struct `MemoryDeleteTool` used across Tau components.
+pub struct MemoryDeleteTool {
+    policy: Arc<ToolPolicy>,
+}
+
+impl MemoryDeleteTool {
+    pub fn new(policy: Arc<ToolPolicy>) -> Self {
+        Self { policy }
+    }
+}
+
+#[async_trait]
+impl AgentTool for MemoryDeleteTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "memory_delete".to_string(),
+            description: "Soft-delete a scoped semantic memory entry by id".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "memory_id": { "type": "string", "description": "Memory id to soft-delete" },
+                    "workspace_id": { "type": "string" },
+                    "channel_id": { "type": "string" },
+                    "actor_id": { "type": "string" }
+                },
+                "required": ["memory_id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let memory_id = match required_string(&arguments, "memory_id") {
+            Ok(memory_id) => memory_id,
+            Err(error) => {
+                return ToolExecutionResult::error(json!({
+                    "tool": "memory_delete",
+                    "reason_code": "memory_invalid_arguments",
+                    "error": error,
+                }))
+            }
+        };
+        let scope_filter = memory_scope_filter_from_arguments(&arguments);
+        if let Some(rbac_result) = evaluate_tool_rbac_gate(
+            self.policy.rbac_principal.as_deref(),
+            "memory_delete",
+            self.policy.rbac_policy_path.as_deref(),
+            json!({
+                "memory_id": memory_id.clone(),
+                "scope_filter": scope_filter.clone(),
+            }),
+        ) {
+            return rbac_result;
+        }
+
+        let store = FileMemoryStore::new_with_embedding_provider(
+            self.policy.memory_state_dir.clone(),
+            self.policy.memory_embedding_provider_config(),
+        );
+        if let Some(rate_limit_result) = evaluate_tool_rate_limit_gate(
+            &self.policy,
+            "memory_delete",
+            json!({
+                "memory_id": memory_id.clone(),
+                "scope_filter": scope_filter.clone(),
+                "store_root": self.policy.memory_state_dir.display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+            }),
+        ) {
+            return rate_limit_result;
+        }
+
+        match store.soft_delete_entry(memory_id.as_str(), scope_filter.as_ref()) {
+            Ok(Some(record)) => ToolExecutionResult::ok(json!({
+                "tool": "memory_delete",
+                "deleted": true,
+                "reason_code": "memory_deleted",
+                "memory_id": record.entry.memory_id,
+                "scope": record.scope,
+                "updated_unix_ms": record.updated_unix_ms,
+                "last_accessed_at_unix_ms": record.last_accessed_at_unix_ms,
+                "access_count": record.access_count,
+                "forgotten": record.forgotten,
+                "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
+            })),
+            Ok(None) => ToolExecutionResult::error(json!({
+                "tool": "memory_delete",
+                "reason_code": "memory_not_found",
+                "memory_id": memory_id,
+                "scope_filter": scope_filter,
+                "store_root": store.root_dir().display().to_string(),
+                "storage_backend": store.storage_backend_label(),
+                "backend_reason_code": store.storage_backend_reason_code(),
+                "storage_path": store
+                    .storage_path()
+                    .map(|path| path.display().to_string()),
+            })),
+            Err(error) => ToolExecutionResult::error(json!({
+                "tool": "memory_delete",
                 "reason_code": "memory_backend_error",
                 "memory_id": memory_id,
                 "store_root": store.root_dir().display().to_string(),

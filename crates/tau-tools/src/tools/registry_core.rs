@@ -572,6 +572,7 @@ pub fn register_builtin_tools(agent: &mut Agent, policy: ToolPolicy) {
     agent.register_tool(EditTool::new(policy.clone()));
     agent.register_tool(MemoryWriteTool::new(policy.clone()));
     agent.register_tool(MemoryReadTool::new(policy.clone()));
+    agent.register_tool(MemoryDeleteTool::new(policy.clone()));
     agent.register_tool(MemorySearchTool::new(policy.clone()));
     agent.register_tool(MemoryTreeTool::new(policy.clone()));
     agent.register_tool(SessionsListTool::new(policy.clone()));

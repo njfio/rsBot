@@ -226,6 +226,12 @@ pub struct RuntimeMemoryRecord {
     #[serde(default = "default_embedding_reason_code")]
     pub embedding_reason_code: String,
     #[serde(default)]
+    pub last_accessed_at_unix_ms: u64,
+    #[serde(default)]
+    pub access_count: u64,
+    #[serde(default)]
+    pub forgotten: bool,
+    #[serde(default)]
     pub relations: Vec<MemoryRelation>,
 }
 
@@ -570,10 +576,54 @@ impl FileMemoryStore {
             embedding_model: computed_embedding.model,
             embedding_vector: computed_embedding.vector,
             embedding_reason_code: computed_embedding.reason_code,
+            last_accessed_at_unix_ms: 0,
+            access_count: 0,
+            forgotten: false,
             relations: normalized_relations,
         };
         self.append_record_backend(&record)?;
         Ok(MemoryWriteResult { record, created })
+    }
+
+    /// Marks the latest active memory record as forgotten without removing historical data.
+    pub fn soft_delete_entry(
+        &self,
+        memory_id: &str,
+        scope_filter: Option<&MemoryScopeFilter>,
+    ) -> Result<Option<RuntimeMemoryRecord>> {
+        let normalized_memory_id = memory_id.trim();
+        if normalized_memory_id.is_empty() {
+            bail!("memory_id must not be empty");
+        }
+        let records = self.load_latest_records_including_forgotten()?;
+        let Some(existing) = records.into_iter().find(|record| {
+            record.entry.memory_id == normalized_memory_id
+                && !record.forgotten
+                && scope_filter
+                    .map(|filter| filter.matches_scope(&record.scope))
+                    .unwrap_or(true)
+        }) else {
+            return Ok(None);
+        };
+
+        let mut forgotten_record = existing;
+        forgotten_record.updated_unix_ms = current_unix_timestamp_ms();
+        forgotten_record.forgotten = true;
+        self.append_record_backend(&forgotten_record)?;
+        Ok(Some(forgotten_record))
+    }
+
+    pub(super) fn touch_entry_access(
+        &self,
+        record: &RuntimeMemoryRecord,
+    ) -> Result<RuntimeMemoryRecord> {
+        let mut touched = record.clone();
+        let now_unix_ms = current_unix_timestamp_ms();
+        touched.updated_unix_ms = now_unix_ms;
+        touched.last_accessed_at_unix_ms = now_unix_ms;
+        touched.access_count = touched.access_count.saturating_add(1);
+        self.append_record_backend(&touched)?;
+        Ok(touched)
     }
 
     fn ensure_backend_ready(&self) -> Result<()> {
@@ -943,6 +993,9 @@ mod tests {
         assert_eq!(decoded.memory_type, MemoryType::Observation);
         assert!((decoded.importance - 0.3).abs() <= 0.000_001);
         assert!(decoded.relations.is_empty());
+        assert_eq!(decoded.last_accessed_at_unix_ms, 0);
+        assert_eq!(decoded.access_count, 0);
+        assert!(!decoded.forgotten);
     }
 
     #[test]

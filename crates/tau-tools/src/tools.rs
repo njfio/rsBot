@@ -124,6 +124,7 @@ const BUILTIN_AGENT_TOOL_NAMES: &[&str] = &[
     "edit",
     "memory_write",
     "memory_read",
+    "memory_delete",
     "memory_search",
     "memory_tree",
     "sessions_list",
@@ -156,7 +157,9 @@ use bash_tool::{
     evaluate_tool_approval_gate, evaluate_tool_rate_limit_gate, evaluate_tool_rbac_gate,
 };
 pub use jobs_tools::{JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool};
-pub use memory_tools::{MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool};
+pub use memory_tools::{
+    MemoryDeleteTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
+};
 use registry_core::BashSandboxSpec;
 pub use registry_core::{
     builtin_agent_tool_names, register_builtin_tools, register_extension_tools,

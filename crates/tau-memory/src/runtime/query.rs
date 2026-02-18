@@ -25,12 +25,16 @@ impl FileMemoryStore {
             bail!("memory_id must not be empty");
         }
         let records = self.load_latest_records()?;
-        Ok(records.into_iter().find(|record| {
+        let matched = records.into_iter().find(|record| {
             record.entry.memory_id == normalized_memory_id
                 && scope_filter
                     .map(|filter| filter.matches_scope(&record.scope))
                     .unwrap_or(true)
-        }))
+        });
+        match matched {
+            Some(record) => self.touch_entry_access(&record).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Returns latest records filtered by scope and bounded by `limit`.
@@ -201,9 +205,20 @@ impl FileMemoryStore {
         ranked.truncate(options.limit);
         let ranking_latency_ms = ranking_started.elapsed().as_millis() as u64;
 
+        let mut touched_records = HashMap::<String, RuntimeMemoryRecord>::new();
+        for item in &ranked {
+            if let Some(record) = by_memory_id.get(item.key.as_str()) {
+                let touched = self.touch_entry_access(record)?;
+                touched_records.insert(item.key.clone(), touched);
+            }
+        }
+
         let mut matches = Vec::with_capacity(ranked.len());
         for item in &ranked {
-            let Some(record) = by_memory_id.get(&item.key) else {
+            let Some(record) = touched_records
+                .get(item.key.as_str())
+                .or_else(|| by_memory_id.get(&item.key))
+            else {
                 continue;
             };
             matches.push(MemorySearchMatch {
@@ -358,6 +373,19 @@ impl FileMemoryStore {
     }
 
     pub(super) fn load_latest_records(&self) -> Result<Vec<RuntimeMemoryRecord>> {
+        self.load_latest_records_internal(false)
+    }
+
+    pub(super) fn load_latest_records_including_forgotten(
+        &self,
+    ) -> Result<Vec<RuntimeMemoryRecord>> {
+        self.load_latest_records_internal(true)
+    }
+
+    fn load_latest_records_internal(
+        &self,
+        include_forgotten: bool,
+    ) -> Result<Vec<RuntimeMemoryRecord>> {
         let records = self.load_records_backend()?;
         let relation_map = self.load_relation_map_backend()?;
         let mut seen = BTreeSet::new();
@@ -373,6 +401,9 @@ impl FileMemoryStore {
                     record.relations = relations.clone();
                 }
             }
+        }
+        if !include_forgotten {
+            latest.retain(|record| !record.forgotten);
         }
         latest.sort_by(|left, right| {
             right
@@ -449,6 +480,9 @@ mod tests {
             embedding_model: None,
             embedding_vector: vec![1.0, 0.0],
             embedding_reason_code: "memory_embedding_hash_only".to_string(),
+            last_accessed_at_unix_ms: 0,
+            access_count: 0,
+            forgotten: false,
             relations,
         }
     }
@@ -624,5 +658,104 @@ mod tests {
         let expected = vector_score * importance_rank_multiplier(source_match.importance)
             + options.graph_signal_weight * graph_score;
         assert!((source_match.score - expected).abs() <= 0.000_001);
+    }
+
+    #[test]
+    fn spec_2450_c02_read_and_search_touch_lifecycle_metadata() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new(temp.path());
+        let scope = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "ops".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        store
+            .write_entry_with_metadata_and_relations(
+                &scope,
+                MemoryEntry {
+                    memory_id: "memory-lifecycle".to_string(),
+                    summary: "lifecycle metadata sample".to_string(),
+                    tags: vec!["lifecycle".to_string()],
+                    facts: vec!["touch updates access counters".to_string()],
+                    source_event_key: "evt-lifecycle".to_string(),
+                    recency_weight_bps: 0,
+                    confidence_bps: 1_000,
+                },
+                Some(MemoryType::Fact),
+                Some(0.65),
+                &[],
+            )
+            .expect("write lifecycle memory");
+
+        let before = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list before touch");
+        let before_record = before
+            .iter()
+            .find(|record| record.entry.memory_id == "memory-lifecycle")
+            .expect("memory-lifecycle exists before touch");
+        assert_eq!(before_record.access_count, 0);
+        assert_eq!(before_record.last_accessed_at_unix_ms, 0);
+        assert!(!before_record.forgotten);
+
+        let read = store
+            .read_entry("memory-lifecycle", None)
+            .expect("read lifecycle memory")
+            .expect("memory-lifecycle should exist");
+        assert_eq!(read.access_count, 1);
+        assert!(read.last_accessed_at_unix_ms > 0);
+
+        let after_read = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list after read touch");
+        let after_read_record = after_read
+            .iter()
+            .find(|record| record.entry.memory_id == "memory-lifecycle")
+            .expect("memory-lifecycle exists after read touch");
+        assert_eq!(after_read_record.access_count, 1);
+        assert!(after_read_record.last_accessed_at_unix_ms > 0);
+
+        let result = store
+            .search(
+                "lifecycle metadata sample",
+                &MemorySearchOptions {
+                    scope: MemoryScopeFilter::default(),
+                    limit: 5,
+                    embedding_dimensions: 64,
+                    min_similarity: 0.0,
+                    enable_hybrid_retrieval: false,
+                    bm25_k1: 1.2,
+                    bm25_b: 0.75,
+                    bm25_min_score: 0.0,
+                    rrf_k: 60,
+                    rrf_vector_weight: 1.0,
+                    rrf_lexical_weight: 1.0,
+                    graph_signal_weight: 0.25,
+                    enable_embedding_migration: false,
+                    benchmark_against_hash: false,
+                    benchmark_against_vector_only: false,
+                },
+            )
+            .expect("search lifecycle memory");
+        assert!(
+            result
+                .matches
+                .iter()
+                .any(|candidate| candidate.memory_id == "memory-lifecycle"),
+            "search should return lifecycle memory"
+        );
+
+        let after_search = store
+            .list_latest_records(None, usize::MAX)
+            .expect("list after search touch");
+        let after_search_record = after_search
+            .iter()
+            .find(|record| record.entry.memory_id == "memory-lifecycle")
+            .expect("memory-lifecycle exists after search touch");
+        assert!(
+            after_search_record.access_count >= 2,
+            "search touch should increment access count"
+        );
+        assert!(after_search_record.last_accessed_at_unix_ms > 0);
     }
 }

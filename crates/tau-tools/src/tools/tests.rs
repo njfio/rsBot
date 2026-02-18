@@ -21,11 +21,11 @@ use super::{
     os_sandbox_docker_network_name, os_sandbox_mode_name, os_sandbox_policy_mode_name,
     redact_secrets, resolve_sandbox_spec, truncate_bytes, AgentTool, BashCommandProfile, BashTool,
     BranchTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool, JobsListTool, JobsStatusTool,
-    MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool, OsSandboxDockerNetwork,
-    OsSandboxMode, OsSandboxPolicyMode, RedoTool, SessionsHistoryTool, SessionsListTool,
-    SessionsSearchTool, SessionsSendTool, SessionsStatsTool, SkipTool, ToolBuilderTool,
-    ToolExecutionResult, ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool,
-    WriteTool,
+    MemoryDeleteTool, MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool,
+    OsSandboxDockerNetwork, OsSandboxMode, OsSandboxPolicyMode, RedoTool, SessionsHistoryTool,
+    SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool, SkipTool,
+    ToolBuilderTool, ToolExecutionResult, ToolPolicy, ToolPolicyPreset,
+    ToolRateLimitExceededBehavior, UndoTool, WriteTool,
 };
 use tau_access::ApprovalAction;
 use tau_ai::Message;
@@ -232,6 +232,7 @@ fn unit_builtin_agent_tool_name_registry_includes_session_tools() {
     assert!(names.contains(&"edit"));
     assert!(names.contains(&"memory_write"));
     assert!(names.contains(&"memory_read"));
+    assert!(names.contains(&"memory_delete"));
     assert!(names.contains(&"memory_search"));
     assert!(names.contains(&"memory_tree"));
     assert!(names.contains(&"sessions_list"));
@@ -2165,6 +2166,84 @@ async fn spec_2444_c05_legacy_records_without_relations_return_stable_defaults()
             .len(),
         0
     );
+}
+
+#[tokio::test]
+async fn spec_2450_c03_memory_delete_marks_forgotten_and_excludes_default_views() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let write_tool = MemoryWriteTool::new(policy.clone());
+    let write = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "memory-forgotten",
+            "summary": "retire this memory entry",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!write.is_error, "{}", write.content);
+
+    let delete_tool = MemoryDeleteTool::new(policy.clone());
+    let deleted = delete_tool
+        .execute(serde_json::json!({
+            "memory_id": "memory-forgotten",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!deleted.is_error, "{}", deleted.content);
+    assert_eq!(deleted.content["deleted"], true);
+    assert_eq!(deleted.content["reason_code"], "memory_deleted");
+    assert_eq!(deleted.content["forgotten"], true);
+
+    let read_tool = MemoryReadTool::new(policy.clone());
+    let read = read_tool
+        .execute(serde_json::json!({
+            "memory_id": "memory-forgotten",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!read.is_error, "{}", read.content);
+    assert_eq!(read.content["found"], false);
+
+    let search_tool = MemorySearchTool::new(policy.clone());
+    let search = search_tool
+        .execute(serde_json::json!({
+            "query": "retire this memory",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "limit": 5
+        }))
+        .await;
+    assert!(!search.is_error, "{}", search.content);
+    assert_eq!(search.content["returned"], 0);
+
+    let tree_tool = MemoryTreeTool::new(policy);
+    let tree = tree_tool.execute(serde_json::json!({})).await;
+    assert!(!tree.is_error, "{}", tree.content);
+    assert_eq!(tree.content["total_entries"], 0);
+}
+
+#[tokio::test]
+async fn spec_2450_c04_memory_delete_unknown_id_returns_memory_not_found() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let delete_tool = MemoryDeleteTool::new(policy);
+    let deleted = delete_tool
+        .execute(serde_json::json!({
+            "memory_id": "missing-memory-id",
+            "workspace_id": "workspace-a",
+            "channel_id": "ops",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(deleted.is_error);
+    assert_eq!(deleted.content["reason_code"], "memory_not_found");
+    assert_eq!(deleted.content["memory_id"], "missing-memory-id");
 }
 
 #[tokio::test]
