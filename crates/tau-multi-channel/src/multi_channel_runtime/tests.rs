@@ -710,6 +710,53 @@ fn spec_c01_coalescer_merges_same_actor_and_conversation_inside_window() {
 }
 
 #[test]
+fn spec_2509_c01_coalescer_merges_and_newline_joins_within_window() {
+    let mut first = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-2509-1",
+        "chat-2509-1",
+        "user-2509-1",
+        "first fragment",
+    );
+    let mut second = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-2509-2",
+        "chat-2509-1",
+        "user-2509-1",
+        "second fragment",
+    );
+    first.timestamp_ms = 10_000;
+    second.timestamp_ms = 11_000;
+    let batches = super::coalesce_inbound_events(&[first, second], 3_000);
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].event.text, "first fragment\nsecond fragment");
+    assert_eq!(
+        batches[0]
+            .event
+            .metadata
+            .get("coalesced_batch_size")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        batches[0]
+            .event
+            .metadata
+            .get("coalescing_window_ms")
+            .and_then(Value::as_u64),
+        Some(3_000)
+    );
+    assert_eq!(
+        batches[0]
+            .event
+            .metadata
+            .get("telemetry_force_typing_presence")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[test]
 fn spec_c02_coalescer_keeps_events_separate_when_window_or_key_differs() {
     let mut first = sample_event(
         MultiChannelTransport::Telegram,
@@ -832,6 +879,36 @@ async fn regression_spec_c04_zero_coalescing_window_preserves_per_event_response
     );
     first.timestamp_ms = 10_000;
     second.timestamp_ms = 10_500;
+
+    let summary = runtime
+        .run_once_events(&[first, second])
+        .await
+        .expect("run once");
+    assert_eq!(summary.completed_events, 2);
+}
+
+#[tokio::test]
+async fn regression_spec_2509_c02_zero_window_keeps_per_event_processing() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.coalescing_window_ms = 0;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let mut first = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-2509-zero-1",
+        "chat-2509-zero",
+        "telegram-user-2509",
+        "first message",
+    );
+    let mut second = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-2509-zero-2",
+        "chat-2509-zero",
+        "telegram-user-2509",
+        "second message",
+    );
+    first.timestamp_ms = 50_000;
+    second.timestamp_ms = 50_200;
 
     let summary = runtime
         .run_once_events(&[first, second])
@@ -2841,6 +2918,41 @@ async fn functional_runner_emits_typing_presence_telemetry_for_long_replies_in_d
 }
 
 #[tokio::test]
+async fn integration_spec_2509_c03_coalesced_batch_forces_typing_lifecycle_signals() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.coalescing_window_ms = 3_000;
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    config.telemetry.typing_presence_min_response_chars = 10_000;
+
+    let mut first = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-typing-2509-1",
+        "chat-coalesce-typing-2509",
+        "telegram-user-2509",
+        "first",
+    );
+    let mut second = sample_event(
+        MultiChannelTransport::Telegram,
+        "tg-coalesce-typing-2509-2",
+        "chat-coalesce-typing-2509",
+        "telegram-user-2509",
+        "second",
+    );
+    first.timestamp_ms = 100_000;
+    second.timestamp_ms = 101_000;
+
+    let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+    let summary = runtime
+        .run_once_events(&[first, second])
+        .await
+        .expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.typing_events_emitted, 2);
+    assert_eq!(summary.presence_events_emitted, 2);
+}
+
+#[tokio::test]
 async fn integration_runner_provider_outbound_posts_per_transport_adapter() {
     struct Scenario<'a> {
         transport: MultiChannelTransport,
@@ -3693,6 +3805,65 @@ async fn integration_spec_c05_live_runner_coalesces_rapid_messages_into_single_t
     assert!(user_entries[0]
         .text
         .starts_with("first fragment\nsecond fragment"));
+
+    let logs = store.load_log_entries().expect("logs");
+    let outbound_response_count = logs
+        .iter()
+        .filter(|entry| entry.direction == "outbound" && entry.payload.get("response").is_some())
+        .count();
+    assert_eq!(outbound_response_count, 1);
+}
+
+#[tokio::test]
+async fn integration_spec_2509_c04_live_runner_coalesces_to_single_turn() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_live_config(temp.path());
+    config.coalescing_window_ms = 3_000;
+    std::fs::create_dir_all(&config.ingress_dir).expect("create ingress dir");
+
+    let telegram_raw =
+        std::fs::read_to_string(live_fixture_path("telegram-valid.json")).expect("fixture");
+    let fixture_json: Value = serde_json::from_str(&telegram_raw).expect("parse fixture");
+    let mut first = fixture_json.clone();
+    let mut second = fixture_json;
+    first["payload"]["message"]["message_id"] = Value::from(2101_u64);
+    first["payload"]["message"]["date"] = Value::from(1_760_120_500_u64);
+    first["payload"]["message"]["chat"]["id"] = Value::String("chat-2509-coalesce".to_string());
+    first["payload"]["message"]["from"]["id"] = Value::String("user-2509-coalesce".to_string());
+    first["payload"]["message"]["text"] = Value::String("first 2509 fragment".to_string());
+    second["payload"]["message"]["message_id"] = Value::from(2102_u64);
+    second["payload"]["message"]["date"] = Value::from(1_760_120_501_u64);
+    second["payload"]["message"]["chat"]["id"] = Value::String("chat-2509-coalesce".to_string());
+    second["payload"]["message"]["from"]["id"] = Value::String("user-2509-coalesce".to_string());
+    second["payload"]["message"]["text"] = Value::String("second 2509 fragment".to_string());
+
+    let first_line = serde_json::to_string(&first).expect("serialize first");
+    let second_line = serde_json::to_string(&second).expect("serialize second");
+    std::fs::write(
+        config.ingress_dir.join("telegram.ndjson"),
+        format!("{first_line}\n{second_line}\n"),
+    )
+    .expect("write coalesced ingress");
+
+    run_multi_channel_live_runner(config.clone())
+        .await
+        .expect("live runner should coalesce");
+
+    let store = ChannelStore::open(
+        &config.state_dir.join("channel-store"),
+        "telegram",
+        "chat-2509-coalesce",
+    )
+    .expect("open telegram store");
+    let context = store.load_context_entries().expect("context");
+    let user_entries = context
+        .iter()
+        .filter(|entry| entry.role == "user")
+        .collect::<Vec<_>>();
+    assert_eq!(user_entries.len(), 1);
+    assert!(user_entries[0]
+        .text
+        .starts_with("first 2509 fragment\nsecond 2509 fragment"));
 
     let logs = store.load_log_entries().expect("logs");
     let outbound_response_count = logs

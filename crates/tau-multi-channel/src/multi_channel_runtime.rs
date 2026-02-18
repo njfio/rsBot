@@ -2035,6 +2035,10 @@ fn annotate_coalesced_event_metadata(batch: &mut CoalescedInboundEvent, coalesci
                 .collect(),
         ),
     );
+    batch.event.metadata.insert(
+        "telemetry_force_typing_presence".to_string(),
+        Value::Bool(true),
+    );
 }
 
 struct TelemetryLifecyclePayloadContext<'a> {

@@ -347,11 +347,11 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: When users send multiple rapid messages, batch them into a single LLM turn instead of processing each separately.
 **Why it matters**: Users often split thoughts across multiple messages. Without coalescing, the agent responds to "Hey" before seeing "can you help me with X?"
 **Pathway**:
-- [ ] Add coalescing buffer to channel/session inbound message handling
-- [ ] Configurable window (default 2-3 seconds)
-- [ ] If another message arrives within the window, extend and batch
-- [ ] Join batched messages with newlines before dispatching to agent
-- [ ] Typing indicator during coalescing window
+- [x] Add coalescing buffer to channel/session inbound message handling
+- [x] Configurable window (default 2-3 seconds)
+- [x] If another message arrives within the window, extend and batch
+- [x] Join batched messages with newlines before dispatching to agent
+- [x] Typing indicator during coalescing window
 - **Files**: `tau-agent-core/src/`, channel runtime modules
 - **Effort**: Small
 
