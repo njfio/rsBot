@@ -1,6 +1,6 @@
 # Spec #2464 - runtime heartbeat policy hot-reload without restart
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Runtime heartbeat scheduler policy is currently fixed at startup. Operators cannot tune heartbeat cadence without restarting the process.

@@ -1,6 +1,6 @@
 # Spec #2466 - RED/GREEN conformance for G16 phase-1 hot-reload behavior
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 G16 phase-1 requires explicit RED/GREEN proof for heartbeat hot-reload conformance before closure.

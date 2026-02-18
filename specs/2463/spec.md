@@ -1,6 +1,6 @@
 # Spec #2463 - G16 hot-reload config phase-1 orchestration
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `tasks/spacebot-comparison.md` identifies `G16` as a gap: Tau runtime configuration changes require process restart. This orchestration issue defines the first bounded delivery slice for runtime hot-reload behavior.
