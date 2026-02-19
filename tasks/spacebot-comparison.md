@@ -268,11 +268,11 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: 8 memory types (Identity, Goal, Decision, Todo, Preference, Fact, Event, Observation) with per-type default importance (0.3-1.0).
 **Why it matters**: Not all memories are equal. "User's name is Alice" (Identity, 1.0) should never decay. "Discussed weather today" (Observation, 0.3) should.
 **Pathway**:
-- [ ] Add `MemoryType` enum to `tau-memory`: `Identity`, `Goal`, `Decision`, `Todo`, `Preference`, `Fact`, `Event`, `Observation`
-- [ ] Add `importance: f64` field to memory entries
-- [ ] Default importance per type (configurable)
-- [ ] Modify `memory_write` tool to accept type and optional importance override
-- [ ] Modify `memory_search` to boost by importance in ranking
+- [x] Add `MemoryType` enum to `tau-memory`: `Identity`, `Goal`, `Decision`, `Todo`, `Preference`, `Fact`, `Event`, `Observation`
+- [x] Add `importance` field to memory entries
+- [ ] Default importance per type configurable via profile/runtime (defaults are currently compile-time in `MemoryType::default_importance()`)
+- [x] Modify `memory_write` tool to accept type and optional importance override
+- [x] Modify `memory_search` to boost by importance in ranking
 - **Files**: `tau-memory/src/`, `tau-tools/src/tools/memory_tools.rs`
 - **Effort**: Small-Medium
 
@@ -280,11 +280,11 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: 6 edge types connecting memories (RelatedTo, Updates, Contradicts, CausedBy, ResultOf, PartOf) with weighted graph traversal in search.
 **Why it matters**: Enables the agent to follow chains of reasoning. "Decision X" → `CausedBy` → "Event Y" → `ResultOf` → "Goal Z".
 **Pathway**:
-- [ ] Add `associations` table to tau-memory SQLite schema: `source_id`, `target_id`, `relation_type`, `weight`
-- [ ] Add `MemoryRelation` enum with 6 types
-- [ ] Modify `memory_save` to accept optional `relates_to` parameter
-- [ ] Add graph BFS traversal to memory search (third dimension alongside BM25 + vector)
-- [ ] Merge graph results into RRF scoring (currently 2-way, becomes 3-way)
+- [x] Add relation table to tau-memory SQLite schema (`memory_relations` with source/target/relation_type/weight/effective_weight)
+- [ ] Add `MemoryRelation` enum with Spacebot-parity 6 relation types (current implementation validates a string relation set)
+- [x] Modify `memory_save` to accept optional `relates_to` parameter
+- [ ] Add graph BFS traversal to memory search (current implementation applies deterministic relation-weight graph signals)
+- [ ] Merge graph results into RRF scoring (current implementation fuses BM25+vector via RRF, then adds graph score)
 - **Files**: `tau-memory/src/`, memory search functions
 - **Effort**: Medium
 
@@ -292,12 +292,12 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Importance decay on unaccessed memories, pruning below floor, near-duplicate merging, orphan detection.
 **Why it matters**: Without lifecycle management, memory grows unbounded and search quality degrades.
 **Pathway**:
-- [ ] Add `last_accessed_at` and `access_count` to memory entries
-- [ ] Add decay function on heartbeat: `importance *= decay_rate` for memories not accessed in N days (Identity exempt)
-- [ ] Prune memories below configurable importance floor (default 0.1)
-- [ ] Near-duplicate detection via cosine similarity threshold on embeddings
-- [ ] Orphan cleanup: memories with no graph edges and low importance
-- [ ] Soft delete via `forgotten` flag (excluded from search, retained in DB)
+- [x] Add `last_accessed_at` and `access_count` to memory entries
+- [x] Add decay function on heartbeat: `importance *= decay_rate` for memories not accessed in N days (Identity exempt)
+- [x] Prune memories below configurable importance floor (default 0.1)
+- [x] Near-duplicate detection via cosine similarity threshold on embeddings
+- [x] Orphan cleanup: memories with no graph edges and low importance
+- [x] Soft delete via `forgotten` flag (excluded from search, retained in DB)
 - **Files**: `tau-memory/src/`, add maintenance task to heartbeat
 - **Effort**: Medium
 
