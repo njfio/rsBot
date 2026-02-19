@@ -34,6 +34,7 @@ const MEMORY_SCOPE_DEFAULT_CHANNEL: &str = "default-channel";
 const MEMORY_SCOPE_DEFAULT_ACTOR: &str = "default-actor";
 const MEMORY_EMBEDDING_SOURCE_HASH: &str = "hash-fnv1a";
 const MEMORY_EMBEDDING_SOURCE_PROVIDER: &str = "provider-openai-compatible";
+const MEMORY_EMBEDDING_SOURCE_PROVIDER_LOCAL_FASTEMBED: &str = "provider-local-fastembed";
 const MEMORY_EMBEDDING_REASON_HASH_ONLY: &str = "memory_embedding_hash_only";
 const MEMORY_EMBEDDING_REASON_PROVIDER_SUCCESS: &str = "memory_embedding_provider_success";
 const MEMORY_EMBEDDING_REASON_PROVIDER_FAILED: &str = "memory_embedding_provider_failed";
@@ -1030,6 +1031,7 @@ fn current_unix_timestamp_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::ranking::{with_local_embedding_test_mode, LocalEmbeddingTestMode};
     use super::{
         embed_text_vector, importance_rank_multiplier, rank_text_candidates,
         rank_text_candidates_bm25, FileMemoryStore, MemoryEmbeddingProviderConfig,
@@ -2499,6 +2501,200 @@ mod tests {
             .embedding_vector
             .iter()
             .any(|value| *value != 0.0));
+    }
+
+    #[test]
+    fn integration_spec_2553_c02_memory_write_local_provider_success_records_local_embedding_metadata(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new_with_embedding_provider(
+            temp.path(),
+            Some(MemoryEmbeddingProviderConfig {
+                provider: "local".to_string(),
+                model: "BAAI/bge-small-en-v1.5".to_string(),
+                api_base: String::new(),
+                api_key: String::new(),
+                dimensions: 8,
+                timeout_ms: 5_000,
+            }),
+        );
+        let scope = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "deploy".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        let write_result = with_local_embedding_test_mode(LocalEmbeddingTestMode::Success, || {
+            store
+                .write_entry(
+                    &scope,
+                    MemoryEntry {
+                        memory_id: "memory-local-provider-success".to_string(),
+                        summary: "local provider should emit non-hash embedding metadata"
+                            .to_string(),
+                        tags: vec!["local".to_string()],
+                        facts: vec!["provider=local".to_string()],
+                        source_event_key: "evt-local-success".to_string(),
+                        recency_weight_bps: 100,
+                        confidence_bps: 900,
+                    },
+                )
+                .expect("local provider write")
+        });
+
+        assert_eq!(
+            write_result.record.embedding_source,
+            "provider-local-fastembed"
+        );
+        assert_eq!(
+            write_result.record.embedding_model,
+            Some("BAAI/bge-small-en-v1.5".to_string())
+        );
+        assert_eq!(
+            write_result.record.embedding_reason_code,
+            "memory_embedding_provider_success"
+        );
+        assert_eq!(write_result.record.embedding_vector.len(), 8);
+        assert!(write_result
+            .record
+            .embedding_vector
+            .iter()
+            .any(|value| *value != 0.0));
+    }
+
+    #[test]
+    fn regression_spec_2553_c03_memory_write_local_provider_failure_falls_back_to_hash_embedding() {
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new_with_embedding_provider(
+            temp.path(),
+            Some(MemoryEmbeddingProviderConfig {
+                provider: "local".to_string(),
+                model: "unsupported/local-model".to_string(),
+                api_base: String::new(),
+                api_key: String::new(),
+                dimensions: 16,
+                timeout_ms: 5_000,
+            }),
+        );
+        let scope = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "deploy".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+        let result = with_local_embedding_test_mode(LocalEmbeddingTestMode::Failure, || {
+            store
+                .write_entry(
+                    &scope,
+                    MemoryEntry {
+                        memory_id: "memory-local-provider-fallback".to_string(),
+                        summary: "fallback should keep local provider writes online".to_string(),
+                        tags: vec!["incident".to_string()],
+                        facts: vec!["provider=local".to_string()],
+                        source_event_key: "evt-local-fallback".to_string(),
+                        recency_weight_bps: 100,
+                        confidence_bps: 900,
+                    },
+                )
+                .expect("local provider fallback write")
+        });
+
+        assert_eq!(result.record.embedding_source, "hash-fnv1a");
+        assert_eq!(result.record.embedding_model, None);
+        assert_eq!(
+            result.record.embedding_reason_code,
+            "memory_embedding_provider_failed"
+        );
+        assert_eq!(result.record.embedding_vector.len(), 16);
+    }
+
+    #[test]
+    fn regression_spec_2553_c04_remote_embedding_provider_path_preserves_existing_semantics() {
+        let server = MockServer::start();
+        let success = server.mock(|when, then| {
+            when.method(POST)
+                .path("/embeddings")
+                .body_includes("remote provider success");
+            then.status(200).json_body_obj(&serde_json::json!({
+                "data": [
+                    { "embedding": [0.9, 0.1, 0.0, 0.0] }
+                ]
+            }));
+        });
+        let failure = server.mock(|when, then| {
+            when.method(POST)
+                .path("/embeddings")
+                .body_includes("remote provider failure");
+            then.status(500).json_body_obj(&serde_json::json!({
+                "error": "provider outage"
+            }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let store = FileMemoryStore::new_with_embedding_provider(
+            temp.path(),
+            Some(MemoryEmbeddingProviderConfig {
+                provider: "openai-compatible".to_string(),
+                model: "text-embedding-3-small".to_string(),
+                api_base: server.url(""),
+                api_key: "test-key".to_string(),
+                dimensions: 8,
+                timeout_ms: 5_000,
+            }),
+        );
+        let scope = MemoryScope {
+            workspace_id: "workspace-a".to_string(),
+            channel_id: "deploy".to_string(),
+            actor_id: "assistant".to_string(),
+        };
+
+        let success_result = store
+            .write_entry(
+                &scope,
+                MemoryEntry {
+                    memory_id: "memory-remote-success".to_string(),
+                    summary: "remote provider success".to_string(),
+                    tags: vec!["release".to_string()],
+                    facts: vec!["mode=remote".to_string()],
+                    source_event_key: "evt-remote-success".to_string(),
+                    recency_weight_bps: 100,
+                    confidence_bps: 900,
+                },
+            )
+            .expect("remote provider success write");
+        let failure_result = store
+            .write_entry(
+                &scope,
+                MemoryEntry {
+                    memory_id: "memory-remote-failure".to_string(),
+                    summary: "remote provider failure".to_string(),
+                    tags: vec!["incident".to_string()],
+                    facts: vec!["mode=remote".to_string()],
+                    source_event_key: "evt-remote-failure".to_string(),
+                    recency_weight_bps: 100,
+                    confidence_bps: 900,
+                },
+            )
+            .expect("remote provider fallback write");
+
+        success.assert();
+        failure.assert();
+        assert_eq!(
+            success_result.record.embedding_source,
+            "provider-openai-compatible"
+        );
+        assert_eq!(
+            success_result.record.embedding_reason_code,
+            "memory_embedding_provider_success"
+        );
+        assert_eq!(
+            success_result.record.embedding_model,
+            Some("text-embedding-3-small".to_string())
+        );
+        assert_eq!(failure_result.record.embedding_source, "hash-fnv1a");
+        assert_eq!(
+            failure_result.record.embedding_reason_code,
+            "memory_embedding_provider_failed"
+        );
+        assert_eq!(failure_result.record.embedding_model, None);
     }
 
     #[test]

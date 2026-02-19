@@ -1724,7 +1724,7 @@ async fn unit_memory_write_tool_rejects_empty_summary() {
 }
 
 #[test]
-fn spec_c01_memory_embedding_provider_config_accepts_local_without_remote_fields() {
+fn spec_2553_c01_memory_embedding_provider_config_defaults_local_model_to_fastembed() {
     let temp = tempdir().expect("tempdir");
     let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
     policy.memory_embedding_provider = Some("local".to_string());
@@ -1735,7 +1735,7 @@ fn spec_c01_memory_embedding_provider_config_accepts_local_without_remote_fields
         .memory_embedding_provider_config()
         .expect("local provider mode should resolve without remote fields");
     assert_eq!(config.provider, "local");
-    assert_eq!(config.model, "local-hash");
+    assert_eq!(config.model, "BAAI/bge-small-en-v1.5");
     assert_eq!(config.api_base, "");
     assert_eq!(config.api_key, "");
     assert_eq!(config.dimensions, 1);
