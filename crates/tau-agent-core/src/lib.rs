@@ -707,6 +707,10 @@ const CONTEXT_SUMMARY_PREFIX: &str = "[Tau context summary]";
 const CONTEXT_SUMMARY_MAX_CHARS: usize = 1_200;
 const CONTEXT_SUMMARY_SNIPPET_MAX_CHARS: usize = 160;
 const CONTEXT_SUMMARY_MAX_EXCERPTS: usize = 6;
+const CONTEXT_SUMMARY_LLM_BRIEF_PREFIX: &str = "llm_brief:";
+const WARN_COMPACTION_LLM_BRIEF_MAX_CHARS: usize = 240;
+const WARN_COMPACTION_LLM_SYSTEM_PROMPT: &str =
+    "You summarize dropped chat context for compaction. Reply with one concise plain-text brief.";
 const COMPACTION_ENTRY_PREFIX: &str = "[Tau compaction entry]";
 const COMPACTION_MEMORY_SAVE_PREFIX: &str = "[Tau compaction memory save]";
 const MEMORY_RECALL_PREFIX: &str = "[Tau memory recall]";
@@ -2054,6 +2058,76 @@ impl Agent {
         Some(merged)
     }
 
+    fn inject_warn_llm_brief_into_summary(summary: &str, llm_brief: &str) -> Option<String> {
+        if !summary.starts_with(CONTEXT_SUMMARY_PREFIX) {
+            return None;
+        }
+        if summary.lines().any(|line| {
+            line.trim_start()
+                .starts_with(CONTEXT_SUMMARY_LLM_BRIEF_PREFIX)
+        }) {
+            return Some(summary.to_string());
+        }
+
+        let brief = collapse_whitespace(llm_brief);
+        if brief.is_empty() {
+            return None;
+        }
+        let brief_line = format!(
+            "{CONTEXT_SUMMARY_LLM_BRIEF_PREFIX} {}",
+            truncate_chars(&brief, WARN_COMPACTION_LLM_BRIEF_MAX_CHARS)
+        );
+        let enriched = if let Some((head, excerpts)) = summary.split_once("\nexcerpts:\n") {
+            format!("{head}\n{brief_line}\nexcerpts:\n{excerpts}")
+        } else {
+            format!("{summary}\n{brief_line}")
+        };
+        Some(truncate_chars(&enriched, CONTEXT_SUMMARY_MAX_CHARS))
+    }
+
+    async fn maybe_build_warn_llm_summary(
+        client: Arc<dyn LlmClient>,
+        model: String,
+        max_tokens: Option<u32>,
+        temperature: Option<f32>,
+        request_timeout_ms: Option<u64>,
+        agent_id: String,
+        fallback_summary: String,
+    ) -> Option<String> {
+        let request = ChatRequest {
+            model,
+            messages: vec![
+                Message::system(WARN_COMPACTION_LLM_SYSTEM_PROMPT),
+                Message::user(format!(
+                    "Refine this context compaction summary into one concise sentence:\n{}",
+                    fallback_summary
+                )),
+            ],
+            tool_choice: None,
+            json_mode: false,
+            tools: Vec::new(),
+            max_tokens,
+            temperature,
+            prompt_cache: tau_ai::PromptCacheConfig {
+                enabled: true,
+                cache_key: Some(format!("{agent_id}:warn-compaction-llm-summary")),
+                retention: None,
+                google_cached_content: None,
+            },
+        };
+
+        let response = if let Some(timeout) = timeout_duration_from_ms(request_timeout_ms) {
+            match tokio::time::timeout(timeout, client.complete(request)).await {
+                Ok(result) => result.ok()?,
+                Err(_) => return None,
+            }
+        } else {
+            client.complete(request).await.ok()?
+        };
+        let llm_brief = response.message.text_content();
+        Self::inject_warn_llm_brief_into_summary(&fallback_summary, &llm_brief)
+    }
+
     fn schedule_warn_compaction_if_needed(
         &self,
         messages: &[Message],
@@ -2078,13 +2152,38 @@ impl Agent {
 
         let source_messages = messages.to_vec();
         let source_for_task = source_messages.clone();
+        let client = Arc::clone(&self.client);
+        let model = self.config.model.clone();
+        let max_tokens = self.config.max_tokens;
+        let temperature = self.config.temperature;
+        let request_timeout_ms = self.config.request_timeout_ms;
+        let agent_id = self.agent_id.clone();
         let (sender, receiver) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let compacted = compact_messages_for_tier(
+            let mut compacted = compact_messages_for_tier(
                 source_for_task.as_slice(),
                 ContextCompactionTier::Warn,
                 compaction_config,
             );
+            if let Some(summary_index) = compacted.iter().position(|message| {
+                message.role == MessageRole::System
+                    && message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)
+            }) {
+                let fallback_summary = compacted[summary_index].text_content().to_string();
+                if let Some(llm_summary) = Agent::maybe_build_warn_llm_summary(
+                    client,
+                    model,
+                    max_tokens,
+                    temperature,
+                    request_timeout_ms,
+                    agent_id,
+                    fallback_summary,
+                )
+                .await
+                {
+                    compacted[summary_index] = Message::system(llm_summary);
+                }
+            }
             let _ = sender.send(compacted);
         });
         state.pending = Some(PendingWarnCompaction {

@@ -228,7 +228,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 - [x] Phase 3 (`#2566`): implement non-blocking warn-tier background compaction scheduling with deterministic apply/fallback on subsequent turns
 - [x] Add `ContextMonitor` to `tau-agent-core` that tracks token count per session
 - [x] Implement 3-tier thresholds (configurable in profile TOML)
-- [ ] At 80%: spawn background compaction task that summarizes oldest 30% of context via LLM call
+- [x] At 80%: spawn background compaction task that summarizes oldest 30% of context via LLM call
 - [x] At 85%: aggressive compaction (50% of context)
 - [x] At 95%: emergency hard truncation (drop oldest 50%, no LLM)
 - [x] During compaction, extract and save memories (like Spacebot's compactor)
