@@ -1771,7 +1771,10 @@ mod tests {
     #[test]
     fn regression_2592_c06_compute_graph_scores_short_circuits_invalid_inputs() {
         let seed_id = "seed".to_string();
-        let records = HashMap::from([(seed_id.clone(), build_record(seed_id.as_str(), 0.9, Vec::new()))]);
+        let records = HashMap::from([(
+            seed_id.clone(),
+            build_record(seed_id.as_str(), 0.9, Vec::new()),
+        )]);
         assert!(compute_graph_scores(&HashMap::new(), &[seed_id.clone()], 2).is_empty());
         assert!(compute_graph_scores(&records, &[], 2).is_empty());
         assert!(compute_graph_scores(&records, &[seed_id], 0).is_empty());
