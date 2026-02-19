@@ -4294,6 +4294,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "tau-agent-core",
+ "tau-ai",
+ "tau-tools",
+ "tokio",
+]
+
+[[package]]
 name = "tau-memory"
 version = "0.1.0"
 dependencies = [

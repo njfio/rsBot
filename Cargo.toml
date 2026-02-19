@@ -42,6 +42,7 @@ members = [
   "crates/kamn-core",
   "crates/kamn-sdk",
   "crates/tau-safety",
+  "tests/integration",
 ]
 resolver = "2"
 
