@@ -319,6 +319,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
     <section class="panel">
       <nav class="tabs" role="tablist" aria-label="Gateway web UI views">
         <button class="tab active" data-view="conversation" role="tab" aria-selected="true">Conversation</button>
+        <button class="tab" data-view="dashboard" role="tab" aria-selected="false">Dashboard</button>
         <button class="tab" data-view="tools" role="tab" aria-selected="false">Tools</button>
         <button class="tab" data-view="sessions" role="tab" aria-selected="false">Sessions</button>
         <button class="tab" data-view="memory" role="tab" aria-selected="false">Memory</button>
@@ -400,6 +401,117 @@ pub(super) fn render_gateway_webchat_page() -> String {
           </div>
         </div>
         <pre id="status">Press "Refresh status" to inspect gateway service state, multi-channel lifecycle summary, connector counters, and recent reason codes.</pre>
+      </section>
+
+      <section id="view-dashboard" class="view" role="tabpanel" aria-hidden="true">
+        <div class="actions" style="margin-top: 0;">
+          <button id="dashboardRefresh" class="secondary">Refresh dashboard</button>
+          <button id="dashboardPause" class="warn">Pause</button>
+          <button id="dashboardResume">Resume</button>
+          <button id="dashboardControlRefresh" class="secondary">Control refresh</button>
+        </div>
+        <div class="row" style="margin-top: 0.5rem;">
+          <div>
+            <label for="dashboardActionReason">Action reason</label>
+            <input id="dashboardActionReason" type="text" value="web-operator" />
+          </div>
+          <div>
+            <label for="dashboardPollSeconds">Live poll interval (seconds)</label>
+            <input id="dashboardPollSeconds" type="text" value="5" />
+          </div>
+          <div>
+            <label>&nbsp;</label>
+            <label class="checkbox">
+              <input id="dashboardLive" type="checkbox" checked />
+              Live Dashboard
+            </label>
+          </div>
+        </div>
+        <div class="status-dashboard">
+          <div class="status-cards">
+            <article class="metric-card">
+              <div class="metric-label">Health State</div>
+              <div id="dashboardHealthStateValue" class="metric-value">unknown</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Rollout Gate</div>
+              <div id="dashboardRolloutGateValue" class="metric-value">unknown</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Control Mode</div>
+              <div id="dashboardControlModeValue" class="metric-value">unknown</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Run State</div>
+              <div id="dashboardRunStateValue" class="metric-value">unknown</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Total Rollouts</div>
+              <div id="dashboardTotalRolloutsValue" class="metric-value tabular-nums">0</div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-label">Failed Rollouts</div>
+              <div id="dashboardFailedRolloutsValue" class="metric-value tabular-nums">0</div>
+            </article>
+          </div>
+          <div>
+            <label style="margin-bottom: 0.35rem;">Dashboard Widgets</label>
+            <div class="table-scroll">
+              <table class="status-table" aria-label="Dashboard widgets table">
+                <thead>
+                  <tr>
+                    <th>Widget</th>
+                    <th>Kind</th>
+                    <th>Query</th>
+                    <th>Refresh ms</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboardWidgetsTableBody">
+                  <tr><td colspan="5">No widget rows yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <label style="margin-bottom: 0.35rem;">Dashboard Alerts</label>
+            <div class="table-scroll">
+              <table class="status-table" aria-label="Dashboard alerts table">
+                <thead>
+                  <tr>
+                    <th>Code</th>
+                    <th>Severity</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboardAlertsTableBody">
+                  <tr><td colspan="3">No dashboard alerts.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <label style="margin-bottom: 0.35rem;">Dashboard Queue Timeline</label>
+            <div class="table-scroll">
+              <table class="status-table" aria-label="Dashboard queue timeline table">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Health</th>
+                    <th>Reason</th>
+                    <th>Queued</th>
+                    <th>Applied</th>
+                    <th>Failed</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboardTimelineTableBody">
+                  <tr><td colspan="6">No timeline entries yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <pre id="dashboardStatus">Dashboard status will appear here.</pre>
       </section>
 
       <section id="view-sessions" class="view" role="tabpanel" aria-hidden="true">
@@ -488,6 +600,12 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const COMPLETIONS_ENDPOINT = "{completions_endpoint}";
     const MODELS_ENDPOINT = "{models_endpoint}";
     const STATUS_ENDPOINT = "{status_endpoint}";
+    const DASHBOARD_HEALTH_ENDPOINT = "{dashboard_health_endpoint}";
+    const DASHBOARD_WIDGETS_ENDPOINT = "{dashboard_widgets_endpoint}";
+    const DASHBOARD_QUEUE_TIMELINE_ENDPOINT = "{dashboard_queue_timeline_endpoint}";
+    const DASHBOARD_ALERTS_ENDPOINT = "{dashboard_alerts_endpoint}";
+    const DASHBOARD_ACTIONS_ENDPOINT = "{dashboard_actions_endpoint}";
+    const DASHBOARD_STREAM_ENDPOINT = "{dashboard_stream_endpoint}";
     const WEBSOCKET_ENDPOINT = "{websocket_endpoint}";
     const SESSIONS_ENDPOINT = "{sessions_endpoint}";
     const MEMORY_ENDPOINT_TEMPLATE = "{memory_endpoint_template}";
@@ -515,6 +633,19 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const failureStreakValue = document.getElementById("failureStreakValue");
     const connectorTableBody = document.getElementById("connectorTableBody");
     const reasonCodeTableBody = document.getElementById("reasonCodeTableBody");
+    const dashboardStatusPre = document.getElementById("dashboardStatus");
+    const dashboardActionReasonInput = document.getElementById("dashboardActionReason");
+    const dashboardLiveInput = document.getElementById("dashboardLive");
+    const dashboardPollSecondsInput = document.getElementById("dashboardPollSeconds");
+    const dashboardHealthStateValue = document.getElementById("dashboardHealthStateValue");
+    const dashboardRolloutGateValue = document.getElementById("dashboardRolloutGateValue");
+    const dashboardControlModeValue = document.getElementById("dashboardControlModeValue");
+    const dashboardRunStateValue = document.getElementById("dashboardRunStateValue");
+    const dashboardTotalRolloutsValue = document.getElementById("dashboardTotalRolloutsValue");
+    const dashboardFailedRolloutsValue = document.getElementById("dashboardFailedRolloutsValue");
+    const dashboardWidgetsTableBody = document.getElementById("dashboardWidgetsTableBody");
+    const dashboardAlertsTableBody = document.getElementById("dashboardAlertsTableBody");
+    const dashboardTimelineTableBody = document.getElementById("dashboardTimelineTableBody");
     const sessionsList = document.getElementById("sessionsList");
     const sessionDetailPre = document.getElementById("sessionDetail");
     const appendRoleInput = document.getElementById("appendRole");
@@ -533,6 +664,10 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const sendButton = document.getElementById("send");
     const clearButton = document.getElementById("clearOutput");
     const refreshButton = document.getElementById("refreshStatus");
+    const dashboardRefreshButton = document.getElementById("dashboardRefresh");
+    const dashboardPauseButton = document.getElementById("dashboardPause");
+    const dashboardResumeButton = document.getElementById("dashboardResume");
+    const dashboardControlRefreshButton = document.getElementById("dashboardControlRefresh");
     const loadSessionsButton = document.getElementById("loadSessions");
     const loadSessionDetailButton = document.getElementById("loadSessionDetail");
     const appendSessionButton = document.getElementById("appendSession");
@@ -540,6 +675,9 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const loadMemoryButton = document.getElementById("loadMemory");
     const saveMemoryButton = document.getElementById("saveMemory");
     const loadMemoryGraphButton = document.getElementById("loadMemoryGraph");
+
+    let dashboardLiveTimer = null;
+    let dashboardRefreshInFlight = false;
 
     function loadLocalValues() {{
       const token = window.localStorage.getItem(STORAGE_TOKEN);
@@ -773,6 +911,259 @@ pub(super) fn render_gateway_webchat_page() -> String {
       }}).join("\n");
     }}
 
+    function formatDashboardTimestamp(unixMs) {{
+      const parsed = Number(unixMs);
+      if (!Number.isFinite(parsed) || parsed <= 0) {{
+        return "n/a";
+      }}
+      return new Date(parsed).toISOString();
+    }}
+
+    function renderDashboardWidgetsTable(widgets) {{
+      const entries = Array.isArray(widgets) ? widgets.slice() : [];
+      entries.sort((left, right) => String(left.widget_id || "").localeCompare(String(right.widget_id || "")));
+      if (entries.length === 0) {{
+        dashboardWidgetsTableBody.innerHTML = "<tr><td colspan=\"5\">No widget rows yet.</td></tr>";
+        return;
+      }}
+      dashboardWidgetsTableBody.innerHTML = entries.map((widget) => {{
+        return [
+          "<tr>",
+          "<td>" + escapeHtml(widget.title || widget.widget_id || "unknown") + "</td>",
+          "<td>" + escapeHtml(widget.kind || "unknown") + "</td>",
+          "<td>" + escapeHtml(widget.query_key || "n/a") + "</td>",
+          "<td>" + String(toSafeInteger(widget.refresh_interval_ms)) + "</td>",
+          "<td>" + escapeHtml(formatDashboardTimestamp(widget.updated_unix_ms)) + "</td>",
+          "</tr>"
+        ].join("");
+      }}).join("");
+    }}
+
+    function renderDashboardAlertsTable(alerts) {{
+      const entries = Array.isArray(alerts) ? alerts.slice() : [];
+      if (entries.length === 0) {{
+        dashboardAlertsTableBody.innerHTML = "<tr><td colspan=\"3\">No dashboard alerts.</td></tr>";
+        return;
+      }}
+      dashboardAlertsTableBody.innerHTML = entries.map((alert) => {{
+        return [
+          "<tr>",
+          "<td>" + escapeHtml(alert.code || "unknown") + "</td>",
+          "<td>" + escapeHtml(alert.severity || "info") + "</td>",
+          "<td>" + escapeHtml(alert.message || "") + "</td>",
+          "</tr>"
+        ].join("");
+      }}).join("");
+    }}
+
+    function renderDashboardTimelineTable(queueTimeline) {{
+      const cycles = queueTimeline && Array.isArray(queueTimeline.recent_cycles)
+        ? queueTimeline.recent_cycles.slice()
+        : [];
+      if (cycles.length === 0) {{
+        dashboardTimelineTableBody.innerHTML = "<tr><td colspan=\"6\">No timeline entries yet.</td></tr>";
+        return;
+      }}
+      dashboardTimelineTableBody.innerHTML = cycles.map((cycle) => {{
+        return [
+          "<tr>",
+          "<td>" + escapeHtml(formatDashboardTimestamp(cycle.timestamp_unix_ms)) + "</td>",
+          "<td>" + escapeHtml(cycle.health_state || "unknown") + "</td>",
+          "<td>" + escapeHtml(cycle.health_reason || "n/a") + "</td>",
+          "<td>" + String(toSafeInteger(cycle.queued_cases)) + "</td>",
+          "<td>" + String(toSafeInteger(cycle.applied_cases)) + "</td>",
+          "<td>" + String(toSafeInteger(cycle.failed_cases)) + "</td>",
+          "</tr>"
+        ].join("");
+      }}).join("");
+    }}
+
+    function renderDashboardSnapshot(payloads) {{
+      const healthPayload = payloads.health || {{}};
+      const widgetsPayload = payloads.widgets || {{}};
+      const timelinePayload = payloads.timeline || {{}};
+      const alertsPayload = payloads.alerts || {{}};
+
+      const health = healthPayload.health || {{}};
+      const training = healthPayload.training || {{}};
+      const control = healthPayload.control || {{}};
+      const widgets = widgetsPayload.widgets || [];
+      const alerts = alertsPayload.alerts || [];
+      const queueTimeline = timelinePayload.queue_timeline || {{}};
+
+      const healthState = String(health.health_state || "unknown");
+      const rolloutGate = String(health.rollout_gate || "unknown");
+      const controlMode = String(control.mode || "unknown");
+      const runState = String(training.run_state || "unknown");
+      const totalRollouts = toSafeInteger(training.total_rollouts);
+      const failedRollouts = toSafeInteger(training.failed);
+
+      const healthTone = healthState === "healthy"
+        ? "ok"
+        : (healthState === "degraded" ? "warn" : "bad");
+      const gateTone = rolloutGate === "pass"
+        ? "ok"
+        : (rolloutGate === "hold" ? "warn" : "bad");
+      const controlTone = controlMode === "running"
+        ? "ok"
+        : (controlMode === "paused" ? "warn" : "bad");
+      const runTone = runState === "completed"
+        ? "ok"
+        : (runState === "running" ? "warn" : "bad");
+      const failedTone = failedRollouts === 0 ? "ok" : "bad";
+
+      applyMetricValue(dashboardHealthStateValue, healthState, healthTone);
+      applyMetricValue(dashboardRolloutGateValue, rolloutGate, gateTone);
+      applyMetricValue(dashboardControlModeValue, controlMode, controlTone);
+      applyMetricValue(dashboardRunStateValue, runState, runTone);
+      applyMetricValue(dashboardTotalRolloutsValue, totalRollouts, totalRollouts > 0 ? "ok" : "warn");
+      applyMetricValue(dashboardFailedRolloutsValue, failedRollouts, failedTone);
+
+      renderDashboardWidgetsTable(widgets);
+      renderDashboardAlertsTable(alerts);
+      renderDashboardTimelineTable(queueTimeline);
+
+      dashboardStatusPre.textContent = [
+        "dashboard_snapshot: health=" + healthState +
+          " rollout_gate=" + rolloutGate +
+          " control_mode=" + controlMode +
+          " run_state=" + runState +
+          " total_rollouts=" + String(totalRollouts) +
+          " failed_rollouts=" + String(failedRollouts),
+        "dashboard_widgets: count=" + String(Array.isArray(widgets) ? widgets.length : 0),
+        "dashboard_alerts: count=" + String(Array.isArray(alerts) ? alerts.length : 0),
+        "dashboard_timeline_cycles: count=" + String(Array.isArray(queueTimeline.recent_cycles) ? queueTimeline.recent_cycles.length : 0),
+        "dashboard_stream_endpoint: " + DASHBOARD_STREAM_ENDPOINT,
+        "",
+        "raw_payloads:",
+        JSON.stringify(payloads, null, 2),
+      ].join("\n");
+    }}
+
+    function dashboardPollIntervalMs() {{
+      const seconds = Math.min(60, Math.max(2, toSafeInteger(dashboardPollSecondsInput.value) || 5));
+      dashboardPollSecondsInput.value = String(seconds);
+      return seconds * 1000;
+    }}
+
+    function setDashboardControlsDisabled(disabled) {{
+      dashboardRefreshButton.disabled = disabled;
+      dashboardPauseButton.disabled = disabled;
+      dashboardResumeButton.disabled = disabled;
+      dashboardControlRefreshButton.disabled = disabled;
+    }}
+
+    async function refreshDashboard() {{
+      const emitTelemetry = arguments.length === 0 ? true : Boolean(arguments[0]);
+      if (dashboardRefreshInFlight) {{
+        return;
+      }}
+      dashboardRefreshInFlight = true;
+      setDashboardControlsDisabled(true);
+      dashboardStatusPre.textContent = "Loading dashboard status...";
+      try {{
+        const responses = await Promise.all([
+          fetch(DASHBOARD_HEALTH_ENDPOINT, {{ headers: authHeaders() }}),
+          fetch(DASHBOARD_WIDGETS_ENDPOINT, {{ headers: authHeaders() }}),
+          fetch(DASHBOARD_QUEUE_TIMELINE_ENDPOINT, {{ headers: authHeaders() }}),
+          fetch(DASHBOARD_ALERTS_ENDPOINT, {{ headers: authHeaders() }}),
+        ]);
+        const rawBodies = await Promise.all(responses.map((response) => response.text()));
+        const payloads = rawBodies.map((raw) => {{
+          try {{
+            return JSON.parse(raw);
+          }} catch (_error) {{
+            return {{ parse_error: true, raw: raw }};
+          }}
+        }});
+        const failedIndex = responses.findIndex((response) => !response.ok);
+        if (failedIndex >= 0) {{
+          dashboardStatusPre.textContent =
+            "dashboard request failed: status=" + String(responses[failedIndex].status) +
+            "\n" + rawBodies[failedIndex];
+          if (emitTelemetry) {{
+            await emitUiTelemetry("dashboard", "refresh", "dashboard_refresh_failed", {{
+              status: responses[failedIndex].status,
+              endpoint_index: failedIndex
+            }});
+          }}
+          return;
+        }}
+        const composed = {{
+          health: payloads[0],
+          widgets: payloads[1],
+          timeline: payloads[2],
+          alerts: payloads[3]
+        }};
+        renderDashboardSnapshot(composed);
+        if (emitTelemetry) {{
+          await emitUiTelemetry("dashboard", "refresh", "dashboard_refreshed", {{
+            health_state: composed.health && composed.health.health
+              ? composed.health.health.health_state
+              : "unknown"
+          }});
+        }}
+      }} catch (error) {{
+        dashboardStatusPre.textContent = "dashboard request failed: " + String(error);
+      }} finally {{
+        dashboardRefreshInFlight = false;
+        setDashboardControlsDisabled(false);
+      }}
+    }}
+
+    async function postDashboardAction(action) {{
+      setDashboardControlsDisabled(true);
+      try {{
+        const response = await fetch(DASHBOARD_ACTIONS_ENDPOINT, {{
+          method: "POST",
+          headers: Object.assign({{ "Content-Type": "application/json" }}, authHeaders()),
+          body: JSON.stringify({{
+            action: action,
+            reason: dashboardActionReasonInput.value.trim()
+          }})
+        }});
+        const raw = await response.text();
+        let payload = null;
+        try {{
+          payload = JSON.parse(raw);
+        }} catch (_error) {{
+          payload = {{ raw: raw }};
+        }}
+        dashboardStatusPre.textContent = JSON.stringify(payload, null, 2);
+        if (!response.ok) {{
+          await emitUiTelemetry("dashboard", "action", "dashboard_action_failed", {{
+            action: action,
+            status: response.status
+          }});
+          return;
+        }}
+        await emitUiTelemetry("dashboard", "action", "dashboard_action_applied", {{ action: action }});
+        await refreshDashboard(false);
+      }} catch (error) {{
+        dashboardStatusPre.textContent = "dashboard action failed: " + String(error);
+      }} finally {{
+        setDashboardControlsDisabled(false);
+      }}
+    }}
+
+    function updateDashboardLiveMode() {{
+      if (dashboardLiveTimer !== null) {{
+        window.clearInterval(dashboardLiveTimer);
+        dashboardLiveTimer = null;
+      }}
+      if (!dashboardLiveInput.checked) {{
+        emitUiTelemetry("dashboard", "live_mode", "dashboard_live_disabled", {{}});
+        return;
+      }}
+      const pollIntervalMs = dashboardPollIntervalMs();
+      dashboardLiveTimer = window.setInterval(() => {{
+        refreshDashboard(false);
+      }}, pollIntervalMs);
+      emitUiTelemetry("dashboard", "live_mode", "dashboard_live_enabled", {{
+        poll_interval_ms: pollIntervalMs
+      }});
+    }}
+
     function formatGatewayStatusSummary(payload) {{
       const service = payload && payload.service ? payload.service : {{}};
       const auth = payload && payload.auth ? payload.auth : {{}};
@@ -820,6 +1211,12 @@ pub(super) fn render_gateway_webchat_page() -> String {
           completions: COMPLETIONS_ENDPOINT,
           models: MODELS_ENDPOINT,
           status: STATUS_ENDPOINT,
+          dashboard_health: DASHBOARD_HEALTH_ENDPOINT,
+          dashboard_widgets: DASHBOARD_WIDGETS_ENDPOINT,
+          dashboard_queue_timeline: DASHBOARD_QUEUE_TIMELINE_ENDPOINT,
+          dashboard_alerts: DASHBOARD_ALERTS_ENDPOINT,
+          dashboard_actions: DASHBOARD_ACTIONS_ENDPOINT,
+          dashboard_stream: DASHBOARD_STREAM_ENDPOINT,
           sessions: SESSIONS_ENDPOINT,
           session_detail: SESSION_DETAIL_ENDPOINT_TEMPLATE,
           session_append: SESSION_APPEND_ENDPOINT_TEMPLATE,
@@ -1303,6 +1700,10 @@ pub(super) fn render_gateway_webchat_page() -> String {
     sendButton.addEventListener("click", sendPrompt);
     clearButton.addEventListener("click", () => setOutput("No response yet."));
     refreshButton.addEventListener("click", refreshStatus);
+    dashboardRefreshButton.addEventListener("click", () => refreshDashboard(true));
+    dashboardPauseButton.addEventListener("click", () => postDashboardAction("pause"));
+    dashboardResumeButton.addEventListener("click", () => postDashboardAction("resume"));
+    dashboardControlRefreshButton.addEventListener("click", () => postDashboardAction("refresh"));
     loadSessionsButton.addEventListener("click", loadSessions);
     loadSessionDetailButton.addEventListener("click", loadSessionDetail);
     appendSessionButton.addEventListener("click", appendSessionMessage);
@@ -1312,6 +1713,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
     loadMemoryGraphButton.addEventListener("click", loadMemoryGraph);
 
     tokenInput.addEventListener("change", saveLocalValues);
+    dashboardLiveInput.addEventListener("change", updateDashboardLiveMode);
+    dashboardPollSecondsInput.addEventListener("change", updateDashboardLiveMode);
     sessionInput.addEventListener("change", () => {{
       saveLocalValues();
       loadSessionDetail();
@@ -1326,6 +1729,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
 
     // renderStatusDashboard(payload) is intentionally invoked after status fetch.
     refreshStatus();
+    refreshDashboard();
+    updateDashboardLiveMode();
     loadSessions();
     loadSessionDetail();
     loadMemory();
@@ -1339,6 +1744,12 @@ pub(super) fn render_gateway_webchat_page() -> String {
         completions_endpoint = OPENAI_COMPLETIONS_ENDPOINT,
         models_endpoint = OPENAI_MODELS_ENDPOINT,
         status_endpoint = GATEWAY_STATUS_ENDPOINT,
+        dashboard_health_endpoint = DASHBOARD_HEALTH_ENDPOINT,
+        dashboard_widgets_endpoint = DASHBOARD_WIDGETS_ENDPOINT,
+        dashboard_queue_timeline_endpoint = DASHBOARD_QUEUE_TIMELINE_ENDPOINT,
+        dashboard_alerts_endpoint = DASHBOARD_ALERTS_ENDPOINT,
+        dashboard_actions_endpoint = DASHBOARD_ACTIONS_ENDPOINT,
+        dashboard_stream_endpoint = DASHBOARD_STREAM_ENDPOINT,
         websocket_endpoint = GATEWAY_WS_ENDPOINT,
         sessions_endpoint = GATEWAY_SESSIONS_ENDPOINT,
         memory_endpoint_template = GATEWAY_MEMORY_ENDPOINT,
