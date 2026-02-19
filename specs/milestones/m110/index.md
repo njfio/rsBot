@@ -13,8 +13,10 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
 - Completed Task: #2667
 - Completed Story: #2669
 - Completed Task: #2670
-- In-Progress Story: #2672
+- Completed Story: #2672
 - Completed Task: #2673
+- Completed Story: #2675
+- Completed Task: #2676
 
 ## Deliverables
 - Completed (`#2667`):
@@ -32,9 +34,14 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
     - `GET /gateway/config`
     - `PATCH /gateway/config`
   - Config patch apply semantics (`applied` vs `restart_required_fields`) and heartbeat hot-reload policy support.
+- Completed (`#2676`):
+  - Gateway safety policy endpoints:
+    - `GET /gateway/safety/policy`
+    - `PUT /gateway/safety/policy`
+  - Policy persistence contract with validation and status discovery metadata.
 
 ## Exit Criteria
 - Epic #2665 is closed with all scoped PRD phase-1 tasks completed.
-- `specs/2667/spec.md`, `specs/2670/spec.md`, and `specs/2673/spec.md` status are `Implemented`.
+- `specs/2667/spec.md`, `specs/2670/spec.md`, `specs/2673/spec.md`, and `specs/2676/spec.md` status are `Implemented`.
 - Scoped verification gates pass with evidence (`fmt`, `clippy -p tau-gateway`, targeted tests).
 - PRD checklist progress is updated for completed phase-1 endpoint slices.

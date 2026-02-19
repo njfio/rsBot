@@ -1441,6 +1441,199 @@ async fn regression_spec_2673_c04_gateway_config_endpoint_rejects_invalid_or_una
 }
 
 #[tokio::test]
+async fn integration_spec_2676_c01_safety_policy_endpoint_supports_get_put_and_status_discovery() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+
+    let client = Client::new();
+    let get_default = client
+        .get(format!("http://{addr}{GATEWAY_SAFETY_POLICY_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("get default safety policy");
+    assert_eq!(get_default.status(), StatusCode::OK);
+    let get_default_payload = get_default
+        .json::<Value>()
+        .await
+        .expect("parse default safety policy payload");
+    assert_eq!(get_default_payload["source"].as_str(), Some("default"));
+    assert_eq!(
+        get_default_payload["policy"]["enabled"].as_bool(),
+        Some(true)
+    );
+
+    let put_response = client
+        .put(format!("http://{addr}{GATEWAY_SAFETY_POLICY_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "policy": {
+                "enabled": true,
+                "mode": "block",
+                "apply_to_inbound_messages": true,
+                "apply_to_tool_outputs": true,
+                "redaction_token": "[MASK]",
+                "secret_leak_detection_enabled": true,
+                "secret_leak_mode": "redact",
+                "secret_leak_redaction_token": "[SECRET]",
+                "apply_to_outbound_http_payloads": true
+            }
+        }))
+        .send()
+        .await
+        .expect("put safety policy");
+    assert_eq!(put_response.status(), StatusCode::OK);
+    let put_payload = put_response
+        .json::<Value>()
+        .await
+        .expect("parse put safety policy payload");
+    assert_eq!(put_payload["updated"], Value::Bool(true));
+    assert_eq!(put_payload["policy"]["mode"].as_str(), Some("block"));
+    assert_eq!(
+        put_payload["policy"]["secret_leak_mode"].as_str(),
+        Some("redact")
+    );
+
+    let safety_policy_path = state
+        .config
+        .state_dir
+        .join("openresponses")
+        .join("safety-policy.json");
+    assert!(safety_policy_path.exists());
+
+    let get_persisted = client
+        .get(format!("http://{addr}{GATEWAY_SAFETY_POLICY_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("get persisted safety policy");
+    assert_eq!(get_persisted.status(), StatusCode::OK);
+    let get_persisted_payload = get_persisted
+        .json::<Value>()
+        .await
+        .expect("parse persisted safety policy payload");
+    assert_eq!(get_persisted_payload["source"].as_str(), Some("persisted"));
+    assert_eq!(
+        get_persisted_payload["policy"]["redaction_token"].as_str(),
+        Some("[MASK]")
+    );
+
+    let status_response = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_payload = status_response
+        .json::<Value>()
+        .await
+        .expect("parse status payload");
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["safety_policy_endpoint"],
+        GATEWAY_SAFETY_POLICY_ENDPOINT
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2676_c03_safety_policy_endpoint_rejects_invalid_or_unauthorized_requests()
+{
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+
+    let client = Client::new();
+    let unauthorized_get = client
+        .get(format!("http://{addr}{GATEWAY_SAFETY_POLICY_ENDPOINT}"))
+        .send()
+        .await
+        .expect("unauthorized get safety policy");
+    assert_eq!(unauthorized_get.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthorized_put = client
+        .put(format!("http://{addr}{GATEWAY_SAFETY_POLICY_ENDPOINT}"))
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("unauthorized put safety policy");
+    assert_eq!(unauthorized_put.status(), StatusCode::UNAUTHORIZED);
+
+    let invalid_redaction = client
+        .put(format!("http://{addr}{GATEWAY_SAFETY_POLICY_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "policy": {
+                "enabled": true,
+                "mode": "warn",
+                "apply_to_inbound_messages": true,
+                "apply_to_tool_outputs": true,
+                "redaction_token": "   ",
+                "secret_leak_detection_enabled": true,
+                "secret_leak_mode": "warn",
+                "secret_leak_redaction_token": "[SECRET]",
+                "apply_to_outbound_http_payloads": true
+            }
+        }))
+        .send()
+        .await
+        .expect("invalid redaction token policy");
+    assert_eq!(invalid_redaction.status(), StatusCode::BAD_REQUEST);
+    let invalid_redaction_payload = invalid_redaction
+        .json::<Value>()
+        .await
+        .expect("parse invalid redaction payload");
+    assert_eq!(
+        invalid_redaction_payload["error"]["code"],
+        "invalid_redaction_token"
+    );
+
+    let invalid_secret_token = client
+        .put(format!("http://{addr}{GATEWAY_SAFETY_POLICY_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "policy": {
+                "enabled": true,
+                "mode": "warn",
+                "apply_to_inbound_messages": true,
+                "apply_to_tool_outputs": true,
+                "redaction_token": "[MASK]",
+                "secret_leak_detection_enabled": true,
+                "secret_leak_mode": "warn",
+                "secret_leak_redaction_token": " ",
+                "apply_to_outbound_http_payloads": true
+            }
+        }))
+        .send()
+        .await
+        .expect("invalid secret redaction token policy");
+    assert_eq!(invalid_secret_token.status(), StatusCode::BAD_REQUEST);
+    let invalid_secret_payload = invalid_secret_token
+        .json::<Value>()
+        .await
+        .expect("parse invalid secret token payload");
+    assert_eq!(
+        invalid_secret_payload["error"]["code"],
+        "invalid_secret_leak_redaction_token"
+    );
+
+    let safety_policy_path = state
+        .config
+        .state_dir
+        .join("openresponses")
+        .join("safety-policy.json");
+    assert!(!safety_policy_path.exists());
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn regression_gateway_memory_graph_endpoint_rejects_unauthorized_requests() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");

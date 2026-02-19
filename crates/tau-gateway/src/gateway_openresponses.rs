@@ -26,9 +26,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tau_agent_core::{Agent, AgentConfig, AgentEvent};
+use tau_agent_core::{Agent, AgentConfig, AgentEvent, SafetyPolicy};
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
-use tau_core::{current_unix_timestamp, current_unix_timestamp_ms};
+use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, write_text_atomic};
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{
     FileMemoryStore, MemoryRelationInput, MemoryScopeFilter, MemorySearchMatch,
@@ -93,10 +93,11 @@ use types::{
     GatewayMemoryEntryDeleteRequest, GatewayMemoryEntryUpsertRequest, GatewayMemoryGraphEdge,
     GatewayMemoryGraphFilterSummary, GatewayMemoryGraphNode, GatewayMemoryGraphQuery,
     GatewayMemoryGraphResponse, GatewayMemoryReadQuery, GatewayMemoryUpdateRequest,
-    GatewaySessionAppendRequest, GatewaySessionResetRequest, GatewayUiTelemetryRequest,
-    OpenResponsesApiError, OpenResponsesExecutionResult, OpenResponsesOutputItem,
-    OpenResponsesOutputTextItem, OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse,
-    OpenResponsesUsage, OpenResponsesUsageSummary, SseFrame,
+    GatewaySafetyPolicyUpdateRequest, GatewaySessionAppendRequest, GatewaySessionResetRequest,
+    GatewayUiTelemetryRequest, OpenResponsesApiError, OpenResponsesExecutionResult,
+    OpenResponsesOutputItem, OpenResponsesOutputTextItem, OpenResponsesPrompt,
+    OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage, OpenResponsesUsageSummary,
+    SseFrame,
 };
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
@@ -118,6 +119,7 @@ const GATEWAY_MEMORY_ENTRY_ENDPOINT: &str = "/gateway/memory/{session_key}/{entr
 const GATEWAY_MEMORY_GRAPH_ENDPOINT: &str = "/gateway/memory-graph/{session_key}";
 const GATEWAY_CHANNEL_LIFECYCLE_ENDPOINT: &str = "/gateway/channels/{channel}/lifecycle";
 const GATEWAY_CONFIG_ENDPOINT: &str = "/gateway/config";
+const GATEWAY_SAFETY_POLICY_ENDPOINT: &str = "/gateway/safety/policy";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
@@ -771,6 +773,10 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             get(handle_gateway_config_get).patch(handle_gateway_config_patch),
         )
         .route(
+            GATEWAY_SAFETY_POLICY_ENDPOINT,
+            get(handle_gateway_safety_policy_get).put(handle_gateway_safety_policy_put),
+        )
+        .route(
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
         )
@@ -879,6 +885,7 @@ async fn handle_gateway_status(
                     "memory_graph_endpoint": GATEWAY_MEMORY_GRAPH_ENDPOINT,
                     "channel_lifecycle_endpoint": GATEWAY_CHANNEL_LIFECYCLE_ENDPOINT,
                     "config_endpoint": GATEWAY_CONFIG_ENDPOINT,
+                    "safety_policy_endpoint": GATEWAY_SAFETY_POLICY_ENDPOINT,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,
@@ -2797,6 +2804,120 @@ async fn handle_gateway_config_patch(
         .into_response()
 }
 
+async fn handle_gateway_safety_policy_get(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+
+    let path = gateway_safety_policy_path(&state.config.state_dir);
+    let persisted = match read_gateway_safety_policy(&path) {
+        Ok(policy) => policy,
+        Err(error) => return error.into_response(),
+    };
+    let (policy, source) = match persisted {
+        Some(policy) => (policy, "persisted"),
+        None => (SafetyPolicy::default(), "default"),
+    };
+
+    state.record_ui_telemetry_event(
+        "configuration",
+        "safety_policy_get",
+        "safety_policy_get_requested",
+    );
+    (
+        StatusCode::OK,
+        Json(json!({
+            "policy": policy,
+            "source": source,
+            "path": path.display().to_string(),
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_gateway_safety_policy_put(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    let request = match parse_gateway_json_body::<GatewaySafetyPolicyUpdateRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+
+    let mut policy = request.policy;
+    policy.redaction_token = policy.redaction_token.trim().to_string();
+    if policy.redaction_token.is_empty() {
+        return OpenResponsesApiError::bad_request(
+            "invalid_redaction_token",
+            "policy.redaction_token must be non-empty",
+        )
+        .into_response();
+    }
+
+    policy.secret_leak_redaction_token = policy.secret_leak_redaction_token.trim().to_string();
+    if policy.secret_leak_redaction_token.is_empty() {
+        return OpenResponsesApiError::bad_request(
+            "invalid_secret_leak_redaction_token",
+            "policy.secret_leak_redaction_token must be non-empty",
+        )
+        .into_response();
+    }
+
+    let path = gateway_safety_policy_path(&state.config.state_dir);
+    let payload = match serde_json::to_string_pretty(&policy) {
+        Ok(payload) => payload,
+        Err(error) => {
+            return OpenResponsesApiError::internal(format!(
+                "failed to encode safety policy payload: {error}"
+            ))
+            .into_response();
+        }
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                return OpenResponsesApiError::internal(format!(
+                    "failed to create safety policy directory '{}': {error}",
+                    parent.display()
+                ))
+                .into_response();
+            }
+        }
+    }
+    if let Err(error) = write_text_atomic(&path, format!("{payload}\n").as_str()) {
+        return OpenResponsesApiError::internal(format!(
+            "failed to write safety policy '{}': {error}",
+            path.display()
+        ))
+        .into_response();
+    }
+
+    let updated_unix_ms = current_unix_timestamp_ms();
+    state.record_ui_telemetry_event(
+        "configuration",
+        "safety_policy_put",
+        "safety_policy_put_applied",
+    );
+    (
+        StatusCode::OK,
+        Json(json!({
+            "updated": true,
+            "policy": policy,
+            "source": "persisted",
+            "path": path.display().to_string(),
+            "updated_unix_ms": updated_unix_ms,
+        })),
+    )
+        .into_response()
+}
+
 async fn handle_gateway_channel_lifecycle_action(
     State(state): State<Arc<GatewayOpenResponsesServerState>>,
     headers: HeaderMap,
@@ -3361,8 +3482,31 @@ fn gateway_config_overrides_path(state_dir: &Path) -> PathBuf {
         .join("config-overrides.json")
 }
 
+fn gateway_safety_policy_path(state_dir: &Path) -> PathBuf {
+    state_dir.join("openresponses").join("safety-policy.json")
+}
+
 fn gateway_runtime_heartbeat_policy_path(state_path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.policy.toml", state_path.display()))
+}
+
+fn read_gateway_safety_policy(path: &Path) -> Result<Option<SafetyPolicy>, OpenResponsesApiError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path).map_err(|error| {
+        OpenResponsesApiError::internal(format!(
+            "failed to read safety policy '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let policy = serde_json::from_str::<SafetyPolicy>(raw.as_str()).map_err(|error| {
+        OpenResponsesApiError::internal(format!(
+            "failed to parse safety policy '{}': {error}",
+            path.display()
+        ))
+    })?;
+    Ok(Some(policy))
 }
 
 fn read_gateway_config_pending_overrides(

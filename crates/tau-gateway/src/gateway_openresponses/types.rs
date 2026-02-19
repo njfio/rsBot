@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tau_agent_core::SafetyPolicy;
 
 /// Error payload mapped to OpenAI-compatible HTTP response envelope.
 #[derive(Debug)]
@@ -219,6 +220,11 @@ pub(super) struct GatewayConfigPatchRequest {
     pub(super) max_input_chars: Option<usize>,
     #[serde(default)]
     pub(super) runtime_heartbeat_interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct GatewaySafetyPolicyUpdateRequest {
+    pub(super) policy: SafetyPolicy,
 }
 
 #[derive(Debug, Deserialize)]
