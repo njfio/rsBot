@@ -1804,10 +1804,16 @@ fn spec_c03_memory_embedding_provider_config_preserves_remote_provider_fields() 
 }
 
 #[test]
-fn spec_c04_memory_embedding_provider_config_without_policy_is_none() {
+fn spec_c04_memory_embedding_provider_config_defaults_to_local() {
     let temp = tempdir().expect("tempdir");
     let policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
-    assert_eq!(policy.memory_embedding_provider_config(), None);
+    let config = policy
+        .memory_embedding_provider_config()
+        .expect("default policy should resolve local embedding provider");
+    assert_eq!(config.provider, "local");
+    assert_eq!(config.model, "BAAI/bge-small-en-v1.5");
+    assert_eq!(config.api_base, "");
+    assert_eq!(config.api_key, "");
 }
 
 #[tokio::test]

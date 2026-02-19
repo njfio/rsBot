@@ -307,7 +307,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 - [x] Add `fastembed` as workspace dependency
 - [x] Create `LocalEmbeddingProvider` implementing the embedding trait
 - [x] Configure via profile: `embedding_provider = "local"` or `"openai"`
-- [ ] Make `embedding_provider = "local"` the default profile setting
+- [x] Make `embedding_provider = "local"` the default profile setting
 - [x] Local model: `BAAI/bge-small-en-v1.5` or similar (same as Spacebot's default)
 - [x] Fall back to FNV1a hash only if local model fails to load
 - **Files**: `tau-memory/src/`, `Cargo.toml`

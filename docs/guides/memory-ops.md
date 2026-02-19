@@ -25,12 +25,12 @@ Persistence backend selection:
 - invalid backend values fall back to inferred backend with reason
   `memory_storage_backend_env_invalid_fallback`
 
-Optional real-embedding configuration (runtime env):
+Optional embedding provider configuration (runtime env):
 
-- `TAU_MEMORY_EMBEDDING_PROVIDER` (`openai` or `openai-compatible`)
-- `TAU_MEMORY_EMBEDDING_MODEL` (for example `text-embedding-3-small`)
-- `TAU_MEMORY_EMBEDDING_API_BASE` (defaults to `--api-base` when provider is set)
-- `TAU_MEMORY_EMBEDDING_API_KEY` (falls back to `OPENAI_API_KEY`/`TAU_API_KEY`)
+- `TAU_MEMORY_EMBEDDING_PROVIDER` (`local` default, or `openai` / `openai-compatible` for remote providers)
+- `TAU_MEMORY_EMBEDDING_MODEL` (defaults to `BAAI/bge-small-en-v1.5` in local mode; use `local-hash` to force hash-only local fallback, or `text-embedding-3-small` for remote providers)
+- `TAU_MEMORY_EMBEDDING_API_BASE` (defaults to `--api-base` only when a remote provider is selected)
+- `TAU_MEMORY_EMBEDDING_API_KEY` (falls back to `OPENAI_API_KEY`/`TAU_API_KEY` only when a remote provider is selected)
 - `TAU_MEMORY_EMBEDDING_TIMEOUT_MS` (default `10000`)
 - `TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION` (default `true`)
 - `TAU_MEMORY_BENCHMARK_AGAINST_HASH` (default `false`)

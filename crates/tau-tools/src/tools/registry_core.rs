@@ -256,7 +256,7 @@ impl ToolPolicy {
             memory_search_max_limit: MEMORY_SEARCH_MAX_LIMIT,
             memory_embedding_dimensions: 128,
             memory_min_similarity: 0.55,
-            memory_embedding_provider: None,
+            memory_embedding_provider: Some("local".to_string()),
             memory_embedding_model: None,
             memory_embedding_api_base: None,
             memory_embedding_api_key: None,

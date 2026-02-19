@@ -128,6 +128,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn regression_resolve_startup_safety_policy_defaults_memory_embedding_provider_local() {
+        let _guard = env_lock().lock().expect("env lock");
+        let vars = [
+            "TAU_MEMORY_EMBEDDING_PROVIDER",
+            "TAU_MEMORY_EMBEDDING_MODEL",
+            "TAU_MEMORY_EMBEDDING_API_BASE",
+            "TAU_MEMORY_EMBEDDING_API_KEY",
+        ];
+        let _snapshot = EnvSnapshot::capture(&vars);
+        for name in vars {
+            std::env::remove_var(name);
+        }
+
+        let cli = parse_cli_with_stack();
+        let resolved = resolve_startup_safety_policy(&cli).expect("resolve startup safety policy");
+
+        assert_eq!(
+            resolved.tool_policy.memory_embedding_provider.as_deref(),
+            Some("local")
+        );
+        assert_eq!(
+            resolved.tool_policy_json["memory_embedding_provider"],
+            "local"
+        );
+    }
+
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))

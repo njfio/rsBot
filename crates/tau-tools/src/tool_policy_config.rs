@@ -226,10 +226,17 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
         policy.memory_benchmark_against_vector_only = benchmark_against_vector_only;
     }
 
-    if policy.memory_embedding_api_base.is_none() && policy.memory_embedding_provider.is_some() {
+    let memory_embedding_provider_is_remote = policy
+        .memory_embedding_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .map(|provider| !provider.eq_ignore_ascii_case("local"))
+        .unwrap_or(false);
+    if policy.memory_embedding_api_base.is_none() && memory_embedding_provider_is_remote {
         policy.memory_embedding_api_base = Some(cli.api_base.clone());
     }
-    if policy.memory_embedding_api_key.is_none() && policy.memory_embedding_provider.is_some() {
+    if policy.memory_embedding_api_key.is_none() && memory_embedding_provider_is_remote {
         policy.memory_embedding_api_key = cli.openai_api_key.clone().or(cli.api_key.clone());
     }
 
@@ -807,10 +814,7 @@ mod tests {
         assert_eq!(payload["memory_search_default_limit"], 5);
         assert_eq!(payload["memory_search_max_limit"], 50);
         assert_eq!(payload["memory_embedding_dimensions"], 128);
-        assert_eq!(
-            payload["memory_embedding_provider"],
-            serde_json::Value::Null
-        );
+        assert_eq!(payload["memory_embedding_provider"], "local");
         assert_eq!(payload["memory_embedding_model"], serde_json::Value::Null);
         assert_eq!(
             payload["memory_embedding_api_base"],
@@ -992,6 +996,66 @@ mod tests {
             .as_object()
             .map(|object| object.contains_key("memory_embedding_api_key"))
             .unwrap_or(false));
+    }
+
+    #[test]
+    fn integration_build_tool_policy_defaults_memory_embedding_provider_local() {
+        let _guard = env_lock().lock().expect("env lock");
+        let vars = [
+            "TAU_MEMORY_EMBEDDING_PROVIDER",
+            "TAU_MEMORY_EMBEDDING_MODEL",
+            "TAU_MEMORY_EMBEDDING_API_BASE",
+            "TAU_MEMORY_EMBEDDING_API_KEY",
+        ];
+        let _snapshot = EnvSnapshot::capture(&vars);
+        for name in vars {
+            std::env::remove_var(name);
+        }
+
+        let cli = parse_cli_with_stack();
+        let policy = build_tool_policy(&cli).expect("build tool policy");
+        assert_eq!(policy.memory_embedding_provider.as_deref(), Some("local"));
+
+        let payload = tool_policy_to_json(&policy);
+        assert_eq!(payload["memory_embedding_provider"], "local");
+        assert_eq!(
+            payload["memory_embedding_api_base"],
+            serde_json::Value::Null
+        );
+        assert_eq!(payload["memory_embedding_api_key_present"], false);
+    }
+
+    #[test]
+    fn regression_build_tool_policy_remote_provider_uses_cli_api_fallback_fields() {
+        let _guard = env_lock().lock().expect("env lock");
+        let vars = [
+            "TAU_API_BASE",
+            "TAU_API_KEY",
+            "OPENAI_API_KEY",
+            "TAU_MEMORY_EMBEDDING_PROVIDER",
+            "TAU_MEMORY_EMBEDDING_MODEL",
+            "TAU_MEMORY_EMBEDDING_API_BASE",
+            "TAU_MEMORY_EMBEDDING_API_KEY",
+        ];
+        let _snapshot = EnvSnapshot::capture(&vars);
+        for name in vars {
+            std::env::remove_var(name);
+        }
+        std::env::set_var("TAU_API_BASE", "https://fallback.example/v1");
+        std::env::set_var("OPENAI_API_KEY", "fallback-secret");
+        std::env::set_var("TAU_MEMORY_EMBEDDING_PROVIDER", "openai-compatible");
+        std::env::set_var("TAU_MEMORY_EMBEDDING_MODEL", "text-embedding-3-small");
+
+        let cli = parse_cli_with_stack();
+        let policy = build_tool_policy(&cli).expect("build tool policy");
+        assert_eq!(
+            policy.memory_embedding_api_base.as_deref(),
+            Some("https://fallback.example/v1")
+        );
+        assert_eq!(
+            policy.memory_embedding_api_key.as_deref(),
+            Some("fallback-secret")
+        );
     }
 
     #[test]
