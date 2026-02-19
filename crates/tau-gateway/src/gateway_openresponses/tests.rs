@@ -216,6 +216,10 @@ fn resolve_job_endpoint(template: &str, job_id: &str) -> String {
     template.replace("{job_id}", job_id)
 }
 
+fn resolve_agent_stop_endpoint(template: &str, agent_id: &str) -> String {
+    template.replace("{agent_id}", agent_id)
+}
+
 async fn spawn_test_server(
     state: Arc<GatewayOpenResponsesServerState>,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
@@ -3108,6 +3112,147 @@ async fn regression_spec_2694_c04_jobs_endpoints_reject_unauthorized_requests() 
         .await
         .expect("unauthorized cancel response");
     assert_eq!(unauthorized_cancel.status(), StatusCode::UNAUTHORIZED);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2697_c01_c02_c05_deploy_and_stop_endpoints_support_authenticated_operator_actions(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let deploy = client
+        .post("http://".to_string() + &addr.to_string() + "/gateway/deploy")
+        .bearer_auth("secret")
+        .json(&json!({
+            "agent_id": "agent-ops",
+            "profile": "default",
+        }))
+        .send()
+        .await
+        .expect("deploy response");
+    assert_eq!(deploy.status(), StatusCode::OK);
+    let deploy_payload = deploy.json::<Value>().await.expect("parse deploy payload");
+    assert_eq!(deploy_payload["agent_id"].as_str(), Some("agent-ops"));
+    assert_eq!(deploy_payload["status"].as_str(), Some("deploying"));
+
+    let stop = client
+        .post(
+            "http://".to_string()
+                + &addr.to_string()
+                + resolve_agent_stop_endpoint("/gateway/agents/{agent_id}/stop", "agent-ops")
+                    .as_str(),
+        )
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("stop response");
+    assert_eq!(stop.status(), StatusCode::OK);
+    let stop_payload = stop.json::<Value>().await.expect("parse stop payload");
+    assert_eq!(stop_payload["agent_id"].as_str(), Some("agent-ops"));
+    assert_eq!(stop_payload["status"].as_str(), Some("stopped"));
+
+    let status = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response")
+        .json::<Value>()
+        .await
+        .expect("parse gateway status payload");
+    assert_eq!(
+        status["gateway"]["web_ui"]["deploy_endpoint"],
+        "/gateway/deploy"
+    );
+    assert_eq!(
+        status["gateway"]["web_ui"]["agent_stop_endpoint_template"],
+        "/gateway/agents/{agent_id}/stop"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2697_c03_stop_endpoint_returns_not_found_for_unknown_agent_id() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let stop_unknown = client
+        .post(
+            "http://".to_string()
+                + &addr.to_string()
+                + resolve_agent_stop_endpoint(
+                    "/gateway/agents/{agent_id}/stop",
+                    "agent-does-not-exist",
+                )
+                .as_str(),
+        )
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("stop unknown response");
+    assert_eq!(stop_unknown.status(), StatusCode::NOT_FOUND);
+    let stop_unknown_payload = stop_unknown
+        .json::<Value>()
+        .await
+        .expect("parse stop unknown payload");
+    assert_eq!(stop_unknown_payload["error"]["code"], "agent_not_found");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2697_c04_c06_deploy_and_stop_endpoints_reject_unauthorized_or_invalid_requests(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let unauthorized_deploy = client
+        .post("http://".to_string() + &addr.to_string() + "/gateway/deploy")
+        .json(&json!({"agent_id":"agent-any"}))
+        .send()
+        .await
+        .expect("unauthorized deploy response");
+    assert_eq!(unauthorized_deploy.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthorized_stop = client
+        .post(
+            "http://".to_string()
+                + &addr.to_string()
+                + resolve_agent_stop_endpoint("/gateway/agents/{agent_id}/stop", "agent-any")
+                    .as_str(),
+        )
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("unauthorized stop response");
+    assert_eq!(unauthorized_stop.status(), StatusCode::UNAUTHORIZED);
+
+    let invalid_deploy = client
+        .post("http://".to_string() + &addr.to_string() + "/gateway/deploy")
+        .bearer_auth("secret")
+        .json(&json!({
+            "agent_id": "   "
+        }))
+        .send()
+        .await
+        .expect("invalid deploy response");
+    assert_eq!(invalid_deploy.status(), StatusCode::BAD_REQUEST);
+    let invalid_deploy_payload = invalid_deploy
+        .json::<Value>()
+        .await
+        .expect("parse invalid deploy payload");
+    assert_eq!(invalid_deploy_payload["error"]["code"], "invalid_agent_id");
 
     handle.abort();
 }
