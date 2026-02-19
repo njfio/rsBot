@@ -48,6 +48,7 @@ Then all checks pass.
 
 ## Conformance Cases
 - C-01 (unit): session open/reuse lifecycle snapshots are deterministic.
+- C-01b (unit): reopening a workspace after terminal session state creates a fresh running session.
 - C-02 (functional): progress events and follow-up events are emitted in ordered stream form.
 - C-03 (regression): stale sessions are reaped after inactivity timeout.
 - C-04 (docs): ADR documents protocol boundary decisions and consequences.
