@@ -1,6 +1,6 @@
 # Spec #2597 - Task: implement notify watcher + ArcSwap apply path for runtime profile reload
 
-Status: Reviewed
+Status: Implemented
 Priority: P1
 Milestone: M102
 Parent: #2596
@@ -38,3 +38,10 @@ Parent: #2596
 - Profile-policy bridge no longer depends on fixed polling interval for change detection.
 - Active policy reads are lock-free and atomic across reload updates.
 - Reload behavior is deterministic and fail-closed under malformed profile updates.
+
+## Verification Evidence
+- `cargo test -p tau-coding-agent 2597_ -- --test-threads=1` => pass (4 passed, 0 failed).
+- `cargo test -p tau-coding-agent runtime_profile_policy_bridge::tests:: -- --test-threads=1` => pass (15 passed, 0 failed).
+- `cargo fmt --all --check` => pass.
+- `cargo clippy -p tau-coding-agent -- -D warnings` => pass.
+- `cargo mutants --in-place --in-diff /tmp/issue2597-working.diff -p tau-coding-agent --baseline skip --timeout 180 -- --test-threads=1 runtime_profile_policy_bridge::tests::` => `42 mutants tested in 4m: 12 caught, 30 unviable`, `missed=0`, `timeout=0`.
