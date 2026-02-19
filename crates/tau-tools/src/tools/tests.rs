@@ -23,10 +23,11 @@ use super::{
     redact_secrets, register_builtin_tools, resolve_sandbox_spec, truncate_bytes, AgentTool,
     BashCommandProfile, BashTool, BranchTool, EditTool, HttpTool, JobsCancelTool, JobsCreateTool,
     JobsListTool, JobsStatusTool, MemoryDeleteTool, MemoryReadTool, MemorySearchTool,
-    MemoryTreeTool, MemoryWriteTool, OsSandboxDockerNetwork, OsSandboxMode, OsSandboxPolicyMode,
-    ReactTool, RedoTool, SendFileTool, SessionsHistoryTool, SessionsListTool, SessionsSearchTool,
-    SessionsSendTool, SessionsStatsTool, SkipTool, ToolBuilderTool, ToolExecutionResult,
-    ToolPolicy, ToolPolicyPreset, ToolRateLimitExceededBehavior, UndoTool, WriteTool,
+    MemoryTreeTool, MemoryTypeImportanceProfile, MemoryWriteTool, OsSandboxDockerNetwork,
+    OsSandboxMode, OsSandboxPolicyMode, ReactTool, RedoTool, SendFileTool, SessionsHistoryTool,
+    SessionsListTool, SessionsSearchTool, SessionsSendTool, SessionsStatsTool, SkipTool,
+    ToolBuilderTool, ToolExecutionResult, ToolPolicy, ToolPolicyPreset,
+    ToolRateLimitExceededBehavior, UndoTool, WriteTool,
 };
 use tau_access::ApprovalAction;
 use tau_agent_core::{Agent, AgentConfig};
@@ -1834,6 +1835,60 @@ async fn spec_c01_memory_write_applies_type_default_importance() {
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.content["memory_type"], "identity");
     assert_json_number_close(&result.content["importance"], 1.0);
+}
+
+#[tokio::test]
+async fn spec_2589_c03_memory_write_uses_configured_default_importance_profile() {
+    let temp = tempdir().expect("tempdir");
+    let mut policy = ToolPolicy::new(vec![temp.path().to_path_buf()]);
+    policy.memory_state_dir = temp.path().join(".tau/memory");
+    policy.memory_default_importance_profile = MemoryTypeImportanceProfile {
+        identity: 0.41,
+        observation: 0.19,
+        ..MemoryTypeImportanceProfile::default()
+    };
+    let write_tool = MemoryWriteTool::new(Arc::new(policy));
+
+    let identity = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "memory-configured-default-identity",
+            "summary": "configured identity defaults should be applied",
+            "memory_type": "identity",
+            "workspace_id": "workspace-a",
+            "channel_id": "profile",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!identity.is_error, "{}", identity.content);
+    assert_eq!(identity.content["memory_type"], "identity");
+    assert_json_number_close(&identity.content["importance"], 0.41);
+
+    let observation = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "memory-configured-default-observation",
+            "summary": "configured observation defaults should be applied",
+            "workspace_id": "workspace-a",
+            "channel_id": "profile",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!observation.is_error, "{}", observation.content);
+    assert_eq!(observation.content["memory_type"], "observation");
+    assert_json_number_close(&observation.content["importance"], 0.19);
+
+    let explicit = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "memory-explicit-override",
+            "summary": "explicit importance must continue to override defaults",
+            "memory_type": "identity",
+            "importance": 0.9,
+            "workspace_id": "workspace-a",
+            "channel_id": "profile",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!explicit.is_error, "{}", explicit.content);
+    assert_json_number_close(&explicit.content["importance"], 0.9);
 }
 
 #[tokio::test]

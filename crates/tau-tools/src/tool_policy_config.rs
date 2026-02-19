@@ -16,8 +16,9 @@ use crate::tools::{
     tool_rate_limit_behavior_name, BashCommandProfile, OsSandboxDockerNetwork, OsSandboxMode,
     OsSandboxPolicyMode, ToolPolicy,
 };
+use tau_memory::runtime::MemoryType;
 
-const TOOL_POLICY_SCHEMA_VERSION: u32 = 12;
+const TOOL_POLICY_SCHEMA_VERSION: u32 = 13;
 const PROTECTED_PATHS_ENV: &str = "TAU_PROTECTED_PATHS";
 const ALLOW_PROTECTED_PATH_MUTATIONS_ENV: &str = "TAU_ALLOW_PROTECTED_PATH_MUTATIONS";
 const MEMORY_EMBEDDING_PROVIDER_ENV: &str = "TAU_MEMORY_EMBEDDING_PROVIDER";
@@ -35,6 +36,14 @@ const MEMORY_RRF_LEXICAL_WEIGHT_ENV: &str = "TAU_MEMORY_RRF_LEXICAL_WEIGHT";
 const MEMORY_ENABLE_EMBEDDING_MIGRATION_ENV: &str = "TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION";
 const MEMORY_BENCHMARK_AGAINST_HASH_ENV: &str = "TAU_MEMORY_BENCHMARK_AGAINST_HASH";
 const MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY_ENV: &str = "TAU_MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY";
+const MEMORY_DEFAULT_IMPORTANCE_IDENTITY_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_IDENTITY";
+const MEMORY_DEFAULT_IMPORTANCE_GOAL_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_GOAL";
+const MEMORY_DEFAULT_IMPORTANCE_DECISION_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_DECISION";
+const MEMORY_DEFAULT_IMPORTANCE_TODO_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_TODO";
+const MEMORY_DEFAULT_IMPORTANCE_PREFERENCE_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_PREFERENCE";
+const MEMORY_DEFAULT_IMPORTANCE_FACT_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_FACT";
+const MEMORY_DEFAULT_IMPORTANCE_EVENT_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_EVENT";
+const MEMORY_DEFAULT_IMPORTANCE_OBSERVATION_ENV: &str = "TAU_MEMORY_DEFAULT_IMPORTANCE_OBSERVATION";
 
 /// Build runtime tool policy from CLI arguments and environment overrides.
 pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
@@ -225,6 +234,47 @@ pub fn build_tool_policy(cli: &Cli) -> Result<ToolPolicy> {
     {
         policy.memory_benchmark_against_vector_only = benchmark_against_vector_only;
     }
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Identity,
+        MEMORY_DEFAULT_IMPORTANCE_IDENTITY_ENV,
+    )?;
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Goal,
+        MEMORY_DEFAULT_IMPORTANCE_GOAL_ENV,
+    )?;
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Decision,
+        MEMORY_DEFAULT_IMPORTANCE_DECISION_ENV,
+    )?;
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Todo,
+        MEMORY_DEFAULT_IMPORTANCE_TODO_ENV,
+    )?;
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Preference,
+        MEMORY_DEFAULT_IMPORTANCE_PREFERENCE_ENV,
+    )?;
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Fact,
+        MEMORY_DEFAULT_IMPORTANCE_FACT_ENV,
+    )?;
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Event,
+        MEMORY_DEFAULT_IMPORTANCE_EVENT_ENV,
+    )?;
+    apply_memory_type_importance_override(
+        &mut policy.memory_default_importance_profile,
+        MemoryType::Observation,
+        MEMORY_DEFAULT_IMPORTANCE_OBSERVATION_ENV,
+    )?;
+    policy.memory_default_importance_profile.validate()?;
 
     let memory_embedding_provider_is_remote = policy
         .memory_embedding_provider
@@ -321,6 +371,19 @@ pub fn tool_policy_to_json(policy: &ToolPolicy) -> serde_json::Value {
     payload.insert(
         "memory_min_similarity".to_string(),
         serde_json::json!(policy.memory_min_similarity),
+    );
+    payload.insert(
+        "memory_default_importance_profile".to_string(),
+        serde_json::json!({
+            "identity": policy.memory_default_importance_profile.identity,
+            "goal": policy.memory_default_importance_profile.goal,
+            "decision": policy.memory_default_importance_profile.decision,
+            "todo": policy.memory_default_importance_profile.todo,
+            "preference": policy.memory_default_importance_profile.preference,
+            "fact": policy.memory_default_importance_profile.fact,
+            "event": policy.memory_default_importance_profile.event,
+            "observation": policy.memory_default_importance_profile.observation,
+        }),
     );
     payload.insert(
         "memory_embedding_provider".to_string(),
@@ -667,6 +730,24 @@ fn parse_optional_env_f32(name: &str) -> Result<Option<f32>> {
     Ok(Some(parsed))
 }
 
+fn apply_memory_type_importance_override(
+    profile: &mut tau_memory::runtime::MemoryTypeImportanceProfile,
+    memory_type: MemoryType,
+    env_name: &str,
+) -> Result<()> {
+    let Some(value) = parse_optional_env_f32(env_name)? else {
+        return Ok(());
+    };
+    if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+        return Err(anyhow!(
+            "{env_name} must be finite and within 0.0..=1.0 (received {})",
+            value
+        ));
+    }
+    profile.set_importance(memory_type, value);
+    Ok(())
+}
+
 fn parse_protected_paths_env(name: &str) -> Result<Vec<std::path::PathBuf>> {
     let Some(raw) = std::env::var_os(name) else {
         return Ok(Vec::new());
@@ -809,7 +890,7 @@ mod tests {
         policy.allow_protected_path_mutations = true;
         let payload = tool_policy_to_json(&policy);
 
-        assert_eq!(payload["schema_version"], 12);
+        assert_eq!(payload["schema_version"], 13);
         assert_eq!(payload["allow_protected_path_mutations"], true);
         assert_eq!(payload["memory_search_default_limit"], 5);
         assert_eq!(payload["memory_search_max_limit"], 50);
@@ -850,6 +931,22 @@ mod tests {
             .as_f64()
             .expect("memory_min_similarity as f64");
         assert!((min_similarity - 0.55).abs() < 1e-6);
+        let defaults = &payload["memory_default_importance_profile"];
+        assert!((defaults["identity"].as_f64().expect("identity as f64") - 1.0).abs() < 1e-6);
+        assert!((defaults["goal"].as_f64().expect("goal as f64") - 0.9).abs() < 1e-6);
+        assert!((defaults["decision"].as_f64().expect("decision as f64") - 0.85).abs() < 1e-6);
+        assert!((defaults["todo"].as_f64().expect("todo as f64") - 0.8).abs() < 1e-6);
+        assert!((defaults["preference"].as_f64().expect("preference as f64") - 0.7).abs() < 1e-6);
+        assert!((defaults["fact"].as_f64().expect("fact as f64") - 0.65).abs() < 1e-6);
+        assert!((defaults["event"].as_f64().expect("event as f64") - 0.55).abs() < 1e-6);
+        assert!(
+            (defaults["observation"]
+                .as_f64()
+                .expect("observation as f64")
+                - 0.3)
+                .abs()
+                < 1e-6
+        );
         assert!(payload["memory_state_dir"]
             .as_str()
             .map(|value| value.ends_with(".tau/memory"))
@@ -927,6 +1024,14 @@ mod tests {
             "TAU_MEMORY_ENABLE_EMBEDDING_MIGRATION",
             "TAU_MEMORY_BENCHMARK_AGAINST_HASH",
             "TAU_MEMORY_BENCHMARK_AGAINST_VECTOR_ONLY",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_IDENTITY",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_GOAL",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_DECISION",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_TODO",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_PREFERENCE",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_FACT",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_EVENT",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_OBSERVATION",
         ];
         let _snapshot = EnvSnapshot::capture(&vars);
         for name in vars {
@@ -996,6 +1101,70 @@ mod tests {
             .as_object()
             .map(|object| object.contains_key("memory_embedding_api_key"))
             .unwrap_or(false));
+    }
+
+    #[test]
+    fn spec_2589_c01_tool_policy_parses_memory_default_importance_overrides() {
+        let _guard = env_lock().lock().expect("env lock");
+        let vars = [
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_IDENTITY",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_GOAL",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_DECISION",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_TODO",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_PREFERENCE",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_FACT",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_EVENT",
+            "TAU_MEMORY_DEFAULT_IMPORTANCE_OBSERVATION",
+        ];
+        let _snapshot = EnvSnapshot::capture(&vars);
+        for name in vars {
+            std::env::remove_var(name);
+        }
+
+        std::env::set_var("TAU_MEMORY_DEFAULT_IMPORTANCE_IDENTITY", "0.91");
+        std::env::set_var("TAU_MEMORY_DEFAULT_IMPORTANCE_OBSERVATION", "0.22");
+        std::env::set_var("TAU_MEMORY_DEFAULT_IMPORTANCE_FACT", "0.6");
+
+        let cli = parse_cli_with_stack();
+        let policy = build_tool_policy(&cli).expect("build tool policy");
+        assert!((policy.memory_default_importance_profile.identity - 0.91).abs() < 1e-6);
+        assert!((policy.memory_default_importance_profile.observation - 0.22).abs() < 1e-6);
+        assert!((policy.memory_default_importance_profile.fact - 0.6).abs() < 1e-6);
+        assert!((policy.memory_default_importance_profile.goal - 0.9).abs() < 1e-6);
+
+        let payload = tool_policy_to_json(&policy);
+        let identity = payload["memory_default_importance_profile"]["identity"]
+            .as_f64()
+            .expect("identity as f64");
+        let observation = payload["memory_default_importance_profile"]["observation"]
+            .as_f64()
+            .expect("observation as f64");
+        let fact = payload["memory_default_importance_profile"]["fact"]
+            .as_f64()
+            .expect("fact as f64");
+        assert!((identity - 0.91).abs() < 1e-6);
+        assert!((observation - 0.22).abs() < 1e-6);
+        assert!((fact - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn regression_2589_c04_memory_write_rejects_out_of_range_configured_defaults() {
+        let _guard = env_lock().lock().expect("env lock");
+        let vars = ["TAU_MEMORY_DEFAULT_IMPORTANCE_IDENTITY"];
+        let _snapshot = EnvSnapshot::capture(&vars);
+        for name in vars {
+            std::env::remove_var(name);
+        }
+
+        std::env::set_var("TAU_MEMORY_DEFAULT_IMPORTANCE_IDENTITY", "1.5");
+        let cli = parse_cli_with_stack();
+        let error = build_tool_policy(&cli).expect_err("out-of-range defaults must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("TAU_MEMORY_DEFAULT_IMPORTANCE_IDENTITY"),
+            "error must identify invalid override env var: {error}"
+        );
     }
 
     #[test]

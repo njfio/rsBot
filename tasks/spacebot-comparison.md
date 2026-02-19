@@ -270,7 +270,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **Pathway**:
 - [x] Add `MemoryType` enum to `tau-memory`: `Identity`, `Goal`, `Decision`, `Todo`, `Preference`, `Fact`, `Event`, `Observation`
 - [x] Add `importance` field to memory entries
-- [ ] Default importance per type configurable via profile/runtime (defaults are currently compile-time in `MemoryType::default_importance()`)
+- [x] Default importance per type configurable via profile/runtime
 - [x] Modify `memory_write` tool to accept type and optional importance override
 - [x] Modify `memory_search` to boost by importance in ranking
 - **Files**: `tau-memory/src/`, `tau-tools/src/tools/memory_tools.rs`

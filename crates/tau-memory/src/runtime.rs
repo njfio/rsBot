@@ -239,6 +239,84 @@ impl Default for MemoryType {
     }
 }
 
+/// Public struct `MemoryTypeImportanceProfile` used across Tau components.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemoryTypeImportanceProfile {
+    pub identity: f32,
+    pub goal: f32,
+    pub decision: f32,
+    pub todo: f32,
+    pub preference: f32,
+    pub fact: f32,
+    pub event: f32,
+    pub observation: f32,
+}
+
+impl Default for MemoryTypeImportanceProfile {
+    fn default() -> Self {
+        Self {
+            identity: MemoryType::Identity.default_importance(),
+            goal: MemoryType::Goal.default_importance(),
+            decision: MemoryType::Decision.default_importance(),
+            todo: MemoryType::Todo.default_importance(),
+            preference: MemoryType::Preference.default_importance(),
+            fact: MemoryType::Fact.default_importance(),
+            event: MemoryType::Event.default_importance(),
+            observation: MemoryType::Observation.default_importance(),
+        }
+    }
+}
+
+impl MemoryTypeImportanceProfile {
+    pub fn importance_for(&self, memory_type: MemoryType) -> f32 {
+        match memory_type {
+            MemoryType::Identity => self.identity,
+            MemoryType::Goal => self.goal,
+            MemoryType::Decision => self.decision,
+            MemoryType::Todo => self.todo,
+            MemoryType::Preference => self.preference,
+            MemoryType::Fact => self.fact,
+            MemoryType::Event => self.event,
+            MemoryType::Observation => self.observation,
+        }
+    }
+
+    pub fn set_importance(&mut self, memory_type: MemoryType, value: f32) {
+        match memory_type {
+            MemoryType::Identity => self.identity = value,
+            MemoryType::Goal => self.goal = value,
+            MemoryType::Decision => self.decision = value,
+            MemoryType::Todo => self.todo = value,
+            MemoryType::Preference => self.preference = value,
+            MemoryType::Fact => self.fact = value,
+            MemoryType::Event => self.event = value,
+            MemoryType::Observation => self.observation = value,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for (label, value) in [
+            ("identity", self.identity),
+            ("goal", self.goal),
+            ("decision", self.decision),
+            ("todo", self.todo),
+            ("preference", self.preference),
+            ("fact", self.fact),
+            ("event", self.event),
+            ("observation", self.observation),
+        ] {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                bail!(
+                    "memory type default importance for '{}' must be finite and within 0.0..=1.0 (received {})",
+                    label,
+                    value
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn importance_rank_multiplier(importance: f32) -> f32 {
     1.0 + importance.clamp(0.0, 1.0)
 }
@@ -562,6 +640,7 @@ pub struct RankedTextMatch {
 pub struct FileMemoryStore {
     root_dir: PathBuf,
     embedding_provider: Option<MemoryEmbeddingProviderConfig>,
+    default_importance_profile: MemoryTypeImportanceProfile,
     storage_backend: MemoryStorageBackend,
     storage_path: Option<PathBuf>,
     backend_reason_code: String,
@@ -571,7 +650,7 @@ pub struct FileMemoryStore {
 impl FileMemoryStore {
     /// Creates a file-backed store rooted at `root_dir`.
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
-        Self::new_with_embedding_provider(root_dir, None)
+        Self::new_with_embedding_provider_and_importance_profile(root_dir, None, None)
     }
 
     /// Creates a file-backed store rooted at `root_dir` with optional embedding provider config.
@@ -579,11 +658,30 @@ impl FileMemoryStore {
         root_dir: impl Into<PathBuf>,
         embedding_provider: Option<MemoryEmbeddingProviderConfig>,
     ) -> Self {
+        Self::new_with_embedding_provider_and_importance_profile(root_dir, embedding_provider, None)
+    }
+
+    /// Creates a file-backed store rooted at `root_dir` with optional embedding provider and
+    /// optional runtime-configured memory-type default importance profile.
+    pub fn new_with_embedding_provider_and_importance_profile(
+        root_dir: impl Into<PathBuf>,
+        embedding_provider: Option<MemoryEmbeddingProviderConfig>,
+        default_importance_profile: Option<MemoryTypeImportanceProfile>,
+    ) -> Self {
         let root_dir = root_dir.into();
         let resolved = resolve_memory_backend(&root_dir);
+        let mut profile = default_importance_profile.unwrap_or_default();
+        if let Err(error) = profile.validate() {
+            tracing::warn!(
+                error = %error,
+                "invalid runtime memory type default importance profile; falling back to built-in defaults"
+            );
+            profile = MemoryTypeImportanceProfile::default();
+        }
         let mut store = Self {
             root_dir,
             embedding_provider,
+            default_importance_profile: profile,
             storage_backend: resolved.backend,
             storage_path: resolved.storage_path,
             backend_reason_code: resolved.reason_code,
@@ -621,6 +719,11 @@ impl FileMemoryStore {
     /// Returns the resolved storage file path, when applicable.
     pub fn storage_path(&self) -> Option<&Path> {
         self.storage_path.as_deref()
+    }
+
+    /// Returns the resolved runtime-configured memory-type default importance profile.
+    pub fn default_importance_profile(&self) -> &MemoryTypeImportanceProfile {
+        &self.default_importance_profile
     }
 
     /// Imports JSONL artifacts into the active backend.
@@ -696,7 +799,9 @@ impl FileMemoryStore {
             Some(value) => {
                 bail!("importance must be within 0.0..=1.0 (received {value})")
             }
-            None => resolved_memory_type.default_importance(),
+            None => self
+                .default_importance_profile
+                .importance_for(resolved_memory_type),
         };
         let existing_records = self.load_latest_records()?;
         let known_memory_ids = existing_records
@@ -1037,9 +1142,10 @@ mod tests {
         rank_text_candidates_bm25, FileMemoryStore, MemoryEmbeddingProviderConfig,
         MemoryIngestionLlmOptions, MemoryIngestionOptions, MemoryLifecycleMaintenancePolicy,
         MemoryLifecycleMaintenanceResult, MemoryRelationInput, MemoryScopeFilter,
-        MemorySearchOptions, MemoryStorageBackend, MemoryType, RankedTextCandidate,
-        RuntimeMemoryRecord, MEMORY_BACKEND_ENV, MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT,
-        MEMORY_INGESTION_LLM_DEFAULT_TIMEOUT_MS, MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
+        MemorySearchOptions, MemoryStorageBackend, MemoryType, MemoryTypeImportanceProfile,
+        RankedTextCandidate, RuntimeMemoryRecord, MEMORY_BACKEND_ENV,
+        MEMORY_INGESTION_DEFAULT_CHUNK_LINE_COUNT, MEMORY_INGESTION_LLM_DEFAULT_TIMEOUT_MS,
+        MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
     };
     use crate::memory_contract::{MemoryEntry, MemoryScope};
     use httpmock::{Method::POST, MockServer};
@@ -1761,6 +1867,87 @@ mod tests {
         assert_eq!(decoded.last_accessed_at_unix_ms, 0);
         assert_eq!(decoded.access_count, 0);
         assert!(!decoded.forgotten);
+    }
+
+    #[test]
+    fn unit_memory_type_importance_profile_set_importance_updates_selected_type() {
+        let mut profile = MemoryTypeImportanceProfile::default();
+        let initial_goal = profile.goal;
+        profile.set_importance(MemoryType::Identity, 0.44);
+        profile.set_importance(MemoryType::Observation, 0.11);
+
+        assert!((profile.identity - 0.44).abs() <= 0.000_001);
+        assert!((profile.observation - 0.11).abs() <= 0.000_001);
+        assert!((profile.goal - initial_goal).abs() <= 0.000_001);
+    }
+
+    #[test]
+    fn unit_memory_type_importance_profile_validate_rejects_invalid_values() {
+        let mut non_finite = MemoryTypeImportanceProfile::default();
+        non_finite.identity = f32::INFINITY;
+        let non_finite_error = non_finite
+            .validate()
+            .expect_err("non-finite defaults must fail validation");
+        assert!(non_finite_error.to_string().contains("identity"));
+
+        let mut out_of_range = MemoryTypeImportanceProfile::default();
+        out_of_range.goal = 1.5;
+        let out_of_range_error = out_of_range
+            .validate()
+            .expect_err("out-of-range defaults must fail validation");
+        assert!(out_of_range_error.to_string().contains("goal"));
+
+        let mut negative = MemoryTypeImportanceProfile::default();
+        negative.todo = -0.01;
+        let negative_error = negative
+            .validate()
+            .expect_err("negative defaults must fail validation");
+        assert!(negative_error.to_string().contains("todo"));
+    }
+
+    #[test]
+    fn spec_2589_c02_file_memory_store_applies_configured_type_default_importance() {
+        let temp = tempdir().expect("tempdir");
+        let mut profile = MemoryTypeImportanceProfile::default();
+        profile.identity = 0.42;
+        profile.observation = 0.18;
+
+        let store = FileMemoryStore::new_with_embedding_provider_and_importance_profile(
+            temp.path(),
+            None,
+            Some(profile),
+        );
+        let resolved_profile = store.default_importance_profile();
+        assert!((resolved_profile.identity - 0.42).abs() <= 0.000_001);
+        assert!((resolved_profile.observation - 0.18).abs() <= 0.000_001);
+        let scope = lifecycle_scope();
+
+        let identity = store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry(
+                    "memory-configured-identity",
+                    "identity from configured profile",
+                ),
+                Some(MemoryType::Identity),
+                None,
+            )
+            .expect("write identity with configured fallback");
+        assert!((identity.record.importance - 0.42).abs() <= 0.000_001);
+
+        let observation = store
+            .write_entry_with_metadata(
+                &scope,
+                lifecycle_entry(
+                    "memory-configured-observation",
+                    "observation from configured profile",
+                ),
+                None,
+                None,
+            )
+            .expect("write observation with configured fallback");
+        assert_eq!(observation.record.memory_type, MemoryType::Observation);
+        assert!((observation.record.importance - 0.18).abs() <= 0.000_001);
     }
 
     #[test]

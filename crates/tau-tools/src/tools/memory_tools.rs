@@ -334,9 +334,10 @@ impl AgentTool for MemoryWriteTool {
             recency_weight_bps,
             confidence_bps,
         };
-        let store = FileMemoryStore::new_with_embedding_provider(
+        let store = FileMemoryStore::new_with_embedding_provider_and_importance_profile(
             self.policy.memory_state_dir.clone(),
             self.policy.memory_embedding_provider_config(),
+            Some(self.policy.memory_default_importance_profile.clone()),
         );
         let storage_path = store
             .storage_path()
