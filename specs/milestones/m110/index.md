@@ -11,8 +11,10 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
 - Epic: #2665
 - Completed Story: #2666
 - Completed Task: #2667
-- In-Progress Story: #2669
+- Completed Story: #2669
 - Completed Task: #2670
+- In-Progress Story: #2672
+- Completed Task: #2673
 
 ## Deliverables
 - Completed (`#2667`):
@@ -25,10 +27,14 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
   - Gateway channel lifecycle action endpoint:
     - `POST /gateway/channels/{channel}/lifecycle`
   - Status payload discovery field for lifecycle endpoint integration.
-  - Integration tests validating auth, channel/action validation, and deterministic lifecycle response contract.
+- Completed (`#2673`):
+  - Gateway config endpoints:
+    - `GET /gateway/config`
+    - `PATCH /gateway/config`
+  - Config patch apply semantics (`applied` vs `restart_required_fields`) and heartbeat hot-reload policy support.
 
 ## Exit Criteria
 - Epic #2665 is closed with all scoped PRD phase-1 tasks completed.
-- `specs/2667/spec.md` and `specs/2670/spec.md` status are `Implemented`.
+- `specs/2667/spec.md`, `specs/2670/spec.md`, and `specs/2673/spec.md` status are `Implemented`.
 - Scoped verification gates pass with evidence (`fmt`, `clippy -p tau-gateway`, targeted tests).
 - PRD checklist progress is updated for completed phase-1 endpoint slices.
