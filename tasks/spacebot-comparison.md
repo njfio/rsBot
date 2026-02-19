@@ -467,12 +467,12 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Spacebot spawns OpenCode as a persistent subprocess for deep coding sessions, communicating via HTTP+SSE.
 **Why it matters**: Enables specialized coding workflows that go beyond simple tool use.
 **Pathway**:
-- [ ] Add external coding agent subprocess support to worker system
+- [x] Add external coding agent subprocess support to worker system
 - [x] HTTP+SSE communication protocol for streaming progress
 - [x] Server pool for managing persistent processes per workspace
 - [x] Interactive follow-up support (send additional context to running session)
 - [x] 10-minute inactivity timeout with auto-cleanup
-- Progress evidence: #2619 (runtime bridge staging) and #2638 (gateway HTTP+SSE integration)
+- Progress evidence: #2619 (runtime bridge staging), #2638 (gateway HTTP+SSE integration), and #2647 (worker subprocess execution integration)
 - **Files**: New module in `tau-tools/` or `tau-runtime/`
 - **Effort**: Medium-Large
 

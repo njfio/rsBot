@@ -2345,6 +2345,11 @@ fn map_external_coding_agent_bridge_error(
         ExternalCodingAgentBridgeError::InvalidMessage => {
             OpenResponsesApiError::bad_request("invalid_message", "message must be non-empty")
         }
+        ExternalCodingAgentBridgeError::InvalidSubprocessConfig(message) => {
+            OpenResponsesApiError::internal(format!(
+                "external coding-agent subprocess configuration is invalid: {message}"
+            ))
+        }
         ExternalCodingAgentBridgeError::SessionNotFound(session_id) => {
             OpenResponsesApiError::not_found(
                 "external_coding_agent_session_not_found",
@@ -2357,6 +2362,17 @@ fn map_external_coding_agent_bridge_error(
                 "external_coding_agent_session_limit_reached",
                 format!("max active sessions limit reached ({limit})"),
             )
+        }
+        ExternalCodingAgentBridgeError::SubprocessSpawnFailed {
+            workspace_id,
+            error,
+        } => OpenResponsesApiError::gateway_failure(format!(
+            "failed to start external coding-agent worker for workspace '{workspace_id}': {error}"
+        )),
+        ExternalCodingAgentBridgeError::SubprocessIoError { session_id, error } => {
+            OpenResponsesApiError::gateway_failure(format!(
+                "external coding-agent worker I/O failed for session '{session_id}': {error}"
+            ))
         }
     }
 }

@@ -2931,6 +2931,141 @@ async fn integration_external_coding_agent_stream_replays_events_and_done_frame(
     handle.abort();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn integration_external_coding_agent_subprocess_mode_streams_worker_stdout_events() {
+    let temp = tempdir().expect("tempdir");
+    let mut subprocess_env = std::collections::BTreeMap::new();
+    subprocess_env.insert("TAU_SUBPROCESS_TEST_MODE".to_string(), "1".to_string());
+    let state = Arc::new(GatewayOpenResponsesServerState::new(
+        GatewayOpenResponsesServerConfig {
+            client: Arc::new(MockGatewayLlmClient::default()),
+            model: "openai/gpt-4o-mini".to_string(),
+            model_input_cost_per_million: Some(10.0),
+            model_cached_input_cost_per_million: None,
+            model_output_cost_per_million: Some(20.0),
+            system_prompt: "You are Tau.".to_string(),
+            max_turns: 4,
+            tool_registrar: Arc::new(NoopGatewayToolRegistrar),
+            turn_timeout_ms: 0,
+            session_lock_wait_ms: 500,
+            session_lock_stale_ms: 10_000,
+            state_dir: temp.path().join(".tau/gateway"),
+            bind: "127.0.0.1:0".to_string(),
+            auth_mode: GatewayOpenResponsesAuthMode::Token,
+            auth_token: Some("secret".to_string()),
+            auth_password: None,
+            session_ttl_seconds: 3_600,
+            rate_limit_window_seconds: 60,
+            rate_limit_max_requests: 120,
+            max_input_chars: 10_000,
+            runtime_heartbeat: RuntimeHeartbeatSchedulerConfig {
+                enabled: false,
+                interval: std::time::Duration::from_secs(5),
+                state_path: temp.path().join(".tau/runtime-heartbeat/state.json"),
+                ..RuntimeHeartbeatSchedulerConfig::default()
+            },
+            external_coding_agent_bridge: tau_runtime::ExternalCodingAgentBridgeConfig {
+                inactivity_timeout_ms: 10_000,
+                max_active_sessions: 8,
+                max_events_per_session: 128,
+                subprocess: Some(tau_runtime::ExternalCodingAgentSubprocessConfig {
+                    command: "/bin/sh".to_string(),
+                    args: vec![
+                        "-c".to_string(),
+                        "echo boot-from-subprocess; \
+                         while IFS= read -r line; do \
+                           echo out:$line; \
+                         done"
+                            .to_string(),
+                    ],
+                    env: subprocess_env,
+                }),
+            },
+        },
+    ));
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let opened = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"workspace_id":"workspace-subprocess-stream"}))
+        .send()
+        .await
+        .expect("open subprocess stream session")
+        .json::<Value>()
+        .await
+        .expect("parse open subprocess stream response");
+    let session_id = opened["session"]["session_id"]
+        .as_str()
+        .expect("subprocess stream session id")
+        .to_string();
+
+    let followup_response = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"message":"hello-subprocess"}))
+        .send()
+        .await
+        .expect("append subprocess followup");
+    assert_eq!(followup_response.status(), StatusCode::OK);
+
+    let stream_endpoint = format!(
+        "http://{addr}{}",
+        resolve_session_endpoint(
+            EXTERNAL_CODING_AGENT_SESSION_STREAM_ENDPOINT,
+            session_id.as_str()
+        )
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let buffer = loop {
+        let response = client
+            .get(stream_endpoint.as_str())
+            .bearer_auth("secret")
+            .send()
+            .await
+            .expect("subprocess stream request");
+        let next_buffer = response.text().await.expect("read subprocess stream body");
+        if next_buffer.contains("boot-from-subprocess")
+            && next_buffer.contains("out:hello-subprocess")
+        {
+            break next_buffer;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for subprocess stream output, buffer={next_buffer}"
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    };
+    assert!(buffer.contains("event: external_coding_agent.progress"));
+    assert!(buffer.contains("event: done"));
+
+    let _closed = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_CLOSE_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("close subprocess stream session");
+
+    handle.abort();
+}
+
 #[tokio::test]
 async fn regression_external_coding_agent_reap_endpoint_times_out_stale_sessions() {
     let temp = tempdir().expect("tempdir");
@@ -2966,6 +3101,7 @@ async fn regression_external_coding_agent_reap_endpoint_times_out_stale_sessions
                 inactivity_timeout_ms: 5,
                 max_active_sessions: 8,
                 max_events_per_session: 64,
+                subprocess: None,
             },
         },
     ));
