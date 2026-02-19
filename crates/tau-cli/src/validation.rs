@@ -1341,11 +1341,23 @@ pub fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()> {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let auth_token_id = cli
+        .gateway_openresponses_auth_token_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let auth_password = cli
         .gateway_openresponses_auth_password
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let auth_password_id = cli
+        .gateway_openresponses_auth_password_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let has_auth_token = auth_token.is_some() || auth_token_id.is_some();
+    let has_auth_password = auth_password.is_some() || auth_password_id.is_some();
     if cli.gateway_openresponses_max_input_chars == 0 {
         bail!("--gateway-openresponses-max-input-chars must be greater than 0");
     }
@@ -1362,16 +1374,16 @@ pub fn validate_gateway_openresponses_server_cli(cli: &Cli) -> Result<()> {
     let bind = tau_gateway::validate_gateway_openresponses_bind(&cli.gateway_openresponses_bind)?;
     match cli.gateway_openresponses_auth_mode {
         CliGatewayOpenResponsesAuthMode::Token => {
-            if auth_token.is_none() {
+            if !has_auth_token {
                 bail!(
-                    "--gateway-openresponses-auth-token is required when --gateway-openresponses-auth-mode=token"
+                    "--gateway-openresponses-auth-token (or --gateway-openresponses-auth-token-id) is required when --gateway-openresponses-auth-mode=token"
                 );
             }
         }
         CliGatewayOpenResponsesAuthMode::PasswordSession => {
-            if auth_password.is_none() {
+            if !has_auth_password {
                 bail!(
-                    "--gateway-openresponses-auth-password is required when --gateway-openresponses-auth-mode=password-session"
+                    "--gateway-openresponses-auth-password (or --gateway-openresponses-auth-password-id) is required when --gateway-openresponses-auth-mode=password-session"
                 );
             }
         }

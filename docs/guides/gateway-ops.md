@@ -54,6 +54,22 @@ cargo run -p tau-coding-agent -- \
   --gateway-openresponses-max-input-chars 32000
 ```
 
+Preferred encrypted-secret workflow (credential-store IDs):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --integration-auth "/integration-auth set gateway-openresponses-auth-token local-dev-token"
+
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --gateway-state-dir .tau/gateway \
+  --gateway-openresponses-server \
+  --gateway-openresponses-bind 127.0.0.1:8787 \
+  --gateway-openresponses-auth-mode token \
+  --gateway-openresponses-auth-token-id gateway-openresponses-auth-token \
+  --gateway-openresponses-max-input-chars 32000
+```
+
 Remote-access profile posture:
 
 - `--gateway-remote-profile local-only` (default)
@@ -86,8 +102,8 @@ cat docs/guides/gateway-remote-access.md
 
 Auth mode summary:
 
-- `token` (default): bearer token required on `/v1/responses`, `/v1/chat/completions`, `/v1/completions`, `/v1/models`, and `/gateway/status`.
-- `password-session`: exchange password once at `/gateway/auth/session`, then use returned bearer session token.
+- `token` (default): bearer token required on `/v1/responses`, `/v1/chat/completions`, `/v1/completions`, `/v1/models`, and `/gateway/status` (set direct token or `--gateway-openresponses-auth-token-id`).
+- `password-session`: exchange password once at `/gateway/auth/session`, then use returned bearer session token (set direct password or `--gateway-openresponses-auth-password-id`).
 - `localhost-dev`: no bearer required, but bind must be loopback (`127.0.0.1`/`::1`).
 
 Password-session startup example:
@@ -100,6 +116,24 @@ cargo run -p tau-coding-agent -- \
   --gateway-openresponses-bind 127.0.0.1:8787 \
   --gateway-openresponses-auth-mode password-session \
   --gateway-openresponses-auth-password "local-password" \
+  --gateway-openresponses-session-ttl-seconds 3600 \
+  --gateway-openresponses-rate-limit-window-seconds 60 \
+  --gateway-openresponses-rate-limit-max-requests 120
+```
+
+Password-session via credential-store ID:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --integration-auth "/integration-auth set gateway-openresponses-auth-password local-password"
+
+cargo run -p tau-coding-agent -- \
+  --model openai/gpt-4o-mini \
+  --gateway-state-dir .tau/gateway \
+  --gateway-openresponses-server \
+  --gateway-openresponses-bind 127.0.0.1:8787 \
+  --gateway-openresponses-auth-mode password-session \
+  --gateway-openresponses-auth-password-id gateway-openresponses-auth-password \
   --gateway-openresponses-session-ttl-seconds 3600 \
   --gateway-openresponses-rate-limit-window-seconds 60 \
   --gateway-openresponses-rate-limit-max-requests 120

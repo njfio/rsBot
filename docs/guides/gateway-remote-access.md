@@ -49,6 +49,22 @@ cargo run -p tau-coding-agent -- \
   --gateway-remote-profile-json
 ```
 
+Secret-id workflow (preferred for encrypted credential-store backed auth):
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --integration-auth "/integration-auth set gateway-openresponses-auth-token edge-token"
+
+cargo run -p tau-coding-agent -- \
+  --gateway-openresponses-server \
+  --gateway-remote-profile tailscale-serve \
+  --gateway-openresponses-auth-mode token \
+  --gateway-openresponses-auth-token-id gateway-openresponses-auth-token \
+  --gateway-openresponses-bind 127.0.0.1:8787 \
+  --gateway-remote-profile-inspect \
+  --gateway-remote-profile-json
+```
+
 Export the remote workflow plan (JSON):
 
 ```bash
@@ -67,21 +83,21 @@ cargo run -p tau-coding-agent -- \
 | Profile | Intended exposure | Required auth mode | Required secret | Bind requirement | Common hold reason codes |
 | --- | --- | --- | --- | --- | --- |
 | `local-only` | workstation/local service | any | none | loopback recommended | `local_only_non_loopback_bind` |
-| `password-remote` | controlled remote operators | `password-session` | `--gateway-openresponses-auth-password` | loopback recommended | `password_remote_auth_mode_mismatch`, `password_remote_missing_password` |
-| `proxy-remote` | reverse proxy or private tunnel | `token` | `--gateway-openresponses-auth-token` | loopback recommended | `proxy_remote_auth_mode_mismatch`, `proxy_remote_missing_token` |
+| `password-remote` | controlled remote operators | `password-session` | `--gateway-openresponses-auth-password` or `--gateway-openresponses-auth-password-id` | loopback recommended | `password_remote_auth_mode_mismatch`, `password_remote_missing_password` |
+| `proxy-remote` | reverse proxy or private tunnel | `token` | `--gateway-openresponses-auth-token` or `--gateway-openresponses-auth-token-id` | loopback recommended | `proxy_remote_auth_mode_mismatch`, `proxy_remote_missing_token` |
 | `tailscale-serve` | private tailnet access | `token` or `password-session` | token or password | loopback required | `tailscale_serve_non_loopback_bind`, `tailscale_serve_localhost_dev_auth_unsupported` |
-| `tailscale-funnel` | public funnel exposure | `password-session` | `--gateway-openresponses-auth-password` | loopback required | `tailscale_funnel_auth_mode_mismatch`, `tailscale_funnel_missing_password`, `tailscale_funnel_non_loopback_bind` |
+| `tailscale-funnel` | public funnel exposure | `password-session` | `--gateway-openresponses-auth-password` or `--gateway-openresponses-auth-password-id` | loopback required | `tailscale_funnel_auth_mode_mismatch`, `tailscale_funnel_missing_password`, `tailscale_funnel_non_loopback_bind` |
 
 ## Fail-closed troubleshooting
 
 - Symptom: `--gateway-remote-plan` exits non-zero.
   Action: read `reason_codes` in stderr, then run `--gateway-remote-profile-inspect --gateway-remote-profile-json` with the same flags.
 - Symptom: selected `tailscale-funnel` profile fails with `tailscale_funnel_missing_password`.
-  Action: set non-empty `--gateway-openresponses-auth-password` and keep `--gateway-openresponses-auth-mode password-session`.
+  Action: set non-empty `--gateway-openresponses-auth-password` (or `--gateway-openresponses-auth-password-id`) and keep `--gateway-openresponses-auth-mode password-session`.
 - Symptom: selected profile fails with `*_non_loopback_bind`.
   Action: force loopback bind (`127.0.0.1:8787` or `::1:8787`) and expose via tunnel/proxy.
 - Symptom: selected `tailscale-serve` profile fails with `tailscale_serve_localhost_dev_auth_unsupported`.
-  Action: switch to `token` or `password-session` auth mode and set the corresponding secret.
+  Action: switch to `token` or `password-session` auth mode and set the corresponding secret (direct or `*-id`).
 - Symptom: profile fails with `*_server_disabled`.
   Action: add `--gateway-openresponses-server` before remote profile/plan evaluation.
 
@@ -97,7 +113,8 @@ Artifacts:
 ## Security recommendations
 
 - Prefer loopback bind with external tunnel/proxy termination over direct public binds.
-- Keep bearer/password secrets out of shell history; use environment variables or secret stores.
+- Keep bearer/password secrets out of shell history; prefer credential-store IDs (`--gateway-openresponses-auth-token-id` / `--gateway-openresponses-auth-password-id`).
+- Use `/integration-auth set <id> <secret>` to rotate stored secrets without editing launch scripts.
 - Rotate gateway auth credentials on operator changes.
 - Keep transport health and gateway status checks in rollout gates:
   - `--transport-health-inspect gateway --transport-health-json`

@@ -46,8 +46,8 @@ use tau_multi_channel::{
 use tau_ops::TransportHealthSnapshot;
 use tau_orchestrator::multi_agent_runtime::MultiAgentRuntimeConfig;
 use tau_provider::{
-    load_credential_store, resolve_credential_store_encryption_mode, AuthCommandConfig,
-    ModelCatalog,
+    load_credential_store, resolve_credential_store_encryption_mode,
+    resolve_secret_from_cli_or_store_id, AuthCommandConfig, ModelCatalog,
 };
 use tau_runtime::RuntimeHeartbeatSchedulerConfig;
 use tau_skills::default_skills_lock_path;
@@ -427,11 +427,20 @@ pub fn map_gateway_openresponses_auth_mode(
     }
 }
 
-pub fn resolve_gateway_openresponses_auth(cli: &Cli) -> (Option<String>, Option<String>) {
-    let auth_token = resolve_non_empty_cli_value(cli.gateway_openresponses_auth_token.as_deref());
-    let auth_password =
-        resolve_non_empty_cli_value(cli.gateway_openresponses_auth_password.as_deref());
-    (auth_token, auth_password)
+pub fn resolve_gateway_openresponses_auth(cli: &Cli) -> Result<(Option<String>, Option<String>)> {
+    let auth_token = resolve_secret_from_cli_or_store_id(
+        cli,
+        cli.gateway_openresponses_auth_token.as_deref(),
+        cli.gateway_openresponses_auth_token_id.as_deref(),
+        "--gateway-openresponses-auth-token-id",
+    )?;
+    let auth_password = resolve_secret_from_cli_or_store_id(
+        cli,
+        cli.gateway_openresponses_auth_password.as_deref(),
+        cli.gateway_openresponses_auth_password_id.as_deref(),
+        "--gateway-openresponses-auth-password-id",
+    )?;
+    Ok((auth_token, auth_password))
 }
 
 pub fn build_gateway_openresponses_server_config(
@@ -440,8 +449,8 @@ pub fn build_gateway_openresponses_server_config(
     model_ref: &ModelRef,
     system_prompt: &str,
     tool_policy: &ToolPolicy,
-) -> GatewayOpenResponsesServerConfig {
-    let (auth_token, auth_password) = resolve_gateway_openresponses_auth(cli);
+) -> Result<GatewayOpenResponsesServerConfig> {
+    let (auth_token, auth_password) = resolve_gateway_openresponses_auth(cli)?;
     let model_catalog = ModelCatalog::built_in();
     let model_catalog_entry = model_catalog.find_model_ref(model_ref);
     let policy = tool_policy.clone();
@@ -449,7 +458,7 @@ pub fn build_gateway_openresponses_server_config(
     if runtime_heartbeat.state_path == PathBuf::from(".tau/runtime-heartbeat/state.json") {
         runtime_heartbeat.state_path = cli.gateway_state_dir.join("runtime-heartbeat/state.json");
     }
-    GatewayOpenResponsesServerConfig {
+    Ok(GatewayOpenResponsesServerConfig {
         client,
         model: model_ref.model.clone(),
         model_input_cost_per_million: model_catalog_entry
@@ -476,7 +485,7 @@ pub fn build_gateway_openresponses_server_config(
         rate_limit_max_requests: cli.gateway_openresponses_rate_limit_max_requests,
         max_input_chars: cli.gateway_openresponses_max_input_chars,
         runtime_heartbeat,
-    }
+    })
 }
 
 pub async fn run_gateway_openresponses_server_if_requested(
@@ -495,7 +504,7 @@ pub async fn run_gateway_openresponses_server_if_requested(
         model_ref,
         system_prompt,
         tool_policy,
-    );
+    )?;
     tau_gateway::run_gateway_openresponses_server(config).await?;
     Ok(true)
 }

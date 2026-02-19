@@ -15,6 +15,7 @@ Revalidate the Tau gap inventory against current `main`, close stale claims with
 - Task: #2610
 - Task: #2611
 - Task: #2612
+- Task: #2613
 
 ## Deliverables
 - Evidence-backed status matrix for each tracked gap item (done/partial/open with references).
@@ -24,13 +25,15 @@ Revalidate the Tau gap inventory against current `main`, close stale claims with
 - Branch hygiene automation for stale merged remote branch inventory + safe prune controls.
 - Outbound provider token-bucket throttling controls with deterministic burst handling.
 - Runtime log sanitization audit + regression checks for secret/token leakage prevention in observability logs.
+- Gateway OpenResponses auth secret-id migration for encrypted credential-store backed token/password resolution.
 - Follow-up issues for remaining non-trivial architecture gaps that cannot be closed in one delivery slice.
 
 ## Exit Criteria
-- #2605, #2606, #2607, #2608, #2609, #2610, #2611, and #2612 closed.
+- #2605, #2606, #2607, #2608, #2609, #2610, #2611, #2612, and #2613 closed.
 - `specs/2608/spec.md` status set to `Implemented`.
 - `specs/2609/spec.md` status set to `Implemented`.
 - `specs/2610/spec.md` status set to `Implemented`.
 - `specs/2611/spec.md` status set to `Implemented`.
 - `specs/2612/spec.md` status set to `Implemented`.
+- `specs/2613/spec.md` status set to `Implemented`.
 - M104-linked roadmap artifacts reflect validated status with concrete evidence links.
