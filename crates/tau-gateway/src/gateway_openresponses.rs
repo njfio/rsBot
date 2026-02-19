@@ -134,6 +134,7 @@ const GATEWAY_SAFETY_RULES_ENDPOINT: &str = "/gateway/safety/rules";
 const GATEWAY_SAFETY_TEST_ENDPOINT: &str = "/gateway/safety/test";
 const GATEWAY_AUDIT_SUMMARY_ENDPOINT: &str = "/gateway/audit/summary";
 const GATEWAY_AUDIT_LOG_ENDPOINT: &str = "/gateway/audit/log";
+const GATEWAY_TRAINING_STATUS_ENDPOINT: &str = "/gateway/training/status";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
@@ -804,6 +805,10 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
         )
         .route(GATEWAY_AUDIT_LOG_ENDPOINT, get(handle_gateway_audit_log))
         .route(
+            GATEWAY_TRAINING_STATUS_ENDPOINT,
+            get(handle_gateway_training_status),
+        )
+        .route(
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
         )
@@ -917,6 +922,7 @@ async fn handle_gateway_status(
                     "safety_test_endpoint": GATEWAY_SAFETY_TEST_ENDPOINT,
                     "audit_summary_endpoint": GATEWAY_AUDIT_SUMMARY_ENDPOINT,
                     "audit_log_endpoint": GATEWAY_AUDIT_LOG_ENDPOINT,
+                    "training_status_endpoint": GATEWAY_TRAINING_STATUS_ENDPOINT,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,
@@ -1287,6 +1293,25 @@ async fn handle_dashboard_alerts(
             "health": snapshot.health,
             "training": snapshot.training,
             "state": snapshot.state,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_gateway_training_status(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize_dashboard_request(&state, &headers) {
+        return error.into_response();
+    }
+    let snapshot = collect_gateway_dashboard_snapshot(&state.config.state_dir);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "schema_version": snapshot.schema_version,
+            "generated_unix_ms": snapshot.generated_unix_ms,
+            "training": snapshot.training,
         })),
     )
         .into_response()

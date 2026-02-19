@@ -2266,6 +2266,122 @@ async fn regression_spec_2682_c03_c06_c07_audit_endpoints_handle_invalid_lines_q
 }
 
 #[tokio::test]
+async fn integration_spec_2685_c01_c04_training_status_endpoint_returns_report_and_status_discovery(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_training_runtime_fixture(temp.path(), 1);
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let training_status_response = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/status")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("training status response");
+    assert_eq!(training_status_response.status(), StatusCode::OK);
+    let training_status_payload = training_status_response
+        .json::<Value>()
+        .await
+        .expect("parse training status payload");
+    assert_eq!(
+        training_status_payload["schema_version"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        training_status_payload["training"]["status_present"],
+        Value::Bool(true)
+    );
+    assert_eq!(
+        training_status_payload["training"]["run_state"],
+        Value::String("completed".to_string())
+    );
+    assert_eq!(
+        training_status_payload["training"]["total_rollouts"],
+        Value::Number(4_u64.into())
+    );
+    assert_eq!(
+        training_status_payload["training"]["failed"],
+        Value::Number(1_u64.into())
+    );
+
+    let status_response = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_payload = status_response
+        .json::<Value>()
+        .await
+        .expect("parse status payload");
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["training_status_endpoint"],
+        "/gateway/training/status"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2685_c02_training_status_endpoint_returns_unavailable_payload_when_missing(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let training_status_response = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/status")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("training status response");
+    assert_eq!(training_status_response.status(), StatusCode::OK);
+    let training_status_payload = training_status_response
+        .json::<Value>()
+        .await
+        .expect("parse unavailable training status payload");
+    assert_eq!(
+        training_status_payload["training"]["status_present"],
+        Value::Bool(false)
+    );
+    assert_eq!(
+        training_status_payload["training"]["run_state"],
+        Value::String("unknown".to_string())
+    );
+    assert_eq!(
+        training_status_payload["training"]["diagnostics"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0)
+            > 0,
+        true
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2685_c03_training_status_endpoint_rejects_unauthorized_requests() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let training_status_response = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/status")
+        .send()
+        .await
+        .expect("unauthorized training status response");
+    assert_eq!(training_status_response.status(), StatusCode::UNAUTHORIZED);
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn regression_gateway_memory_graph_endpoint_rejects_unauthorized_requests() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");
