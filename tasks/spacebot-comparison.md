@@ -281,10 +281,10 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **Why it matters**: Enables the agent to follow chains of reasoning. "Decision X" → `CausedBy` → "Event Y" → `ResultOf` → "Goal Z".
 **Pathway**:
 - [x] Add relation table to tau-memory SQLite schema (`memory_relations` with source/target/relation_type/weight/effective_weight)
-- [ ] Add `MemoryRelation` enum with Spacebot-parity 6 relation types (current implementation validates a string relation set)
+- [x] Add `MemoryRelation` enum with Spacebot-parity 6 relation types
 - [x] Modify `memory_save` to accept optional `relates_to` parameter
-- [ ] Add graph BFS traversal to memory search (current implementation applies deterministic relation-weight graph signals)
-- [ ] Merge graph results into RRF scoring (current implementation fuses BM25+vector via RRF, then adds graph score)
+- [x] Add graph BFS traversal to memory search
+- [x] Merge graph results into RRF scoring
 - **Files**: `tau-memory/src/`, memory search functions
 - **Effort**: Medium
 

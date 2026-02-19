@@ -60,14 +60,6 @@ const MEMORY_STORAGE_REASON_ENV_AUTO: &str = "memory_storage_backend_env_auto";
 const MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK: &str =
     "memory_storage_backend_env_invalid_fallback";
 const MEMORY_STORAGE_REASON_INIT_IMPORT_FAILED: &str = "memory_storage_backend_import_failed";
-const MEMORY_RELATION_TYPE_DEFAULT: &str = "relates_to";
-const MEMORY_RELATION_TYPE_VALUES: &[&str] = &[
-    "relates_to",
-    "depends_on",
-    "supports",
-    "blocks",
-    "references",
-];
 const MEMORY_GRAPH_SIGNAL_WEIGHT_DEFAULT: f32 = 0.25;
 pub const MEMORY_INVALID_RELATION_REASON_CODE: &str = "memory_invalid_relation";
 
@@ -158,11 +150,54 @@ fn default_ingestion_llm_timeout_ms() -> u64 {
     MEMORY_INGESTION_LLM_DEFAULT_TIMEOUT_MS
 }
 
+/// Enumerates supported canonical `MemoryRelationType` values.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRelationType {
+    RelatedTo,
+    Updates,
+    Contradicts,
+    CausedBy,
+    ResultOf,
+    PartOf,
+}
+
+impl MemoryRelationType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RelatedTo => "related_to",
+            Self::Updates => "updates",
+            Self::Contradicts => "contradicts",
+            Self::CausedBy => "caused_by",
+            Self::ResultOf => "result_of",
+            Self::PartOf => "part_of",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "related_to" | "relates_to" | "supports" | "references" => Some(Self::RelatedTo),
+            "updates" => Some(Self::Updates),
+            "contradicts" | "blocks" => Some(Self::Contradicts),
+            "caused_by" | "depends_on" => Some(Self::CausedBy),
+            "result_of" => Some(Self::ResultOf),
+            "part_of" => Some(Self::PartOf),
+            _ => None,
+        }
+    }
+}
+
+impl Default for MemoryRelationType {
+    fn default() -> Self {
+        Self::RelatedTo
+    }
+}
+
 /// Public struct `MemoryRelation` used across Tau components.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MemoryRelation {
     pub target_id: String,
-    pub relation_type: String,
+    pub relation_type: MemoryRelationType,
     pub weight: f32,
     pub effective_weight: f32,
 }
@@ -1068,7 +1103,7 @@ fn normalize_relations(
         return Ok(Vec::new());
     }
 
-    let mut deduped = BTreeMap::<(String, String), MemoryRelation>::new();
+    let mut deduped = BTreeMap::<(String, MemoryRelationType), MemoryRelation>::new();
     for relation in relations {
         let target_id = relation.target_id.trim();
         if target_id.is_empty() {
@@ -1096,7 +1131,7 @@ fn normalize_relations(
         }
         let effective_weight = raw_weight.clamp(0.0, 1.0);
         deduped.insert(
-            (target_id.to_string(), relation_type.clone()),
+            (target_id.to_string(), relation_type),
             MemoryRelation {
                 target_id: target_id.to_string(),
                 relation_type,
@@ -1109,22 +1144,17 @@ fn normalize_relations(
     Ok(deduped.into_values().collect())
 }
 
-fn normalize_relation_type(value: Option<&str>) -> Result<String> {
-    let normalized = value
-        .unwrap_or(MEMORY_RELATION_TYPE_DEFAULT)
-        .trim()
-        .to_ascii_lowercase();
+fn normalize_relation_type(value: Option<&str>) -> Result<MemoryRelationType> {
+    let normalized = value.unwrap_or("related_to").trim().to_ascii_lowercase();
     if normalized.is_empty() {
         bail!("{MEMORY_INVALID_RELATION_REASON_CODE}: relation_type must not be empty");
     }
-    if MEMORY_RELATION_TYPE_VALUES.contains(&normalized.as_str()) {
-        Ok(normalized)
-    } else {
-        bail!(
+    MemoryRelationType::parse(normalized.as_str()).ok_or_else(|| {
+        anyhow!(
             "{MEMORY_INVALID_RELATION_REASON_CODE}: unsupported relation_type '{}'",
             normalized
-        );
-    }
+        )
+    })
 }
 
 fn current_unix_timestamp_ms() -> u64 {
@@ -2006,6 +2036,86 @@ mod tests {
     }
 
     #[test]
+    fn spec_2592_c01_memory_relation_enum_canonical_roundtrip() {
+        let canonical = [
+            "related_to",
+            "updates",
+            "contradicts",
+            "caused_by",
+            "result_of",
+            "part_of",
+        ];
+        for label in canonical {
+            let relation = super::MemoryRelationType::parse(label)
+                .expect("canonical relation type must parse");
+            assert_eq!(relation.as_str(), label);
+            let encoded = serde_json::to_string(&relation).expect("serialize relation enum");
+            assert_eq!(encoded, format!("\"{label}\""));
+            let decoded: super::MemoryRelationType =
+                serde_json::from_str(encoded.as_str()).expect("deserialize relation enum");
+            assert_eq!(decoded, relation);
+        }
+        assert_eq!(
+            super::MemoryRelationType::parse("depends_on"),
+            Some(super::MemoryRelationType::CausedBy)
+        );
+        assert_eq!(
+            super::MemoryRelationType::parse("relates_to"),
+            Some(super::MemoryRelationType::RelatedTo)
+        );
+        assert_eq!(super::MemoryRelationType::parse(""), None);
+        assert_eq!(super::MemoryRelationType::parse("unknown"), None);
+    }
+
+    #[test]
+    fn spec_2592_c02_normalize_relations_accepts_only_supported_relation_enum_values() {
+        let known_memory_ids = std::collections::BTreeSet::from([String::from("target-memory")]);
+        let valid = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "target-memory".to_string(),
+                relation_type: Some("updates".to_string()),
+                weight: Some(0.75),
+            }],
+            &known_memory_ids,
+        )
+        .expect("valid relation normalization");
+        assert_eq!(valid.len(), 1);
+        assert_eq!(valid[0].target_id, "target-memory");
+        assert_eq!(valid[0].relation_type.as_str(), "updates");
+        assert!((valid[0].weight - 0.75).abs() <= 0.000_001);
+        assert!((valid[0].effective_weight - 0.75).abs() <= 0.000_001);
+
+        let default_type = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "target-memory".to_string(),
+                relation_type: None,
+                weight: None,
+            }],
+            &known_memory_ids,
+        )
+        .expect("default relation type and weight");
+        assert_eq!(default_type[0].relation_type.as_str(), "related_to");
+        assert!((default_type[0].weight - 1.0).abs() <= 0.000_001);
+        assert!((default_type[0].effective_weight - 1.0).abs() <= 0.000_001);
+
+        let invalid_legacy = super::normalize_relations(
+            "source-memory",
+            &[super::MemoryRelationInput {
+                target_id: "target-memory".to_string(),
+                relation_type: Some("unknown_relation".to_string()),
+                weight: Some(0.5),
+            }],
+            &known_memory_ids,
+        )
+        .expect_err("unsupported relation labels must fail closed");
+        assert!(invalid_legacy
+            .to_string()
+            .contains("unsupported relation_type"));
+    }
+
+    #[test]
     fn unit_normalize_relations_validates_target_type_and_weight() {
         let known_memory_ids = std::collections::BTreeSet::from([String::from("target-memory")]);
         let valid = super::normalize_relations(
@@ -2020,7 +2130,7 @@ mod tests {
         .expect("valid relation normalization");
         assert_eq!(valid.len(), 1);
         assert_eq!(valid[0].target_id, "target-memory");
-        assert_eq!(valid[0].relation_type, "depends_on");
+        assert_eq!(valid[0].relation_type, super::MemoryRelationType::CausedBy);
         assert!((valid[0].weight - 0.75).abs() <= 0.000_001);
         assert!((valid[0].effective_weight - 0.75).abs() <= 0.000_001);
 
@@ -2034,7 +2144,10 @@ mod tests {
             &known_memory_ids,
         )
         .expect("default relation type and weight");
-        assert_eq!(default_type[0].relation_type, "relates_to");
+        assert_eq!(
+            default_type[0].relation_type,
+            super::MemoryRelationType::RelatedTo
+        );
         assert!((default_type[0].weight - 1.0).abs() <= 0.000_001);
         assert!((default_type[0].effective_weight - 1.0).abs() <= 0.000_001);
 
@@ -2259,7 +2372,10 @@ mod tests {
             .expect("source exists");
         assert_eq!(read.relations.len(), 1);
         assert_eq!(read.relations[0].target_id, "target-legacy");
-        assert_eq!(read.relations[0].relation_type, "depends_on");
+        assert_eq!(
+            read.relations[0].relation_type,
+            super::MemoryRelationType::CausedBy
+        );
         assert!((read.relations[0].effective_weight - 0.7).abs() <= 0.000_001);
     }
 
