@@ -307,6 +307,30 @@ enum RuntimeHeartbeatHotReloadWatcherEvent {
     WatchError(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeHeartbeatHotReloadPolicyFingerprint {
+    exists: bool,
+    len: Option<u64>,
+    modified: Option<SystemTime>,
+}
+
+impl RuntimeHeartbeatHotReloadPolicyFingerprint {
+    fn read(path: &Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Self {
+                exists: true,
+                len: Some(metadata.len()),
+                modified: metadata.modified().ok(),
+            },
+            Err(_) => Self {
+                exists: false,
+                len: None,
+                modified: None,
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RuntimeHeartbeatHotReloadState {
     policy_path: PathBuf,
@@ -314,6 +338,7 @@ struct RuntimeHeartbeatHotReloadState {
     watcher: Option<RecommendedWatcher>,
     watcher_rx: Option<mpsc::UnboundedReceiver<RuntimeHeartbeatHotReloadWatcherEvent>>,
     pending_watcher_diagnostics: Vec<String>,
+    last_policy_fingerprint: Option<RuntimeHeartbeatHotReloadPolicyFingerprint>,
 }
 
 impl RuntimeHeartbeatHotReloadState {
@@ -324,6 +349,9 @@ impl RuntimeHeartbeatHotReloadState {
             watcher: None,
             watcher_rx: None,
             pending_watcher_diagnostics: Vec::new(),
+            last_policy_fingerprint: Some(RuntimeHeartbeatHotReloadPolicyFingerprint::read(
+                &policy_path,
+            )),
         };
 
         let Some(policy_parent) = policy_path.parent().map(Path::to_path_buf) else {
@@ -428,6 +456,25 @@ impl RuntimeHeartbeatHotReloadState {
                     break;
                 }
             }
+        }
+
+        if self.pending_policy_reload || self.watcher_rx.is_none() {
+            return;
+        }
+        let current_fingerprint =
+            RuntimeHeartbeatHotReloadPolicyFingerprint::read(&self.policy_path);
+        let changed = self
+            .last_policy_fingerprint
+            .as_ref()
+            .map(|previous| previous != &current_fingerprint)
+            .unwrap_or(false);
+        self.last_policy_fingerprint = Some(current_fingerprint);
+        if changed {
+            self.pending_policy_reload = true;
+            outcome.diagnostics.push(format!(
+                "hot_reload_policy_poll_detected_change: path={}",
+                self.policy_path.display()
+            ));
         }
     }
 }
@@ -652,6 +699,9 @@ fn evaluate_hot_reload_policy_if_changed(
         return outcome;
     }
     hot_reload_state.pending_policy_reload = false;
+    hot_reload_state.last_policy_fingerprint = Some(
+        RuntimeHeartbeatHotReloadPolicyFingerprint::read(&hot_reload_state.policy_path),
+    );
 
     if !hot_reload_state.policy_path.exists() {
         return outcome;
@@ -1671,8 +1721,10 @@ mod tests {
     use super::{
         append_runtime_heartbeat_cycle_report, evaluate_hot_reload_policy_if_changed,
         heartbeat_events_log_path, inspect_runtime_heartbeat, start_runtime_heartbeat_scheduler,
-        RuntimeHeartbeatCycleReport, RuntimeHeartbeatHotReloadState,
-        RuntimeHeartbeatSchedulerConfig, RUNTIME_HEARTBEAT_REASON_HOT_RELOAD_POLICY_APPLIED,
+        RuntimeHeartbeatCycleReport, RuntimeHeartbeatHotReloadPolicyFingerprint,
+        RuntimeHeartbeatHotReloadState, RuntimeHeartbeatSchedulerConfig,
+        RUNTIME_HEARTBEAT_REASON_HOT_RELOAD_POLICY_APPLIED,
+        RUNTIME_HEARTBEAT_REASON_HOT_RELOAD_POLICY_INVALID,
     };
     use arc_swap::ArcSwap;
     use serde_json::{json, Value};
@@ -1680,6 +1732,7 @@ mod tests {
     use std::time::Duration;
     use tau_agent_core::{FileMemoryStore, MemoryLifecycleMaintenancePolicy};
     use tempfile::tempdir;
+    use tokio::sync::mpsc;
 
     fn scheduler_config(root: &Path, enabled: bool) -> RuntimeHeartbeatSchedulerConfig {
         RuntimeHeartbeatSchedulerConfig {
@@ -2018,7 +2071,6 @@ mod tests {
 
         let mut handle =
             start_runtime_heartbeat_scheduler(config.clone()).expect("start runtime heartbeat");
-        wait_for_tick(handle.state_path(), Duration::from_secs(2)).await;
 
         let policy_path = hot_reload_policy_toml_path_for_state(handle.state_path());
         std::fs::write(&policy_path, "interval_ms = 20\n").expect("write hot reload policy toml");
@@ -2141,11 +2193,14 @@ mod tests {
         let active_config = ArcSwap::from_pointee(config);
 
         let mut hot_reload_state = RuntimeHeartbeatHotReloadState {
-            policy_path,
+            policy_path: policy_path.clone(),
             pending_policy_reload: false,
             watcher: None,
             watcher_rx: None,
             pending_watcher_diagnostics: Vec::new(),
+            last_policy_fingerprint: Some(RuntimeHeartbeatHotReloadPolicyFingerprint::read(
+                &policy_path,
+            )),
         };
 
         let outcome = evaluate_hot_reload_policy_if_changed(&active_config, &mut hot_reload_state);
@@ -2155,6 +2210,189 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == RUNTIME_HEARTBEAT_REASON_HOT_RELOAD_POLICY_APPLIED));
+    }
+
+    #[test]
+    fn integration_spec_2544_c01_runtime_heartbeat_hot_reload_applies_interval_when_watcher_event_is_missed(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("heartbeat/state.json");
+        std::fs::create_dir_all(
+            state_path
+                .parent()
+                .expect("state path should have a parent directory"),
+        )
+        .expect("create heartbeat dir");
+        let policy_path = hot_reload_policy_toml_path_for_state(&state_path);
+        std::fs::write(&policy_path, "interval_ms = 77\n").expect("write baseline policy");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.state_path = state_path;
+        config.interval = Duration::from_millis(77);
+        let active_config = ArcSwap::from_pointee(config);
+
+        let (_watch_tx, watch_rx) = mpsc::unbounded_channel();
+        let mut hot_reload_state = RuntimeHeartbeatHotReloadState {
+            policy_path: policy_path.clone(),
+            pending_policy_reload: false,
+            watcher: None,
+            watcher_rx: Some(watch_rx),
+            pending_watcher_diagnostics: Vec::new(),
+            last_policy_fingerprint: Some(RuntimeHeartbeatHotReloadPolicyFingerprint::read(
+                &policy_path,
+            )),
+        };
+
+        std::thread::sleep(Duration::from_millis(5));
+        std::fs::write(&policy_path, "interval_ms = 11\n").expect("write updated policy");
+        let outcome = evaluate_hot_reload_policy_if_changed(&active_config, &mut hot_reload_state);
+
+        assert!(
+            outcome.interval_updated,
+            "watcher-miss fallback should still apply changed policy"
+        );
+        assert_eq!(active_config.load().interval, Duration::from_millis(11));
+        assert!(outcome
+            .reason_codes
+            .iter()
+            .any(|code| code == RUNTIME_HEARTBEAT_REASON_HOT_RELOAD_POLICY_APPLIED));
+    }
+
+    #[test]
+    fn regression_spec_2544_c02_hot_reload_requires_pending_signal_without_watcher_or_poll_context()
+    {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("heartbeat/state.json");
+        std::fs::create_dir_all(
+            state_path
+                .parent()
+                .expect("state path should have a parent directory"),
+        )
+        .expect("create heartbeat dir");
+        let policy_path = hot_reload_policy_toml_path_for_state(&state_path);
+        std::fs::write(&policy_path, "interval_ms = 11\n").expect("write policy");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.state_path = state_path;
+        config.interval = Duration::from_millis(77);
+        let active_config = ArcSwap::from_pointee(config);
+
+        let mut hot_reload_state = RuntimeHeartbeatHotReloadState {
+            policy_path: policy_path.clone(),
+            pending_policy_reload: false,
+            watcher: None,
+            watcher_rx: None,
+            pending_watcher_diagnostics: Vec::new(),
+            last_policy_fingerprint: Some(RuntimeHeartbeatHotReloadPolicyFingerprint::read(
+                &policy_path,
+            )),
+        };
+
+        let outcome = evaluate_hot_reload_policy_if_changed(&active_config, &mut hot_reload_state);
+        assert!(!outcome.interval_updated);
+        assert_eq!(active_config.load().interval, Duration::from_millis(77));
+        assert!(!outcome
+            .reason_codes
+            .iter()
+            .any(|code| code == RUNTIME_HEARTBEAT_REASON_HOT_RELOAD_POLICY_APPLIED));
+    }
+
+    #[test]
+    fn regression_spec_2544_c03_invalid_policy_after_valid_update_preserves_last_interval() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("heartbeat/state.json");
+        std::fs::create_dir_all(
+            state_path
+                .parent()
+                .expect("state path should have a parent directory"),
+        )
+        .expect("create heartbeat dir");
+        let policy_path = hot_reload_policy_toml_path_for_state(&state_path);
+        std::fs::write(&policy_path, "interval_ms = 77\n").expect("write baseline policy");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.state_path = state_path;
+        config.interval = Duration::from_millis(77);
+        let active_config = ArcSwap::from_pointee(config);
+
+        let (_watch_tx, watch_rx) = mpsc::unbounded_channel();
+        let mut hot_reload_state = RuntimeHeartbeatHotReloadState {
+            policy_path: policy_path.clone(),
+            pending_policy_reload: true,
+            watcher: None,
+            watcher_rx: Some(watch_rx),
+            pending_watcher_diagnostics: Vec::new(),
+            last_policy_fingerprint: Some(RuntimeHeartbeatHotReloadPolicyFingerprint::read(
+                &policy_path,
+            )),
+        };
+
+        std::fs::write(&policy_path, "interval_ms = 25\n").expect("write valid update");
+        let applied = evaluate_hot_reload_policy_if_changed(&active_config, &mut hot_reload_state);
+        assert!(applied.interval_updated, "valid update should apply");
+        assert_eq!(active_config.load().interval, Duration::from_millis(25));
+
+        std::thread::sleep(Duration::from_millis(5));
+        std::fs::write(&policy_path, "{invalid").expect("write invalid update");
+        let outcome = evaluate_hot_reload_policy_if_changed(&active_config, &mut hot_reload_state);
+
+        assert!(
+            !outcome.interval_updated,
+            "invalid update should not change active interval"
+        );
+        assert_eq!(active_config.load().interval, Duration::from_millis(25));
+        assert!(outcome
+            .reason_codes
+            .iter()
+            .any(|code| code == RUNTIME_HEARTBEAT_REASON_HOT_RELOAD_POLICY_INVALID));
+    }
+
+    #[test]
+    fn regression_spec_2544_c05_pending_reload_short_circuits_poll_fallback_with_watcher_context() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join("heartbeat/state.json");
+        std::fs::create_dir_all(
+            state_path
+                .parent()
+                .expect("state path should have a parent directory"),
+        )
+        .expect("create heartbeat dir");
+        let policy_path = hot_reload_policy_toml_path_for_state(&state_path);
+        std::fs::write(&policy_path, "interval_ms = 77\n").expect("write baseline policy");
+
+        let mut config = scheduler_config(temp.path(), true);
+        config.state_path = state_path;
+        config.interval = Duration::from_millis(77);
+        let active_config = ArcSwap::from_pointee(config);
+
+        let (_watch_tx, watch_rx) = mpsc::unbounded_channel();
+        let mut hot_reload_state = RuntimeHeartbeatHotReloadState {
+            policy_path: policy_path.clone(),
+            pending_policy_reload: true,
+            watcher: None,
+            watcher_rx: Some(watch_rx),
+            pending_watcher_diagnostics: Vec::new(),
+            last_policy_fingerprint: Some(RuntimeHeartbeatHotReloadPolicyFingerprint::read(
+                &policy_path,
+            )),
+        };
+
+        std::thread::sleep(Duration::from_millis(5));
+        std::fs::write(&policy_path, "interval_ms = 11\n").expect("write updated policy");
+        let outcome = evaluate_hot_reload_policy_if_changed(&active_config, &mut hot_reload_state);
+
+        assert!(
+            outcome.interval_updated,
+            "pending reload should still apply updated policy"
+        );
+        assert_eq!(active_config.load().interval, Duration::from_millis(11));
+        assert!(
+            !outcome
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("hot_reload_policy_poll_detected_change")),
+            "poll fallback diagnostics should not be emitted when pending reload is already set"
+        );
     }
 
     #[tokio::test]
@@ -2273,19 +2511,18 @@ mod tests {
 
         let mut handle =
             start_runtime_heartbeat_scheduler(config).expect("start runtime heartbeat");
-        wait_for_tick(handle.state_path(), Duration::from_secs(2)).await;
+        wait_for_events_log_reason_code(
+            handle.state_path(),
+            "self_repair_retry_exhausted",
+            Duration::from_secs(5),
+        )
+        .await;
 
         let repaired_raw = std::fs::read_to_string(temp.path().join("jobs/job-exhausted.json"))
             .expect("read repaired exhausted job");
         let repaired: Value = serde_json::from_str(&repaired_raw).expect("parse repaired job");
         assert_eq!(repaired["status"], "failed");
         assert_eq!(repaired["reason_code"], "self_repair_retry_exhausted");
-        wait_for_events_log_reason_code(
-            handle.state_path(),
-            "self_repair_retry_exhausted",
-            Duration::from_secs(3),
-        )
-        .await;
 
         handle.shutdown().await;
     }

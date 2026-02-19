@@ -211,7 +211,7 @@ pub(crate) fn start_runtime_heartbeat_profile_policy_bridge(
     if !cli.runtime_heartbeat_enabled {
         return Ok(RuntimeHeartbeatProfilePolicyBridgeHandle::disabled());
     }
-    let profile_store_path = default_profile_store_path()?;
+    let profile_store_path = profile_store_path_for_runtime_heartbeat(cli)?;
     let profile_name = DEFAULT_PROFILE_NAME.to_string();
     let state_path = cli.runtime_heartbeat_state_path.clone();
     let initial_interval_ms = cli.runtime_heartbeat_interval_ms.max(1);
@@ -250,6 +250,19 @@ pub(crate) fn start_runtime_heartbeat_profile_policy_bridge(
     })
 }
 
+fn profile_store_path_for_runtime_heartbeat(cli: &Cli) -> Result<PathBuf> {
+    let derived_path = cli
+        .runtime_heartbeat_state_path
+        .parent()
+        .and_then(Path::parent)
+        .filter(|candidate| candidate.file_name().is_some_and(|name| name == ".tau"))
+        .map(|tau_root| tau_root.join("profiles.json"));
+    if let Some(path) = derived_path {
+        return Ok(path);
+    }
+    default_profile_store_path()
+}
+
 fn emit_bridge_outcome(outcome: &ProfilePolicyBridgeOutcome) {
     match outcome {
         ProfilePolicyBridgeOutcome::Applied {
@@ -282,38 +295,21 @@ fn emit_bridge_outcome(outcome: &ProfilePolicyBridgeOutcome) {
 #[cfg(test)]
 mod tests {
     use super::{
-        emit_bridge_outcome, runtime_heartbeat_policy_path,
-        start_runtime_heartbeat_profile_policy_bridge, ProfilePolicyBridgeOutcome,
-        RuntimeHeartbeatProfilePolicyBridge, RuntimeHeartbeatProfilePolicyBridgeHandle,
+        emit_bridge_outcome, profile_store_path_for_runtime_heartbeat,
+        runtime_heartbeat_policy_path, start_runtime_heartbeat_profile_policy_bridge,
+        ProfilePolicyBridgeOutcome, RuntimeHeartbeatProfilePolicyBridge,
+        RuntimeHeartbeatProfilePolicyBridgeHandle,
     };
     use crate::tests::test_cli;
     use std::collections::BTreeMap;
     use std::io::{self, Write};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tau_onboarding::profile_store::save_profile_store;
     use tempfile::tempdir;
     use tokio::sync::oneshot;
     use tracing_subscriber::fmt::MakeWriter;
-
-    struct CwdGuard {
-        original: PathBuf,
-    }
-
-    impl CwdGuard {
-        fn set(path: &Path) -> Self {
-            let original = std::env::current_dir().expect("resolve cwd");
-            std::env::set_current_dir(path).expect("set current dir");
-            Self { original }
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.original);
-        }
-    }
 
     #[derive(Clone, Default)]
     struct SharedLogBuffer {
@@ -527,7 +523,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn integration_spec_2541_c04_profile_policy_bridge_start_and_shutdown_is_clean() {
         let temp = tempdir().expect("tempdir");
-        let _cwd_guard = CwdGuard::set(temp.path());
         let mut cli = test_cli();
         cli.runtime_heartbeat_enabled = true;
         cli.runtime_heartbeat_interval_ms = 900;
@@ -543,7 +538,6 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn regression_spec_2541_c07_profile_policy_bridge_start_enabled_spawns_active_handle() {
         let temp = tempdir().expect("tempdir");
-        let _cwd_guard = CwdGuard::set(temp.path());
         let mut cli = test_cli();
         cli.runtime_heartbeat_enabled = true;
         cli.runtime_heartbeat_interval_ms = 900;
@@ -648,6 +642,20 @@ mod tests {
         assert!(
             rendered.contains("profile_store_load_failed"),
             "logs should include diagnostic payload"
+        );
+    }
+
+    #[test]
+    fn regression_profile_store_path_for_runtime_heartbeat_prefers_tau_root_relative_state_path() {
+        let mut cli = test_cli();
+        cli.runtime_heartbeat_state_path =
+            PathBuf::from("/tmp/tau-test/.tau/runtime-heartbeat/state.json");
+        let resolved =
+            profile_store_path_for_runtime_heartbeat(&cli).expect("resolve derived profile path");
+        assert_eq!(
+            resolved,
+            PathBuf::from("/tmp/tau-test/.tau/profiles.json"),
+            "derived runtime heartbeat state path should map to sibling profile store"
         );
     }
 }
