@@ -1,6 +1,6 @@
 # Spec: Issue #2638 - Gateway external coding-agent APIs and SSE stream (G21 phase 2)
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau has runtime bridge contracts for external coding-agent sessions (#2619), but no gateway-facing API layer for opening/reusing sessions, routing follow-ups, replaying progress via SSE, and exposing bridge runtime state in operator status views. Without this integration, the bridge remains inaccessible to live operators and tooling.
