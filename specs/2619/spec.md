@@ -1,6 +1,6 @@
 # Spec: Issue #2619 - External coding-agent bridge protocol staging (G21)
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Tau does not have a first-class runtime bridge for delegated external coding-agent sessions with lifecycle tracking, streaming progress replay, follow-up context injection, and inactivity cleanup. Without this bridge contract, delegated coding workflows risk ad-hoc process control, weak timeout guarantees, and non-replayable progress state.
