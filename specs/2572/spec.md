@@ -1,6 +1,6 @@
 # Spec #2572 - Task: implement compaction entry persistence and memory extraction/save
 
-Status: Reviewed
+Status: Implemented
 Priority: P0
 Milestone: M98
 Parent: #2571
