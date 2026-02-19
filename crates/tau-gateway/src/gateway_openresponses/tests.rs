@@ -313,6 +313,35 @@ fn write_training_runtime_fixture(root: &Path, failed: usize) -> PathBuf {
     training_root
 }
 
+fn write_gateway_audit_fixture(root: &Path) -> (PathBuf, PathBuf) {
+    let dashboard_root = root.join(".tau").join("dashboard");
+    std::fs::create_dir_all(&dashboard_root).expect("create dashboard root for audit fixture");
+    std::fs::write(
+        dashboard_root.join("actions-audit.jsonl"),
+        r#"{"schema_version":1,"request_id":"dashboard-action-1","action":"pause","actor":"ops-user-1","reason":"maintenance","status":"accepted","timestamp_unix_ms":1000,"control_mode":"paused"}
+invalid-dashboard-line
+{"schema_version":1,"request_id":"dashboard-action-2","action":"resume","actor":"ops-user-2","reason":"maintenance-complete","status":"accepted","timestamp_unix_ms":2000,"control_mode":"running"}
+"#,
+    )
+    .expect("write dashboard actions audit fixture");
+
+    let telemetry_root = root.join(".tau").join("gateway").join("openresponses");
+    std::fs::create_dir_all(&telemetry_root).expect("create telemetry root for audit fixture");
+    std::fs::write(
+        telemetry_root.join("ui-telemetry.jsonl"),
+        r#"{"timestamp_unix_ms":1500,"view":"dashboard","action":"refresh","reason_code":"ui_refresh","session_key":"default","principal":"ops-user-1","metadata":{"surface":"webchat"}}
+{"timestamp_unix_ms":2500,"view":"memory","action":"search","reason_code":"memory_search_requested","session_key":"s-memory","principal":"ops-user-2","metadata":{"query":"ArcSwap"}}
+invalid-telemetry-line
+"#,
+    )
+    .expect("write ui telemetry fixture");
+
+    (
+        dashboard_root.join("actions-audit.jsonl"),
+        telemetry_root.join("ui-telemetry.jsonl"),
+    )
+}
+
 fn write_events_runtime_fixture(root: &Path) -> PathBuf {
     let events_root = root.join(".tau").join("events");
     std::fs::create_dir_all(&events_root).expect("create events root");
@@ -1966,6 +1995,272 @@ async fn regression_spec_2679_c03_c06_safety_rules_and_test_endpoints_reject_inv
         .join("openresponses")
         .join("safety-rules.json");
     assert!(!safety_rules_path.exists());
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2682_c01_c02_c08_audit_summary_and_status_discovery_support_merged_and_windowed_counts(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_gateway_audit_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let summary_response = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/audit/summary")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("audit summary response");
+    assert_eq!(summary_response.status(), StatusCode::OK);
+    let summary_payload = summary_response
+        .json::<Value>()
+        .await
+        .expect("parse audit summary payload");
+    assert_eq!(
+        summary_payload["schema_version"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        summary_payload["records_total"],
+        Value::Number(4_u64.into())
+    );
+    assert_eq!(
+        summary_payload["invalid_records_total"],
+        Value::Number(2_u64.into())
+    );
+    assert_eq!(
+        summary_payload["source_counts"]["dashboard_action"],
+        Value::Number(2_u64.into())
+    );
+    assert_eq!(
+        summary_payload["source_counts"]["ui_telemetry"],
+        Value::Number(2_u64.into())
+    );
+    assert_eq!(
+        summary_payload["action_counts"]["pause"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        summary_payload["action_counts"]["search"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        summary_payload["reason_code_counts"]["memory_search_requested"],
+        Value::Number(1_u64.into())
+    );
+
+    let filtered_summary_response = client
+        .get(
+            "http://".to_string()
+                + &addr.to_string()
+                + "/gateway/audit/summary?since_unix_ms=1400&until_unix_ms=2100",
+        )
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("filtered summary response");
+    assert_eq!(filtered_summary_response.status(), StatusCode::OK);
+    let filtered_summary_payload = filtered_summary_response
+        .json::<Value>()
+        .await
+        .expect("parse filtered summary payload");
+    assert_eq!(
+        filtered_summary_payload["records_total"],
+        Value::Number(2_u64.into())
+    );
+    assert_eq!(
+        filtered_summary_payload["source_counts"]["dashboard_action"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        filtered_summary_payload["source_counts"]["ui_telemetry"],
+        Value::Number(1_u64.into())
+    );
+
+    let status_response = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_payload = status_response
+        .json::<Value>()
+        .await
+        .expect("parse gateway status payload");
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["audit_summary_endpoint"],
+        "/gateway/audit/summary"
+    );
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["audit_log_endpoint"],
+        "/gateway/audit/log"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2682_c04_c05_audit_log_endpoint_supports_pagination_and_filters() {
+    let temp = tempdir().expect("tempdir");
+    write_gateway_audit_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let log_response = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/audit/log?page=1&page_size=2")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("audit log response");
+    assert_eq!(log_response.status(), StatusCode::OK);
+    let log_payload = log_response
+        .json::<Value>()
+        .await
+        .expect("parse audit log payload");
+    assert_eq!(log_payload["schema_version"], Value::Number(1_u64.into()));
+    assert_eq!(log_payload["page"], Value::Number(1_u64.into()));
+    assert_eq!(log_payload["page_size"], Value::Number(2_u64.into()));
+    assert_eq!(log_payload["total_records"], Value::Number(4_u64.into()));
+    assert_eq!(log_payload["items"].as_array().map(Vec::len), Some(2usize));
+    assert_eq!(
+        log_payload["items"][0]["timestamp_unix_ms"],
+        Value::Number(2500_u64.into())
+    );
+    assert_eq!(
+        log_payload["items"][1]["timestamp_unix_ms"],
+        Value::Number(2000_u64.into())
+    );
+
+    let filtered_log_response = client
+        .get(
+            "http://".to_string()
+                + &addr.to_string()
+                + "/gateway/audit/log?source=ui_telemetry&view=memory&action=search&reason_code=memory_search_requested&page=1&page_size=10",
+        )
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("filtered audit log response");
+    assert_eq!(filtered_log_response.status(), StatusCode::OK);
+    let filtered_log_payload = filtered_log_response
+        .json::<Value>()
+        .await
+        .expect("parse filtered audit log payload");
+    assert_eq!(
+        filtered_log_payload["filtered_records"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        filtered_log_payload["items"][0]["source"],
+        Value::String("ui_telemetry".to_string())
+    );
+    assert_eq!(
+        filtered_log_payload["items"][0]["view"],
+        Value::String("memory".to_string())
+    );
+    assert_eq!(
+        filtered_log_payload["items"][0]["action"],
+        Value::String("search".to_string())
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2682_c03_c06_c07_audit_endpoints_handle_invalid_lines_queries_and_unauthorized_requests(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_gateway_audit_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let unauthorized_summary = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/audit/summary")
+        .send()
+        .await
+        .expect("unauthorized audit summary");
+    assert_eq!(unauthorized_summary.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthorized_log = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/audit/log")
+        .send()
+        .await
+        .expect("unauthorized audit log");
+    assert_eq!(unauthorized_log.status(), StatusCode::UNAUTHORIZED);
+
+    let invalid_source = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/audit/log?source=invalid")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("invalid source response");
+    assert_eq!(invalid_source.status(), StatusCode::BAD_REQUEST);
+    let invalid_source_payload = invalid_source
+        .json::<Value>()
+        .await
+        .expect("parse invalid source payload");
+    assert_eq!(
+        invalid_source_payload["error"]["code"],
+        Value::String("invalid_audit_source".to_string())
+    );
+
+    let invalid_page = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/audit/log?page=0")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("invalid page response");
+    assert_eq!(invalid_page.status(), StatusCode::BAD_REQUEST);
+    let invalid_page_payload = invalid_page
+        .json::<Value>()
+        .await
+        .expect("parse invalid page payload");
+    assert_eq!(
+        invalid_page_payload["error"]["code"],
+        Value::String("invalid_audit_page".to_string())
+    );
+
+    let invalid_page_size = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/audit/log?page_size=500")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("invalid page size response");
+    assert_eq!(invalid_page_size.status(), StatusCode::BAD_REQUEST);
+    let invalid_page_size_payload = invalid_page_size
+        .json::<Value>()
+        .await
+        .expect("parse invalid page size payload");
+    assert_eq!(
+        invalid_page_size_payload["error"]["code"],
+        Value::String("invalid_audit_page_size".to_string())
+    );
+
+    let invalid_window = client
+        .get(
+            "http://".to_string()
+                + &addr.to_string()
+                + "/gateway/audit/summary?since_unix_ms=3000&until_unix_ms=1000",
+        )
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("invalid summary window response");
+    assert_eq!(invalid_window.status(), StatusCode::BAD_REQUEST);
+    let invalid_window_payload = invalid_window
+        .json::<Value>()
+        .await
+        .expect("parse invalid window payload");
+    assert_eq!(
+        invalid_window_payload["error"]["code"],
+        Value::String("invalid_audit_window".to_string())
+    );
 
     handle.abort();
 }

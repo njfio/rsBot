@@ -56,6 +56,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
+mod audit_runtime;
 mod auth_runtime;
 mod dashboard_status;
 mod multi_channel_status;
@@ -69,6 +70,7 @@ mod types;
 mod webchat_page;
 mod websocket;
 
+use audit_runtime::{handle_gateway_audit_log, handle_gateway_audit_summary};
 use auth_runtime::{
     authorize_gateway_request, collect_gateway_auth_status_report, enforce_gateway_rate_limit,
     issue_gateway_session_token,
@@ -130,6 +132,8 @@ const GATEWAY_CONFIG_ENDPOINT: &str = "/gateway/config";
 const GATEWAY_SAFETY_POLICY_ENDPOINT: &str = "/gateway/safety/policy";
 const GATEWAY_SAFETY_RULES_ENDPOINT: &str = "/gateway/safety/rules";
 const GATEWAY_SAFETY_TEST_ENDPOINT: &str = "/gateway/safety/test";
+const GATEWAY_AUDIT_SUMMARY_ENDPOINT: &str = "/gateway/audit/summary";
+const GATEWAY_AUDIT_LOG_ENDPOINT: &str = "/gateway/audit/log";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
@@ -795,6 +799,11 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             post(handle_gateway_safety_test),
         )
         .route(
+            GATEWAY_AUDIT_SUMMARY_ENDPOINT,
+            get(handle_gateway_audit_summary),
+        )
+        .route(GATEWAY_AUDIT_LOG_ENDPOINT, get(handle_gateway_audit_log))
+        .route(
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
         )
@@ -906,6 +915,8 @@ async fn handle_gateway_status(
                     "safety_policy_endpoint": GATEWAY_SAFETY_POLICY_ENDPOINT,
                     "safety_rules_endpoint": GATEWAY_SAFETY_RULES_ENDPOINT,
                     "safety_test_endpoint": GATEWAY_SAFETY_TEST_ENDPOINT,
+                    "audit_summary_endpoint": GATEWAY_AUDIT_SUMMARY_ENDPOINT,
+                    "audit_log_endpoint": GATEWAY_AUDIT_LOG_ENDPOINT,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,

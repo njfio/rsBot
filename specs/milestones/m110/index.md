@@ -19,6 +19,8 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
 - Completed Task: #2676
 - Completed Story: #2678
 - Completed Task: #2679
+- Completed Story: #2681
+- Completed Task: #2682
 
 ## Deliverables
 - Completed (`#2667`):
@@ -48,9 +50,15 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
   - Gateway safety test endpoint:
     - `POST /gateway/safety/test`
   - Rule persistence and policy-aware test evaluation contract.
+- Completed (`#2682`):
+  - Gateway audit diagnostics endpoints:
+    - `GET /gateway/audit/summary`
+    - `GET /gateway/audit/log`
+  - Audit summary/log query contracts for dashboard diagnostics workflows.
+  - Status discovery metadata for audit endpoints.
 
 ## Exit Criteria
 - Epic #2665 is closed with all scoped PRD phase-1 tasks completed.
-- `specs/2667/spec.md`, `specs/2670/spec.md`, `specs/2673/spec.md`, `specs/2676/spec.md`, and `specs/2679/spec.md` status are `Implemented`.
+- `specs/2667/spec.md`, `specs/2670/spec.md`, `specs/2673/spec.md`, `specs/2676/spec.md`, `specs/2679/spec.md`, and `specs/2682/spec.md` status are `Implemented`.
 - Scoped verification gates pass with evidence (`fmt`, `clippy -p tau-gateway`, targeted tests).
 - PRD checklist progress is updated for completed phase-1 endpoint slices.
