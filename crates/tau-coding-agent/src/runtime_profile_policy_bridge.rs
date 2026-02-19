@@ -282,14 +282,76 @@ fn emit_bridge_outcome(outcome: &ProfilePolicyBridgeOutcome) {
 #[cfg(test)]
 mod tests {
     use super::{
-        runtime_heartbeat_policy_path, start_runtime_heartbeat_profile_policy_bridge,
-        ProfilePolicyBridgeOutcome, RuntimeHeartbeatProfilePolicyBridge,
+        emit_bridge_outcome, runtime_heartbeat_policy_path,
+        start_runtime_heartbeat_profile_policy_bridge, ProfilePolicyBridgeOutcome,
+        RuntimeHeartbeatProfilePolicyBridge, RuntimeHeartbeatProfilePolicyBridgeHandle,
     };
     use crate::tests::test_cli;
     use std::collections::BTreeMap;
+    use std::io::{self, Write};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tau_onboarding::profile_store::save_profile_store;
     use tempfile::tempdir;
+    use tokio::sync::oneshot;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    struct CwdGuard {
+        original: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn set(path: &Path) -> Self {
+            let original = std::env::current_dir().expect("resolve cwd");
+            std::env::set_current_dir(path).expect("set current dir");
+            Self { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct SharedLogBuffer {
+        inner: Arc<Mutex<Vec<u8>>>,
+    }
+
+    struct SharedLogWriter {
+        inner: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for SharedLogBuffer {
+        type Writer = SharedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedLogWriter {
+                inner: Arc::clone(&self.inner),
+            }
+        }
+    }
+
+    impl Write for SharedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut locked = self.inner.lock().expect("log buffer lock");
+            locked.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl SharedLogBuffer {
+        fn contents(&self) -> String {
+            let bytes = self.inner.lock().expect("log buffer lock").clone();
+            String::from_utf8(bytes).expect("valid utf8 logs")
+        }
+    }
 
     fn sample_profile(interval_ms: u64) -> tau_onboarding::startup_config::ProfileDefaults {
         let mut cli = test_cli();
@@ -386,11 +448,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn regression_spec_2541_c05_profile_policy_bridge_detects_non_forced_profile_updates() {
+        let temp = tempdir().expect("tempdir");
+        let profile_path = temp.path().join(".tau/profiles.json");
+        let state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+        write_profile_store(&profile_path, "default", 1_200).expect("write initial profile store");
+
+        let mut bridge = RuntimeHeartbeatProfilePolicyBridge::new(
+            profile_path.clone(),
+            "default".to_string(),
+            state_path,
+            5_000,
+        );
+        let initial = bridge.evaluate_if_changed(true);
+        assert!(
+            matches!(
+                initial,
+                ProfilePolicyBridgeOutcome::Applied {
+                    interval_ms: 1_200,
+                    ..
+                }
+            ),
+            "initial force evaluation should apply 1200 interval"
+        );
+
+        std::thread::sleep(Duration::from_millis(5));
+        write_profile_store(&profile_path, "default", 12_000).expect("write updated profile store");
+        let updated = bridge.evaluate_if_changed(false);
+        assert!(
+            matches!(
+                updated,
+                ProfilePolicyBridgeOutcome::Applied {
+                    interval_ms: 12_000,
+                    ..
+                }
+            ),
+            "non-forced evaluation should detect fingerprint change and apply update"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2541_c06_profile_policy_bridge_force_reload_bypasses_fingerprint_noop() {
+        let temp = tempdir().expect("tempdir");
+        let profile_path = temp.path().join(".tau/profiles.json");
+        let state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+        write_profile_store(&profile_path, "default", 1_200).expect("write profile store");
+
+        let mut bridge = RuntimeHeartbeatProfilePolicyBridge::new(
+            profile_path,
+            "default".to_string(),
+            state_path,
+            1_200,
+        );
+        let first = bridge.evaluate_if_changed(true);
+        assert!(
+            matches!(
+                first,
+                ProfilePolicyBridgeOutcome::NoChange { interval_ms: 1_200 }
+            ),
+            "first force evaluation should initialize fingerprint and report no change"
+        );
+
+        bridge.last_applied_interval_ms = 900;
+        let forced = bridge.evaluate_if_changed(true);
+        assert!(
+            matches!(
+                forced,
+                ProfilePolicyBridgeOutcome::Applied {
+                    interval_ms: 1_200,
+                    ..
+                }
+            ),
+            "forced evaluation must reload profile even when fingerprint is unchanged"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn integration_spec_2541_c04_profile_policy_bridge_start_and_shutdown_is_clean() {
         let temp = tempdir().expect("tempdir");
-        let original_cwd = std::env::current_dir().expect("resolve cwd");
-        std::env::set_current_dir(temp.path()).expect("set current dir");
+        let _cwd_guard = CwdGuard::set(temp.path());
         let mut cli = test_cli();
         cli.runtime_heartbeat_enabled = true;
         cli.runtime_heartbeat_interval_ms = 900;
@@ -401,6 +538,116 @@ mod tests {
         let mut handle = start_runtime_heartbeat_profile_policy_bridge(&cli).expect("start bridge");
         tokio::time::sleep(Duration::from_millis(80)).await;
         handle.shutdown().await;
-        std::env::set_current_dir(original_cwd).expect("restore cwd");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn regression_spec_2541_c07_profile_policy_bridge_start_enabled_spawns_active_handle() {
+        let temp = tempdir().expect("tempdir");
+        let _cwd_guard = CwdGuard::set(temp.path());
+        let mut cli = test_cli();
+        cli.runtime_heartbeat_enabled = true;
+        cli.runtime_heartbeat_interval_ms = 900;
+        cli.runtime_heartbeat_state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+        let profile_path = temp.path().join(".tau/profiles.json");
+        write_profile_store(&profile_path, "default", 1_200).expect("write profile store");
+
+        let mut handle = start_runtime_heartbeat_profile_policy_bridge(&cli).expect("start bridge");
+        assert!(
+            handle.shutdown_tx.is_some(),
+            "enabled bridge should expose shutdown channel"
+        );
+        assert!(
+            handle.task.is_some(),
+            "enabled bridge should spawn background task"
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let policy_path = runtime_heartbeat_policy_path(&cli.runtime_heartbeat_state_path);
+        let policy_raw = std::fs::read_to_string(&policy_path).expect("read policy file");
+        assert!(
+            policy_raw.contains("interval_ms = 1200"),
+            "initial bridge evaluation should write profile interval policy"
+        );
+
+        handle.shutdown().await;
+        assert!(
+            handle.shutdown_tx.is_none(),
+            "shutdown should consume shutdown channel"
+        );
+        assert!(
+            handle.task.is_none(),
+            "shutdown should await and clear background task"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn regression_spec_2541_c08_profile_policy_bridge_handle_shutdown_stops_task() {
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _ = (&mut shutdown_rx).await;
+        });
+        let mut handle = RuntimeHeartbeatProfilePolicyBridgeHandle {
+            shutdown_tx: Some(shutdown_tx),
+            task: Some(task),
+        };
+
+        handle.shutdown().await;
+        assert!(
+            handle.shutdown_tx.is_none(),
+            "shutdown should clear shutdown sender"
+        );
+        assert!(handle.task.is_none(), "shutdown should clear joined task");
+    }
+
+    #[test]
+    fn regression_spec_2541_c09_profile_policy_bridge_outcome_reason_codes_are_stable() {
+        let policy_path = PathBuf::from("/tmp/runtime-heartbeat.policy.toml");
+        let applied = ProfilePolicyBridgeOutcome::Applied {
+            interval_ms: 1_200,
+            policy_path,
+        };
+        let no_change = ProfilePolicyBridgeOutcome::NoChange { interval_ms: 1_200 };
+        let invalid = ProfilePolicyBridgeOutcome::Invalid {
+            reason: "profile_store_load_failed".to_string(),
+        };
+        let missing = ProfilePolicyBridgeOutcome::MissingProfile {
+            profile: "default".to_string(),
+        };
+
+        assert_eq!(applied.reason_code(), "profile_policy_bridge_applied");
+        assert_eq!(no_change.reason_code(), "profile_policy_bridge_no_change");
+        assert_eq!(invalid.reason_code(), "profile_policy_bridge_invalid");
+        assert_eq!(
+            missing.reason_code(),
+            "profile_policy_bridge_missing_profile"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2541_c10_emit_bridge_outcome_logs_reason_code_and_diagnostic() {
+        let logs = SharedLogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_writer(logs.clone())
+            .finish();
+
+        let outcome = ProfilePolicyBridgeOutcome::Invalid {
+            reason: "profile_store_load_failed".to_string(),
+        };
+        tracing::subscriber::with_default(subscriber, || {
+            emit_bridge_outcome(&outcome);
+        });
+
+        let rendered = logs.contents();
+        assert!(
+            rendered.contains("profile_policy_bridge_invalid"),
+            "logs should include stable reason code"
+        );
+        assert!(
+            rendered.contains("profile_store_load_failed"),
+            "logs should include diagnostic payload"
+        );
     }
 }
