@@ -105,6 +105,7 @@ fn test_state_with_client_and_auth(
                 state_path: root.join(".tau/runtime-heartbeat/state.json"),
                 ..RuntimeHeartbeatSchedulerConfig::default()
             },
+            external_coding_agent_bridge: tau_runtime::ExternalCodingAgentBridgeConfig::default(),
         },
     ))
 }
@@ -144,6 +145,10 @@ fn test_state(
         60,
         120,
     )
+}
+
+fn resolve_session_endpoint(template: &str, session_id: &str) -> String {
+    template.replace("{session_id}", session_id)
 }
 
 async fn spawn_test_server(
@@ -2592,6 +2597,7 @@ async fn regression_gateway_password_session_token_expires_and_fails_closed() {
                 state_path: temp.path().join(".tau/runtime-heartbeat/state.json"),
                 ..RuntimeHeartbeatSchedulerConfig::default()
             },
+            external_coding_agent_bridge: tau_runtime::ExternalCodingAgentBridgeConfig::default(),
         },
     ));
     let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
@@ -2673,6 +2679,350 @@ async fn regression_gateway_status_endpoint_rejects_unauthorized_request() {
         .expect("send request");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_external_coding_agent_endpoints_support_lifecycle_followups_and_status() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let opened = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"workspace_id":"workspace-alpha"}))
+        .send()
+        .await
+        .expect("open session request")
+        .json::<Value>()
+        .await
+        .expect("parse open session response");
+    let session_id = opened["session"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    assert_eq!(
+        opened["session"]["workspace_id"],
+        Value::String("workspace-alpha".to_string())
+    );
+    assert_eq!(
+        opened["session"]["status"],
+        Value::String("running".to_string())
+    );
+
+    let progress_response = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_PROGRESS_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"message":"worker_started"}))
+        .send()
+        .await
+        .expect("append progress request");
+    assert_eq!(progress_response.status(), StatusCode::OK);
+
+    let followup_response = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"message":"apply diff chunk"}))
+        .send()
+        .await
+        .expect("append followup request");
+    assert_eq!(followup_response.status(), StatusCode::OK);
+
+    let drained = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_DRAIN_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"limit":1}))
+        .send()
+        .await
+        .expect("drain followups request")
+        .json::<Value>()
+        .await
+        .expect("parse drain response");
+    assert_eq!(drained["drained_count"], Value::Number(1_u64.into()));
+    assert_eq!(
+        drained["followups"][0],
+        Value::String("apply diff chunk".to_string())
+    );
+
+    let snapshot = client
+        .get(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_DETAIL_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("session detail request")
+        .json::<Value>()
+        .await
+        .expect("parse session detail response");
+    assert_eq!(
+        snapshot["session"]["session_id"],
+        Value::String(session_id.clone())
+    );
+    assert_eq!(
+        snapshot["session"]["queued_followups"],
+        Value::Number(0_u64.into())
+    );
+
+    let status = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status request")
+        .json::<Value>()
+        .await
+        .expect("parse status response");
+    assert_eq!(
+        status["gateway"]["external_coding_agent"]["sessions_endpoint"],
+        Value::String(EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT.to_string())
+    );
+    assert_eq!(
+        status["gateway"]["external_coding_agent"]["runtime"]["active_sessions"],
+        Value::Number(1_u64.into())
+    );
+
+    let closed = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_CLOSE_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("close session request")
+        .json::<Value>()
+        .await
+        .expect("parse close response");
+    assert_eq!(
+        closed["session"]["status"],
+        Value::String("closed".to_string())
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_external_coding_agent_stream_replays_events_and_done_frame() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let opened = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"workspace_id":"workspace-stream"}))
+        .send()
+        .await
+        .expect("open stream session")
+        .json::<Value>()
+        .await
+        .expect("parse open response");
+    let session_id = opened["session"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    let progress_response = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_PROGRESS_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"message":"step-one"}))
+        .send()
+        .await
+        .expect("append stream progress");
+    assert_eq!(progress_response.status(), StatusCode::OK);
+
+    let followup_response = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"message":"step-two-followup"}))
+        .send()
+        .await
+        .expect("append stream followup");
+    assert_eq!(followup_response.status(), StatusCode::OK);
+
+    let response = client
+        .get(format!(
+            "http://{addr}{}?after_sequence_id=0&limit=16",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_STREAM_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("stream request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.contains("text/event-stream"));
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        let chunk = tokio::time::timeout(Duration::from_millis(250), stream.next()).await;
+        let Ok(Some(Ok(bytes))) = chunk else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        buffer.push_str(text.as_ref());
+        if buffer.contains("event: done") {
+            break;
+        }
+    }
+
+    assert!(buffer.contains("event: external_coding_agent.snapshot"));
+    assert!(buffer.contains("event: external_coding_agent.progress"));
+    assert!(buffer.contains("\"message\":\"step-one\""));
+    assert!(buffer.contains("\"message\":\"step-two-followup\""));
+    assert!(buffer.contains("event: done"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_external_coding_agent_reap_endpoint_times_out_stale_sessions() {
+    let temp = tempdir().expect("tempdir");
+    let state = Arc::new(GatewayOpenResponsesServerState::new(
+        GatewayOpenResponsesServerConfig {
+            client: Arc::new(MockGatewayLlmClient::default()),
+            model: "openai/gpt-4o-mini".to_string(),
+            model_input_cost_per_million: Some(10.0),
+            model_cached_input_cost_per_million: None,
+            model_output_cost_per_million: Some(20.0),
+            system_prompt: "You are Tau.".to_string(),
+            max_turns: 4,
+            tool_registrar: Arc::new(NoopGatewayToolRegistrar),
+            turn_timeout_ms: 0,
+            session_lock_wait_ms: 500,
+            session_lock_stale_ms: 10_000,
+            state_dir: temp.path().join(".tau/gateway"),
+            bind: "127.0.0.1:0".to_string(),
+            auth_mode: GatewayOpenResponsesAuthMode::Token,
+            auth_token: Some("secret".to_string()),
+            auth_password: None,
+            session_ttl_seconds: 3_600,
+            rate_limit_window_seconds: 60,
+            rate_limit_max_requests: 120,
+            max_input_chars: 10_000,
+            runtime_heartbeat: RuntimeHeartbeatSchedulerConfig {
+                enabled: false,
+                interval: std::time::Duration::from_secs(5),
+                state_path: temp.path().join(".tau/runtime-heartbeat/state.json"),
+                ..RuntimeHeartbeatSchedulerConfig::default()
+            },
+            external_coding_agent_bridge: tau_runtime::ExternalCodingAgentBridgeConfig {
+                inactivity_timeout_ms: 5,
+                max_active_sessions: 8,
+                max_events_per_session: 64,
+            },
+        },
+    ));
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let opened = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"workspace_id":"workspace-timeout"}))
+        .send()
+        .await
+        .expect("open timeout session")
+        .json::<Value>()
+        .await
+        .expect("parse open timeout response");
+    let session_id = opened["session"]["session_id"]
+        .as_str()
+        .expect("timeout session id")
+        .to_string();
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let reaped = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_REAP_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("reap request")
+        .json::<Value>()
+        .await
+        .expect("parse reap response");
+    assert_eq!(reaped["reaped_count"], Value::Number(1_u64.into()));
+    assert_eq!(
+        reaped["sessions"][0]["status"],
+        Value::String("timed_out".to_string())
+    );
+
+    let missing = client
+        .get(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_DETAIL_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("session missing after reap");
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
     handle.abort();
 }
 

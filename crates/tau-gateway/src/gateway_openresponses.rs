@@ -30,8 +30,10 @@ use tau_agent_core::{Agent, AgentConfig, AgentEvent};
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
 use tau_core::{current_unix_timestamp, current_unix_timestamp_ms};
 use tau_runtime::{
-    inspect_runtime_heartbeat, start_runtime_heartbeat_scheduler, RuntimeHeartbeatSchedulerConfig,
-    TransportHealthSnapshot,
+    inspect_runtime_heartbeat, start_runtime_heartbeat_scheduler, ExternalCodingAgentBridge,
+    ExternalCodingAgentBridgeConfig, ExternalCodingAgentBridgeError,
+    ExternalCodingAgentSessionSnapshot, ExternalCodingAgentSessionStatus,
+    RuntimeHeartbeatSchedulerConfig, TransportHealthSnapshot,
 };
 use tau_session::SessionStore;
 use tokio::net::TcpListener;
@@ -73,13 +75,16 @@ use session_runtime::{
     persist_messages, persist_session_usage_delta,
 };
 use types::{
-    GatewayAuthSessionRequest, GatewayAuthSessionResponse, GatewayMemoryGraphEdge,
-    GatewayMemoryGraphFilterSummary, GatewayMemoryGraphNode, GatewayMemoryGraphQuery,
-    GatewayMemoryGraphResponse, GatewayMemoryUpdateRequest, GatewaySessionAppendRequest,
-    GatewaySessionResetRequest, GatewayUiTelemetryRequest, OpenResponsesApiError,
-    OpenResponsesExecutionResult, OpenResponsesOutputItem, OpenResponsesOutputTextItem,
-    OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage,
-    OpenResponsesUsageSummary, SseFrame,
+    GatewayAuthSessionRequest, GatewayAuthSessionResponse,
+    GatewayExternalCodingAgentFollowupsDrainRequest, GatewayExternalCodingAgentMessageRequest,
+    GatewayExternalCodingAgentReapRequest, GatewayExternalCodingAgentSessionOpenRequest,
+    GatewayExternalCodingAgentStreamQuery, GatewayMemoryGraphEdge, GatewayMemoryGraphFilterSummary,
+    GatewayMemoryGraphNode, GatewayMemoryGraphQuery, GatewayMemoryGraphResponse,
+    GatewayMemoryUpdateRequest, GatewaySessionAppendRequest, GatewaySessionResetRequest,
+    GatewayUiTelemetryRequest, OpenResponsesApiError, OpenResponsesExecutionResult,
+    OpenResponsesOutputItem, OpenResponsesOutputTextItem, OpenResponsesPrompt,
+    OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage, OpenResponsesUsageSummary,
+    SseFrame,
 };
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
@@ -105,6 +110,20 @@ const DASHBOARD_QUEUE_TIMELINE_ENDPOINT: &str = "/dashboard/queue-timeline";
 const DASHBOARD_ALERTS_ENDPOINT: &str = "/dashboard/alerts";
 const DASHBOARD_ACTIONS_ENDPOINT: &str = "/dashboard/actions";
 const DASHBOARD_STREAM_ENDPOINT: &str = "/dashboard/stream";
+const EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT: &str = "/gateway/external-coding-agent/sessions";
+const EXTERNAL_CODING_AGENT_SESSION_DETAIL_ENDPOINT: &str =
+    "/gateway/external-coding-agent/sessions/{session_id}";
+const EXTERNAL_CODING_AGENT_SESSION_PROGRESS_ENDPOINT: &str =
+    "/gateway/external-coding-agent/sessions/{session_id}/progress";
+const EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT: &str =
+    "/gateway/external-coding-agent/sessions/{session_id}/followups";
+const EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_DRAIN_ENDPOINT: &str =
+    "/gateway/external-coding-agent/sessions/{session_id}/followups/drain";
+const EXTERNAL_CODING_AGENT_SESSION_STREAM_ENDPOINT: &str =
+    "/gateway/external-coding-agent/sessions/{session_id}/stream";
+const EXTERNAL_CODING_AGENT_SESSION_CLOSE_ENDPOINT: &str =
+    "/gateway/external-coding-agent/sessions/{session_id}/close";
+const EXTERNAL_CODING_AGENT_REAP_ENDPOINT: &str = "/gateway/external-coding-agent/reap";
 const GATEWAY_EVENTS_INSPECT_QUEUE_LIMIT: usize = 64;
 const GATEWAY_EVENTS_STALE_IMMEDIATE_MAX_AGE_SECONDS: u64 = 86_400;
 const DEFAULT_SESSION_KEY: &str = "default";
@@ -178,6 +197,7 @@ pub struct GatewayOpenResponsesServerConfig {
     pub rate_limit_max_requests: usize,
     pub max_input_chars: usize,
     pub runtime_heartbeat: RuntimeHeartbeatSchedulerConfig,
+    pub external_coding_agent_bridge: ExternalCodingAgentBridgeConfig,
 }
 
 #[derive(Clone)]
@@ -187,16 +207,21 @@ struct GatewayOpenResponsesServerState {
     auth_runtime: Arc<Mutex<GatewayAuthRuntimeState>>,
     compat_runtime: Arc<Mutex<GatewayOpenAiCompatRuntimeState>>,
     ui_telemetry_runtime: Arc<Mutex<GatewayUiTelemetryRuntimeState>>,
+    external_coding_agent_bridge: Arc<ExternalCodingAgentBridge>,
 }
 
 impl GatewayOpenResponsesServerState {
     fn new(config: GatewayOpenResponsesServerConfig) -> Self {
+        let external_coding_agent_bridge = Arc::new(ExternalCodingAgentBridge::new(
+            config.external_coding_agent_bridge.clone(),
+        ));
         Self {
             config,
             response_sequence: Arc::new(AtomicU64::new(0)),
             auth_runtime: Arc::new(Mutex::new(GatewayAuthRuntimeState::default())),
             compat_runtime: Arc::new(Mutex::new(GatewayOpenAiCompatRuntimeState::default())),
             ui_telemetry_runtime: Arc::new(Mutex::new(GatewayUiTelemetryRuntimeState::default())),
+            external_coding_agent_bridge,
         }
     }
 
@@ -720,6 +745,38 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
         )
+        .route(
+            EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT,
+            post(handle_external_coding_agent_open_session),
+        )
+        .route(
+            EXTERNAL_CODING_AGENT_SESSION_DETAIL_ENDPOINT,
+            get(handle_external_coding_agent_session_detail),
+        )
+        .route(
+            EXTERNAL_CODING_AGENT_SESSION_PROGRESS_ENDPOINT,
+            post(handle_external_coding_agent_session_progress),
+        )
+        .route(
+            EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT,
+            post(handle_external_coding_agent_session_followup),
+        )
+        .route(
+            EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_DRAIN_ENDPOINT,
+            post(handle_external_coding_agent_session_followups_drain),
+        )
+        .route(
+            EXTERNAL_CODING_AGENT_SESSION_STREAM_ENDPOINT,
+            get(handle_external_coding_agent_session_stream),
+        )
+        .route(
+            EXTERNAL_CODING_AGENT_SESSION_CLOSE_ENDPOINT,
+            post(handle_external_coding_agent_session_close),
+        )
+        .route(
+            EXTERNAL_CODING_AGENT_REAP_ENDPOINT,
+            post(handle_external_coding_agent_reap),
+        )
         .route(WEBCHAT_ENDPOINT, get(handle_webchat_page))
         .route(GATEWAY_STATUS_ENDPOINT, get(handle_gateway_status))
         .route(DASHBOARD_HEALTH_ENDPOINT, get(handle_dashboard_health))
@@ -808,6 +865,22 @@ async fn handle_gateway_status(
                     "alerts_endpoint": DASHBOARD_ALERTS_ENDPOINT,
                     "actions_endpoint": DASHBOARD_ACTIONS_ENDPOINT,
                     "stream_endpoint": DASHBOARD_STREAM_ENDPOINT,
+                },
+                "external_coding_agent": {
+                    "sessions_endpoint": EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT,
+                    "session_detail_endpoint": EXTERNAL_CODING_AGENT_SESSION_DETAIL_ENDPOINT,
+                    "progress_endpoint": EXTERNAL_CODING_AGENT_SESSION_PROGRESS_ENDPOINT,
+                    "followups_endpoint": EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT,
+                    "followups_drain_endpoint": EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_DRAIN_ENDPOINT,
+                    "stream_endpoint": EXTERNAL_CODING_AGENT_SESSION_STREAM_ENDPOINT,
+                    "close_endpoint": EXTERNAL_CODING_AGENT_SESSION_CLOSE_ENDPOINT,
+                    "reap_endpoint": EXTERNAL_CODING_AGENT_REAP_ENDPOINT,
+                    "runtime": {
+                        "active_sessions": state.external_coding_agent_bridge.active_session_count(),
+                        "inactivity_timeout_ms": state.config.external_coding_agent_bridge.inactivity_timeout_ms,
+                        "max_active_sessions": state.config.external_coding_agent_bridge.max_active_sessions,
+                        "max_events_per_session": state.config.external_coding_agent_bridge.max_events_per_session,
+                    }
                 },
                 "state_dir": state.config.state_dir.display().to_string(),
                 "model": state.config.model,
@@ -1194,6 +1267,329 @@ async fn handle_dashboard_stream(
     let stream = UnboundedReceiverStream::new(rx).map(Ok::<Event, Infallible>);
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn handle_external_coding_agent_open_session(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    if let Err(error) = validate_gateway_request_body_size(&state, &body) {
+        return error.into_response();
+    }
+    let request =
+        match parse_gateway_json_body::<GatewayExternalCodingAgentSessionOpenRequest>(&body) {
+            Ok(request) => request,
+            Err(error) => return error.into_response(),
+        };
+    state
+        .external_coding_agent_bridge
+        .reap_inactive_sessions(current_unix_timestamp_ms());
+    let snapshot = match state
+        .external_coding_agent_bridge
+        .open_or_reuse_session(request.workspace_id.as_str())
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "session": external_coding_agent_session_json(&snapshot),
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_external_coding_agent_session_detail(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    state
+        .external_coding_agent_bridge
+        .reap_inactive_sessions(current_unix_timestamp_ms());
+    let Some(snapshot) = state
+        .external_coding_agent_bridge
+        .snapshot(session_id.as_str())
+    else {
+        return OpenResponsesApiError::not_found(
+            "external_coding_agent_session_not_found",
+            format!("session '{session_id}' was not found"),
+        )
+        .into_response();
+    };
+    (
+        StatusCode::OK,
+        Json(json!({ "session": external_coding_agent_session_json(&snapshot) })),
+    )
+        .into_response()
+}
+
+async fn handle_external_coding_agent_session_progress(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    if let Err(error) = validate_gateway_request_body_size(&state, &body) {
+        return error.into_response();
+    }
+    let request = match parse_gateway_json_body::<GatewayExternalCodingAgentMessageRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    let event = match state
+        .external_coding_agent_bridge
+        .append_progress(session_id.as_str(), request.message.as_str())
+    {
+        Ok(event) => event,
+        Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
+    };
+    let session = state
+        .external_coding_agent_bridge
+        .snapshot(session_id.as_str())
+        .map(|snapshot| external_coding_agent_session_json(&snapshot))
+        .unwrap_or_else(|| Value::Null);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "event": external_coding_agent_event_json(&event),
+            "session": session,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_external_coding_agent_session_followup(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    if let Err(error) = validate_gateway_request_body_size(&state, &body) {
+        return error.into_response();
+    }
+    let request = match parse_gateway_json_body::<GatewayExternalCodingAgentMessageRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    let event = match state
+        .external_coding_agent_bridge
+        .queue_followup(session_id.as_str(), request.message.as_str())
+    {
+        Ok(event) => event,
+        Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
+    };
+    let session = state
+        .external_coding_agent_bridge
+        .snapshot(session_id.as_str())
+        .map(|snapshot| external_coding_agent_session_json(&snapshot))
+        .unwrap_or_else(|| Value::Null);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "event": external_coding_agent_event_json(&event),
+            "session": session,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_external_coding_agent_session_followups_drain(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    if let Err(error) = validate_gateway_request_body_size(&state, &body) {
+        return error.into_response();
+    }
+    let request = if body.is_empty() {
+        GatewayExternalCodingAgentFollowupsDrainRequest::default()
+    } else {
+        match parse_gateway_json_body::<GatewayExternalCodingAgentFollowupsDrainRequest>(&body) {
+            Ok(request) => request,
+            Err(error) => return error.into_response(),
+        }
+    };
+    let limit = request.limit.unwrap_or(64).max(1);
+    let followups = match state
+        .external_coding_agent_bridge
+        .take_followups(session_id.as_str(), limit)
+    {
+        Ok(followups) => followups,
+        Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
+    };
+    let session = state
+        .external_coding_agent_bridge
+        .snapshot(session_id.as_str())
+        .map(|snapshot| external_coding_agent_session_json(&snapshot))
+        .unwrap_or_else(|| Value::Null);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "session_id": session_id,
+            "drained_count": followups.len(),
+            "followups": followups,
+            "session": session,
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_external_coding_agent_session_stream(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<GatewayExternalCodingAgentStreamQuery>,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    state
+        .external_coding_agent_bridge
+        .reap_inactive_sessions(current_unix_timestamp_ms());
+    let Some(snapshot) = state
+        .external_coding_agent_bridge
+        .snapshot(session_id.as_str())
+    else {
+        return OpenResponsesApiError::not_found(
+            "external_coding_agent_session_not_found",
+            format!("session '{session_id}' was not found"),
+        )
+        .into_response();
+    };
+    let replay_from_header = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u64>().ok());
+    let after_sequence_id = query.after_sequence_id.or(replay_from_header);
+    let limit = query
+        .limit
+        .unwrap_or(
+            state
+                .config
+                .external_coding_agent_bridge
+                .max_events_per_session,
+        )
+        .max(1);
+    let events = match state.external_coding_agent_bridge.poll_events(
+        session_id.as_str(),
+        after_sequence_id,
+        limit,
+    ) {
+        Ok(events) => events,
+        Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
+    };
+
+    let (tx, rx) = mpsc::unbounded_channel::<SseFrame>();
+    let _ = tx.send(SseFrame::Json {
+        event: "external_coding_agent.snapshot",
+        payload: json!({
+            "session": external_coding_agent_session_json(&snapshot),
+            "replay_after_sequence_id": after_sequence_id,
+        }),
+    });
+    for event in events {
+        let _ = tx.send(SseFrame::Json {
+            event: "external_coding_agent.progress",
+            payload: external_coding_agent_event_json(&event),
+        });
+    }
+    let _ = tx.send(SseFrame::Done);
+    drop(tx);
+
+    let stream =
+        UnboundedReceiverStream::new(rx).map(|frame| Ok::<Event, Infallible>(frame.into_event()));
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn handle_external_coding_agent_session_close(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    let snapshot = match state
+        .external_coding_agent_bridge
+        .close_session(session_id.as_str())
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "session": external_coding_agent_session_json(&snapshot),
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_external_coding_agent_reap(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    if let Err(error) = validate_gateway_request_body_size(&state, &body) {
+        return error.into_response();
+    }
+    let request = if body.is_empty() {
+        GatewayExternalCodingAgentReapRequest::default()
+    } else {
+        match parse_gateway_json_body::<GatewayExternalCodingAgentReapRequest>(&body) {
+            Ok(request) => request,
+            Err(error) => return error.into_response(),
+        }
+    };
+    let now_unix_ms = request
+        .now_unix_ms
+        .unwrap_or_else(current_unix_timestamp_ms);
+    let sessions = state
+        .external_coding_agent_bridge
+        .reap_inactive_sessions(now_unix_ms)
+        .into_iter()
+        .map(|snapshot| external_coding_agent_session_json(&snapshot))
+        .collect::<Vec<_>>();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "reaped_count": sessions.len(),
+            "sessions": sessions,
+            "runtime": {
+                "active_sessions": state.external_coding_agent_bridge.active_session_count(),
+                "inactivity_timeout_ms": state.config.external_coding_agent_bridge.inactivity_timeout_ms,
+                "max_active_sessions": state.config.external_coding_agent_bridge.max_active_sessions,
+                "max_events_per_session": state.config.external_coding_agent_bridge.max_events_per_session,
+            }
+        })),
+    )
         .into_response()
 }
 
@@ -1935,6 +2331,65 @@ fn parse_gateway_json_body<T: DeserializeOwned>(body: &Bytes) -> Result<T, OpenR
             "malformed_json",
             format!("failed to parse request body: {error}"),
         )
+    })
+}
+
+fn map_external_coding_agent_bridge_error(
+    error: ExternalCodingAgentBridgeError,
+) -> OpenResponsesApiError {
+    match error {
+        ExternalCodingAgentBridgeError::InvalidWorkspaceId => OpenResponsesApiError::bad_request(
+            "invalid_workspace_id",
+            "workspace_id must be non-empty",
+        ),
+        ExternalCodingAgentBridgeError::InvalidMessage => {
+            OpenResponsesApiError::bad_request("invalid_message", "message must be non-empty")
+        }
+        ExternalCodingAgentBridgeError::SessionNotFound(session_id) => {
+            OpenResponsesApiError::not_found(
+                "external_coding_agent_session_not_found",
+                format!("session '{session_id}' was not found"),
+            )
+        }
+        ExternalCodingAgentBridgeError::SessionLimitReached { limit } => {
+            OpenResponsesApiError::new(
+                StatusCode::CONFLICT,
+                "external_coding_agent_session_limit_reached",
+                format!("max active sessions limit reached ({limit})"),
+            )
+        }
+    }
+}
+
+fn external_coding_agent_status_label(status: ExternalCodingAgentSessionStatus) -> &'static str {
+    match status {
+        ExternalCodingAgentSessionStatus::Running => "running",
+        ExternalCodingAgentSessionStatus::Completed => "completed",
+        ExternalCodingAgentSessionStatus::Failed => "failed",
+        ExternalCodingAgentSessionStatus::TimedOut => "timed_out",
+        ExternalCodingAgentSessionStatus::Closed => "closed",
+    }
+}
+
+fn external_coding_agent_session_json(snapshot: &ExternalCodingAgentSessionSnapshot) -> Value {
+    json!({
+        "session_id": snapshot.session_id,
+        "workspace_id": snapshot.workspace_id,
+        "status": external_coding_agent_status_label(snapshot.status),
+        "started_unix_ms": snapshot.started_unix_ms,
+        "last_activity_unix_ms": snapshot.last_activity_unix_ms,
+        "queued_followups": snapshot.queued_followups,
+    })
+}
+
+fn external_coding_agent_event_json(
+    event: &tau_runtime::ExternalCodingAgentProgressEvent,
+) -> Value {
+    json!({
+        "sequence_id": event.sequence_id,
+        "event_type": event.event_type,
+        "message": event.message,
+        "timestamp_unix_ms": event.timestamp_unix_ms,
     })
 }
 

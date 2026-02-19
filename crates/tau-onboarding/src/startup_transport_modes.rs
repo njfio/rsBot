@@ -49,7 +49,7 @@ use tau_provider::{
     load_credential_store, resolve_credential_store_encryption_mode,
     resolve_secret_from_cli_or_store_id, AuthCommandConfig, ModelCatalog,
 };
-use tau_runtime::RuntimeHeartbeatSchedulerConfig;
+use tau_runtime::{ExternalCodingAgentBridgeConfig, RuntimeHeartbeatSchedulerConfig};
 use tau_skills::default_skills_lock_path;
 use tau_tools::tools::{register_builtin_tools, ToolPolicy};
 use tau_voice::voice_runtime::{
@@ -485,6 +485,7 @@ pub fn build_gateway_openresponses_server_config(
         rate_limit_max_requests: cli.gateway_openresponses_rate_limit_max_requests,
         max_input_chars: cli.gateway_openresponses_max_input_chars,
         runtime_heartbeat,
+        external_coding_agent_bridge: ExternalCodingAgentBridgeConfig::default(),
     })
 }
 

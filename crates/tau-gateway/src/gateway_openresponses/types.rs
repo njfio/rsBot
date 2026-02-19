@@ -150,6 +150,36 @@ pub(super) struct GatewayUiTelemetryRequest {
     pub(super) metadata: Value,
 }
 
+#[derive(Debug, Deserialize)]
+pub(super) struct GatewayExternalCodingAgentSessionOpenRequest {
+    pub(super) workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct GatewayExternalCodingAgentMessageRequest {
+    pub(super) message: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayExternalCodingAgentFollowupsDrainRequest {
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayExternalCodingAgentStreamQuery {
+    #[serde(default)]
+    pub(super) after_sequence_id: Option<u64>,
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayExternalCodingAgentReapRequest {
+    #[serde(default)]
+    pub(super) now_unix_ms: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct GatewayAuthSessionResponse {
     pub(super) access_token: String,
