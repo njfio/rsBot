@@ -4243,6 +4243,7 @@ dependencies = [
  "tau-ai",
  "tau-contract",
  "tau-core",
+ "tau-memory",
  "tau-multi-channel",
  "tau-runtime",
  "tau-session",

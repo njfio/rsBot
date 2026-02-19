@@ -14,6 +14,7 @@ tau-agent-core = { path = "../tau-agent-core" }
 tau-ai = { path = "../tau-ai" }
 tau-contract = { path = "../tau-contract" }
 tau-core = { path = "../tau-core" }
+tau-memory = { path = "../tau-memory" }
 tau-multi-channel = { path = "../tau-multi-channel" }
 tau-runtime = { path = "../tau-runtime" }
 tau-session = { path = "../tau-session" }

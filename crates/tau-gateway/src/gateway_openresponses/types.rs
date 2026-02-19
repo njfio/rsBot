@@ -129,6 +129,62 @@ pub(super) struct GatewayMemoryUpdateRequest {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayMemoryReadQuery {
+    #[serde(default)]
+    pub(super) query: Option<String>,
+    #[serde(default)]
+    pub(super) limit: Option<usize>,
+    #[serde(default)]
+    pub(super) workspace_id: Option<String>,
+    #[serde(default)]
+    pub(super) channel_id: Option<String>,
+    #[serde(default)]
+    pub(super) actor_id: Option<String>,
+    #[serde(default)]
+    pub(super) memory_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayMemoryEntryUpsertRequest {
+    pub(super) summary: String,
+    #[serde(default)]
+    pub(super) tags: Vec<String>,
+    #[serde(default)]
+    pub(super) facts: Vec<String>,
+    #[serde(default)]
+    pub(super) source_event_key: String,
+    #[serde(default)]
+    pub(super) workspace_id: Option<String>,
+    #[serde(default)]
+    pub(super) channel_id: Option<String>,
+    #[serde(default)]
+    pub(super) actor_id: Option<String>,
+    #[serde(default)]
+    pub(super) memory_type: Option<String>,
+    #[serde(default)]
+    pub(super) importance: Option<f32>,
+    #[serde(default)]
+    pub(super) relations: Vec<GatewayMemoryRelationInput>,
+    #[serde(default)]
+    pub(super) policy_gate: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayMemoryEntryDeleteRequest {
+    #[serde(default)]
+    pub(super) policy_gate: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayMemoryRelationInput {
+    pub(super) target_id: String,
+    #[serde(default)]
+    pub(super) relation_type: Option<String>,
+    #[serde(default)]
+    pub(super) weight: Option<f32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(super) struct GatewayMemoryGraphQuery {
     #[serde(default)]
     pub(super) max_nodes: Option<usize>,

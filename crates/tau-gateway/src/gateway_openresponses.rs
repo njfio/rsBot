@@ -29,6 +29,11 @@ use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentConfig, AgentEvent};
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
 use tau_core::{current_unix_timestamp, current_unix_timestamp_ms};
+use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
+use tau_memory::runtime::{
+    FileMemoryStore, MemoryRelationInput, MemoryScopeFilter, MemorySearchMatch,
+    MemorySearchOptions, MemoryType, RuntimeMemoryRecord,
+};
 use tau_runtime::{
     inspect_runtime_heartbeat, start_runtime_heartbeat_scheduler, ExternalCodingAgentBridge,
     ExternalCodingAgentBridgeConfig, ExternalCodingAgentBridgeError,
@@ -78,13 +83,14 @@ use types::{
     GatewayAuthSessionRequest, GatewayAuthSessionResponse,
     GatewayExternalCodingAgentFollowupsDrainRequest, GatewayExternalCodingAgentMessageRequest,
     GatewayExternalCodingAgentReapRequest, GatewayExternalCodingAgentSessionOpenRequest,
-    GatewayExternalCodingAgentStreamQuery, GatewayMemoryGraphEdge, GatewayMemoryGraphFilterSummary,
+    GatewayExternalCodingAgentStreamQuery, GatewayMemoryEntryDeleteRequest,
+    GatewayMemoryEntryUpsertRequest, GatewayMemoryGraphEdge, GatewayMemoryGraphFilterSummary,
     GatewayMemoryGraphNode, GatewayMemoryGraphQuery, GatewayMemoryGraphResponse,
-    GatewayMemoryUpdateRequest, GatewaySessionAppendRequest, GatewaySessionResetRequest,
-    GatewayUiTelemetryRequest, OpenResponsesApiError, OpenResponsesExecutionResult,
-    OpenResponsesOutputItem, OpenResponsesOutputTextItem, OpenResponsesPrompt,
-    OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage, OpenResponsesUsageSummary,
-    SseFrame,
+    GatewayMemoryReadQuery, GatewayMemoryUpdateRequest, GatewaySessionAppendRequest,
+    GatewaySessionResetRequest, GatewayUiTelemetryRequest, OpenResponsesApiError,
+    OpenResponsesExecutionResult, OpenResponsesOutputItem, OpenResponsesOutputTextItem,
+    OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage,
+    OpenResponsesUsageSummary, SseFrame,
 };
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
@@ -102,6 +108,7 @@ const GATEWAY_SESSION_DETAIL_ENDPOINT: &str = "/gateway/sessions/{session_key}";
 const GATEWAY_SESSION_APPEND_ENDPOINT: &str = "/gateway/sessions/{session_key}/append";
 const GATEWAY_SESSION_RESET_ENDPOINT: &str = "/gateway/sessions/{session_key}/reset";
 const GATEWAY_MEMORY_ENDPOINT: &str = "/gateway/memory/{session_key}";
+const GATEWAY_MEMORY_ENTRY_ENDPOINT: &str = "/gateway/memory/{session_key}/{entry_id}";
 const GATEWAY_MEMORY_GRAPH_ENDPOINT: &str = "/gateway/memory-graph/{session_key}";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
@@ -738,6 +745,12 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             get(handle_gateway_memory_read).put(handle_gateway_memory_write),
         )
         .route(
+            GATEWAY_MEMORY_ENTRY_ENDPOINT,
+            get(handle_gateway_memory_entry_read)
+                .put(handle_gateway_memory_entry_write)
+                .delete(handle_gateway_memory_entry_delete),
+        )
+        .route(
             GATEWAY_MEMORY_GRAPH_ENDPOINT,
             get(handle_gateway_memory_graph),
         )
@@ -846,6 +859,7 @@ async fn handle_gateway_status(
                     "session_append_endpoint": GATEWAY_SESSION_APPEND_ENDPOINT,
                     "session_reset_endpoint": GATEWAY_SESSION_RESET_ENDPOINT,
                     "memory_endpoint": GATEWAY_MEMORY_ENDPOINT,
+                    "memory_entry_endpoint": GATEWAY_MEMORY_ENTRY_ENDPOINT,
                     "memory_graph_endpoint": GATEWAY_MEMORY_GRAPH_ENDPOINT,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
@@ -2087,11 +2101,86 @@ async fn handle_gateway_memory_read(
     State(state): State<Arc<GatewayOpenResponsesServerState>>,
     headers: HeaderMap,
     AxumPath(session_key): AxumPath<String>,
+    Query(query): Query<GatewayMemoryReadQuery>,
 ) -> Response {
     if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
         return error.into_response();
     }
     let session_key = sanitize_session_key(session_key.as_str());
+
+    let search_query = query
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(search_query) = search_query {
+        let memory_type_filter = match parse_gateway_memory_type(query.memory_type.as_deref()) {
+            Ok(memory_type) => memory_type,
+            Err(error) => return error.into_response(),
+        };
+        let options = MemorySearchOptions {
+            limit: query.limit.unwrap_or(25).clamp(1, 200),
+            scope: MemoryScopeFilter {
+                workspace_id: normalize_optional_text(query.workspace_id),
+                channel_id: normalize_optional_text(query.channel_id),
+                actor_id: normalize_optional_text(query.actor_id),
+            },
+            ..MemorySearchOptions::default()
+        };
+
+        let store = gateway_memory_store(&state.config.state_dir, &session_key);
+        let search_result = match store.search(search_query.as_str(), &options) {
+            Ok(result) => result,
+            Err(error) => {
+                return OpenResponsesApiError::internal(format!(
+                    "failed to search memory entries for session '{session_key}': {error}"
+                ))
+                .into_response();
+            }
+        };
+
+        let mut matches = search_result
+            .matches
+            .iter()
+            .filter(|entry| {
+                memory_type_filter
+                    .map(|expected| entry.memory_type == expected)
+                    .unwrap_or(true)
+            })
+            .map(memory_search_match_json)
+            .collect::<Vec<_>>();
+        matches.truncate(options.limit);
+
+        state.record_ui_telemetry_event("memory", "search", "memory_search_requested");
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "mode": "search",
+                "session_key": session_key,
+                "query": search_query,
+                "limit": options.limit,
+                "memory_type_filter": memory_type_filter.map(|kind| kind.as_str()),
+                "scope_filter": {
+                    "workspace_id": options.scope.workspace_id,
+                    "channel_id": options.scope.channel_id,
+                    "actor_id": options.scope.actor_id,
+                },
+                "scanned": search_result.scanned,
+                "returned": matches.len(),
+                "retrieval_backend": search_result.retrieval_backend,
+                "retrieval_reason_code": search_result.retrieval_reason_code,
+                "embedding_backend": search_result.embedding_backend,
+                "embedding_reason_code": search_result.embedding_reason_code,
+                "matches": matches,
+                "storage_backend": store.storage_backend_label(),
+                "storage_reason_code": store.storage_backend_reason_code(),
+                "store_root": gateway_memory_store_root(&state.config.state_dir, &session_key).display().to_string(),
+            })),
+        )
+            .into_response();
+    }
+
     let path = gateway_memory_path(&state.config.state_dir, &session_key);
     let exists = path.exists();
     let content = if exists {
@@ -2177,6 +2266,231 @@ async fn handle_gateway_memory_write(
         })),
     )
         .into_response()
+}
+
+async fn handle_gateway_memory_entry_read(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath((session_key, entry_id)): AxumPath<(String, String)>,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    let session_key = sanitize_session_key(session_key.as_str());
+    let entry_id = entry_id.trim().to_string();
+    if entry_id.is_empty() {
+        return OpenResponsesApiError::bad_request(
+            "invalid_memory_entry_id",
+            "entry_id must be non-empty",
+        )
+        .into_response();
+    }
+
+    let store = gateway_memory_store(&state.config.state_dir, &session_key);
+    match store.read_entry(entry_id.as_str(), None) {
+        Ok(Some(record)) => {
+            state.record_ui_telemetry_event("memory", "entry_read", "memory_entry_read_requested");
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "session_key": session_key,
+                    "entry": memory_record_json(&record),
+                    "storage_backend": store.storage_backend_label(),
+                    "storage_reason_code": store.storage_backend_reason_code(),
+                })),
+            )
+                .into_response()
+        }
+        Ok(None) => OpenResponsesApiError::not_found(
+            "memory_entry_not_found",
+            format!(
+                "memory entry '{}' was not found for session '{}'",
+                entry_id, session_key
+            ),
+        )
+        .into_response(),
+        Err(error) => OpenResponsesApiError::internal(format!(
+            "failed to read memory entry '{}' for session '{}': {error}",
+            entry_id, session_key
+        ))
+        .into_response(),
+    }
+}
+
+async fn handle_gateway_memory_entry_write(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath((session_key, entry_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    let request = match parse_gateway_json_body::<GatewayMemoryEntryUpsertRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) =
+        enforce_policy_gate(request.policy_gate.as_deref(), MEMORY_WRITE_POLICY_GATE)
+    {
+        state.record_ui_telemetry_event(
+            "memory",
+            "entry_write",
+            "memory_entry_write_policy_gate_blocked",
+        );
+        return error.into_response();
+    }
+
+    let session_key = sanitize_session_key(session_key.as_str());
+    let entry_id = entry_id.trim().to_string();
+    if entry_id.is_empty() {
+        return OpenResponsesApiError::bad_request(
+            "invalid_memory_entry_id",
+            "entry_id must be non-empty",
+        )
+        .into_response();
+    }
+    let summary = request.summary.trim().to_string();
+    if summary.is_empty() {
+        return OpenResponsesApiError::bad_request("invalid_summary", "summary must be non-empty")
+            .into_response();
+    }
+    let memory_type = match parse_gateway_memory_type(request.memory_type.as_deref()) {
+        Ok(memory_type) => memory_type,
+        Err(error) => return error.into_response(),
+    };
+
+    let scope = MemoryScope {
+        workspace_id: normalize_optional_text(request.workspace_id)
+            .unwrap_or_else(|| session_key.clone()),
+        channel_id: normalize_optional_text(request.channel_id)
+            .unwrap_or_else(|| "gateway".to_string()),
+        actor_id: normalize_optional_text(request.actor_id)
+            .unwrap_or_else(|| "operator".to_string()),
+    };
+    let entry = MemoryEntry {
+        memory_id: entry_id.clone(),
+        summary,
+        tags: request.tags,
+        facts: request.facts,
+        source_event_key: request.source_event_key,
+        recency_weight_bps: 0,
+        confidence_bps: 1000,
+    };
+    let relation_inputs = request
+        .relations
+        .into_iter()
+        .map(|relation| MemoryRelationInput {
+            target_id: relation.target_id,
+            relation_type: relation.relation_type,
+            weight: relation.weight,
+        })
+        .collect::<Vec<_>>();
+
+    let store = gateway_memory_store(&state.config.state_dir, &session_key);
+    let write_result = match store.write_entry_with_metadata_and_relations(
+        &scope,
+        entry,
+        memory_type,
+        request.importance,
+        relation_inputs.as_slice(),
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            return OpenResponsesApiError::internal(format!(
+                "failed to write memory entry '{}' for session '{}': {error}",
+                entry_id, session_key
+            ))
+            .into_response();
+        }
+    };
+
+    state.record_ui_telemetry_event("memory", "entry_write", "memory_entry_write_applied");
+    (
+        if write_result.created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
+        Json(json!({
+            "session_key": session_key,
+            "created": write_result.created,
+            "entry": memory_record_json(&write_result.record),
+            "storage_backend": store.storage_backend_label(),
+            "storage_reason_code": store.storage_backend_reason_code(),
+        })),
+    )
+        .into_response()
+}
+
+async fn handle_gateway_memory_entry_delete(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath((session_key, entry_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    let request = match parse_gateway_json_body::<GatewayMemoryEntryDeleteRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => return error.into_response(),
+    };
+    if let Err(error) =
+        enforce_policy_gate(request.policy_gate.as_deref(), MEMORY_WRITE_POLICY_GATE)
+    {
+        state.record_ui_telemetry_event(
+            "memory",
+            "entry_delete",
+            "memory_entry_delete_policy_gate_blocked",
+        );
+        return error.into_response();
+    }
+
+    let session_key = sanitize_session_key(session_key.as_str());
+    let entry_id = entry_id.trim().to_string();
+    if entry_id.is_empty() {
+        return OpenResponsesApiError::bad_request(
+            "invalid_memory_entry_id",
+            "entry_id must be non-empty",
+        )
+        .into_response();
+    }
+
+    let store = gateway_memory_store(&state.config.state_dir, &session_key);
+    match store.soft_delete_entry(entry_id.as_str(), None) {
+        Ok(Some(record)) => {
+            state.record_ui_telemetry_event(
+                "memory",
+                "entry_delete",
+                "memory_entry_delete_applied",
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "session_key": session_key,
+                    "deleted": true,
+                    "entry": memory_record_json(&record),
+                    "storage_backend": store.storage_backend_label(),
+                    "storage_reason_code": store.storage_backend_reason_code(),
+                })),
+            )
+                .into_response()
+        }
+        Ok(None) => OpenResponsesApiError::not_found(
+            "memory_entry_not_found",
+            format!(
+                "memory entry '{}' was not found for session '{}'",
+                entry_id, session_key
+            ),
+        )
+        .into_response(),
+        Err(error) => OpenResponsesApiError::internal(format!(
+            "failed to delete memory entry '{}' for session '{}': {error}",
+            entry_id, session_key
+        ))
+        .into_response(),
+    }
 }
 
 async fn handle_gateway_memory_graph(
@@ -2586,6 +2900,94 @@ fn gateway_memory_path(state_dir: &Path, session_key: &str) -> PathBuf {
         .join("openresponses")
         .join("memory")
         .join(format!("{session_key}.md"))
+}
+
+fn gateway_memory_store_root(state_dir: &Path, session_key: &str) -> PathBuf {
+    state_dir
+        .join("openresponses")
+        .join("memory-store")
+        .join(session_key)
+}
+
+fn gateway_memory_store(state_dir: &Path, session_key: &str) -> FileMemoryStore {
+    FileMemoryStore::new(gateway_memory_store_root(state_dir, session_key))
+}
+
+fn normalize_optional_text(raw: Option<String>) -> Option<String> {
+    raw.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn parse_gateway_memory_type(
+    raw: Option<&str>,
+) -> Result<Option<MemoryType>, OpenResponsesApiError> {
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+
+    MemoryType::parse(raw).map(Some).ok_or_else(|| {
+        OpenResponsesApiError::bad_request(
+            "invalid_memory_type",
+            "memory_type must be one of: identity, goal, decision, todo, preference, fact, event, observation",
+        )
+    })
+}
+
+fn memory_record_json(record: &RuntimeMemoryRecord) -> Value {
+    json!({
+        "memory_id": record.entry.memory_id.as_str(),
+        "summary": record.entry.summary.as_str(),
+        "tags": &record.entry.tags,
+        "facts": &record.entry.facts,
+        "source_event_key": record.entry.source_event_key.as_str(),
+        "scope": {
+            "workspace_id": record.scope.workspace_id.as_str(),
+            "channel_id": record.scope.channel_id.as_str(),
+            "actor_id": record.scope.actor_id.as_str(),
+        },
+        "memory_type": record.memory_type.as_str(),
+        "importance": record.importance,
+        "relations": &record.relations,
+        "embedding_source": record.embedding_source.as_str(),
+        "embedding_model": &record.embedding_model,
+        "embedding_vector_dim": record.embedding_vector.len(),
+        "embedding_reason_code": record.embedding_reason_code.as_str(),
+        "updated_unix_ms": record.updated_unix_ms,
+        "last_accessed_at_unix_ms": record.last_accessed_at_unix_ms,
+        "access_count": record.access_count,
+        "forgotten": record.forgotten,
+    })
+}
+
+fn memory_search_match_json(entry: &MemorySearchMatch) -> Value {
+    json!({
+        "memory_id": entry.memory_id.as_str(),
+        "score": entry.score,
+        "vector_score": entry.vector_score,
+        "lexical_score": entry.lexical_score,
+        "fused_score": entry.fused_score,
+        "graph_score": entry.graph_score,
+        "scope": {
+            "workspace_id": entry.scope.workspace_id.as_str(),
+            "channel_id": entry.scope.channel_id.as_str(),
+            "actor_id": entry.scope.actor_id.as_str(),
+        },
+        "summary": entry.summary.as_str(),
+        "memory_type": entry.memory_type.as_str(),
+        "importance": entry.importance,
+        "tags": &entry.tags,
+        "facts": &entry.facts,
+        "source_event_key": entry.source_event_key.as_str(),
+        "embedding_source": entry.embedding_source.as_str(),
+        "embedding_model": &entry.embedding_model,
+        "relations": &entry.relations,
+    })
 }
 
 fn gateway_ui_telemetry_path(state_dir: &Path) -> PathBuf {
