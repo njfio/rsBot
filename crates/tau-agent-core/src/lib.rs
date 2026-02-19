@@ -40,10 +40,10 @@ pub(crate) use runtime_tool_bridge::execute_tool_call_inner;
 pub(crate) use runtime_turn_loop::extract_json_payload;
 pub(crate) use runtime_turn_loop::{
     bounded_messages, build_structured_output_retry_prompt, collapse_whitespace,
-    compact_messages_for_token_pressure, estimate_chat_request_tokens, estimate_usage_cost_usd,
-    is_retryable_ai_error, normalize_cost_alert_thresholds, parse_structured_output, role_label,
-    stream_retry_buffer_on_delta, timeout_duration_from_ms, truncate_chars,
-    ContextCompactionConfig, StreamingRetryBufferState,
+    compact_messages_for_tier, context_pressure_snapshot, estimate_chat_request_tokens,
+    estimate_usage_cost_usd, is_retryable_ai_error, normalize_cost_alert_thresholds,
+    parse_structured_output, role_label, stream_retry_buffer_on_delta, timeout_duration_from_ms,
+    truncate_chars, ContextCompactionConfig, ContextCompactionTier, StreamingRetryBufferState,
 };
 #[cfg(test)]
 pub(crate) use tau_memory::runtime::embed_text_vector;
@@ -755,6 +755,23 @@ struct SafetyInspection {
     reason_codes: Vec<String>,
 }
 
+struct PendingWarnCompaction {
+    source_messages: Vec<Message>,
+    receiver: tokio::sync::oneshot::Receiver<Vec<Message>>,
+}
+
+#[derive(Clone)]
+struct ReadyWarnCompaction {
+    source_messages: Vec<Message>,
+    compacted_messages: Vec<Message>,
+}
+
+#[derive(Default)]
+struct WarnCompactionState {
+    pending: Option<PendingWarnCompaction>,
+    ready: Option<ReadyWarnCompaction>,
+}
+
 /// Public struct `Agent` used across Tau components.
 ///
 /// # Examples
@@ -803,6 +820,7 @@ pub struct Agent {
     cumulative_cost_usd: f64,
     emitted_cost_alert_thresholds: HashSet<u8>,
     skip_response_reason: Option<String>,
+    warn_compaction_state: Arc<Mutex<WarnCompactionState>>,
 }
 
 impl Agent {
@@ -835,6 +853,7 @@ impl Agent {
             cumulative_cost_usd: 0.0,
             emitted_cost_alert_thresholds: HashSet::new(),
             skip_response_reason: None,
+            warn_compaction_state: Arc::new(Mutex::new(WarnCompactionState::default())),
         }
     }
 
@@ -1239,7 +1258,9 @@ impl Agent {
 
     /// Clones the agent state for independent execution.
     pub fn fork(&self) -> Self {
-        self.clone()
+        let mut cloned = self.clone();
+        cloned.warn_compaction_state = Arc::new(Mutex::new(WarnCompactionState::default()));
+        cloned
     }
 
     /// Executes multiple prompts in bounded parallel batches.
@@ -1977,6 +1998,99 @@ impl Agent {
         Err(AgentError::MaxTurnsExceeded(self.config.max_turns))
     }
 
+    fn context_compaction_config(&self) -> ContextCompactionConfig {
+        ContextCompactionConfig {
+            max_input_tokens: self.config.max_estimated_input_tokens,
+            warn_threshold_percent: self.config.context_compaction_warn_threshold_percent,
+            aggressive_threshold_percent: self
+                .config
+                .context_compaction_aggressive_threshold_percent,
+            emergency_threshold_percent: self.config.context_compaction_emergency_threshold_percent,
+            warn_retain_percent: self.config.context_compaction_warn_retain_percent,
+            aggressive_retain_percent: self.config.context_compaction_aggressive_retain_percent,
+            emergency_retain_percent: self.config.context_compaction_emergency_retain_percent,
+        }
+    }
+
+    fn poll_warn_compaction_state_locked(state: &mut WarnCompactionState) {
+        let outcome = if let Some(pending) = state.pending.as_mut() {
+            match pending.receiver.try_recv() {
+                Ok(compacted_messages) => {
+                    Some((pending.source_messages.clone(), Some(compacted_messages)))
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some((Vec::new(), None)),
+            }
+        } else {
+            None
+        };
+
+        let Some((source_messages, compacted_messages)) = outcome else {
+            return;
+        };
+
+        state.pending = None;
+        if let Some(compacted_messages) = compacted_messages {
+            state.ready = Some(ReadyWarnCompaction {
+                source_messages,
+                compacted_messages,
+            });
+        }
+    }
+
+    fn take_ready_warn_compaction(&self, messages: &[Message]) -> Option<Vec<Message>> {
+        let mut state = lock_or_recover(self.warn_compaction_state.as_ref());
+        Self::poll_warn_compaction_state_locked(&mut state);
+
+        let ready = state.ready.take()?;
+        if !messages.starts_with(&ready.source_messages) {
+            return None;
+        }
+
+        let mut merged = ready.compacted_messages;
+        merged.extend_from_slice(&messages[ready.source_messages.len()..]);
+        Some(merged)
+    }
+
+    fn schedule_warn_compaction_if_needed(
+        &self,
+        messages: &[Message],
+        compaction_config: ContextCompactionConfig,
+    ) {
+        let mut state = lock_or_recover(self.warn_compaction_state.as_ref());
+        Self::poll_warn_compaction_state_locked(&mut state);
+
+        if let Some(ready) = state.ready.as_ref() {
+            if messages.starts_with(&ready.source_messages) {
+                return;
+            }
+            state.ready = None;
+        }
+
+        if let Some(pending) = state.pending.as_ref() {
+            if messages.starts_with(&pending.source_messages) {
+                return;
+            }
+            state.pending = None;
+        }
+
+        let source_messages = messages.to_vec();
+        let source_for_task = source_messages.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let compacted = compact_messages_for_tier(
+                source_for_task.as_slice(),
+                ContextCompactionTier::Warn,
+                compaction_config,
+            );
+            let _ = sender.send(compacted);
+        });
+        state.pending = Some(PendingWarnCompaction {
+            source_messages,
+            receiver,
+        });
+    }
+
     async fn request_messages(&self) -> Vec<Message> {
         let context_limit = self.config.max_context_messages;
         let mut messages = if let Some(limit) = context_limit {
@@ -1984,6 +2098,7 @@ impl Agent {
         } else {
             self.messages.clone()
         };
+        let compaction_config = self.context_compaction_config();
         let pressure_estimate = estimate_chat_request_tokens(&ChatRequest {
             model: self.config.model.clone(),
             messages: messages.clone(),
@@ -1999,23 +2114,25 @@ impl Agent {
                 google_cached_content: None,
             },
         });
-        messages = compact_messages_for_token_pressure(
-            &messages,
-            pressure_estimate.input_tokens,
-            ContextCompactionConfig {
-                max_input_tokens: self.config.max_estimated_input_tokens,
-                warn_threshold_percent: self.config.context_compaction_warn_threshold_percent,
-                aggressive_threshold_percent: self
-                    .config
-                    .context_compaction_aggressive_threshold_percent,
-                emergency_threshold_percent: self
-                    .config
-                    .context_compaction_emergency_threshold_percent,
-                warn_retain_percent: self.config.context_compaction_warn_retain_percent,
-                aggressive_retain_percent: self.config.context_compaction_aggressive_retain_percent,
-                emergency_retain_percent: self.config.context_compaction_emergency_retain_percent,
-            },
-        );
+        let pressure_snapshot =
+            context_pressure_snapshot(pressure_estimate.input_tokens, compaction_config);
+        match pressure_snapshot.tier {
+            ContextCompactionTier::Warn => {
+                if let Some(compacted) = self.take_ready_warn_compaction(&messages) {
+                    messages = compacted;
+                } else {
+                    self.schedule_warn_compaction_if_needed(&messages, compaction_config);
+                }
+            }
+            ContextCompactionTier::Aggressive | ContextCompactionTier::Emergency => {
+                let mut state = lock_or_recover(self.warn_compaction_state.as_ref());
+                state.pending = None;
+                state.ready = None;
+                messages =
+                    compact_messages_for_tier(&messages, pressure_snapshot.tier, compaction_config);
+            }
+            ContextCompactionTier::None => {}
+        }
 
         let Some(limit) = context_limit else {
             return messages;

@@ -201,14 +201,19 @@ impl ContextMonitor {
     }
 }
 
-pub(crate) fn compact_messages_for_token_pressure(
-    messages: &[Message],
+pub(crate) fn context_pressure_snapshot(
     estimated_input_tokens: u32,
     config: ContextCompactionConfig,
+) -> ContextPressureSnapshot {
+    ContextMonitor::from_compaction_config(config).snapshot(estimated_input_tokens)
+}
+
+pub(crate) fn compact_messages_for_tier(
+    messages: &[Message],
+    tier: ContextCompactionTier,
+    config: ContextCompactionConfig,
 ) -> Vec<Message> {
-    let monitor = ContextMonitor::from_compaction_config(config);
-    let snapshot = monitor.snapshot(estimated_input_tokens);
-    match snapshot.tier {
+    match tier {
         ContextCompactionTier::None => messages.to_vec(),
         ContextCompactionTier::Warn => {
             let retain = normalize_retain_percent(config.warn_retain_percent);
