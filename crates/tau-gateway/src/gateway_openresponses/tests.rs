@@ -1243,6 +1243,204 @@ async fn regression_spec_2670_c04_channel_lifecycle_endpoint_rejects_invalid_cha
 }
 
 #[tokio::test]
+async fn integration_spec_2673_c01_gateway_config_endpoint_supports_get_and_hot_reload_aware_patch()
+{
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+
+    let client = Client::new();
+    let config_get = client
+        .get(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("config get");
+    assert_eq!(config_get.status(), StatusCode::OK);
+    let config_get_payload = config_get
+        .json::<Value>()
+        .await
+        .expect("parse config get payload");
+    assert_eq!(
+        config_get_payload["active"]["model"].as_str(),
+        Some("openai/gpt-4o-mini")
+    );
+    assert_eq!(
+        config_get_payload["hot_reload_capabilities"]["runtime_heartbeat_interval_ms"]["mode"],
+        "hot_reload"
+    );
+
+    let config_patch = client
+        .patch(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "model": "openai/gpt-4o",
+            "runtime_heartbeat_interval_ms": 120
+        }))
+        .send()
+        .await
+        .expect("config patch");
+    assert_eq!(config_patch.status(), StatusCode::OK);
+    let config_patch_payload = config_patch
+        .json::<Value>()
+        .await
+        .expect("parse config patch payload");
+    assert_eq!(
+        config_patch_payload["accepted"]["model"].as_str(),
+        Some("openai/gpt-4o")
+    );
+    assert_eq!(
+        config_patch_payload["applied"]["runtime_heartbeat_interval_ms"]["value"].as_u64(),
+        Some(120)
+    );
+    assert!(config_patch_payload["restart_required_fields"]
+        .as_array()
+        .expect("restart_required_fields array")
+        .iter()
+        .any(|field| field.as_str() == Some("model")));
+
+    let heartbeat_policy_path = PathBuf::from(format!(
+        "{}.policy.toml",
+        state.config.runtime_heartbeat.state_path.display()
+    ));
+    let heartbeat_policy =
+        std::fs::read_to_string(&heartbeat_policy_path).expect("read heartbeat hot reload policy");
+    assert!(heartbeat_policy.contains("interval_ms = 120"));
+
+    let overrides_path = state
+        .config
+        .state_dir
+        .join("openresponses")
+        .join("config-overrides.json");
+    assert!(overrides_path.exists());
+    let overrides_payload = serde_json::from_str::<Value>(
+        std::fs::read_to_string(&overrides_path)
+            .expect("read config overrides")
+            .as_str(),
+    )
+    .expect("parse config overrides");
+    assert_eq!(
+        overrides_payload["pending_overrides"]["model"].as_str(),
+        Some("openai/gpt-4o")
+    );
+
+    let config_get_after = client
+        .get(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("config get after patch");
+    assert_eq!(config_get_after.status(), StatusCode::OK);
+    let config_get_after_payload = config_get_after
+        .json::<Value>()
+        .await
+        .expect("parse config get after payload");
+    assert_eq!(
+        config_get_after_payload["pending_overrides"]["model"].as_str(),
+        Some("openai/gpt-4o")
+    );
+
+    let status_response = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_payload = status_response
+        .json::<Value>()
+        .await
+        .expect("parse gateway status payload");
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["config_endpoint"],
+        GATEWAY_CONFIG_ENDPOINT
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2673_c04_gateway_config_endpoint_rejects_invalid_or_unauthorized_patch() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+
+    let client = Client::new();
+    let unauthorized_get = client
+        .get(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .send()
+        .await
+        .expect("unauthorized get config");
+    assert_eq!(unauthorized_get.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthorized_patch = client
+        .patch(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .json(&json!({"model":"openai/gpt-4o"}))
+        .send()
+        .await
+        .expect("unauthorized patch config");
+    assert_eq!(unauthorized_patch.status(), StatusCode::UNAUTHORIZED);
+
+    let empty_patch = client
+        .patch(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("empty patch payload");
+    assert_eq!(empty_patch.status(), StatusCode::BAD_REQUEST);
+    let empty_patch_payload = empty_patch
+        .json::<Value>()
+        .await
+        .expect("parse empty patch payload");
+    assert_eq!(empty_patch_payload["error"]["code"], "no_config_changes");
+
+    let invalid_model = client
+        .patch(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({"model":"   "}))
+        .send()
+        .await
+        .expect("invalid model patch payload");
+    assert_eq!(invalid_model.status(), StatusCode::BAD_REQUEST);
+    let invalid_model_payload = invalid_model
+        .json::<Value>()
+        .await
+        .expect("parse invalid model payload");
+    assert_eq!(invalid_model_payload["error"]["code"], "invalid_model");
+
+    let invalid_interval = client
+        .patch(format!("http://{addr}{GATEWAY_CONFIG_ENDPOINT}"))
+        .bearer_auth("secret")
+        .json(&json!({"runtime_heartbeat_interval_ms":0}))
+        .send()
+        .await
+        .expect("invalid heartbeat interval payload");
+    assert_eq!(invalid_interval.status(), StatusCode::BAD_REQUEST);
+    let invalid_interval_payload = invalid_interval
+        .json::<Value>()
+        .await
+        .expect("parse invalid heartbeat interval payload");
+    assert_eq!(
+        invalid_interval_payload["error"]["code"],
+        "invalid_runtime_heartbeat_interval_ms"
+    );
+
+    let overrides_path = state
+        .config
+        .state_dir
+        .join("openresponses")
+        .join("config-overrides.json");
+    assert!(!overrides_path.exists());
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn regression_gateway_memory_graph_endpoint_rejects_unauthorized_requests() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");
