@@ -212,6 +212,10 @@ fn resolve_session_endpoint(template: &str, session_id: &str) -> String {
     template.replace("{session_id}", session_id)
 }
 
+fn resolve_job_endpoint(template: &str, job_id: &str) -> String {
+    template.replace("{job_id}", job_id)
+}
+
 async fn spawn_test_server(
     state: Arc<GatewayOpenResponsesServerState>,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
@@ -2949,6 +2953,161 @@ async fn regression_spec_2691_c05_tools_endpoints_reject_unauthorized_requests()
         .await
         .expect("unauthorized tools stats response");
     assert_eq!(unauthorized_stats.status(), StatusCode::UNAUTHORIZED);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2694_c01_c02_c05_jobs_list_and_cancel_endpoints_support_runtime_sessions()
+{
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let opened = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"workspace_id":"workspace-jobs"}))
+        .send()
+        .await
+        .expect("open external coding session")
+        .json::<Value>()
+        .await
+        .expect("parse open session payload");
+    let session_id = opened["session"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    let jobs = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/jobs")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("list jobs response");
+    assert_eq!(jobs.status(), StatusCode::OK);
+    let jobs_payload = jobs.json::<Value>().await.expect("parse jobs list payload");
+    assert_eq!(jobs_payload["total_jobs"], Value::Number(1_u64.into()));
+    assert_eq!(
+        jobs_payload["jobs"][0]["job_id"].as_str(),
+        Some(session_id.as_str())
+    );
+    assert_eq!(jobs_payload["jobs"][0]["status"].as_str(), Some("running"));
+
+    let cancel = client
+        .post(
+            "http://".to_string()
+                + &addr.to_string()
+                + resolve_job_endpoint("/gateway/jobs/{job_id}/cancel", session_id.as_str())
+                    .as_str(),
+        )
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("cancel job response");
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let cancel_payload = cancel
+        .json::<Value>()
+        .await
+        .expect("parse cancel job payload");
+    assert_eq!(cancel_payload["job_id"].as_str(), Some(session_id.as_str()));
+    assert_eq!(cancel_payload["status"].as_str(), Some("cancelled"));
+
+    let jobs_after_cancel = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/jobs")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("list jobs after cancel response");
+    assert_eq!(jobs_after_cancel.status(), StatusCode::OK);
+    let jobs_after_cancel_payload = jobs_after_cancel
+        .json::<Value>()
+        .await
+        .expect("parse jobs after cancel payload");
+    assert_eq!(
+        jobs_after_cancel_payload["total_jobs"],
+        Value::Number(0_u64.into())
+    );
+
+    let status = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response")
+        .json::<Value>()
+        .await
+        .expect("parse gateway status payload");
+    assert_eq!(
+        status["gateway"]["web_ui"]["jobs_endpoint"],
+        "/gateway/jobs"
+    );
+    assert_eq!(
+        status["gateway"]["web_ui"]["job_cancel_endpoint_template"],
+        "/gateway/jobs/{job_id}/cancel"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2694_c03_jobs_cancel_endpoint_returns_not_found_for_unknown_job() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let cancel_unknown = client
+        .post(
+            "http://".to_string()
+                + &addr.to_string()
+                + resolve_job_endpoint("/gateway/jobs/{job_id}/cancel", "job-does-not-exist")
+                    .as_str(),
+        )
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("cancel unknown job response");
+    assert_eq!(cancel_unknown.status(), StatusCode::NOT_FOUND);
+    let cancel_unknown_payload = cancel_unknown
+        .json::<Value>()
+        .await
+        .expect("parse cancel unknown payload");
+    assert_eq!(cancel_unknown_payload["error"]["code"], "job_not_found");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2694_c04_jobs_endpoints_reject_unauthorized_requests() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let unauthorized_list = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/jobs")
+        .send()
+        .await
+        .expect("unauthorized jobs list response");
+    assert_eq!(unauthorized_list.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthorized_cancel = client
+        .post(
+            "http://".to_string()
+                + &addr.to_string()
+                + resolve_job_endpoint("/gateway/jobs/{job_id}/cancel", "job-any").as_str(),
+        )
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("unauthorized cancel response");
+    assert_eq!(unauthorized_cancel.status(), StatusCode::UNAUTHORIZED);
 
     handle.abort();
 }
