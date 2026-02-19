@@ -707,6 +707,8 @@ const CONTEXT_SUMMARY_PREFIX: &str = "[Tau context summary]";
 const CONTEXT_SUMMARY_MAX_CHARS: usize = 1_200;
 const CONTEXT_SUMMARY_SNIPPET_MAX_CHARS: usize = 160;
 const CONTEXT_SUMMARY_MAX_EXCERPTS: usize = 6;
+const COMPACTION_ENTRY_PREFIX: &str = "[Tau compaction entry]";
+const COMPACTION_MEMORY_SAVE_PREFIX: &str = "[Tau compaction memory save]";
 const MEMORY_RECALL_PREFIX: &str = "[Tau memory recall]";
 const DIRECT_MESSAGE_PREFIX: &str = "[Tau direct message]";
 const REPLAN_ON_TOOL_FAILURE_PROMPT: &str = "One or more tool calls failed. Replan and continue with an alternative approach using available tools. If no viable tool exists, explain what is missing and ask the user for clarification.";
@@ -2091,7 +2093,104 @@ impl Agent {
         });
     }
 
-    async fn request_messages(&self) -> Vec<Message> {
+    fn compaction_tier_label(tier: ContextCompactionTier) -> &'static str {
+        match tier {
+            ContextCompactionTier::Warn => "warn",
+            ContextCompactionTier::Aggressive => "aggressive",
+            ContextCompactionTier::Emergency => "emergency",
+            ContextCompactionTier::None => "none",
+        }
+    }
+
+    fn extract_memory_candidates_from_compaction_summary(
+        summary: &str,
+    ) -> Result<Vec<String>, &'static str> {
+        let mut candidates = Vec::new();
+        let mut in_excerpt_block = false;
+        for line in summary.lines() {
+            let trimmed = line.trim();
+            if trimmed.eq_ignore_ascii_case("excerpts:") {
+                in_excerpt_block = true;
+                continue;
+            }
+            if !in_excerpt_block {
+                continue;
+            }
+            let Some(excerpt) = trimmed.strip_prefix("- ") else {
+                continue;
+            };
+            let content = excerpt
+                .split_once(':')
+                .map(|(_, value)| value)
+                .unwrap_or(excerpt);
+            let collapsed = collapse_whitespace(content);
+            if collapsed.is_empty() {
+                continue;
+            }
+            candidates.push(collapsed);
+            if candidates.len() >= CONTEXT_SUMMARY_MAX_EXCERPTS {
+                break;
+            }
+        }
+        if candidates.is_empty() {
+            return Err("compaction summary did not contain excerpt candidates");
+        }
+        Ok(candidates)
+    }
+
+    fn append_system_artifact_if_new(&mut self, artifact: String) {
+        let duplicate = self.messages.iter().rev().take(24).any(|message| {
+            message.role == MessageRole::System && message.text_content() == artifact
+        });
+        if duplicate {
+            return;
+        }
+        let message = Message::system(artifact);
+        self.messages.push(message.clone());
+        self.emit(AgentEvent::MessageAdded { message });
+    }
+
+    fn persist_compaction_artifacts(
+        &mut self,
+        tier: ContextCompactionTier,
+        compacted_messages: &[Message],
+    ) {
+        if !matches!(
+            tier,
+            ContextCompactionTier::Warn | ContextCompactionTier::Aggressive
+        ) {
+            return;
+        }
+
+        let Some(summary) = compacted_messages.iter().find_map(|message| {
+            (message.role == MessageRole::System
+                && message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX))
+            .then(|| message.text_content().to_string())
+        }) else {
+            return;
+        };
+
+        let tier_label = Self::compaction_tier_label(tier);
+        let compaction_entry = format!("{COMPACTION_ENTRY_PREFIX} tier={tier_label}\n{summary}");
+        self.append_system_artifact_if_new(compaction_entry);
+
+        let Ok(candidates) = Self::extract_memory_candidates_from_compaction_summary(&summary)
+        else {
+            return;
+        };
+
+        let mut lines = Vec::with_capacity(candidates.len().saturating_add(1));
+        lines.push(format!("{COMPACTION_MEMORY_SAVE_PREFIX} tier={tier_label}"));
+        for candidate in candidates {
+            lines.push(format!(
+                "- memory: {}",
+                truncate_chars(&candidate, self.config.memory_max_chars_per_item)
+            ));
+        }
+        self.append_system_artifact_if_new(lines.join("\n"));
+    }
+
+    async fn request_messages(&mut self) -> Vec<Message> {
         let context_limit = self.config.max_context_messages;
         let mut messages = if let Some(limit) = context_limit {
             bounded_messages(&self.messages, limit)
@@ -2120,11 +2219,22 @@ impl Agent {
             ContextCompactionTier::Warn => {
                 if let Some(compacted) = self.take_ready_warn_compaction(&messages) {
                     messages = compacted;
+                    self.persist_compaction_artifacts(ContextCompactionTier::Warn, &messages);
                 } else {
                     self.schedule_warn_compaction_if_needed(&messages, compaction_config);
                 }
             }
-            ContextCompactionTier::Aggressive | ContextCompactionTier::Emergency => {
+            ContextCompactionTier::Aggressive => {
+                {
+                    let mut state = lock_or_recover(self.warn_compaction_state.as_ref());
+                    state.pending = None;
+                    state.ready = None;
+                }
+                messages =
+                    compact_messages_for_tier(&messages, pressure_snapshot.tier, compaction_config);
+                self.persist_compaction_artifacts(ContextCompactionTier::Aggressive, &messages);
+            }
+            ContextCompactionTier::Emergency => {
                 let mut state = lock_or_recover(self.warn_compaction_state.as_ref());
                 state.pending = None;
                 state.ready = None;
@@ -2505,7 +2615,8 @@ mod tests {
         AgentDirectMessageError, AgentDirectMessagePolicy, AgentError, AgentEvent, AgentTool,
         AsyncEventDispatchMetrics, CooperativeCancellationToken, SafetyMode, SafetyPolicy,
         SafetyStage, StreamingRetryBufferState, ToolExecutionResult, CONTEXT_SUMMARY_MAX_CHARS,
-        CONTEXT_SUMMARY_PREFIX, DIRECT_MESSAGE_PREFIX, MEMORY_RECALL_PREFIX,
+        CONTEXT_SUMMARY_MAX_EXCERPTS, CONTEXT_SUMMARY_PREFIX, DIRECT_MESSAGE_PREFIX,
+        MEMORY_RECALL_PREFIX,
     };
 
     struct MockClient {

@@ -231,8 +231,8 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 - [ ] At 80%: spawn background compaction task that summarizes oldest 30% of context via LLM call
 - [x] At 85%: aggressive compaction (50% of context)
 - [x] At 95%: emergency hard truncation (drop oldest 50%, no LLM)
-- [ ] During compaction, extract and save memories (like Spacebot's compactor)
-- [ ] Compaction summaries stored as session entries with `compaction` role
+- [x] During compaction, extract and save memories (like Spacebot's compactor)
+- [x] Compaction summaries stored as session entries (encoded as deterministic `[Tau compaction entry]` system artifacts)
 - **Files**: New `tau-agent-core/src/compaction.rs`, modify turn loop to check thresholds
 - **Effort**: Medium
 

@@ -1428,6 +1428,308 @@ async fn regression_spec_2566_c05_emergency_tier_remains_hard_truncation_without
 }
 
 #[tokio::test]
+async fn spec_2572_c01_warn_compaction_persists_compaction_entry() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn persist user message {index} with durable planning context"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn persist assistant message {index} with execution notes"
+        )));
+    }
+
+    let _ = agent.request_messages().await;
+    let mut maybe_entry = None;
+    for _ in 0..20 {
+        let _ = agent.request_messages().await;
+        maybe_entry = agent.messages().iter().rev().find_map(|message| {
+            (message.role == MessageRole::System
+                && message.text_content().starts_with("[Tau compaction entry]"))
+            .then(|| message.text_content().to_string())
+        });
+        if maybe_entry.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let entry = maybe_entry.expect("warn compaction should persist a compaction entry");
+    assert!(entry.contains(CONTEXT_SUMMARY_PREFIX));
+    assert!(
+        entry.contains("tier=warn"),
+        "warn compaction entry should encode tier label"
+    );
+    let entry_count = agent
+        .messages()
+        .iter()
+        .filter(|message| {
+            message.role == MessageRole::System
+                && message.text_content().starts_with("[Tau compaction entry]")
+        })
+        .count();
+    assert_eq!(
+        entry_count, 1,
+        "warn compaction entry should only be persisted once for unchanged history"
+    );
+}
+
+#[tokio::test]
+async fn spec_2572_c02_aggressive_compaction_persists_compaction_entry() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(220),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "aggressive persist user message {index} with durable planning context"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "aggressive persist assistant message {index} with execution notes"
+        )));
+    }
+
+    let _ = agent.request_messages().await;
+
+    let entry = agent.messages().iter().rev().find(|message| {
+        message.role == MessageRole::System
+            && message.text_content().starts_with("[Tau compaction entry]")
+    });
+    let entry = entry.expect("aggressive compaction should persist entry");
+    assert!(
+        entry.text_content().contains("tier=aggressive"),
+        "aggressive compaction entry should encode tier label"
+    );
+}
+
+#[tokio::test]
+async fn spec_2572_c03_compaction_summary_extracts_memory_candidates() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "memory extraction user message {index} keep retry policy for payments"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "memory extraction assistant message {index} prioritize idempotent writes"
+        )));
+    }
+
+    let _ = agent.request_messages().await;
+    let mut found_memory_save = None;
+    for _ in 0..20 {
+        let _ = agent.request_messages().await;
+        found_memory_save = agent.messages().iter().rev().find_map(|message| {
+            (message.role == MessageRole::System
+                && message
+                    .text_content()
+                    .starts_with("[Tau compaction memory save]"))
+            .then(|| message.text_content().to_string())
+        });
+        if found_memory_save.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let memory_save = found_memory_save.expect("expected persisted memory save extraction entry");
+    assert!(
+        memory_save.contains("tier=warn"),
+        "warn memory save artifact should encode tier label"
+    );
+    let memory_lines = memory_save
+        .lines()
+        .filter(|line| line.trim_start().starts_with("- memory:"))
+        .count();
+    assert!(
+        memory_lines >= 2,
+        "memory extraction should keep multiple excerpt candidates when available"
+    );
+    assert!(
+        memory_lines <= CONTEXT_SUMMARY_MAX_EXCERPTS,
+        "memory extraction should honor excerpt cap"
+    );
+    let memory_save_count = agent
+        .messages()
+        .iter()
+        .filter(|message| {
+            message.role == MessageRole::System
+                && message
+                    .text_content()
+                    .starts_with("[Tau compaction memory save]")
+        })
+        .count();
+    assert_eq!(
+        memory_save_count, 1,
+        "memory save artifact should only be persisted once for unchanged history"
+    );
+}
+
+#[tokio::test]
+async fn regression_spec_2572_c04_memory_save_failure_does_not_break_request_flow() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(100),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for _ in 0..5 {
+        agent.append_message(Message::user("   "));
+        agent.append_message(Message::assistant_text("   "));
+    }
+
+    let compacted = agent.request_messages().await;
+    assert!(
+        !compacted.is_empty(),
+        "request shaping should continue even if memory extraction cannot produce candidates"
+    );
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .any(|message| message.role == MessageRole::System
+                && message.text_content().starts_with("[Tau compaction entry]")),
+        "compaction entry should still persist"
+    );
+    assert!(
+        agent.messages().iter().all(|message| !message
+            .text_content()
+            .starts_with("[Tau compaction memory save]")),
+        "failed extraction path should skip memory save entry while remaining fail-safe"
+    );
+}
+
+#[tokio::test]
+async fn regression_spec_2572_c05_emergency_compaction_skips_summary_extraction() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(100),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 60,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "emergency memory user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "emergency memory assistant message {index} with enough text to consume tokens"
+        )));
+    }
+
+    let compacted = agent.request_messages().await;
+    assert!(compacted
+        .iter()
+        .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)));
+    assert!(
+        agent.messages().iter().all(|message| !message
+            .text_content()
+            .starts_with("[Tau compaction entry]")
+            && !message
+                .text_content()
+                .starts_with("[Tau compaction memory save]")),
+        "emergency path should not persist summary/memory extraction entries"
+    );
+}
+
+#[test]
+fn regression_spec_2572_c06_append_system_artifact_dedupes_identical_entries() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+    let mut agent = Agent::new(client, AgentConfig::default());
+    let artifact = "[Tau compaction entry] tier=warn\n[Tau context summary]\nstub".to_string();
+    agent.append_system_artifact_if_new(artifact.clone());
+    agent.append_system_artifact_if_new(artifact.clone());
+
+    let duplicate_count = agent
+        .messages()
+        .iter()
+        .filter(|message| message.role == MessageRole::System && message.text_content() == artifact)
+        .count();
+    assert_eq!(
+        duplicate_count, 1,
+        "system artifact dedupe should be stable"
+    );
+}
+
+#[tokio::test]
 async fn regression_context_pressure_below_warn_threshold_skips_tiered_compaction() {
     let client = Arc::new(CapturingMockClient {
         responses: AsyncMutex::new(VecDeque::from([ChatResponse {
