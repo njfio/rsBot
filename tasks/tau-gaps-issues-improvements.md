@@ -34,8 +34,8 @@ Validation used repository and issue evidence plus targeted commands:
 | 13 | Add provider failover | **Done** | Fallback routing + circuit breaker implemented (`crates/tau-provider/src/fallback.rs`) | No further action |
 | 14 | Add rate limiting for outbound provider calls | **Partial** | Gateway rate limiting exists (`crates/tau-gateway/src/gateway_openresponses.rs`), but dedicated outbound token-bucket control is not isolated as a provider-layer feature | Follow-up: #2611 |
 | 15 | Add SQLite memory backend | **Done** | SQLite backend is implemented (`crates/tau-memory/src/runtime/backend.rs`) | No further action |
-| 16 | Build real dashboard (G18) | **Open** | `tau-dashboard` remains contract/runtime scaffolding, not a production SPA (`crates/tau-dashboard/src/dashboard_runtime.rs`) | Follow-up: #2614 |
-| 17 | Wire RL training loop to live decisions | **Partial** | Training orchestrator exists (`crates/tau-trainer/src/lib.rs`), but live decision-path coupling remains open | Follow-up: #2615 |
+| 16 | Build real dashboard (G18) | **Done** | Gateway webchat now includes a production dashboard operator surface with authenticated dashboard health/widgets/timeline/alerts/actions + live polling (`crates/tau-gateway/src/gateway_openresponses/webchat_page.rs`) | Completed in #2614 |
+| 17 | Wire RL training loop to live decisions | **Done** | Live RL runtime bridge now captures agent events into rollouts/spans and runs scheduled PPO/GAE updates (`crates/tau-coding-agent/src/live_rl_runtime.rs`) | Completed in #2615 |
 | 18 | Add OpenTelemetry | **Open** | No active OpenTelemetry export path in runtime/gateway | Follow-up: #2616 |
 | 19 | Add graph visualization (G19) | **Open** | No memory graph API/UI visualization path shipped | Follow-up: #2617 |
 | 20 | Multi-process architecture (G1) | **Open** | Current runtime remains single-loop oriented for core interaction path | Follow-up: #2618 |
@@ -64,8 +64,6 @@ Validation used repository and issue evidence plus targeted commands:
 - #2611 Provider-layer token-bucket rate limiting
 - #2612 Log sanitization audit formalization
 - #2613 Encrypted secret migration completion
-- #2614 Production dashboard UI (G18)
-- #2615 RL loop live integration
 - #2616 OpenTelemetry export path
 - #2617 Memory graph visualization (G19)
 - #2618 Multi-process architecture staging (G1)
