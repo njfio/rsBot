@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tau_agent_core::SafetyPolicy;
+use tau_agent_core::{SafetyPolicy, SafetyRuleSet};
 
 /// Error payload mapped to OpenAI-compatible HTTP response envelope.
 #[derive(Debug)]
@@ -225,6 +225,18 @@ pub(super) struct GatewayConfigPatchRequest {
 #[derive(Debug, Deserialize)]
 pub(super) struct GatewaySafetyPolicyUpdateRequest {
     pub(super) policy: SafetyPolicy,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct GatewaySafetyRulesUpdateRequest {
+    pub(super) rules: SafetyRuleSet,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct GatewaySafetyTestRequest {
+    pub(super) input: String,
+    #[serde(default)]
+    pub(super) include_secret_leaks: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
