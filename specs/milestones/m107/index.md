@@ -1,6 +1,6 @@
 # M107 - Spacebot G20 Secret Store Hardening (Phase 1)
 
-Status: In Progress
+Status: Completed
 Related roadmap items: `tasks/spacebot-comparison.md` (G20)
 
 ## Objective

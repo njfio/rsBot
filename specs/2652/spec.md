@@ -1,6 +1,6 @@
 # Spec: Issue #2652 - SecretStore contract, DecryptedSecret redaction, and machine-auto encryption (G20 phase 1)
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau credential store support currently provides plaintext and keyed encoding modes, but lacks a first-class secret-store contract and a redacted decrypted-secret wrapper for safe logging. In addition, auto encryption mode currently degrades to plaintext when no passphrase is set. G20 phase 1 requires reusable secret-store abstractions plus safer default behavior where auto mode uses machine-derived at-rest encryption.
