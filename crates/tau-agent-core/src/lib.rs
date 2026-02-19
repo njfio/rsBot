@@ -25,11 +25,16 @@ pub use tau_safety::{
 };
 use thiserror::Error;
 
+mod process_types;
 mod runtime_safety_memory;
 mod runtime_startup;
 mod runtime_tool_bridge;
 mod runtime_turn_loop;
 
+pub use process_types::{
+    ProcessLifecycleState, ProcessManager, ProcessManagerError, ProcessRuntimeProfile,
+    ProcessSnapshot, ProcessSpawnSpec, ProcessType,
+};
 pub(crate) use runtime_safety_memory::{assistant_text_suggests_failure, retrieve_memory_matches};
 pub(crate) use runtime_startup::{
     cache_insert_with_limit, lock_or_recover, normalize_direct_message_content,
@@ -3344,4 +3349,7 @@ mod tests {
 
     #[path = "safety_pipeline.rs"]
     mod safety_pipeline;
+
+    #[path = "process_architecture.rs"]
+    mod process_architecture;
 }
