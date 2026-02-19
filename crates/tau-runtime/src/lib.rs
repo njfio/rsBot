@@ -6,6 +6,7 @@
 
 pub mod background_jobs_runtime;
 pub mod channel_store;
+pub mod external_coding_agent_bridge_runtime;
 pub mod generated_tool_builder_runtime;
 pub mod heartbeat_runtime;
 pub mod observability_loggers_runtime;
@@ -20,6 +21,7 @@ pub mod wasm_sandbox_runtime;
 
 pub use background_jobs_runtime::*;
 pub use channel_store::*;
+pub use external_coding_agent_bridge_runtime::*;
 pub use generated_tool_builder_runtime::*;
 pub use heartbeat_runtime::*;
 pub use observability_loggers_runtime::*;
