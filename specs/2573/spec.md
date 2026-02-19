@@ -1,6 +1,6 @@
 # Spec #2573 - Subtask: conformance/mutation/live-validation evidence for G2 phase-4
 
-Status: Reviewed
+Status: Implemented
 Priority: P0
 Milestone: M98
 Parent: #2572
