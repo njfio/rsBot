@@ -13,11 +13,12 @@ const MEMORY_TYPE_ENUM_VALUES: &[&str] = &[
     "observation",
 ];
 const MEMORY_RELATION_TYPE_ENUM_VALUES: &[&str] = &[
-    "relates_to",
-    "depends_on",
-    "supports",
-    "blocks",
-    "references",
+    "related_to",
+    "updates",
+    "contradicts",
+    "caused_by",
+    "result_of",
+    "part_of",
 ];
 const MEMORY_GRAPH_SIGNAL_WEIGHT: f32 = 0.25;
 
@@ -62,7 +63,16 @@ fn optional_memory_relations(arguments: &Value) -> Result<Vec<MemoryRelationInpu
                     .as_str()
                     .map(str::trim)
                     .ok_or_else(|| format!("'relates_to[{index}].relation_type' must be a string"))
-                    .map(|value| value.to_string())
+                    .and_then(|value| {
+                        MemoryRelationType::parse(value)
+                            .map(|relation| relation.as_str().to_string())
+                            .ok_or_else(|| {
+                                format!(
+                                    "'relates_to[{index}].relation_type' must be one of: {}",
+                                    MEMORY_RELATION_TYPE_ENUM_VALUES.join(", ")
+                                )
+                            })
+                    })
             })
             .transpose()?
             .filter(|value| !value.is_empty());
@@ -166,7 +176,7 @@ impl AgentTool for MemoryWriteTool {
                                 "relation_type": {
                                     "type": "string",
                                     "enum": MEMORY_RELATION_TYPE_ENUM_VALUES,
-                                    "description": "Optional relation type (defaults to relates_to)"
+                                    "description": "Optional relation type (defaults to related_to)"
                                 },
                                 "weight": {
                                     "type": "number",

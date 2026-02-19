@@ -7,13 +7,13 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
 use super::{
-    MemoryRelation, MemoryStorageBackend, ResolvedMemoryBackend, RuntimeMemoryRecord,
-    MEMORY_BACKEND_ENV, MEMORY_RUNTIME_ENTRIES_FILE_NAME, MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME,
-    MEMORY_STORAGE_REASON_DEFAULT_SQLITE, MEMORY_STORAGE_REASON_ENV_AUTO,
-    MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK, MEMORY_STORAGE_REASON_ENV_JSONL,
-    MEMORY_STORAGE_REASON_ENV_SQLITE, MEMORY_STORAGE_REASON_EXISTING_JSONL,
-    MEMORY_STORAGE_REASON_EXISTING_SQLITE, MEMORY_STORAGE_REASON_PATH_JSONL,
-    MEMORY_STORAGE_REASON_PATH_SQLITE,
+    MemoryRelation, MemoryRelationType, MemoryStorageBackend, ResolvedMemoryBackend,
+    RuntimeMemoryRecord, MEMORY_BACKEND_ENV, MEMORY_RUNTIME_ENTRIES_FILE_NAME,
+    MEMORY_RUNTIME_ENTRIES_SQLITE_FILE_NAME, MEMORY_STORAGE_REASON_DEFAULT_SQLITE,
+    MEMORY_STORAGE_REASON_ENV_AUTO, MEMORY_STORAGE_REASON_ENV_INVALID_FALLBACK,
+    MEMORY_STORAGE_REASON_ENV_JSONL, MEMORY_STORAGE_REASON_ENV_SQLITE,
+    MEMORY_STORAGE_REASON_EXISTING_JSONL, MEMORY_STORAGE_REASON_EXISTING_SQLITE,
+    MEMORY_STORAGE_REASON_PATH_JSONL, MEMORY_STORAGE_REASON_PATH_SQLITE,
 };
 
 /// Resolve memory storage backend from env override, path hints, and existing artifacts.
@@ -245,7 +245,7 @@ pub(super) fn append_record_sqlite(path: &Path, record: &RuntimeMemoryRecord) ->
             params![
                 record.entry.memory_id,
                 relation.target_id,
-                relation.relation_type,
+                relation.relation_type.as_str(),
                 relation.weight,
                 relation.effective_weight,
                 record.updated_unix_ms
@@ -304,9 +304,18 @@ pub(super) fn load_relation_map_sqlite(
     let mut relation_map = HashMap::<String, Vec<MemoryRelation>>::new();
     while let Some(row) = rows.next()? {
         let source_memory_id: String = row.get(0)?;
+        let relation_type_raw: String = row.get(2)?;
+        let Some(relation_type) = MemoryRelationType::parse(relation_type_raw.as_str()) else {
+            tracing::warn!(
+                relation_type = %relation_type_raw,
+                source_memory_id = %source_memory_id,
+                "skipping memory relation row with unsupported relation_type"
+            );
+            continue;
+        };
         let relation = MemoryRelation {
             target_id: row.get(1)?,
-            relation_type: row.get(2)?,
+            relation_type,
             weight: row.get(3)?,
             effective_weight: row.get(4)?,
         };

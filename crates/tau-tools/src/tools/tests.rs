@@ -2070,7 +2070,7 @@ async fn spec_2444_c01_memory_write_persists_relates_to_edges() {
             "relates_to": [
                 {
                     "target_id": "target-memory",
-                    "relation_type": "relates_to",
+                    "relation_type": "related_to",
                     "weight": 0.9
                 }
             ]
@@ -2079,7 +2079,7 @@ async fn spec_2444_c01_memory_write_persists_relates_to_edges() {
     assert!(!write.is_error, "{}", write.content);
     assert!(write.content["relations"].is_array());
     assert_eq!(write.content["relations"][0]["target_id"], "target-memory");
-    assert_eq!(write.content["relations"][0]["relation_type"], "relates_to");
+    assert_eq!(write.content["relations"][0]["relation_type"], "related_to");
     assert_json_number_close(&write.content["relations"][0]["effective_weight"], 0.9);
 
     let read_tool = MemoryReadTool::new(policy);
@@ -2094,8 +2094,59 @@ async fn spec_2444_c01_memory_write_persists_relates_to_edges() {
     assert!(!read.is_error, "{}", read.content);
     assert_eq!(read.content["found"], true);
     assert_eq!(read.content["relations"][0]["target_id"], "target-memory");
-    assert_eq!(read.content["relations"][0]["relation_type"], "relates_to");
+    assert_eq!(read.content["relations"][0]["relation_type"], "related_to");
     assert_json_number_close(&read.content["relations"][0]["effective_weight"], 0.9);
+}
+
+#[tokio::test]
+async fn spec_2592_c03_memory_write_read_roundtrip_canonical_relation_type() {
+    let temp = tempdir().expect("tempdir");
+    let policy = test_policy_with_memory(temp.path());
+    let write_tool = MemoryWriteTool::new(policy.clone());
+
+    let target = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "canonical-target-memory",
+            "summary": "canonical target memory",
+            "workspace_id": "workspace-a",
+            "channel_id": "planning",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!target.is_error, "{}", target.content);
+
+    let write = write_tool
+        .execute(serde_json::json!({
+            "memory_id": "canonical-source-memory",
+            "summary": "canonical source relation",
+            "workspace_id": "workspace-a",
+            "channel_id": "planning",
+            "actor_id": "assistant",
+            "relates_to": [
+                {
+                    "target_id": "canonical-target-memory",
+                    "relation_type": "updates",
+                    "weight": 0.85
+                }
+            ]
+        }))
+        .await;
+    assert!(!write.is_error, "{}", write.content);
+    assert_eq!(write.content["relations"][0]["relation_type"], "updates");
+    assert_json_number_close(&write.content["relations"][0]["effective_weight"], 0.85);
+
+    let read_tool = MemoryReadTool::new(policy);
+    let read = read_tool
+        .execute(serde_json::json!({
+            "memory_id": "canonical-source-memory",
+            "workspace_id": "workspace-a",
+            "channel_id": "planning",
+            "actor_id": "assistant"
+        }))
+        .await;
+    assert!(!read.is_error, "{}", read.content);
+    assert_eq!(read.content["found"], true);
+    assert_eq!(read.content["relations"][0]["relation_type"], "updates");
 }
 
 #[tokio::test]
@@ -2153,7 +2204,7 @@ async fn spec_2444_c02_memory_search_includes_relation_metadata() {
         source_match["relations"][0]["target_id"],
         "target-queryable"
     );
-    assert_eq!(source_match["relations"][0]["relation_type"], "depends_on");
+    assert_eq!(source_match["relations"][0]["relation_type"], "caused_by");
     assert_json_number_close(&source_match["relations"][0]["effective_weight"], 0.8);
 }
 
@@ -2215,8 +2266,15 @@ async fn spec_2444_c03_graph_signal_boosts_connected_candidate_ranking() {
         }))
         .await;
     assert!(!search.is_error, "{}", search.content);
-    assert_eq!(search.content["returned"], 2);
+    assert!(search.content["returned"].as_u64().expect("returned count") >= 2);
     assert_eq!(search.content["matches"][0]["memory_id"], "z-connected");
+    let matches = search.content["matches"].as_array().expect("matches array");
+    assert!(
+        matches
+            .iter()
+            .any(|item| item["memory_id"] == "hub-high-importance"),
+        "graph-connected hub should be included after traversal expansion"
+    );
 }
 
 #[tokio::test]
