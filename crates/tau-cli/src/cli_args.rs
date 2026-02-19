@@ -3454,12 +3454,28 @@ pub struct Cli {
     pub gateway_openresponses_auth_token: Option<String>,
 
     #[arg(
+        long = "gateway-openresponses-auth-token-id",
+        env = "TAU_GATEWAY_OPENRESPONSES_AUTH_TOKEN_ID",
+        requires = "gateway_openresponses_server",
+        help = "Credential-store integration id used to resolve bearer token when --gateway-openresponses-auth-mode=token"
+    )]
+    pub gateway_openresponses_auth_token_id: Option<String>,
+
+    #[arg(
         long = "gateway-openresponses-auth-password",
         env = "TAU_GATEWAY_OPENRESPONSES_AUTH_PASSWORD",
         requires = "gateway_openresponses_server",
         help = "Password used by /gateway/auth/session when --gateway-openresponses-auth-mode=password-session"
     )]
     pub gateway_openresponses_auth_password: Option<String>,
+
+    #[arg(
+        long = "gateway-openresponses-auth-password-id",
+        env = "TAU_GATEWAY_OPENRESPONSES_AUTH_PASSWORD_ID",
+        requires = "gateway_openresponses_server",
+        help = "Credential-store integration id used to resolve session password when --gateway-openresponses-auth-mode=password-session"
+    )]
+    pub gateway_openresponses_auth_password_id: Option<String>,
 
     #[arg(
         long = "gateway-openresponses-session-ttl-seconds",

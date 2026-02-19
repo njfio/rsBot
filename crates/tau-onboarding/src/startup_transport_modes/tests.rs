@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, ModelRef, TauAiError};
-use tau_cli::{Cli, CliGatewayOpenResponsesAuthMode};
+use tau_cli::{Cli, CliCredentialStoreEncryptionMode, CliGatewayOpenResponsesAuthMode};
 use tau_gateway::GatewayOpenResponsesAuthMode;
 use tau_multi_channel::{
     MultiChannelLiveConnectorMode, MultiChannelPairingDecision, MultiChannelPairingEvaluator,
@@ -817,7 +817,7 @@ fn functional_resolve_gateway_openresponses_auth_trims_non_empty_values() {
     cli.gateway_openresponses_auth_token = Some(" token-value ".to_string());
     cli.gateway_openresponses_auth_password = Some(" password-value ".to_string());
 
-    let (token, password) = resolve_gateway_openresponses_auth(&cli);
+    let (token, password) = resolve_gateway_openresponses_auth(&cli).expect("resolve auth");
     assert_eq!(token.as_deref(), Some("token-value"));
     assert_eq!(password.as_deref(), Some("password-value"));
 }
@@ -828,9 +828,75 @@ fn regression_resolve_gateway_openresponses_auth_ignores_empty_values() {
     cli.gateway_openresponses_auth_token = Some("   ".to_string());
     cli.gateway_openresponses_auth_password = Some(String::new());
 
-    let (token, password) = resolve_gateway_openresponses_auth(&cli);
+    let (token, password) = resolve_gateway_openresponses_auth(&cli).expect("resolve auth");
     assert!(token.is_none());
     assert!(password.is_none());
+}
+
+#[test]
+fn functional_resolve_gateway_openresponses_auth_reads_secret_ids_from_credential_store() {
+    let temp = tempdir().expect("temp dir");
+    let mut cli = parse_cli_with_stack();
+    cli.credential_store = temp.path().join("credentials.json");
+    cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+    write_integration_secret(
+        &cli.credential_store,
+        "gateway-openresponses-auth-token",
+        Some(" stored-token "),
+        false,
+    );
+    write_integration_secret(
+        &cli.credential_store,
+        "gateway-openresponses-auth-password",
+        Some(" stored-password "),
+        false,
+    );
+    cli.gateway_openresponses_auth_token_id = Some("gateway-openresponses-auth-token".to_string());
+    cli.gateway_openresponses_auth_password_id =
+        Some("gateway-openresponses-auth-password".to_string());
+
+    let (token, password) = resolve_gateway_openresponses_auth(&cli).expect("resolve auth");
+    assert_eq!(token.as_deref(), Some("stored-token"));
+    assert_eq!(password.as_deref(), Some("stored-password"));
+}
+
+#[test]
+fn regression_resolve_gateway_openresponses_auth_fails_closed_for_revoked_secret_id() {
+    let temp = tempdir().expect("temp dir");
+    let mut cli = parse_cli_with_stack();
+    cli.credential_store = temp.path().join("credentials.json");
+    cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+    write_integration_secret(
+        &cli.credential_store,
+        "gateway-openresponses-auth-token",
+        Some("stored-token"),
+        true,
+    );
+    cli.gateway_openresponses_auth_token_id = Some("gateway-openresponses-auth-token".to_string());
+
+    let error =
+        resolve_gateway_openresponses_auth(&cli).expect_err("revoked token id should fail closed");
+    assert!(error.to_string().contains("is revoked"));
+}
+
+#[test]
+fn integration_gateway_openresponses_validation_accepts_gateway_token_id_for_token_mode() {
+    let mut cli = parse_cli_with_stack();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::Token;
+    cli.gateway_openresponses_auth_token_id = Some("gateway-openresponses-auth-token".to_string());
+    validate_transport_mode_cli(&cli).expect("token id should satisfy token auth mode validation");
+}
+
+#[test]
+fn integration_gateway_openresponses_validation_accepts_gateway_password_id_for_password_mode() {
+    let mut cli = parse_cli_with_stack();
+    cli.gateway_openresponses_server = true;
+    cli.gateway_openresponses_auth_mode = CliGatewayOpenResponsesAuthMode::PasswordSession;
+    cli.gateway_openresponses_auth_password_id =
+        Some("gateway-openresponses-auth-password".to_string());
+    validate_transport_mode_cli(&cli)
+        .expect("password id should satisfy password-session auth mode validation");
 }
 
 #[test]
@@ -1077,7 +1143,8 @@ fn integration_build_gateway_openresponses_server_config_preserves_runtime_field
         &model_ref,
         "system prompt",
         &tool_policy,
-    );
+    )
+    .expect("gateway config");
 
     assert_eq!(config.model, "gpt-4o-mini");
     assert!(config.model_input_cost_per_million.is_some());
@@ -1138,7 +1205,8 @@ fn regression_build_gateway_openresponses_server_config_routes_default_heartbeat
         &model_ref,
         "system prompt",
         &tool_policy,
-    );
+    )
+    .expect("gateway config");
 
     assert_eq!(
         config.runtime_heartbeat.state_path,

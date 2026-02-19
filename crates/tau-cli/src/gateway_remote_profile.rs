@@ -35,6 +35,10 @@ fn has_non_empty(value: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+fn secret_configured(direct_secret: Option<&str>, secret_id: Option<&str>) -> bool {
+    has_non_empty(direct_secret) || has_non_empty(secret_id)
+}
+
 fn gateway_remote_profile_config_for(
     cli: &Cli,
     profile: GatewayRemoteProfile,
@@ -43,8 +47,14 @@ fn gateway_remote_profile_config_for(
         bind: cli.gateway_openresponses_bind.clone(),
         auth_mode: map_auth_mode(cli.gateway_openresponses_auth_mode),
         profile,
-        auth_token_configured: has_non_empty(cli.gateway_openresponses_auth_token.as_deref()),
-        auth_password_configured: has_non_empty(cli.gateway_openresponses_auth_password.as_deref()),
+        auth_token_configured: secret_configured(
+            cli.gateway_openresponses_auth_token.as_deref(),
+            cli.gateway_openresponses_auth_token_id.as_deref(),
+        ),
+        auth_password_configured: secret_configured(
+            cli.gateway_openresponses_auth_password.as_deref(),
+            cli.gateway_openresponses_auth_password_id.as_deref(),
+        ),
         server_enabled: cli.gateway_openresponses_server,
     }
 }
@@ -109,8 +119,13 @@ fn build_tailscale_serve_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflow
         cli.gateway_openresponses_auth_mode,
         CliGatewayOpenResponsesAuthMode::Token | CliGatewayOpenResponsesAuthMode::PasswordSession
     );
-    let auth_secret_ok = has_non_empty(cli.gateway_openresponses_auth_token.as_deref())
-        || has_non_empty(cli.gateway_openresponses_auth_password.as_deref());
+    let auth_secret_ok = secret_configured(
+        cli.gateway_openresponses_auth_token.as_deref(),
+        cli.gateway_openresponses_auth_token_id.as_deref(),
+    ) || secret_configured(
+        cli.gateway_openresponses_auth_password.as_deref(),
+        cli.gateway_openresponses_auth_password_id.as_deref(),
+    );
     let preflight_checks = vec![
         format_check(
             "gateway_openresponses_server_enabled",
@@ -130,7 +145,7 @@ fn build_tailscale_serve_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflow
         format_check(
             "auth_secret_configured",
             auth_secret_ok,
-            "set --gateway-openresponses-auth-token or --gateway-openresponses-auth-password",
+            "set --gateway-openresponses-auth-token/--gateway-openresponses-auth-token-id or --gateway-openresponses-auth-password/--gateway-openresponses-auth-password-id",
         ),
     ];
     Ok(GatewayRemoteExposureWorkflowPlan {
@@ -145,7 +160,7 @@ fn build_tailscale_serve_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflow
         preflight_checks,
         auth_requirements: vec![
             "token (recommended) or password-session auth mode".to_string(),
-            "non-empty auth token/password value".to_string(),
+            "non-empty auth token/password value or credential-store secret id".to_string(),
         ],
         bind_requirements: vec![
             "gateway bind must stay loopback (127.0.0.1 or ::1)".to_string(),
@@ -172,7 +187,10 @@ fn build_tailscale_funnel_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflo
         cli.gateway_openresponses_auth_mode,
         CliGatewayOpenResponsesAuthMode::PasswordSession
     );
-    let password_ok = has_non_empty(cli.gateway_openresponses_auth_password.as_deref());
+    let password_ok = secret_configured(
+        cli.gateway_openresponses_auth_password.as_deref(),
+        cli.gateway_openresponses_auth_password_id.as_deref(),
+    );
     let preflight_checks = vec![
         format_check(
             "gateway_openresponses_server_enabled",
@@ -192,7 +210,7 @@ fn build_tailscale_funnel_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflo
         format_check(
             "auth_password_configured",
             password_ok,
-            "set --gateway-openresponses-auth-password to a non-empty value",
+            "set --gateway-openresponses-auth-password or --gateway-openresponses-auth-password-id to a non-empty value",
         ),
     ];
     Ok(GatewayRemoteExposureWorkflowPlan {
@@ -205,7 +223,7 @@ fn build_tailscale_funnel_plan(cli: &Cli) -> Result<GatewayRemoteExposureWorkflo
         preflight_checks,
         auth_requirements: vec![
             "password-session auth mode".to_string(),
-            "non-empty auth password".to_string(),
+            "non-empty auth password or credential-store secret id".to_string(),
         ],
         bind_requirements: vec![
             "gateway bind must stay loopback (127.0.0.1 or ::1)".to_string(),
@@ -232,7 +250,10 @@ fn build_ssh_tunnel_fallback_plan(cli: &Cli) -> Result<GatewayRemoteExposureWork
         cli.gateway_openresponses_auth_mode,
         CliGatewayOpenResponsesAuthMode::Token
     );
-    let token_ok = has_non_empty(cli.gateway_openresponses_auth_token.as_deref());
+    let token_ok = secret_configured(
+        cli.gateway_openresponses_auth_token.as_deref(),
+        cli.gateway_openresponses_auth_token_id.as_deref(),
+    );
     let preflight_checks = vec![
         format_check(
             "gateway_openresponses_server_enabled",
@@ -252,7 +273,7 @@ fn build_ssh_tunnel_fallback_plan(cli: &Cli) -> Result<GatewayRemoteExposureWork
         format_check(
             "auth_token_configured",
             token_ok,
-            "set --gateway-openresponses-auth-token to a non-empty value",
+            "set --gateway-openresponses-auth-token or --gateway-openresponses-auth-token-id to a non-empty value",
         ),
     ];
     Ok(GatewayRemoteExposureWorkflowPlan {
@@ -267,7 +288,7 @@ fn build_ssh_tunnel_fallback_plan(cli: &Cli) -> Result<GatewayRemoteExposureWork
         preflight_checks,
         auth_requirements: vec![
             "token auth mode".to_string(),
-            "non-empty bearer auth token".to_string(),
+            "non-empty bearer auth token or credential-store secret id".to_string(),
         ],
         bind_requirements: vec![
             "gateway bind must stay loopback (127.0.0.1 or ::1)".to_string(),
@@ -519,6 +540,27 @@ mod tests {
     }
 
     #[test]
+    fn functional_evaluate_gateway_remote_profile_proxy_remote_accepts_token_id_profile() {
+        let cli = parse_cli_with_stack(&[
+            "tau-rs",
+            "--gateway-openresponses-server",
+            "--gateway-remote-profile",
+            "proxy-remote",
+            "--gateway-openresponses-auth-mode",
+            "token",
+            "--gateway-openresponses-auth-token-id",
+            "gateway-openresponses-auth-token",
+        ]);
+        let report = evaluate_gateway_remote_profile(&cli).expect("evaluate");
+        assert_eq!(report.profile, "proxy-remote");
+        assert_eq!(report.gate, "pass");
+        assert!(report.auth_token_configured);
+        assert!(report
+            .reason_codes
+            .contains(&"proxy_remote_token_configured".to_string()));
+    }
+
+    #[test]
     fn unit_evaluate_gateway_remote_profile_tailscale_serve_rejects_localhost_dev_auth_mode() {
         let cli = parse_cli_with_stack(&[
             "tau-rs",
@@ -553,6 +595,27 @@ mod tests {
         assert_eq!(report.profile, "tailscale-funnel");
         assert_eq!(report.posture, "remote-enabled");
         assert_eq!(report.gate, "pass");
+        assert!(report
+            .reason_codes
+            .contains(&"tailscale_funnel_password_configured".to_string()));
+    }
+
+    #[test]
+    fn functional_evaluate_gateway_remote_profile_tailscale_funnel_accepts_password_id_profile() {
+        let cli = parse_cli_with_stack(&[
+            "tau-rs",
+            "--gateway-openresponses-server",
+            "--gateway-remote-profile",
+            "tailscale-funnel",
+            "--gateway-openresponses-auth-mode",
+            "password-session",
+            "--gateway-openresponses-auth-password-id",
+            "gateway-openresponses-auth-password",
+        ]);
+        let report = evaluate_gateway_remote_profile(&cli).expect("evaluate");
+        assert_eq!(report.profile, "tailscale-funnel");
+        assert_eq!(report.gate, "pass");
+        assert!(report.auth_password_configured);
         assert!(report
             .reason_codes
             .contains(&"tailscale_funnel_password_configured".to_string()));
