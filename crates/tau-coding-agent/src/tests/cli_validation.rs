@@ -45,6 +45,30 @@ fn functional_cli_provider_retry_flags_accept_overrides() {
 }
 
 #[test]
+fn unit_cli_provider_rate_limit_flags_default_values_are_stable() {
+    let cli = parse_cli_with_stack(["tau-rs"]);
+    assert_eq!(cli.provider_rate_limit_capacity, 0);
+    assert_eq!(cli.provider_rate_limit_refill_per_second, 0);
+    assert_eq!(cli.provider_rate_limit_max_wait_ms, 0);
+}
+
+#[test]
+fn functional_cli_provider_rate_limit_flags_accept_overrides() {
+    let cli = parse_cli_with_stack([
+        "tau-rs",
+        "--provider-rate-limit-capacity",
+        "8",
+        "--provider-rate-limit-refill-per-second",
+        "4",
+        "--provider-rate-limit-max-wait-ms",
+        "250",
+    ]);
+    assert_eq!(cli.provider_rate_limit_capacity, 8);
+    assert_eq!(cli.provider_rate_limit_refill_per_second, 4);
+    assert_eq!(cli.provider_rate_limit_max_wait_ms, 250);
+}
+
+#[test]
 fn unit_cli_agent_cost_budget_flags_default_values_are_stable() {
     let cli = parse_cli_with_stack(["tau-rs"]);
     assert_eq!(cli.agent_cost_budget_usd, None);

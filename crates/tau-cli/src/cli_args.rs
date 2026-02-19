@@ -690,6 +690,30 @@ pub struct Cli {
     pub provider_retry_jitter: bool,
 
     #[arg(
+        long = "provider-rate-limit-capacity",
+        env = "TAU_PROVIDER_RATE_LIMIT_CAPACITY",
+        default_value_t = 0,
+        help = "Outbound provider token-bucket capacity (0 disables provider rate limiting)"
+    )]
+    pub provider_rate_limit_capacity: u32,
+
+    #[arg(
+        long = "provider-rate-limit-refill-per-second",
+        env = "TAU_PROVIDER_RATE_LIMIT_REFILL_PER_SECOND",
+        default_value_t = 0,
+        help = "Outbound provider token refill rate per second (0 disables provider rate limiting)"
+    )]
+    pub provider_rate_limit_refill_per_second: u32,
+
+    #[arg(
+        long = "provider-rate-limit-max-wait-ms",
+        env = "TAU_PROVIDER_RATE_LIMIT_MAX_WAIT_MS",
+        default_value_t = 0,
+        help = "Maximum wait budget per outbound provider request when rate-limited (0 fails closed immediately)"
+    )]
+    pub provider_rate_limit_max_wait_ms: u64,
+
+    #[arg(
         long,
         env = "TAU_TURN_TIMEOUT_MS",
         default_value_t = 0,
