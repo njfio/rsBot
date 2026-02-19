@@ -4046,6 +4046,7 @@ name = "tau-coding-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "assert_cmd",
  "async-trait",
  "axum",
@@ -4058,6 +4059,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "httpmock",
+ "notify",
  "predicates",
  "proptest",
  "reqwest 0.12.28",

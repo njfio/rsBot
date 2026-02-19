@@ -4,20 +4,35 @@
 //! `<state-path>.policy.toml` heartbeat hot-reload channel.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tau_cli::Cli;
 use tau_onboarding::profile_store::{default_profile_store_path, load_profile_store};
 use tau_onboarding::startup_config::ProfileDefaults;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use tau_core::write_text_atomic;
 
 const DEFAULT_PROFILE_NAME: &str = "default";
-const PROFILE_BRIDGE_POLL_INTERVAL_MS: u64 = 1_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeHeartbeatActivePolicyConfig {
+    interval_ms: u64,
+}
+
+impl RuntimeHeartbeatActivePolicyConfig {
+    fn new(interval_ms: u64) -> Self {
+        Self {
+            interval_ms: interval_ms.max(1),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProfileStoreFingerprint {
@@ -72,11 +87,83 @@ impl ProfilePolicyBridgeOutcome {
 }
 
 #[derive(Debug)]
+enum ProfilePolicyBridgeWatcherEvent {
+    ProfileChanged,
+    WatchError(String),
+}
+
+fn start_profile_store_watcher(
+    profile_store_path: &Path,
+) -> (
+    Option<RecommendedWatcher>,
+    Option<mpsc::UnboundedReceiver<ProfilePolicyBridgeWatcherEvent>>,
+    Vec<String>,
+) {
+    let mut diagnostics = Vec::new();
+    let Some(profile_parent) = profile_store_path.parent().map(Path::to_path_buf) else {
+        diagnostics.push(format!(
+            "profile_policy_watch_parent_missing: path={}",
+            profile_store_path.display()
+        ));
+        return (None, None, diagnostics);
+    };
+
+    let (watch_tx, watch_rx) = mpsc::unbounded_channel::<ProfilePolicyBridgeWatcherEvent>();
+    let watched_profile_path = profile_store_path.to_path_buf();
+    let watched_profile_parent = profile_parent.clone();
+    let watched_profile_name = profile_store_path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string);
+    let watcher = notify::recommended_watcher(move |result: notify::Result<Event>| match result {
+        Ok(event) => {
+            let matches_profile = event.paths.is_empty()
+                || event.paths.iter().any(|candidate_path| {
+                    candidate_path == &watched_profile_path
+                        || candidate_path == &watched_profile_parent
+                        || watched_profile_name
+                            .as_ref()
+                            .is_some_and(|name| candidate_path.file_name() == Some(name))
+                });
+            if matches_profile {
+                let _ = watch_tx.send(ProfilePolicyBridgeWatcherEvent::ProfileChanged);
+            }
+        }
+        Err(error) => {
+            let _ = watch_tx.send(ProfilePolicyBridgeWatcherEvent::WatchError(
+                error.to_string(),
+            ));
+        }
+    });
+
+    let mut watcher = match watcher {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            diagnostics.push(format!(
+                "profile_policy_watch_init_failed: path={} error={error}",
+                profile_store_path.display()
+            ));
+            return (None, None, diagnostics);
+        }
+    };
+
+    if let Err(error) = watcher.watch(profile_parent.as_path(), RecursiveMode::NonRecursive) {
+        diagnostics.push(format!(
+            "profile_policy_watch_start_failed: path={} parent={} error={error}",
+            profile_store_path.display(),
+            profile_parent.display()
+        ));
+        return (None, None, diagnostics);
+    }
+
+    (Some(watcher), Some(watch_rx), diagnostics)
+}
+
+#[derive(Debug)]
 struct RuntimeHeartbeatProfilePolicyBridge {
     profile_store_path: PathBuf,
     profile_name: String,
     heartbeat_state_path: PathBuf,
-    last_applied_interval_ms: u64,
+    active_policy_config: Arc<ArcSwap<RuntimeHeartbeatActivePolicyConfig>>,
     last_fingerprint: Option<ProfileStoreFingerprint>,
 }
 
@@ -91,9 +178,23 @@ impl RuntimeHeartbeatProfilePolicyBridge {
             profile_store_path,
             profile_name,
             heartbeat_state_path,
-            last_applied_interval_ms: initial_interval_ms.max(1),
+            active_policy_config: Arc::new(ArcSwap::from_pointee(
+                RuntimeHeartbeatActivePolicyConfig::new(initial_interval_ms),
+            )),
             last_fingerprint: None,
         }
+    }
+
+    fn active_interval_ms(&self) -> u64 {
+        self.active_policy_config.load().interval_ms
+    }
+
+    #[cfg(test)]
+    fn set_active_interval_ms_for_test(&self, interval_ms: u64) {
+        self.active_policy_config
+            .store(Arc::new(RuntimeHeartbeatActivePolicyConfig::new(
+                interval_ms,
+            )));
     }
 
     fn evaluate_if_changed(&mut self, force: bool) -> ProfilePolicyBridgeOutcome {
@@ -106,7 +207,7 @@ impl RuntimeHeartbeatProfilePolicyBridge {
         self.last_fingerprint = Some(current_fingerprint);
         if !force && !changed {
             return ProfilePolicyBridgeOutcome::NoChange {
-                interval_ms: self.last_applied_interval_ms,
+                interval_ms: self.active_interval_ms(),
             };
         }
         self.evaluate_active_profile()
@@ -142,12 +243,15 @@ impl RuntimeHeartbeatProfilePolicyBridge {
                 reason: "profile_interval_invalid_zero".to_string(),
             };
         }
-        if interval_ms == self.last_applied_interval_ms {
+        if interval_ms == self.active_interval_ms() {
             return ProfilePolicyBridgeOutcome::NoChange { interval_ms };
         }
         match write_runtime_heartbeat_policy_file(&self.heartbeat_state_path, interval_ms) {
             Ok(policy_path) => {
-                self.last_applied_interval_ms = interval_ms;
+                self.active_policy_config
+                    .store(Arc::new(RuntimeHeartbeatActivePolicyConfig::new(
+                        interval_ms,
+                    )));
                 ProfilePolicyBridgeOutcome::Applied {
                     interval_ms,
                     policy_path,
@@ -222,20 +326,50 @@ pub(crate) fn start_runtime_heartbeat_profile_policy_bridge(
         state_path,
         initial_interval_ms,
     );
+    let watch_path = bridge.profile_store_path.clone();
+    let (watcher, mut watch_rx, watcher_diagnostics) = start_profile_store_watcher(&watch_path);
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(Duration::from_millis(PROFILE_BRIDGE_POLL_INTERVAL_MS));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let _watcher = watcher;
         let initial = bridge.evaluate_if_changed(true);
         emit_bridge_outcome(&initial);
+        for diagnostic in watcher_diagnostics {
+            emit_bridge_outcome(&ProfilePolicyBridgeOutcome::Invalid { reason: diagnostic });
+        }
 
         loop {
             tokio::select! {
-                _ = interval.tick() => {
-                    let outcome = bridge.evaluate_if_changed(false);
-                    if !matches!(outcome, ProfilePolicyBridgeOutcome::NoChange { .. }) {
-                        emit_bridge_outcome(&outcome);
+                event = async {
+                    match watch_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending::<Option<ProfilePolicyBridgeWatcherEvent>>().await,
+                    }
+                } => {
+                    match event {
+                        Some(ProfilePolicyBridgeWatcherEvent::ProfileChanged) => {
+                            // A watcher event is itself a change signal; force re-evaluation to
+                            // avoid missing same-size rapid rewrites that can alias fingerprint
+                            // metadata.
+                            let outcome = bridge.evaluate_if_changed(true);
+                            emit_bridge_outcome(&outcome);
+                        }
+                        Some(ProfilePolicyBridgeWatcherEvent::WatchError(error)) => {
+                            emit_bridge_outcome(&ProfilePolicyBridgeOutcome::Invalid {
+                                reason: format!(
+                                    "profile_policy_watch_error: path={} error={error}",
+                                    bridge.profile_store_path.display()
+                                ),
+                            });
+                        }
+                        None => {
+                            watch_rx = None;
+                            emit_bridge_outcome(&ProfilePolicyBridgeOutcome::Invalid {
+                                reason: format!(
+                                    "profile_policy_watch_disconnected: path={}",
+                                    bridge.profile_store_path.display()
+                                ),
+                            });
+                        }
                     }
                 }
                 _ = &mut shutdown_rx => {
@@ -363,6 +497,26 @@ mod tests {
         let mut profiles = BTreeMap::new();
         profiles.insert(profile_name.to_string(), sample_profile(interval_ms));
         save_profile_store(path, &profiles)
+    }
+
+    async fn wait_for_policy_interval(
+        policy_path: &std::path::Path,
+        expected_interval_ms: u64,
+        timeout_ms: u64,
+    ) -> bool {
+        let expected = format!("interval_ms = {expected_interval_ms}");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if let Ok(raw) = std::fs::read_to_string(policy_path) {
+                if raw.contains(&expected) {
+                    return true;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     #[test]
@@ -506,7 +660,7 @@ mod tests {
             "first force evaluation should initialize fingerprint and report no change"
         );
 
-        bridge.last_applied_interval_ms = 900;
+        bridge.set_active_interval_ms_for_test(900);
         let forced = bridge.evaluate_if_changed(true);
         assert!(
             matches!(
@@ -533,6 +687,134 @@ mod tests {
         let mut handle = start_runtime_heartbeat_profile_policy_bridge(&cli).expect("start bridge");
         tokio::time::sleep(Duration::from_millis(80)).await;
         handle.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spec_2597_c01_profile_policy_bridge_notify_events_trigger_reload() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = test_cli();
+        cli.runtime_heartbeat_enabled = true;
+        cli.runtime_heartbeat_interval_ms = 900;
+        cli.runtime_heartbeat_state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+        let profile_path = temp.path().join(".tau/profiles.json");
+        write_profile_store(&profile_path, "default", 900).expect("write profile store");
+
+        let mut handle = start_runtime_heartbeat_profile_policy_bridge(&cli).expect("start bridge");
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        write_profile_store(&profile_path, "default", 1_200).expect("write updated profile store");
+        let policy_path = runtime_heartbeat_policy_path(&cli.runtime_heartbeat_state_path);
+        assert!(
+            wait_for_policy_interval(&policy_path, 1_200, 2_000).await,
+            "profile change should trigger reload promptly through notify watcher"
+        );
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spec_2597_c02_profile_policy_bridge_arcswap_updates_on_valid_change() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = test_cli();
+        cli.runtime_heartbeat_enabled = true;
+        cli.runtime_heartbeat_interval_ms = 700;
+        cli.runtime_heartbeat_state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+        let profile_path = temp.path().join(".tau/profiles.json");
+        write_profile_store(&profile_path, "default", 900).expect("write initial profile store");
+
+        let mut handle = start_runtime_heartbeat_profile_policy_bridge(&cli).expect("start bridge");
+        let policy_path = runtime_heartbeat_policy_path(&cli.runtime_heartbeat_state_path);
+        assert!(
+            wait_for_policy_interval(&policy_path, 900, 2_000).await,
+            "initial evaluation should apply profile interval"
+        );
+
+        write_profile_store(&profile_path, "default", 1_200).expect("write updated profile store");
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        write_profile_store(&profile_path, "default", 1_300).expect("write second profile store");
+        assert!(
+            wait_for_policy_interval(&policy_path, 1_300, 2_500).await,
+            "active config should swap atomically to latest valid update"
+        );
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn regression_2597_c03_profile_policy_bridge_invalid_change_preserves_last_good_active_config(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = test_cli();
+        cli.runtime_heartbeat_enabled = true;
+        cli.runtime_heartbeat_interval_ms = 700;
+        cli.runtime_heartbeat_state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+        let profile_path = temp.path().join(".tau/profiles.json");
+        write_profile_store(&profile_path, "default", 1_200).expect("write initial profile store");
+
+        let mut handle = start_runtime_heartbeat_profile_policy_bridge(&cli).expect("start bridge");
+        let policy_path = runtime_heartbeat_policy_path(&cli.runtime_heartbeat_state_path);
+        assert!(
+            wait_for_policy_interval(&policy_path, 1_200, 300).await,
+            "initial profile interval should apply"
+        );
+
+        std::fs::write(&profile_path, "{invalid").expect("write invalid profile payload");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let policy_raw = std::fs::read_to_string(&policy_path).expect("read policy after invalid");
+        assert!(
+            policy_raw.contains("interval_ms = 1200"),
+            "invalid profile payload must preserve last-known-good active config"
+        );
+
+        handle.shutdown().await;
+    }
+
+    #[test]
+    fn regression_2597_c04_profile_policy_bridge_emits_stable_reload_diagnostics() {
+        let temp = tempdir().expect("tempdir");
+        let state_path = temp.path().join(".tau/runtime-heartbeat/state.json");
+        let profile_path = temp.path().join(".tau/profiles.json");
+        write_profile_store(&profile_path, "default", 900).expect("write initial profile store");
+
+        let mut bridge = RuntimeHeartbeatProfilePolicyBridge::new(
+            profile_path.clone(),
+            "default".to_string(),
+            state_path,
+            700,
+        );
+        let applied = bridge.evaluate_if_changed(true);
+        std::thread::sleep(Duration::from_millis(5));
+        write_profile_store(&profile_path, "default", 900).expect("rewrite no-change profile");
+        let no_change = bridge.evaluate_if_changed(false);
+        std::thread::sleep(Duration::from_millis(5));
+        std::fs::write(&profile_path, "{invalid").expect("write invalid profile payload");
+        let invalid = bridge.evaluate_if_changed(false);
+
+        assert!(
+            matches!(
+                applied,
+                ProfilePolicyBridgeOutcome::Applied {
+                    interval_ms: 900,
+                    ..
+                }
+            ),
+            "initial evaluation should apply profile interval"
+        );
+        assert!(
+            matches!(
+                no_change,
+                ProfilePolicyBridgeOutcome::NoChange { interval_ms: 900 }
+            ),
+            "rewriting equivalent interval should produce no-change outcome"
+        );
+        assert!(
+            matches!(invalid, ProfilePolicyBridgeOutcome::Invalid { .. }),
+            "invalid profile payload should produce invalid outcome"
+        );
+        assert_eq!(applied.reason_code(), "profile_policy_bridge_applied");
+        assert_eq!(no_change.reason_code(), "profile_policy_bridge_no_change");
+        assert_eq!(invalid.reason_code(), "profile_policy_bridge_invalid");
     }
 
     #[tokio::test(flavor = "current_thread")]

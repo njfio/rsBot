@@ -406,11 +406,11 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **Why it matters**: In production, restarting drops all active sessions. Config changes should be seamless.
 **Pathway**:
 - [x] Phase 3 (`#2541`): bridge active profile store heartbeat interval updates into runtime heartbeat `.policy.toml` hot-reload payloads with deterministic `applied/no_change/invalid/missing_profile` diagnostics
-- [ ] Add `notify` as workspace dependency (file system watcher)
-- [ ] Wrap config in `ArcSwap<Config>` — atomic pointer swap, lock-free reads
-- [ ] Watch profile TOML for changes
-- [ ] On change: parse new config, validate, swap atomically
-- [ ] Log config reloads
+- [x] Add `notify` as workspace dependency (file system watcher)
+- [x] Wrap config in `ArcSwap<Config>` — atomic pointer swap, lock-free reads
+- [x] Watch profile TOML for changes
+- [x] On change: parse new config, validate, swap atomically
+- [x] Log config reloads
 - **Files**: `tau-onboarding/src/`, `tau-runtime/src/`
 - **Effort**: Small-Medium
 
