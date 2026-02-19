@@ -146,3 +146,32 @@ fn job_status_label(status: ExternalCodingAgentSessionStatus) -> &'static str {
         ExternalCodingAgentSessionStatus::Closed => "cancelled",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unit_job_status_label_maps_all_runtime_statuses() {
+        assert_eq!(
+            job_status_label(ExternalCodingAgentSessionStatus::Running),
+            "running"
+        );
+        assert_eq!(
+            job_status_label(ExternalCodingAgentSessionStatus::Completed),
+            "completed"
+        );
+        assert_eq!(
+            job_status_label(ExternalCodingAgentSessionStatus::Failed),
+            "failed"
+        );
+        assert_eq!(
+            job_status_label(ExternalCodingAgentSessionStatus::TimedOut),
+            "timed_out"
+        );
+        assert_eq!(
+            job_status_label(ExternalCodingAgentSessionStatus::Closed),
+            "cancelled"
+        );
+    }
+}
