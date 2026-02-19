@@ -92,3 +92,45 @@ Active PRs must include stale-branch status fields in `.github/pull_request_temp
 - `Stale Alert Acknowledgement`
 - `Conflict Response Decision`
 - `Rollback Trigger Check`
+
+## Stale Merged Branch Prune Workflow
+
+Use `scripts/dev/stale-merged-branch-prune.sh` for deterministic stale merged branch inventory and optional prune.
+
+1. Dry-run (default, non-destructive):
+
+```bash
+scripts/dev/stale-merged-branch-prune.sh \
+  --remote origin \
+  --base-branch master \
+  --min-age-days 7
+```
+
+2. Review generated artifacts:
+   - `tasks/reports/stale-merged-branch-prune.json`
+   - `tasks/reports/stale-merged-branch-prune.md`
+
+3. Execute deletion only after review:
+
+```bash
+scripts/dev/stale-merged-branch-prune.sh \
+  --remote origin \
+  --base-branch master \
+  --min-age-days 7 \
+  --execute \
+  --confirm-delete DELETE_REMOTE_BRANCHES
+```
+
+## Rollback Procedure for Deleted Branches
+
+Each deleted row records `branch` and `tip_sha` in the JSON report. To restore a deleted branch:
+
+```bash
+git push origin <tip_sha>:refs/heads/<branch>
+```
+
+Validate restoration:
+
+```bash
+git ls-remote --heads origin <branch>
+```

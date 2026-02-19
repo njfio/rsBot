@@ -24,6 +24,7 @@ Stale-branch threshold and alert rules are defined in:
 
 - `tasks/policies/stale-branch-alert-policy.json`
 - `docs/guides/stale-branch-response-playbook.md`
+- `scripts/dev/stale-merged-branch-prune.sh`
 
 Hierarchy graph extraction for the `#1678` execution tree:
 
