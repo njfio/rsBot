@@ -254,11 +254,11 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: The agent can invoke a `branch` tool to fork its context and think independently, returning only the conclusion.
 **Why it matters**: Separates "thinking" from "talking". The user never sees the agent's working — only the answer. Reduces noise.
 **Pathway**:
-- [ ] Add `BranchTool` to `tau-tools` that creates a new session branch with the current context
-- [ ] Branch runs a separate agent turn with memory tools but no user-facing reply tools
-- [ ] Branch returns a structured conclusion to the parent session
-- [ ] Parent session receives conclusion as a tool result and can act on it
-- [ ] Configurable max concurrent branches per session
+- [x] Add `BranchTool` to `tau-tools` that creates a new session branch with the current context
+- [x] Branch runs a separate agent turn with memory tools but no user-facing reply tools
+- [x] Branch returns a structured conclusion to the parent session
+- [x] Parent session receives conclusion as a tool result and can act on it
+- [x] Configurable max concurrent branches per session
 - **Files**: `tau-tools/src/tools/`, `tau-agent-core/src/` for branch execution
 - **Effort**: Medium
 

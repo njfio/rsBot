@@ -1,6 +1,6 @@
 # Spec: Issue #2602 - G4 phase-2 branch tool runtime orchestration + limits
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Issue #2429 delivered a phase-1 `branch` tool that appends branch prompts to session storage, but it did not execute a separate branch reasoning turn or return a branch conclusion to the parent turn. G4 remains incomplete until branch calls can run isolated branch reasoning and report structured conclusions with concurrency safety.
