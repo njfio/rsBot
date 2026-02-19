@@ -207,6 +207,20 @@ pub(super) struct GatewayChannelLifecycleRequest {
     pub(super) probe_online_retry_delay_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayConfigPatchRequest {
+    #[serde(default)]
+    pub(super) model: Option<String>,
+    #[serde(default)]
+    pub(super) system_prompt: Option<String>,
+    #[serde(default)]
+    pub(super) max_turns: Option<usize>,
+    #[serde(default)]
+    pub(super) max_input_chars: Option<usize>,
+    #[serde(default)]
+    pub(super) runtime_heartbeat_interval_ms: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct GatewayUiTelemetryRequest {
     pub(super) view: String,
