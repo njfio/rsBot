@@ -1,6 +1,6 @@
 # Spec: Issue #2642 - G22 skill prompt-mode routing and SKILL.md compatibility hardening
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau already supports markdown skills and `SKILL.md` directories, including frontmatter parsing and `{baseDir}` substitution. However, startup prompt composition still injects full skill bodies into channel-level prompts, and delegated/worker orchestration paths do not receive an explicit full-skill context channel. This misses the G22 parity target: channel prompts should carry concise skill summaries while worker/delegated execution paths receive full skill content.
