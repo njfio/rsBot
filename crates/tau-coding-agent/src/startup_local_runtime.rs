@@ -31,6 +31,7 @@ use crate::runtime_loop::{
 };
 use crate::runtime_output::event_to_json;
 use crate::runtime_profile_policy_bridge::start_runtime_heartbeat_profile_policy_bridge;
+use crate::runtime_prompt_template_bridge::start_runtime_prompt_template_hot_reload_bridge;
 use crate::runtime_types::{CommandExecutionContext, RenderOptions, SkillsSyncCommandConfig};
 use crate::tools::{self, ToolPolicy};
 use tau_onboarding::startup_local_runtime::{
@@ -295,12 +296,16 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
     )?;
     let mut runtime_profile_policy_bridge_handle =
         start_runtime_heartbeat_profile_policy_bridge(cli)?;
+    let mut runtime_prompt_template_bridge_handle =
+        start_runtime_prompt_template_hot_reload_bridge(cli, system_prompt)?;
     let run_result = async {
         if execute_onboarding_local_runtime_entry_mode_with_dispatch(
             &entry_mode,
             |entry_dispatch| async {
                 match entry_dispatch {
                     LocalRuntimeEntryDispatch::PlanFirstPrompt(prompt) => {
+                        runtime_prompt_template_bridge_handle
+                            .apply_pending_update(&mut agent, cli, skills_dir)?;
                         run_plan_first_prompt_with_runtime_hooks(
                             &mut agent,
                             &mut session_runtime,
@@ -331,6 +336,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                         .await?;
                     }
                     LocalRuntimeEntryDispatch::Prompt(prompt) => {
+                        runtime_prompt_template_bridge_handle
+                            .apply_pending_update(&mut agent, cli, skills_dir)?;
                         run_prompt_with_profile_routing(
                             &mut agent,
                             &mut session_runtime,
@@ -360,9 +367,18 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
             return Ok(());
         }
 
-        run_interactive(agent, session_runtime, interactive_config).await
+        run_interactive(
+            agent,
+            session_runtime,
+            interactive_config,
+            &mut runtime_prompt_template_bridge_handle,
+            cli,
+            skills_dir,
+        )
+        .await
     }
     .await;
+    runtime_prompt_template_bridge_handle.shutdown().await;
     runtime_profile_policy_bridge_handle.shutdown().await;
     runtime_heartbeat_handle.shutdown().await;
     run_result

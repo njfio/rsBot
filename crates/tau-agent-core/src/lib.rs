@@ -1212,6 +1212,26 @@ impl Agent {
         self.messages = messages;
     }
 
+    /// Replaces the leading startup system prompt while preserving conversation history.
+    ///
+    /// Returns `true` when the effective startup system prompt changed.
+    pub fn replace_system_prompt(&mut self, system_prompt: impl Into<String>) -> bool {
+        let system_prompt = system_prompt.into();
+
+        if let Some(first) = self.messages.first_mut() {
+            if first.role == MessageRole::System {
+                if first.text_content() == system_prompt {
+                    return false;
+                }
+                *first = Message::system(system_prompt);
+                return true;
+            }
+        }
+
+        self.messages.insert(0, Message::system(system_prompt));
+        true
+    }
+
     /// Appends a message to the conversation history.
     pub fn append_message(&mut self, message: Message) {
         self.messages.push(message);

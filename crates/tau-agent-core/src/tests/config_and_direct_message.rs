@@ -33,6 +33,38 @@ fn unit_dynamic_tool_registry_supports_presence_and_lifecycle_helpers() {
 }
 
 #[test]
+fn unit_replace_system_prompt_updates_leading_system_message_without_history_churn() {
+    let mut agent = Agent::new(Arc::new(EchoClient), AgentConfig::default());
+    agent.append_message(Message::user("hello"));
+
+    let unchanged = agent.replace_system_prompt("You are a helpful coding assistant.");
+    assert!(!unchanged, "identical prompt must not report update");
+    assert_eq!(agent.messages().len(), 2);
+
+    let changed = agent.replace_system_prompt("System prompt v2");
+    assert!(changed, "different startup prompt should be applied");
+    assert_eq!(agent.messages()[0].role, MessageRole::System);
+    assert_eq!(agent.messages()[0].text_content(), "System prompt v2");
+    assert_eq!(agent.messages()[1].role, MessageRole::User);
+    assert_eq!(agent.messages()[1].text_content(), "hello");
+}
+
+#[test]
+fn regression_replace_system_prompt_inserts_when_history_lacks_leading_system_message() {
+    let mut agent = Agent::new(Arc::new(EchoClient), AgentConfig::default());
+    agent.replace_messages(vec![Message::user("user-only history")]);
+
+    let changed = agent.replace_system_prompt("Restored startup prompt");
+    assert!(changed, "missing leading system prompt should be restored");
+    assert_eq!(agent.messages()[0].role, MessageRole::System);
+    assert_eq!(
+        agent.messages()[0].text_content(),
+        "Restored startup prompt"
+    );
+    assert_eq!(agent.messages()[1].role, MessageRole::User);
+}
+
+#[test]
 fn unit_direct_message_policy_enforces_configured_routes() {
     let mut policy = AgentDirectMessagePolicy::default();
     assert!(!policy.allows("planner", "executor"));

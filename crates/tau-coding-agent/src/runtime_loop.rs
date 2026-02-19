@@ -8,6 +8,7 @@ use std::{
     future::Future,
     io::{IsTerminal, Read, Write},
     path::{Path, PathBuf},
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -43,6 +44,7 @@ use crate::orchestrator_bridge::{
     PlanFirstPromptRequest, PlanFirstPromptRoutingRequest,
 };
 use crate::runtime_output::{persist_messages, print_assistant_messages};
+use crate::runtime_prompt_template_bridge::RuntimePromptTemplateHotReloadBridgeHandle;
 use crate::runtime_types::{CommandExecutionContext, ProfileDefaults, RenderOptions};
 
 const EXTENSION_HOOK_PAYLOAD_SCHEMA_VERSION: u32 = 1;
@@ -125,6 +127,46 @@ pub(crate) struct InteractiveRuntimeConfig<'a> {
 enum InteractiveLoopControl {
     Continue,
     Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractiveIoMode {
+    Tty,
+    Stdin,
+}
+
+type InteractiveRunnerFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+struct InteractiveRunnerContext<'a> {
+    agent: &'a mut Agent,
+    session_runtime: &'a mut Option<SessionRuntime>,
+    config: InteractiveRuntimeConfig<'a>,
+    prompt_template_bridge_handle: &'a mut RuntimePromptTemplateHotReloadBridgeHandle,
+    cli: &'a Cli,
+    skills_dir: &'a Path,
+}
+
+type InteractiveRunner =
+    for<'a> fn(&'a mut InteractiveRunnerContext<'a>) -> InteractiveRunnerFuture<'a>;
+
+fn resolve_interactive_io_mode(
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+) -> InteractiveIoMode {
+    if stdin_is_terminal && stdout_is_terminal {
+        InteractiveIoMode::Tty
+    } else {
+        InteractiveIoMode::Stdin
+    }
+}
+
+fn require_tty_streams(stdin_is_terminal: bool, stdout_is_terminal: bool) -> Result<()> {
+    match resolve_interactive_io_mode(stdin_is_terminal, stdout_is_terminal) {
+        InteractiveIoMode::Tty => Ok(()),
+        InteractiveIoMode::Stdin => {
+            bail!("interactive tty runtime requires terminal stdin/stdout")
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -260,11 +302,66 @@ pub(crate) async fn run_interactive(
     mut agent: Agent,
     mut session_runtime: Option<SessionRuntime>,
     config: InteractiveRuntimeConfig<'_>,
+    prompt_template_bridge_handle: &mut RuntimePromptTemplateHotReloadBridgeHandle,
+    cli: &Cli,
+    skills_dir: &Path,
 ) -> Result<()> {
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        run_interactive_tty(&mut agent, &mut session_runtime, config).await
-    } else {
-        run_interactive_stdin(&mut agent, &mut session_runtime, config).await
+    let mode = resolve_interactive_io_mode(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    );
+    let mut context = InteractiveRunnerContext {
+        agent: &mut agent,
+        session_runtime: &mut session_runtime,
+        config,
+        prompt_template_bridge_handle,
+        cli,
+        skills_dir,
+    };
+    run_interactive_with_runner(
+        mode,
+        &mut context,
+        run_interactive_tty_runner,
+        run_interactive_stdin_runner,
+    )
+    .await
+}
+
+fn run_interactive_stdin_runner<'a>(
+    context: &'a mut InteractiveRunnerContext<'a>,
+) -> InteractiveRunnerFuture<'a> {
+    Box::pin(run_interactive_stdin(
+        context.agent,
+        context.session_runtime,
+        context.config,
+        context.prompt_template_bridge_handle,
+        context.cli,
+        context.skills_dir,
+    ))
+}
+
+fn run_interactive_tty_runner<'a>(
+    context: &'a mut InteractiveRunnerContext<'a>,
+) -> InteractiveRunnerFuture<'a> {
+    Box::pin(run_interactive_tty(
+        context.agent,
+        context.session_runtime,
+        context.config,
+        context.prompt_template_bridge_handle,
+        context.cli,
+        context.skills_dir,
+    ))
+}
+
+async fn run_interactive_with_runner<'a>(
+    mode: InteractiveIoMode,
+    context: &'a mut InteractiveRunnerContext<'a>,
+    tty_runner: InteractiveRunner,
+    stdin_runner: InteractiveRunner,
+) -> Result<()> {
+    match mode {
+        InteractiveIoMode::Tty => tty_runner(context).await,
+        InteractiveIoMode::Stdin => stdin_runner(context).await,
     }
 }
 
@@ -272,6 +369,9 @@ async fn run_interactive_stdin(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
     config: InteractiveRuntimeConfig<'_>,
+    prompt_template_bridge_handle: &mut RuntimePromptTemplateHotReloadBridgeHandle,
+    cli: &Cli,
+    skills_dir: &Path,
 ) -> Result<()> {
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
@@ -286,6 +386,7 @@ async fn run_interactive_stdin(
             break;
         };
 
+        prompt_template_bridge_handle.apply_pending_update(agent, cli, skills_dir)?;
         match dispatch_interactive_turn(agent, session_runtime, config, &line).await? {
             InteractiveLoopControl::Continue => continue,
             InteractiveLoopControl::Exit => break,
@@ -299,7 +400,14 @@ async fn run_interactive_tty(
     agent: &mut Agent,
     session_runtime: &mut Option<SessionRuntime>,
     config: InteractiveRuntimeConfig<'_>,
+    prompt_template_bridge_handle: &mut RuntimePromptTemplateHotReloadBridgeHandle,
+    cli: &Cli,
+    skills_dir: &Path,
 ) -> Result<()> {
+    require_tty_streams(
+        std::io::stdin().is_terminal(),
+        std::io::stdout().is_terminal(),
+    )?;
     let history_path = default_repl_history_path(session_runtime.as_ref());
     let mut editor = build_repl_editor()?;
     load_repl_history(&mut editor, &history_path);
@@ -334,6 +442,7 @@ async fn run_interactive_tty(
             save_repl_history(&mut editor, &history_path);
         }
 
+        prompt_template_bridge_handle.apply_pending_update(agent, cli, skills_dir)?;
         match dispatch_interactive_turn(agent, session_runtime, config, &input).await {
             Ok(InteractiveLoopControl::Continue) => continue,
             Ok(InteractiveLoopControl::Exit) => break,
@@ -1289,20 +1398,34 @@ fn report_prompt_status(status: PromptRunStatus) {
 mod tests {
     use super::{
         apply_runtime_message_transform, build_runtime_hook_payload, classify_prompt_complexity,
-        render_orchestrator_policy_inheritance_context, resolve_repl_history_path,
-        run_prompt_with_profile_routing, select_routed_dispatch_model, PromptComplexity,
+        render_orchestrator_policy_inheritance_context, require_tty_streams,
+        resolve_interactive_io_mode, resolve_repl_history_path, run_interactive_tty,
+        run_interactive_with_runner, run_prompt_with_profile_routing, select_routed_dispatch_model,
+        InteractiveIoMode, InteractiveRunnerContext, InteractiveRunnerFuture, PromptComplexity,
         PromptProcessType, ReplCommandCompleter, ReplMultilineState, RuntimeExtensionHooksConfig,
         RuntimeHookRunStatus,
     };
+    use crate::runtime_prompt_template_bridge::start_runtime_prompt_template_hot_reload_bridge;
     use crate::runtime_types::{
+        AuthCommandConfig, DoctorCommandConfig, DoctorMultiChannelReadinessConfig,
         ProfileAuthDefaults, ProfileDefaults, ProfileMcpDefaults, ProfilePolicyDefaults,
-        ProfileRoutingDefaults, ProfileSessionDefaults, RenderOptions,
+        ProfileRoutingDefaults, ProfileSessionDefaults, RenderOptions, SkillsSyncCommandConfig,
     };
+    use crate::tests::test_cli;
+    use crate::ModelCatalog;
     use async_trait::async_trait;
     use std::collections::{BTreeMap, VecDeque};
-    use std::sync::Arc;
+    use std::io::IsTerminal;
+    use std::path::{Path, PathBuf};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
     use tau_agent_core::{Agent, AgentConfig};
-    use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, TauAiError};
+    use tau_ai::{ChatRequest, ChatResponse, ChatUsage, LlmClient, Message, Provider, TauAiError};
+    use tau_provider::CredentialStoreEncryptionMode;
+    use tau_provider::ProviderAuthMethod;
+    use tau_session::SessionImportMode;
     use tempfile::tempdir;
     use tokio::sync::Mutex as AsyncMutex;
 
@@ -1382,6 +1505,127 @@ mod tests {
         }
     }
 
+    static TTY_RUNNER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static STDIN_RUNNER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static INTERACTIVE_RUNNER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct InteractiveRunnerHarness {
+        tool_policy_json: serde_json::Value,
+        profile_defaults: ProfileDefaults,
+        skills_command_config: SkillsSyncCommandConfig,
+        auth_command_config: AuthCommandConfig,
+        model_catalog: ModelCatalog,
+        route_table: tau_orchestrator::multi_agent_router::MultiAgentRouteTable,
+    }
+
+    impl InteractiveRunnerHarness {
+        fn new() -> Self {
+            let skills_dir = PathBuf::from(".tau/skills");
+            let skills_lock_path = PathBuf::from(".tau/skills.lock.json");
+            let doctor_config = DoctorCommandConfig {
+                model: "openai/gpt-4o-mini".to_string(),
+                provider_keys: Vec::new(),
+                release_channel_path: PathBuf::from(".tau/release-channel.toml"),
+                release_lookup_cache_path: PathBuf::from(".tau/release-channel-cache.json"),
+                release_lookup_cache_ttl_ms: 300_000,
+                browser_automation_playwright_cli: "playwright".to_string(),
+                session_enabled: true,
+                session_path: PathBuf::from(".tau/sessions/default.sqlite"),
+                skills_dir: skills_dir.clone(),
+                skills_lock_path: skills_lock_path.clone(),
+                trust_root_path: None,
+                multi_channel_live_readiness: DoctorMultiChannelReadinessConfig::default(),
+            };
+
+            Self {
+                tool_policy_json: serde_json::json!({
+                    "schema_version": 1,
+                    "preset": "balanced"
+                }),
+                profile_defaults: sample_profile_defaults(),
+                skills_command_config: SkillsSyncCommandConfig {
+                    skills_dir,
+                    default_lock_path: skills_lock_path,
+                    default_trust_root_path: None,
+                    doctor_config,
+                },
+                auth_command_config: AuthCommandConfig {
+                    credential_store: PathBuf::from(".tau/credentials.json"),
+                    credential_store_key: None,
+                    credential_store_encryption: CredentialStoreEncryptionMode::None,
+                    api_key: None,
+                    openai_api_key: None,
+                    anthropic_api_key: None,
+                    google_api_key: None,
+                    openai_auth_mode: ProviderAuthMethod::ApiKey,
+                    anthropic_auth_mode: ProviderAuthMethod::ApiKey,
+                    google_auth_mode: ProviderAuthMethod::ApiKey,
+                    provider_subscription_strict: false,
+                    openai_codex_backend: false,
+                    openai_codex_cli: "codex".to_string(),
+                    anthropic_claude_backend: false,
+                    anthropic_claude_cli: "claude".to_string(),
+                    google_gemini_backend: false,
+                    google_gemini_cli: "gemini".to_string(),
+                    google_gcloud_cli: "gcloud".to_string(),
+                },
+                model_catalog: ModelCatalog::built_in(),
+                route_table: tau_orchestrator::multi_agent_router::MultiAgentRouteTable::default(),
+            }
+        }
+
+        fn runtime_config<'a>(
+            &'a self,
+            extension_runtime_hooks: &'a RuntimeExtensionHooksConfig,
+        ) -> super::InteractiveRuntimeConfig<'a> {
+            super::InteractiveRuntimeConfig {
+                turn_timeout_ms: 0,
+                render_options: test_render_options(),
+                extension_runtime_hooks,
+                orchestrator_mode: tau_cli::CliOrchestratorMode::Off,
+                orchestrator_max_plan_steps: 4,
+                orchestrator_max_delegated_steps: 4,
+                orchestrator_max_executor_response_chars: 4_096,
+                orchestrator_max_delegated_step_response_chars: 2_048,
+                orchestrator_max_delegated_total_response_chars: 8_192,
+                orchestrator_delegate_steps: true,
+                orchestrator_route_table: &self.route_table,
+                orchestrator_route_trace_log: None,
+                command_context: crate::runtime_types::CommandExecutionContext {
+                    tool_policy_json: &self.tool_policy_json,
+                    session_import_mode: SessionImportMode::Merge,
+                    profile_defaults: &self.profile_defaults,
+                    skills_command_config: &self.skills_command_config,
+                    auth_command_config: &self.auth_command_config,
+                    model_catalog: &self.model_catalog,
+                    extension_commands: &[],
+                },
+            }
+        }
+    }
+
+    fn apply_workspace_paths(cli: &mut tau_cli::Cli, workspace: &Path) {
+        let tau_root = workspace.join(".tau");
+        cli.session = tau_root.join("sessions/default.sqlite");
+        cli.credential_store = tau_root.join("credentials.json");
+        cli.skills_dir = tau_root.join("skills");
+        std::fs::create_dir_all(&cli.skills_dir).expect("create skills dir");
+    }
+
+    fn fake_tty_runner<'a>(
+        _context: &'a mut InteractiveRunnerContext<'a>,
+    ) -> InteractiveRunnerFuture<'a> {
+        TTY_RUNNER_CALLS.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn fake_stdin_runner<'a>(
+        _context: &'a mut InteractiveRunnerContext<'a>,
+    ) -> InteractiveRunnerFuture<'a> {
+        STDIN_RUNNER_CALLS.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async { Ok(()) })
+    }
+
     fn routed_profile_defaults() -> ProfileDefaults {
         let mut profile = sample_profile_defaults();
         profile.routing = ProfileRoutingDefaults {
@@ -1399,6 +1643,183 @@ mod tests {
             ]),
         };
         profile
+    }
+
+    #[test]
+    fn regression_2548_resolve_interactive_io_mode_requires_both_terminal_streams() {
+        assert_eq!(
+            resolve_interactive_io_mode(true, true),
+            InteractiveIoMode::Tty
+        );
+        assert_eq!(
+            resolve_interactive_io_mode(true, false),
+            InteractiveIoMode::Stdin
+        );
+        assert_eq!(
+            resolve_interactive_io_mode(false, true),
+            InteractiveIoMode::Stdin
+        );
+        assert_eq!(
+            resolve_interactive_io_mode(false, false),
+            InteractiveIoMode::Stdin
+        );
+    }
+
+    #[test]
+    fn regression_2548_require_tty_streams_fails_closed_when_any_stream_is_not_terminal() {
+        assert!(
+            require_tty_streams(true, true).is_ok(),
+            "both terminal streams should pass"
+        );
+
+        let stdout_non_terminal =
+            require_tty_streams(true, false).expect_err("stdout non-terminal should fail");
+        assert!(stdout_non_terminal
+            .to_string()
+            .contains("interactive tty runtime requires terminal stdin/stdout"));
+
+        let stdin_non_terminal =
+            require_tty_streams(false, true).expect_err("stdin non-terminal should fail");
+        assert!(stdin_non_terminal
+            .to_string()
+            .contains("interactive tty runtime requires terminal stdin/stdout"));
+
+        let both_non_terminal =
+            require_tty_streams(false, false).expect_err("non-terminal streams should fail");
+        assert!(both_non_terminal
+            .to_string()
+            .contains("interactive tty runtime requires terminal stdin/stdout"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn regression_2548_run_interactive_with_runner_dispatches_tty_mode() {
+        let _guard = INTERACTIVE_RUNNER_TEST_LOCK
+            .lock()
+            .expect("interactive runner test lock");
+        TTY_RUNNER_CALLS.store(0, Ordering::Relaxed);
+        STDIN_RUNNER_CALLS.store(0, Ordering::Relaxed);
+
+        let hooks = disabled_runtime_hooks();
+        let harness = InteractiveRunnerHarness::new();
+        let config = harness.runtime_config(&hooks);
+        let mut cli = test_cli();
+        let temp = tempdir().expect("tempdir");
+        apply_workspace_paths(&mut cli, temp.path());
+        let mut bridge = start_runtime_prompt_template_hot_reload_bridge(&cli, "initial prompt")
+            .expect("start bridge");
+        let mut agent = Agent::new(
+            Arc::new(RecordingSequenceClient {
+                outcomes: AsyncMutex::new(VecDeque::new()),
+                recorded_models: Arc::new(AsyncMutex::new(Vec::new())),
+            }),
+            AgentConfig::default(),
+        );
+        let mut session_runtime = None;
+        let mut context = InteractiveRunnerContext {
+            agent: &mut agent,
+            session_runtime: &mut session_runtime,
+            config,
+            prompt_template_bridge_handle: &mut bridge,
+            cli: &cli,
+            skills_dir: &cli.skills_dir,
+        };
+
+        run_interactive_with_runner(
+            InteractiveIoMode::Tty,
+            &mut context,
+            fake_tty_runner,
+            fake_stdin_runner,
+        )
+        .await
+        .expect("mode dispatch");
+        assert_eq!(TTY_RUNNER_CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(STDIN_RUNNER_CALLS.load(Ordering::Relaxed), 0);
+        bridge.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn regression_2548_run_interactive_with_runner_dispatches_stdin_mode() {
+        let _guard = INTERACTIVE_RUNNER_TEST_LOCK
+            .lock()
+            .expect("interactive runner test lock");
+        TTY_RUNNER_CALLS.store(0, Ordering::Relaxed);
+        STDIN_RUNNER_CALLS.store(0, Ordering::Relaxed);
+
+        let hooks = disabled_runtime_hooks();
+        let harness = InteractiveRunnerHarness::new();
+        let config = harness.runtime_config(&hooks);
+        let mut cli = test_cli();
+        let temp = tempdir().expect("tempdir");
+        apply_workspace_paths(&mut cli, temp.path());
+        let mut bridge = start_runtime_prompt_template_hot_reload_bridge(&cli, "initial prompt")
+            .expect("start bridge");
+        let mut agent = Agent::new(
+            Arc::new(RecordingSequenceClient {
+                outcomes: AsyncMutex::new(VecDeque::new()),
+                recorded_models: Arc::new(AsyncMutex::new(Vec::new())),
+            }),
+            AgentConfig::default(),
+        );
+        let mut session_runtime = None;
+        let mut context = InteractiveRunnerContext {
+            agent: &mut agent,
+            session_runtime: &mut session_runtime,
+            config,
+            prompt_template_bridge_handle: &mut bridge,
+            cli: &cli,
+            skills_dir: &cli.skills_dir,
+        };
+
+        run_interactive_with_runner(
+            InteractiveIoMode::Stdin,
+            &mut context,
+            fake_tty_runner,
+            fake_stdin_runner,
+        )
+        .await
+        .expect("mode dispatch");
+        assert_eq!(TTY_RUNNER_CALLS.load(Ordering::Relaxed), 0);
+        assert_eq!(STDIN_RUNNER_CALLS.load(Ordering::Relaxed), 1);
+        bridge.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn regression_2548_run_interactive_tty_fails_closed_without_terminal() {
+        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+            return;
+        }
+
+        let hooks = disabled_runtime_hooks();
+        let harness = InteractiveRunnerHarness::new();
+        let config = harness.runtime_config(&hooks);
+        let mut cli = test_cli();
+        let temp = tempdir().expect("tempdir");
+        apply_workspace_paths(&mut cli, temp.path());
+        let mut bridge = start_runtime_prompt_template_hot_reload_bridge(&cli, "initial prompt")
+            .expect("start bridge");
+        let mut agent = Agent::new(
+            Arc::new(RecordingSequenceClient {
+                outcomes: AsyncMutex::new(VecDeque::new()),
+                recorded_models: Arc::new(AsyncMutex::new(Vec::new())),
+            }),
+            AgentConfig::default(),
+        );
+        let mut session_runtime = None;
+
+        let error = run_interactive_tty(
+            &mut agent,
+            &mut session_runtime,
+            config,
+            &mut bridge,
+            &cli,
+            &cli.skills_dir,
+        )
+        .await
+        .expect_err("tty runner should fail closed when stdin/stdout are not terminals");
+        assert!(error
+            .to_string()
+            .contains("interactive tty runtime requires terminal stdin/stdout"));
+        bridge.shutdown().await;
     }
 
     #[test]
