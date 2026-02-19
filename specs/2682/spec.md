@@ -1,6 +1,6 @@
 # Spec: Issue #2682 - PRD gateway audit summary and audit log endpoints
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `specs/tau-ops-dashboard-prd.md` requires diagnostics APIs for aggregated audit metrics and paginated audit record retrieval (`/gateway/audit/summary`, `/gateway/audit/log`). `tau-gateway` currently persists dashboard action audit records and UI telemetry events, but does not expose API endpoints that let operators query those records for dashboard diagnostics workflows.
