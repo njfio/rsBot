@@ -388,6 +388,27 @@ mod tests {
     }
 
     #[test]
+    fn spec_2642_c01_load_catalog_keeps_scalar_frontmatter_compatibility() {
+        let temp = tempdir().expect("tempdir");
+        let checks_dir = temp.path().join("checks");
+        std::fs::create_dir_all(&checks_dir).expect("create checks dir");
+        std::fs::write(
+            checks_dir.join("SKILL.md"),
+            "---\nname: checks\ndescription: Run verification checks\ntags: [ci,verification]\nconfig: { strict: true }\n---\ncd {baseDir}\nrun-checks\n",
+        )
+        .expect("write skill");
+
+        let catalog = load_catalog(temp.path()).expect("catalog");
+        let skill = catalog
+            .iter()
+            .find(|skill| skill.name == "checks")
+            .expect("checks skill");
+        assert_eq!(skill.description, "Run verification checks");
+        assert!(skill.content.contains("run-checks"));
+        assert!(!skill.content.contains("{baseDir}"));
+    }
+
+    #[test]
     fn spec_c03_augment_system_prompt_summary_mode_injects_metadata_without_full_body() {
         let skills = vec![Skill {
             name: "checks".to_string(),

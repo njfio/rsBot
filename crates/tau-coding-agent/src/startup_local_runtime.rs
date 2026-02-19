@@ -5,7 +5,7 @@
 
 use std::{path::Path, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 #[cfg(test)]
 use tau_agent_core::Agent;
@@ -14,6 +14,9 @@ use tau_ai::{LlmClient, ModelRef};
 use tau_cli::{Cli, CliPromptSanitizerMode};
 use tau_runtime::start_runtime_heartbeat_scheduler;
 use tau_session::initialize_session;
+use tau_skills::{
+    augment_system_prompt_with_mode, load_catalog, resolve_selected_skills, SkillPromptMode,
+};
 
 use crate::commands::execute_command_file;
 use crate::extension_manifest::{
@@ -326,6 +329,18 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         model_catalog,
         extension_commands: &extension_runtime_registrations.registered_commands,
     };
+    let orchestrator_worker_skill_prompt = {
+        let catalog = load_catalog(skills_dir)
+            .with_context(|| format!("failed to load skills from {}", skills_dir.display()))?;
+        let selected = resolve_selected_skills(&catalog, &cli.skills)?;
+        let prompt = augment_system_prompt_with_mode("", &selected, SkillPromptMode::Full);
+        let trimmed = prompt.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    };
     let interactive_config = InteractiveRuntimeConfig {
         turn_timeout_ms: interactive_defaults.turn_timeout_ms,
         render_options,
@@ -342,6 +357,7 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
         orchestrator_delegate_steps: interactive_defaults.orchestrator_delegate_steps,
         orchestrator_route_table: &orchestrator_route_table,
         orchestrator_route_trace_log,
+        orchestrator_worker_skill_prompt: orchestrator_worker_skill_prompt.as_deref(),
         command_context,
     };
 
@@ -383,6 +399,8 @@ pub(crate) async fn run_local_runtime(config: LocalRuntimeConfig<'_>) -> Result<
                                     .orchestrator_delegate_steps,
                                 orchestrator_route_table: &orchestrator_route_table,
                                 orchestrator_route_trace_log,
+                                orchestrator_worker_skill_prompt: orchestrator_worker_skill_prompt
+                                    .as_deref(),
                                 tool_policy_json,
                                 extension_runtime_hooks: &extension_runtime_hooks,
                             },

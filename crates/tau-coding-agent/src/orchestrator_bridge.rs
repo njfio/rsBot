@@ -37,6 +37,7 @@ pub(crate) struct PlanFirstPromptRequest<'a> {
     pub max_delegated_step_response_chars: usize,
     pub max_delegated_total_response_chars: usize,
     pub delegate_steps: bool,
+    pub delegated_skill_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +52,7 @@ pub(crate) struct PlanFirstPromptPolicyRequest<'a> {
     pub max_delegated_total_response_chars: usize,
     pub delegate_steps: bool,
     pub delegated_policy_context: Option<&'a str>,
+    pub delegated_skill_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +67,7 @@ pub(crate) struct PlanFirstPromptRoutingRequest<'a> {
     pub max_delegated_total_response_chars: usize,
     pub delegate_steps: bool,
     pub delegated_policy_context: Option<&'a str>,
+    pub delegated_skill_context: Option<&'a str>,
     pub route_table: &'a MultiAgentRouteTable,
     pub route_trace_log_path: Option<&'a Path>,
 }
@@ -159,6 +162,7 @@ pub(crate) async fn run_plan_first_prompt(
             max_delegated_step_response_chars: request.max_delegated_step_response_chars,
             max_delegated_total_response_chars: request.max_delegated_total_response_chars,
             delegate_steps: request.delegate_steps,
+            delegated_skill_context: request.delegated_skill_context,
         },
     )
     .await
@@ -186,6 +190,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context(
             max_delegated_total_response_chars: request.max_delegated_total_response_chars,
             delegate_steps: request.delegate_steps,
             delegated_policy_context: request.delegated_policy_context,
+            delegated_skill_context: request.delegated_skill_context,
         },
     )
     .await
@@ -213,6 +218,7 @@ pub(crate) async fn run_plan_first_prompt_with_policy_context_and_routing(
             max_delegated_total_response_chars: request.max_delegated_total_response_chars,
             delegate_steps: request.delegate_steps,
             delegated_policy_context: request.delegated_policy_context,
+            delegated_skill_context: request.delegated_skill_context,
             route_table: request.route_table,
             route_trace_log_path: request.route_trace_log_path,
         },

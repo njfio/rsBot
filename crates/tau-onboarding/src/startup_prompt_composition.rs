@@ -10,7 +10,9 @@ use anyhow::{Context, Result};
 use minijinja::{context, Environment, UndefinedBehavior};
 use serde::{Deserialize, Serialize};
 use tau_cli::Cli;
-use tau_skills::{augment_system_prompt, load_catalog, resolve_selected_skills, Skill};
+use tau_skills::{
+    augment_system_prompt_with_mode, load_catalog, resolve_selected_skills, Skill, SkillPromptMode,
+};
 
 use crate::onboarding_paths::resolve_tau_root;
 use crate::startup_resolution::resolve_system_prompt;
@@ -255,7 +257,11 @@ fn compose_default_system_prompt(
     selected_skills: &[Skill],
     loaded_sections: &[LoadedIdentitySection],
 ) -> String {
-    let mut system_prompt = augment_system_prompt(base_system_prompt, selected_skills);
+    let mut system_prompt = augment_system_prompt_with_mode(
+        base_system_prompt,
+        selected_skills,
+        SkillPromptMode::Summary,
+    );
     append_identity_sections(&mut system_prompt, loaded_sections);
     system_prompt
 }
@@ -395,7 +401,7 @@ fn render_builtin_or_default(
 }
 
 fn render_skills_section(selected_skills: &[Skill]) -> String {
-    augment_system_prompt("", selected_skills)
+    augment_system_prompt_with_mode("", selected_skills, SkillPromptMode::Summary)
         .trim()
         .to_string()
 }
@@ -567,14 +573,43 @@ mod tests {
         let composition =
             compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
         assert!(composition.system_prompt.contains("base prompt"));
-        assert!(composition
-            .system_prompt
-            .contains("Always run tests before reporting completion."));
+        assert!(composition.system_prompt.contains("# Skill: checks"));
+        assert!(composition.system_prompt.contains("Description: (none)"));
+        assert!(composition.system_prompt.contains("Path: "));
         assert!(composition
             .system_prompt
             .contains("Preserve deterministic behavior for startup composition."));
         assert_eq!(composition.identity_report.loaded_count, 1);
         assert_eq!(composition.identity_report.missing_count, 2);
+    }
+
+    #[test]
+    fn spec_2642_c02_channel_prompt_uses_skill_summary_mode_not_full_body() {
+        let temp = tempdir().expect("tempdir");
+        let mut cli = parse_cli_with_stack();
+        apply_workspace_paths(&mut cli, temp.path());
+        cli.system_prompt = "base prompt".to_string();
+        cli.skills = vec!["checks".to_string()];
+
+        let checks_dir = cli.skills_dir.join("checks");
+        std::fs::create_dir_all(&checks_dir).expect("create checks dir");
+        std::fs::write(
+            checks_dir.join("SKILL.md"),
+            "---\nname: checks\ndescription: Run verification checks\n---\nFULL_SKILL_BODY_TOKEN\n",
+        )
+        .expect("write checks skill");
+
+        let composition =
+            compose_startup_system_prompt_with_report(&cli, &cli.skills_dir).expect("compose");
+        assert!(composition.system_prompt.contains("# Skill: checks"));
+        assert!(composition
+            .system_prompt
+            .contains("Description: Run verification checks"));
+        assert!(composition.system_prompt.contains("Path: "));
+        assert!(
+            !composition.system_prompt.contains("FULL_SKILL_BODY_TOKEN"),
+            "channel prompt should not include full skill body"
+        );
     }
 
     #[test]

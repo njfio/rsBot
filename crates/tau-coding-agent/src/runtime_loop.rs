@@ -120,6 +120,7 @@ pub(crate) struct InteractiveRuntimeConfig<'a> {
     pub(crate) orchestrator_delegate_steps: bool,
     pub(crate) orchestrator_route_table: &'a MultiAgentRouteTable,
     pub(crate) orchestrator_route_trace_log: Option<&'a Path>,
+    pub(crate) orchestrator_worker_skill_prompt: Option<&'a str>,
     pub(crate) command_context: CommandExecutionContext<'a>,
 }
 
@@ -500,6 +501,7 @@ async fn dispatch_interactive_turn(
                 orchestrator_delegate_steps: config.orchestrator_delegate_steps,
                 orchestrator_route_table: config.orchestrator_route_table,
                 orchestrator_route_trace_log: config.orchestrator_route_trace_log,
+                orchestrator_worker_skill_prompt: config.orchestrator_worker_skill_prompt,
                 tool_policy_json: config.command_context.tool_policy_json,
                 extension_runtime_hooks: config.extension_runtime_hooks,
             },
@@ -832,6 +834,7 @@ pub(crate) struct PlanFirstPromptRuntimeHooksConfig<'a> {
     pub(crate) orchestrator_delegate_steps: bool,
     pub(crate) orchestrator_route_table: &'a MultiAgentRouteTable,
     pub(crate) orchestrator_route_trace_log: Option<&'a Path>,
+    pub(crate) orchestrator_worker_skill_prompt: Option<&'a str>,
     pub(crate) tool_policy_json: &'a serde_json::Value,
     pub(crate) extension_runtime_hooks: &'a RuntimeExtensionHooksConfig,
 }
@@ -853,6 +856,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
         orchestrator_delegate_steps,
         orchestrator_route_table,
         orchestrator_route_trace_log,
+        orchestrator_worker_skill_prompt,
         tool_policy_json,
         extension_runtime_hooks,
     } = config;
@@ -897,6 +901,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
                         orchestrator_max_delegated_total_response_chars,
                     delegate_steps: orchestrator_delegate_steps,
                     delegated_policy_context: Some(policy_context),
+                    delegated_skill_context: orchestrator_worker_skill_prompt,
                 },
             )
             .await
@@ -916,6 +921,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
                     max_delegated_total_response_chars:
                         orchestrator_max_delegated_total_response_chars,
                     delegate_steps: orchestrator_delegate_steps,
+                    delegated_skill_context: orchestrator_worker_skill_prompt,
                 },
             )
             .await
@@ -935,6 +941,7 @@ pub(crate) async fn run_plan_first_prompt_with_runtime_hooks(
                 max_delegated_total_response_chars: orchestrator_max_delegated_total_response_chars,
                 delegate_steps: orchestrator_delegate_steps,
                 delegated_policy_context: policy_context.as_deref(),
+                delegated_skill_context: orchestrator_worker_skill_prompt,
                 route_table: orchestrator_route_table,
                 route_trace_log_path: orchestrator_route_trace_log,
             },
@@ -1597,6 +1604,7 @@ mod tests {
                 orchestrator_delegate_steps: true,
                 orchestrator_route_table: &self.route_table,
                 orchestrator_route_trace_log: None,
+                orchestrator_worker_skill_prompt: None,
                 command_context: crate::runtime_types::CommandExecutionContext {
                     tool_policy_json: &self.tool_policy_json,
                     session_import_mode: SessionImportMode::Merge,

@@ -60,6 +60,7 @@ pub struct PlanFirstPromptRequest<'a> {
     pub max_delegated_step_response_chars: usize,
     pub max_delegated_total_response_chars: usize,
     pub delegate_steps: bool,
+    pub delegated_skill_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,6 +75,7 @@ pub struct PlanFirstPromptPolicyRequest<'a> {
     pub max_delegated_total_response_chars: usize,
     pub delegate_steps: bool,
     pub delegated_policy_context: Option<&'a str>,
+    pub delegated_skill_context: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +90,7 @@ pub struct PlanFirstPromptRoutingRequest<'a> {
     pub max_delegated_total_response_chars: usize,
     pub delegate_steps: bool,
     pub delegated_policy_context: Option<&'a str>,
+    pub delegated_skill_context: Option<&'a str>,
     pub route_table: &'a MultiAgentRouteTable,
     pub route_trace_log_path: Option<&'a Path>,
 }
@@ -112,6 +115,7 @@ pub async fn run_plan_first_prompt<R: OrchestratorRuntime>(
             max_delegated_total_response_chars: request.max_delegated_total_response_chars,
             delegate_steps: request.delegate_steps,
             delegated_policy_context: fallback_policy_context,
+            delegated_skill_context: request.delegated_skill_context,
         },
     )
     .await
@@ -135,6 +139,7 @@ pub async fn run_plan_first_prompt_with_policy_context<R: OrchestratorRuntime>(
             max_delegated_total_response_chars: request.max_delegated_total_response_chars,
             delegate_steps: request.delegate_steps,
             delegated_policy_context: request.delegated_policy_context,
+            delegated_skill_context: request.delegated_skill_context,
             route_table: &default_route_table,
             route_trace_log_path: None,
         },
@@ -157,6 +162,7 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
         max_delegated_total_response_chars,
         delegate_steps,
         delegated_policy_context,
+        delegated_skill_context,
         route_table,
         route_trace_log_path,
     } = request;
@@ -254,6 +260,7 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
                 index,
                 step,
                 policy_context,
+                delegated_skill_context,
             );
             let delegated_state = run_routed_prompt_with_fallback(
                 runtime,
@@ -341,7 +348,7 @@ pub async fn run_plan_first_prompt_with_policy_context_and_routing<R: Orchestrat
         build_plan_first_consolidation_prompt(user_prompt, &plan_steps, &delegated_outputs)
     } else {
         println!("orchestrator trace: mode=plan-first phase=executor");
-        build_plan_first_execution_prompt(user_prompt, &plan_steps)
+        build_plan_first_execution_prompt(user_prompt, &plan_steps, delegated_skill_context)
     };
 
     let execution_state = run_routed_prompt_with_fallback(
@@ -748,11 +755,16 @@ fn build_plan_first_planner_prompt(user_prompt: &str, max_plan_steps: usize) -> 
     )
 }
 
-fn build_plan_first_execution_prompt(user_prompt: &str, plan_steps: &[String]) -> String {
+fn build_plan_first_execution_prompt(
+    user_prompt: &str,
+    plan_steps: &[String],
+    delegated_skill_context: Option<&str>,
+) -> String {
     let numbered_steps = render_numbered_plan_steps(plan_steps);
+    let skill_context_section = render_worker_skill_context_section(delegated_skill_context);
     format!(
-        "ORCHESTRATOR_EXECUTION_PHASE\nExecute the user request using the approved plan.\n\nApproved plan:\n{}\n\nUser request:\n{}\n\nProvide the final response.",
-        numbered_steps, user_prompt
+        "ORCHESTRATOR_EXECUTION_PHASE\nExecute the user request using the approved plan.\n\nApproved plan:\n{}\n\nUser request:\n{}{}\n\nProvide the final response.",
+        numbered_steps, user_prompt, skill_context_section
     )
 }
 
@@ -762,17 +774,34 @@ fn build_plan_first_delegated_step_prompt(
     step_index: usize,
     step: &str,
     policy_context: &str,
+    delegated_skill_context: Option<&str>,
 ) -> String {
     let numbered_steps = render_numbered_plan_steps(plan_steps);
+    let skill_context_section = render_worker_skill_context_section(delegated_skill_context);
     format!(
-        "ORCHESTRATOR_DELEGATED_STEP_PHASE\nYou are executing one delegated plan step in plan-first mode.\nFocus only on the assigned step and produce useful progress for that step.\n\nApproved plan:\n{}\n\nAssigned step ({} of {}):\n{}. {}\n\nUser request:\n{}\n\nInherited execution policy (must be preserved):\n{}\n\nReturn concise output for this delegated step.",
+        "ORCHESTRATOR_DELEGATED_STEP_PHASE\nYou are executing one delegated plan step in plan-first mode.\nFocus only on the assigned step and produce useful progress for that step.\n\nApproved plan:\n{}\n\nAssigned step ({} of {}):\n{}. {}\n\nUser request:\n{}\n\nInherited execution policy (must be preserved):\n{}{}\n\nReturn concise output for this delegated step.",
         numbered_steps,
         step_index + 1,
         plan_steps.len(),
         step_index + 1,
         step,
         user_prompt,
-        policy_context
+        policy_context,
+        skill_context_section
+    )
+}
+
+fn render_worker_skill_context_section(delegated_skill_context: Option<&str>) -> String {
+    let Some(context) = delegated_skill_context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return String::new();
+    };
+
+    format!(
+        "\n\nWorker skill context (full SKILL.md content):\n{}",
+        context
     )
 }
 
@@ -838,7 +867,8 @@ fn flatten_whitespace(value: &str) -> String {
 mod tests {
     use super::{
         build_plan_first_consolidation_prompt, build_plan_first_delegated_step_prompt,
-        count_reviewed_plan_steps, executor_response_within_budget, parse_numbered_plan_steps,
+        build_plan_first_execution_prompt, count_reviewed_plan_steps,
+        executor_response_within_budget, parse_numbered_plan_steps,
     };
 
     #[test]
@@ -870,12 +900,53 @@ mod tests {
             1,
             "Apply fix",
             "preset=balanced;max_command_length=4096",
+            None,
         );
         assert!(prompt.contains("ORCHESTRATOR_DELEGATED_STEP_PHASE"));
         assert!(prompt.contains("Assigned step (2 of 2)"));
         assert!(prompt.contains("2. Apply fix"));
         assert!(prompt.contains("Inherited execution policy"));
         assert!(prompt.contains("preset=balanced;max_command_length=4096"));
+    }
+
+    #[test]
+    fn spec_2642_c03_build_plan_first_delegated_step_prompt_includes_worker_skill_context_section()
+    {
+        let prompt = build_plan_first_delegated_step_prompt(
+            "ship feature",
+            &["Inspect constraints".to_string(), "Apply fix".to_string()],
+            0,
+            "Inspect constraints",
+            "preset=balanced;max_command_length=4096",
+            Some("# Skill: checks\nrun everything"),
+        );
+        assert!(
+            prompt.contains("Worker skill context"),
+            "delegated worker prompt should include full skill context section"
+        );
+    }
+
+    #[test]
+    fn spec_2642_c04_build_plan_first_execution_prompt_includes_worker_skill_context_section() {
+        let prompt = build_plan_first_execution_prompt(
+            "ship feature",
+            &["Inspect constraints".to_string(), "Apply fix".to_string()],
+            Some("# Skill: checks\nrun everything"),
+        );
+        assert!(
+            prompt.contains("Worker skill context"),
+            "executor prompt should include full skill context section"
+        );
+    }
+
+    #[test]
+    fn regression_spec_2642_c05_execution_prompt_omits_worker_skill_context_when_unset() {
+        let prompt = build_plan_first_execution_prompt(
+            "ship feature",
+            &["Inspect constraints".to_string(), "Apply fix".to_string()],
+            None,
+        );
+        assert!(!prompt.contains("Worker skill context"));
     }
 
     #[test]

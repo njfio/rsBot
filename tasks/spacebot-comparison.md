@@ -480,10 +480,11 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Markdown files with YAML frontmatter defining reusable skill templates that are injected into agent prompts.
 **Why it matters**: Modular, user-authored behavior customization without code changes.
 **Pathway**:
-- [ ] Tau already has `tau-skills` with a package manifest system — this is more sophisticated than Spacebot's SKILL.md
-- [ ] To add SKILL.md compatibility: parse markdown + YAML frontmatter alongside existing skill format
-- [ ] Inject skill summaries into channel prompts, full content into worker prompts
-- [ ] Support `{baseDir}` template variable
+- [x] Tau already has `tau-skills` with a package manifest system — this is more sophisticated than Spacebot's SKILL.md
+- [x] To add SKILL.md compatibility: parse markdown + YAML frontmatter alongside existing skill format
+- [x] Inject skill summaries into channel prompts, full content into worker/delegated prompts
+- [x] Support `{baseDir}` template variable
+- Progress evidence: #2642
 - **Files**: `tau-skills/src/`
 - **Effort**: Small (Tau's existing skills system is already more advanced)
 

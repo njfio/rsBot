@@ -1411,6 +1411,7 @@ async fn integration_run_plan_first_prompt_with_routing_uses_distinct_delegated_
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
             delegated_policy_context: Some("preset=balanced;max_command_length=4096"),
+            delegated_skill_context: Some("# Skill: checks\nFULL_SKILL_CONTEXT_TOKEN"),
             route_table: &route_table,
             route_trace_log_path: None,
         },
@@ -1427,6 +1428,9 @@ async fn integration_run_plan_first_prompt_with_routing_uses_distinct_delegated_
     assert!(user_prompts
         .iter()
         .any(|prompt| prompt.contains("phase=planner") && prompt.contains("role=planner")));
+    assert!(user_prompts
+        .iter()
+        .any(|prompt| prompt.contains("FULL_SKILL_CONTEXT_TOKEN")));
     assert!(user_prompts.iter().any(|prompt| {
         prompt.contains("phase=delegated-step") && prompt.contains("role=executor")
     }));
@@ -1517,6 +1521,7 @@ async fn spec_c01_integration_routed_dispatch_applies_role_model_overrides_per_a
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
             delegated_policy_context: Some("preset=balanced;max_command_length=4096"),
+            delegated_skill_context: None,
             route_table: &route_table,
             route_trace_log_path: None,
         },
@@ -1607,6 +1612,7 @@ async fn spec_c02_functional_routed_dispatch_inherits_baseline_model_without_rol
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
             delegated_policy_context: Some("preset=balanced;max_command_length=4096"),
+            delegated_skill_context: None,
             route_table: &route_table,
             route_trace_log_path: None,
         },
@@ -1683,6 +1689,7 @@ async fn functional_run_plan_first_prompt_with_routing_emits_fallback_trace_reco
             max_delegated_total_response_chars: 1_024,
             delegate_steps: false,
             delegated_policy_context: None,
+            delegated_skill_context: None,
             route_table: &route_table,
             route_trace_log_path: Some(telemetry_log.as_path()),
         },
@@ -1752,6 +1759,7 @@ async fn regression_routed_orchestrator_default_profile_matches_legacy_behavior(
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: false,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -1770,6 +1778,7 @@ async fn regression_routed_orchestrator_default_profile_matches_legacy_behavior(
             max_delegated_total_response_chars: 1_024,
             delegate_steps: false,
             delegated_policy_context: None,
+            delegated_skill_context: None,
             route_table: &MultiAgentRouteTable::default(),
             route_trace_log_path: None,
         },
@@ -1827,6 +1836,7 @@ async fn functional_run_plan_first_prompt_executes_planner_then_executor() {
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 2_048,
             delegate_steps: false,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -1891,6 +1901,7 @@ async fn functional_run_plan_first_prompt_delegate_steps_executes_and_consolidat
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -1946,6 +1957,7 @@ async fn regression_run_plan_first_prompt_with_policy_context_fails_when_context
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
             delegated_policy_context: None,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -2001,6 +2013,7 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_on_empty_step_out
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -2052,6 +2065,7 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_when_step_count_e
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -2105,6 +2119,7 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_when_step_output_
             max_delegated_step_response_chars: 8,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: true,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -2166,6 +2181,7 @@ async fn regression_run_plan_first_prompt_delegate_steps_fails_when_total_output
             max_delegated_step_response_chars: 64,
             max_delegated_total_response_chars: 12,
             delegate_steps: true,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -2215,6 +2231,7 @@ async fn regression_run_plan_first_prompt_rejects_overlong_plans_before_executor
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: false,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -2262,6 +2279,7 @@ async fn regression_run_plan_first_prompt_fails_when_executor_output_is_empty() 
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: false,
+            delegated_skill_context: None,
         },
     )
     .await
@@ -2307,6 +2325,7 @@ async fn regression_run_plan_first_prompt_fails_when_executor_output_exceeds_bud
             max_delegated_step_response_chars: 512,
             max_delegated_total_response_chars: 1_024,
             delegate_steps: false,
+            delegated_skill_context: None,
         },
     )
     .await
