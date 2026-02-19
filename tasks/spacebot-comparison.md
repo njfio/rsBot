@@ -304,11 +304,12 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Spacebot uses FastEmbed for local embedding generation — no API calls, no cost, no latency.
 **Why it matters**: Every memory save/search in Tau requires an API call. Local embeddings are free and fast.
 **Pathway**:
-- [ ] Add `fastembed` as workspace dependency
-- [ ] Create `LocalEmbeddingProvider` implementing the embedding trait
-- [x] Configure via profile: `embedding_provider = "local"` (default) or `"openai"`
-- [ ] Local model: `BAAI/bge-small-en-v1.5` or similar (same as Spacebot's default)
-- [ ] Fall back to FNV1a hash only if local model fails to load
+- [x] Add `fastembed` as workspace dependency
+- [x] Create `LocalEmbeddingProvider` implementing the embedding trait
+- [x] Configure via profile: `embedding_provider = "local"` or `"openai"`
+- [x] Make `embedding_provider = "local"` the default profile setting
+- [x] Local model: `BAAI/bge-small-en-v1.5` or similar (same as Spacebot's default)
+- [x] Fall back to FNV1a hash only if local model fails to load
 - **Files**: `tau-memory/src/`, `Cargo.toml`
 - **Effort**: Small
 

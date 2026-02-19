@@ -3,17 +3,19 @@
 Milestone: GitHub milestone `M95 - Spacebot G8 Local Embeddings (Phase 1)`
 
 ## Objective
-Deliver the next bounded `G8` slice from `tasks/spacebot-comparison.md` by enabling local memory embeddings as the default runtime policy while preserving explicit remote-provider overrides.
+Close the next Spacebot-comparison priority gap (`G8`) by shipping local embeddings for memory save/search and making local mode the default policy path while preserving explicit remote-provider overrides.
 
 ## Scope
-- Provide local embedding provider as default tool policy/profile behavior.
-- Preserve explicit remote provider (`openai` / `openai-compatible`) override paths.
-- Verify behavior through conformance/regression tests and live validation evidence.
+- Add local embedding backend support to `tau-memory`.
+- Keep deterministic fail-closed fallback behavior to hash embeddings.
+- Set default embedding provider policy/profile behavior to `local`.
+- Preserve existing remote-provider embedding behavior.
+- Ship conformance/regression/mutation/live-validation evidence for the delivered task slices.
 
 ## Out of Scope
-- FastEmbed runtime/model-loading implementation details beyond existing local provider wiring.
-- New provider families or remote protocol changes.
-- Broader memory lifecycle and retrieval enhancements outside G8.
+- Graph ranking changes (`G6`).
+- Memory lifecycle policy changes (`G7`).
+- UI/dashboard work (`G18+`).
 
 ## Issue Hierarchy
 - Epic: #2551
@@ -23,6 +25,6 @@ Deliver the next bounded `G8` slice from `tasks/spacebot-comparison.md` by enabl
 - Subtask: #2554
 
 ## Exit Criteria
-- G8 default-local profile behavior is implemented and verified.
-- ACs for milestone tasks are covered by conformance tests with RED/GREEN evidence.
-- `cargo fmt --check`, `cargo clippy -- -D warnings`, scoped tests, mutation in diff, and live validation pass.
+- ACs for #2553 and #2556 are verified by conformance tests.
+- `cargo fmt --check`, scoped `clippy`, scoped tests, mutation in diff, workspace `cargo test -j 1 -- --test-threads=1`, and live validation all pass.
+- `tasks/spacebot-comparison.md` `G8` checklist is updated for delivered scope.

@@ -520,7 +520,7 @@ impl ToolPolicy {
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .unwrap_or("local-hash");
+                .unwrap_or("BAAI/bge-small-en-v1.5");
             return Some(MemoryEmbeddingProviderConfig {
                 provider: "local".to_string(),
                 model: model.to_string(),
