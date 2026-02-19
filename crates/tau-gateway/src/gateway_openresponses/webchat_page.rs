@@ -262,6 +262,18 @@ pub(super) fn render_gateway_webchat_page() -> String {
       border: 1px solid #d1dce5;
       display: inline-block;
     }}
+    #memoryGraphCanvas {{
+      display: block;
+      border: 1px solid #d0dae2;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #f9fcff 0%, #eef4f8 100%);
+      margin-top: 0.6rem;
+    }}
+    .memory-graph-node-label {{
+      font-size: 11px;
+      fill: #173142;
+      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+    }}
     @media (min-width: 960px) {{
       .split {{
         grid-template-columns: 1fr 1.3fr;
@@ -441,6 +453,26 @@ pub(super) fn render_gateway_webchat_page() -> String {
         <label for="memoryContent" style="margin-top: 0.6rem;">Memory content</label>
         <textarea id="memoryContent" placeholder="Editable memory note for the active session"></textarea>
         <pre id="memoryStatus">Memory status will appear here.</pre>
+        <h2 style="margin: 0.8rem 0 0.4rem 0; font-size: 1rem;">Memory Graph</h2>
+        <div class="row">
+          <div>
+            <label for="graphMaxNodes">Max nodes</label>
+            <input id="graphMaxNodes" type="text" value="24" />
+          </div>
+          <div>
+            <label for="graphMinEdgeWeight">Min edge weight</label>
+            <input id="graphMinEdgeWeight" type="text" value="1" />
+          </div>
+          <div>
+            <label for="graphRelationTypes">Relation types</label>
+            <input id="graphRelationTypes" type="text" value="contains,keyword_overlap" />
+          </div>
+        </div>
+        <div class="actions" style="margin-top: 0;">
+          <button id="loadMemoryGraph" class="secondary">Load memory graph</button>
+        </div>
+        <svg id="memoryGraphCanvas" width="100%" height="340" viewBox="0 0 900 340" role="img" aria-label="Memory graph visualization"></svg>
+        <pre id="memoryGraphStatus">Memory graph status will appear here.</pre>
       </section>
 
       <section id="view-configuration" class="view" role="tabpanel" aria-hidden="true">
@@ -459,6 +491,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const WEBSOCKET_ENDPOINT = "{websocket_endpoint}";
     const SESSIONS_ENDPOINT = "{sessions_endpoint}";
     const MEMORY_ENDPOINT_TEMPLATE = "{memory_endpoint_template}";
+    const MEMORY_GRAPH_ENDPOINT_TEMPLATE = "{memory_graph_endpoint_template}";
     const SESSION_DETAIL_ENDPOINT_TEMPLATE = "{session_detail_endpoint_template}";
     const SESSION_APPEND_ENDPOINT_TEMPLATE = "{session_append_endpoint_template}";
     const SESSION_RESET_ENDPOINT_TEMPLATE = "{session_reset_endpoint_template}";
@@ -490,6 +523,11 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const memoryPolicyGateInput = document.getElementById("memoryPolicyGate");
     const memoryContentInput = document.getElementById("memoryContent");
     const memoryStatusPre = document.getElementById("memoryStatus");
+    const graphMaxNodesInput = document.getElementById("graphMaxNodes");
+    const graphMinEdgeWeightInput = document.getElementById("graphMinEdgeWeight");
+    const graphRelationTypesInput = document.getElementById("graphRelationTypes");
+    const memoryGraphCanvas = document.getElementById("memoryGraphCanvas");
+    const memoryGraphStatusPre = document.getElementById("memoryGraphStatus");
     const configViewPre = document.getElementById("configView");
 
     const sendButton = document.getElementById("send");
@@ -501,6 +539,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const resetSessionButton = document.getElementById("resetSession");
     const loadMemoryButton = document.getElementById("loadMemory");
     const saveMemoryButton = document.getElementById("saveMemory");
+    const loadMemoryGraphButton = document.getElementById("loadMemoryGraph");
 
     function loadLocalValues() {{
       const token = window.localStorage.getItem(STORAGE_TOKEN);
@@ -596,6 +635,37 @@ pub(super) fn render_gateway_webchat_page() -> String {
         }}
       }}
       return 0;
+    }}
+
+    function toSafeFloat(value, fallbackValue) {{
+      if (typeof value === "number" && Number.isFinite(value)) {{
+        return value;
+      }}
+      if (typeof value === "string" && value.trim().length > 0) {{
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) {{
+          return parsed;
+        }}
+      }}
+      return fallbackValue;
+    }}
+
+    function clampGraphMaxNodes(value) {{
+      return Math.min(256, Math.max(1, toSafeInteger(value) || 24));
+    }}
+
+    function clampGraphMinEdgeWeight(value) {{
+      return Math.max(0, toSafeFloat(value, 1));
+    }}
+
+    function relationColor(relationType) {{
+      if (relationType === "contains") {{
+        return '#0b6f56';
+      }}
+      if (relationType === "keyword_overlap") {{
+        return '#9a5a00';
+      }}
+      return '#40627a';
     }}
 
     function escapeHtml(value) {{
@@ -755,6 +825,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
           session_append: SESSION_APPEND_ENDPOINT_TEMPLATE,
           session_reset: SESSION_RESET_ENDPOINT_TEMPLATE,
           memory: MEMORY_ENDPOINT_TEMPLATE,
+          memory_graph: MEMORY_GRAPH_ENDPOINT_TEMPLATE,
           ui_telemetry: UI_TELEMETRY_ENDPOINT,
           websocket: WEBSOCKET_ENDPOINT
         }},
@@ -1097,6 +1168,118 @@ pub(super) fn render_gateway_webchat_page() -> String {
       }}
     }}
 
+    function resetMemoryGraphCanvas() {{
+      while (memoryGraphCanvas.firstChild) {{
+        memoryGraphCanvas.removeChild(memoryGraphCanvas.firstChild);
+      }}
+      memoryGraphCanvas.setAttribute("viewBox", "0 0 900 340");
+    }}
+
+    function renderMemoryGraph(payload) {{
+      const svgNs = "http://www.w3.org/2000/svg";
+      resetMemoryGraphCanvas();
+      const nodes = Array.isArray(payload && payload.nodes) ? payload.nodes : [];
+      const edges = Array.isArray(payload && payload.edges) ? payload.edges : [];
+      const width = 900;
+      const height = 340;
+      memoryGraphCanvas.setAttribute("viewBox", "0 0 " + String(width) + " " + String(height));
+
+      if (nodes.length === 0) {{
+        const emptyLabel = document.createElementNS(svgNs, "text");
+        emptyLabel.setAttribute("x", "22");
+        emptyLabel.setAttribute("y", "30");
+        emptyLabel.setAttribute("fill", '#34576d');
+        emptyLabel.textContent = "No graph nodes available for current filters.";
+        memoryGraphCanvas.appendChild(emptyLabel);
+        return;
+      }}
+
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const orbit = Math.min(width, height) * 0.34;
+      const positions = new Map();
+      for (let index = 0; index < nodes.length; index += 1) {{
+        const node = nodes[index];
+        const angle = (2 * Math.PI * index) / nodes.length;
+        const x = centerX + Math.cos(angle) * orbit;
+        const y = centerY + Math.sin(angle) * orbit;
+        positions.set(node.id, {{ x, y, node }});
+      }}
+
+      for (const edge of edges) {{
+        const source = positions.get(edge.source);
+        const target = positions.get(edge.target);
+        if (!source || !target) {{
+          continue;
+        }}
+        const line = document.createElementNS(svgNs, "line");
+        line.setAttribute("x1", String(source.x));
+        line.setAttribute("y1", String(source.y));
+        line.setAttribute("x2", String(target.x));
+        line.setAttribute("y2", String(target.y));
+        line.setAttribute("stroke", relationColor(edge.relation_type || ""));
+        line.setAttribute("stroke-width", String(Math.max(1.3, Math.min(5.6, 1.0 + toSafeFloat(edge.weight, 0)))));
+        line.setAttribute("stroke-opacity", "0.85");
+        memoryGraphCanvas.appendChild(line);
+      }}
+
+      for (const node of nodes) {{
+        const placed = positions.get(node.id);
+        if (!placed) {{
+          continue;
+        }}
+        const group = document.createElementNS(svgNs, "g");
+        const circle = document.createElementNS(svgNs, "circle");
+        circle.setAttribute("cx", String(placed.x));
+        circle.setAttribute("cy", String(placed.y));
+        circle.setAttribute("r", String(Math.max(8, Math.min(24, toSafeFloat(node.size, 12)))));
+        circle.setAttribute("fill", '#d7e9f5');
+        circle.setAttribute("stroke", '#1f5574');
+        circle.setAttribute("stroke-width", "1.5");
+        group.appendChild(circle);
+
+        const label = document.createElementNS(svgNs, "text");
+        label.setAttribute("x", String(placed.x + 10));
+        label.setAttribute("y", String(placed.y - 10));
+        label.setAttribute("class", "memory-graph-node-label");
+        label.textContent = String(node.label || "").slice(0, 36);
+        group.appendChild(label);
+        memoryGraphCanvas.appendChild(group);
+      }}
+    }}
+
+    async function loadMemoryGraph() {{
+      const endpoint = encodeSessionPath(MEMORY_GRAPH_ENDPOINT_TEMPLATE);
+      const maxNodes = clampGraphMaxNodes(graphMaxNodesInput.value);
+      const minEdgeWeight = clampGraphMinEdgeWeight(graphMinEdgeWeightInput.value);
+      const relationTypes = graphRelationTypesInput.value.trim();
+      const query = new URLSearchParams();
+      query.set("max_nodes", String(maxNodes));
+      query.set("min_edge_weight", String(minEdgeWeight));
+      if (relationTypes.length > 0) {{
+        query.set("relation_types", relationTypes);
+      }}
+      memoryGraphStatusPre.textContent = "Loading memory graph...";
+      try {{
+        const response = await fetch(endpoint + "?" + query.toString(), {{ headers: authHeaders() }});
+        const payload = await response.json();
+        memoryGraphStatusPre.textContent = JSON.stringify(payload, null, 2);
+        if (!response.ok) {{
+          renderMemoryGraph({{ nodes: [], edges: [] }});
+          await emitUiTelemetry("memory", "graph", "memory_graph_failed", {{ status: response.status }});
+          return;
+        }}
+        renderMemoryGraph(payload);
+        await emitUiTelemetry("memory", "graph", "memory_graph_loaded", {{
+          node_count: payload.node_count || 0,
+          edge_count: payload.edge_count || 0
+        }});
+      }} catch (error) {{
+        renderMemoryGraph({{ nodes: [], edges: [] }});
+        memoryGraphStatusPre.textContent = "Failed to load memory graph: " + String(error);
+      }}
+    }}
+
     function activateView(viewKey) {{
       const tabs = Array.from(document.querySelectorAll(".tab"));
       const views = Array.from(document.querySelectorAll(".view"));
@@ -1126,12 +1309,14 @@ pub(super) fn render_gateway_webchat_page() -> String {
     resetSessionButton.addEventListener("click", resetSession);
     loadMemoryButton.addEventListener("click", loadMemory);
     saveMemoryButton.addEventListener("click", saveMemory);
+    loadMemoryGraphButton.addEventListener("click", loadMemoryGraph);
 
     tokenInput.addEventListener("change", saveLocalValues);
     sessionInput.addEventListener("change", () => {{
       saveLocalValues();
       loadSessionDetail();
       loadMemory();
+      loadMemoryGraph();
     }});
 
     loadLocalValues();
@@ -1144,6 +1329,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
     loadSessions();
     loadSessionDetail();
     loadMemory();
+    loadMemoryGraph();
   </script>
 </body>
 </html>
@@ -1156,6 +1342,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
         websocket_endpoint = GATEWAY_WS_ENDPOINT,
         sessions_endpoint = GATEWAY_SESSIONS_ENDPOINT,
         memory_endpoint_template = GATEWAY_MEMORY_ENDPOINT,
+        memory_graph_endpoint_template = GATEWAY_MEMORY_GRAPH_ENDPOINT,
         session_detail_endpoint_template = GATEWAY_SESSION_DETAIL_ENDPOINT,
         session_append_endpoint_template = GATEWAY_SESSION_APPEND_ENDPOINT,
         session_reset_endpoint_template = GATEWAY_SESSION_RESET_ENDPOINT,

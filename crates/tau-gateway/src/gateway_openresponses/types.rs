@@ -128,6 +128,16 @@ pub(super) struct GatewayMemoryUpdateRequest {
     pub(super) policy_gate: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct GatewayMemoryGraphQuery {
+    #[serde(default)]
+    pub(super) max_nodes: Option<usize>,
+    #[serde(default)]
+    pub(super) min_edge_weight: Option<f64>,
+    #[serde(default)]
+    pub(super) relation_types: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct GatewayUiTelemetryRequest {
     pub(super) view: String,
@@ -146,6 +156,44 @@ pub(super) struct GatewayAuthSessionResponse {
     pub(super) token_type: &'static str,
     pub(super) expires_unix_ms: u64,
     pub(super) expires_in_seconds: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GatewayMemoryGraphNode {
+    pub(super) id: String,
+    pub(super) label: String,
+    pub(super) category: String,
+    pub(super) weight: f64,
+    pub(super) size: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GatewayMemoryGraphEdge {
+    pub(super) id: String,
+    pub(super) source: String,
+    pub(super) target: String,
+    pub(super) relation_type: String,
+    pub(super) weight: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GatewayMemoryGraphFilterSummary {
+    pub(super) max_nodes: usize,
+    pub(super) min_edge_weight: f64,
+    pub(super) relation_types: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GatewayMemoryGraphResponse {
+    pub(super) session_key: String,
+    pub(super) path: String,
+    pub(super) exists: bool,
+    pub(super) bytes: usize,
+    pub(super) node_count: usize,
+    pub(super) edge_count: usize,
+    pub(super) nodes: Vec<GatewayMemoryGraphNode>,
+    pub(super) edges: Vec<GatewayMemoryGraphEdge>,
+    pub(super) filters: GatewayMemoryGraphFilterSummary,
 }
 
 #[derive(Debug)]

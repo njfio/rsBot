@@ -73,11 +73,13 @@ use session_runtime::{
     persist_messages, persist_session_usage_delta,
 };
 use types::{
-    GatewayAuthSessionRequest, GatewayAuthSessionResponse, GatewayMemoryUpdateRequest,
-    GatewaySessionAppendRequest, GatewaySessionResetRequest, GatewayUiTelemetryRequest,
-    OpenResponsesApiError, OpenResponsesExecutionResult, OpenResponsesOutputItem,
-    OpenResponsesOutputTextItem, OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse,
-    OpenResponsesUsage, OpenResponsesUsageSummary, SseFrame,
+    GatewayAuthSessionRequest, GatewayAuthSessionResponse, GatewayMemoryGraphEdge,
+    GatewayMemoryGraphFilterSummary, GatewayMemoryGraphNode, GatewayMemoryGraphQuery,
+    GatewayMemoryGraphResponse, GatewayMemoryUpdateRequest, GatewaySessionAppendRequest,
+    GatewaySessionResetRequest, GatewayUiTelemetryRequest, OpenResponsesApiError,
+    OpenResponsesExecutionResult, OpenResponsesOutputItem, OpenResponsesOutputTextItem,
+    OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage,
+    OpenResponsesUsageSummary, SseFrame,
 };
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
@@ -95,6 +97,7 @@ const GATEWAY_SESSION_DETAIL_ENDPOINT: &str = "/gateway/sessions/{session_key}";
 const GATEWAY_SESSION_APPEND_ENDPOINT: &str = "/gateway/sessions/{session_key}/append";
 const GATEWAY_SESSION_RESET_ENDPOINT: &str = "/gateway/sessions/{session_key}/reset";
 const GATEWAY_MEMORY_ENDPOINT: &str = "/gateway/memory/{session_key}";
+const GATEWAY_MEMORY_GRAPH_ENDPOINT: &str = "/gateway/memory-graph/{session_key}";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
@@ -710,6 +713,10 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             get(handle_gateway_memory_read).put(handle_gateway_memory_write),
         )
         .route(
+            GATEWAY_MEMORY_GRAPH_ENDPOINT,
+            get(handle_gateway_memory_graph),
+        )
+        .route(
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
         )
@@ -782,6 +789,7 @@ async fn handle_gateway_status(
                     "session_append_endpoint": GATEWAY_SESSION_APPEND_ENDPOINT,
                     "session_reset_endpoint": GATEWAY_SESSION_RESET_ENDPOINT,
                     "memory_endpoint": GATEWAY_MEMORY_ENDPOINT,
+                    "memory_graph_endpoint": GATEWAY_MEMORY_GRAPH_ENDPOINT,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,
@@ -1775,6 +1783,61 @@ async fn handle_gateway_memory_write(
         .into_response()
 }
 
+async fn handle_gateway_memory_graph(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    AxumPath(session_key): AxumPath<String>,
+    Query(query): Query<GatewayMemoryGraphQuery>,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    let session_key = sanitize_session_key(session_key.as_str());
+    let memory_path = gateway_memory_path(&state.config.state_dir, &session_key);
+    let exists = memory_path.exists();
+    let content = if exists {
+        match std::fs::read_to_string(&memory_path) {
+            Ok(content) => content,
+            Err(error) => {
+                return OpenResponsesApiError::internal(format!(
+                    "failed to read memory '{}': {error}",
+                    memory_path.display()
+                ))
+                .into_response();
+            }
+        }
+    } else {
+        String::new()
+    };
+
+    let max_nodes = query.max_nodes.unwrap_or(24).clamp(1, 256);
+    let min_edge_weight = query.min_edge_weight.unwrap_or(1.0).max(0.0);
+    let relation_types = normalize_memory_graph_relation_types(query.relation_types.as_deref());
+    let nodes = build_memory_graph_nodes(&content, max_nodes);
+    let edges = build_memory_graph_edges(&nodes, &relation_types, min_edge_weight);
+
+    state.record_ui_telemetry_event("memory", "graph", "memory_graph_requested");
+    (
+        StatusCode::OK,
+        Json(GatewayMemoryGraphResponse {
+            session_key,
+            path: memory_path.display().to_string(),
+            exists,
+            bytes: content.len(),
+            node_count: nodes.len(),
+            edge_count: edges.len(),
+            nodes,
+            edges,
+            filters: GatewayMemoryGraphFilterSummary {
+                max_nodes,
+                min_edge_weight,
+                relation_types,
+            },
+        }),
+    )
+        .into_response()
+}
+
 async fn handle_gateway_ui_telemetry(
     State(state): State<Arc<GatewayOpenResponsesServerState>>,
     headers: HeaderMap,
@@ -1914,6 +1977,137 @@ fn build_manual_session_message(role: MessageRole, content: &str) -> Message {
         MessageRole::Assistant => Message::assistant_text(content),
         MessageRole::Tool => Message::tool_result("manual", "manual", content, false),
     }
+}
+
+fn normalize_memory_graph_relation_types(raw: Option<&str>) -> Vec<String> {
+    let mut relation_types = raw
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .filter(|value| value == "contains" || value == "keyword_overlap")
+        .collect::<BTreeSet<_>>();
+    if relation_types.is_empty() {
+        relation_types.insert("contains".to_string());
+        relation_types.insert("keyword_overlap".to_string());
+    }
+    relation_types.into_iter().collect()
+}
+
+fn build_memory_graph_nodes(content: &str, max_nodes: usize) -> Vec<GatewayMemoryGraphNode> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(max_nodes)
+        .enumerate()
+        .map(|(index, line)| {
+            let term_count = memory_graph_terms(line).len().max(1);
+            GatewayMemoryGraphNode {
+                id: format!("line:{}", index + 1),
+                label: line.to_string(),
+                category: "memory_line".to_string(),
+                weight: term_count as f64,
+                size: 12.0 + (term_count.min(8) as f64 * 2.0),
+            }
+        })
+        .collect()
+}
+
+fn build_memory_graph_edges(
+    nodes: &[GatewayMemoryGraphNode],
+    relation_types: &[String],
+    min_edge_weight: f64,
+) -> Vec<GatewayMemoryGraphEdge> {
+    let relation_filter = relation_types
+        .iter()
+        .map(|value| value.as_str())
+        .collect::<BTreeSet<_>>();
+    let normalized_labels = nodes
+        .iter()
+        .map(|node| node.label.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let terms = nodes
+        .iter()
+        .map(|node| memory_graph_terms(&node.label))
+        .collect::<Vec<_>>();
+    let mut edges = Vec::new();
+
+    for left_index in 0..nodes.len() {
+        for right_index in (left_index + 1)..nodes.len() {
+            let left = &nodes[left_index];
+            let right = &nodes[right_index];
+            let left_label = normalized_labels[left_index].as_str();
+            let right_label = normalized_labels[right_index].as_str();
+
+            if relation_filter.contains("contains")
+                && left_label != right_label
+                && !left_label.is_empty()
+                && !right_label.is_empty()
+            {
+                let relation_direction = if left_label.contains(right_label) {
+                    Some((left.id.as_str(), right.id.as_str()))
+                } else if right_label.contains(left_label) {
+                    Some((right.id.as_str(), left.id.as_str()))
+                } else {
+                    None
+                };
+                if let Some((source, target)) = relation_direction {
+                    let weight = 1.0;
+                    if weight >= min_edge_weight {
+                        edges.push(GatewayMemoryGraphEdge {
+                            id: format!("edge:contains:{source}:{target}"),
+                            source: source.to_string(),
+                            target: target.to_string(),
+                            relation_type: "contains".to_string(),
+                            weight,
+                        });
+                    }
+                }
+            }
+
+            if relation_filter.contains("keyword_overlap") {
+                let overlap = terms[left_index].intersection(&terms[right_index]).count();
+                if overlap > 0 {
+                    let weight = overlap as f64;
+                    if weight >= min_edge_weight {
+                        edges.push(GatewayMemoryGraphEdge {
+                            id: format!("edge:keyword_overlap:{}:{}", left.id, right.id),
+                            source: left.id.clone(),
+                            target: right.id.clone(),
+                            relation_type: "keyword_overlap".to_string(),
+                            weight,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    edges.sort_by(|left, right| {
+        (
+            left.relation_type.as_str(),
+            left.source.as_str(),
+            left.target.as_str(),
+            left.id.as_str(),
+        )
+            .cmp(&(
+                right.relation_type.as_str(),
+                right.source.as_str(),
+                right.target.as_str(),
+                right.id.as_str(),
+            ))
+    });
+    edges
+}
+
+fn memory_graph_terms(value: &str) -> BTreeSet<String> {
+    value
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_ascii_lowercase)
+        .filter(|segment| segment.len() >= 3)
+        .collect()
 }
 
 fn gateway_memory_path(state_dir: &Path, session_key: &str) -> PathBuf {
