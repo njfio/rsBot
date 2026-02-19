@@ -851,53 +851,116 @@ pub fn execute_auth_login_command(
 
     match mode {
         ProviderAuthMethod::ApiKey => {
-            match resolve_non_empty_secret_with_source(
+            let Some((api_key, source)) = resolve_non_empty_secret_with_source(
                 provider_api_key_candidates_from_auth_config(config, provider),
-            ) {
-                Some((_secret, source)) => {
-                    if json_output {
-                        return serde_json::json!({
-                            "command": "auth.login",
-                            "provider": provider.as_str(),
-                            "mode": mode.as_str(),
-                            "status": "ready",
-                            "source": source,
-                            "persisted": false,
-                        })
-                        .to_string();
-                    }
-                    format!(
-                        "auth login: provider={} mode={} status=ready source={} persisted=false",
-                        provider.as_str(),
-                        mode.as_str(),
-                        source
-                    )
+            ) else {
+                let reason = redact_known_secrets(
+                    missing_provider_api_key_message(provider).to_string(),
+                    &redaction_secrets,
+                );
+                if json_output {
+                    return serde_json::json!({
+                        "command": "auth.login",
+                        "provider": provider.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "error",
+                        "reason": reason,
+                    })
+                    .to_string();
                 }
-                None => {
-                    let reason = redact_known_secrets(
-                        missing_provider_api_key_message(provider).to_string(),
-                        &redaction_secrets,
-                    );
+                return redact_known_secrets(
+                    format!(
+                        "auth login error: provider={} mode={} error={reason}",
+                        provider.as_str(),
+                        mode.as_str()
+                    ),
+                    &redaction_secrets,
+                );
+            };
+
+            let mut store = match load_credential_store(
+                &config.credential_store,
+                config.credential_store_encryption,
+                config.credential_store_key.as_deref(),
+            ) {
+                Ok(store) => store,
+                Err(error) => {
                     if json_output {
                         return serde_json::json!({
                             "command": "auth.login",
                             "provider": provider.as_str(),
                             "mode": mode.as_str(),
                             "status": "error",
-                            "reason": reason,
+                            "reason": redact_known_secrets(error.to_string(), &redaction_secrets),
                         })
                         .to_string();
                     }
-                    redact_known_secrets(
+                    return redact_known_secrets(
                         format!(
-                            "auth login error: provider={} mode={} error={reason}",
+                            "auth login error: provider={} mode={} error={error}",
                             provider.as_str(),
                             mode.as_str()
                         ),
                         &redaction_secrets,
-                    )
+                    );
                 }
+            };
+
+            store.providers.insert(
+                provider.as_str().to_string(),
+                ProviderCredentialStoreRecord {
+                    auth_method: mode,
+                    access_token: Some(api_key),
+                    refresh_token: None,
+                    expires_unix: None,
+                    revoked: false,
+                },
+            );
+
+            if let Err(error) = save_credential_store(
+                &config.credential_store,
+                &store,
+                config.credential_store_key.as_deref(),
+            ) {
+                if json_output {
+                    return serde_json::json!({
+                        "command": "auth.login",
+                        "provider": provider.as_str(),
+                        "mode": mode.as_str(),
+                        "status": "error",
+                        "reason": redact_known_secrets(error.to_string(), &redaction_secrets),
+                    })
+                    .to_string();
+                }
+                return redact_known_secrets(
+                    format!(
+                        "auth login error: provider={} mode={} error={error}",
+                        provider.as_str(),
+                        mode.as_str()
+                    ),
+                    &redaction_secrets,
+                );
             }
+
+            if json_output {
+                return serde_json::json!({
+                    "command": "auth.login",
+                    "provider": provider.as_str(),
+                    "mode": mode.as_str(),
+                    "status": "saved",
+                    "source": source,
+                    "credential_store": config.credential_store.display().to_string(),
+                    "persisted": true,
+                })
+                .to_string();
+            }
+            format!(
+                "auth login: provider={} mode={} status=saved source={} credential_store={} persisted=true",
+                provider.as_str(),
+                mode.as_str(),
+                source,
+                config.credential_store.display()
+            )
         }
         ProviderAuthMethod::OauthToken | ProviderAuthMethod::SessionToken => {
             let Some((access_token, access_source)) = resolve_non_empty_secret_with_source(
@@ -1089,7 +1152,7 @@ pub fn execute_auth_reauth_command(
     let mode = mode_override
         .unwrap_or_else(|| configured_provider_auth_method_from_config(config, provider));
     let mode_config = auth_config_with_provider_mode(config, provider, mode);
-    let requires_store = mode != ProviderAuthMethod::ApiKey;
+    let requires_store = true;
     let (store, store_error) = if requires_store {
         match load_credential_store(
             &config.credential_store,
@@ -2272,5 +2335,113 @@ pub fn execute_auth_command(config: &AuthCommandConfig, command_args: &str) -> S
             },
             json_output,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use tempfile::TempDir;
+
+    fn test_auth_config(temp_dir: &TempDir) -> AuthCommandConfig {
+        AuthCommandConfig {
+            credential_store: temp_dir.path().join("credentials.toml"),
+            credential_store_key: Some("unit-test-store-key".to_string()),
+            credential_store_encryption: CredentialStoreEncryptionMode::Keyed,
+            api_key: None,
+            openai_api_key: Some("sk-openai-test-key".to_string()),
+            anthropic_api_key: None,
+            google_api_key: None,
+            openai_auth_mode: ProviderAuthMethod::ApiKey,
+            anthropic_auth_mode: ProviderAuthMethod::ApiKey,
+            google_auth_mode: ProviderAuthMethod::ApiKey,
+            provider_subscription_strict: false,
+            openai_codex_backend: true,
+            openai_codex_cli: "codex".to_string(),
+            anthropic_claude_backend: true,
+            anthropic_claude_cli: "claude".to_string(),
+            google_gemini_backend: true,
+            google_gemini_cli: "gemini".to_string(),
+            google_gcloud_cli: "gcloud".to_string(),
+        }
+    }
+
+    #[test]
+    fn unit_execute_auth_login_command_api_key_json_status_saved() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = test_auth_config(&temp_dir);
+
+        let result = execute_auth_login_command(
+            &config,
+            Provider::OpenAi,
+            Some(ProviderAuthMethod::ApiKey),
+            false,
+            true,
+        );
+        let parsed: Value = serde_json::from_str(&result).expect("valid json output");
+
+        assert_eq!(
+            parsed.get("command").and_then(Value::as_str),
+            Some("auth.login")
+        );
+        assert_eq!(
+            parsed.get("provider").and_then(Value::as_str),
+            Some("openai")
+        );
+        assert_eq!(parsed.get("mode").and_then(Value::as_str), Some("api_key"));
+        assert_eq!(parsed.get("status").and_then(Value::as_str), Some("saved"));
+        assert_eq!(parsed.get("persisted").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn unit_execute_auth_reauth_command_json_includes_status_and_entry() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = test_auth_config(&temp_dir);
+
+        let login_result = execute_auth_login_command(
+            &config,
+            Provider::OpenAi,
+            Some(ProviderAuthMethod::ApiKey),
+            false,
+            true,
+        );
+        let login_json: Value =
+            serde_json::from_str(&login_result).expect("valid login json output");
+        assert_eq!(
+            login_json.get("status").and_then(Value::as_str),
+            Some("saved")
+        );
+
+        let result = execute_auth_reauth_command(
+            &config,
+            Provider::OpenAi,
+            Some(ProviderAuthMethod::ApiKey),
+            false,
+            true,
+        );
+        let parsed: Value = serde_json::from_str(&result).expect("valid reauth json output");
+
+        assert_eq!(
+            parsed.get("command").and_then(Value::as_str),
+            Some("auth.reauth")
+        );
+        assert_eq!(
+            parsed.get("provider").and_then(Value::as_str),
+            Some("openai")
+        );
+        assert_eq!(parsed.get("mode").and_then(Value::as_str), Some("api_key"));
+        assert_eq!(parsed.get("status").and_then(Value::as_str), Some("ready"));
+        assert_eq!(
+            parsed.get("launch_requested").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            parsed
+                .get("entry")
+                .and_then(|entry| entry.get("state"))
+                .and_then(Value::as_str),
+            Some("ready")
+        );
     }
 }

@@ -459,7 +459,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 - [x] Create `SecretStore` trait in `tau-provider` or `tau-safety` (`#2652`)
 - [x] Encrypt secrets at rest with machine-derived key or user-provided passphrase (`#2652`)
 - [x] `DecryptedSecret` wrapper type that implements `Debug`/`Display` as `"[REDACTED]"` (`#2652`)
-- [ ] Migrate API key storage from plain-text TOML to encrypted store
+- [x] Migrate API key storage from plain-text TOML to encrypted store (`#2657`)
 - **Files**: `tau-provider/src/` or `tau-safety/src/`
 - **Effort**: Medium
 

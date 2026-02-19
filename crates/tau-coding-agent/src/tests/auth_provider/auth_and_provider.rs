@@ -2435,6 +2435,49 @@ fn regression_auth_security_matrix_blocks_unsupported_mode_bypass_attempts() {
 }
 
 #[test]
+fn conformance_spec_c01_execute_auth_command_login_api_key_persists_store_entry() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let mut config = test_auth_command_config();
+    config.credential_store = temp.path().join("api-key-login-store.json");
+    config.credential_store_encryption = CredentialStoreEncryptionMode::Keyed;
+    config.credential_store_key = None;
+    config.openai_auth_mode = ProviderAuthMethod::ApiKey;
+    config.openai_api_key = Some("openai-api-key-secret".to_string());
+    config.api_key = None;
+
+    let login_output = execute_auth_command(&config, "login openai --mode api-key --json");
+    let login_json: serde_json::Value =
+        serde_json::from_str(&login_output).expect("parse login output");
+    assert_eq!(login_json["status"], "saved");
+    assert_eq!(login_json["provider"], "openai");
+    assert_eq!(login_json["mode"], "api_key");
+    assert_eq!(login_json["persisted"], true);
+    assert!(!login_output.contains("openai-api-key-secret"));
+
+    let raw_store = std::fs::read_to_string(&config.credential_store).expect("read raw store");
+    assert!(!raw_store.contains("openai-api-key-secret"));
+
+    let stored = load_credential_store(
+        &config.credential_store,
+        CredentialStoreEncryptionMode::None,
+        None,
+    )
+    .expect("load persisted api key store");
+    let entry = stored
+        .providers
+        .get("openai")
+        .expect("openai provider entry");
+    assert_eq!(entry.auth_method, ProviderAuthMethod::ApiKey);
+    assert_eq!(entry.access_token.as_deref(), Some("openai-api-key-secret"));
+    assert_eq!(entry.refresh_token, None);
+    assert_eq!(entry.expires_unix, None);
+    assert!(!entry.revoked);
+}
+
+#[test]
 fn functional_execute_auth_command_login_status_logout_lifecycle() {
     let _env_lock = AUTH_ENV_TEST_LOCK
         .lock()

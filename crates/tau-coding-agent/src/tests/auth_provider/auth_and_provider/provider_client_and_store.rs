@@ -883,6 +883,60 @@ fn integration_build_provider_client_supports_openai_session_token_from_credenti
 }
 
 #[test]
+fn integration_spec_c02_build_provider_client_supports_openai_api_key_from_credential_store() {
+    let _env_lock = AUTH_ENV_TEST_LOCK
+        .lock()
+        .expect("acquire auth env test lock");
+    let temp = tempdir().expect("tempdir");
+    let store_path = temp.path().join("api-key-credentials.json");
+    write_test_provider_credential(
+        &store_path,
+        CredentialStoreEncryptionMode::None,
+        None,
+        Provider::OpenAi,
+        ProviderCredentialStoreRecord {
+            auth_method: ProviderAuthMethod::ApiKey,
+            access_token: Some("stored-openai-api-key".to_string()),
+            refresh_token: None,
+            expires_unix: None,
+            revoked: false,
+        },
+    );
+
+    let mut cli = test_cli();
+    cli.openai_auth_mode = CliProviderAuthMode::ApiKey;
+    cli.credential_store = store_path;
+    cli.credential_store_encryption = CliCredentialStoreEncryptionMode::None;
+    cli.openai_api_key = None;
+    cli.api_key = None;
+
+    let snapshot = snapshot_env_vars(&[
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "XAI_API_KEY",
+        "MISTRAL_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "TAU_API_KEY",
+    ]);
+    std::env::remove_var("OPENAI_API_KEY");
+    std::env::remove_var("OPENROUTER_API_KEY");
+    std::env::remove_var("DEEPSEEK_API_KEY");
+    std::env::remove_var("GROQ_API_KEY");
+    std::env::remove_var("XAI_API_KEY");
+    std::env::remove_var("MISTRAL_API_KEY");
+    std::env::remove_var("AZURE_OPENAI_API_KEY");
+    std::env::remove_var("TAU_API_KEY");
+
+    let client = build_provider_client(&cli, Provider::OpenAi).expect("build api-key client");
+    let ptr = Arc::as_ptr(&client);
+    assert!(!ptr.is_null());
+
+    restore_env_vars(snapshot);
+}
+
+#[test]
 fn unit_resolve_credential_store_encryption_mode_auto_uses_key_presence() {
     let mut cli = test_cli();
     cli.credential_store_encryption = CliCredentialStoreEncryptionMode::Auto;
