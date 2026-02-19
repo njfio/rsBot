@@ -18,6 +18,7 @@ pub const PROMPT_TELEMETRY_SCHEMA_VERSION: u32 = 1;
 pub const CHECKPOINT_PROMOTION_GATE_RECORD_TYPE_V1: &str = "checkpoint_promotion_gate_v1";
 /// Current checkpoint promotion gate audit schema version.
 pub const CHECKPOINT_PROMOTION_GATE_SCHEMA_VERSION: u32 = 1;
+const TOOL_AUDIT_LOG_REDACTION_SENTINEL: &str = "[TAU-LOG-REDACTED]";
 
 fn current_unix_timestamp_ms() -> u64 {
     SystemTime::now()
@@ -366,6 +367,33 @@ fn secret_leak_pattern_class(reason_code: &str) -> Option<&str> {
     reason_code.strip_prefix("secret_leak.")
 }
 
+fn is_secret_like_log_principal(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("bearer ")
+        || lower.starts_with("sk-")
+        || lower.starts_with("sk-ant-")
+        || lower.starts_with("ghp_")
+        || lower.starts_with("github_pat_")
+        || lower.starts_with("xox")
+        || trimmed.starts_with("AKIA")
+}
+
+fn sanitize_tool_audit_principal(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if is_secret_like_log_principal(trimmed) {
+        Some(TOOL_AUDIT_LOG_REDACTION_SENTINEL.to_string())
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 pub fn tool_audit_event_json(
     event: &AgentEvent,
     starts: &mut HashMap<String, Instant>,
@@ -461,10 +489,14 @@ pub fn tool_audit_event_json(
                     );
                 }
                 if let Some(throttle_principal) = throttle_principal {
-                    object.insert(
-                        "throttle_principal".to_string(),
-                        serde_json::json!(throttle_principal),
-                    );
+                    if let Some(sanitized_principal) =
+                        sanitize_tool_audit_principal(&throttle_principal)
+                    {
+                        object.insert(
+                            "throttle_principal".to_string(),
+                            serde_json::json!(sanitized_principal),
+                        );
+                    }
                 }
             }
 
@@ -478,7 +510,7 @@ pub fn tool_audit_event_json(
 mod tests {
     use super::{
         checkpoint_promotion_gate_audit_json, tool_audit_event_json, PromptTelemetryLogger,
-        ToolAuditLogger,
+        ToolAuditLogger, TOOL_AUDIT_LOG_REDACTION_SENTINEL,
     };
     use std::{collections::HashMap, path::PathBuf, time::Instant};
     use tau_agent_core::{AgentEvent, SafetyMode, SafetyStage, ToolExecutionResult};
@@ -546,6 +578,74 @@ mod tests {
         assert_eq!(payload["throttle_events_total"], 5);
         assert_eq!(payload["principal_throttle_events"], 2);
         assert_eq!(payload["throttle_principal"], "github:octocat");
+    }
+
+    #[test]
+    fn unit_spec_2612_c01_tool_audit_payload_omits_secret_argument_and_result_content() {
+        let mut starts = HashMap::new();
+        let secret = "sk-proj-AbCdEf0123456789_uvWXyZ9876543210";
+
+        let start = AgentEvent::ToolExecutionStart {
+            tool_call_id: "call-2612-start".to_string(),
+            tool_name: "http".to_string(),
+            arguments: serde_json::json!({
+                "authorization": format!("Bearer {secret}"),
+                "token": secret,
+                "url": "https://api.example.com"
+            }),
+        };
+        let start_payload =
+            tool_audit_event_json(&start, &mut starts).expect("expected start payload");
+        let start_line = serde_json::to_string(&start_payload).expect("encode start payload");
+        assert!(
+            !start_line.contains(secret),
+            "tool start payload must not leak secret material"
+        );
+        assert!(start_payload["arguments_bytes"].as_u64().unwrap_or(0) > 0);
+
+        let end = AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call-2612-start".to_string(),
+            tool_name: "http".to_string(),
+            result: ToolExecutionResult::error(serde_json::json!({
+                "error": "upstream denied",
+                "token": secret
+            })),
+        };
+        let end_payload = tool_audit_event_json(&end, &mut starts).expect("expected end payload");
+        let end_line = serde_json::to_string(&end_payload).expect("encode end payload");
+        assert!(
+            !end_line.contains(secret),
+            "tool end payload must not leak secret material"
+        );
+        assert!(end_payload["result_bytes"].as_u64().unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn regression_spec_2612_c02_tool_audit_redacts_secret_like_throttle_principal() {
+        let mut starts = HashMap::new();
+        starts.insert("call-2612-throttle".to_string(), Instant::now());
+        let secret_principal = "sk-proj-AbCdEf0123456789_uvWXyZ9876543210";
+        let event = AgentEvent::ToolExecutionEnd {
+            tool_call_id: "call-2612-throttle".to_string(),
+            tool_name: "http".to_string(),
+            result: ToolExecutionResult::error(serde_json::json!({
+                "policy_rule": "rate_limit",
+                "reason_code": "rate_limit_rejected",
+                "principal": secret_principal,
+            })),
+        };
+
+        let payload = tool_audit_event_json(&event, &mut starts).expect("expected payload");
+        assert_eq!(payload["throttled"], true);
+        assert_eq!(
+            payload["throttle_principal"],
+            TOOL_AUDIT_LOG_REDACTION_SENTINEL
+        );
+        let line = serde_json::to_string(&payload).expect("encode payload");
+        assert!(
+            !line.contains(secret_principal),
+            "serialized payload must not contain raw secret principal"
+        );
     }
 
     #[test]
@@ -644,6 +744,45 @@ mod tests {
             backup.contains("call-rotation-1"),
             "backup should keep prior line"
         );
+    }
+
+    #[test]
+    fn integration_spec_2612_c03_tool_audit_logger_persists_redacted_principal_without_secret_literals(
+    ) {
+        let temp = tempdir().expect("tempdir");
+        let log_path = temp.path().join("tool-audit-redaction.jsonl");
+        let logger = ToolAuditLogger::open(log_path.clone()).expect("logger should open");
+        let secret_principal = "ghp_abcdEFGHijklMNOPqrstUVWX1234567890";
+
+        logger
+            .log_event(&AgentEvent::ToolExecutionStart {
+                tool_call_id: "call-2612-log".to_string(),
+                tool_name: "http".to_string(),
+                arguments: serde_json::json!({
+                    "authorization": format!("Bearer {secret_principal}")
+                }),
+            })
+            .expect("write start event");
+
+        logger
+            .log_event(&AgentEvent::ToolExecutionEnd {
+                tool_call_id: "call-2612-log".to_string(),
+                tool_name: "http".to_string(),
+                result: ToolExecutionResult::error(serde_json::json!({
+                    "policy_rule": "rate_limit",
+                    "reason_code": "rate_limit_rejected",
+                    "principal": secret_principal,
+                })),
+            })
+            .expect("write end event");
+
+        let raw = std::fs::read_to_string(log_path).expect("read audit log");
+        assert!(
+            !raw.contains(secret_principal),
+            "persisted log must not contain secret literals"
+        );
+        assert!(raw.contains(TOOL_AUDIT_LOG_REDACTION_SENTINEL));
+        assert!(raw.contains("\"throttle_reason_code\":\"rate_limit_rejected\""));
     }
 
     #[test]
