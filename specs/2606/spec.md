@@ -1,6 +1,6 @@
 # Spec: Issue #2606 - Validate tau-gaps roadmap items and execute open P0/P1 remediations
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Story #2606 tracks the M104 revalidation/remediation wave. With all child task issues now merged, the roadmap and milestone artifacts must be reconciled to avoid stale "open/partial" status for already delivered work.
