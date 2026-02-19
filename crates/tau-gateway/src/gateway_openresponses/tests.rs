@@ -313,6 +313,21 @@ fn write_training_runtime_fixture(root: &Path, failed: usize) -> PathBuf {
     training_root
 }
 
+fn write_training_rollouts_fixture(root: &Path) -> PathBuf {
+    let training_root = root.join(".tau").join("training");
+    std::fs::create_dir_all(&training_root).expect("create training root");
+    std::fs::write(
+        training_root.join("rollouts.jsonl"),
+        r#"{"rollout_id":"r-104","status":"succeeded","mode":"optimize","steps":12,"reward":0.9,"duration_ms":3000,"updated_unix_ms":1400}
+invalid-rollout-line
+{"rollout_id":"r-103","status":"cancelled","mode":"validate","steps":3,"reward":0.1,"duration_ms":1100,"updated_unix_ms":1300}
+{"rollout_id":"r-102","status":"failed","mode":"optimize","steps":8,"reward":-0.3,"duration_ms":2500,"updated_unix_ms":1200}
+"#,
+    )
+    .expect("write training rollouts");
+    training_root
+}
+
 fn write_gateway_audit_fixture(root: &Path) -> (PathBuf, PathBuf) {
     let dashboard_root = root.join(".tau").join("dashboard");
     std::fs::create_dir_all(&dashboard_root).expect("create dashboard root for audit fixture");
@@ -2377,6 +2392,316 @@ async fn regression_spec_2685_c03_training_status_endpoint_rejects_unauthorized_
         .await
         .expect("unauthorized training status response");
     assert_eq!(training_status_response.status(), StatusCode::UNAUTHORIZED);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2688_c01_c07_training_rollouts_and_status_discovery_support_pagination() {
+    let temp = tempdir().expect("tempdir");
+    write_training_rollouts_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let rollouts_response = client
+        .get(
+            "http://".to_string()
+                + &addr.to_string()
+                + "/gateway/training/rollouts?page=1&per_page=2",
+        )
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("training rollouts response");
+    assert_eq!(rollouts_response.status(), StatusCode::OK);
+    let rollouts_payload = rollouts_response
+        .json::<Value>()
+        .await
+        .expect("parse training rollouts payload");
+    assert_eq!(
+        rollouts_payload["schema_version"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(rollouts_payload["page"], Value::Number(1_u64.into()));
+    assert_eq!(rollouts_payload["per_page"], Value::Number(2_u64.into()));
+    assert_eq!(
+        rollouts_payload["total_records"],
+        Value::Number(3_u64.into())
+    );
+    assert_eq!(rollouts_payload["total_pages"], Value::Number(2_u64.into()));
+    assert_eq!(
+        rollouts_payload["invalid_records"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        rollouts_payload["records"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0),
+        2
+    );
+    assert_eq!(
+        rollouts_payload["records"][0]["rollout_id"].as_str(),
+        Some("r-104")
+    );
+    assert_eq!(
+        rollouts_payload["records"][1]["rollout_id"].as_str(),
+        Some("r-103")
+    );
+
+    let status_response = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_payload = status_response
+        .json::<Value>()
+        .await
+        .expect("parse status payload");
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["training_rollouts_endpoint"],
+        "/gateway/training/rollouts"
+    );
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["training_config_endpoint"],
+        "/gateway/training/config"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2688_c02_c03_training_rollouts_endpoint_returns_fallback_when_artifacts_are_missing_or_malformed(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let missing_rollouts = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/rollouts")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("missing rollouts response");
+    assert_eq!(missing_rollouts.status(), StatusCode::OK);
+    let missing_payload = missing_rollouts
+        .json::<Value>()
+        .await
+        .expect("parse missing rollouts payload");
+    assert_eq!(
+        missing_payload["total_records"],
+        Value::Number(0_u64.into())
+    );
+    assert_eq!(
+        missing_payload["invalid_records"],
+        Value::Number(0_u64.into())
+    );
+    assert_eq!(
+        missing_payload["records"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(0),
+        0
+    );
+    assert!(missing_payload["diagnostics"]
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    write_training_rollouts_fixture(temp.path());
+    let malformed_rollouts = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/rollouts")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("malformed rollouts response");
+    assert_eq!(malformed_rollouts.status(), StatusCode::OK);
+    let malformed_payload = malformed_rollouts
+        .json::<Value>()
+        .await
+        .expect("parse malformed rollouts payload");
+    assert_eq!(
+        malformed_payload["invalid_records"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        malformed_payload["total_records"],
+        Value::Number(3_u64.into())
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2688_c04_training_rollouts_endpoint_rejects_invalid_pagination_queries() {
+    let temp = tempdir().expect("tempdir");
+    write_training_rollouts_fixture(temp.path());
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let invalid_page = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/rollouts?page=0")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("invalid page rollouts response");
+    assert_eq!(invalid_page.status(), StatusCode::BAD_REQUEST);
+    let invalid_page_payload = invalid_page
+        .json::<Value>()
+        .await
+        .expect("parse invalid page payload");
+    assert_eq!(
+        invalid_page_payload["error"]["code"],
+        "invalid_training_rollouts_page"
+    );
+
+    let invalid_per_page = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/rollouts?per_page=0")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("invalid per_page rollouts response");
+    assert_eq!(invalid_per_page.status(), StatusCode::BAD_REQUEST);
+    let invalid_per_page_payload = invalid_per_page
+        .json::<Value>()
+        .await
+        .expect("parse invalid per_page payload");
+    assert_eq!(
+        invalid_per_page_payload["error"]["code"],
+        "invalid_training_rollouts_per_page"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2688_c05_training_config_patch_persists_supported_overrides() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+
+    let client = Client::new();
+    let config_patch = client
+        .patch("http://".to_string() + &addr.to_string() + "/gateway/training/config")
+        .bearer_auth("secret")
+        .json(&json!({
+            "enabled": true,
+            "update_interval_rollouts": 8,
+            "max_rollouts_per_update": 64,
+            "max_failure_streak": 3,
+            "store_path": ".tau/training/store-v2.sqlite"
+        }))
+        .send()
+        .await
+        .expect("training config patch");
+    assert_eq!(config_patch.status(), StatusCode::OK);
+    let config_patch_payload = config_patch
+        .json::<Value>()
+        .await
+        .expect("parse training config patch payload");
+    assert_eq!(
+        config_patch_payload["accepted"]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        config_patch_payload["accepted"]["update_interval_rollouts"].as_u64(),
+        Some(8)
+    );
+    assert_eq!(
+        config_patch_payload["accepted"]["max_rollouts_per_update"].as_u64(),
+        Some(64)
+    );
+    assert_eq!(
+        config_patch_payload["accepted"]["max_failure_streak"].as_u64(),
+        Some(3)
+    );
+    assert_eq!(
+        config_patch_payload["accepted"]["store_path"].as_str(),
+        Some(".tau/training/store-v2.sqlite")
+    );
+
+    let overrides_path = state
+        .config
+        .state_dir
+        .join("openresponses")
+        .join("training-config-overrides.json");
+    assert!(overrides_path.exists());
+    let overrides_payload = serde_json::from_str::<Value>(
+        std::fs::read_to_string(&overrides_path)
+            .expect("read training config overrides")
+            .as_str(),
+    )
+    .expect("parse training config overrides");
+    assert_eq!(
+        overrides_payload["pending_overrides"]["max_rollouts_per_update"].as_u64(),
+        Some(64)
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2688_c06_c07_training_endpoints_reject_invalid_or_unauthorized_requests() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let unauthorized_rollouts = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/training/rollouts")
+        .send()
+        .await
+        .expect("unauthorized training rollouts response");
+    assert_eq!(unauthorized_rollouts.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthorized_patch = client
+        .patch("http://".to_string() + &addr.to_string() + "/gateway/training/config")
+        .json(&json!({"enabled": true}))
+        .send()
+        .await
+        .expect("unauthorized training config patch response");
+    assert_eq!(unauthorized_patch.status(), StatusCode::UNAUTHORIZED);
+
+    let empty_patch = client
+        .patch("http://".to_string() + &addr.to_string() + "/gateway/training/config")
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("empty training config patch response");
+    assert_eq!(empty_patch.status(), StatusCode::BAD_REQUEST);
+    let empty_patch_payload = empty_patch
+        .json::<Value>()
+        .await
+        .expect("parse empty training patch payload");
+    assert_eq!(
+        empty_patch_payload["error"]["code"],
+        "no_training_config_changes"
+    );
+
+    let invalid_patch = client
+        .patch("http://".to_string() + &addr.to_string() + "/gateway/training/config")
+        .bearer_auth("secret")
+        .json(&json!({"store_path":"   "}))
+        .send()
+        .await
+        .expect("invalid training config patch response");
+    assert_eq!(invalid_patch.status(), StatusCode::BAD_REQUEST);
+    let invalid_patch_payload = invalid_patch
+        .json::<Value>()
+        .await
+        .expect("parse invalid training patch payload");
+    assert_eq!(
+        invalid_patch_payload["error"]["code"],
+        "invalid_training_store_path"
+    );
 
     handle.abort();
 }

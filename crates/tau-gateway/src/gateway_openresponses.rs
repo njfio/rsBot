@@ -20,7 +20,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header::AUTHORIZATION, HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
@@ -66,6 +66,7 @@ mod safety_runtime;
 mod session_runtime;
 #[cfg(test)]
 mod tests;
+mod training_runtime;
 mod types;
 mod webchat_page;
 mod websocket;
@@ -95,6 +96,7 @@ use session_runtime::{
     collect_assistant_reply, gateway_session_path, initialize_gateway_session_runtime,
     persist_messages, persist_session_usage_delta,
 };
+use training_runtime::{handle_gateway_training_config_patch, handle_gateway_training_rollouts};
 use types::{
     GatewayAuthSessionRequest, GatewayAuthSessionResponse, GatewayChannelLifecycleRequest,
     GatewayConfigPatchRequest, GatewayExternalCodingAgentFollowupsDrainRequest,
@@ -135,6 +137,8 @@ const GATEWAY_SAFETY_TEST_ENDPOINT: &str = "/gateway/safety/test";
 const GATEWAY_AUDIT_SUMMARY_ENDPOINT: &str = "/gateway/audit/summary";
 const GATEWAY_AUDIT_LOG_ENDPOINT: &str = "/gateway/audit/log";
 const GATEWAY_TRAINING_STATUS_ENDPOINT: &str = "/gateway/training/status";
+const GATEWAY_TRAINING_ROLLOUTS_ENDPOINT: &str = "/gateway/training/rollouts";
+const GATEWAY_TRAINING_CONFIG_ENDPOINT: &str = "/gateway/training/config";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
@@ -809,6 +813,14 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             get(handle_gateway_training_status),
         )
         .route(
+            GATEWAY_TRAINING_ROLLOUTS_ENDPOINT,
+            get(handle_gateway_training_rollouts),
+        )
+        .route(
+            GATEWAY_TRAINING_CONFIG_ENDPOINT,
+            patch(handle_gateway_training_config_patch),
+        )
+        .route(
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
         )
@@ -923,6 +935,8 @@ async fn handle_gateway_status(
                     "audit_summary_endpoint": GATEWAY_AUDIT_SUMMARY_ENDPOINT,
                     "audit_log_endpoint": GATEWAY_AUDIT_LOG_ENDPOINT,
                     "training_status_endpoint": GATEWAY_TRAINING_STATUS_ENDPOINT,
+                    "training_rollouts_endpoint": GATEWAY_TRAINING_ROLLOUTS_ENDPOINT,
+                    "training_config_endpoint": GATEWAY_TRAINING_CONFIG_ENDPOINT,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,
