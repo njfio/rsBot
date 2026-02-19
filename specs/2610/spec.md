@@ -1,6 +1,6 @@
 # Spec: Issue #2610 - Branch hygiene wave for stale merged remote branches
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Merged remote branches accumulate over time and increase operational noise for active lane triage. The repository needs a deterministic, auditable procedure that identifies stale merged branches and supports safe pruning with explicit destructive confirmation plus rollback guidance.

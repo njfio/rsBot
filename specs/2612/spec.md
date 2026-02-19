@@ -1,6 +1,6 @@
 # Spec: Issue #2612 - Runtime log sanitization audit and leak-prevention checks
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Runtime observability logs must never emit credential/token material. Existing logger coverage validates structure and counters but does not explicitly enforce redaction guarantees for secret-like values flowing through tool-event metadata. This creates false-negative risk where high-entropy secrets could leak into persisted logs.
