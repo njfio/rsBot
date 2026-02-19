@@ -1,6 +1,6 @@
 # Spec #2592 - Task: implement G6 relation enum + graph traversal parity improvements
 
-Status: Reviewed
+Status: Implemented
 Priority: P1
 Milestone: M101
 Parent: #2588
