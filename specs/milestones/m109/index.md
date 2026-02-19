@@ -1,6 +1,6 @@
 # M109 - Spacebot G10 Discord Adapter (Phase 1)
 
-Status: In Progress
+Status: Completed
 Related roadmap items: `tasks/spacebot-comparison.md` (G10 Discord Adapter)
 
 ## Objective

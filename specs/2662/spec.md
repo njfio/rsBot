@@ -1,6 +1,6 @@
 # Spec: Issue #2662 - Discord mention normalization and chunking parity validation
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Discord inbound payloads can contain mention tokens such as `<@123>` and `<@!456>`. Without normalization, channel policies and downstream prompts receive low-signal raw IDs rather than user-friendly display mentions. Additionally, Discord outbound chunking must remain safely capped to 2000 characters.
